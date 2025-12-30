@@ -36,7 +36,7 @@ impl SequentialChain {
         }
     }
 
-    pub async fn call(&self, initial_input: &HashMap<String, String>) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    pub async fn call(&self, initial_input: &HashMap<&str, &str>) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
         // 1. 校验初始输入
         for var in &self.input_variables {
             if !initial_input.contains_key(var.as_str()) {
