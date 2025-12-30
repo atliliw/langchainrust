@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "role", content = "content")]
 pub enum Message {
     #[serde(rename = "system")]
     System(SystemMessage),
@@ -78,4 +77,9 @@ impl From<AIMessage> for Message {
     fn from(msg: AIMessage) -> Self {
         Message::AIMessage(msg)
     }
+}
+
+pub trait IntoApiMessage {
+    fn role(&self) -> String;
+    fn content(&self) -> String;
 }

@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
-use crate::messages::{Message as LangMessage, HumanMessage, SystemMessage, AIMessage};
+use serde::{Deserialize};
+use crate::messages::Message as LangMessage;
+use crate::prompts::ChatPromptTemplate;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct LLM {
@@ -19,39 +21,45 @@ impl LLM {
             base_url: base_url.to_string(),
         }
     }
-
-    // Original method for backward compatibility
     pub async fn generate(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let messages = vec![LangMessage::human(prompt)];
         self.generate_with_messages(messages).await
     }
+pub async fn generate_with_messages(
+    &self,
+    messages: Vec<LangMessage>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let url = format!("{}/chat/completions", self.base_url);
 
-    // New method that accepts a vector of messages
-    pub async fn generate_with_messages(
-        &self,
-        messages: Vec<LangMessage>
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let url = format!("{}/chat/completions", self.base_url);
-        let body = ChatRequest {
-            model: self.model.to_string(),
-            messages: messages.into_iter().map(|msg| ChatMessage {
-                role: msg.role().to_string(),
-                content: msg.content().to_string(),
-            }).collect(),
-        };
+    let openai_messages: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role(),
+                "content": m.content()
+            })
+        })
+        .collect();
 
-        let response: ChatResponse = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
+    let body = serde_json::json!({
+        "model": self.model,
+        "messages": openai_messages,
+    });
 
-        Ok(response.choices[0].message.content.clone())
-    }
+    let response: ChatResponse = self.client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", self.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    // ✅ 安全访问，不 panic，也不乱用 ok_or
+    let first_choice = response.choices.first().ok_or("No choices returned")?;
+    Ok(first_choice.message.content.clone())
+}
 
     // Convenience method for chat with system message
     pub async fn chat(
@@ -69,21 +77,23 @@ impl LLM {
 
         self.generate_with_messages(messages).await
     }
+
+    /// 使用 ChatPromptTemplate 生成消息并调用 LLM
+    pub async fn invoke_chat_template(
+        &self,
+        template: &ChatPromptTemplate,
+        values: &HashMap<&str, &str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let messages = template.format(values)
+            .map_err(|e| format!("模板格式化失败: {}", e))?;
+
+        self.generate_with_messages(messages).await
+    }
 }
 
-// OpenAI API 结构体
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-}
 
-#[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
 
+// 只保留响应结构（用于反序列化）
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
@@ -95,6 +105,7 @@ struct Choice {
 }
 
 #[derive(Deserialize)]
-struct ResponseMessage {
+struct ResponseMessage {   
     content: String,
 }
+
