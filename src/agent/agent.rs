@@ -72,27 +72,55 @@ impl ReActAgent {
         )
     }
     // 行为：工具名({{\"参数1\": \"值1\", \"参数2\": \"值2\"}})
-    fn parse_action(&self, response: &str) -> Option<(String, HashMap<String, String>)> {
-        let lines: Vec<&str> = response.lines().collect();
-        let mut action_line = None;
-        
-        for line in lines {
-            if line.starts_with("行为：") {
-                action_line = Some(line.trim_start_matches("行为："));
-                break;
-            }
-        }
+    // fn parse_action(&self, response: &str) -> Option<(String, HashMap<String, String>)> {
+    //     let lines: Vec<&str> = response.lines().collect();
+    //     let mut action_line = None;
+    //
+    //     for line in lines {
+    //         if line.starts_with("行为：") {
+    //             action_line = Some(line.trim_start_matches("行为："));
+    //             break;
+    //         }
+    //     }
+    //
+    //     if let Some(action) = action_line {
+    //         if let Some(brace_start) = action.find('(') {
+    //             if let Some(brace_end) = action.rfind(')') {
+    //                 let tool_name = &action[..brace_start];
+    //                 let json_str = &action[brace_start + 1..brace_end];
+    //
+    //                 if let Ok(params) = serde_json::from_str::<HashMap<String, String>>(json_str) {
+    //                     return Some((tool_name.to_string(), params));
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     None
+    // }
 
-        if let Some(action) = action_line {
-            if let Some(brace_start) = action.find('(') {
-                if let Some(brace_end) = action.rfind(')') {
-                    let tool_name = &action[..brace_start];
-                    let json_str = &action[brace_start + 1..brace_end];
-                    
-                    if let Ok(params) = serde_json::from_str::<HashMap<String, String>>(json_str) {
-                        return Some((tool_name.to_string(), params));
+    fn parse_action(&self, response: &str) -> Option<(String, HashMap<String, String>)> {
+        for line in response.lines() {
+            if line.starts_with("行为：") {
+                let rest = line.trim_start_matches("行为：").trim();
+
+                // 分割工具名和参数部分（按第一个空格）
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                if parts.is_empty() {
+                    return None;
+                }
+
+                let tool_name = parts[0].to_string();
+                let mut params = HashMap::new();
+
+                if parts.len() == 2 {
+                    for pair in parts[1].split_whitespace() {
+                        if let Some((key, value)) = pair.split_once('=') {
+                            params.insert(key.to_string(), value.to_string());
+                        }
                     }
                 }
+
+                return Some((tool_name, params));
             }
         }
         None
@@ -134,6 +162,7 @@ impl Agent for ReActAgent {
             let system_prompt = format!("{}", system_prompt);
             let system_template = PromptTemplate::new(&system_prompt);
             let system_prompt = system_template.format(&HashMap::from([("input", input)]))?;
+
             
             // 简化的消息系统，不支持记忆，只处理当前轮次
             let chat_template = crate::prompts::ChatPromptTemplate::new(vec![
