@@ -1,2 +1,10 @@
 /target
 /tests
+
+# JetBrains IDE
+.idea/
+
+# Claude or other AI tool cache
+.claude/
+
+Cargo.lock  # only for libraries; omit if building a binary
