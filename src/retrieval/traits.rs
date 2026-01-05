@@ -18,7 +18,7 @@ pub trait Retriever: Send + Sync {
         &self,
         query: &str,
         k: usize,
-        filter: HashMap<String, String>
+        _filter: HashMap<String, String>
     ) -> Result<Vec<SearchResult>, Box<dyn Error>> {
         // 默认实现：忽略过滤条件
         self.retrieve(query, k).await
@@ -85,7 +85,7 @@ pub trait DocumentLoader: Send + Sync {
 
         for (doc_idx, doc) in docs.into_iter().enumerate() {
             let doc_chunks = splitter.split_document(&doc)?;
-            for (chunk_idx, mut chunk) in doc_chunks.into_iter().enumerate() {
+            for (_chunk_idx, mut chunk) in doc_chunks.into_iter().enumerate() {
                 chunk.document_id = Some(format!("doc_{}", doc_idx));
                 chunks.push(chunk);
             }
