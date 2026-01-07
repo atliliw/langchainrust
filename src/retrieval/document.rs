@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-
-/// 文档结构
 #[derive(Debug, Clone)]
 pub struct Document {
     pub content: String,
@@ -20,8 +18,6 @@ impl Document {
         self
     }
 }
-
-/// 文档分块
 #[derive(Debug, Clone)]
 pub struct DocumentChunk {
     pub content: String,
@@ -51,7 +47,6 @@ impl DocumentChunk {
     }
 }
 
-/// 搜索结果
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub chunk: DocumentChunk,

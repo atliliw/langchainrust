@@ -3,7 +3,6 @@ use crate::messages::Message as LangMessage;
 use crate::prompts::ChatPromptTemplate;
 use std::collections::HashMap;
 
-
 #[derive(Debug, Clone)]
 pub struct LLMQwen {
     client: reqwest::Client,
@@ -56,8 +55,7 @@ impl LLMQwen {
             .await?
             .json()
             .await?;
-
-        // ✅ 安全访问，不 panic，也不乱用 ok_or
+        
         let first_choice = response.choices.first().ok_or("No choices returned")?;
         Ok(first_choice.message.content.clone())
     }
@@ -79,7 +77,6 @@ impl LLMQwen {
         self.generate_with_messages(messages).await
     }
 
-    /// 使用 ChatPromptTemplate 生成消息并调用 LLM
     pub async fn invoke_chat_template(
         &self,
         template: &ChatPromptTemplate,
@@ -94,7 +91,6 @@ impl LLMQwen {
 
 
 
-// 只保留响应结构（用于反序列化）
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,

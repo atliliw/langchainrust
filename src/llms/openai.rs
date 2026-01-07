@@ -76,8 +76,7 @@ impl LLM {
 
         self.generate_with_messages(messages).await
     }
-
-    /// 使用 ChatPromptTemplate 生成消息并调用 LLM
+    
     pub async fn invoke_chat_template(
         &self,
         template: &ChatPromptTemplate,
@@ -90,9 +89,6 @@ impl LLM {
     }
 }
 
-
-
-// 只保留响应结构（用于反序列化）
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,

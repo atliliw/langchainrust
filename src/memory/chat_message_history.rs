@@ -30,7 +30,7 @@ impl ChatMessageHistory {
     }
 }
 
-// 实现 Memory trait
+
 impl Memory for ChatMessageHistory {
     fn load_memory_variables(&self) -> HashMap<String, String> {
         let messages = self.messages.read().unwrap();

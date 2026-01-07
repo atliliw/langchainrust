@@ -10,8 +10,6 @@ impl MockEmbeddingModel {
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }
-
-    /// 基于文本的简单哈希嵌入生成
     fn text_to_embedding(&self, text: &str
     ) -> Vec<f32> {
         use std::collections::hash_map::DefaultHasher;
