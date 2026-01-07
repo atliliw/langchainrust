@@ -1,5 +1,3 @@
-// src/prompts/prompt_template.rs
-
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -10,7 +8,6 @@ pub struct PromptTemplate {
 }
 
 impl PromptTemplate {
-    // ✅ 只接收模板字符串，自动提取 {xxx} 变量
     pub fn new(template: &str) -> Self {
         let re = Regex::new(r"\{([^}]+)\}").unwrap();
         let mut vars = Vec::new();

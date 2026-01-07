@@ -5,7 +5,6 @@ use crate::tools::{Tool, ToolInput};
 use std::collections::HashMap;
 use std::sync::Arc;
 use async_trait::async_trait;
-
 pub const MAX_ITERATIONS: usize = 10;
 
 #[async_trait]
@@ -71,32 +70,6 @@ impl ReActAgent {
             tool_descriptions.join("\n"),
         )
     }
-    // 行为：工具名({{\"参数1\": \"值1\", \"参数2\": \"值2\"}})
-    // fn parse_action(&self, response: &str) -> Option<(String, HashMap<String, String>)> {
-    //     let lines: Vec<&str> = response.lines().collect();
-    //     let mut action_line = None;
-    //
-    //     for line in lines {
-    //         if line.starts_with("行为：") {
-    //             action_line = Some(line.trim_start_matches("行为："));
-    //             break;
-    //         }
-    //     }
-    //
-    //     if let Some(action) = action_line {
-    //         if let Some(brace_start) = action.find('(') {
-    //             if let Some(brace_end) = action.rfind(')') {
-    //                 let tool_name = &action[..brace_start];
-    //                 let json_str = &action[brace_start + 1..brace_end];
-    //
-    //                 if let Ok(params) = serde_json::from_str::<HashMap<String, String>>(json_str) {
-    //                     return Some((tool_name.to_string(), params));
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     None
-    // }
 
     fn parse_action(&self, response: &str) -> Option<(String, HashMap<String, String>)> {
         for line in response.lines() {
