@@ -3,6 +3,13 @@ use serde::Deserialize;
 use crate::prompts::ChatPromptTemplate;
 
 #[derive(Debug, Clone)]
+pub struct OpenAIConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct LLM {
     client: reqwest::Client,
     api_key: String,
@@ -11,13 +18,13 @@ pub struct LLM {
 }
 
 impl LLM {
-    pub fn new(api_key: &str, base_url: &str, model: &str) -> Self {
+    pub fn new(config: OpenAIConfig) -> Self {
         let client = reqwest::Client::new();
         Self {
             client,
-            model: model.to_string(),
-            api_key: api_key.to_string(),
-            base_url: base_url.to_string(),
+            model: config.model,
+            api_key: config.api_key,
+            base_url: config.base_url,
         }
     }
     pub async fn generate(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
