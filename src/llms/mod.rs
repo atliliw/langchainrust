@@ -8,4 +8,4 @@ mod openai;
 
 
 pub use qwen::{LLMQwen};
-pub use openai::LLM;
+pub use openai::{LLM,OpenAIConfig};
