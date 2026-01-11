@@ -53,5 +53,4 @@ fn test_chat_prompt_format() {
     let messages = chat_prompt.format(&values).unwrap();
 
     assert_eq!(messages.len(), 2);
-
 }
