@@ -4,7 +4,8 @@ mod common;
 #[cfg(test)]
 mod tests {
     use langchainrust::chains::{PromptChain, SequentialChain};
-    use langchainrust::llms::{LLM,OpenAIConfig};
+    use langchainrust::llms::{LLM};
+    use langchainrust::memory::{SimpleMemory};
     use langchainrust::messages::Message;
     use langchainrust::prompts::ChatPromptTemplate;
     use std::collections::HashMap;
@@ -36,11 +37,12 @@ mod tests {
             "summary", // output_key
         );
 
-        let seq_chain = SequentialChain::new(
+        let mut seq_chain = SequentialChain::new(
             vec![Box::new(chain_a), Box::new(chain_b)],
             vec!["topic"],                  // 整体输入
             vec!["explanation", "summary"], // 整体输出
-            true
+            true,
+            Some(Box::new(SimpleMemory::default())), // 👈 传入 memory！
         );
 
         let input: HashMap<&str, &str> =

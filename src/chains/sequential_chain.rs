@@ -1,4 +1,6 @@
 use crate::llms::LLM;
+use crate::memory::Memory;
+use crate::messages::Message;
 use crate::prompts::ChatPromptTemplate;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -20,6 +22,7 @@ pub struct SequentialChain {
     input_variables: Vec<String>,
     output_variables: Vec<String>,
     verbose: bool,
+    memory: Option<Box<dyn Memory>>,
 }
 
 impl SequentialChain {
@@ -28,6 +31,7 @@ impl SequentialChain {
         input_variables: Vec<&str>,
         output_variables: Vec<&str>,
         verbose: bool,
+        memory: Option<Box<dyn Memory>>,
     ) -> Self {
         Self {
             chains,
@@ -37,58 +41,83 @@ impl SequentialChain {
                 .map(|s| s.to_string())
                 .collect(),
             verbose,
+            memory,
         }
     }
 
     pub async fn call(
-        &self,
+        &mut self,
         initial_input: &HashMap<&str, &str>,
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-        // 1. 校验初始输入
+        // 校验
         for var in &self.input_variables {
             if !initial_input.contains_key(var.as_str()) {
-                return Err(format!("SequentialChain Missing initial input: {}", var).into());
+                return Err(format!("Missing input: {}", var).into());
             }
         }
 
-        // 2. 初始化上下文
+        let main_key = &self.input_variables[0];
+
+        // 构建 context
         let mut context: HashMap<String, String> = initial_input
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        // 3. 依次执行每个子链
-        for (i, chain) in self.chains.iter().enumerate() {
-            // 子链所需输入是否都在 context 中？
-            for key in chain.input_keys() {
-                if !context.contains_key(key) {
-                    return Err(format!(
-                        "The {} th chain ({}) is missing an input variable:{}",
-                        i,
-                        chain.output_key(),
-                        key
-                    )
-                    .into());
+        // 注入历史到主输入
+        if let Some(mem) = &self.memory {
+            let history = mem.context();
+            if !history.trim().is_empty() {
+                if let Some(current) = context.get(main_key) {
+                    context.insert(
+                        main_key.clone(),
+                        format!(
+                            "【对话历史】\n{}\n\n【当前请求】\n{}",
+                            history.trim(),
+                            current
+                        ),
+                    );
+                }
+            }
+        }
+        let mut user_question1 = String::new();
+        let mut step = 1; // 👈 步骤计数器
+        // 执行 chains
+        for chain in &self.chains {
+            let chain_input: HashMap<String, String> = chain
+                .input_keys()
+                .into_iter()
+                .filter_map(|k| context.get(k).map(|v| (k.to_string(), v.clone())))
+                .collect();
+
+
+            for (k) in self.memory {
+
+            }
+
+
+            let result = chain.call(&chain_input, self.verbose).await?;
+            for (k, v) in result {
+                if k == "question" {
+                    user_question1 = v;
+                }else {
+                    context.insert(k, v);
                 }
             }
 
-            let result = chain.call(&context,true).await?;
-            // 合并输出到上下文（key 不会冲突，因为每个链 output_key 唯一）
-            for (k, v) in result {
-                context.insert(k, v);
+            if let Some(ref mut mem) = self.memory {
+                mem.add(&step.to_string(), &user_question1);
             }
+            step += 1;
         }
 
-        // 4. 提取最终输出
+
+
+        // 输出
         let mut final_output = HashMap::new();
         for var in &self.output_variables {
-            if let Some(value) = context.get(var) {
-                final_output.insert(var.clone(), value.clone());
-            } else {
-                return Err(format!("最终输出变量未生成: {}", var).into());
-            }
+            final_output.insert(var.clone(), context.get(var).unwrap().clone());
         }
-
         Ok(final_output)
     }
 }
@@ -129,7 +158,7 @@ impl Chain for PromptChain {
     async fn call(
         &self,
         input: &HashMap<String, String>,
-        verbose:bool,
+        verbose: bool,
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
         // ✅ 校验输入是否齐全
         for key in &self.input_keys {
@@ -147,6 +176,13 @@ impl Chain for PromptChain {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
+        let question = &self
+            .template
+            .format(&input_refs)
+            .map_err(|e| format!("Template formatting failed: {}", e))?;
+
+        let questionstr = messages_to_string(question);
+
         let output = self
             .llm
             .invoke_chat_template(&self.template, &input_refs)
@@ -154,6 +190,20 @@ impl Chain for PromptChain {
 
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), output);
+
+        result.insert("question".parse()?, questionstr);
         Ok(result)
     }
+}
+
+pub fn messages_to_string(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|msg| match msg {
+            Message::System(sys) => format!("System: {}", sys.content),
+            Message::Human(hum) => format!("Human: {}", hum.content),
+            Message::AIMessage(ai) => format!("AI: {}", ai.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
