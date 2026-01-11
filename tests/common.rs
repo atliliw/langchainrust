@@ -14,7 +14,7 @@ pub fn create_test_llm() -> LLM {
 
 
 
-pub fn create_test_llm_Config() -> OpenAIConfig {
+pub fn llm_Config() -> OpenAIConfig {
     let config = OpenAIConfig {
         api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string(),
         base_url: "https://api.openai-proxy.org/v1".to_string(),

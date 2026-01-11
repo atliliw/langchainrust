@@ -24,7 +24,7 @@ impl ChatPromptTemplate {
                 "system" => Message::system(content),
                 "user" => Message::human(content),
                 "assistant" => Message::ai(content),
-                _ => return Err(format!("不支持的角色: {}", role)),
+                _ => return Err(format!("Unsupported characters: {}", role)),
             };
 
             result.push(new_msg);
