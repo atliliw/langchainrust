@@ -13,6 +13,7 @@ mod tests {
             api_key: "your-api-key".to_string(),
             base_url: "https://api.openai-proxy.org/v1".to_string(),
             model: "gpt-3.5-turbo".to_string(),
+            streaming: false,
         };
 
         let llm = LLM::new(config);
