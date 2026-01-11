@@ -3,9 +3,7 @@ use std::error::Error;
 use serde::Deserialize;
 use crate::prompts::ChatPromptTemplate;
 use std::pin::Pin;
-use futures_util::{
-    stream::{Stream, StreamExt, TryStreamExt},
-};
+use futures_util::{stream, stream::{Stream, StreamExt, TryStreamExt}};
 
 // 辅助类型别名，避免重复写长签名
 type TokenStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error>>> + Send>>;
@@ -58,6 +56,24 @@ impl LLM {
 
         self.generate_with_messages(messages).await
     }
+    pub async fn invoke_chat_template_batch_limited(
+        &self,
+        pairs: &[(ChatPromptTemplate, HashMap<&str, &str>)],
+        max_concurrent: usize,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        use futures_util::{stream, StreamExt, TryStreamExt};
+
+        stream::iter(pairs.iter())
+            .map(|(template, values)| {
+                let t = template.clone();
+                let v = values.clone();
+                async move { self.invoke_chat_template(&t, &v).await }
+            })
+            .buffer_unordered(max_concurrent)
+            .try_collect()
+            .await
+    }
+
     pub async fn invoke_chat_template_stream(
         &self,
         template: &ChatPromptTemplate,
@@ -144,7 +160,6 @@ impl LLM {
                                     pos = i + 1; // 跳过 \n
                                     last_line_start = pos;
                                     found_complete_line = true;
-
                                     // 跳过空行
                                     if line.trim().is_empty() {
                                         continue;

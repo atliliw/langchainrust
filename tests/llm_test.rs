@@ -35,8 +35,6 @@ async fn test_streaming_LLM() {
     // 创建一个启用流式输出的 LLM 实例
     let llm = LLM::new(create_test_llm_config_streaming());
     // 调用 generate 方法，请求模型从 1 数到 5
-
-
     let mut stream = llm.stream_generate("生成500字的春天的诗").await.unwrap();
 
     while let Some(result) = stream.next().await {
@@ -56,13 +54,11 @@ async fn test_streaming_LLM() {
 }
 
 
-
 use tokio::time;
-
+// cargo test test_streaming_LLM1 -- --nocapture
 #[tokio::test]
 async fn test_streaming_LLM1() {
     let llm = LLM::new(create_test_llm_config_streaming());
-
     println!("开始流式输出：");
 
     let mut stream = llm.stream_generate("生成一段春天的散文3000字").await.unwrap();
