@@ -25,7 +25,7 @@ impl PromptTemplate {
     pub fn format(&self, values: &HashMap<&str, &str>) -> Result<String, String> {
         for var in &self.input_variables {
             if !values.contains_key(var.as_str()) {
-                return Err(format!("缺少变量: {}", var));
+                return Err(format!("Missing variables: {}", var));
             }
         }
 

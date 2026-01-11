@@ -1,11 +1,10 @@
+use crate::prompts::ChatPromptTemplate;
+use futures_util::stream::{Stream, StreamExt, TryStreamExt};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
-use serde::Deserialize;
-use crate::prompts::ChatPromptTemplate;
 use std::pin::Pin;
-use futures_util::{stream, stream::{Stream, StreamExt, TryStreamExt}};
 
-// 辅助类型别名，避免重复写长签名
 type TokenStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error>>> + Send>>;
 
 #[derive(Debug, Clone)]
@@ -25,43 +24,42 @@ pub struct LLM {
 impl LLM {
     pub fn new(config: OpenAIConfig) -> Self {
         let client = reqwest::Client::new();
-        Self {
-            client, config
-        }
+        Self { client, config }
     }
 
     // Convenience method for chat with system message
-    pub async fn chat(
-        &self,
-        system_message: Option<&str>,
-        human_message: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut messages = Vec::new();
-
-        if let Some(system) = system_message {
-            messages.push(crate::messages::Message::system(system));
-        }
-        messages.push(crate::messages::Message::human(human_message));
-        self.generate_with_messages(messages).await
-    }
-
+    // pub async fn chatModel(
+    //     &self,
+    //     system_message: Option<&str>,
+    //     human_message: &str,
+    // ) -> Result<String, Box<dyn std::error::Error>> {
+    //     let mut messages = Vec::new();
+    // 
+    //     if let Some(system) = system_message {
+    //         messages.push(crate::messages::Message::system(system));
+    //     }
+    //     messages.push(crate::messages::Message::human(human_message));
+    //     self.generate_with_messages(messages).await
+    // }
 
     pub async fn invoke_chat_template(
         &self,
         template: &ChatPromptTemplate,
         values: &HashMap<&str, &str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let messages = template.format(values)
-            .map_err(|e| format!("模板格式化失败: {}", e))?;
+        let messages = template
+            .format(values)
+            .map_err(|e| format!("Template formatting failed: {}", e))?;
 
         self.generate_with_messages(messages).await
     }
+
     pub async fn invoke_chat_template_batch_limited(
         &self,
         pairs: &[(ChatPromptTemplate, HashMap<&str, &str>)],
         max_concurrent: usize,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        use futures_util::{stream, StreamExt, TryStreamExt};
+        use futures_util::{StreamExt, TryStreamExt, stream};
 
         stream::iter(pairs.iter())
             .map(|(template, values)| {
@@ -79,19 +77,16 @@ impl LLM {
         template: &ChatPromptTemplate,
         values: &HashMap<&str, &str>,
     ) -> Result<TokenStream, Box<dyn Error>> {
-        let messages = template.format(values)
-            .map_err(|e| format!("模板格式化失败: {}", e))?;
+        let messages = template
+            .format(values)
+            .map_err(|e| format!("Template formatting failed: {}", e))?;
 
         self.stream_with_messages(messages).await
     }
 
-    pub async fn invoke(
-        &self,
-        content: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn invoke(&self, content: &str) -> Result<String, Box<dyn std::error::Error>> {
         self.generate(content).await
     }
-
 
     pub async fn generate(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let messages = vec![crate::messages::Message::human(prompt)];
@@ -101,8 +96,10 @@ impl LLM {
     pub async fn stream_generate(
         &self,
         prompt: &str,
-    ) -> Result<impl Stream<Item = Result<String, Box<dyn std::error::Error>>>, Box<dyn std::error::Error>>
-    {
+    ) -> Result<
+        impl Stream<Item = Result<String, Box<dyn std::error::Error>>>,
+        Box<dyn std::error::Error>,
+    > {
         let messages = vec![crate::messages::Message::human(prompt)];
         self.stream_with_messages(messages).await
     }
@@ -122,12 +119,13 @@ impl LLM {
             .collect();
 
         let body = serde_json::json!({
-        "model": self.config.model,
-        "messages": openai_messages,
-        "stream": true,
-    });
+            "model": self.config.model,
+            "messages": openai_messages,
+            "stream": true,
+        });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -139,7 +137,12 @@ impl LLM {
 
         // 使用 unfold 手动管理 buffer 状态
         let token_stream = futures_util::stream::unfold(
-            (byte_stream.map_err(|e| Box::new(e) as Box<dyn std::error::Error>).boxed(), String::new()),
+            (
+                byte_stream
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                    .boxed(),
+                String::new(),
+            ),
             |(mut stream, mut buffer)| async move {
                 loop {
                     // 读取下一个字节块
@@ -172,7 +175,9 @@ impl LLM {
                                             return None; // 流结束
                                         }
 
-                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                        if let Ok(json) =
+                                            serde_json::from_str::<serde_json::Value>(data)
+                                        {
                                             if let Some(content) = json
                                                 .get("choices")
                                                 .and_then(|c| c.get(0))
@@ -230,7 +235,6 @@ impl LLM {
         Ok(Box::pin(token_stream))
     }
 
-
     pub async fn generate_with_messages(
         &self,
         messages: Vec<crate::messages::Message>,
@@ -241,9 +245,9 @@ impl LLM {
             .into_iter()
             .map(|m| {
                 serde_json::json!({
-                "role": m.role(),
-                "content": m.content()
-            })
+                    "role": m.role(),
+                    "content": m.content()
+                })
             })
             .collect();
 
@@ -257,7 +261,8 @@ impl LLM {
             body["stream"] = serde_json::json!(true);
         }
 
-        let request = self.client
+        let request = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -304,11 +309,7 @@ impl LLM {
             Ok(full_content)
         } else {
             // Non-streaming response (original behavior)
-            let response: ChatResponse = request
-                .send()
-                .await?
-                .json()
-                .await?;
+            let response: ChatResponse = request.send().await?.json().await?;
             let first_choice = response.choices.first().ok_or("No choices returned")?;
             Ok(first_choice.message.content.clone())
         }
@@ -329,4 +330,3 @@ struct Choice {
 struct ResponseMessage {
     content: String,
 }
-
