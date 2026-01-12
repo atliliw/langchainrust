@@ -12,6 +12,11 @@ impl ChatPromptTemplate {
         Self { templates }
     }
 
+    pub fn add_to_front(&mut self, message: Message) {
+        self.templates.insert(0, message);
+    }
+
+
     pub fn format(&self, values: &HashMap<&str, &str>) -> Result<Vec<Message>, String> {
         let mut result = Vec::new();
 
