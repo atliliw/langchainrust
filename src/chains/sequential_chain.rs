@@ -56,8 +56,6 @@ impl SequentialChain {
             }
         }
 
-        let main_key = &self.input_variables[0];
-
         // 构建 context
         let mut context: HashMap<String, String> = initial_input
             .iter()
