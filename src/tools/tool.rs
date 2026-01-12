@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ToolInput {
@@ -16,10 +16,8 @@ pub struct ToolOutput {
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
-    
     fn description(&self) -> &str;
-    
     async fn invoke(&self, input: ToolInput) -> Result<ToolOutput, Box<dyn std::error::Error>>;
-    
     fn parameters(&self) -> Vec<(&str, &str)>;
+    fn return_direct(&self) -> bool;
 }
