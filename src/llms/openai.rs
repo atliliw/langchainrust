@@ -27,21 +27,6 @@ impl LLM {
         Self { client, config }
     }
 
-    // Convenience method for chat with system message
-    // pub async fn chatModel(
-    //     &self,
-    //     system_message: Option<&str>,
-    //     human_message: &str,
-    // ) -> Result<String, Box<dyn std::error::Error>> {
-    //     let mut messages = Vec::new();
-    // 
-    //     if let Some(system) = system_message {
-    //         messages.push(crate::messages::Message::system(system));
-    //     }
-    //     messages.push(crate::messages::Message::human(human_message));
-    //     self.generate_with_messages(messages).await
-    // }
-
     pub async fn invoke_chat_template(
         &self,
         template: &ChatPromptTemplate,
