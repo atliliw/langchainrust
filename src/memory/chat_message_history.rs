@@ -98,6 +98,7 @@ pub trait Memory {
     fn add(&mut self, input: &str, output: &str);
     fn context(&self) -> String;
     fn clear(&mut self);
+    fn history(&self) -> Vec<&str>;
 }
 
 pub struct SimpleMemory {
@@ -121,8 +122,15 @@ impl Default for SimpleMemory {
 }
 
 impl Memory for SimpleMemory {
-    fn add(&mut self, input: &str, _output: &str) {
-        self.history.push(input.to_string());
+    // fn add(&mut self, input: &str, _output: &str) {
+    //     self.history.push(input.to_string());
+    //     if self.history.len() > self.max_turns {
+    //         self.history.remove(0);
+    //     }
+    // }
+
+    fn add(&mut self, _input: &str, output: &str) {
+        self.history.push(output.to_string()); // ← 存 output
         if self.history.len() > self.max_turns {
             self.history.remove(0);
         }
@@ -140,4 +148,9 @@ impl Memory for SimpleMemory {
     fn clear(&mut self) {
         self.history.clear();
     }
+
+    fn history(&self) -> Vec<&str> {
+        self.history.iter().map(|s| s.as_str()).collect()
+    }
+
 }

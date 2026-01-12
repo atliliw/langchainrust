@@ -11,7 +11,7 @@ pub trait Chain {
     fn output_key(&self) -> &str;
 
     async fn call(
-        &self,
+        &mut self,
         input: &HashMap<String, String>,
         verbose: bool,
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>>;
@@ -64,43 +64,33 @@ impl SequentialChain {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        // 注入历史到主输入
-        if let Some(mem) = &self.memory {
-            let history = mem.context();
-            if !history.trim().is_empty() {
-                if let Some(current) = context.get(main_key) {
-                    context.insert(
-                        main_key.clone(),
-                        format!(
-                            "【对话历史】\n{}\n\n【当前请求】\n{}",
-                            history.trim(),
-                            current
-                        ),
-                    );
-                }
-            }
-        }
         let mut user_question1 = String::new();
-        let mut step = 1; // 👈 步骤计数器
+        let mut step = 1;
         // 执行 chains
-        for chain in &self.chains {
-            let chain_input: HashMap<String, String> = chain
+        for chain in &mut self.chains {
+            let mut chain_input: HashMap<String, String> = chain
                 .input_keys()
                 .into_iter()
                 .filter_map(|k| context.get(k).map(|v| (k.to_string(), v.clone())))
                 .collect();
 
 
-            for (k) in self.memory {
-
+            if let Some(ref memory) = self.memory {
+                let history_entries = memory.history();
+                if !history_entries.is_empty() {
+                    let history_str = format!(
+                        "以下是我们的历史对话，请根据上下文进行回答：\n\n{}",
+                        history_entries.join("\n")
+                    );
+                    chain_input.insert("chat_history".to_string(), history_str);
+                }
             }
-
 
             let result = chain.call(&chain_input, self.verbose).await?;
             for (k, v) in result {
                 if k == "question" {
                     user_question1 = v;
-                }else {
+                } else {
                     context.insert(k, v);
                 }
             }
@@ -110,8 +100,6 @@ impl SequentialChain {
             }
             step += 1;
         }
-
-
 
         // 输出
         let mut final_output = HashMap::new();
@@ -156,7 +144,7 @@ impl Chain for PromptChain {
     }
 
     async fn call(
-        &self,
+        &mut self,
         input: &HashMap<String, String>,
         verbose: bool,
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
@@ -182,6 +170,15 @@ impl Chain for PromptChain {
             .map_err(|e| format!("Template formatting failed: {}", e))?;
 
         let questionstr = messages_to_string(question);
+
+        let mut chat_history = String::new();
+        for key in input.keys() {
+            if key == "chat_history" {
+                chat_history = input_refs["chat_history"].to_string();
+            }
+        }
+        // 构造一个模板
+        self.template.add_to_front(Message::system(chat_history));
 
         let output = self
             .llm
