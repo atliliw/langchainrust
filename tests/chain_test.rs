@@ -3,14 +3,13 @@ mod common;
 
 #[cfg(test)]
 mod tests {
+    use crate::common::llm_Config;
     use langchainrust::chains::{PromptChain, SequentialChain};
-    use langchainrust::llms::{LLM};
-    use langchainrust::memory::{SimpleMemory};
+    use langchainrust::llms::LLM;
+    use langchainrust::memory::SimpleMemory;
     use langchainrust::messages::Message;
     use langchainrust::prompts::ChatPromptTemplate;
     use std::collections::HashMap;
-    use crate::common::llm_Config;
-    
 
     #[tokio::test]
     async fn test_sequential_chain_with_input_output_keys() {
@@ -23,7 +22,7 @@ mod tests {
                 Message::human("请详细计算：{topic}，"),
             ]),
             vec!["topic"], // input_keys
-            "explanation"   , // output_key
+            "explanation", // output_key
         );
         // Chain B: 输入 explanation，输出 summary
         let chain_b = PromptChain::new(
@@ -34,7 +33,7 @@ mod tests {
                 Message::human("你名字是什么"),
             ]),
             vec!["explanation"], // input_keys
-            "summary", // output_key
+            "summary",           // output_key
         );
 
         let mut seq_chain = SequentialChain::new(
@@ -42,11 +41,10 @@ mod tests {
             vec!["topic"],                  // 整体输入
             vec!["explanation", "summary"], // 整体输出
             true,
-            Some(Box::new(SimpleMemory::default())), // 👈 传入 memory！
+            Some(Box::new(SimpleMemory::default())), // 传入 memory！
         );
 
-        let input: HashMap<&str, &str> =
-            HashMap::from([("topic", "1+3")]);
+        let input: HashMap<&str, &str> = HashMap::from([("topic", "1+3")]);
 
         let result = seq_chain.call(&input).await.unwrap();
 
