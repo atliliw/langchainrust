@@ -1,5 +1,4 @@
-use langchainrust::llms::{OpenAIConfig, LLM};
-
+use langchainrust::llms::{LLM, OpenAIConfig};
 
 pub fn create_test_llm() -> LLM {
     let config = OpenAIConfig {
@@ -11,9 +10,6 @@ pub fn create_test_llm() -> LLM {
     LLM::new(config)
 }
 
-
-
-
 pub fn llm_Config() -> OpenAIConfig {
     let config = OpenAIConfig {
         api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string(),
@@ -23,7 +19,6 @@ pub fn llm_Config() -> OpenAIConfig {
     };
     return config;
 }
-
 
 pub fn create_test_llm_config_streaming() -> OpenAIConfig {
     let config = OpenAIConfig {
