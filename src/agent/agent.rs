@@ -6,12 +6,11 @@ use crate::tools::Tool;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-
+use crate::memory::Memory;
 
 impl ReActAgent {
-    pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>) -> Self {
-        Self { llm, tools }
+    pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
+        Self { llm, tools ,memory}
     }
 
     fn build_prompt(&self, input: &str, intermediate_steps: Option<&str>) -> String {

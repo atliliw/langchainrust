@@ -1,4 +1,4 @@
-pub trait Memory {
+pub trait Memory :Send + Sync{
     fn add(&mut self, input: &str, output: &str);
     fn context(&self) -> String;
     fn clear(&mut self);
