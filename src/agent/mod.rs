@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use crate::llms::LLM;
+use crate::memory::Memory;
 
 #[async_trait]
 pub trait Agent: Send + Sync {
@@ -43,4 +44,5 @@ impl std::error::Error for AgentError {}
 pub struct ReActAgent {
     llm: LLM,
     tools: Vec<Arc<dyn Tool>>,
+    memory: Option<Box<dyn Memory>>,
 }

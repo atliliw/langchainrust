@@ -4,6 +4,7 @@ mod common;
 use langchainrust::llms::LLM;
 use std::sync::Arc;
 use langchainrust::agent::{ReActAgent, AgentExecutor};
+use langchainrust::memory::SimpleMemory;
 use langchainrust::tools::{Calculator, Tool}; // ← 替换为你的实际路径
 
 #[tokio::test]
@@ -17,7 +18,7 @@ async fn test_react_agent_with_calculator() {
     ];
 
     // 创建 Agent 和 Executor
-    let agent = ReActAgent::new(llm, tools.clone());
+    let agent = ReActAgent::new(llm, tools.clone(),  Some(Box::new(SimpleMemory::default())));
     let executor = AgentExecutor::new(Box::new(agent), tools)
         .with_max_iterations(3); // 防止无限循环
 
