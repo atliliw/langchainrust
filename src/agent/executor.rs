@@ -42,6 +42,7 @@ impl AgentExecutor {
 
             match action {
                 AgentAction::FinalAnswer(answer) => {
+                    self.agent.add_memory(input, &answer);
                     return Ok(answer);
                 }
                 AgentAction::ToolCall(tool_name, params) => {
@@ -60,6 +61,9 @@ impl AgentExecutor {
                         intermediate_steps = Some(output.result);
                     } else {
                         intermediate_steps = Some(format!("工具错误: {}", output.result));
+                    }
+                    if let Some(ref obs) = intermediate_steps {
+                        self.agent.add_memory(input, obs);
                     }
                 }
             }

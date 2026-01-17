@@ -2,7 +2,7 @@ pub mod agent;
 mod executor;
 use crate::tools::Tool;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use crate::llms::LLM;
@@ -15,6 +15,7 @@ pub trait Agent: Send + Sync {
         input: &str,
         intermediate_steps: Option<&str>,
     ) -> Result<AgentAction, AgentError>;
+    fn add_memory(&self, _input: &str, _output: &str) {}
 }
 
 pub struct AgentExecutor {
@@ -44,5 +45,5 @@ impl std::error::Error for AgentError {}
 pub struct ReActAgent {
     llm: LLM,
     tools: Vec<Arc<dyn Tool>>,
-    memory: Option<Box<dyn Memory>>,
+    memory: Option<Mutex<Box<dyn Memory>>>,
 }

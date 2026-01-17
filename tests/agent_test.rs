@@ -18,7 +18,7 @@ async fn test_react_agent_with_calculator() {
     ];
 
     // 创建 Agent 和 Executor
-    let agent = ReActAgent::new(llm, tools.clone(),  Some(Box::new(SimpleMemory::default())));
+    let agent = ReActAgent::new(llm, tools.clone(), Some(Box::new(SimpleMemory::default())));
     let executor = AgentExecutor::new(Box::new(agent), tools)
         .with_max_iterations(3); // 防止无限循环
 
