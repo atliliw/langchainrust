@@ -5,17 +5,17 @@ use crate::prompts::{ChatPromptTemplate, PromptTemplate};
 use crate::tools::Tool;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::memory::Memory;
 
 impl ReActAgent {
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
-        Self { llm, tools ,memory}
+        let wrapped_memory = memory.map(|m| Mutex::new(m));
+        Self { llm, tools, memory: wrapped_memory }
     }
 
-    fn build_prompt(&self, input: &str, intermediate_steps: Option<&str>) -> String {
-        let tool_descs: Vec<String> = self
-            .tools
+    fn tool_descriptions(&self) -> String {
+        self.tools
             .iter()
             .map(|t| {
                 let params = t.parameters();
@@ -30,30 +30,17 @@ impl ReActAgent {
                 };
                 format!("{} - {} (参数: {})", t.name(), t.description(), param_str)
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
-        let mut prompt = format!(
-            "你是一个 AI 助手，可以使用以下工具解决问题。
-
-响应格式要求：
-- 如果需要使用工具，请严格按以下格式输出：
-思考：你的推理过程
-行为：工具名 参数1=值1 参数2=值2
-- 如果无需工具，请直接给出最终答案。
-
-可用工具：
-{}
-",
-            tool_descs.join("\n")
-        );
-
-        prompt.push_str(&format!("\n用户问题：{}", input));
-
-        if let Some(obs) = intermediate_steps {
-            prompt.push_str(&format!("\n\n上一步结果：{}", obs));
+    pub fn memory_context(&self) -> String {
+        if let Some(mem) = &self.memory {
+            let m = mem.lock().unwrap();
+            m.context()
+        } else {
+            String::new()
         }
-
-        prompt
     }
 
     fn parse_response(&self, response: &str) -> Result<AgentAction, AgentError> {
@@ -92,18 +79,37 @@ impl Agent for ReActAgent {
         input: &str,
         intermediate_steps: Option<&str>,
     ) -> Result<AgentAction, AgentError> {
-        let prompt = self.build_prompt(input, intermediate_steps);
+        let tools_str = self.tool_descriptions();
+        let memory_str = self.memory_context();
+        let input_str = input.to_string();
+        let scratchpad_str = intermediate_steps.unwrap_or("").to_string();
+
         let chat_template = ChatPromptTemplate::new(vec![
-            Message::system(&prompt),
+            Message::system(
+                "你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}\n\n对话记忆：\n{memory}\n\n用户问题：{input}\n\n上一步结果：{scratchpad}"
+            ),
             Message::human("请根据上述信息回答。"),
         ]);
 
+        let mut values: HashMap<&str, &str> = HashMap::new();
+        values.insert("tools", &tools_str);
+        values.insert("memory", &memory_str);
+        values.insert("input", &input_str);
+        values.insert("scratchpad", &scratchpad_str);
+
         let response = self
             .llm
-            .invoke_chat_template(&chat_template, &HashMap::new())
+            .invoke_chat_template(&chat_template, &values)
             .await
             .map_err(|e| AgentError(format!("LLM 调用失败: {}", e)))?;
 
         self.parse_response(&response)
+    }
+
+    fn add_memory(&self, input: &str, output: &str) {
+        if let Some(mem) = &self.memory {
+            let mut m = mem.lock().unwrap();
+            m.add(input, output);
+        }
     }
 }
