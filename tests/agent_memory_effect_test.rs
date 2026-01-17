@@ -14,11 +14,9 @@ async fn test_agent_memory_accumulates_outputs() {
 
     let agent = ReActAgent::new(llm, tools, Some(Box::new(SimpleMemory::default())));
 
-    // 手动写入两条记忆，模拟前置链条或工具输出
     agent.add_memory("step1", "第一次输出：1+2=3");
     agent.add_memory("step2", "第二次输出：3*4=12");
 
-    // 读取记忆上下文，验证累积效果
     let mem_ctx = agent.memory_context();
     assert!(mem_ctx.contains("第一次输出：1+2=3"));
     assert!(mem_ctx.contains("第二次输出：3*4=12"));
