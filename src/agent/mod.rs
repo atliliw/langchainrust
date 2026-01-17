@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use crate::llms::LLM;
 use crate::memory::Memory;
+use crate::prompts::ChatPromptTemplate;
 
 #[async_trait]
 pub trait Agent: Send + Sync {
@@ -15,6 +16,14 @@ pub trait Agent: Send + Sync {
         input: &str,
         intermediate_steps: Option<&str>,
     ) -> Result<AgentAction, AgentError>;
+    async fn get_next_step_with_vars(
+        &self,
+        input: &str,
+        intermediate_steps: Option<&str>,
+        _vars: &HashMap<String, String>,
+    ) -> Result<AgentAction, AgentError> {
+        self.get_next_step(input, intermediate_steps).await
+    }
     fn add_memory(&self, _input: &str, _output: &str) {}
 }
 
@@ -46,4 +55,5 @@ pub struct ReActAgent {
     llm: LLM,
     tools: Vec<Arc<dyn Tool>>,
     memory: Option<Mutex<Box<dyn Memory>>>,
+    user_template: Option<ChatPromptTemplate>,
 }

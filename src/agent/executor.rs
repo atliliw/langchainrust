@@ -1,5 +1,6 @@
-use crate::agent::{Agent, AgentAction, AgentError,AgentExecutor};
+use crate::agent::{Agent, AgentAction, AgentExecutor};
 use crate::tools::{Tool, ToolInput};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 
@@ -25,6 +26,14 @@ impl AgentExecutor {
     }
 
     pub async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        self.run_with_vars(input, HashMap::new()).await
+    }
+
+    pub async fn run_with_vars(
+        &self,
+        input: &str,
+        vars: HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let mut iteration = 0;
         let mut intermediate_steps: Option<String> = None;
 
@@ -36,7 +45,7 @@ impl AgentExecutor {
             
             let action = self
                 .agent
-                .get_next_step(input, intermediate_steps.as_deref())
+                .get_next_step_with_vars(input, intermediate_steps.as_deref(), &vars)
                 .await
                 .map_err(|e| e.0)?;
 

@@ -1,7 +1,7 @@
 use crate::agent::{Agent, AgentAction, AgentError,ReActAgent};
 use crate::llms::LLM;
 use crate::messages::Message;
-use crate::prompts::{ChatPromptTemplate, PromptTemplate};
+use crate::prompts::ChatPromptTemplate;
 use crate::tools::Tool;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -11,7 +11,11 @@ use crate::memory::Memory;
 impl ReActAgent {
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
         let wrapped_memory = memory.map(|m| Mutex::new(m));
-        Self { llm, tools, memory: wrapped_memory }
+        Self { llm, tools, memory: wrapped_memory, user_template: None }
+    }
+    pub fn with_template(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>, template: ChatPromptTemplate) -> Self {
+        let wrapped_memory = memory.map(|m| Mutex::new(m));
+        Self { llm, tools, memory: wrapped_memory, user_template: Some(template) }
     }
 
     fn tool_descriptions(&self) -> String {
@@ -79,27 +83,54 @@ impl Agent for ReActAgent {
         input: &str,
         intermediate_steps: Option<&str>,
     ) -> Result<AgentAction, AgentError> {
+        self.get_next_step_with_vars(input, intermediate_steps, &HashMap::new())
+            .await
+    }
+
+    async fn get_next_step_with_vars(
+        &self,
+        input: &str,
+        intermediate_steps: Option<&str>,
+        vars: &HashMap<String, String>,
+    ) -> Result<AgentAction, AgentError> {
         let tools_str = self.tool_descriptions();
-        let memory_str = self.memory_context();
         let input_str = input.to_string();
         let scratchpad_str = intermediate_steps.unwrap_or("").to_string();
 
-        let chat_template = ChatPromptTemplate::new(vec![
-            Message::system(
-                "你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}\n\n对话记忆：\n{memory}\n\n用户问题：{input}\n\n上一步结果：{scratchpad}"
-            ),
-            Message::human("请根据上述信息回答。"),
-        ]);
+        let mut chat_template = if let Some(t) = &self.user_template {
+            t.clone()
+        } else {
+            ChatPromptTemplate::new(vec![
+                Message::system("你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}"),
+                Message::human("用户问题：{input}\n上一步结果：{scratchpad}"),
+            ])
+        };
 
-        let mut values: HashMap<&str, &str> = HashMap::new();
-        values.insert("tools", &tools_str);
-        values.insert("memory", &memory_str);
-        values.insert("input", &input_str);
-        values.insert("scratchpad", &scratchpad_str);
+        let mut merged: HashMap<String, String> = vars.clone();
+        merged.insert("tools".to_string(), tools_str);
+        merged.insert("input".to_string(), input_str);
+        merged.insert("scratchpad".to_string(), scratchpad_str);
+
+        let merged_refs: HashMap<&str, &str> = merged
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        if let Some(mem) = &self.memory {
+            let m = mem.lock().unwrap();
+            let history_entries = m.history();
+            if !history_entries.is_empty() {
+                let history_str = format!(
+                    "以下是我们的历史对话，请根据上下文进行回答：\n\n{}",
+                    history_entries.join("\n")
+                );
+                chat_template.add_to_front(Message::system(history_str));
+            }
+        }
 
         let response = self
             .llm
-            .invoke_chat_template(&chat_template, &values)
+            .invoke_chat_template(&chat_template, &merged_refs)
             .await
             .map_err(|e| AgentError(format!("LLM 调用失败: {}", e)))?;
 
