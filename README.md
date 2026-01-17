@@ -2,7 +2,7 @@
 
 一个受 LangChain 启发的 Rust 框架，用于构建基于大模型（LLM）的应用：提示词模板（Prompt Template）、链式调用（Chains）、工具调用（Tools）、Agent、Memory、检索（Retrieval）等。
 
-详细使用文档：docs/USAGE.md
+详细使用文档：https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md
 
 ## 特性
 
