@@ -26,8 +26,8 @@
   - 文档切分、向量存储、检索器等基础组件
 
 ## 安装
+cargo add langchainrust
 
-本项目当前更适合以 Git 依赖方式引入（未发布到 crates.io 时）：
 
 ```toml
 [dependencies]
