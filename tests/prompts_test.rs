@@ -46,5 +46,4 @@ mod tests {
         let result = prompt.format(&input).unwrap();
         assert_eq!(result, "Hi, Bob! You have 5 messages.");
     }
-    
 }

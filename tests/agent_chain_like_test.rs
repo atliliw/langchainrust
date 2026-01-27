@@ -5,9 +5,9 @@ use crate::common::llm_Config;
 use langchainrust::agent::{AgentExecutor, ReActAgent};
 use langchainrust::llms::LLM;
 use langchainrust::memory::SimpleMemory;
-use langchainrust::tools::{Calculator, Tool};
 use langchainrust::messages::Message;
 use langchainrust::prompts::ChatPromptTemplate;
+use langchainrust::tools::{Calculator, Tool};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,7 +25,12 @@ async fn test_agent_with_memory_and_template_like_chain() {
         Message::human("回答时附带你的名字：{name}。"),
     ]);
 
-    let agent = ReActAgent::with_template(llm, tools.clone(), Some(Box::new(SimpleMemory::default())), template);
+    let agent = ReActAgent::with_template(
+        llm,
+        tools.clone(),
+        Some(Box::new(SimpleMemory::default())),
+        template,
+    ).with_verbose(true);
     let executor = AgentExecutor::new(Box::new(agent), tools).with_max_iterations(3);
 
     let vars1: HashMap<String, String> = HashMap::from([
@@ -44,10 +49,7 @@ async fn test_agent_with_memory_and_template_like_chain() {
         ("multiplier".to_string(), "100".to_string()),
     ]);
 
-    let result2 = executor
-        .run_with_vars("上一步结果", vars2)
-        .await;
+    let result2 = executor.run_with_vars("上一步结果", vars2).await;
     assert!(result2.is_ok(), "第二次执行失败: {:?}", result2.err());
     println!("第二次结果: {}", result2.unwrap());
 }
-

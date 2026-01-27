@@ -8,6 +8,7 @@ pub struct PromptTemplate {
 }
 
 impl PromptTemplate {
+    /// Create a new string-based prompt template and extract its variables.
     pub fn new(template: &str) -> Self {
         let re = Regex::new(r"\{([^}]+)\}").unwrap();
         let mut vars = Vec::new();
@@ -22,6 +23,7 @@ impl PromptTemplate {
         }
     }
 
+    /// Render the template into a string using the provided variables.
     pub fn format(&self, values: &HashMap<&str, &str>) -> Result<String, String> {
         for var in &self.input_variables {
             if !values.contains_key(var.as_str()) {

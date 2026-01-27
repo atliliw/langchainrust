@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::pin::Pin;
 
+/// A boxed async stream of tokens returned from the model.
 type TokenStream = Pin<Box<dyn Stream<Item = Result<String, Box<dyn std::error::Error>>> + Send>>;
 
 #[derive(Debug, Clone)]
@@ -22,11 +23,13 @@ pub struct LLM {
 }
 
 impl LLM {
+    /// Create a new LLM client from the given OpenAI-compatible configuration.
     pub fn new(config: OpenAIConfig) -> Self {
         let client = reqwest::Client::new();
         Self { client, config }
     }
 
+    /// Invoke a chat model with a `ChatPromptTemplate` and variables.
     pub async fn invoke_chat_template(
         &self,
         template: &ChatPromptTemplate,
@@ -39,6 +42,7 @@ impl LLM {
         self.generate_with_messages(messages).await
     }
 
+    /// Invoke multiple templates concurrently with a concurrency limit.
     pub async fn invoke_chat_template_batch_limited(
         &self,
         pairs: &[(ChatPromptTemplate, HashMap<&str, &str>)],
@@ -57,6 +61,7 @@ impl LLM {
             .await
     }
 
+    /// Invoke a chat template and return a streaming token iterator.
     pub async fn invoke_chat_template_stream(
         &self,
         template: &ChatPromptTemplate,
@@ -69,15 +74,18 @@ impl LLM {
         self.stream_with_messages(messages).await
     }
 
+    /// Convenience wrapper to generate from a single user message.
     pub async fn invoke(&self, content: &str) -> Result<String, Box<dyn std::error::Error>> {
         self.generate(content).await
     }
 
+    /// Generate using a plain-text prompt wrapped as a single user message.
     pub async fn generate(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let messages = vec![crate::messages::Message::human(prompt)];
         self.generate_with_messages(messages).await
     }
 
+    /// Stream tokens for a plain-text prompt as a single user message.
     pub async fn stream_generate(
         &self,
         prompt: &str,
@@ -89,6 +97,7 @@ impl LLM {
         self.stream_with_messages(messages).await
     }
 
+    /// Stream tokens for an explicit list of chat messages.
     pub async fn stream_with_messages(
         &self,
         messages: Vec<crate::messages::Message>,
@@ -220,6 +229,7 @@ impl LLM {
         Ok(Box::pin(token_stream))
     }
 
+    /// Generate a single string completion from explicit chat messages.
     pub async fn generate_with_messages(
         &self,
         messages: Vec<crate::messages::Message>,

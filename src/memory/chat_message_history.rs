@@ -1,3 +1,4 @@
+/// Abstraction over a memory store used to inject conversation history.
 pub trait Memory :Send + Sync{
     fn add(&mut self, input: &str, output: &str);
     fn context(&self) -> String;
@@ -5,12 +6,14 @@ pub trait Memory :Send + Sync{
     fn history(&self) -> Vec<&str>;
 }
 
+/// Simple in-memory implementation that keeps a rolling window of messages.
 pub struct SimpleMemory {
     history: Vec<String>,
     max_turns: usize,
 }
 
 impl SimpleMemory {
+    /// Create a memory with a given maximum number of turns.
     pub fn new(max_turns: usize) -> Self {
         Self {
             history: Vec::new(),

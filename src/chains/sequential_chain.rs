@@ -5,11 +5,15 @@ use crate::prompts::ChatPromptTemplate;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+/// A single processing unit inside a sequential chain.
 #[async_trait]
 pub trait Chain {
+    /// Input variable keys this chain expects.
     fn input_keys(&self) -> Vec<&str>;
+    /// Output variable key this chain produces.
     fn output_key(&self) -> &str;
 
+    /// Execute the chain with an input map and optional verbose logging.
     async fn call(
         &mut self,
         input: &HashMap<String, String>,
@@ -17,6 +21,7 @@ pub trait Chain {
     ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>>;
 }
 
+/// Chain together multiple `Chain` implementations with optional memory.
 pub struct SequentialChain {
     chains: Vec<Box<dyn Chain>>,
     input_variables: Vec<String>,
@@ -26,6 +31,7 @@ pub struct SequentialChain {
 }
 
 impl SequentialChain {
+    /// Construct a new sequential chain from sub-chains and IO variable lists.
     pub fn new(
         chains: Vec<Box<dyn Chain>>,
         input_variables: Vec<&str>,
@@ -45,6 +51,7 @@ impl SequentialChain {
         }
     }
 
+    /// Run the sequential chain with an initial map of input values.
     pub async fn call(
         &mut self,
         initial_input: &HashMap<&str, &str>,
@@ -108,6 +115,7 @@ impl SequentialChain {
     }
 }
 
+/// A chain that runs a single `ChatPromptTemplate` against an LLM.
 pub struct PromptChain {
     llm: LLM,
     template: ChatPromptTemplate,
@@ -116,6 +124,7 @@ pub struct PromptChain {
 }
 
 impl PromptChain {
+    /// Create a new prompt chain from an LLM, template, and IO keys.
     pub fn new(
         llm: LLM,
         template: ChatPromptTemplate,
@@ -131,6 +140,7 @@ impl PromptChain {
     }
 }
 
+/// Implementation of `Chain` for a single prompt/LLM pair.
 #[async_trait]
 impl Chain for PromptChain {
     fn input_keys(&self) -> Vec<&str> {
@@ -191,6 +201,7 @@ impl Chain for PromptChain {
     }
 }
 
+/// Convert a list of messages to a human-readable multi-line string.
 pub fn messages_to_string(messages: &[Message]) -> String {
     messages
         .iter()

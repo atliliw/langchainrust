@@ -1,11 +1,11 @@
 #[path = "common.rs"]
 mod common;
 
+use langchainrust::agent::{AgentExecutor, ReActAgent};
 use langchainrust::llms::LLM;
-use std::sync::Arc;
-use langchainrust::agent::{ReActAgent, AgentExecutor};
 use langchainrust::memory::SimpleMemory;
-use langchainrust::tools::{Calculator, Tool}; // ← 替换为你的实际路径
+use langchainrust::tools::{Calculator, Tool};
+use std::sync::Arc; // ← 替换为你的实际路径
 
 #[tokio::test]
 async fn test_react_agent_with_calculator() {
@@ -13,14 +13,11 @@ async fn test_react_agent_with_calculator() {
     let llm = LLM::new(common::create_test_llm_config_streaming());
 
     // 创建工具（必须是你已实现的 Tool）
-    let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(Calculator),
-    ];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Calculator)];
 
     // 创建 Agent 和 Executor
     let agent = ReActAgent::new(llm, tools.clone(), Some(Box::new(SimpleMemory::default())));
-    let executor = AgentExecutor::new(Box::new(agent), tools)
-        .with_max_iterations(3); // 防止无限循环
+    let executor = AgentExecutor::new(Box::new(agent), tools).with_max_iterations(3); // 防止无限循环
 
     // Act: 执行用户问题
     println!(" 正在处理问题: '37 加 48 等于多少？'");

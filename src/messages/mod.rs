@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// A single chat message with a specific role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     #[serde(rename = "system")]
@@ -10,40 +11,47 @@ pub enum Message {
     AIMessage(AIMessage),
 }
 
+/// System-level message, usually used for instructions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMessage {
     pub content: String,
 }
 
+/// Human/user message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanMessage {
     pub content: String,
 }
 
+/// Assistant/AI message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AIMessage {
     pub content: String,
 }
 
 impl Message {
+    /// Create a system message from string-like content.
     pub fn system(content: impl Into<String>) -> Self {
         Message::System(SystemMessage {
             content: content.into(),
         })
     }
 
+    /// Create a human/user message from string-like content.
     pub fn human(content: impl Into<String>) -> Self {
         Message::Human(HumanMessage {
             content: content.into(),
         })
     }
 
+    /// Create an assistant/AI message from string-like content.
     pub fn ai(content: impl Into<String>) -> Self {
         Message::AIMessage(AIMessage {
             content: content.into(),
         })
     }
 
+    /// Return the message content as a string slice.
     pub fn content(&self) -> &str {
         match self {
             Message::System(msg) => &msg.content,
@@ -52,6 +60,7 @@ impl Message {
         }
     }
 
+    /// Return the OpenAI-style role string for this message.
     pub fn role(&self) -> &str {
         match self {
             Message::System(_) => "system",

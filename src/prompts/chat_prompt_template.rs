@@ -8,15 +8,18 @@ pub struct ChatPromptTemplate {
 }
 
 impl ChatPromptTemplate {
+    /// Construct a chat prompt template from message templates.
     pub fn new(templates: Vec<Message>) -> Self {
         Self { templates }
     }
 
+    /// Prepend a message to the template (useful for injecting memory).
     pub fn add_to_front(&mut self, message: Message) {
         self.templates.insert(0, message);
     }
 
 
+    /// Render the template with the provided variables into concrete messages.
     pub fn format(&self, values: &HashMap<&str, &str>) -> Result<Vec<Message>, String> {
         let mut result = Vec::new();
 

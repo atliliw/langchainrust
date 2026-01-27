@@ -9,15 +9,36 @@ use std::sync::{Arc, Mutex};
 use crate::memory::Memory;
 
 impl ReActAgent {
+    /// Create a ReAct agent with optional memory and no custom template.
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
         let wrapped_memory = memory.map(|m| Mutex::new(m));
-        Self { llm, tools, memory: wrapped_memory, user_template: None }
+        Self {
+            llm,
+            tools,
+            memory: wrapped_memory,
+            user_template: None,
+            verbose: false,
+        }
     }
+    /// Create a ReAct agent that uses a user-provided chat prompt template.
     pub fn with_template(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>, template: ChatPromptTemplate) -> Self {
         let wrapped_memory = memory.map(|m| Mutex::new(m));
-        Self { llm, tools, memory: wrapped_memory, user_template: Some(template) }
+        Self {
+            llm,
+            tools,
+            memory: wrapped_memory,
+            user_template: Some(template),
+            verbose: false,
+        }
     }
 
+    /// Enable or disable verbose logging of the final chat prompt.
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    /// Build a human-readable description of the registered tools.
     fn tool_descriptions(&self) -> String {
         self.tools
             .iter()
@@ -38,6 +59,7 @@ impl ReActAgent {
             .join("\n")
     }
 
+    /// Return the current memory context as a single string.
     pub fn memory_context(&self) -> String {
         if let Some(mem) = &self.memory {
             let m = mem.lock().unwrap();
@@ -47,6 +69,7 @@ impl ReActAgent {
         }
     }
 
+    /// Parse the LLM response into either a tool call or a final answer.
     fn parse_response(&self, response: &str) -> Result<AgentAction, AgentError> {
         for line in response.lines() {
             if line.starts_with("行为：") {
@@ -125,6 +148,21 @@ impl Agent for ReActAgent {
                     history_entries.join("\n")
                 );
                 chat_template.add_to_front(Message::system(history_str));
+            }
+        }
+
+        if self.verbose {
+            match chat_template.format(&merged_refs) {
+                Ok(messages) => {
+                    println!("===== ReActAgent verbose prompt =====");
+                    for (idx, msg) in messages.iter().enumerate() {
+                        println!("[{}][{}] {}", idx, msg.role(), msg.content());
+                    }
+                    println!("=====================================");
+                }
+                Err(e) => {
+                    eprintln!("ReActAgent verbose format error: {}", e);
+                }
             }
         }
 

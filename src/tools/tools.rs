@@ -1,18 +1,22 @@
 use crate::tools::{Tool, ToolInput, ToolOutput};
 use async_trait::async_trait;
 
+/// A simple arithmetic calculator tool.
 pub struct Calculator;
 
 #[async_trait]
 impl Tool for Calculator {
+    /// Name used by the agent when calling this tool.
     fn name(&self) -> &str {
         "calculator"
     }
 
+    /// Short description of the calculator's capability.
     fn description(&self) -> &str {
         "执行基本数学运算，支持加减乘除"
     }
 
+    /// Evaluate a mathematical expression passed via `expression` parameter.
     async fn invoke(&self, input: ToolInput) -> Result<ToolOutput, Box<dyn std::error::Error>> {
         let expression = input
             .parameters
@@ -36,6 +40,7 @@ impl Tool for Calculator {
 }
 
 impl Calculator {
+    /// Parse and evaluate a basic binary arithmetic expression.
     fn evaluate_expression(&self, expression: &str) -> Result<String, Box<dyn std::error::Error>> {
         let expression = expression.trim().replace(" ", "");
 
@@ -76,18 +81,22 @@ impl Calculator {
 
 
 
+/// A mock weather tool returning static weather information.
 pub struct WeatherTool;
 
 #[async_trait]
 impl Tool for WeatherTool {
+    /// Name used by the agent when calling this tool.
     fn name(&self) -> &str {
         "weather"
     }
 
+    /// Short description of the weather tool capability.
     fn description(&self) -> &str {
         "获取指定城市的天气信息（模拟）"
     }
 
+    /// Return fake weather data for the requested city.
     async fn invoke(&self, input: ToolInput) -> Result<ToolOutput, Box<dyn std::error::Error>> {
         let city = input.parameters.get("city").ok_or("缺少 city 参数")?;
 

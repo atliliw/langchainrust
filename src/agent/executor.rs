@@ -8,6 +8,7 @@ pub const DEFAULT_MAX_ITERATIONS: usize = 10;
 
 
 impl AgentExecutor {
+    /// Create a new executor with the given agent and tools.
     pub fn new(agent: Box<dyn Agent>, tools: Vec<Arc<dyn Tool>>) -> Self {
         Self {
             agent,
@@ -16,6 +17,7 @@ impl AgentExecutor {
         }
     }
 
+    /// Override the maximum number of reasoning/tool iterations.
     pub fn with_max_iterations(mut self, n: usize) -> Self {
         self.max_iterations = n;
         self
@@ -25,10 +27,12 @@ impl AgentExecutor {
         self.tools.iter().find(|t| t.name() == name)
     }
 
+    /// Run the agent loop with a plain string input.
     pub async fn run(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
         self.run_with_vars(input, HashMap::new()).await
     }
 
+    /// Run the agent loop with additional template variables.
     pub async fn run_with_vars(
         &self,
         input: &str,
