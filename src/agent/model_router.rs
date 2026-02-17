@@ -210,6 +210,51 @@ impl RoutedReActAgent {
         }
     }
 
+    fn parse_model_response(raw: &str) -> (Option<String>, Option<String>) {
+        #[derive(Deserialize)]
+        struct ModelChoice {
+            provider: String,
+            model: String,
+        }
+        
+        let raw = raw.trim();
+        
+        // 首先尝试 JSON 格式
+        if raw.starts_with('{') &&
+            let Ok(choice) = serde_json::from_str::<ModelChoice>(raw)
+        {
+            return (Some(choice.provider), Some(choice.model));
+        }
+        
+        // 然后尝试 "provider: xxx, model: yyy" 格式
+        let mut provider = None;
+        let mut model = None;
+        
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.to_ascii_lowercase().starts_with("provider:") {
+                provider = line[9..].trim().trim_matches(',').trim().to_string().into();
+            } else if line.to_ascii_lowercase().starts_with("model:") {
+                model = line[6..].trim().trim_matches(',').trim().to_string().into();
+            }
+        }
+        
+        // 如果单行格式 "provider: xxx, model: yyy"
+        if provider.is_none() && model.is_none() {
+            let parts: Vec<&str> = raw.split(',').collect();
+            for part in parts {
+                let part = part.trim();
+                if part.to_ascii_lowercase().starts_with("provider:") {
+                    provider = part[9..].trim().to_string().into();
+                } else if part.to_ascii_lowercase().starts_with("model:") {
+                    model = part[6..].trim().to_string().into();
+                }
+            }
+        }
+        
+        (provider, model)
+    }
+
     fn models_as_text(&self) -> String {
         let mut items = self.models.clone();
         items.sort_by(|a, b| {
@@ -236,9 +281,12 @@ impl RoutedReActAgent {
     }
 
     fn find_model_config(&self, provider: &str, model: &str) -> Option<ModelConfig> {
+        let provider_lower = provider.to_ascii_lowercase();
+        let model_clean = model.trim().to_ascii_lowercase();
+        
         self.models.iter().find_map(|m| {
             let (p, name) = Self::model_id(m);
-            if p == provider && name == model {
+            if p.to_ascii_lowercase() == provider_lower && name.to_ascii_lowercase() == model_clean {
                 Some(m.clone())
             } else {
                 None
@@ -290,21 +338,15 @@ impl RoutedReActAgent {
             }
         }
 
-        #[derive(Deserialize)]
-        struct ModelChoice {
-            provider: String,
-            model: String,
-        }
-
         let difficulty_str = difficulty.to_string();
         let catalog_str = self.models_as_text();
 
         let prompt = ChatPromptTemplate::new(vec![
             Message::system(
-                "你是一个模型路由器。根据问题难度(1-10)与候选模型列表(含 factor 1-10，越高越贵/更强)，选择一个最合适的模型。",
+                "你是一个模型路由器。根据问题难度(1-10)与候选模型列表(含 factor 1-10，越高越贵/越强)，选择一个最合适的模型。",
             ),
             Message::human(
-                "问题难度：{difficulty}\n用户问题：{input}\n候选模型（每行一条 JSON）：\n{catalog}\n\n输出格式：provider=openai或qwen, model=具体模型名\n只输出一行JSON，不要其他内容。",
+                "问题难度：{difficulty}\n用户问题：{input}\n候选模型（每行一条 JSON）：\n{catalog}\n\n请只输出一行纯JSON（不要markdown代码块），格式如下：\nprovider字段值: openai 或 qwen\nmodel字段值: 从候选列表中选择一个具体的模型名称\n\n示例输出：provider: openai, model: gpt-4",
             ),
         ]);
 
@@ -327,9 +369,11 @@ impl RoutedReActAgent {
             .await
             .map_err(|e| AgentError(format!("路由 LLM 调用失败: {}", e)))?;
 
-        let parsed: Result<ModelChoice, _> = serde_json::from_str(raw.trim());
-        let chosen = if let Ok(choice) = parsed {
-            self.find_model_config(&choice.provider.to_ascii_lowercase(), &choice.model)
+        // 尝试解析 JSON 格式，如果失败则尝试解析 "provider: xxx, model: yyy" 格式
+        let (provider, model) = Self::parse_model_response(&raw);
+        
+        let chosen = if let (Some(p), Some(m)) = (provider, model) {
+            self.find_model_config(&p, &m)
         } else {
             None
         };
@@ -338,6 +382,13 @@ impl RoutedReActAgent {
             Some(m) => m,
             None => self.fallback_choose_model(difficulty)?,
         };
+
+        let (provider, model) = Self::model_id(&chosen);
+        let factor = Self::model_factor(&chosen);
+        println!(
+            "Routed model: provider={}, model={}, factor={}, difficulty={}",
+            provider, model, factor, difficulty
+        );
 
         let llm = Self::build_llm(&chosen);
 
