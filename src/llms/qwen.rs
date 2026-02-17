@@ -3,6 +3,15 @@ use crate::prompts::ChatPromptTemplate;
 use serde::Deserialize;
 use std::collections::HashMap;
 
+/// Qwen 模型配置
+#[derive(Debug, Clone)]
+pub struct QwenConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    pub factor: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct LLMQwen {
     client: reqwest::Client,

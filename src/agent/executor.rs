@@ -1,9 +1,15 @@
-use crate::agent::{Agent, AgentAction, AgentExecutor};
+use crate::agent::{Agent, AgentAction};
 use crate::tools::{Tool, ToolInput};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const DEFAULT_MAX_ITERATIONS: usize = 10;
+
+pub struct AgentExecutor {
+    agent: Box<dyn Agent>,
+    tools: Vec<Arc<dyn Tool>>,
+    max_iterations: usize,
+}
 
 impl AgentExecutor {
     pub fn new(agent: Box<dyn Agent>, tools: Vec<Arc<dyn Tool>>) -> Self {
