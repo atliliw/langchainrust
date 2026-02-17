@@ -301,10 +301,10 @@ impl RoutedReActAgent {
 
         let prompt = ChatPromptTemplate::new(vec![
             Message::system(
-                "你是一个模型路由器。根据问题难度(1-10)与候选模型列表(含 factor 1-10，越高越贵/更强)，选择一个最合适的模型。\n输出必须严格为一行 JSON：{\"provider\":\"openai|qwen\",\"model\":\"...\"}\n不要输出任何其他内容，不要包裹代码块，不要解释。",
+                "你是一个模型路由器。根据问题难度(1-10)与候选模型列表(含 factor 1-10，越高越贵/更强)，选择一个最合适的模型。",
             ),
             Message::human(
-                "问题难度：{difficulty}\n用户问题：{input}\n候选模型（每行一条 JSON）：\n{catalog}",
+                "问题难度：{difficulty}\n用户问题：{input}\n候选模型（每行一条 JSON）：\n{catalog}\n\n输出格式：provider=openai或qwen, model=具体模型名\n只输出一行JSON，不要其他内容。",
             ),
         ]);
 
