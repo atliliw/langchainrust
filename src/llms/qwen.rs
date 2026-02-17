@@ -1,6 +1,6 @@
-use serde::{Deserialize};
 use crate::messages::Message as LangMessage;
 use crate::prompts::ChatPromptTemplate;
+use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -35,18 +35,19 @@ impl LLMQwen {
             .into_iter()
             .map(|m| {
                 serde_json::json!({
-                "role": m.role(),
-                "content": m.content()
-            })
+                    "role": m.role(),
+                    "content": m.content()
+                })
             })
             .collect();
 
         let body = serde_json::json!({
-        "model": self.model,
-        "messages": openai_messages,
-    });
+            "model": self.model,
+            "messages": openai_messages,
+        });
 
-        let response: ChatResponse = self.client
+        let response: ChatResponse = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -55,7 +56,7 @@ impl LLMQwen {
             .await?
             .json()
             .await?;
-        
+
         let first_choice = response.choices.first().ok_or("No choices returned")?;
         Ok(first_choice.message.content.clone())
     }
@@ -82,14 +83,13 @@ impl LLMQwen {
         template: &ChatPromptTemplate,
         values: &HashMap<&str, &str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let messages = template.format(values)
+        let messages = template
+            .format(values)
             .map_err(|e| format!("模板格式化失败: {}", e))?;
 
         self.generate_with_messages(messages).await
     }
 }
-
-
 
 #[derive(Deserialize)]
 struct ChatResponse {
@@ -105,4 +105,3 @@ struct Choice {
 struct ResponseMessage {
     content: String,
 }
-

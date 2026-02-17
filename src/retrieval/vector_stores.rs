@@ -1,9 +1,9 @@
+use crate::retrieval::document::DocumentChunk;
+use crate::retrieval::traits::VectorStore;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::error::Error;
 use uuid::Uuid;
-use crate::retrieval::document::{DocumentChunk};
-use crate::retrieval::traits::VectorStore;
 
 /// 内存中的向量存储实现
 pub struct InMemoryVectorStore {
@@ -48,7 +48,7 @@ impl Default for InMemoryVectorStore {
 impl VectorStore for InMemoryVectorStore {
     async fn add_documents(
         &mut self,
-        documents: Vec<(DocumentChunk, Vec<f32>)>
+        documents: Vec<(DocumentChunk, Vec<f32>)>,
     ) -> Result<(), Box<dyn Error>> {
         for (chunk, embedding) in documents {
             let id = Uuid::new_v4().to_string();
@@ -60,7 +60,7 @@ impl VectorStore for InMemoryVectorStore {
     async fn similarity_search(
         &self,
         query: Vec<f32>,
-        k: usize
+        k: usize,
     ) -> Result<Vec<(DocumentChunk, f32)>, Box<dyn Error>> {
         if self.vectors.is_empty() {
             return Ok(vec![]);
@@ -86,7 +86,7 @@ impl VectorStore for InMemoryVectorStore {
         &self,
         query: Vec<f32>,
         k: usize,
-        filter: HashMap<String, String>
+        filter: HashMap<String, String>,
     ) -> Result<Vec<(DocumentChunk, f32)>, Box<dyn Error>> {
         if self.vectors.is_empty() {
             return Ok(vec![]);
@@ -97,9 +97,9 @@ impl VectorStore for InMemoryVectorStore {
             .values()
             .filter(|(chunk, _)| {
                 // 应用过滤器
-                filter.iter().all(|(key, value)| {
-                    chunk.metadata.get(key).map_or(false, |v| v == value)
-                })
+                filter
+                    .iter()
+                    .all(|(key, value)| chunk.metadata.get(key).map_or(false, |v| v == value))
             })
             .map(|(chunk, embedding)| {
                 let score = Self::cosine_similarity(&query, embedding);
@@ -114,10 +114,7 @@ impl VectorStore for InMemoryVectorStore {
         Ok(scored_results.into_iter().take(k).collect())
     }
 
-    async fn delete_documents(
-        &mut self,
-        _ids: Vec<String>
-    ) -> Result<(), Box<dyn Error>> {
+    async fn delete_documents(&mut self, _ids: Vec<String>) -> Result<(), Box<dyn Error>> {
         // 简化实现：由于ID管理复杂，暂时提供空实现
         // 在实际应用中，需要在DocumentChunk中添加ID字段
         Ok(())

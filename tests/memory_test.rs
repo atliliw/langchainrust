@@ -24,8 +24,7 @@ mod tests {
             vec!["topic"], // input_keys
             "explanation", // output_key
         );
-        
-        
+
         // Chain B: 输入 explanation，输出 summary
         let chain_b = PromptChain::new(
             llm,

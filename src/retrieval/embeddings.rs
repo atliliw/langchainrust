@@ -10,8 +10,7 @@ impl MockEmbeddingModel {
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }
-    fn text_to_embedding(&self, text: &str
-    ) -> Vec<f32> {
+    fn text_to_embedding(&self, text: &str) -> Vec<f32> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -44,15 +43,11 @@ impl MockEmbeddingModel {
 
 #[async_trait]
 impl super::traits::EmbeddingModel for MockEmbeddingModel {
-    async fn embed(&self, text: &str
-    ) -> Result<Vec<f32>, Box<dyn Error>> {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, Box<dyn Error>> {
         Ok(self.text_to_embedding(text))
     }
 
-    async fn embed_batch(
-        &self,
-        texts: Vec<&str>
-    ) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+    async fn embed_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
         let mut embeddings = Vec::new();
         for text in texts {
             embeddings.push(self.text_to_embedding(text));
@@ -64,4 +59,3 @@ impl super::traits::EmbeddingModel for MockEmbeddingModel {
         self.dimension
     }
 }
-

@@ -4,10 +4,10 @@ use crate::tools::Tool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use crate::llms::LLM;
 use crate::memory::Memory;
 use crate::prompts::ChatPromptTemplate;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait Agent: Send + Sync {
@@ -49,7 +49,6 @@ impl std::fmt::Display for AgentError {
 }
 
 impl std::error::Error for AgentError {}
-
 
 pub struct ReActAgent {
     llm: LLM,

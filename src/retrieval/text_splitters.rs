@@ -1,6 +1,6 @@
-use regex::Regex;
 use crate::retrieval::document::{Document, DocumentChunk};
 pub use crate::retrieval::traits::TextSplitter;
+use regex::Regex;
 
 /// 递归字符文本分割器
 pub struct RecursiveCharacterSplitter {
@@ -30,10 +30,7 @@ impl RecursiveCharacterSplitter {
     }
 
     /// 使用给定的分隔符分割文本
-    fn split_with_separator(&self,
-        text: &str,
-        separator: &str
-    ) -> Vec<String> {
+    fn split_with_separator(&self, text: &str, separator: &str) -> Vec<String> {
         if separator.is_empty() {
             // 如果分隔符为空，按字符分割
             text.chars().map(|c| c.to_string()).collect()
@@ -49,11 +46,7 @@ impl RecursiveCharacterSplitter {
     }
 
     /// 递归分割文本
-    fn recursive_split(
-        &self,
-        text: &str,
-        separators: &[String]
-    ) -> Vec<String> {
+    fn recursive_split(&self, text: &str, separators: &[String]) -> Vec<String> {
         if text.len() <= self.chunk_size {
             return vec![text.to_string()];
         }
@@ -99,8 +92,9 @@ impl RecursiveCharacterSplitter {
 }
 
 impl TextSplitter for RecursiveCharacterSplitter {
-    fn split_document(&self,
-        document: &Document
+    fn split_document(
+        &self,
+        document: &Document,
     ) -> Result<Vec<DocumentChunk>, Box<dyn std::error::Error>> {
         let chunks = self.recursive_split(&document.content, &self.separators);
 
@@ -144,7 +138,7 @@ impl FixedSizeSplitter {
 impl TextSplitter for FixedSizeSplitter {
     fn split_document(
         &self,
-        document: &Document
+        document: &Document,
     ) -> Result<Vec<DocumentChunk>, Box<dyn std::error::Error>> {
         let chars: Vec<char> = document.content.chars().collect();
         let mut chunks = Vec::new();
@@ -203,7 +197,11 @@ pub struct RegexSplitter {
 }
 
 impl RegexSplitter {
-    pub fn new(pattern: &str, chunk_size: usize, chunk_overlap: usize) -> Result<Self, regex::Error> {
+    pub fn new(
+        pattern: &str,
+        chunk_size: usize,
+        chunk_overlap: usize,
+    ) -> Result<Self, regex::Error> {
         Ok(Self {
             pattern: Regex::new(pattern)?,
             chunk_size,
@@ -215,9 +213,10 @@ impl RegexSplitter {
 impl TextSplitter for RegexSplitter {
     fn split_document(
         &self,
-        document: &Document
+        document: &Document,
     ) -> Result<Vec<DocumentChunk>, Box<dyn std::error::Error>> {
-        let splits: Vec<String> = self.pattern
+        let splits: Vec<String> = self
+            .pattern
             .split(&document.content)
             .map(|s| s.to_string())
             .collect();
@@ -270,10 +269,7 @@ impl TextSplitter for RegexSplitter {
     }
 
     fn split_text(&self, text: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let splits: Vec<String> = self.pattern
-            .split(text)
-            .map(|s| s.to_string())
-            .collect();
+        let splits: Vec<String> = self.pattern.split(text).map(|s| s.to_string()).collect();
 
         // 简单的重新组合逻辑
         let mut chunks = Vec::new();

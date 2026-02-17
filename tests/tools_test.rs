@@ -16,7 +16,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculator_addition() {
-        let calc = Calculator{};
+        let calc = Calculator {};
         let input = mock_tool_input(vec![("expression", "3 + 4")]);
         let output = calc.invoke(input).await.unwrap();
         assert_eq!(output.result, "7");
@@ -25,7 +25,6 @@ mod tests {
         println!("{:?}", calc.parameters());
         println!("{}", calc.return_direct());
     }
-
 
     #[tokio::test]
     async fn test_weather_tool() {

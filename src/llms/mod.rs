@@ -1,5 +1,5 @@
-mod qwen;
 mod openai;
+mod qwen;
 
-pub use qwen::{LLMQwen};
 pub use openai::{LLM, OpenAIConfig};
+pub use qwen::LLMQwen;

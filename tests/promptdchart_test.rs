@@ -5,16 +5,17 @@ use common::create_test_llm;
 use langchainrust::messages::Message;
 pub use langchainrust::prompts::ChatPromptTemplate;
 
-
 #[tokio::test]
 async fn test_with_template() {
     #[tokio::test]
-   async  fn test_only(){
+    async fn test_only() {
         let llm = create_test_llm();
 
         let template = ChatPromptTemplate::new(vec![
-            Message::system("你是由{name}开发的AI助手，专精于{field}领域。请用清晰易懂的方式回答问题。"),
-            Message::human("请向初学者解释{topic}是什么。")
+            Message::system(
+                "你是由{name}开发的AI助手，专精于{field}领域。请用清晰易懂的方式回答问题。",
+            ),
+            Message::human("请向初学者解释{topic}是什么。"),
         ]);
 
         let mut values = std::collections::HashMap::new();
@@ -24,10 +25,13 @@ async fn test_with_template() {
 
         let result = llm.invoke_chat_template(&template, &values).await;
         println!("{:?}", result);
-        assert!(result.is_ok(), "Template invocation failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Template invocation failed: {:?}",
+            result.err()
+        );
     }
 }
-
 
 #[tokio::test]
 async fn test_batch_limited() {
@@ -35,12 +39,12 @@ async fn test_batch_limited() {
 
     let template1 = ChatPromptTemplate::new(vec![
         Message::system("你是数学老师"),
-        Message::human("解释{topic}")
+        Message::human("解释{topic}"),
     ]);
 
     let template2 = ChatPromptTemplate::new(vec![
         Message::system("你是编程导师"),
-        Message::human("用Rust写一个{topic}的例子")
+        Message::human("用Rust写一个{topic}的例子"),
     ]);
 
     let mut values1 = std::collections::HashMap::new();
@@ -49,10 +53,7 @@ async fn test_batch_limited() {
     let mut values2 = std::collections::HashMap::new();
     values2.insert("topic", "斐波那契数列");
 
-    let pairs = vec![
-        (template1, values1),
-        (template2, values2),
-    ];
+    let pairs = vec![(template1, values1), (template2, values2)];
 
     // 调用方法并处理结果
     match llm.invoke_chat_template_batch_limited(&pairs, 2).await {

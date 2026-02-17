@@ -3,9 +3,7 @@ use crate::tools::{Tool, ToolInput};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
 pub const DEFAULT_MAX_ITERATIONS: usize = 10;
-
 
 impl AgentExecutor {
     pub fn new(agent: Box<dyn Agent>, tools: Vec<Arc<dyn Tool>>) -> Self {
@@ -42,7 +40,7 @@ impl AgentExecutor {
                 return Err("达到最大迭代次数，未能生成答案".into());
             }
             iteration += 1;
-            
+
             let action = self
                 .agent
                 .get_next_step_with_vars(input, intermediate_steps.as_deref(), &vars)
@@ -55,7 +53,8 @@ impl AgentExecutor {
                     return Ok(answer);
                 }
                 AgentAction::ToolCall(tool_name, params) => {
-                    let tool = self.find_tool(&tool_name)
+                    let tool = self
+                        .find_tool(&tool_name)
                         .ok_or_else(|| format!("工具未找到: {}", tool_name))?;
 
                     let tool_input = ToolInput {
@@ -63,7 +62,9 @@ impl AgentExecutor {
                         parameters: params,
                     };
 
-                    let output = tool.invoke(tool_input).await
+                    let output = tool
+                        .invoke(tool_input)
+                        .await
                         .map_err(|e| format!("工具 '{}' 执行失败: {}", tool_name, e))?;
 
                     if output.success {

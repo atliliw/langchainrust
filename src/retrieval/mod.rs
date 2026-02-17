@@ -1,9 +1,9 @@
 pub mod document;
-pub mod traits;
-pub mod vector_stores;
+pub mod embeddings;
 pub mod retrievers;
 pub mod text_splitters;
-pub mod embeddings;
+pub mod traits;
+pub mod vector_stores;
 
 pub use document::{Document, DocumentChunk, SearchResult};
-pub use traits::{Retriever, VectorStore, DocumentLoader, TextSplitter, EmbeddingModel};
+pub use traits::{DocumentLoader, EmbeddingModel, Retriever, TextSplitter, VectorStore};

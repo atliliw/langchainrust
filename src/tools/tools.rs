@@ -73,9 +73,6 @@ impl Calculator {
     }
 }
 
-
-
-
 pub struct WeatherTool;
 
 #[async_trait]

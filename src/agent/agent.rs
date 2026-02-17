@@ -1,21 +1,36 @@
-use crate::agent::{Agent, AgentAction, AgentError,ReActAgent};
+use crate::agent::{Agent, AgentAction, AgentError, ReActAgent};
 use crate::llms::LLM;
+use crate::memory::Memory;
 use crate::messages::Message;
 use crate::prompts::ChatPromptTemplate;
 use crate::tools::Tool;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::memory::Memory;
 
 impl ReActAgent {
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
         let wrapped_memory = memory.map(|m| Mutex::new(m));
-        Self { llm, tools, memory: wrapped_memory, user_template: None }
+        Self {
+            llm,
+            tools,
+            memory: wrapped_memory,
+            user_template: None,
+        }
     }
-    pub fn with_template(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>, template: ChatPromptTemplate) -> Self {
+    pub fn with_template(
+        llm: LLM,
+        tools: Vec<Arc<dyn Tool>>,
+        memory: Option<Box<dyn Memory>>,
+        template: ChatPromptTemplate,
+    ) -> Self {
         let wrapped_memory = memory.map(|m| Mutex::new(m));
-        Self { llm, tools, memory: wrapped_memory, user_template: Some(template) }
+        Self {
+            llm,
+            tools,
+            memory: wrapped_memory,
+            user_template: Some(template),
+        }
     }
 
     fn tool_descriptions(&self) -> String {
@@ -101,7 +116,9 @@ impl Agent for ReActAgent {
             t.clone()
         } else {
             ChatPromptTemplate::new(vec![
-                Message::system("你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}"),
+                Message::system(
+                    "你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}",
+                ),
                 Message::human("用户问题：{input}\n上一步结果：{scratchpad}"),
             ])
         };

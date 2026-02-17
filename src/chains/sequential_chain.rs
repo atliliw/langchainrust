@@ -72,7 +72,6 @@ impl SequentialChain {
                 .filter_map(|k| context.get(k).map(|v| (k.to_string(), v.clone())))
                 .collect();
 
-
             if let Some(ref memory) = self.memory {
                 let history_entries = memory.history();
                 if !history_entries.is_empty() {

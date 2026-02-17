@@ -1,4 +1,4 @@
-mod prompt_template;
 mod chat_prompt_template;
-pub use prompt_template::PromptTemplate;
+mod prompt_template;
 pub use chat_prompt_template::ChatPromptTemplate;
+pub use prompt_template::PromptTemplate;

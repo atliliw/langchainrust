@@ -1,24 +1,20 @@
+use crate::retrieval::document::{Document, DocumentChunk, SearchResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::error::Error;
-use crate::retrieval::document::{Document, DocumentChunk, SearchResult};
 
 /// 检索器trait
 #[async_trait]
 pub trait Retriever: Send + Sync {
     /// 检索相关文档
-    async fn retrieve(
-        &self,
-        query: &str,
-        k: usize
-    ) -> Result<Vec<SearchResult>, Box<dyn Error>>;
+    async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<SearchResult>, Box<dyn Error>>;
 
     /// 带过滤条件的检索
     async fn retrieve_with_filter(
         &self,
         query: &str,
         k: usize,
-        _filter: HashMap<String, String>
+        _filter: HashMap<String, String>,
     ) -> Result<Vec<SearchResult>, Box<dyn Error>> {
         // 默认实现：忽略过滤条件
         self.retrieve(query, k).await
@@ -31,14 +27,14 @@ pub trait VectorStore: Send + Sync {
     /// 添加文档到向量存储
     async fn add_documents(
         &mut self,
-        documents: Vec<(DocumentChunk, Vec<f32>)>
+        documents: Vec<(DocumentChunk, Vec<f32>)>,
     ) -> Result<(), Box<dyn Error>>;
 
     /// 相似度搜索
     async fn similarity_search(
         &self,
         query: Vec<f32>,
-        k: usize
+        k: usize,
     ) -> Result<Vec<(DocumentChunk, f32)>, Box<dyn Error>>;
 
     /// 带元数据过滤的相似度搜索
@@ -46,16 +42,16 @@ pub trait VectorStore: Send + Sync {
         &self,
         query: Vec<f32>,
         k: usize,
-        filter: HashMap<String, String>
+        filter: HashMap<String, String>,
     ) -> Result<Vec<(DocumentChunk, f32)>, Box<dyn Error>> {
         // 默认实现：先搜索再过滤
         let results = self.similarity_search(query, k * 2).await?;
         let filtered: Vec<_> = results
             .into_iter()
             .filter(|(chunk, _)| {
-                filter.iter().all(|(key, value)| {
-                    chunk.metadata.get(key).map_or(false, |v| v == value)
-                })
+                filter
+                    .iter()
+                    .all(|(key, value)| chunk.metadata.get(key).map_or(false, |v| v == value))
             })
             .take(k)
             .collect();
@@ -63,10 +59,7 @@ pub trait VectorStore: Send + Sync {
     }
 
     /// 删除文档
-    async fn delete_documents(
-        &mut self,
-        ids: Vec<String>
-    ) -> Result<(), Box<dyn Error>>;
+    async fn delete_documents(&mut self, ids: Vec<String>) -> Result<(), Box<dyn Error>>;
 }
 
 /// 文档加载器trait
@@ -78,7 +71,7 @@ pub trait DocumentLoader: Send + Sync {
     /// 加载并分块
     async fn load_and_split(
         &self,
-        splitter: &dyn TextSplitter
+        splitter: &dyn TextSplitter,
     ) -> Result<Vec<DocumentChunk>, Box<dyn Error>> {
         let docs = self.load().await?;
         let mut chunks = Vec::new();
@@ -124,6 +117,6 @@ pub trait Reranker: Send + Sync {
     async fn rerank(
         &self,
         query: &str,
-        results: Vec<SearchResult>
+        results: Vec<SearchResult>,
     ) -> Result<Vec<SearchResult>, Box<dyn Error>>;
 }
