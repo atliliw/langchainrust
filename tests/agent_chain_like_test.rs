@@ -1,7 +1,7 @@
 #[path = "common.rs"]
 mod common;
 
-use crate::common::llm_Config;
+use crate::common::llm_config;
 use langchainrust::agent::{AgentExecutor, ReActAgent};
 use langchainrust::llms::LLM;
 use langchainrust::memory::SimpleMemory;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn test_agent_with_memory_and_template_like_chain() {
-    let config = llm_Config();
+    let config = llm_config();
     let llm = LLM::new(config);
 
     let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Calculator)];

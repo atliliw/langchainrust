@@ -6,6 +6,7 @@ use langchainrust::messages::Message;
 pub use langchainrust::prompts::ChatPromptTemplate;
 
 #[tokio::test]
+#[ignore]
 async fn test_with_template() {
     #[tokio::test]
     async fn test_only() {

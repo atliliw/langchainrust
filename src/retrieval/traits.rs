@@ -51,7 +51,7 @@ pub trait VectorStore: Send + Sync {
             .filter(|(chunk, _)| {
                 filter
                     .iter()
-                    .all(|(key, value)| chunk.metadata.get(key).map_or(false, |v| v == value))
+                    .all(|(key, value)| chunk.metadata.get(key).is_some_and(|v| v == value))
             })
             .take(k)
             .collect();
@@ -78,7 +78,7 @@ pub trait DocumentLoader: Send + Sync {
 
         for (doc_idx, doc) in docs.into_iter().enumerate() {
             let doc_chunks = splitter.split_document(&doc)?;
-            for (_chunk_idx, mut chunk) in doc_chunks.into_iter().enumerate() {
+            for mut chunk in doc_chunks.into_iter() {
                 chunk.document_id = Some(format!("doc_{}", doc_idx));
                 chunks.push(chunk);
             }

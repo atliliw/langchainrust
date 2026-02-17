@@ -1,4 +1,5 @@
 mod tool;
+#[allow(clippy::module_inception)]
 mod tools;
 
 pub use tool::{Tool, ToolInput, ToolOutput};

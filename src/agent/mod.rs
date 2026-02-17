@@ -1,5 +1,7 @@
+#[allow(clippy::module_inception)]
 pub mod agent;
 mod executor;
+pub mod model_router;
 use crate::tools::Tool;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

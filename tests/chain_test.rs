@@ -3,7 +3,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use crate::common::llm_Config;
+    use crate::common::llm_config;
     use langchainrust::chains::{PromptChain, SequentialChain};
     use langchainrust::llms::LLM;
     use langchainrust::memory::SimpleMemory;
@@ -13,7 +13,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sequential_chain_with_input_output_keys() {
-        let config = llm_Config();
+        let config = llm_config();
         let llm = LLM::new(config);
         let chain_a = PromptChain::new(
             llm.clone(),

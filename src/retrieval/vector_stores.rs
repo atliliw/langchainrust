@@ -99,7 +99,7 @@ impl VectorStore for InMemoryVectorStore {
                 // 应用过滤器
                 filter
                     .iter()
-                    .all(|(key, value)| chunk.metadata.get(key).map_or(false, |v| v == value))
+                    .all(|(key, value)| chunk.metadata.get(key).is_some_and(|v| v == value))
             })
             .map(|(chunk, embedding)| {
                 let score = Self::cosine_similarity(&query, embedding);

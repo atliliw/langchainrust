@@ -12,6 +12,7 @@ pub struct OpenAIConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub factor: u8,
     pub streaming: bool,
 }
 
@@ -153,32 +154,26 @@ impl LLM {
                                         continue;
                                     }
 
-                                    // 处理 data: 行
-                                    if line.starts_with("data: ") {
-                                        let data = &line[6..];
+                                    if let Some(data) = line.strip_prefix("data: ") {
                                         if data.trim() == "[DONE]" {
-                                            return None; // 流结束
+                                            return None;
                                         }
 
                                         if let Ok(json) =
                                             serde_json::from_str::<serde_json::Value>(data)
-                                        {
-                                            if let Some(content) = json
+                                            && let Some(content) = json
                                                 .get("choices")
                                                 .and_then(|c| c.get(0))
                                                 .and_then(|c| c.get("delta"))
                                                 .and_then(|d| d.get("content"))
                                                 .and_then(|v| v.as_str())
-                                            {
-                                                if !content.is_empty() {
-                                                    // 返回 token，并保留剩余 buffer
-                                                    let remaining = buffer[pos..].to_string();
-                                                    return Some((
-                                                        Ok(content.to_string()),
-                                                        (stream, remaining),
-                                                    ));
-                                                }
-                                            }
+                                            && !content.is_empty()
+                                        {
+                                            let remaining = buffer[pos..].to_string();
+                                            return Some((
+                                                Ok(content.to_string()),
+                                                (stream, remaining),
+                                            ));
                                         }
                                     }
                                 }
@@ -190,7 +185,7 @@ impl LLM {
                                 // 注意：这里不能 return，必须继续 loop
                                 // 但为了避免无限循环，break 出去让下一次 unfold 调用继续
                                 // 所以我们只保留未处理部分
-                                let remaining = buffer[last_line_start..].to_string();
+                                let _remaining = buffer[last_line_start..].to_string();
                                 // 没有可返回的 token，继续下一轮
                                 // 但由于 unfold 必须返回 Some 或 None，我们不能在这里阻塞
                                 // 所以：如果没有完整行，就 break 并等待下次调用
@@ -264,9 +259,7 @@ impl LLM {
 
                 // Parse Server-Sent Events format
                 for line in chunk_str.lines() {
-                    if line.starts_with("data: ") {
-                        let data = &line[6..]; // Remove "data: " prefix
-
+                    if let Some(data) = line.strip_prefix("data: ") {
                         // Check for [DONE] marker
                         if data.trim() == "[DONE]" {
                             break;
@@ -275,16 +268,13 @@ impl LLM {
                         // Parse the JSON chunk
                         if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) {
                             // Extract content from the chunk
-                            if let Some(choices) = chunk_json.get("choices") {
-                                if let Some(first_choice) = choices.get(0) {
-                                    if let Some(delta) = first_choice.get("delta") {
-                                        if let Some(content) = delta.get("content") {
-                                            if let Some(text) = content.as_str() {
-                                                full_content.push_str(text);
-                                            }
-                                        }
-                                    }
-                                }
+                            if let Some(choices) = chunk_json.get("choices")
+                                && let Some(first_choice) = choices.get(0)
+                                && let Some(delta) = first_choice.get("delta")
+                                && let Some(content) = delta.get("content")
+                                && let Some(text) = content.as_str()
+                            {
+                                full_content.push_str(text);
                             }
                         }
                     }

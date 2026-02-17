@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 impl ReActAgent {
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
-        let wrapped_memory = memory.map(|m| Mutex::new(m));
+        let wrapped_memory = memory.map(Mutex::new);
         Self {
             llm,
             tools,
@@ -24,7 +24,7 @@ impl ReActAgent {
         memory: Option<Box<dyn Memory>>,
         template: ChatPromptTemplate,
     ) -> Self {
-        let wrapped_memory = memory.map(|m| Mutex::new(m));
+        let wrapped_memory = memory.map(Mutex::new);
         Self {
             llm,
             tools,
