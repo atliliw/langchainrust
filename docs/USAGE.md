@@ -333,17 +333,88 @@ let models = vec![
 
 ---
 
-### Tool 调用输出格式约定
+### Tool 调用机制
 
-当前 `ReActAgent` 的工具调用解析规则是从模型输出中查找以 `行为：` 开头的行，并解析为 `tool_name key=value ...` 的形式；否则视为最终答案。
+`ReActAgent` 的工具调用是**可选的**：
+
+1. **智能判断**：Agent 会根据问题内容自主判断是否需要使用工具
+2. **工具调用格式**：如果需要使用工具，模型会输出 `[TOOL: 工具名 参数名=参数值]`
+3. **直接回答**：如果不需要工具，模型会直接给出答案
+
+```
+# 使用工具的示例输出
+[TOOL: calculator expression=37+48]
+
+# 不使用工具的示例输出
+Rust 是一种系统编程语言，具有内存安全、零成本抽象等特点...
+```
+
+### 判断是否使用了工具
+
+使用 `run_with_details()` 方法获取执行详情：
+
+```rust
+use langchainrust::agent::{AgentExecutor, ReActAgent, ExecutionResult};
+
+let executor = AgentExecutor::new(Box::new(agent), tools);
+
+// 获取执行详情
+let result: ExecutionResult = executor.run_with_details("计算 37+48").await?;
+
+println!("最终答案: {}", result.answer);
+println!("是否使用工具: {}", result.used_tools);
+println!("调用的工具: {:?}", result.tool_calls);
+println!("迭代次数: {}", result.iterations);
+
+if result.used_tools {
+    println!("✓ Agent 使用了工具来帮助回答");
+} else {
+    println!("✓ Agent 直接回答了问题");
+}
+```
+
+### 执行日志
+
+执行时会打印工具调用日志：
+
+```
+[工具调用] calculator {"expression": "37+48"}
+[工具结果] 85
+```
 
 ---
 
 ## Tools
 
-### 自定义 Tool
+### 内置工具
 
-内置工具在 [tools.rs](../src/tools/tools.rs) 中提供了 `Calculator` / `WeatherTool`。你也可以按 `Tool` trait 自定义：
+| 工具名 | 描述 | 参数 |
+|--------|------|------|
+| `Calculator` | 执行基本数学运算 | `expression`: 数学表达式 |
+| `WeatherTool` | 获取城市天气（模拟） | `city`: 城市名称 |
+| `DateTimeTool` | 获取当前日期时间 | 无 |
+| `TextTool` | 文本处理工具 | `operation`: 操作类型, `text`: 文本内容 |
+| `WebSearchTool` | 网络搜索（模拟） | `query`: 搜索关键词 |
+| `JsonTool` | JSON 处理工具 | `operation`: 操作类型, `data`: JSON字符串 |
+
+### 使用工具
+
+```rust
+use langchainrust::tools::{Calculator, DateTimeTool, TextTool, Tool};
+use std::sync::Arc;
+
+// 创建工具列表
+let tools: Vec<Arc<dyn Tool>> = vec![
+    Arc::new(Calculator),
+    Arc::new(DateTimeTool),
+    Arc::new(TextTool),
+];
+
+// 不传工具也可以工作（Agent 会直接回答）
+let tools: Vec<Arc<dyn Tool>> = vec![];
+```
+
+### 自定义 Tool
 
 ```rust
 use async_trait::async_trait;
@@ -419,6 +490,9 @@ src/
 ├── memory/         # 记忆接口与实现
 ├── chains/         # 链式组合
 ├── tools/          # 工具接口与内置工具
+│   ├── mod.rs      # 导出 Tool trait 和所有工具
+│   ├── tool.rs     # Tool trait 定义
+│   └── tools.rs    # 内置工具实现
 ├── agent/          # Agent 与执行器
 │   ├── mod.rs      # Agent trait、AgentAction、AgentError
 │   ├── agent.rs    # ReActAgent（含模型路由）
@@ -437,6 +511,13 @@ src/
 | `new(llm, tools, memory)` | LLM、工具列表、可选内存 | 基础 Agent |
 | `with_template(llm, tools, memory, template)` | 增加模板参数 | 带模板的 Agent |
 | `with_models(llm, models, tools, memory, template)` | 增加模型列表参数 | 带模型路由的 Agent |
+
+### 工具调用
+
+| 行为 | 说明 |
+|------|------|
+| 使用工具 | 模型输出 `[TOOL: 工具名 参数=值]` |
+| 直接回答 | 模型直接输出答案文本 |
 
 ### 模型路由参数
 

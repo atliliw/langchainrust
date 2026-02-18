@@ -3,7 +3,7 @@ pub mod agent;
 pub mod executor;
 
 pub use agent::ReActAgent;
-pub use executor::AgentExecutor;
+pub use executor::{AgentExecutor, ExecutionResult};
 
 use std::collections::HashMap;
 

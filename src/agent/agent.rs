@@ -123,13 +123,44 @@ impl ReActAgent {
     }
 
     fn parse_response(&self, response: &str) -> Result<AgentAction, AgentError> {
+        let response = response.trim();
+        
+        // 检查是否有工具调用标记 [TOOL: tool_name key=value ...]
+        if response.contains("[TOOL:") {
+            for line in response.lines() {
+                if line.contains("[TOOL:")
+                    && let Some(start) = line.find("[TOOL:")
+                    && let Some(end) = line.find("]")
+                {
+                    let content = &line[start + 6..end].trim();
+                    let parts: Vec<&str> = content.split_whitespace().collect();
+                    
+                    if parts.is_empty() {
+                        continue;
+                    }
+                    
+                    let tool_name = parts[0].to_string();
+                    let mut params = HashMap::new();
+                    
+                    for part in &parts[1..] {
+                        if let Some((k, v)) = part.split_once('=') {
+                            params.insert(k.to_string(), v.to_string());
+                        }
+                    }
+                    
+                    return Ok(AgentAction::ToolCall(tool_name, params));
+                }
+            }
+        }
+        
+        // 兼容旧格式 "行为：tool_name key=value"
         for line in response.lines() {
             if line.starts_with("行为：") {
                 let rest = line.trim_start_matches("行为：").trim();
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
 
                 if parts.is_empty() {
-                    return Err(AgentError("行为行格式无效".into()));
+                    continue;
                 }
 
                 let tool_name = parts[0].to_string();
@@ -147,7 +178,8 @@ impl ReActAgent {
             }
         }
 
-        Ok(AgentAction::FinalAnswer(response.trim().to_string()))
+        // 没有工具调用，直接作为最终答案
+        Ok(AgentAction::FinalAnswer(response.to_string()))
     }
 
     // ===== 模型路由相关方法 =====
@@ -407,21 +439,38 @@ impl Agent for ReActAgent {
 
         let tools_str = self.tool_descriptions();
         let input_str = input.to_string();
-        let scratchpad_str = intermediate_steps.unwrap_or("").to_string();
+        let scratchpad_str = match intermediate_steps {
+            Some(s) if !s.is_empty() => format!("\n上一步工具执行结果：{}\n", s),
+            _ => String::new(),
+        };
 
         let mut chat_template = if let Some(t) = &self.user_template {
             t.clone()
         } else {
+            let system_msg = if self.tools.is_empty() {
+                "你是一个 AI 助手。".to_string()
+            } else {
+                let tool_hint = if scratchpad_str.is_empty() {
+                    format!(
+                        "你可以使用以下工具：\n{}\n\n\
+                        如果需要使用工具，只输出一行：[TOOL: 工具名 参数名=参数值]\n\
+                        如果不需要工具，直接给出答案。",
+                        tools_str
+                    )
+                } else {
+                    "工具已执行完毕，请根据工具执行结果直接给出最终答案，不要再调用工具！".to_string()
+                };
+
+                format!("你是一个 AI 助手。\n\n{}", tool_hint)
+            };
+
             ChatPromptTemplate::new(vec![
-                Message::system(
-                    "你是一个 AI 助手，可以使用以下工具解决问题。\n\n可用工具：\n{tools}",
-                ),
-                Message::human("用户问题：{input}\n上一步结果：{scratchpad}"),
+                Message::system(&system_msg),
+                Message::human("{scratchpad}用户问题：{input}"),
             ])
         };
 
         let mut merged: HashMap<String, String> = vars.clone();
-        merged.insert("tools".to_string(), tools_str);
         merged.insert("input".to_string(), input_str);
         merged.insert("scratchpad".to_string(), scratchpad_str);
 

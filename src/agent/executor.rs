@@ -11,6 +11,19 @@ pub struct AgentExecutor {
     max_iterations: usize,
 }
 
+/// 执行结果，包含最终答案和执行过程信息
+#[derive(Debug)]
+pub struct ExecutionResult {
+    /// 最终答案
+    pub answer: String,
+    /// 是否使用了工具
+    pub used_tools: bool,
+    /// 调用的工具名称列表
+    pub tool_calls: Vec<String>,
+    /// 迭代次数
+    pub iterations: usize,
+}
+
 impl AgentExecutor {
     pub fn new(agent: Box<dyn Agent>, tools: Vec<Arc<dyn Tool>>) -> Self {
         Self {
@@ -33,13 +46,20 @@ impl AgentExecutor {
         self.run_with_vars(input, HashMap::new()).await
     }
 
-    pub async fn run_with_vars(
+    /// 执行并返回详细信息（包含是否使用了工具）
+    pub async fn run_with_details(&self, input: &str) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
+        self.run_with_vars_and_details(input, HashMap::new()).await
+    }
+
+    /// 带变量执行并返回详细信息
+    pub async fn run_with_vars_and_details(
         &self,
         input: &str,
         vars: HashMap<String, String>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
         let mut iteration = 0;
         let mut intermediate_steps: Option<String> = None;
+        let mut tool_calls = Vec::new();
 
         loop {
             if iteration >= self.max_iterations {
@@ -56,9 +76,17 @@ impl AgentExecutor {
             match action {
                 AgentAction::FinalAnswer(answer) => {
                     self.agent.add_memory(input, &answer);
-                    return Ok(answer);
+                    return Ok(ExecutionResult {
+                        answer,
+                        used_tools: !tool_calls.is_empty(),
+                        tool_calls,
+                        iterations: iteration,
+                    });
                 }
                 AgentAction::ToolCall(tool_name, params) => {
+                    println!("[工具调用] {} {:?}", tool_name, params);
+                    tool_calls.push(tool_name.clone());
+                    
                     let tool = self
                         .find_tool(&tool_name)
                         .ok_or_else(|| format!("工具未找到: {}", tool_name))?;
@@ -73,6 +101,8 @@ impl AgentExecutor {
                         .await
                         .map_err(|e| format!("工具 '{}' 执行失败: {}", tool_name, e))?;
 
+                    println!("[工具结果] {}", output.result);
+
                     if output.success {
                         intermediate_steps = Some(output.result);
                     } else {
@@ -84,5 +114,14 @@ impl AgentExecutor {
                 }
             }
         }
+    }
+
+    pub async fn run_with_vars(
+        &self,
+        input: &str,
+        vars: HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let result = self.run_with_vars_and_details(input, vars).await?;
+        Ok(result.answer)
     }
 }
