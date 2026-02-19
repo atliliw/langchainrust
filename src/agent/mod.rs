@@ -1,9 +1,11 @@
 #[allow(clippy::module_inception)]
 pub mod agent;
 pub mod executor;
+pub mod retrieval_agent;
 
 pub use agent::ReActAgent;
 pub use executor::{AgentExecutor, ExecutionResult};
+pub use retrieval_agent::{RetrievalAgent, SimpleRetrievalAgent};
 
 use std::collections::HashMap;
 

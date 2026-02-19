@@ -384,6 +384,112 @@ if result.used_tools {
 
 ---
 
+## Retrieval + Agent (RAG)
+
+将向量检索与 Agent 结合，实现 **RAG（检索增强生成）** 功能。
+
+### 工作原理
+
+```
+┌─────────────┐      检索器      ┌─────────────┐
+│   用户问题   │  ─────────────>  │  向量数据库  │
+└─────────────┘                  └─────────────┘
+       │                                │
+       │                                ▼
+       │                         ┌─────────────┐
+       │                         │  相关文档   │
+       │                         └─────────────┘
+       │                                │
+       ▼                                ▼
+┌─────────────────────────────────────────────┐
+│                   LLM                        │
+│  (问题 + 检索到的文档作为上下文)              │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+               ┌─────────────┐
+               │   最终答案   │
+               └─────────────┘
+```
+
+### SimpleRetrievalAgent（简单版）
+
+```rust
+use langchainrust::agent::SimpleRetrievalAgent;
+use langchainrust::llms::LLM;
+use langchainrust::retrieval::{
+    Document, InMemoryVectorStore, MockEmbeddingModel,
+    RecursiveCharacterSplitter, Retriever, SimilarityRetriever, TextSplitter,
+};
+use std::sync::Arc;
+
+// 1. 准备文档
+let docs = vec![
+    Document::new("Rust是一种系统编程语言...".to_string()),
+    Document::new("Python是一种脚本语言...".to_string()),
+];
+
+// 2. 分割文档
+let splitter = RecursiveCharacterSplitter::new(100, 20);
+let chunks = splitter.split_document(&docs[0]).unwrap();
+
+// 3. 创建检索器
+let embedding = Arc::new(MockEmbeddingModel::new(128));
+let store = Box::new(InMemoryVectorStore::new());
+let retriever = SimilarityRetriever::new(store, embedding);
+retriever.add_documents(chunks).await?;
+
+// 4. 创建 RAG Agent
+let llm = LLM::new(config);
+let agent = SimpleRetrievalAgent::new(llm, Arc::new(retriever) as Arc<dyn Retriever>, 3);
+
+// 5. 查询
+let answer = agent.query("什么是Rust？").await?;
+println!("回答: {}", answer);
+```
+
+### RetrievalAgent（完整版）
+
+支持 Memory 和自定义模板：
+
+```rust
+use langchainrust::agent::{AgentExecutor, RetrievalAgent};
+use langchainrust::memory::SimpleMemory;
+use langchainrust::messages::Message;
+use langchainrust::prompts::ChatPromptTemplate;
+
+// 自定义模板
+let template = ChatPromptTemplate::new(vec![
+    Message::system(
+        "你是专业顾问。根据参考资料回答问题。\n\n参考资料：\n{context}",
+    ),
+    Message::human("{input}"),
+]);
+
+let agent = RetrievalAgent::with_template(
+    llm,
+    retriever,
+    Some(Box::new(SimpleMemory::default())),
+    3,  // top_k
+    template,
+);
+
+let executor = AgentExecutor::new(Box::new(agent), vec![]);
+let result = executor.run("比较这些语言的特点").await?;
+```
+
+### 执行日志
+
+```
+[检索] 正在从向量数据库检索相关文档...
+[检索] 找到 3 个相关文档
+  [1] 相似度: 0.8542
+  [2] 相似度: 0.7231
+  [3] 相似度: 0.5123
+```
+
+---
+
 ## Tools
 
 ### 内置工具
@@ -471,6 +577,12 @@ cargo test --test agent_chain_like_test
 # 运行模型路由测试
 cargo test --test model_factor_test -- --nocapture
 
+# 运行 retrieval 测试
+cargo test --test retrieval_test -- --nocapture
+
+# 运行 RAG Agent 测试
+cargo test --test retrieval_agent_test -- --nocapture
+
 # 运行特定测试函数
 cargo test test_model_routing_with_real_question -- --nocapture
 ```
@@ -496,8 +608,16 @@ src/
 ├── agent/          # Agent 与执行器
 │   ├── mod.rs      # Agent trait、AgentAction、AgentError
 │   ├── agent.rs    # ReActAgent（含模型路由）
-│   └── executor.rs # AgentExecutor
-└── retrieval/      # 检索组件（实验性）
+│   ├── executor.rs # AgentExecutor
+│   └── retrieval_agent.rs # RetrievalAgent（RAG Agent）
+├── retrieval/      # 检索组件
+│   ├── mod.rs      # 导出所有 retrieval 组件
+│   ├── traits.rs   # 核心 trait 定义
+│   ├── document.rs # 文档结构
+│   ├── text_splitters.rs # 文本分割器
+│   ├── embeddings.rs     # 嵌入模型
+│   ├── vector_stores.rs  # 向量存储
+│   └── retrievers.rs     # 检索器
 ```
 
 ---
@@ -524,3 +644,22 @@ src/
 | 参数名 | 别名 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `difficulty` | `难度`、`level` | 1 | 问题难度（1-10） |
+
+### RetrievalAgent 构造方法
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `SimpleRetrievalAgent::new(llm, retriever, top_k)` | LLM、检索器、检索数量 | 简单 RAG Agent |
+| `RetrievalAgent::new(llm, retriever, memory, top_k)` | 增加内存 | 带记忆的 RAG Agent |
+| `RetrievalAgent::with_template(...)` | 增加模板 | 自定义模板的 RAG Agent |
+| `RetrievalAgent::with_models(...)` | 增加模型列表 | 带模型路由的 RAG Agent |
+
+### RAG 执行流程
+
+| 步骤 | 说明 |
+|------|------|
+| 1. 检索 | 从向量数据库检索 top_k 个相关文档 |
+| 2. 构建上下文 | 将文档格式化为 prompt 上下文 |
+| 3. 调用 LLM | 将问题和上下文一起发送给模型 |
+| 4. 返回答案 | 模型基于上下文生成答案 |
+
