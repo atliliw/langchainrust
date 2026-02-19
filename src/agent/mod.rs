@@ -1,9 +1,11 @@
 pub mod executor;
+pub mod planner;
 pub mod react;
 
 pub use react::ReActAgent;
 pub use react::RoutingState;
 pub use executor::{AgentExecutor, ExecutionResult};
+pub use planner::{PlannedExecutor, SimplePlannedExecutor, TaskPlanner, Plan, SubTask, TaskResult};
 
 use std::collections::HashMap;
 
