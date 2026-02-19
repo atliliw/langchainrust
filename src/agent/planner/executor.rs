@@ -14,6 +14,7 @@ pub struct PlannedExecutor {
     planner: TaskPlanner,
     agent_executor: AgentExecutor,
     memory: Option<Arc<Mutex<Box<dyn Memory>>>>,
+    verbose: bool,
 }
 
 impl PlannedExecutor {
@@ -29,6 +30,7 @@ impl PlannedExecutor {
             planner,
             agent_executor,
             memory: None,
+            verbose: false,
         }
     }
 
@@ -50,6 +52,20 @@ impl PlannedExecutor {
         self
     }
 
+    /// 设置是否打印详细日志
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self.planner = self.planner.with_verbose(verbose);
+        self
+    }
+
+    /// 打印日志（仅在 verbose 模式下）
+    fn log(&self, msg: &str) {
+        if self.verbose {
+            println!("{}", msg);
+        }
+    }
+
     /// 执行复杂任务（自动规划 + 执行 + 汇总）
     pub async fn run(&self, question: &str) -> Result<String, Box<dyn std::error::Error>> {
         let (plan, results) = self.run_with_plan(question).await?;
@@ -63,19 +79,19 @@ impl PlannedExecutor {
         &self,
         question: &str,
     ) -> Result<(Plan, Vec<TaskResult>), Box<dyn std::error::Error>> {
-        println!("[规划] 正在分析任务...");
+        self.log("[规划] 正在分析任务...");
 
         // 1. 规划任务
         let plan = self.planner.plan(question).await?;
         
-        println!("[规划] 任务已分解为 {} 个子任务:", plan.sub_tasks.len());
+        self.log(&format!("[规划] 任务已分解为 {} 个子任务:", plan.sub_tasks.len()));
         for task in &plan.sub_tasks {
-            println!(
+            self.log(&format!(
                 "  [{}] {} {}",
                 task.id,
                 task.description,
                 if task.depends_on_previous { "(依赖前序)" } else { "" }
-            );
+            ));
         }
 
         // 2. 执行子任务
@@ -83,7 +99,7 @@ impl PlannedExecutor {
         let mut previous_result = String::new();
 
         for task in &plan.sub_tasks {
-            println!("\n[执行] 任务 {}/{}: {}", task.id, plan.sub_tasks.len(), task.description);
+            self.log(&format!("\n[执行] 任务 {}/{}: {}", task.id, plan.sub_tasks.len(), task.description));
 
             // 构建任务输入
             let task_input = if task.depends_on_previous && !previous_result.is_empty() {
@@ -100,7 +116,7 @@ impl PlannedExecutor {
             
             match result {
                 Ok(output) => {
-                    println!("[完成] 任务 {} 执行成功", task.id);
+                    self.log(&format!("[完成] 任务 {} 执行成功", task.id));
                     previous_result = output.clone();
                     results.push(TaskResult {
                         id: task.id,
@@ -110,7 +126,7 @@ impl PlannedExecutor {
                     });
                 }
                 Err(e) => {
-                    println!("[失败] 任务 {} 执行失败: {}", task.id, e);
+                    self.log(&format!("[失败] 任务 {} 执行失败: {}", task.id, e));
                     let error_msg = format!("执行失败: {}", e);
                     previous_result = error_msg.clone();
                     results.push(TaskResult {
@@ -129,7 +145,7 @@ impl PlannedExecutor {
             }
         }
 
-        println!("\n[汇总] 正在汇总所有任务结果...");
+        self.log("\n[汇总] 正在汇总所有任务结果...");
         Ok((plan, results))
     }
 }
@@ -137,17 +153,38 @@ impl PlannedExecutor {
 /// 简化版：直接使用 LLM 进行任务规划和执行
 pub struct SimplePlannedExecutor {
     planner: TaskPlanner,
+    verbose: bool,
 }
 
 impl SimplePlannedExecutor {
     pub fn new(llm: LLM) -> Self {
         let planner = TaskPlanner::new(llm);
-        Self { planner }
+        Self { 
+            planner,
+            verbose: false,
+        }
+    }
+
+    /// 设置是否打印详细日志
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self.planner = self.planner.with_verbose(verbose);
+        self
+    }
+
+    /// 打印日志（仅在 verbose 模式下）
+    fn log(&self, msg: &str) {
+        if self.verbose {
+            println!("{}", msg);
+        }
     }
 
     /// 规划任务（不执行，只返回计划）
     pub async fn plan(&self, question: &str) -> Result<Plan, Box<dyn std::error::Error>> {
-        self.planner.plan(question).await
+        self.log("[规划] 正在分析任务...");
+        let plan = self.planner.plan(question).await?;
+        self.log(&format!("[规划] 任务已分解为 {} 个子任务", plan.sub_tasks.len()));
+        Ok(plan)
     }
 
     /// 汇总结果
@@ -156,6 +193,9 @@ impl SimplePlannedExecutor {
         original_question: &str,
         results: &[TaskResult],
     ) -> Result<String, Box<dyn std::error::Error>> {
-        self.planner.summarize(original_question, results).await
+        self.log("[汇总] 正在汇总结果...");
+        let summary = self.planner.summarize(original_question, results).await?;
+        self.log("[汇总] 完成");
+        Ok(summary)
     }
 }

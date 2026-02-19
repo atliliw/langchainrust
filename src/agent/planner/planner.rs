@@ -9,6 +9,7 @@ use super::types::{Plan, SubTask, TaskResult};
 pub struct TaskPlanner {
     llm: LLM,
     max_sub_tasks: usize,
+    verbose: bool,
 }
 
 impl TaskPlanner {
@@ -16,6 +17,7 @@ impl TaskPlanner {
         Self {
             llm,
             max_sub_tasks: 5,
+            verbose: false,
         }
     }
 
@@ -25,8 +27,23 @@ impl TaskPlanner {
         self
     }
 
+    /// 设置是否打印详细日志
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    /// 打印日志（仅在 verbose 模式下）
+    fn log(&self, msg: &str) {
+        if self.verbose {
+            println!("{}", msg);
+        }
+    }
+
     /// 将复杂问题分解为子任务
     pub async fn plan(&self, question: &str) -> Result<Plan, Box<dyn std::error::Error>> {
+        self.log("[TaskPlanner] 开始规划任务...");
+        
         let system_prompt = format!(
             "你是一个任务规划专家。请将用户的复杂问题分解为 {} 个以内的子任务。\n\
             每个子任务应该是独立可执行的步骤。\n\
@@ -50,6 +67,8 @@ impl TaskPlanner {
         let response = self.llm.invoke_chat_template(&template, &values).await?;
 
         let sub_tasks = self.parse_sub_tasks(&response)?;
+        
+        self.log(&format!("[TaskPlanner] 规划完成，共 {} 个子任务", sub_tasks.len()));
 
         Ok(Plan {
             original_question: question.to_string(),
@@ -99,12 +118,15 @@ impl TaskPlanner {
         original_question: &str,
         results: &[TaskResult],
     ) -> Result<String, Box<dyn std::error::Error>> {
+        self.log("[TaskPlanner] 开始汇总结果...");
+        
         if results.is_empty() {
             return Ok("没有可汇总的结果".to_string());
         }
 
         // 如果只有一个结果，直接返回
         if results.len() == 1 {
+            self.log("[TaskPlanner] 只有一个结果，直接返回");
             return Ok(results[0].result.clone());
         }
 
@@ -138,6 +160,9 @@ impl TaskPlanner {
             ("results", &results_text),
         ]);
 
-        self.llm.invoke_chat_template(&template, &values).await
+        let result = self.llm.invoke_chat_template(&template, &values).await;
+        
+        self.log("[TaskPlanner] 汇总完成");
+        result
     }
 }

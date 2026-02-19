@@ -549,7 +549,9 @@ use langchainrust::agent::TaskPlanner;
 use langchainrust::llms::LLM;
 
 let llm = LLM::new(config);
-let planner = TaskPlanner::new(llm).with_max_sub_tasks(5);
+let planner = TaskPlanner::new(llm)
+    .with_max_sub_tasks(5)
+    .with_verbose(true);  // 开启日志输出
 
 // 分解任务
 let plan = planner.plan("分析项目代码，写测试用例，运行测试").await?;
@@ -579,7 +581,8 @@ let planned_executor = PlannedExecutor::new(
     tools,
 )
 .with_max_sub_tasks(3)      // 最多 3 个子任务
-.with_max_iterations(2);    // 每个子任务最多 2 次迭代
+.with_max_iterations(2)    // 每个子任务最多 2 次迭代
+.with_verbose(true);       // 开启日志输出
 
 // 执行复杂任务
 let result = planned_executor
@@ -587,6 +590,35 @@ let result = planned_executor
     .await?;
 
 println!("{}", result);
+```
+
+### 日志控制
+
+默认不打印工作过程日志，使用 `with_verbose(true)` 开启：
+
+```rust
+// 不打印日志（默认）
+let executor = PlannedExecutor::new(llm, agent, tools);
+
+// 打印详细日志
+let executor = PlannedExecutor::new(llm, agent, tools)
+    .with_verbose(true);
+```
+
+开启日志后的输出示例：
+
+```
+[规划] 正在分析任务...
+[规划] 任务已分解为 3 个子任务:
+  [1] 分析项目结构
+  [2] 提取核心功能
+  [3] 生成总结报告
+
+[执行] 任务 1/3: 分析项目结构
+[完成] 任务 1 执行成功
+...
+
+[汇总] 正在汇总所有任务结果...
 ```
 
 ### 获取详细执行结果
@@ -843,11 +875,18 @@ src/
 |------|----------|------|
 | `TaskPlanner::new(llm)` | 构造 | 创建任务规划器 |
 | `.with_max_sub_tasks(n)` | 配置 | 设置最大子任务数 |
+| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
 | `.plan(question)` | 方法 | 分解任务，返回 Plan |
 | `.summarize(question, results)` | 方法 | 汇总执行结果 |
 | `PlannedExecutor::new(llm, agent, tools)` | 构造 | 创建规划执行器 |
+| `.with_max_sub_tasks(n)` | 配置 | 设置最大子任务数 |
+| `.with_max_iterations(n)` | 配置 | 设置每个子任务最大迭代次数 |
+| `.with_memory(memory)` | 配置 | 设置记忆模块 |
+| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
 | `.run(question)` | 方法 | 执行复杂任务 |
 | `.run_with_plan(question)` | 方法 | 返回规划和详细结果 |
+| `SimplePlannedExecutor::new(llm)` | 构造 | 创建简化版执行器 |
+| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
 
 ### 任务规划流程
 

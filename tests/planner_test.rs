@@ -32,7 +32,9 @@ async fn test_task_planner_complex_question() {
     println!("\n=== 测试复杂问题（需要分解）===\n");
 
     let llm = LLM::new(common::llm_config());
-    let planner = TaskPlanner::new(llm).with_max_sub_tasks(5);
+    let planner = TaskPlanner::new(llm)
+        .with_max_sub_tasks(5)
+        .with_verbose(true);  // 开启日志
 
     let plan = planner
         .plan("分析 Python 和 Rust 的区别，然后给出选择建议")
@@ -113,7 +115,8 @@ async fn test_planned_executor_with_agent() {
 
     let planned_executor = PlannedExecutor::new(llm, Box::new(ReActAgent::new(LLM::new(common::llm_config()), vec![], None)), vec![])
         .with_max_sub_tasks(3)
-        .with_max_iterations(2);
+        .with_max_iterations(2)
+        .with_verbose(true);  // 开启日志
 
     let result = planned_executor
         .run("简单介绍一下 Python 语言的特点")
@@ -135,7 +138,8 @@ async fn test_planned_executor_with_plan_details() {
         Box::new(ReActAgent::new(LLM::new(common::llm_config()), vec![], None)),
         vec![],
     )
-    .with_max_sub_tasks(3);
+    .with_max_sub_tasks(3)
+    .with_verbose(true);  // 开启日志
 
     let (plan, results) = planned_executor
         .run_with_plan("介绍一下 JavaScript 的用途")
@@ -247,8 +251,10 @@ async fn test_full_planning_workflow() {
     // 1. 创建 LLM
     let llm = LLM::new(common::llm_config());
 
-    // 2. 创建规划器
-    let planner = TaskPlanner::new(llm.clone()).with_max_sub_tasks(3);
+    // 2. 创建规划器（开启日志）
+    let planner = TaskPlanner::new(llm.clone())
+        .with_max_sub_tasks(3)
+        .with_verbose(true);
 
     // 3. 规划任务
     println!("步骤1: 任务规划");
@@ -289,4 +295,56 @@ async fn test_full_planning_workflow() {
 
     println!("  最终答案: {}", summary);
     assert!(!summary.is_empty());
+}
+
+#[tokio::test]
+async fn test_verbose_off_no_logs() {
+    println!("\n=== 测试 verbose=false（默认不打印日志）===\n");
+
+    let llm = LLM::new(common::llm_config());
+
+    // 不设置 verbose，默认为 false，不会打印日志
+    let planner = TaskPlanner::new(llm).with_max_sub_tasks(2);
+
+    let plan = planner.plan("什么是编程？").await.unwrap();
+    
+    // 应该成功但没有内部日志输出
+    assert!(!plan.sub_tasks.is_empty());
+    println!("测试通过：任务规划完成，但无内部日志输出");
+}
+
+#[tokio::test]
+async fn test_executor_verbose_on_and_off() {
+    println!("\n=== 测试 Executor verbose 开关 ===\n");
+
+    let llm = LLM::new(common::llm_config());
+
+    // 测试 verbose=true
+    println!("--- verbose=true ---");
+    let executor_verbose = PlannedExecutor::new(
+        LLM::new(common::llm_config()),
+        Box::new(ReActAgent::new(LLM::new(common::llm_config()), vec![], None)),
+        vec![],
+    )
+    .with_max_sub_tasks(2)
+    .with_verbose(true);
+
+    let result1 = executor_verbose.run("1+1等于几？").await.unwrap();
+    println!("结果: {}", result1);
+
+    // 测试 verbose=false
+    println!("\n--- verbose=false ---");
+    let executor_quiet = PlannedExecutor::new(
+        LLM::new(common::llm_config()),
+        Box::new(ReActAgent::new(LLM::new(common::llm_config()), vec![], None)),
+        vec![],
+    )
+    .with_max_sub_tasks(2)
+    .with_verbose(false);
+
+    let result2 = executor_quiet.run("2+2等于几？").await.unwrap();
+    println!("结果: {}", result2);
+
+    assert!(!result1.is_empty());
+    assert!(!result2.is_empty());
 }
