@@ -3,6 +3,7 @@ use crate::llms::{LLM, LLMQwen, ModelConfig};
 use crate::memory::Memory;
 use crate::messages::Message;
 use crate::prompts::ChatPromptTemplate;
+use crate::retrieval::Retriever;
 use crate::tools::Tool;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -37,6 +38,9 @@ pub struct ReActAgent {
     // 模型路由相关字段（可选）
     models: Option<Vec<ModelConfig>>,
     routing_state: Mutex<Option<RoutingState>>,
+    // 检索相关字段（可选）
+    retriever: Option<Arc<dyn Retriever>>,
+    top_k: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -47,30 +51,33 @@ struct RoutingState {
 
 impl ReActAgent {
     pub fn new(llm: LLM, tools: Vec<Arc<dyn Tool>>, memory: Option<Box<dyn Memory>>) -> Self {
-        let wrapped_memory = memory.map(Mutex::new);
         Self {
             llm,
             tools,
-            memory: wrapped_memory,
+            memory: memory.map(Mutex::new),
             user_template: None,
             models: None,
             routing_state: Mutex::new(None),
+            retriever: None,
+            top_k: 3,
         }
     }
+
     pub fn with_template(
         llm: LLM,
         tools: Vec<Arc<dyn Tool>>,
         memory: Option<Box<dyn Memory>>,
         template: ChatPromptTemplate,
     ) -> Self {
-        let wrapped_memory = memory.map(Mutex::new);
         Self {
             llm,
             tools,
-            memory: wrapped_memory,
+            memory: memory.map(Mutex::new),
             user_template: Some(template),
             models: None,
             routing_state: Mutex::new(None),
+            retriever: None,
+            top_k: 3,
         }
     }
 
@@ -82,14 +89,78 @@ impl ReActAgent {
         memory: Option<Box<dyn Memory>>,
         template: Option<ChatPromptTemplate>,
     ) -> Self {
-        let wrapped_memory = memory.map(Mutex::new);
         Self {
             llm,
             tools,
-            memory: wrapped_memory,
+            memory: memory.map(Mutex::new),
             user_template: template,
             models: Some(models),
             routing_state: Mutex::new(None),
+            retriever: None,
+            top_k: 3,
+        }
+    }
+
+    /// 创建带检索功能的 Agent（RAG）
+    pub fn with_retriever(
+        llm: LLM,
+        tools: Vec<Arc<dyn Tool>>,
+        memory: Option<Box<dyn Memory>>,
+        retriever: Arc<dyn Retriever>,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            llm,
+            tools,
+            memory: memory.map(Mutex::new),
+            user_template: None,
+            models: None,
+            routing_state: Mutex::new(None),
+            retriever: Some(retriever),
+            top_k,
+        }
+    }
+
+    /// 创建带检索功能和自定义模板的 Agent
+    pub fn with_retriever_and_template(
+        llm: LLM,
+        tools: Vec<Arc<dyn Tool>>,
+        memory: Option<Box<dyn Memory>>,
+        retriever: Arc<dyn Retriever>,
+        top_k: usize,
+        template: ChatPromptTemplate,
+    ) -> Self {
+        Self {
+            llm,
+            tools,
+            memory: memory.map(Mutex::new),
+            user_template: Some(template),
+            models: None,
+            routing_state: Mutex::new(None),
+            retriever: Some(retriever),
+            top_k,
+        }
+    }
+
+    /// 创建完整的 Agent（包含所有功能）
+    pub fn with_all(
+        llm: LLM,
+        tools: Vec<Arc<dyn Tool>>,
+        memory: Option<Box<dyn Memory>>,
+        template: Option<ChatPromptTemplate>,
+        models: Option<Vec<ModelConfig>>,
+        retriever: Option<Arc<dyn Retriever>>,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            llm,
+            tools,
+            memory: memory.map(Mutex::new),
+            user_template: template,
+            models,
+            routing_state: Mutex::new(None),
+            retriever,
+            top_k,
         }
     }
 
@@ -178,7 +249,6 @@ impl ReActAgent {
             }
         }
 
-        // 没有工具调用，直接作为最终答案
         Ok(AgentAction::FinalAnswer(response.to_string()))
     }
 
@@ -190,7 +260,7 @@ impl ReActAgent {
             .or_else(|| vars.get("难度"))
             .or_else(|| vars.get("level"))
             .map(|s| s.trim())
-            .unwrap_or("1");  // 默认为 1
+            .unwrap_or("1");
         let parsed = raw.parse::<u8>().unwrap_or(1);
         parsed.clamp(1, 10)
     }
@@ -225,14 +295,12 @@ impl ReActAgent {
         
         let raw = raw.trim();
         
-        // 首先尝试 JSON 格式
         if raw.starts_with('{') &&
             let Ok(choice) = serde_json::from_str::<ModelChoice>(raw)
         {
             return (Some(choice.provider), Some(choice.model));
         }
         
-        // 然后尝试 "provider: xxx, model: yyy" 格式
         let mut provider = None;
         let mut model = None;
         
@@ -245,7 +313,6 @@ impl ReActAgent {
             }
         }
         
-        // 如果单行格式 "provider: xxx, model: yyy"
         if provider.is_none() && model.is_none() {
             let parts: Vec<&str> = raw.split(',').collect();
             for part in parts {
@@ -332,13 +399,9 @@ impl ReActAgent {
         input: &str,
         vars: &HashMap<String, String>,
     ) -> Result<AnyLLM, AgentError> {
-        // 如果没有配置模型路由，直接使用默认 LLM
         let models = match &self.models {
             Some(m) => m,
-            None => {
-                // 没有模型列表，使用默认的 LLM
-                return Ok(AnyLLM::OpenAI(self.llm.clone()));
-            }
+            None => return Ok(AnyLLM::OpenAI(self.llm.clone())),
         };
 
         let difficulty = Self::parse_difficulty(vars);
@@ -384,7 +447,6 @@ impl ReActAgent {
             .await
             .map_err(|e| AgentError(format!("路由 LLM 调用失败: {}", e)))?;
 
-        // 尝试解析 JSON 格式，如果失败则尝试解析 "provider: xxx, model: yyy" 格式
         let (provider, model) = Self::parse_model_response(&raw);
         
         let chosen = if let (Some(p), Some(m)) = (provider, model) {
@@ -415,6 +477,42 @@ impl ReActAgent {
 
         Ok(llm)
     }
+
+    // ===== 检索相关方法 =====
+
+    /// 从向量数据库检索相关文档
+    async fn retrieve_context(&self, query: &str) -> Option<String> {
+        let retriever = self.retriever.as_ref()?;
+        
+        println!("[检索] 正在从向量数据库检索相关文档...");
+        
+        match retriever.retrieve(query, self.top_k).await {
+            Ok(results) => {
+                if results.is_empty() {
+                    println!("[检索] 未找到相关文档");
+                    return None;
+                }
+                
+                println!("[检索] 找到 {} 个相关文档:", results.len());
+                for (i, result) in results.iter().enumerate() {
+                    println!("  [{}] 相似度: {:.4}", i + 1, result.score);
+                }
+                
+                let context = results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| format!("[文档{}]\n{}", i + 1, r.chunk.content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                
+                Some(context)
+            }
+            Err(e) => {
+                println!("[检索] 检索失败: {}", e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -434,7 +532,6 @@ impl Agent for ReActAgent {
         intermediate_steps: Option<&str>,
         vars: &HashMap<String, String>,
     ) -> Result<AgentAction, AgentError> {
-        // 选择 LLM（如果有模型路由则使用路由选择，否则使用默认 LLM）
         let llm = self.choose_llm(input, vars).await?;
 
         let tools_str = self.tool_descriptions();
@@ -444,10 +541,39 @@ impl Agent for ReActAgent {
             _ => String::new(),
         };
 
+        // 如果有 retriever，先检索相关文档
+        let retrieved_context = self.retrieve_context(input).await;
+        let has_retrieval = retrieved_context.is_some();
+
         let mut chat_template = if let Some(t) = &self.user_template {
             t.clone()
         } else {
-            let system_msg = if self.tools.is_empty() {
+            let system_msg = if has_retrieval {
+                // 有检索结果，使用 RAG 模式
+                if self.tools.is_empty() {
+                    "你是一个 AI 助手。请根据提供的参考文档回答用户问题。\n\
+                    如果参考文档中没有相关信息，请说明。\n\n\
+                    参考文档：\n{context}".to_string()
+                } else {
+                    let tool_hint = if scratchpad_str.is_empty() {
+                        format!(
+                            "你可以使用以下工具：\n{}\n\n\
+                            如果需要使用工具，只输出一行：[TOOL: 工具名 参数名=参数值]\n\
+                            如果不需要工具，直接给出答案。",
+                            tools_str
+                        )
+                    } else {
+                        "工具已执行完毕，请根据工具执行结果直接给出最终答案，不要再调用工具！".to_string()
+                    };
+
+                    format!(
+                        "你是一个 AI 助手。请根据提供的参考文档回答用户问题。\n\
+                        如果参考文档中没有相关信息，请说明。\n\n\
+                        参考文档：\n{{context}}\n\n{}",
+                        tool_hint
+                    )
+                }
+            } else if self.tools.is_empty() {
                 "你是一个 AI 助手。".to_string()
             } else {
                 let tool_hint = if scratchpad_str.is_empty() {
@@ -473,6 +599,11 @@ impl Agent for ReActAgent {
         let mut merged: HashMap<String, String> = vars.clone();
         merged.insert("input".to_string(), input_str);
         merged.insert("scratchpad".to_string(), scratchpad_str);
+        
+        // 添加检索到的上下文
+        if let Some(context) = retrieved_context {
+            merged.insert("context".to_string(), context);
+        }
 
         let merged_refs: HashMap<&str, &str> = merged
             .iter()
