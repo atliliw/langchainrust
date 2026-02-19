@@ -510,6 +510,153 @@ let agent = ReActAgent::with_retriever(llm, tools, memory, retriever, 3);
 
 ---
 
+## 任务规划（Task Planning）
+
+将复杂任务自动分解为子任务，依次执行，最后汇总结果。
+
+### 工作原理
+
+```
+┌─────────────────┐
+│   复杂问题       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  TaskPlanner    │  ← 分解任务
+│  分解为子任务    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  子任务 1       │ → 结果 1
+├─────────────────┤
+│  子任务 2       │ → 结果 2
+├─────────────────┤
+│  子任务 3       │ → 结果 3
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    汇总结果      │
+└─────────────────┘
+```
+
+### TaskPlanner（任务规划器）
+
+```rust
+use langchainrust::agent::TaskPlanner;
+use langchainrust::llms::LLM;
+
+let llm = LLM::new(config);
+let planner = TaskPlanner::new(llm).with_max_sub_tasks(5);
+
+// 分解任务
+let plan = planner.plan("分析项目代码，写测试用例，运行测试").await?;
+
+println!("分解为 {} 个子任务:", plan.sub_tasks.len());
+for task in &plan.sub_tasks {
+    println!("  [{}] {}", task.id, task.description);
+}
+```
+
+### PlannedExecutor（自动规划执行器）
+
+自动完成：规划 → 执行 → 汇总
+
+```rust
+use langchainrust::agent::{PlannedExecutor, ReActAgent};
+use langchainrust::llms::LLM;
+use langchainrust::tools::Tool;
+use std::sync::Arc;
+
+let llm = LLM::new(config);
+let tools: Vec<Arc<dyn Tool>> = vec![];
+
+let planned_executor = PlannedExecutor::new(
+    llm,
+    Box::new(ReActAgent::new(LLM::new(config), tools.clone(), None)),
+    tools,
+)
+.with_max_sub_tasks(3)      // 最多 3 个子任务
+.with_max_iterations(2);    // 每个子任务最多 2 次迭代
+
+// 执行复杂任务
+let result = planned_executor
+    .run("调研 Rust 异步编程最佳实践，写示例代码，解释关键点")
+    .await?;
+
+println!("{}", result);
+```
+
+### 获取详细执行结果
+
+```rust
+// 返回规划详情和每个子任务的结果
+let (plan, results) = planned_executor
+    .run_with_plan("复杂问题")
+    .await?;
+
+for result in &results {
+    println!("任务 {}: {} - {}",
+        result.id,
+        result.description,
+        if result.success { "成功" } else { "失败" }
+    );
+}
+```
+
+### 执行日志
+
+```
+[规划] 正在分析任务...
+[规划] 任务已分解为 3 个子任务:
+  [1] 分析项目结构
+  [2] 提取核心功能
+  [3] 生成总结报告
+
+[执行] 任务 1/3: 分析项目结构
+[完成] 任务 1 执行成功
+[执行] 任务 2/3: 提取核心功能
+[完成] 任务 2 执行成功
+[执行] 任务 3/3: 生成总结报告
+[完成] 任务 3 执行成功
+
+[汇总] 正在汇总所有任务结果...
+```
+
+### SimplePlannedExecutor（简化版）
+
+只规划不执行：
+
+```rust
+use langchainrust::agent::SimplePlannedExecutor;
+
+let executor = SimplePlannedExecutor::new(llm);
+
+// 只获取任务规划
+let plan = executor.plan("复杂问题").await?;
+
+// 手动执行每个子任务...
+
+// 汇总结果
+let summary = executor.summarize("原始问题", &results).await?;
+```
+
+### 子任务依赖关系
+
+```rust
+pub struct SubTask {
+    pub id: usize,
+    pub description: String,
+    pub depends_on_previous: bool,  // 是否依赖前一个任务
+}
+```
+
+当 `depends_on_previous = true` 时，执行器会自动将上一个任务的结果附加到当前任务的输入中。
+
+---
+
 ## Tools
 
 ### 内置工具
@@ -600,11 +747,14 @@ cargo test --test model_factor_test -- --nocapture
 # 运行 retrieval 测试
 cargo test --test retrieval_test -- --nocapture
 
+# 运行任务规划测试
+cargo test --test planner_test -- --nocapture
+
 # 运行 RAG Agent 测试
 cargo test --test retrieval_agent_test -- --nocapture
 
 # 运行特定测试函数
-cargo test test_model_routing_with_real_question -- --nocapture
+cargo test test_full_planning_workflow -- --nocapture
 ```
 
 ---
@@ -627,16 +777,27 @@ src/
 │   └── tools.rs    # 内置工具实现
 ├── agent/          # Agent 与执行器
 │   ├── mod.rs      # Agent trait、AgentAction、AgentError
-│   ├── agent.rs    # ReActAgent（含模型路由和 RAG）
-│   └── executor.rs # AgentExecutor
-├── retrieval/      # 检索组件
-│   ├── mod.rs      # 导出所有 retrieval 组件
-│   ├── traits.rs   # 核心 trait 定义
-│   ├── document.rs # 文档结构
-│   ├── text_splitters.rs # 文本分割器
-│   ├── embeddings.rs     # 嵌入模型
-│   ├── vector_stores.rs  # 向量存储
-│   └── retrievers.rs     # 检索器
+│   ├── executor.rs # AgentExecutor
+│   ├── react/      # ReActAgent 模块
+│   │   ├── mod.rs      # ReActAgent 结构体
+│   │   ├── types.rs    # AnyLLM、RoutingState
+│   │   ├── routing.rs  # 模型路由
+│   │   ├── retrieval.rs # RAG 检索
+│   │   ├── parser.rs   # 响应解析
+│   │   └── agent_impl.rs # Agent trait 实现
+│   └── planner/    # 任务规划模块
+│       ├── mod.rs      # 模块导出
+│       ├── types.rs    # Plan、SubTask、TaskResult
+│       ├── planner.rs  # TaskPlanner
+│       └── executor.rs # PlannedExecutor
+└── retrieval/      # 检索组件
+    ├── mod.rs      # 导出所有 retrieval 组件
+    ├── traits.rs   # 核心 trait 定义
+    ├── document.rs # 文档结构
+    ├── text_splitters.rs # 文本分割器
+    ├── embeddings.rs     # 嵌入模型
+    ├── vector_stores.rs  # 向量存储
+    └── retrievers.rs     # 检索器
 ```
 
 ---
@@ -676,4 +837,23 @@ src/
 | 3. 调用 LLM | 将问题和上下文一起发送给模型 |
 | 4. 返回答案 | 模型基于上下文生成答案 |
 
+### 任务规划 API
+
+| 类型 | 方法/字段 | 说明 |
+|------|----------|------|
+| `TaskPlanner::new(llm)` | 构造 | 创建任务规划器 |
+| `.with_max_sub_tasks(n)` | 配置 | 设置最大子任务数 |
+| `.plan(question)` | 方法 | 分解任务，返回 Plan |
+| `.summarize(question, results)` | 方法 | 汇总执行结果 |
+| `PlannedExecutor::new(llm, agent, tools)` | 构造 | 创建规划执行器 |
+| `.run(question)` | 方法 | 执行复杂任务 |
+| `.run_with_plan(question)` | 方法 | 返回规划和详细结果 |
+
+### 任务规划流程
+
+| 步骤 | 说明 |
+|------|------|
+| 1. 规划 | LLM 将问题分解为子任务 |
+| 2. 执行 | 依次执行每个子任务 |
+| 3. 汇总 | 将所有结果汇总为最终答案 |
 
