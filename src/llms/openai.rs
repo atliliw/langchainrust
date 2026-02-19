@@ -119,6 +119,12 @@ impl LLM {
             .send()
             .await?;
 
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await?;
+            return Err(format!("LLM HTTP {}: {}", status, body_text).into());
+        }
+
         let byte_stream = response.bytes_stream();
 
         // 使用 unfold 手动管理 buffer 状态
@@ -250,7 +256,13 @@ impl LLM {
 
         if self.config.streaming {
             // Handle streaming response
-            let mut stream = request.send().await?.bytes_stream();
+            let response = request.send().await?;
+            let status = response.status();
+            if !status.is_success() {
+                let body_text = response.text().await?;
+                return Err(format!("LLM HTTP {}: {}", status, body_text).into());
+            }
+            let mut stream = response.bytes_stream();
             let mut full_content = String::new();
 
             while let Some(chunk_result) = stream.next().await {
@@ -284,7 +296,16 @@ impl LLM {
             Ok(full_content)
         } else {
             // Non-streaming response (original behavior)
-            let response: ChatResponse = request.send().await?.json().await?;
+            let response = request.send().await?;
+            let status = response.status();
+            let body_text = response.text().await?;
+            if !status.is_success() {
+                return Err(format!("LLM HTTP {}: {}", status, body_text).into());
+            }
+            let parsed: Result<ChatResponse, _> = serde_json::from_str(&body_text);
+            let response = parsed.map_err(|e| {
+                format!("LLM response parse failed: {} body={}", e, body_text)
+            })?;
             let first_choice = response.choices.first().ok_or("No choices returned")?;
             Ok(first_choice.message.content.clone())
         }
