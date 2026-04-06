@@ -1,13 +1,14 @@
-pub mod document;
-pub mod embeddings;
-pub mod retrievers;
-pub mod text_splitters;
-pub mod traits;
-pub mod vector_stores;
+// src/retrieval/mod.rs
+//! 检索模块
+//!
+//! 提供文档检索和文本分割功能。
 
-pub use document::{Document, DocumentChunk, SearchResult};
-pub use traits::{DocumentLoader, EmbeddingModel, Retriever, Reranker, TextSplitter, VectorStore};
-pub use text_splitters::{FixedSizeSplitter, RecursiveCharacterSplitter, RegexSplitter};
-pub use embeddings::MockEmbeddingModel;
-pub use vector_stores::InMemoryVectorStore;
-pub use retrievers::SimilarityRetriever;
+mod retriever;
+mod splitter;
+
+pub use retriever::{Retriever, SimilarityRetriever, RetrieverTrait};
+pub use splitter::{TextSplitter, RecursiveCharacterSplitter};
+
+// 重新导出 vector_stores 和 embeddings 的类型
+pub use crate::vector_stores::{Document, SearchResult, VectorStore, InMemoryVectorStore};
+pub use crate::embeddings::{Embeddings, MockEmbeddings, OpenAIEmbeddings, cosine_similarity};

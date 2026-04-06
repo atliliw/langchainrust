@@ -695,28 +695,91 @@ pub struct SubTask {
 
 | 工具名 | 描述 | 参数 |
 |--------|------|------|
-| `Calculator` | 执行基本数学运算 | `expression`: 数学表达式 |
+| `Calculator` | 执行基本数学运算（加减乘除） | `expression`: 数学表达式 |
+| `SimpleMathTool` | 高级数学运算（幂、开方、三角函数等） | `operation`: 操作类型, `value`: 数值, `value2`: 第二个数值（可选） |
+| `DateTimeTool` | 日期时间查询和计算 | `operation`: 操作类型, `datetime`: 日期时间（可选）, `value`: 数值（可选）, `unit`: 单位（可选） |
+| `URLFetchTool` | 网页抓取和解析 | `operation`: 操作类型, `url`: 网址, `max_length`: 最大长度（可选） |
 | `WeatherTool` | 获取城市天气（模拟） | `city`: 城市名称 |
-| `DateTimeTool` | 获取当前日期时间 | 无 |
 | `TextTool` | 文本处理工具 | `operation`: 操作类型, `text`: 文本内容 |
 | `WebSearchTool` | 网络搜索（模拟） | `query`: 搜索关键词 |
 | `JsonTool` | JSON 处理工具 | `operation`: 操作类型, `data`: JSON字符串 |
 
+### SimpleMathTool 详细用法
+
+支持的操作类型：
+
+| 操作 | 说明 | 示例 |
+|------|------|------|
+| `power` | 幂运算 | `{"operation": "power", "value": 2, "value2": 10}` → 1024 |
+| `sqrt` | 平方根 | `{"operation": "sqrt", "value": 16}` → 4 |
+| `log` | 对数（可指定底数） | `{"operation": "log", "value": 100, "base": 10}` → 2 |
+| `ln` | 自然对数 | `{"operation": "ln", "value": 2.718}` → ~1 |
+| `sin` | 正弦函数（弧度） | `{"operation": "sin", "value": 1.57}` → ~1 |
+| `cos` | 余弦函数（弧度） | `{"operation": "cos", "value": 0}` → 1 |
+| `tan` | 正切函数（弧度） | `{"operation": "tan", "value": 0.785}` → ~1 |
+| `abs` | 绝对值 | `{"operation": "abs", "value": -5}` → 5 |
+| `factorial` | 阶乘（最大20） | `{"operation": "factorial", "value": 5}` → 120 |
+| `mod` | 取模运算 | `{"operation": "mod", "value": 17, "value2": 5}` → 2 |
+| `gcd` | 最大公约数 | `{"operation": "gcd", "value": 12, "value2": 18}` → 6 |
+| `lcm` | 最小公倍数 | `{"operation": "lcm", "value": 4, "value2": 6}` → 12 |
+| `pi` | 圆周率 | `{"operation": "pi"}` → 3.14159... |
+| `e` | 自然常数 | `{"operation": "e"}` → 2.71828... |
+
+### DateTimeTool 详细用法
+
+支持的操作类型：
+
+| 操作 | 说明 | 示例 |
+|------|------|------|
+| `now` | 获取当前时间 | `{"operation": "now"}` |
+| `format` | 格式化日期 | `{"operation": "format", "datetime": "2024-01-15"}` |
+| `add` | 添加时间 | `{"operation": "add", "datetime": "2024-01-15", "value": 3, "unit": "days"}` |
+| `subtract` | 减去时间 | `{"operation": "subtract", "datetime": "2024-01-15", "value": 1, "unit": "weeks"}` |
+| `weekday` | 获取星期几 | `{"operation": "weekday", "datetime": "2024-01-15"}` → 星期一 |
+| `diff` | 计算时间差 | `{"operation": "diff", "datetime": "2024-01-01", "target": "2024-01-15"}` → 14天 |
+
+时间单位支持：`seconds`, `minutes`, `hours`, `days`, `weeks`, `months`, `years`
+
+### URLFetchTool 详细用法
+
+支持的操作类型：
+
+| 操作 | 说明 | 示例 |
+|------|------|------|
+| `fetch` | 抓取完整网页 | `{"operation": "fetch", "url": "https://example.com"}` |
+| `extract_text` | 提取纯文本 | `{"operation": "extract_text", "url": "https://example.com"}` |
+| `extract_links` | 提取所有链接 | `{"operation": "extract_links", "url": "https://example.com"}` |
+| `extract_images` | 提取图片链接 | `{"operation": "extract_images", "url": "https://example.com"}` |
+| `metadata` | 提取元数据 | `{"operation": "metadata", "url": "https://example.com"}` |
+
 ### 使用工具
 
 ```rust
-use langchainrust::tools::{Calculator, DateTimeTool, TextTool, Tool};
+use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool, URLFetchTool, BaseTool};
 use std::sync::Arc;
 
 // 创建工具列表
-let tools: Vec<Arc<dyn Tool>> = vec![
-    Arc::new(Calculator),
-    Arc::new(DateTimeTool),
-    Arc::new(TextTool),
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+    Arc::new(SimpleMathTool::new()),
+    Arc::new(URLFetchTool::new()),
 ];
 
 // 不传工具也可以工作（Agent 会直接回答）
-let tools: Vec<Arc<dyn Tool>> = vec![];
+let tools: Vec<Arc<dyn BaseTool>> = vec![];
+```
+
+### 直接调用工具
+
+```rust
+use langchainrust::tools::{SimpleMathTool, BaseTool};
+
+let math = SimpleMathTool::new();
+
+// 直接调用工具
+let result = math.run(r#"{"operation": "power", "value": 2, "value2": 10}"#.to_string()).await?;
+println!("2^10 = {}", result); // 输出: 2^10 = 1024
 ```
 
 ### 自定义 Tool

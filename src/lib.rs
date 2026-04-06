@@ -1,8 +1,43 @@
-pub mod agent;
-pub mod chains;
-pub mod llms;
-pub mod memory;
-pub mod messages;
-pub mod prompts;
-pub mod retrieval;
+// src/lib.rs
+//! LangChain Rust - A LangChain-compatible framework for building LLM applications
+//!
+//! This crate is a Rust implementation inspired by LangChain Python.
+//!
+//! # Example
+//! ```
+//! use langchainrust::core::RunnableConfig;
+//! use langchainrust::core::runnables::Runnable;
+//!
+//! let config = RunnableConfig::new()
+//!     .with_tag("example")
+//!     .with_run_name("my_run");
+//! ```
+
+pub mod core;
+pub mod schema;
+pub mod language_models;
 pub mod tools;
+pub mod agents;
+pub mod memory;
+pub mod chains;
+pub mod embeddings;
+pub mod vector_stores;
+pub mod retrieval;
+
+// 重新导出常用类型
+pub use core::{Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, BaseTool, Tool, ToolError, ToolRegistry};
+pub use schema::{Message, MessageType};
+pub use language_models::{OpenAIChat, OpenAIConfig};
+pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput};
+pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent};
+pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory};
+pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, SequentialChain};
+
+// Embeddings
+pub use embeddings::{Embeddings, EmbeddingError, OpenAIEmbeddings, OpenAIEmbeddingsConfig, MockEmbeddings, cosine_similarity};
+
+// Vector Stores
+pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore};
+
+// Retrieval
+pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter};

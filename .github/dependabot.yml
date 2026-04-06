@@ -1,0 +1,46 @@
+# Dependabot 配置
+# 自动检查并更新依赖
+
+version: 2
+
+updates:
+  # ==================== Rust 依赖 ====================
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    reviewers:
+      - "atliliw"
+    # 忽略某些依赖的大版本更新
+    ignore:
+      # 如果需要锁定某些依赖的版本，可以在这里配置
+      # - dependency-name: "some-crate"
+      #   versions: ["2.x"]
+
+  # ==================== GitHub Actions ====================
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    reviewers:
+      - "atliliw"

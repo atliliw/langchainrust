@@ -1,14 +1,37 @@
-/target
-/tests
-/docs
+# Rust
+/target/
+Cargo.lock
 
-
-
-# JetBrains IDE
+# IDE
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
 
-# Claude or other AI tool cache
+# AI Tools
 .claude/
 
+# OS
+.DS_Store
+Thumbs.db
 
-Cargo.lock  # only for libraries; omit if building a binary
+# Build
+*.pdb
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test
+/coverage/
+
+# Documentation
+/docs/
+/tests/
+
+# Temp
+*.tmp
+*.temp
+*.log

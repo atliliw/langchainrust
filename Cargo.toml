@@ -3,18 +3,41 @@ name = "langchainrust"
 version = "0.1.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "A LangChain-inspired framework for building LLM applications in Rust."
+description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, and RAG."
 repository = "https://github.com/atliliw/langchainrust"
 homepage = "https://github.com/atliliw/langchainrust"
-keywords = ["llm", "langchain", "ai", "rust"]
-categories = ["algorithms", "asynchronous"]
+documentation = "https://docs.rs/langchainrust"
+readme = "README.md"
+keywords = ["llm", "langchain", "ai", "rust", "openai"]
+categories = ["algorithms", "asynchronous", "api-bindings", "science"]
+authors = ["atliliw"]
+exclude = [
+    "/tests",
+    "/docs",
+    "/examples",
+    "/.github",
+    "/langchain",
+]
 
 [dependencies]
 reqwest = { version = "0.11", features = ["json", "stream"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-async-trait = "0.1.89"
-regex = "1.12.2"
+async-trait = "0.1"
+regex = "1"
 uuid = { version = "1.10", features = ["v4"] }
 futures-util = "0.3"
+schemars = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+experimental = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
