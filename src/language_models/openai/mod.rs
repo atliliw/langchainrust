@@ -7,4 +7,5 @@ mod sse;
 
 pub use config::OpenAIConfig;
 pub use chat::OpenAIChat;
+pub use chat::OpenAIError;
 pub use sse::{SSEParser, SSEEvent};

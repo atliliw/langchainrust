@@ -6,7 +6,7 @@
 //! 功能: 演示 Agent 如何自动选择和使用多个工具完成复杂任务
 
 use langchainrust::{
-    OpenAIChat, OpenAIConfig, BaseChatModel,
+    OpenAIChat, OpenAIConfig,
     ReActAgent, AgentExecutor, BaseAgent, BaseTool,
     Calculator, DateTimeTool, SimpleMathTool, URLFetchTool,
 };
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("组合任务", "告诉我今天的日期，然后计算 100 天后是哪一天"),
     ];
     
-    for (task_name, task) in tasks {
+    for (_task_name, task) in tasks {
         println!("{}\n任务: {}\n", "=".repeat(50), task);
         
         match executor.invoke(task.to_string()).await {

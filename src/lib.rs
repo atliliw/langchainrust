@@ -23,6 +23,7 @@ pub mod chains;
 pub mod embeddings;
 pub mod vector_stores;
 pub mod retrieval;
+pub mod prompts;
 
 // 重新导出常用类型
 pub use core::{Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, BaseTool, Tool, ToolError, ToolRegistry};
@@ -41,3 +42,6 @@ pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, I
 
 // Retrieval
 pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter};
+
+// Prompts
+pub use prompts::{PromptTemplate, ChatPromptTemplate};

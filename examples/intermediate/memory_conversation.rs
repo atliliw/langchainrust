@@ -7,10 +7,10 @@
 
 use langchainrust::{
     OpenAIChat, OpenAIConfig, BaseChatModel,
-    ConversationBufferMemory, BaseMemory,
+    ConversationBufferMemory, ChatMessageHistory, BaseMemory,
 };
 use langchainrust::schema::Message;
-use std::sync::Arc;
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,10 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let llm = OpenAIChat::new(config);
     
-    // 2. 创建记忆
-    let memory = Arc::new(ConversationBufferMemory::new());
+    // 2. 创建聊天历史
+    let mut chat_history = ChatMessageHistory::new();
     
-    println!("开始多轮对话 (输入 'quit' 退出)\n");
+    println!("开始多轮对话\n");
     println!("{}", "=".repeat(50));
     
     // 3. 对话循环
@@ -56,16 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n[轮次 {}]", turn);
         println!("用户: {}", user_input);
         
-        // 获取历史消息
-        let history = memory.get_messages();
-        
         // 构建消息
         let mut messages = vec![
             Message::system("你是一个友好的助手。请记住用户告诉你的信息。"),
         ];
         
         // 添加历史
-        messages.extend(history.clone());
+        messages.extend(chat_history.messages().iter().cloned());
         
         // 添加当前问题
         messages.push(Message::human(user_input));
@@ -75,12 +72,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(response) => {
                 println!("助手: {}", response.content);
                 
-                // 保存到记忆
-                memory.add_message(Message::human(user_input));
-                memory.add_message(Message::ai(&response.content));
+                // 保存到历史
+                chat_history.add_message(Message::human(user_input));
+                chat_history.add_message(Message::ai(&response.content));
             }
             Err(e) => {
                 eprintln!("错误: {}", e);
+                eprintln!("提示: 请确保设置了正确的 OPENAI_API_KEY 环境变量");
                 break;
             }
         }
@@ -89,8 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. 显示完整记忆
     println!("\n{}\n", "=".repeat(50));
     println!("完整对话历史:");
-    let final_history = memory.get_messages();
-    for (i, msg) in final_history.iter().enumerate() {
+    for (i, msg) in chat_history.messages().iter().enumerate() {
         let role = match msg.message_type {
             langchainrust::schema::MessageType::Human => "用户",
             langchainrust::schema::MessageType::AI => "助手",
@@ -99,6 +96,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         println!("  [{}] {}: {}", i + 1, role, msg.content.chars().take(50).collect::<String>());
     }
+    
+    // 5. 使用 ConversationBufferMemory (演示 API)
+    println!("\n{}\n", "=".repeat(50));
+    println!("演示 ConversationBufferMemory API:");
+    
+    let mut memory = ConversationBufferMemory::new()
+        .with_return_messages(true);
+    
+    // 保存上下文
+    let inputs = HashMap::from([
+        ("input".to_string(), "你好".to_string()),
+    ]);
+    let outputs = HashMap::from([
+        ("output".to_string(), "你好！很高兴见到你！".to_string()),
+    ]);
+    
+    memory.save_context(&inputs, &outputs).await?;
+    
+    // 加载记忆
+    let memory_vars = memory.load_memory_variables(&HashMap::new()).await?;
+    println!("记忆变量: {:?}", memory_vars.keys().collect::<Vec<_>>());
     
     println!("\n=== 示例完成 ===");
     Ok(())

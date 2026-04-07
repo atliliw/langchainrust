@@ -6,7 +6,7 @@
 //! 功能: 演示完整的 RAG 流程：文档分割 -> 向量化 -> 存储 -> 检索 -> 生成答案
 
 use langchainrust::{
-    Document, InMemoryVectorStore, VectorStore,
+    Document, InMemoryVectorStore,
     OpenAIEmbeddings, OpenAIEmbeddingsConfig, Embeddings,
     SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter,
     OpenAIChat, OpenAIConfig, BaseChatModel,

@@ -6,12 +6,9 @@
 //! 功能: 演示如何使用 LLMChain 和 SequentialChain
 
 use langchainrust::{
-    OpenAIChat, OpenAIConfig, BaseChatModel,
-    LLMChain, LLMChainBuilder, SequentialChain,
-    ConversationBufferMemory,
+    OpenAIChat, OpenAIConfig,
+    LLMChain, LLMChainBuilder, SequentialChain, BaseChain,
 };
-use langchainrust::prompts::ChatPromptTemplate;
-use langchainrust::schema::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,36 +32,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         organization: None,
     };
     
-    let llm = Arc::new(OpenAIChat::new(config));
-    
     // ========== 1. 简单 LLMChain ==========
     println!("--- 1. 简单 LLMChain ---\n");
     
-    // 创建提示词模板
-    let template = ChatPromptTemplate::new(vec![
-        Message::system("你是一个{role}。"),
-        Message::human("{question}"),
-    ]);
-    
-    // 创建 LLMChain
-    let chain = LLMChainBuilder::new()
-        .llm(llm.clone())
-        .template(template)
-        .build()?;
+    let llm1 = OpenAIChat::new(config.clone());
+    let chain = LLMChain::new(llm1, "你是一个{role}。请回答: {question}");
     
     // 执行
     let mut inputs = HashMap::new();
-    inputs.insert("role".to_string(), "编程专家".to_string());
-    inputs.insert("question".to_string(), "什么是 Rust 的所有权？用一句话解释。".to_string());
+    inputs.insert("role".to_string(), serde_json::Value::String("编程专家".to_string()));
+    inputs.insert("question".to_string(), serde_json::Value::String("什么是 Rust 的所有权？用一句话解释。".to_string()));
     
     println!("问题: 什么是 Rust 的所有权？\n");
     
     match chain.invoke(inputs).await {
         Ok(result) => {
-            println!("回答: {}\n", result);
+            if let Some(text) = result.get("text") {
+                println!("回答: {}\n", text);
+            }
         }
         Err(e) => {
             eprintln!("错误: {}", e);
+            eprintln!("提示: 请确保设置了正确的 OPENAI_API_KEY 环境变量");
         }
     }
     
@@ -72,39 +61,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- 2. SequentialChain 多步骤链 ---\n");
     
     // 步骤 1: 分析主题
-    let analyze_template = ChatPromptTemplate::new(vec![
-        Message::system("你是一个分析师。请简要分析以下主题。"),
-        Message::human("主题: {topic}"),
-    ]);
-    
-    let analyze_chain = LLMChainBuilder::new()
-        .llm(llm.clone())
-        .template(analyze_template)
-        .output_key("analysis")
-        .build()?;
+    let llm2 = OpenAIChat::new(config.clone());
+    let analyze_chain = Arc::new(LLMChain::new(llm2, "你是一个分析师。请简要分析以下主题: {topic}"));
     
     // 步骤 2: 生成总结
-    let summarize_template = ChatPromptTemplate::new(vec![
-        Message::system("你是一个总结专家。请根据以下分析生成一个简洁的总结。"),
-        Message::human("分析结果: {analysis}"),
-    ]);
-    
-    let summarize_chain = LLMChainBuilder::new()
-        .llm(llm.clone())
-        .template(summarize_template)
-        .output_key("summary")
-        .build()?;
+    let llm3 = OpenAIChat::new(config.clone());
+    let summarize_chain = Arc::new(LLMChain::new(llm3, "你是一个总结专家。请根据以下分析生成一个简洁的总结: {analysis}"));
     
     // 创建顺序链
     let sequential = SequentialChain::new()
-        .add_chain(analyze_chain)
-        .add_chain(summarize_chain);
+        .add_chain(analyze_chain, vec!["topic"], vec!["analysis"])
+        .add_chain(summarize_chain, vec!["analysis"], vec!["summary"]);
     
     println!("执行两步链: 分析 -> 总结\n");
     println!("主题: 人工智能的未来\n");
     
     let mut seq_inputs = HashMap::new();
-    seq_inputs.insert("topic".to_string(), "人工智能的未来发展趋势".to_string());
+    seq_inputs.insert("topic".to_string(), serde_json::Value::String("人工智能的未来发展趋势".to_string()));
     
     match sequential.invoke(seq_inputs).await {
         Ok(results) => {
@@ -121,46 +94,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // ========== 3. Chain + Memory ==========
-    println!("--- 3. Chain + Memory ---\n");
+    // ========== 3. 使用 LLMChainBuilder ==========
+    println!("--- 3. 使用 LLMChainBuilder ---\n");
     
-    let memory = Arc::new(ConversationBufferMemory::new());
+    let llm4 = OpenAIChat::new(config);
+    let builder_chain = LLMChainBuilder::new(llm4, "请用{style}的风格解释{topic}")
+        .input_key("topic")
+        .output_key("answer")
+        .name("style_chain")
+        .build();
     
-    // 创建带记忆的 Chain
-    let memory_template = ChatPromptTemplate::new(vec![
-        Message::system("你是一个友好的助手。"),
-        Message::human("{history}"),
-        Message::human("{question}"),
-    ]);
+    let mut builder_inputs = HashMap::new();
+    builder_inputs.insert("style".to_string(), serde_json::Value::String("通俗易懂".to_string()));
+    builder_inputs.insert("topic".to_string(), serde_json::Value::String("量子计算".to_string()));
     
-    let memory_chain = LLMChainBuilder::new()
-        .llm(llm.clone())
-        .template(memory_template)
-        .memory(memory.clone())
-        .build()?;
+    println!("问题: 用通俗易懂的风格解释量子计算\n");
     
-    // 多轮对话
-    let questions = vec![
-        "我叫小红",
-        "我喜欢 Python 编程",
-        "我刚才说我叫什么名字？",
-    ];
-    
-    println!("带记忆的多轮对话:\n");
-    
-    for question in questions {
-        println!("用户: {}", question);
-        
-        let mut inputs = HashMap::new();
-        inputs.insert("question".to_string(), question.to_string());
-        
-        match memory_chain.invoke(inputs).await {
-            Ok(response) => {
-                println!("助手: {}\n", response);
+    match builder_chain.invoke(builder_inputs).await {
+        Ok(result) => {
+            if let Some(answer) = result.get("answer") {
+                println!("回答: {}\n", answer);
             }
-            Err(e) => {
-                eprintln!("错误: {}", e);
-            }
+        }
+        Err(e) => {
+            eprintln!("错误: {}", e);
         }
     }
     

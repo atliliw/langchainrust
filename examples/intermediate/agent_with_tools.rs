@@ -6,7 +6,7 @@
 //! 功能: 演示如何创建 ReActAgent 并使用工具回答问题
 
 use langchainrust::{
-    OpenAIChat, OpenAIConfig, BaseChatModel,
+    OpenAIChat, OpenAIConfig,
     ReActAgent, AgentExecutor, BaseAgent, BaseTool,
     Calculator, DateTimeTool, SimpleMathTool,
 };
@@ -18,10 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 1. 创建 LLM 配置
     let config = OpenAIConfig {
-        api_key: std::env::var("OPENAI_API_KEY")
-            .unwrap_or_else(|_| "your-api-key-here".to_string()),
-        base_url: std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+        api_key: std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "your-api-key-here".to_string()),
+        base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
         model: "gpt-3.5-turbo".to_string(),
         streaming: false,
         temperature: Some(0.0),  // Agent 通常用较低的温度
