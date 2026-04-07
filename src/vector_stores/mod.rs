@@ -4,8 +4,16 @@
 //! 提供文档向量存储和检索功能。
 
 mod memory;
+mod provider;
+
+#[cfg(feature = "qdrant-integration")]
+mod qdrant;
 
 pub use memory::InMemoryVectorStore;
+pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
+
+#[cfg(feature = "qdrant-integration")]
+pub use qdrant::{QdrantVectorStore, QdrantConfig, QdrantDistance};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -23,6 +31,9 @@ pub enum VectorStoreError {
     
     /// 存储错误
     StorageError(String),
+    
+    /// 连接错误 (用于远程向量数据库)
+    ConnectionError(String),
 }
 
 impl std::fmt::Display for VectorStoreError {
@@ -31,6 +42,7 @@ impl std::fmt::Display for VectorStoreError {
             VectorStoreError::DocumentNotFound(id) => write!(f, "文档不存在: {}", id),
             VectorStoreError::EmbeddingError(msg) => write!(f, "嵌入错误: {}", msg),
             VectorStoreError::StorageError(msg) => write!(f, "存储错误: {}", msg),
+            VectorStoreError::ConnectionError(msg) => write!(f, "连接错误: {}", msg),
         }
     }
 }

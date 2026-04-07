@@ -13,6 +13,9 @@
 //!     .with_run_name("my_run");
 //! ```
 
+#[cfg(test)]
+extern crate tempfile;
+
 pub mod core;
 pub mod schema;
 pub mod language_models;
@@ -38,10 +41,13 @@ pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, 
 pub use embeddings::{Embeddings, EmbeddingError, OpenAIEmbeddings, OpenAIEmbeddingsConfig, MockEmbeddings, cosine_similarity};
 
 // Vector Stores
-pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore};
+pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
+
+#[cfg(feature = "qdrant-integration")]
+pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 
 // Retrieval
-pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter};
+pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, DocumentLoader, LoaderError};
 
 // Prompts
 pub use prompts::{PromptTemplate, ChatPromptTemplate};

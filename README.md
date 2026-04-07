@@ -25,6 +25,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | **Memory** | 对话历史管理 |
 | **Chains** | LLMChain 和 SequentialChain 工作流 |
 | **RAG** | 文档分割、向量存储、语义检索 |
+| **Loaders** | 支持 PDF 和 CSV 文档加载 |
 | **Tools** | 内置工具：计算器、日期时间、数学运算、URL抓取 |
 
 ### 关键优势
@@ -204,6 +205,42 @@ retriever.add_documents(chunks).await?;
 let relevant_docs = retriever.retrieve("什么是 Rust？", 3).await?;
 ```
 
+### 文档加载器
+
+LangChainRust 现在支持从多种格式加载文档，包括 PDF 和 CSV 文件。
+
+#### PDF Loader
+
+```rust
+use langchainrust::retrieval::{PDFLoader, DocumentLoader};
+
+// 加载 PDF 文件
+let pdf_loader = PDFLoader::new("path/to/document.pdf");
+let documents = pdf_loader.load().await?;
+
+// 提取的文档包含文本内容和元数据
+for doc in documents {
+    println!("Content: {}", &doc.content[..100.min(doc.content.len())]);
+    println!("Metadata: {:?}", doc.metadata);
+}
+```
+
+#### CSV Loader
+
+```rust
+use langchainrust::retrieval::{CSVLoader, DocumentLoader};
+
+// 加载 CSV 文件，指定内容列为"description"
+let csv_loader = CSVLoader::new("path/to/data.csv", "description");
+let documents = csv_loader.load().await?;
+
+// 每一行数据转换为单独的文档，具有对应元数据
+for doc in documents {
+    println!("Content: {}", doc.content);
+    println!("Row Metadata: {:?}", doc.metadata);
+}
+```
+
 ## 📚 完整示例
 
 查看 [examples/](examples/) 目录：
@@ -330,6 +367,7 @@ Apache License, Version 2.0 或 MIT License，任选其一。
 | **Memory** | Conversation history management |
 | **Chains** | LLMChain and SequentialChain workflows |
 | **RAG** | Document splitting, vector stores, semantic retrieval |
+| **Loaders** | PDF and CSV document loading support |
 | **Tools** | Built-in: Calculator, DateTime, Math, URLFetch |
 
 ### Key Benefits
