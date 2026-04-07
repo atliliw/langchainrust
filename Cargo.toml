@@ -12,9 +12,7 @@ keywords = ["llm", "langchain", "ai", "rust", "openai"]
 categories = ["algorithms", "asynchronous", "api-bindings", "science"]
 authors = ["atliliw"]
 exclude = [
-    "/tests",
     "/docs",
-    "/examples",
     "/.github",
     "/langchain",
 ]
@@ -42,6 +40,78 @@ experimental = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+# ============================================================================
+# 单元测试 - 不需要 API Key
+# ============================================================================
+[[test]]
+name = "unit_schema"
+path = "tests/unit/schema.rs"
+
+[[test]]
+name = "unit_prompts"
+path = "tests/unit/prompts.rs"
+
+[[test]]
+name = "unit_tools"
+path = "tests/unit/tools.rs"
+
+[[test]]
+name = "unit_memory"
+path = "tests/unit/memory.rs"
+
+[[test]]
+name = "unit_retrieval"
+path = "tests/unit/retrieval.rs"
+
+# ============================================================================
+# 整合测试 - 需要 API Key
+# ============================================================================
+[[test]]
+name = "integration_agent_memory"
+path = "tests/integration/agent_memory.rs"
+
+[[test]]
+name = "integration_rag_pipeline"
+path = "tests/integration/rag_pipeline.rs"
+
+[[test]]
+name = "integration_chain_workflow"
+path = "tests/integration/chain_workflow.rs"
+
+[[test]]
+name = "integration_agent"
+path = "tests/integration/agent_test.rs"
+
+[[test]]
+name = "integration_agent_react"
+path = "tests/integration/agent_react.rs"
+
+[[test]]
+name = "integration_chains"
+path = "tests/integration/chains.rs"
+
+[[test]]
+name = "integration_embeddings"
+path = "tests/integration/embeddings.rs"
+
+[[test]]
+name = "integration_llm_chat"
+path = "tests/integration/llm_chat.rs"
+
+[[test]]
+name = "integration_rag"
+path = "tests/integration/rag.rs"
+
+# ============================================================================
+# 端到端测试 - 完整应用流程
+# ============================================================================
+[[test]]
+name = "e2e_full_application"
+path = "tests/e2e/full_application.rs"
+
+# ============================================================================
+# 示例
+# ============================================================================
 # Basic examples
 [[example]]
 name = "hello_llm"
