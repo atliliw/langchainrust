@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ChatPromptTemplate`: Multi-message template for chat scenarios
 - **OpenAIError Export**: `OpenAIError` is now publicly accessible from `langchainrust::language_models::openai`
 - **Example Configuration**: All examples configured in `Cargo.toml` for easy running
+- **LICENSE File**: MIT License for open source distribution
 
 ### Changed
 - **Refactored Examples**: All examples updated to match current API
@@ -21,12 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed `full_pipeline.rs` to work with current components
   - Removed unused imports in `multi_tool_agent.rs` and `rag_demo.rs`
 - **Removed Reference Comments**: Cleaned up "参考 Python 版本" comments from all source files
-- **Updated README**: Improved documentation with accurate examples and feature descriptions
+- **Improved Documentation**: 
+  - Rewritten README with bilingual support (English/Chinese)
+  - Updated examples/README with clearer structure
+  - Added comprehensive API usage examples
 
 ### Fixed
 - All examples now compile and run successfully
 - Proper trait imports (`BaseChain`, `BaseMemory`) in examples
 - Type annotation issues resolved in chain examples
+
+### Documentation
+- Bilingual README (English + Chinese)
+- Improved code examples with error handling
+- Added configuration tables and feature descriptions
+- Cleaner project structure documentation
 
 ## [0.1.1] - 2024-03-XX
 
