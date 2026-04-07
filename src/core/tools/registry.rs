@@ -107,8 +107,8 @@ impl ToolRegistry {
             description.push_str(&format!("- {}: {}\n", name, tool.description()));
 
             // 添加输入格式说明
-            if let Some(schema) = tool.args_schema()
-                && let Some(props) = schema.get("properties") {
+            if let Some(schema) = tool.args_schema() {
+                if let Some(props) = schema.get("properties") {
                     description.push_str("  输入参数:\n");
                     if let Some(obj) = props.as_object() {
                         for (prop_name, prop_value) in obj {
@@ -120,6 +120,7 @@ impl ToolRegistry {
                         }
                     }
                 }
+            }
         }
 
         description

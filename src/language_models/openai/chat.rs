@@ -227,11 +227,13 @@ impl BaseChatModel for OpenAIChat {
                                 return None;
                             }
                             
-                            if let Ok(Some(chunk)) = event.parse_openai_chunk()
-                                && let Some(choice) = chunk.choices.first()
-                                    && let Some(content) = &choice.delta.content {
+                            if let Ok(Some(chunk)) = event.parse_openai_chunk() {
+                                if let Some(choice) = chunk.choices.first() {
+                                    if let Some(content) = &choice.delta.content {
                                         return Some(Ok(content.clone()));
                                     }
+                                }
+                            }
                         }
                         
                         None

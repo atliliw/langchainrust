@@ -121,10 +121,11 @@ impl ReActOutputParser {
         let input = input.trim();
 
         // 尝试解析为 JSON
-        if (input.starts_with('{') || input.starts_with('['))
-            && let Ok(value) = serde_json::from_str(input) {
+        if input.starts_with('{') || input.starts_with('[') {
+            if let Ok(value) = serde_json::from_str(input) {
                 return ToolInput::Object(value);
             }
+        }
 
         // 移除引号
         let cleaned = input.trim_matches('"').trim_matches('\'');

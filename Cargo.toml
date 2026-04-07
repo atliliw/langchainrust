@@ -1,7 +1,7 @@
 [package]
 name = "langchainrust"
 version = "0.1.2"
-edition = "2024"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, and RAG."
 repository = "https://github.com/atliliw/langchainrust"

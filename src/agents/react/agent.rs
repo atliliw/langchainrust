@@ -82,10 +82,11 @@ impl ReActAgent {
         let mut prompt = build_react_prompt(&tools_description, &tool_names, input, &scratchpad);
         
         // 如果有对话历史，添加到 prompt 开头
-        if let Some(h) = history
-            && !h.is_empty() {
+        if let Some(h) = history {
+            if !h.is_empty() {
                 prompt = format!("之前的对话历史:\n{}\n\n{}", h, prompt);
             }
+        }
         
         // 如果有自定义系统提示词，添加到 prompt 开头
         if let Some(sys) = &self.system_prompt {

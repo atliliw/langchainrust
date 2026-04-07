@@ -153,10 +153,11 @@ impl AgentExecutor {
                 .map_err(|e| AgentError::Other(format!("加载记忆失败: {}", e)))?;
             
             // 将历史添加到 inputs
-            if let Some(history) = memory_vars.get("history")
-                && let Some(history_str) = history.as_str() {
+            if let Some(history) = memory_vars.get("history") {
+                if let Some(history_str) = history.as_str() {
                     inputs.insert("history".to_string(), history_str.to_string());
                 }
+            }
         }
         
         // 中间步骤历史
@@ -166,8 +167,8 @@ impl AgentExecutor {
         let result = self.run_agent_loop(inputs.clone(), intermediate_steps).await;
         
         // 如果有 memory，保存对话
-        if let Some(memory) = &self.memory
-            && let Ok(ref output) = result {
+        if let Some(memory) = &self.memory {
+            if let Ok(ref output) = result {
                 let mut outputs = HashMap::new();
                 outputs.insert("output".to_string(), output.clone());
                 
@@ -175,6 +176,7 @@ impl AgentExecutor {
                     .save_context(&inputs, &outputs).await
                     .map_err(|e| AgentError::Other(format!("保存记忆失败: {}", e)))?;
             }
+        }
         
         result
     }
