@@ -1,7 +1,5 @@
 // src/language_models/openai/config.rs
 //! OpenAI 配置结构
-//!
-//! 参考 Python 版本: langchain/libs/partners/openai/langchain_openai/chat_models/base.py
 
 use std::env;
 

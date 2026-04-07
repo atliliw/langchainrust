@@ -2,7 +2,6 @@
 //! 工具注册表
 //!
 //! 管理多个工具，提供统一的查找和执行接口。
-//! 参考 Python 版本: langchain/libs/core/langchain_core/tools/base.py
 
 use super::BaseTool;
 use std::collections::HashMap;

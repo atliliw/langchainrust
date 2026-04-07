@@ -2,7 +2,6 @@
 //! ReAct 输出解析器
 //!
 //! 解析 LLM 的 ReAct 格式输出。
-//! 参考 Python 版本: langchain/libs/langchain/langchain_classic/agents/output_parsers/react_single_input.py
 
 use crate::agents::{AgentAction, AgentError, AgentFinish, AgentOutput, ToolInput};
 use regex::Regex;

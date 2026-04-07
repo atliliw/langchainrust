@@ -1,7 +1,5 @@
 // src/agents/types.rs
 //! Agent 相关类型定义
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/agents.py
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

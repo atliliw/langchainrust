@@ -1,7 +1,5 @@
 // src/core/language_models/chat.rs
 //! 聊天模型基础 trait
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/language_models/chat_models.py
 
 use async_trait::async_trait;
 use futures_util::Stream;

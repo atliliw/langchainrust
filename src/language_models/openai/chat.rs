@@ -1,7 +1,5 @@
 // src/language_models/openai/chat.rs
 //! OpenAI 聊天模型实现
-//!
-//! 参考 Python 版本: langchain/libs/partners/openai/langchain_openai/chat_models/base.py
 
 use async_trait::async_trait;
 use futures_util::Stream;

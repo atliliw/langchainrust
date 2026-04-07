@@ -1,7 +1,5 @@
 // src/memory/base.rs
 //! Memory 基础 trait
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/memory.py
 
 use async_trait::async_trait;
 use crate::schema::Message;

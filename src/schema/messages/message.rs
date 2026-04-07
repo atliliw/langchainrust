@@ -1,7 +1,5 @@
 // src/schema/messages/message.rs
 //! 核心消息类型
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/messages/base.py
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -1,8 +1,6 @@
 // src/core/runnables/runnable_trait.rs
 //! Runnable trait - LCEL (LangChain Expression Language) 的基础
 //!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/runnables/base.py
-//!
 //! LangChain 中的每个组件都实现 Runnable，使它们可以
 //! 链式调用、组合和互操作。
 

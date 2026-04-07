@@ -1,7 +1,5 @@
 // src/chains/base.rs
 //! Chain 基础 trait
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/chains/base.py
 
 use async_trait::async_trait;
 use serde_json::Value;

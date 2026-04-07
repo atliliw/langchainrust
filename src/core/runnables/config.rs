@@ -1,7 +1,5 @@
 // src/core/runnables/config.rs
 //! Runnable 配置模块
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/runnables/config.py
 
 use serde_json::Value;
 use std::collections::HashMap;

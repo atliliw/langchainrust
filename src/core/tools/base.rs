@@ -1,7 +1,6 @@
 // src/core/tools/base.rs
 //! 工具基础 trait
 //!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/tools/base.py
 //! Python 的 BaseTool 使用 run(input: str) -> str 的简化接口。
 
 use async_trait::async_trait;

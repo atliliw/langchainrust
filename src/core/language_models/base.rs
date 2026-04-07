@@ -1,7 +1,5 @@
 // src/core/language_models/base.rs
 //! 语言模型基础 trait
-//!
-//! 参考 Python 版本: langchain/libs/core/langchain_core/language_models/base.py
 
 use crate::core::runnables::Runnable;
 use async_trait::async_trait;

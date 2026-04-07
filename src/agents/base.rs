@@ -1,7 +1,5 @@
 // src/agents/base.rs
 //! Agent 基础 trait 定义
-//!
-//! 参考 Python 版本: langchain/libs/langchain/langchain_classic/agents/agent.py
 
 use super::types::{AgentAction, AgentFinish, AgentOutput, AgentStep};
 use async_trait::async_trait;
