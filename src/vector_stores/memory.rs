@@ -114,6 +114,11 @@ impl VectorStore for InMemoryVectorStore {
         Ok(store.get(id).map(|vd| vd.document.clone()))
     }
     
+    async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
+        let store = self.documents.read().await;
+        Ok(store.get(id).map(|vd| vd.embedding.clone()))
+    }
+    
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
         let mut store = self.documents.write().await;
         store.remove(id);

@@ -12,10 +12,10 @@ use std::sync::OnceLock;
 // ============================================================================
 
 /// API Key - 修改这里或设置环境变量 OPENAI_API_KEY
-const API_KEY: &str = "";
+const API_KEY: &str = "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6";
 
 /// Base URL - 可选修改
-const BASE_URL: &str = "https://api.openai.com/v1";
+const BASE_URL: &str = "https://api.openai-proxy.org/v1";
 
 /// 默认模型
 const DEFAULT_MODEL: &str = "gpt-3.5-turbo";

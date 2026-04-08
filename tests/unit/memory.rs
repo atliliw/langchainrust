@@ -1,5 +1,8 @@
 //! 单元测试 - Memory
 
+mod loaders_csv;
+mod vectorstores;
+
 use langchainrust::{ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory};
 use langchainrust::memory::BaseMemory;
 use langchainrust::schema::{Message, MessageType};

@@ -68,6 +68,19 @@ path = "tests/unit/memory.rs"
 name = "unit_retrieval"
 path = "tests/unit/retrieval.rs"
 
+[[test]]
+name = "unit_loaders_csv"
+path = "tests/unit/loaders_csv.rs"
+
+[[test]]
+name = "unit_vectorstores"
+path = "tests/unit/vectorstores.rs"
+
+[[test]]
+name = "qdrant_tutorial"
+path = "tests/qdrant_tutorial.rs"
+required-features = ["qdrant-integration"]
+
 # ============================================================================
 # 整合测试 - 需要 API Key
 # ============================================================================
@@ -106,6 +119,10 @@ path = "tests/integration/llm_chat.rs"
 [[test]]
 name = "integration_rag"
 path = "tests/integration/rag.rs"
+
+[[test]]
+name = "integration_rag_full"
+path = "tests/integration/rag_full.rs"
 
 # ============================================================================
 # 端到端测试 - 完整应用流程

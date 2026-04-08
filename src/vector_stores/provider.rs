@@ -39,23 +39,27 @@ impl VectorStoreProvider {
                 Ok(Arc::new(InMemoryVectorStore::new()))
             }
             VectorStoreType::Qdrant { url, collection } => {
-                // 需要实际的服务地址，等待你提供IP和端口后实现
                 Self::create_qdrant_store(url, collection).await
             }
         }
     }
 
-    /// 创建 Qdrant 向量存储 (等待你提供地址)
+    /// 创建 Qdrant 向量存储
     async fn create_qdrant_store(url: String, collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
-        // TODO: 在获得 Qdrant 服务地址后实现
-        // 这里会使用你前面提到的 Qdrant 配置进行初始化
+        #[cfg(feature = "qdrant-integration")]
+        {
+            use crate::vector_stores::{QdrantVectorStore, QdrantConfig};
+            let config = QdrantConfig::new(url, collection);
+            let store = QdrantVectorStore::new(config).await?;
+            Ok(Arc::new(store))
+        }
         
-        // 这是占位实现，直到你的 Qdrant 服务准备就绪
-        eprintln!("Warning: Qdrant backend requested but disabled. Contact developer for address.");
-        
-        // 暂时回退到内存存储，但标记为需要实现
-        use crate::vector_stores::InMemoryVectorStore;
-        Ok(Arc::new(InMemoryVectorStore::new()))
+        #[cfg(not(feature = "qdrant-integration"))]
+        {
+            eprintln!("Warning: Qdrant requested but feature 'qdrant-integration' not enabled. Falling back to InMemory store.");
+            use crate::vector_stores::InMemoryVectorStore;
+            Ok(Arc::new(InMemoryVectorStore::new()))
+        }
     }
 }
 
@@ -115,10 +119,10 @@ mod tests {
     }
     
     #[tokio::test]
-    async fn test_builder_qdrant() {
+    async fn test_builder_qdrant_fallback() {
+        // 没有 feature 时，应该回退到内存存储
         let builder = VectorStoreBuilder::qdrant("http://localhost:6334", "test_collection");
         let store = builder.build().await;
-        // 应该返回 Ok 因为我们回退到内存存储
         assert!(store.is_ok());
     }
 }

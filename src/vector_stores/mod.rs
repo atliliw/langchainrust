@@ -144,6 +144,9 @@ pub trait VectorStore: Send + Sync {
     /// 根据 ID 获取文档
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError>;
     
+    /// 根据 ID 获取文档的向量
+    async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError>;
+    
     /// 删除文档
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError>;
     

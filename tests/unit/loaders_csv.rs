@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test_csv_loader {
-    use crate::retrieval::{CSVLoader, DocumentLoader};
+    use langchainrust::retrieval::{CSVLoader, DocumentLoader};
 
     #[tokio::test]
     async fn test_csv_loader_nonexistent() {
@@ -20,7 +20,7 @@ mod test_csv_loader {
         
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::retrieval::LoaderError::CsvError(msg) => assert!(msg.contains("不存在")),
+            langchainrust::retrieval::LoaderError::CsvError(msg) => assert!(msg.contains("不存在")),
             _ => panic!("Expected CsvError"),
         }
     }
