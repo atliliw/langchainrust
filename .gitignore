@@ -11,6 +11,7 @@ Cargo.lock
 
 # AI Tools
 .claude/
+.sisyphus/
 
 # OS
 .DS_Store
@@ -27,8 +28,8 @@ Thumbs.db
 # Test
 /coverage/
 
-# Documentation
-/docs/
+# Documentation (internal only)
+/docs/internal/
 
 # Temp
 *.tmp
