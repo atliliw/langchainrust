@@ -1,15 +1,15 @@
 // src/core/language_models/chat.rs
-//! 聊天模型基础 trait
 
 use async_trait::async_trait;
 use futures_util::Stream;
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use crate::schema::Message;
 use crate::RunnableConfig;
 use super::BaseLanguageModel;
 
 /// LLM 结果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMResult {
     /// 生成的内容
     pub content: String,
@@ -22,7 +22,7 @@ pub struct LLMResult {
 }
 
 /// Token 使用情况
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     /// 输入 token 数
     pub prompt_tokens: usize,

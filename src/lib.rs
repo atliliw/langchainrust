@@ -27,6 +27,7 @@ pub mod embeddings;
 pub mod vector_stores;
 pub mod retrieval;
 pub mod prompts;
+pub mod callbacks;
 
 // 重新导出常用类型
 pub use core::{Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, BaseTool, Tool, ToolError, ToolRegistry};
@@ -51,3 +52,6 @@ pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter
 
 // Prompts
 pub use prompts::{PromptTemplate, ChatPromptTemplate};
+
+// Callbacks
+pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler};

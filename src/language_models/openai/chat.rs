@@ -1,5 +1,4 @@
 // src/language_models/openai/chat.rs
-//! OpenAI 聊天模型实现
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -11,6 +10,7 @@ use crate::schema::Message;
 use crate::RunnableConfig;
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
+use crate::callbacks::{RunTree, RunType};
 use super::OpenAIConfig;
 
 /// OpenAI 聊天客户端
@@ -144,12 +144,123 @@ impl BaseChatModel for OpenAIChat {
     async fn chat(
         &self,
         messages: Vec<Message>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        let url = format!("{}/chat/completions", self.config.base_url);
-        let body = self.build_request_body(messages, false);  // 非流式
+        let run_name = config.as_ref()
+            .and_then(|c| c.run_name.clone())
+            .unwrap_or_else(|| format!("{}:chat", self.config.model));
         
-        // 发送请求
+        let mut run = RunTree::new(
+            run_name,
+            RunType::Llm,
+            json!({
+                "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
+                "model": self.config.model,
+            }),
+        );
+        
+        if let Some(ref cfg) = config {
+            for tag in &cfg.tags {
+                run = run.with_tag(tag.clone());
+            }
+            for (key, value) in &cfg.metadata {
+                run = run.with_metadata(key.clone(), value.clone());
+            }
+        }
+        
+        if let Some(ref cfg) = config {
+            if let Some(ref callbacks) = cfg.callbacks {
+                for handler in callbacks.handlers() {
+                    handler.on_llm_start(&run, &messages).await;
+                }
+            }
+        }
+        
+        let result = self.chat_internal(messages.clone()).await;
+        
+        match result {
+            Ok(response) => {
+                run.end(json!({
+                    "content": &response.content,
+                    "model": &response.model,
+                    "token_usage": &response.token_usage,
+                }));
+                
+                if let Some(ref cfg) = config {
+                    if let Some(ref callbacks) = cfg.callbacks {
+                        for handler in callbacks.handlers() {
+                            handler.on_llm_end(&run, &response.content).await;
+                        }
+                    }
+                }
+                
+                Ok(response)
+            }
+            Err(e) => {
+                run.end_with_error(e.to_string());
+                
+                if let Some(ref cfg) = config {
+                    if let Some(ref callbacks) = cfg.callbacks {
+                        for handler in callbacks.handlers() {
+                            handler.on_llm_error(&run, &e.to_string()).await;
+                        }
+                    }
+                }
+                
+                Err(e)
+            }
+        }
+    }
+    
+    async fn stream_chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+        let run_name = config.as_ref()
+            .and_then(|c| c.run_name.clone())
+            .unwrap_or_else(|| format!("{}:stream", self.config.model));
+        
+        let run = RunTree::new(
+            run_name,
+            RunType::Llm,
+            json!({
+                "messages": messages.len(),
+                "model": self.config.model,
+            }),
+        );
+        
+        if let Some(ref cfg) = config {
+            if let Some(ref callbacks) = cfg.callbacks {
+                for handler in callbacks.handlers() {
+                    handler.on_llm_start(&run, &messages).await;
+                }
+            }
+        }
+        
+        let stream = self.stream_chat_internal(messages).await?;
+        
+        let callbacks = config.and_then(|c| c.callbacks);
+        let stream = Box::pin(futures_util::stream::StreamExt::map(stream, move |token_result| {
+            if let Some(ref cbs) = callbacks {
+                if let Ok(ref token) = token_result {
+                    for handler in cbs.handlers() {
+                        let _ = handler.on_llm_new_token(&run, token);
+                    }
+                }
+            }
+            token_result
+        }));
+        
+        Ok(stream)
+    }
+}
+
+impl OpenAIChat {
+    async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, OpenAIError> {
+        let url = format!("{}/chat/completions", self.config.base_url);
+        let body = self.build_request_body(messages, false);
+        
         let response = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
@@ -165,7 +276,6 @@ impl BaseChatModel for OpenAIChat {
             return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
         }
         
-        // 解析响应
         let chat_response: OpenAIChatResponse = response
             .json()
             .await
@@ -182,18 +292,13 @@ impl BaseChatModel for OpenAIChat {
         })
     }
     
-    async fn stream_chat(
-        &self,
-        messages: Vec<Message>,
-        _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    async fn stream_chat_internal(&self, messages: Vec<Message>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
         use super::sse::SSEParser;
         use futures_util::StreamExt;
         
         let url = format!("{}/chat/completions", self.config.base_url);
-        let body = self.build_request_body(messages, true);  // 流式
+        let body = self.build_request_body(messages, true);
         
-        // 发送流式请求
         let response = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
@@ -209,10 +314,8 @@ impl BaseChatModel for OpenAIChat {
             return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
         }
         
-        // 转换响应为字节流
         let byte_stream = response.bytes_stream();
         
-        // 创建流式输出
         let stream = byte_stream
             .then(|chunk_result| async move {
                 let mut parser = SSEParser::new();
@@ -221,7 +324,6 @@ impl BaseChatModel for OpenAIChat {
                         let chunk_str = String::from_utf8_lossy(&bytes);
                         let events = parser.parse(&chunk_str);
                         
-                        // 提取第一个有效的 token
                         for event in events {
                             if event.is_done() {
                                 return None;

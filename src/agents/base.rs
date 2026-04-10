@@ -1,12 +1,13 @@
 // src/agents/base.rs
-//! Agent 基础 trait 定义
 
 use super::types::{AgentAction, AgentFinish, AgentOutput, AgentStep};
 use async_trait::async_trait;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::core::tools::BaseTool;
 use crate::memory::BaseMemory;
+use crate::callbacks::{CallbackManager, RunTree, RunType};
 
 /// Agent 错误类型
 #[derive(Debug)]
@@ -102,6 +103,9 @@ pub struct AgentExecutor {
     
     /// 记忆（可选）
     memory: Option<Arc<tokio::sync::Mutex<dyn BaseMemory>>>,
+    
+    /// 回调管理器（可选）
+    callbacks: Option<Arc<CallbackManager>>,
 }
 
 impl AgentExecutor {
@@ -113,6 +117,7 @@ impl AgentExecutor {
             max_iterations: 10,
             verbose: false,
             memory: None,
+            callbacks: None,
         }
     }
     
@@ -134,25 +139,34 @@ impl AgentExecutor {
         self
     }
     
+    /// 设置回调管理器
+    pub fn with_callbacks(mut self, callbacks: Arc<CallbackManager>) -> Self {
+        self.callbacks = Some(callbacks);
+        self
+    }
+    
     /// 执行 Agent
-    /// 
-    /// # 参数
-    /// * `input` - 用户输入
-    /// 
-    /// # 返回
-    /// 最终答案
     pub async fn invoke(&self, input: String) -> Result<String, AgentError> {
-        // 准备输入
+        let mut root_run = RunTree::new(
+            "AgentExecutor",
+            RunType::Chain,
+            json!({"input": input.clone()}),
+        );
+        
+        if let Some(ref callbacks) = self.callbacks {
+            for handler in callbacks.handlers() {
+                handler.on_chain_start(&root_run, &root_run.inputs).await;
+            }
+        }
+        
         let mut inputs = HashMap::new();
         inputs.insert("input".to_string(), input.clone());
         
-        // 如果有 memory，加载历史
         if let Some(memory) = &self.memory {
             let memory_vars = memory.lock().await
                 .load_memory_variables(&inputs).await
                 .map_err(|e| AgentError::Other(format!("加载记忆失败: {}", e)))?;
             
-            // 将历史添加到 inputs
             if let Some(history) = memory_vars.get("history") {
                 if let Some(history_str) = history.as_str() {
                     inputs.insert("history".to_string(), history_str.to_string());
@@ -160,13 +174,10 @@ impl AgentExecutor {
             }
         }
         
-        // 中间步骤历史
         let intermediate_steps: Vec<AgentStep> = Vec::new();
         
-        // 执行循环
-        let result = self.run_agent_loop(inputs.clone(), intermediate_steps).await;
+        let result = self.run_agent_loop(inputs.clone(), intermediate_steps, &mut root_run).await;
         
-        // 如果有 memory，保存对话
         if let Some(memory) = &self.memory {
             if let Ok(ref output) = result {
                 let mut outputs = HashMap::new();
@@ -178,6 +189,27 @@ impl AgentExecutor {
             }
         }
         
+        match &result {
+            Ok(output) => {
+                root_run.end(json!({"output": output}));
+                if let Some(ref callbacks) = self.callbacks {
+                    if let Some(ref outputs) = root_run.outputs {
+                        for handler in callbacks.handlers() {
+                            handler.on_chain_end(&root_run, outputs).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                root_run.end_with_error(e.to_string());
+                if let Some(ref callbacks) = self.callbacks {
+                    for handler in callbacks.handlers() {
+                        handler.on_chain_error(&root_run, &e.to_string()).await;
+                    }
+                }
+            }
+        }
+        
         result
     }
     
@@ -186,19 +218,17 @@ impl AgentExecutor {
         &self,
         inputs: HashMap<String, String>,
         mut intermediate_steps: Vec<AgentStep>,
+        root_run: &mut RunTree,
     ) -> Result<String, AgentError> {
-        // 执行循环
         for iteration in 0..self.max_iterations {
             if self.verbose {
                 println!("\n=== 迭代 {} ===", iteration + 1);
             }
             
-            // 1. PLAN: Agent 决策
             let output = self.agent.plan(&intermediate_steps, &inputs).await?;
             
             match output {
                 AgentOutput::Finish(finish) => {
-                    // 返回最终答案
                     if self.verbose {
                         println!("最终答案: {:?}", finish.return_values);
                     }
@@ -210,20 +240,17 @@ impl AgentExecutor {
                         println!("动作: {}({})", action.tool, action.tool_input);
                     }
                     
-                    // 2. ACT: 执行工具
-                    let observation = self.execute_tool(&action).await?;
+                    let observation = self.execute_tool(&action, root_run).await?;
                     
                     if self.verbose {
                         println!("观察: {}", observation);
                     }
                     
-                    // 3. OBSERVE: 记录结果
                     intermediate_steps.push(AgentStep::new(action, observation));
                 }
             }
         }
         
-        // 达到最大迭代次数
         if self.verbose {
             println!("达到最大迭代次数: {}", self.max_iterations);
         }
@@ -233,22 +260,51 @@ impl AgentExecutor {
     }
     
     /// 执行工具
-    async fn execute_tool(&self, action: &AgentAction) -> Result<String, AgentError> {
-        // 查找工具
+    async fn execute_tool(&self, action: &AgentAction, root_run: &RunTree) -> Result<String, AgentError> {
         let tool = self.tools.iter()
             .find(|t| t.name() == action.tool)
             .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
         
-        // 准备输入
         let input_str = match &action.tool_input {
             super::types::ToolInput::String(s) => s.clone(),
             super::types::ToolInput::Object(v) => serde_json::to_string(v)
                 .unwrap_or_else(|_| v.to_string()),
         };
         
-        // 执行工具
-        tool.run(input_str).await
-            .map_err(|e| AgentError::ToolExecutionError(e.to_string()))
+        let mut tool_run = root_run.create_child(
+            &action.tool,
+            RunType::Tool,
+            json!({"input": input_str.clone()}),
+        );
+        
+        if let Some(ref callbacks) = self.callbacks {
+            for handler in callbacks.handlers() {
+                handler.on_tool_start(&tool_run, &action.tool, &input_str).await;
+            }
+        }
+        
+        let result = tool.run(input_str.clone()).await;
+        
+        match result {
+            Ok(output) => {
+                tool_run.end(json!({"output": output.clone()}));
+                if let Some(ref callbacks) = self.callbacks {
+                    for handler in callbacks.handlers() {
+                        handler.on_tool_end(&tool_run, &output).await;
+                    }
+                }
+                Ok(output)
+            }
+            Err(e) => {
+                tool_run.end_with_error(e.to_string());
+                if let Some(ref callbacks) = self.callbacks {
+                    for handler in callbacks.handlers() {
+                        handler.on_tool_error(&tool_run, &e.to_string()).await;
+                    }
+                }
+                Err(AgentError::ToolExecutionError(e.to_string()))
+            }
+        }
     }
 }
 

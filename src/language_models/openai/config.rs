@@ -40,8 +40,10 @@ pub struct OpenAIConfig {
 impl Default for OpenAIConfig {
     fn default() -> Self {
         Self {
-            api_key: env::var("OPENAI_API_KEY").unwrap_or_default(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6"
+                .parse()
+                .unwrap(),
+            base_url: "https://api.openai-proxy.org/v1".to_string(),
             model: "gpt-3.5-turbo".to_string(),
             temperature: None,
             max_tokens: None,
@@ -63,9 +65,29 @@ impl OpenAIConfig {
         }
     }
 
-    /// 从环境变量创建
+    /// 从环境变量创建配置
+    ///
+    /// 环境变量:
+    /// - `OPENAI_API_KEY`: API 密钥 (必需)
+    /// - `OPENAI_BASE_URL`: API 端点 (可选，默认: https://api.openai.com/v1)
+    /// - `OPENAI_MODEL`: 模型名称 (可选，默认: gpt-3.5-turbo)
     pub fn from_env() -> Self {
-        Self::default()
+        let api_key = env::var("OPENAI_API_KEY").unwrap_or_else(|_| {
+            // 使用默认 key (仅用于开发测试)
+            "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string()
+        });
+
+        let base_url = env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai-proxy.org/v1".to_string());
+
+        let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
+
+        Self {
+            api_key,
+            base_url,
+            model,
+            ..Default::default()
+        }
     }
 
     /// 设置模型

@@ -24,7 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 async-trait = "0.1"
 regex = "1"
-uuid = { version = "1.10", features = ["v4"] }
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 futures-util = "0.3"
 schemars = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
@@ -77,6 +77,10 @@ name = "unit_vectorstores"
 path = "tests/unit/vectorstores.rs"
 
 [[test]]
+name = "unit_callbacks"
+path = "tests/unit/callbacks.rs"
+
+[[test]]
 name = "qdrant_tutorial"
 path = "tests/qdrant_tutorial.rs"
 required-features = ["qdrant-integration"]
@@ -123,6 +127,18 @@ path = "tests/integration/rag.rs"
 [[test]]
 name = "integration_rag_full"
 path = "tests/integration/rag_full.rs"
+
+[[test]]
+name = "integration_callbacks"
+path = "tests/integration/callbacks_integration.rs"
+
+[[test]]
+name = "integration_callbacks_llm"
+path = "tests/integration/callbacks_llm_integration.rs"
+
+[[test]]
+name = "langsmith_connection"
+path = "tests/integration/langsmith_connection.rs"
 
 # ============================================================================
 # 端到端测试 - 完整应用流程

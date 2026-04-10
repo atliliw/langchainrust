@@ -1,13 +1,13 @@
 // src/core/runnables/config.rs
-//! Runnable 配置模块
 
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::callbacks::CallbackManager;
+
 /// Runnable 执行配置
-///
-/// 这个结构体对应 Python 的 RunnableConfig TypedDict
 #[derive(Debug, Clone, Default)]
 pub struct RunnableConfig {
     /// 标签 - 用于过滤和追踪
@@ -24,6 +24,9 @@ pub struct RunnableConfig {
 
     /// 运行名称 - 用于调试
     pub run_name: Option<String>,
+
+    /// 回调管理器 - 用于追踪和监控
+    pub callbacks: Option<Arc<CallbackManager>>,
 }
 
 impl RunnableConfig {
@@ -62,6 +65,12 @@ impl RunnableConfig {
         self
     }
 
+    /// 设置回调管理器
+    pub fn with_callbacks(mut self, callbacks: Arc<CallbackManager>) -> Self {
+        self.callbacks = Some(callbacks);
+        self
+    }
+
     /// 合并两个配置 (后面的配置覆盖前面的)
     pub fn merge(mut self, other: RunnableConfig) -> Self {
         // 合并标签 (取并集)
@@ -81,6 +90,9 @@ impl RunnableConfig {
         }
         if other.run_name.is_some() {
             self.run_name = other.run_name;
+        }
+        if other.callbacks.is_some() {
+            self.callbacks = other.callbacks;
         }
 
         self
