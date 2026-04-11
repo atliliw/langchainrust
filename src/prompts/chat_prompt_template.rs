@@ -66,6 +66,7 @@ impl ChatPromptTemplate {
                     name: msg.name.clone(),
                     additional_kwargs: msg.additional_kwargs.clone(),
                     id: msg.id.clone(),
+                    tool_calls: msg.tool_calls.clone(),
                 })
             })
             .collect()

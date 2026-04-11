@@ -30,7 +30,12 @@ pub mod prompts;
 pub mod callbacks;
 
 // 重新导出常用类型
-pub use core::{Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, BaseTool, Tool, ToolError, ToolRegistry};
+pub use core::{
+    Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
+    BaseTool, Tool, ToolError, ToolRegistry,
+    ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
+};
+pub use core::tools::StructuredOutput;
 pub use schema::{Message, MessageType};
 pub use language_models::{OpenAIChat, OpenAIConfig};
 pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput};

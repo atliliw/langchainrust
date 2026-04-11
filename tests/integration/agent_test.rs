@@ -1,6 +1,8 @@
 // tests/agent_test.rs
 //! Agent 系统测试
 
+mod tool_callbacks_integration;
+
 use langchainrust::{AgentAction, AgentFinish, AgentStep, AgentOutput, BaseAgent, AgentExecutor, AgentError, Calculator, ToolRegistry, Tool};
 use langchainrust::tools::CalculatorInput;
 use async_trait::async_trait;

@@ -161,6 +161,8 @@ mod tests {
             presence_penalty: None,
             streaming: false,
             organization: None,
+            tools: None,
+            tool_choice: None,
         }
     }
     

@@ -6,19 +6,16 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use crate::schema::Message;
 use crate::RunnableConfig;
+use crate::core::tools::ToolCall;
 use super::BaseLanguageModel;
 
 /// LLM 结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMResult {
-    /// 生成的内容
     pub content: String,
-    
-    /// 模型名称
     pub model: String,
-    
-    /// Token 使用情况
     pub token_usage: Option<TokenUsage>,
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// Token 使用情况

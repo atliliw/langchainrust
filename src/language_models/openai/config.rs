@@ -1,40 +1,24 @@
 // src/language_models/openai/config.rs
 //! OpenAI 配置结构
 
+use crate::core::tools::ToolDefinition;
 use std::env;
 
 /// OpenAI 配置
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
-    /// API 密钥 (从环境变量或显式设置)
     pub api_key: String,
-
-    /// 基础 URL (默认: https://api.openai.com/v1)
     pub base_url: String,
-
-    /// 模型名称 (gpt-4, gpt-3.5-turbo 等)
     pub model: String,
-
-    /// 温度 (0.0 - 2.0)
     pub temperature: Option<f32>,
-
-    /// 最大 token 数
     pub max_tokens: Option<usize>,
-
-    /// Top P 采样
     pub top_p: Option<f32>,
-
-    /// 频率惩罚
     pub frequency_penalty: Option<f32>,
-
-    /// 存在惩罚
     pub presence_penalty: Option<f32>,
-
-    /// 是否启用流式
     pub streaming: bool,
-
-    /// 组织 ID
     pub organization: Option<String>,
+    pub tools: Option<Vec<ToolDefinition>>,
+    pub tool_choice: Option<String>,
 }
 
 impl Default for OpenAIConfig {
@@ -52,6 +36,8 @@ impl Default for OpenAIConfig {
             presence_penalty: None,
             streaming: false,
             organization: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }
@@ -123,6 +109,16 @@ impl OpenAIConfig {
     /// 设置组织 ID
     pub fn with_organization(mut self, org: impl Into<String>) -> Self {
         self.organization = Some(org.into());
+        self
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.tool_choice = Some(choice.into());
         self
     }
 }

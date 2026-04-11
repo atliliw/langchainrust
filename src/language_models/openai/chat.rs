@@ -10,8 +10,12 @@ use crate::schema::Message;
 use crate::RunnableConfig;
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
+use crate::core::tools::{ToolDefinition, StructuredOutput};
 use crate::callbacks::{RunTree, RunType};
 use super::OpenAIConfig;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use std::marker::PhantomData;
 
 /// OpenAI 聊天客户端
 pub struct OpenAIChat {
@@ -44,10 +48,16 @@ impl OpenAIChat {
                 "role": "user",
                 "content": message.content,
             }),
-            crate::schema::MessageType::AI => json!({
-                "role": "assistant",
-                "content": message.content,
-            }),
+            crate::schema::MessageType::AI => {
+                let mut msg = json!({
+                    "role": "assistant",
+                    "content": message.content,
+                });
+                if let Some(tool_calls) = &message.tool_calls {
+                    msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null);
+                }
+                msg
+            },
             crate::schema::MessageType::Tool { tool_call_id } => json!({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
@@ -69,7 +79,6 @@ impl OpenAIChat {
             "stream": stream,
         });
         
-        // 添加可选参数
         if let Some(temp) = self.config.temperature {
             body["temperature"] = json!(temp);
         }
@@ -82,7 +91,73 @@ impl OpenAIChat {
             body["top_p"] = json!(top_p);
         }
         
+        if let Some(tools) = &self.config.tools {
+            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
+        }
+        
+        if let Some(tool_choice) = &self.config.tool_choice {
+            body["tool_choice"] = json!(tool_choice);
+        }
+        
         body
+    }
+    
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
+        let config = OpenAIConfig {
+            tools: Some(tools),
+            ..self.config.clone()
+        };
+        Self {
+            config,
+            client: self.client.clone(),
+        }
+    }
+    
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.config.tool_choice = Some(choice.into());
+        self
+    }
+    
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> StructuredOutputMethod<T> {
+        use schemars::schema_for;
+        let schema = serde_json::to_value(schema_for!(T))
+            .unwrap_or(serde_json::Value::Null);
+        
+        let tool = ToolDefinition::new("structured_output", "Return structured JSON output")
+            .with_parameters(schema)
+            .with_strict(true);
+        
+        let config = OpenAIConfig {
+            tools: Some(vec![tool]),
+            tool_choice: Some("auto".to_string()),
+            ..self.config.clone()
+        };
+        
+        StructuredOutputMethod {
+            config,
+            client: self.client.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Method for structured output calls
+pub struct StructuredOutputMethod<T: DeserializeOwned + JsonSchema> {
+    config: OpenAIConfig,
+    client: reqwest::Client,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: DeserializeOwned + JsonSchema> StructuredOutputMethod<T> {
+    pub async fn invoke(&self, messages: Vec<Message>) -> Result<T, OpenAIError> {
+        let chat = OpenAIChat {
+            config: self.config.clone(),
+            client: self.client.clone(),
+        };
+        
+        let result = chat.chat_internal(messages).await?;
+        let structured = StructuredOutput::<T>::new(result);
+        structured.parse().map_err(|e| OpenAIError::Parse(e.to_string()))
     }
 }
 
@@ -281,14 +356,17 @@ impl OpenAIChat {
             .await
             .map_err(|e| OpenAIError::Parse(e.to_string()))?;
         
+        let message = &chat_response.choices[0].message;
+        
         Ok(LLMResult {
-            content: chat_response.choices[0].message.content.clone(),
+            content: message.content.clone(),
             model: chat_response.model,
             token_usage: chat_response.usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
+            tool_calls: message.tool_calls.clone(),
         })
     }
     
@@ -394,6 +472,7 @@ struct OpenAIChoice {
 struct OpenAIMessage {
     role: String,
     content: String,
+    tool_calls: Option<Vec<crate::core::tools::ToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]

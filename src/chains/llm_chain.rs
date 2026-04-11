@@ -202,6 +202,8 @@ mod tests {
             presence_penalty: None,
             temperature: None,
             top_p: None,
+            tools: None,
+            tool_choice: None,
         }
     }
     

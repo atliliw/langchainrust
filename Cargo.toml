@@ -81,6 +81,10 @@ name = "unit_callbacks"
 path = "tests/unit/callbacks.rs"
 
 [[test]]
+name = "unit_tool_calling"
+path = "tests/unit/tool_calling.rs"
+
+[[test]]
 name = "qdrant_tutorial"
 path = "tests/qdrant_tutorial.rs"
 required-features = ["qdrant-integration"]
@@ -135,6 +139,10 @@ path = "tests/integration/callbacks_integration.rs"
 [[test]]
 name = "integration_callbacks_llm"
 path = "tests/integration/callbacks_llm_integration.rs"
+
+[[test]]
+name = "integration_tool_callbacks"
+path = "tests/integration/tool_callbacks_integration.rs"
 
 [[test]]
 name = "langsmith_connection"
