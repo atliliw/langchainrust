@@ -44,7 +44,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 
 ```toml
 [dependencies]
-langchainrust = "0.2.2"
+langchainrust = "0.2.3"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -386,7 +386,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.2.2"
+langchainrust = "0.2.3"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
