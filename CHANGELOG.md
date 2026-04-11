@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2025-04-11
+
+### Added
+- **回调系统 (Callback System)**: 完整的执行追踪和监控框架
+  - `CallbackHandler` trait: 定义 LLM/Chain/Tool/Retriever 回调接口
+  - `CallbackManager`: 多处理器管理和分发
+  - `StdOutHandler`: 控制台日志输出
+  - `LangSmithHandler`: LangSmith 平台追踪集成
+  - `RunTree`: 运行层次结构和追踪 ID 管理
+  - `RunType`: LLM/Chain/Tool/Retriever 类型枚举
+- **工具回调 (Tool Callbacks)**: 工具执行全生命周期追踪
+  - `on_tool_start`: 工具开始时记录输入
+  - `on_tool_end`: 工具完成时记录输出
+  - `on_tool_error`: 工具失败时记录错误
+- **Tool Calling 增强**: OpenAI function calling 完整支持
+  - `bind_tools()`: LLM 绑定工具定义
+  - `ToolDefinition`: 工具定义结构 (name, description, parameters)
+  - `ToolCall` / `ToolCallResult`: 工具调用解析
+  - `with_structured_output<T>()`: 结构化输出方法
+  - `StructuredOutput<T>`: 泛型结构化输出包装
+  - `StructuredTool<T>`: 泛型结构化工具包装
+- **Runnable 接口**: LCEL 基础 trait
+  - `Runnable<Input, Output>`: 统一执行接口
+  - `RunnableConfig`: 配置支持回调、标签、元数据
+  - `invoke()` / `batch()` 方法
+
+### Changed
+- `OpenAIChat` 实现 `Runnable<Vec<Message>, String>` trait
+- `RunnableConfig` 支持回调系统集成 (`with_callbacks()`)
+- AgentExecutor 自动触发工具回调
+
+### Documentation
+- 新增 `docs/internal/ROADMAP.md`: 功能开发路线图
+- 新增 `docs/internal/FEATURE_PLAN.md`: 详细实现计划
+- README 更新回调系统使用示例
+
 ## [0.2.1] - 2025-04-09
 
 ### Changed
@@ -88,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.2]: https://github.com/atliliw/langchainrust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/atliliw/langchainrust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atliliw/langchainrust/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/atliliw/langchainrust/compare/v0.1.1...v0.1.2

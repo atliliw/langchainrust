@@ -19,7 +19,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 
 | 组件 | 功能 |
 |------|------|
-| **LLM** | OpenAI 兼容接口，支持流式输出 |
+| **LLM** | OpenAI 兼容接口，支持流式输出、function calling |
 | **Agents** | ReActAgent - 推理+行动的智能代理 |
 | **Prompts** | PromptTemplate 和 ChatPromptTemplate |
 | **Memory** | 对话历史管理 |
@@ -27,6 +27,8 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | **RAG** | 文档分割、向量存储、语义检索 |
 | **Loaders** | 支持 PDF 和 CSV 文档加载 |
 | **Tools** | 内置工具：计算器、日期时间、数学运算、URL抓取 |
+| **Callbacks** | 执行追踪、LangSmith 集成、日志输出 |
+| **Tool Calling** | bind_tools()、结构化输出、ToolDefinition |
 
 ### 关键优势
 
@@ -42,7 +44,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 
 ```toml
 [dependencies]
-langchainrust = "0.1.2"
+langchainrust = "0.2.2"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -384,7 +386,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.1.2"
+langchainrust = "0.2.2"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
