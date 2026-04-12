@@ -116,3 +116,29 @@ impl std::fmt::Display for ToolError {
 }
 
 impl std::error::Error for ToolError {}
+
+use super::ToolDefinition;
+
+/// 将 BaseTool 转为 ToolDefinition（用于 Function Calling）
+///
+/// # 参数
+/// * `tool` - 实现 BaseTool trait 的工具
+///
+/// # 返回
+/// ToolDefinition，可用于 bind_tools()
+///
+/// # 示例
+/// ```
+/// use langchainrust::{Calculator, BaseTool, to_tool_definition};
+/// use std::sync::Arc;
+///
+/// let calculator = Calculator::new();
+/// let tool_def = to_tool_definition(&calculator);
+/// ```
+pub fn to_tool_definition(tool: &dyn BaseTool) -> ToolDefinition {
+    ToolDefinition::new(tool.name(), tool.description())
+        .with_parameters(
+            tool.args_schema()
+                .unwrap_or(serde_json::json!({"type": "object"}))
+        )
+}

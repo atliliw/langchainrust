@@ -359,7 +359,7 @@ impl OpenAIChat {
         let message = &chat_response.choices[0].message;
         
         Ok(LLMResult {
-            content: message.content.clone(),
+            content: message.content.clone().unwrap_or_default(),
             model: chat_response.model,
             token_usage: chat_response.usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
@@ -464,14 +464,14 @@ struct OpenAIChatResponse {
 struct OpenAIChoice {
     index: i32,
     message: OpenAIMessage,
-    finish_reason: String,
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct OpenAIMessage {
     role: String,
-    content: String,
+    content: Option<String>,
     tool_calls: Option<Vec<crate::core::tools::ToolCall>>,
 }
 

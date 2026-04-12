@@ -162,3 +162,10 @@ path = "tests/integration/langsmith_connection.rs"
 [[test]]
 name = "e2e_full_application"
 path = "tests/e2e/full_application.rs"
+
+# ============================================================================
+# Function Calling 测试 - 使用原生 Function Calling
+# ============================================================================
+[[test]]
+name = "function_calling_agent"
+path = "tests/function_calling/agent_fc.rs"
