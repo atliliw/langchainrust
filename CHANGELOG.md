@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2025-04-13
+
+### Added
+- **FunctionCallingAgent**: 使用原生 Function Calling 的 Agent
+  - 不依赖文本解析，直接处理 `tool_calls`
+  - 类型安全：通过 JSON Schema 定义工具参数
+  - 更可靠：利用模型原生支持，不依赖 Prompt Engineering
+  - 更高效：Token 消耗更低
+- **to_tool_definition()**: 将 BaseTool 转为 ToolDefinition 的转换函数
+  - 自动从 `args_schema()` 生成 JSON Schema
+  - 简化工具绑定流程
+- **测试目录**: 新增 `tests/function_calling/` 专门用于 Function Calling 测试
+  - 5 个测试用例覆盖单工具、多工具、系统提示词等场景
+  - 对比测试：ReActAgent vs FunctionCallingAgent
+
+### Changed
+- **OpenAI 响应解析**: 修复 Function Calling 时 `content` 为 null 的解析错误
+  - `OpenAIMessage.content` 改为 `Option<String>`
+  - `OpenAIMessage.finish_reason` 改为 `Option<String>`
+- **项目结构**: `agents/` 目录新增 `function_calling/` 子模块
+- **导出**: 新增 `FunctionCallingAgent` 和 `to_tool_definition` 公开导出
+
+### Documentation
+- README 添加 FunctionCallingAgent 使用示例
+- 新增内部文档解释两种 Agent 的区别和适用场景
+
 ## [0.2.3] - 2025-04-11
 
 ### Changed
@@ -129,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.4]: https://github.com/atliliw/langchainrust/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/atliliw/langchainrust/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/atliliw/langchainrust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/atliliw/langchainrust/compare/v0.2.0...v0.2.1

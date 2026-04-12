@@ -7,17 +7,22 @@
 - [LLM](#llm)
   - 直接调用（纯文本）
   - 流式输出（streaming）
+  - Function Calling（bind_tools）
 - [Prompts](#prompts)
   - PromptTemplate
   - ChatPromptTemplate
 - [Memory](#memory)
 - [Chains](#chains)
 - [Agent](#agent)
-  - ReActAgent（基础用法）
+  - FunctionCallingAgent（推荐）
+  - ReActAgent（兼容旧模型）
+  - 两种 Agent 对比
   - 模型路由（智能选择模型）
   - Tool 调用输出格式约定
 - [Tools](#tools)
+  - 内置工具
   - 自定义 Tool
+  - to_tool_definition()
 - [配置与安全](#配置与安全)
 - [测试](#测试)
 - [模块结构](#模块结构)
@@ -29,43 +34,111 @@
 ### 直接调用 LLM（纯文本）
 
 ```rust
-use langchainrust::llms::{LLM, OpenAIConfig};
+use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
 
 #[tokio::main]
-async fn main() {
-    let llm = LLM::new(OpenAIConfig {
-        api_key: std::env::var("OPENAI_API_KEY").unwrap(),
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = OpenAIConfig {
+        api_key: std::env::var("OPENAI_API_KEY")?,
         base_url: "https://api.openai.com/v1".to_string(),
         model: "gpt-3.5-turbo".to_string(),
-        streaming: false,
-        factor: 3,
-    });
-
-    let out = llm.invoke("用一句话解释 Rust 的所有权").await.unwrap();
-    println!("{}", out);
+        ..Default::default()
+    };
+    
+    let llm = OpenAIChat::new(config);
+    
+    let messages = vec![
+        Message::system("你是一个友好的助手。"),
+        Message::human("什么是 Rust 语言？"),
+    ];
+    
+    let response = llm.chat(messages, None).await?;
+    println!("{}", response.content);
+    
+    Ok(())
 }
 ```
 
 ### 流式输出（streaming）
 
 ```rust
-use futures_util::StreamExt;
-use langchainrust::llms::{LLM, OpenAIConfig};
+use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
 
 #[tokio::main]
-async fn main() {
-    let llm = LLM::new(OpenAIConfig {
-        api_key: std::env::var("OPENAI_API_KEY").unwrap(),
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = OpenAIConfig {
+        api_key: std::env::var("OPENAI_API_KEY")?,
         base_url: "https://api.openai.com/v1".to_string(),
         model: "gpt-3.5-turbo".to_string(),
         streaming: true,
-        factor: 3,
-    });
+        ..Default::default()
+    };
+    
+    let llm = OpenAIChat::new(config);
+    
+    let messages = vec![Message::human("写一段 100 字的短文")];
+    
+    let stream = llm.stream_chat(messages, None).await?;
+    // 使用 futures_util::StreamExt 处理流
+    // while let Some(tok) = stream.next().await { print!("{}", tok?); }
+    
+    Ok(())
+}
+```
 
-    let mut stream = llm.stream_generate("生成一段 100 字的短文").await.unwrap();
-    while let Some(tok) = stream.next().await {
-        print!("{}", tok.unwrap());
+### Function Calling（bind_tools）
+
+通过 `bind_tools()` 将工具绑定到 LLM，让模型能够调用外部函数：
+
+```rust
+use langchainrust::{OpenAIChat, OpenAIConfig, ToolDefinition, BaseChatModel};
+use langchainrust::schema::Message;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+// 定义工具输入类型
+#[derive(JsonSchema, Deserialize)]
+struct CalculatorInput {
+    expression: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = OpenAIConfig {
+        api_key: std::env::var("OPENAI_API_KEY")?,
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-3.5-turbo".to_string(),
+        ..Default::default()
+    };
+    
+    let llm = OpenAIChat::new(config);
+    
+    // 创建工具定义（自动生成 JSON Schema）
+    let tool = ToolDefinition::from_type::<CalculatorInput>(
+        "calculator",
+        "计算数学表达式"
+    );
+    
+    // 绑定工具到 LLM
+    let llm_with_tools = llm.bind_tools(vec![tool]);
+    
+    let messages = vec![Message::human("计算 25 + 17")];
+    let response = llm_with_tools.chat(messages, None).await?;
+    
+    // 检查是否有工具调用
+    if let Some(tool_calls) = response.tool_calls {
+        let call = &tool_calls[0];
+        println!("工具: {}", call.function.name);
+        println!("参数: {}", call.function.arguments);
+        
+        // 解析参数
+        let args: CalculatorInput = call.parse_arguments()?;
+        println!("表达式: {}", args.expression);
     }
+    
+    Ok(())
 }
 ```
 
@@ -77,7 +150,9 @@ async fn main() {
 | `base_url` | String | API 基础 URL |
 | `model` | String | 模型名称 |
 | `streaming` | bool | 是否启用流式输出 |
-| `factor` | u8 | 模型系数（1-10），用于模型路由 |
+| `temperature` | Option<f32> | 采样温度 (0.0-2.0) |
+| `max_tokens` | Option<usize> | 最大生成 token 数 |
+| `tools` | Option<Vec<ToolDefinition>> | 绑定的工具定义 |
 
 ---
 
@@ -148,6 +223,126 @@ let history = memory.history();  // 获取历史记录列表
 ---
 
 ## Agent
+
+LangChainRust 提供两种 Agent：
+
+| Agent | 工具调用方式 | 适用场景 |
+|-------|-------------|----------|
+| **FunctionCallingAgent** | 原生 Function Calling | 支持 FC 的模型（GPT-4、Claude、Gemini）**推荐** |
+| **ReActAgent** | 文本解析（正则提取） | 不支持 FC 的模型、开源模型、本地部署模型 |
+
+### FunctionCallingAgent（推荐）
+
+使用原生 Function Calling，类型安全，更可靠。
+
+#### 创建 FunctionCallingAgent
+
+```rust
+use langchainrust::{
+    OpenAIChat, OpenAIConfig, BaseChatModel,
+    FunctionCallingAgent, AgentExecutor, BaseAgent, BaseTool,
+    Calculator, DateTimeTool,
+};
+use std::sync::Arc;
+
+let config = OpenAIConfig {
+    api_key: std::env::var("OPENAI_API_KEY")?,
+    base_url: "https://api.openai.com/v1".to_string(),
+    model: "gpt-3.5-turbo".to_string(),
+    ..Default::default()
+};
+
+let llm = OpenAIChat::new(config);
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+// FunctionCallingAgent 自动绑定工具到 LLM
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
+
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
+    .with_max_iterations(5)
+    .with_verbose(true);
+
+let result = executor.invoke("计算 37 + 48".to_string()).await?;
+println!("结果: {}", result);
+```
+
+#### 带自定义系统提示词
+
+```rust
+let agent = FunctionCallingAgent::new(
+    llm,
+    tools.clone(),
+    Some("你是一个数学助手，专门帮助用户解决数学问题。".to_string()),
+);
+```
+
+#### 执行日志
+
+```
+=== 迭代 1 ===
+动作: calculator({"expression":"37 + 48"})
+观察: 37 + 48 = 85
+
+=== 迭代 2 ===
+最终答案: {"output": "37 + 48 = 85"}
+```
+
+---
+
+### ReActAgent（兼容旧模型）
+
+使用文本解析方式，适用于不支持 Function Calling 的模型。
+
+#### 创建 ReActAgent
+
+```rust
+use langchainrust::{
+    OpenAIChat, OpenAIConfig, BaseChatModel,
+    ReActAgent, AgentExecutor, BaseAgent, BaseTool,
+    Calculator, DateTimeTool, SimpleMathTool,
+};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(config);
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+    Arc::new(SimpleMathTool::new()),
+];
+
+let agent = ReActAgent::new(llm, tools.clone(), None);
+
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
+    .with_max_iterations(5);
+
+let result = executor.invoke("计算 37 + 48".to_string()).await?;
+println!("结果: {}", result);
+```
+
+---
+
+### 两种 Agent 对比
+
+| 维度 | FunctionCallingAgent | ReActAgent |
+|------|---------------------|------------|
+| **工具调用方式** | 原生 Function Calling | 文本解析（正则） |
+| **可靠性** | 高（类型安全） | 较低（依赖 Prompt 格式） |
+| **Token 消耗** | 低（不需要格式说明） | 高（Prompt 包含格式说明） |
+| **参数处理** | JSON Schema 类型安全 | 文本提取，可能格式错误 |
+| **历史传递** | Message 消息流 | scratchpad 文本 |
+| **适用模型** | 支持 FC 的模型 | 所有模型 |
+
+#### 选择建议
+
+- 使用 OpenAI GPT-4/Claude/Gemini → **FunctionCallingAgent**
+- 使用本地部署模型/开源模型 → **ReActAgent**
+
+---
 
 ### ReActAgent（基础用法）
 
@@ -696,123 +891,103 @@ pub struct SubTask {
 | 工具名 | 描述 | 参数 |
 |--------|------|------|
 | `Calculator` | 执行基本数学运算（加减乘除） | `expression`: 数学表达式 |
-| `SimpleMathTool` | 高级数学运算（幂、开方、三角函数等） | `operation`: 操作类型, `value`: 数值, `value2`: 第二个数值（可选） |
-| `DateTimeTool` | 日期时间查询和计算 | `operation`: 操作类型, `datetime`: 日期时间（可选）, `value`: 数值（可选）, `unit`: 单位（可选） |
-| `URLFetchTool` | 网页抓取和解析 | `operation`: 操作类型, `url`: 网址, `max_length`: 最大长度（可选） |
-| `WeatherTool` | 获取城市天气（模拟） | `city`: 城市名称 |
-| `TextTool` | 文本处理工具 | `operation`: 操作类型, `text`: 文本内容 |
-| `WebSearchTool` | 网络搜索（模拟） | `query`: 搜索关键词 |
-| `JsonTool` | JSON 处理工具 | `operation`: 操作类型, `data`: JSON字符串 |
-
-### SimpleMathTool 详细用法
-
-支持的操作类型：
-
-| 操作 | 说明 | 示例 |
-|------|------|------|
-| `power` | 幂运算 | `{"operation": "power", "value": 2, "value2": 10}` → 1024 |
-| `sqrt` | 平方根 | `{"operation": "sqrt", "value": 16}` → 4 |
-| `log` | 对数（可指定底数） | `{"operation": "log", "value": 100, "base": 10}` → 2 |
-| `ln` | 自然对数 | `{"operation": "ln", "value": 2.718}` → ~1 |
-| `sin` | 正弦函数（弧度） | `{"operation": "sin", "value": 1.57}` → ~1 |
-| `cos` | 余弦函数（弧度） | `{"operation": "cos", "value": 0}` → 1 |
-| `tan` | 正切函数（弧度） | `{"operation": "tan", "value": 0.785}` → ~1 |
-| `abs` | 绝对值 | `{"operation": "abs", "value": -5}` → 5 |
-| `factorial` | 阶乘（最大20） | `{"operation": "factorial", "value": 5}` → 120 |
-| `mod` | 取模运算 | `{"operation": "mod", "value": 17, "value2": 5}` → 2 |
-| `gcd` | 最大公约数 | `{"operation": "gcd", "value": 12, "value2": 18}` → 6 |
-| `lcm` | 最小公倍数 | `{"operation": "lcm", "value": 4, "value2": 6}` → 12 |
-| `pi` | 圆周率 | `{"operation": "pi"}` → 3.14159... |
-| `e` | 自然常数 | `{"operation": "e"}` → 2.71828... |
-
-### DateTimeTool 详细用法
-
-支持的操作类型：
-
-| 操作 | 说明 | 示例 |
-|------|------|------|
-| `now` | 获取当前时间 | `{"operation": "now"}` |
-| `format` | 格式化日期 | `{"operation": "format", "datetime": "2024-01-15"}` |
-| `add` | 添加时间 | `{"operation": "add", "datetime": "2024-01-15", "value": 3, "unit": "days"}` |
-| `subtract` | 减去时间 | `{"operation": "subtract", "datetime": "2024-01-15", "value": 1, "unit": "weeks"}` |
-| `weekday` | 获取星期几 | `{"operation": "weekday", "datetime": "2024-01-15"}` → 星期一 |
-| `diff` | 计算时间差 | `{"operation": "diff", "datetime": "2024-01-01", "target": "2024-01-15"}` → 14天 |
-
-时间单位支持：`seconds`, `minutes`, `hours`, `days`, `weeks`, `months`, `years`
-
-### URLFetchTool 详细用法
-
-支持的操作类型：
-
-| 操作 | 说明 | 示例 |
-|------|------|------|
-| `fetch` | 抓取完整网页 | `{"operation": "fetch", "url": "https://example.com"}` |
-| `extract_text` | 提取纯文本 | `{"operation": "extract_text", "url": "https://example.com"}` |
-| `extract_links` | 提取所有链接 | `{"operation": "extract_links", "url": "https://example.com"}` |
-| `extract_images` | 提取图片链接 | `{"operation": "extract_images", "url": "https://example.com"}` |
-| `metadata` | 提取元数据 | `{"operation": "metadata", "url": "https://example.com"}` |
+| `SimpleMathTool` | 高级数学运算（幂、开方、三角函数等） | `operation`: 操作类型, `value`: 数值 |
+| `DateTimeTool` | 日期时间查询和计算 | `operation`: 操作类型, `datetime`: 日期时间 |
+| `URLFetchTool` | 网页抓取和解析 | `operation`: 操作类型, `url`: 网址 |
 
 ### 使用工具
 
 ```rust
-use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool, URLFetchTool, BaseTool};
+use langchainrust::{Calculator, DateTimeTool, SimpleMathTool, BaseTool};
 use std::sync::Arc;
 
-// 创建工具列表
 let tools: Vec<Arc<dyn BaseTool>> = vec![
     Arc::new(Calculator::new()),
     Arc::new(DateTimeTool::new()),
     Arc::new(SimpleMathTool::new()),
-    Arc::new(URLFetchTool::new()),
 ];
-
-// 不传工具也可以工作（Agent 会直接回答）
-let tools: Vec<Arc<dyn BaseTool>> = vec![];
 ```
 
 ### 直接调用工具
 
 ```rust
-use langchainrust::tools::{SimpleMathTool, BaseTool};
+use langchainrust::{SimpleMathTool, BaseTool};
 
 let math = SimpleMathTool::new();
 
-// 直接调用工具
 let result = math.run(r#"{"operation": "power", "value": 2, "value2": 10}"#.to_string()).await?;
 println!("2^10 = {}", result); // 输出: 2^10 = 1024
 ```
 
+### to_tool_definition()
+
+将 BaseTool 转换为 ToolDefinition，用于 Function Calling：
+
+```rust
+use langchainrust::{Calculator, BaseTool, to_tool_definition, ToolDefinition};
+
+let calculator = Calculator::new();
+
+// 自动从 args_schema() 生成 JSON Schema
+let tool_def: ToolDefinition = to_tool_definition(&calculator);
+
+// 用于 bind_tools()
+let llm_with_tools = llm.bind_tools(vec![tool_def]);
+```
+
 ### 自定义 Tool
+
+实现 `BaseTool` trait 创建自定义工具：
 
 ```rust
 use async_trait::async_trait;
-use langchainrust::tools::{Tool, ToolInput, ToolOutput};
+use langchainrust::{BaseTool, ToolError};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+// 定义输入类型（用于 JSON Schema）
+#[derive(JsonSchema, Deserialize)]
+struct EchoInput {
+    text: String,
+}
 
 pub struct EchoTool;
 
 #[async_trait]
-impl Tool for EchoTool {
+impl BaseTool for EchoTool {
     fn name(&self) -> &str {
         "echo"
     }
 
     fn description(&self) -> &str {
-        "原样返回输入的 text"
+        "原样返回输入的文本"
     }
 
-    async fn invoke(&self, input: ToolInput) -> Result<ToolOutput, Box<dyn std::error::Error>> {
-        let text = input.parameters.get("text").ok_or("缺少 text 参数")?;
-        Ok(ToolOutput { success: true, result: text.clone() })
+    async fn run(&self, input: String) -> Result<String, ToolError> {
+        // 解析输入
+        let args: EchoInput = serde_json::from_str(&input)
+            .map_err(|e| ToolError::InvalidInput(e.to_string()))?;
+        
+        Ok(args.text)
     }
 
-    fn parameters(&self) -> Vec<(&str, &str)> {
-        vec![("text", "要回显的文本")]
-    }
-
-    fn return_direct(&self) -> bool {
-        false
+    fn args_schema(&self) -> Option<serde_json::Value> {
+        // 自动生成 JSON Schema
+        use schemars::schema_for;
+        serde_json::to_value(schema_for!(EchoInput)).ok()
     }
 }
+```
+
+使用自定义工具：
+
+```rust
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(EchoTool),
+];
+
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
 ```
 
 ---
@@ -832,24 +1007,17 @@ impl Tool for EchoTool {
 # 运行全部测试
 cargo test
 
-# 运行单个测试文件
-cargo test --test chain_test
-cargo test --test agent_chain_like_test
+# 运行单元测试
+cargo test --lib
 
-# 运行模型路由测试
-cargo test --test model_factor_test -- --nocapture
+# 运行 Function Calling Agent 测试
+cargo test --test function_calling_agent -- --include-ignored --nocapture
 
-# 运行 retrieval 测试
-cargo test --test retrieval_test -- --nocapture
-
-# 运行任务规划测试
-cargo test --test planner_test -- --nocapture
-
-# 运行 RAG Agent 测试
-cargo test --test retrieval_agent_test -- --nocapture
+# 运行 ReAct Agent 测试
+cargo test --test integration_agent_react -- --include-ignored --nocapture
 
 # 运行特定测试函数
-cargo test test_full_planning_workflow -- --nocapture
+cargo test test_fc_agent_with_calculator -- --include-ignored --nocapture
 ```
 
 ---
@@ -858,70 +1026,51 @@ cargo test test_full_planning_workflow -- --nocapture
 
 ```
 src/
-├── llms/           # LLM 实现
-│   ├── mod.rs      # 导出 LLM、OpenAIConfig、ModelConfig、QwenConfig
-│   ├── openai.rs   # OpenAI 兼容接口
-│   └── qwen.rs     # Qwen 接口
-├── prompts/        # 提示词模板
-├── messages/       # 消息结构（system/user/assistant）
-├── memory/         # 记忆接口与实现
-├── chains/         # 链式组合
-├── tools/          # 工具接口与内置工具
-│   ├── mod.rs      # 导出 Tool trait 和所有工具
-│   ├── tool.rs     # Tool trait 定义
-│   └── tools.rs    # 内置工具实现
-├── agent/          # Agent 与执行器
-│   ├── mod.rs      # Agent trait、AgentAction、AgentError
-│   ├── executor.rs # AgentExecutor
-│   ├── react/      # ReActAgent 模块
-│   │   ├── mod.rs      # ReActAgent 结构体
-│   │   ├── types.rs    # AnyLLM、RoutingState
-│   │   ├── routing.rs  # 模型路由
-│   │   ├── retrieval.rs # RAG 检索
-│   │   ├── parser.rs   # 响应解析
-│   │   └── agent_impl.rs # Agent trait 实现
-│   └── planner/    # 任务规划模块
-│       ├── mod.rs      # 模块导出
-│       ├── types.rs    # Plan、SubTask、TaskResult
-│       ├── planner.rs  # TaskPlanner
-│       └── executor.rs # PlannedExecutor
-└── retrieval/      # 检索组件
-    ├── mod.rs      # 导出所有 retrieval 组件
-    ├── traits.rs   # 核心 trait 定义
-    ├── document.rs # 文档结构
-    ├── text_splitters.rs # 文本分割器
-    ├── embeddings.rs     # 嵌入模型
-    ├── vector_stores.rs  # 向量存储
-    └── retrievers.rs     # 检索器
+├── core/                # 核心抽象
+│   ├── language_models/ # Base LLM traits
+│   ├── runnables/       # Runnable trait
+│   └── tools/           # Tool trait + ToolDefinition + to_tool_definition()
+├── language_models/     # LLM 实现
+│   └── openai/          # OpenAI 客户端（支持 bind_tools）
+├── agents/              # Agent 框架
+│   ├── react/           # ReActAgent（文本解析）
+│   └── function_calling/ # FunctionCallingAgent（原生 FC）
+├── prompts/             # 提示词模板
+├── memory/              # 记忆管理
+├── chains/              # 链式调用
+├── retrieval/           # RAG 组件
+├── embeddings/          # 文本嵌入
+├── vector_stores/       # 向量存储
+├── tools/               # 内置工具
+└── schema/              # 数据结构（Message、ToolCall）
 ```
 
 ---
 
 ## API 速查
 
-### ReActAgent 构造方法
+### Agent 构造方法
 
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `new(llm, tools, memory)` | LLM、工具列表、可选内存 | 基础 Agent |
-| `with_template(llm, tools, memory, template)` | 增加模板参数 | 带模板的 Agent |
-| `with_models(llm, models, tools, memory, template)` | 增加模型列表参数 | 带模型路由的 Agent |
-| `with_retriever(llm, tools, memory, retriever, top_k)` | 增加检索器 | 带 RAG 的 Agent |
-| `with_retriever_and_template(...)` | 增加检索器和模板 | RAG + 自定义模板 |
-| `with_all(...)` | 所有参数 | 完整功能 Agent |
+| Agent | 方法 | 说明 |
+|-------|------|------|
+| **FunctionCallingAgent** | `new(llm, tools, system_prompt)` | 推荐，原生 FC |
+| **ReActAgent** | `new(llm, tools, memory)` | 兼容旧模型 |
 
 ### 工具调用
 
-| 行为 | 说明 |
+| Agent | 工具调用方式 | 说明 |
+|-------|-------------|------|
+| FunctionCallingAgent | `tool_calls` JSON | 类型安全 |
+| ReActAgent | 文本 `Action: xxx` | 正则提取 |
+
+### Function Calling API
+
+| 方法 | 说明 |
 |------|------|
-| 使用工具 | 模型输出 `[TOOL: 工具名 参数=值]` |
-| 直接回答 | 模型直接输出答案文本 |
-
-### 模型路由参数
-
-| 参数名 | 别名 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `difficulty` | `难度`、`level` | 1 | 问题难度（1-10） |
+| `bind_tools(vec![ToolDefinition])` | 绑定工具到 LLM |
+| `to_tool_definition(&tool)` | 将 BaseTool 转为 ToolDefinition |
+| `ToolDefinition::from_type::<T>()` | 从类型自动生成 Schema |
+| `ToolCall::parse_arguments::<T>()` | 解析工具参数 |
 
 ### RAG 执行流程
 
@@ -931,31 +1080,4 @@ src/
 | 2. 构建上下文 | 将文档格式化为 prompt 上下文 |
 | 3. 调用 LLM | 将问题和上下文一起发送给模型 |
 | 4. 返回答案 | 模型基于上下文生成答案 |
-
-### 任务规划 API
-
-| 类型 | 方法/字段 | 说明 |
-|------|----------|------|
-| `TaskPlanner::new(llm)` | 构造 | 创建任务规划器 |
-| `.with_max_sub_tasks(n)` | 配置 | 设置最大子任务数 |
-| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
-| `.plan(question)` | 方法 | 分解任务，返回 Plan |
-| `.summarize(question, results)` | 方法 | 汇总执行结果 |
-| `PlannedExecutor::new(llm, agent, tools)` | 构造 | 创建规划执行器 |
-| `.with_max_sub_tasks(n)` | 配置 | 设置最大子任务数 |
-| `.with_max_iterations(n)` | 配置 | 设置每个子任务最大迭代次数 |
-| `.with_memory(memory)` | 配置 | 设置记忆模块 |
-| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
-| `.run(question)` | 方法 | 执行复杂任务 |
-| `.run_with_plan(question)` | 方法 | 返回规划和详细结果 |
-| `SimplePlannedExecutor::new(llm)` | 构造 | 创建简化版执行器 |
-| `.with_verbose(bool)` | 配置 | 是否打印日志（默认 false） |
-
-### 任务规划流程
-
-| 步骤 | 说明 |
-|------|------|
-| 1. 规划 | LLM 将问题分解为子任务 |
-| 2. 执行 | 依次执行每个子任务 |
-| 3. 汇总 | 将所有结果汇总为最终答案 |
 

@@ -20,7 +20,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | 组件 | 功能 |
 |------|------|
 | **LLM** | OpenAI 兼容接口，支持流式输出、function calling |
-| **Agents** | ReActAgent - 推理+行动的智能代理 |
+| **Agents** | ReActAgent（文本解析）+ FunctionCallingAgent（原生 FC）|
 | **Prompts** | PromptTemplate 和 ChatPromptTemplate |
 | **Memory** | 对话历史管理 |
 | **Chains** | LLMChain 和 SequentialChain 工作流 |
@@ -28,7 +28,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | **Loaders** | 支持 PDF 和 CSV 文档加载 |
 | **Tools** | 内置工具：计算器、日期时间、数学运算、URL抓取 |
 | **Callbacks** | 执行追踪、LangSmith 集成、日志输出 |
-| **Tool Calling** | bind_tools()、结构化输出、ToolDefinition |
+| **Tool Calling** | bind_tools()、结构化输出、ToolDefinition、to_tool_definition() |
 
 ### 关键优势
 
@@ -114,6 +114,38 @@ let messages = chat_template.format(&vars)?;
 
 ### Agent 与工具调用
 
+LangChainRust 提供两种 Agent：
+
+| Agent | 方式 | 适用场景 |
+|-------|------|----------|
+| **ReActAgent** | 文本解析（正则提取） | 不支持 Function Calling 的模型 |
+| **FunctionCallingAgent** | 原生 Function Calling | 支持 FC 的模型（推荐） |
+
+#### 使用 FunctionCallingAgent（推荐）
+
+```rust
+use langchainrust::{
+    FunctionCallingAgent, AgentExecutor, BaseAgent, BaseTool,
+    Calculator, DateTimeTool, to_tool_definition,
+};
+use std::sync::Arc;
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+// FunctionCallingAgent 自动绑定工具到 LLM
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
+    .with_max_iterations(5);
+
+let result = executor.invoke("计算 37 + 48".to_string()).await?;
+println!("结果: {}", result);
+```
+
+#### 使用 ReActAgent（兼容旧模型）
+
 ```rust
 use langchainrust::{
     ReActAgent, AgentExecutor, BaseAgent, BaseTool,
@@ -134,6 +166,15 @@ let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
 let result = executor.invoke("计算 37 + 48".to_string()).await?;
 println!("结果: {}", result);
 ```
+
+#### 两种 Agent 的区别
+
+| 维度 | ReActAgent | FunctionCallingAgent |
+|------|------------|---------------------|
+| 工具调用方式 | 文本解析（正则） | 原生 Function Calling |
+| 可靠性 | 依赖 Prompt 格式 | 类型安全，模型原生支持 |
+| Token 消耗 | 高（需要格式说明） | 低（不需要格式说明） |
+| 适用模型 | 所有模型 | 支持 FC 的模型（GPT-4、Claude、Gemini） |
 
 ### 对话记忆
 
@@ -296,11 +337,12 @@ src/
 ├── core/                # 核心抽象
 │   ├── language_models/ # 基础 LLM trait
 │   ├── runnables/       # Runnable trait
-│   └── tools/           # Tool trait
+│   └── tools/           # Tool trait + to_tool_definition()
 ├── language_models/     # LLM 实现
-│   └── openai/          # OpenAI 客户端
+│   └── openai/          # OpenAI 客户端（支持 Function Calling）
 ├── agents/              # Agent 框架
-│   └── react/           # ReActAgent
+│   ├── react/           # ReActAgent（文本解析）
+│   └── function_calling/ # FunctionCallingAgent（原生 FC）
 ├── prompts/             # 提示词模板
 ├── memory/              # 记忆管理
 ├── chains/              # 链式调用
@@ -364,13 +406,14 @@ Apache License, Version 2.0 或 MIT License，任选其一。
 | Component | Description |
 |-----------|-------------|
 | **LLM** | OpenAI-compatible API with streaming support |
-| **Agents** | ReActAgent for reasoning + acting |
+| **Agents** | ReActAgent (text parsing) + FunctionCallingAgent (native FC) |
 | **Prompts** | PromptTemplate and ChatPromptTemplate |
 | **Memory** | Conversation history management |
 | **Chains** | LLMChain and SequentialChain workflows |
 | **RAG** | Document splitting, vector stores, semantic retrieval |
 | **Loaders** | PDF and CSV document loading support |
 | **Tools** | Built-in: Calculator, DateTime, Math, URLFetch |
+| **Tool Calling** | bind_tools(), to_tool_definition(), ToolDefinition, structured output |
 
 ### Key Benefits
 
@@ -386,7 +429,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.2.3"
+langchainrust = "0.2.4"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -455,6 +498,38 @@ let messages = chat_template.format(&vars)?;
 ```
 
 ### Agent with Tools
+
+LangChainRust provides two types of Agents:
+
+| Agent | Method | Use Case |
+|-------|--------|----------|
+| **ReActAgent** | Text parsing (regex) | Models without Function Calling support |
+| **FunctionCallingAgent** | Native Function Calling | Models with FC support (recommended) |
+
+#### Using FunctionCallingAgent (Recommended)
+
+```rust
+use langchainrust::{
+    FunctionCallingAgent, AgentExecutor, BaseAgent, BaseTool,
+    Calculator, DateTimeTool,
+};
+use std::sync::Arc;
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+// FunctionCallingAgent automatically binds tools to LLM
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
+    .with_max_iterations(5);
+
+let result = executor.invoke("What is 37 + 48?".to_string()).await?;
+println!("Answer: {}", result);
+```
+
+#### Using ReActAgent (Legacy Support)
 
 ```rust
 use langchainrust::{
@@ -602,11 +677,12 @@ src/
 ├── core/                # Core abstractions
 │   ├── language_models/ # Base LLM traits
 │   ├── runnables/       # Runnable trait
-│   └── tools/           # Tool trait
+│   └── tools/           # Tool trait + to_tool_definition()
 ├── language_models/     # LLM implementations
-│   └── openai/          # OpenAI client
+│   └── openai/          # OpenAI client (Function Calling support)
 ├── agents/              # Agent framework
-│   └── react/           # ReActAgent
+│   ├── react/           # ReActAgent (text parsing)
+│   └── function_calling/ # FunctionCallingAgent (native FC)
 ├── prompts/             # Prompt templates
 ├── memory/              # Memory management
 ├── chains/              # Chain workflows
