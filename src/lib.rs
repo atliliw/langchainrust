@@ -37,7 +37,7 @@ pub use core::{
 };
 pub use core::tools::StructuredOutput;
 pub use schema::{Message, MessageType};
-pub use language_models::{OpenAIChat, OpenAIConfig};
+pub use language_models::{OpenAIChat, OpenAIConfig, OllamaChat, OllamaConfig};
 pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput};
 pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent};
 pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory};
