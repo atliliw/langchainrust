@@ -248,6 +248,27 @@ impl AgentExecutor {
                     
                     intermediate_steps.push(AgentStep::new(action, observation));
                 }
+                
+                AgentOutput::Actions(actions) => {
+                    if self.verbose {
+                        println!("并行动作: {} 个", actions.len());
+                        for action in &actions {
+                            println!("  - {}({})", action.tool, action.tool_input);
+                        }
+                    }
+                    
+                    let observations = self.execute_tools_parallel(&actions, root_run).await?;
+                    
+                    if self.verbose {
+                        for (i, obs) in observations.iter().enumerate() {
+                            println!("观察 {}: {}", i + 1, obs);
+                        }
+                    }
+                    
+                    for (action, observation) in actions.into_iter().zip(observations.into_iter()) {
+                        intermediate_steps.push(AgentStep::new(action, observation));
+                    }
+                }
             }
         }
         
@@ -257,6 +278,21 @@ impl AgentExecutor {
         
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())
+    }
+    
+    /// 并行执行多个工具
+    async fn execute_tools_parallel(
+        &self,
+        actions: &[super::types::AgentAction],
+        root_run: &RunTree,
+    ) -> Result<Vec<String>, AgentError> {
+        use futures_util::future::join_all;
+        
+        let futures: Vec<_> = actions.iter().map(|action| {
+            self.execute_tool(action, root_run)
+        }).collect();
+        
+        join_all(futures).await.into_iter().collect()
     }
     
     /// 执行工具

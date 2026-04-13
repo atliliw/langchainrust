@@ -60,4 +60,4 @@ pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter
 pub use prompts::{PromptTemplate, ChatPromptTemplate};
 
 // Callbacks
-pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler};
+pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler, FileCallbackHandler, LogFormat};

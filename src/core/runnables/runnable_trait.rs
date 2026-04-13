@@ -89,13 +89,61 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     ///
     /// # 返回
     /// * `Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error>` - 输出流
+    ///
+    /// # 默认实现
+    /// 默认将 invoke 结果包装为单元素流。
+    /// 支持真正流式的类型应重写此方法。
     async fn stream(
         &self,
-        _input: Input,
-        _config: Option<RunnableConfig>,
+        input: Input,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error> {
-        // 默认实现 - 不支持流式
-        // 在支持流式的类型中重写此方法
-        unimplemented!("此 Runnable 不支持流式处理")
+        // 默认实现：将 invoke 结果包装为单元素流
+        // 这样所有 Runnable 都自动获得 stream 能力
+        // 支持真正流式的类型（如 LLM）应重写此方法
+        let result = self.invoke(input, config).await?;
+        let stream = futures_util::stream::once(async move { Ok(result) });
+        Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    struct TestRunnable;
+
+    #[async_trait]
+    impl Runnable<String, String> for TestRunnable {
+        type Error = std::convert::Infallible;
+
+        async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+            Ok(format!("processed: {}", input))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_stream_returns_single_element() {
+        let runnable = TestRunnable;
+        let mut stream = runnable.stream("test".to_string(), None).await.unwrap();
+        
+        let first = stream.next().await;
+        assert!(first.is_some());
+        assert_eq!(first.unwrap().unwrap(), "processed: test");
+        
+        let second = stream.next().await;
+        assert!(second.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_matches_stream_result() {
+        let runnable = TestRunnable;
+        
+        let invoke_result = runnable.invoke("hello".to_string(), None).await.unwrap();
+        let mut stream = runnable.stream("hello".to_string(), None).await.unwrap();
+        let stream_result = stream.next().await.unwrap().unwrap();
+        
+        assert_eq!(invoke_result, stream_result);
     }
 }

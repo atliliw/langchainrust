@@ -103,18 +103,24 @@ impl BaseAgent for FunctionCallingAgent {
         
         if let Some(tool_calls) = &result.tool_calls {
             if !tool_calls.is_empty() {
-                let call = &tool_calls[0];
+                let actions: Vec<AgentAction> = tool_calls.iter().map(|call| {
+                    let tool_input = match serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+                        Ok(v) => ToolInput::Object(v),
+                        Err(_) => ToolInput::String(call.function.arguments.clone()),
+                    };
+                    
+                    AgentAction {
+                        tool: call.function.name.clone(),
+                        tool_input,
+                        log: call.id.clone(),
+                    }
+                }).collect();
                 
-                let tool_input = match serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
-                    Ok(v) => ToolInput::Object(v),
-                    Err(_) => ToolInput::String(call.function.arguments.clone()),
-                };
-                
-                return Ok(AgentOutput::Action(AgentAction {
-                    tool: call.function.name.clone(),
-                    tool_input,
-                    log: call.id.clone(),
-                }));
+                if actions.len() == 1 {
+                    return Ok(AgentOutput::Action(actions.into_iter().next().unwrap()));
+                } else {
+                    return Ok(AgentOutput::Actions(actions));
+                }
             }
         }
         

@@ -8,7 +8,7 @@ repository = "https://github.com/atliliw/langchainrust"
 homepage = "https://github.com/atliliw/langchainrust"
 documentation = "https://docs.rs/langchainrust"
 readme = "README.md"
-keywords = ["llm", "langchain", "ai", "rust", "openai", "function-calling", "agent"]
+keywords = ["llm", "langchain", "ai", "rust", "agent"]
 categories = ["algorithms", "asynchronous", "api-bindings", "science"]
 authors = ["atliliw"]
 exclude = [
@@ -87,6 +87,19 @@ path = "tests/unit/tool_calling.rs"
 [[test]]
 name = "unit_ollama"
 path = "tests/unit/ollama.rs"
+
+# Phase 1 新增测试
+[[test]]
+name = "unit_parallel_tool_calls"
+path = "tests/unit/parallel_tool_calls.rs"
+
+[[test]]
+name = "unit_file_handler"
+path = "tests/unit/file_handler.rs"
+
+[[test]]
+name = "unit_runnable_stream"
+path = "tests/unit/runnable_stream.rs"
 
 [[test]]
 name = "qdrant_tutorial"

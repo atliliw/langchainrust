@@ -249,8 +249,10 @@ mod tests {
                 assert!(finish.output().is_some());
             }
             AgentOutput::Action(_) => {
-                // 如果 LLM 仍然尝试调用工具，也接受（但应该不会有工具）
                 println!("LLM 尝试调用工具");
+            }
+            AgentOutput::Actions(_) => {
+                println!("ReActAgent 不支持并行工具调用");
             }
         }
     }
@@ -275,8 +277,10 @@ mod tests {
                 assert_eq!(action.tool, "calculator");
             }
             AgentOutput::Finish(finish) => {
-                // LLM 可能直接计算（如果足够智能）
                 println!("直接答案: {:?}", finish.return_values);
+            }
+            AgentOutput::Actions(_) => {
+                println!("ReActAgent 不支持并行工具调用");
             }
         }
     }
@@ -310,11 +314,13 @@ mod tests {
         match result {
             AgentOutput::Action(action) => {
                 println!("下一步动作: {}({})", action.tool, action.tool_input);
-                // 应该计算 85 * 2
                 assert_eq!(action.tool, "calculator");
             }
             AgentOutput::Finish(finish) => {
                 println!("最终答案: {:?}", finish.return_values);
+            }
+            AgentOutput::Actions(_) => {
+                println!("ReActAgent 不支持并行工具调用");
             }
         }
     }
@@ -340,12 +346,14 @@ mod tests {
         match result {
             AgentOutput::Finish(finish) => {
                 println!("答案: {:?}", finish.return_values);
-                // 应该能记住名字
                 let output = finish.output().unwrap_or("");
                 assert!(output.contains("张三"), "应该记住用户名字");
             }
             AgentOutput::Action(_) => {
                 println!("LLM 尝试调用工具");
+            }
+            AgentOutput::Actions(_) => {
+                println!("ReActAgent 不支持并行工具调用");
             }
         }
     }
