@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2025-04-14
+
+### Added
+- **RetrievalQA**: 一站式检索问答 Chain
+  - 自动检索相关文档（RAG 核心）
+  - 组装 Prompt（上下文 + 问题）
+  - LLM 基于上下文生成答案
+  - `query()` 简化接口，一行完成问答
+  - `with_return_source_documents(true)` 返回来源文档
+  - `with_prompt_template()` 自定义 Prompt
+  - `with_k()` 配置检索数量
+- **ConversationSummaryBufferMemory**: 智能摘要 + 完整对话
+  - 保留最近对话完整内容（确保流畅性）
+  - 对旧对话进行摘要（节省 token）
+  - `max_token_limit` 触发摘要机制
+  - 平衡效率和对话质量
+- **RouterChain**: 条件路由 Chain（已完成）
+  - 根据输入关键词自动路由到不同 Chain
+  - `LLMRouterChain` 使用 LLM 智能判断路由
+  - 支持默认 Chain（未匹配时使用）
+
+### Changed
+- Chain 类型完成度提升到 40%（新增 RetrievalQA）
+- Memory 类型完成度提升到 80%（新增 SummaryBuffer）
+
+### Tests
+- 新增 `tests/unit/retrieval_qa.rs` (4 个 LLM 测试)
+- 新增 `tests/unit/summary_buffer_memory.rs` (5 个 LLM 测试)
+- RetrievalQA 5 个单元测试
+- SummaryBufferMemory 7 个单元测试
+
+### Added
+- **RouterChain**: 条件路由 Chain
+  - 根据输入关键词自动路由到不同 Chain
+  - `add_route_with_keywords()` 配置关键词匹配
+  - `LLMRouterChain` 使用 LLM 智能判断路由
+  - 支持默认 Chain（未匹配时使用）
+  - `with_verbose()` 打印路由详情
+- **ConversationChain**: 带记忆的对话 Chain
+  - 自动保存和加载对话历史
+  - 支持多轮对话记忆
+  - `predict()` 简化接口，直接传入字符串
+  - `clear_memory()` 清空记忆方法
+  - 支持系统提示词配置
+  - 支持自定义输入/输出/记忆键名
+  - `ConversationChainBuilder` 方便构建
+- **ConversationSummaryMemory**: 智能摘要记忆
+  - 使用 LLM 自动摘要对话历史
+  - 解决长对话 token 爆炸问题
+  - 每轮对话后更新摘要
+  - 支持自定义摘要提示词
+  - 可配置返回消息或字符串格式
+- **并行工具调用**: Agent 支持一次调用多个工具并并行执行
+  - `AgentOutput::Actions(Vec<AgentAction>)` 新枚举变体
+  - `execute_tools_parallel()` 并行执行方法
+- **FileCallbackHandler**: 文件日志回调处理器
+  - 支持 JSON 和纯文本格式
+  - `LogFormat` 枚举选择日志格式
+- **Runnable::stream()**: 流式处理默认实现
+  - 所有 Runnable 自动获得 stream 能力
+  - 将 invoke 结果包装为单元素流
+
+### Changed
+- **AgentOutput**: 新增 `Actions` 变体和 `actions()`、`is_action()` 方法
+- **FunctionCallingAgent**: 支持解析多个 tool_calls
+
+### Tests
+- 新增 `tests/unit/parallel_tool_calls.rs`
+- 新增 `tests/unit/file_handler.rs`
+- 新增 `tests/unit/runnable_stream.rs`
+- 新增 `tests/unit/conversation_chain.rs` (14 个测试)
+- 新增 `tests/unit/summary_memory.rs` (4 个 LLM 测试)
+- 新增 `tests/unit/router_chain.rs` (3 个 LLM 测试)
+- RouterChain 7 个单元测试
+
 ## [0.2.4] - 2025-04-13
 
 ### Added

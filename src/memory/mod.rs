@@ -30,7 +30,11 @@
 pub mod base;
 pub mod buffer;
 pub mod window;
+pub mod summary;
+pub mod summary_buffer;
 
 pub use base::{BaseMemory, MemoryError, ChatMessageHistory};
 pub use buffer::ConversationBufferMemory;
 pub use window::ConversationBufferWindowMemory;
+pub use summary::ConversationSummaryMemory;
+pub use summary_buffer::ConversationSummaryBufferMemory;

@@ -102,6 +102,26 @@ name = "unit_runnable_stream"
 path = "tests/unit/runnable_stream.rs"
 
 [[test]]
+name = "unit_conversation_chain"
+path = "tests/unit/conversation_chain.rs"
+
+[[test]]
+name = "unit_summary_memory"
+path = "tests/unit/summary_memory.rs"
+
+[[test]]
+name = "unit_router_chain"
+path = "tests/unit/router_chain.rs"
+
+[[test]]
+name = "unit_retrieval_qa"
+path = "tests/unit/retrieval_qa.rs"
+
+[[test]]
+name = "unit_summary_buffer_memory"
+path = "tests/unit/summary_buffer_memory.rs"
+
+[[test]]
 name = "qdrant_tutorial"
 path = "tests/qdrant_tutorial.rs"
 required-features = ["qdrant-integration"]

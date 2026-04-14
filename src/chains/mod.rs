@@ -33,7 +33,13 @@
 pub mod base;
 pub mod llm_chain;
 pub mod sequential_chain;
+pub mod conversation_chain;
+pub mod router_chain;
+pub mod retrieval_qa;
 
 pub use base::{BaseChain, ChainError, ChainResult};
 pub use llm_chain::{LLMChain, LLMChainBuilder};
 pub use sequential_chain::SequentialChain;
+pub use conversation_chain::{ConversationChain, ConversationChainBuilder};
+pub use router_chain::{RouterChain, LLMRouterChain, RouteDestination};
+pub use retrieval_qa::RetrievalQA;
