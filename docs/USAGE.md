@@ -12,6 +12,11 @@
   - PromptTemplate
   - ChatPromptTemplate
 - [Memory](#memory)
+  - ConversationBufferMemory
+  - ConversationBufferWindowMemory
+  - ConversationSummaryMemory
+  - ConversationSummaryBufferMemory
+  - Memory 类型对比
 - [Chains](#chains)
 - [Agent](#agent)
   - FunctionCallingAgent（推荐）
@@ -62,9 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 流式输出（streaming）
 
+流式输出让用户实时看到生成过程，感知延迟更低：
+
 ```rust
 use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
 use langchainrust::schema::Message;
+use futures_util::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,12 +88,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let messages = vec![Message::human("写一段 100 字的短文")];
     
-    let stream = llm.stream_chat(messages, None).await?;
-    // 使用 futures_util::StreamExt 处理流
-    // while let Some(tok) = stream.next().await { print!("{}", tok?); }
+    // 获取流式输出
+    let mut stream = llm.stream_chat(messages, None).await?;
+    
+    let mut full_response = String::new();
+    
+    // 逐 token 接收并打印
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(token) => {
+                print!("{}", token);  // 实时打印（打字机效果）
+                full_response.push_str(&token);
+            }
+            Err(e) => {
+                println!("流式错误: {}", e);
+                break;
+            }
+        }
+    }
+    
+    println!("\n完整响应: {}", full_response);
     
     Ok(())
 }
+```
+
+#### 流式 vs 非流式对比
+
+| 方式 | 用户感知延迟 | 适用场景 |
+|------|--------------|----------|
+| `chat()` | 等待完整响应（可能5-10秒） | 批量处理、后台任务 |
+| `stream_chat()` | 首token立即显示（约0-500ms） | 实时交互、聊天界面 |
+
+#### 流式部分收集
+
+流式输出可以中途停止：
+
+```rust
+let mut stream = llm.stream_chat(messages, None).await?;
+
+let mut partial = String::new();
+let mut count = 0;
+
+while let Some(chunk) = stream.next().await {
+    if let Ok(token) = chunk {
+        count += 1;
+        partial.push_str(&token);
+        
+        if count >= 10 {
+            break;  // 只收集前 10 个 token
+        }
+    }
+}
+
+println!("部分收集: {}", partial);
+```
 ```
 
 ### Function Calling（bind_tools）
@@ -195,17 +252,180 @@ fn main() {
 
 ## Memory
 
-### SimpleMemory
+LangChainRust 提供四种 Memory 类型，解决对话历史管理问题：
 
-`SimpleMemory` 会保存一定数量的历史输出（默认 5 条），可以用于构造对话上下文。
+| Memory 类型 | 压缩方式 | Token 管理 | 适用场景 |
+|-------------|----------|------------|----------|
+| **BufferMemory** | 无压缩 | 无限制 | 短对话、需要完整历史 |
+| **WindowMemory** | 窗口截断 | 硬性截断 | 简单控制、接受丢失 |
+| **SummaryMemory** | LLM 摘要 | 智能压缩 | 长对话、节省 token |
+| **SummaryBufferMemory** | 混合策略 | 动态压缩 | 平衡方案（推荐） |
+
+### ConversationBufferMemory
+
+保存全部对话历史，无压缩：
 
 ```rust
-use langchainrust::memory::SimpleMemory;
+use langchainrust::{ConversationBufferMemory, BaseMemory};
+use std::collections::HashMap;
 
-let memory = SimpleMemory::default();
-memory.add("用户问题", "AI回答");
-let context = memory.context();  // 获取上下文
-let history = memory.history();  // 获取历史记录列表
+let mut memory = ConversationBufferMemory::new();
+
+// 保存对话
+let inputs = HashMap::from([("input".to_string(), "我叫张三".to_string())]);
+let outputs = HashMap::from([("output".to_string(), "你好张三！".to_string())]);
+memory.save_context(&inputs, &outputs).await?;
+
+// 加载历史
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+let history = vars.get("history").unwrap().as_str().unwrap();
+// 输出: "Human: 我叫张三\nAI: 你好张三！"
+```
+
+**特点**：所有对话都保存，token 会随对话增长无限增加。
+
+### ConversationBufferWindowMemory
+
+只保留最近 k 轮对话：
+
+```rust
+use langchainrust::ConversationBufferWindowMemory;
+
+// k=2，保留最近 2 轮（4 条消息）
+let mut memory = ConversationBufferWindowMemory::new(2);
+
+// 添加多轮对话
+for i in 1..=5 {
+    let inputs = HashMap::from([("input".to_string(), format!("问题{}", i))]);
+    let outputs = HashMap::from([("output".to_string(), format!("答案{}", i))]);
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+// 只返回最近 2 轮：问题4、问题5
+// 问题1、2、3 被丢弃
+```
+
+**特点**：简单控制 token 数量，但早期对话会丢失。
+
+### ConversationSummaryMemory
+
+使用 LLM 自动摘要旧对话：
+
+```rust
+use langchainrust::{ConversationSummaryMemory, OpenAIChat};
+
+let llm = OpenAIChat::new(config);
+let mut memory = ConversationSummaryMemory::new(llm);
+
+// 添加多轮对话，超过限制时自动摘要
+for i in 1..=10 {
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+let buffer = memory.buffer().await;
+// buffer = "用户张三喜欢编程，讨论了 Rust 语言..."
+// 原始对话被压缩成摘要
+```
+
+**特点**：大幅压缩 token，保留关键信息。需要额外 LLM 调用。
+
+### ConversationSummaryBufferMemory（推荐）
+
+摘要 + 保留最近对话的混合策略：
+
+```rust
+use langchainrust::{ConversationSummaryBufferMemory, OpenAIChat};
+
+let llm = OpenAIChat::new(config);
+
+// max_token_limit = 100，超过时触发压缩
+let mut memory = ConversationSummaryBufferMemory::new(llm, 100);
+
+// 添加对话
+for i in 1..=10 {
+    let inputs = HashMap::from([("input".to_string(), format!("问题{}", i))]);
+    let outputs = HashMap::from([("output".to_string(), format!("答案{}", i))]);
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+let history = vars.get("history").unwrap().as_str().unwrap();
+// 输出: "摘要: 用户讨论了问题1-7...\n\nHuman: 问题8\nAI: 答案8\nHuman: 问题9\nAI: 答案9..."
+```
+
+**工作原理**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  max_token_limit = 100                                       │
+│                                                             │
+│  total_tokens > 100 时触发压缩:                              │
+│                                                             │
+│  1. prune_messages() 从后往前保留到 limit                    │
+│  2. 被裁掉的消息 → LLM 生成摘要 → buffer                      │
+│  3. 清空 chat_memory，只保留 pruned 部分                      │
+│                                                             │
+│  最终:                                                       │
+│  - buffer = "摘要内容"                                       │
+│  - chat_memory = [最近消息]                                  │
+│                                                             │
+│  load_memory_variables:                                      │
+│  - 返回 "摘要: xxx\n\nHuman: 最近消息\nAI: 回复"              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Memory 类型对比
+
+| 维度 | BufferMemory | WindowMemory | SummaryMemory | SummaryBufferMemory |
+|------|--------------|--------------|---------------|---------------------|
+| **压缩方式** | 无 | 硬删除 | LLM摘要 | 摘要+保留 |
+| **丢失信息** | 无 | 完全丢失 | 摘要保留关键 | 平衡 |
+| **LLM调用** | 无 | 无 | 每轮摘要 | 触发时摘要 |
+| **Token控制** | 无限 | 固定k轮 | 动态压缩 | 动态+保留最近 |
+
+### return_messages 模式
+
+控制输出格式：
+
+```rust
+// 默认：返回字符串
+let memory = ConversationBufferMemory::new();
+// history = "Human: 问题\nAI: 回答"
+
+// 返回消息数组
+let memory = ConversationBufferMemory::new()
+    .with_return_messages(true);
+// history = [{"type": "human", "content": "问题"}, {"type": "ai", "content": "回答"}]
+```
+
+### 自定义键名
+
+```rust
+let memory = ConversationBufferMemory::new()
+    .with_input_key("question")    // 输入键
+    .with_output_key("answer")     // 输出键
+    .with_memory_key("context");   // 记忆键
+
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+let history = vars.get("context").unwrap();  // 使用自定义键
+```
+
+### ChatMessageHistory
+
+底层消息存储容器：
+
+```rust
+use langchainrust::ChatMessageHistory;
+
+let mut history = ChatMessageHistory::new();
+
+history.add_user_message("你好");
+history.add_ai_message("你好！有什么可以帮助你的？");
+
+println!("消息数: {}", history.len());
+println!("格式化: {}", history.to_string());
+// 输出: "Human: 你好\nAI: 你好！有什么可以帮助你的？"
 ```
 
 ---

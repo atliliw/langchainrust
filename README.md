@@ -22,13 +22,14 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | **LLM** | OpenAI 兼容接口，支持流式输出、function calling |
 | **Agents** | ReActAgent（文本解析）+ FunctionCallingAgent（原生 FC）|
 | **Prompts** | PromptTemplate 和 ChatPromptTemplate |
-| **Memory** | 对话历史管理 |
-| **Chains** | LLMChain 和 SequentialChain 工作流 |
+| **Memory** | 四种记忆类型：Buffer、Window、Summary、SummaryBuffer |
+| **Chains** | LLMChain、SequentialChain、ConversationChain、RetrievalQA |
 | **RAG** | 文档分割、向量存储、语义检索 |
 | **Loaders** | 支持 PDF 和 CSV 文档加载 |
 | **Tools** | 内置工具：计算器、日期时间、数学运算、URL抓取 |
 | **Callbacks** | 执行追踪、LangSmith 集成、日志输出 |
 | **Tool Calling** | bind_tools()、结构化输出、ToolDefinition、to_tool_definition() |
+| **Streaming** | stream_chat() 逐 token 实时输出，打字机效果 |
 
 ### 关键优势
 
@@ -44,7 +45,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 
 ```toml
 [dependencies]
-langchainrust = "0.2.3"
+langchainrust = "0.2.5"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -178,22 +179,99 @@ println!("结果: {}", result);
 
 ### 对话记忆
 
+LangChainRust 提供四种 Memory 类型：
+
+| Memory 类型 | 压缩方式 | 适用场景 |
+|-------------|----------|----------|
+| **BufferMemory** | 无压缩 | 短对话、需要完整历史 |
+| **WindowMemory** | 窗口截断 | 简单控制、接受丢失 |
+| **SummaryMemory** | LLM 摘要 | 长对话、节省 token |
+| **SummaryBufferMemory** | 混合策略 | 平衡方案（推荐） |
+
+#### ConversationBufferMemory
+
 ```rust
-use langchainrust::{ChatMessageHistory, Message};
+use langchainrust::{ConversationBufferMemory, BaseMemory};
+use std::collections::HashMap;
 
-let mut history = ChatMessageHistory::new();
+let mut memory = ConversationBufferMemory::new();
 
-// 添加消息
-history.add_message(Message::human("你好！"));
-history.add_message(Message::ai("你好！很高兴见到你！"));
+// 保存对话
+let inputs = HashMap::from([("input".to_string(), "我叫张三".to_string())]);
+let outputs = HashMap::from([("output".to_string(), "你好张三！".to_string())]);
+memory.save_context(&inputs, &outputs).await?;
 
-// 获取历史
-for msg in history.messages() {
-    println!("{:?}: {}", msg.message_type, msg.content);
+// 加载历史
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+let history = vars.get("history").unwrap().as_str().unwrap();
+// 输出: "Human: 我叫张三\nAI: 你好张三！"
+```
+
+#### ConversationBufferWindowMemory
+
+```rust
+use langchainrust::ConversationBufferWindowMemory;
+
+// k=2，保留最近 2 轮（4 条消息）
+let mut memory = ConversationBufferWindowMemory::new(2);
+
+for i in 1..=5 {
+    let inputs = HashMap::from([("input".to_string(), format!("问题{}", i))]);
+    let outputs = HashMap::from([("output".to_string(), format!("答案{}", i))]);
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+// 只返回最近 2 轮，问题1-3 被丢弃
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+```
+
+#### ConversationSummaryBufferMemory（推荐）
+
+```rust
+use langchainrust::{ConversationSummaryBufferMemory, OpenAIChat};
+
+let llm = OpenAIChat::new(config);
+
+// max_token_limit = 100，超过时触发压缩
+let mut memory = ConversationSummaryBufferMemory::new(llm, 100);
+
+for i in 1..=10 {
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+// 返回: "摘要: 用户讨论了...\n\nHuman: 最近消息\nAI: 回复"
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+```
+
+### 流式输出
+
+实时看到生成过程，感知延迟更低：
+
+```rust
+use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
+use futures_util::StreamExt;
+
+let config = OpenAIConfig {
+    streaming: true,  // 启用流式
+    ..Default::default()
+};
+
+let llm = OpenAIChat::new(config);
+let messages = vec![Message::human("写一段短文")];
+
+// 获取流式输出
+let mut stream = llm.stream_chat(messages, None).await?;
+
+// 逐 token 接收并实时打印
+while let Some(chunk) = stream.next().await {
+    if let Ok(token) = chunk {
+        print!("{}", token);  // 打字机效果
+    }
 }
 ```
 
-### Chain 工作流
+### 基础对话
 
 ```rust
 use langchainrust::{LLMChain, SequentialChain, BaseChain};
@@ -429,7 +507,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.2.4"
+langchainrust = "0.2.5"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
