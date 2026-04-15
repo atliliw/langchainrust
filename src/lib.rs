@@ -28,6 +28,7 @@ pub mod vector_stores;
 pub mod retrieval;
 pub mod prompts;
 pub mod callbacks;
+pub mod langgraph;
 
 // 重新导出常用类型
 pub use core::{
@@ -61,3 +62,15 @@ pub use prompts::{PromptTemplate, ChatPromptTemplate};
 
 // Callbacks
 pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler, FileCallbackHandler, LogFormat};
+
+// LangGraph
+pub use langgraph::{
+    StateSchema, StateUpdate, Reducer, ReplaceReducer,
+    GraphNode, NodeResult, NodeConfig,
+    GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter,
+    StateGraph, GraphBuilder, START, END,
+    CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep,
+    GraphError, GraphResult,
+    Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, CheckpointData,
+    AgentState, MessageEntry, MessageRole, StepEntry,
+};
