@@ -28,6 +28,21 @@ pub struct CompiledGraph<S: StateSchema> {
     conditional_routers: HashMap<String, Arc<dyn ConditionalEdge<S>>>,
     checkpointer: Option<Arc<Mutex<dyn Checkpointer<S> + Send>>>,
     recursion_limit: usize,
+    interrupt_before: Vec<String>,
+    interrupt_after: Vec<String>,
+}
+
+impl<S: StateSchema> std::fmt::Debug for CompiledGraph<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledGraph")
+            .field("nodes", &self.nodes.keys().collect::<Vec<_>>())
+            .field("edges", &self.edges)
+            .field("entry_point", &self.entry_point)
+            .field("recursion_limit", &self.recursion_limit)
+            .field("interrupt_before", &self.interrupt_before)
+            .field("interrupt_after", &self.interrupt_after)
+            .finish()
+    }
 }
 
 impl<S: StateSchema> CompiledGraph<S> {
@@ -45,6 +60,8 @@ impl<S: StateSchema> CompiledGraph<S> {
             conditional_routers: HashMap::new(),
             checkpointer: None,
             recursion_limit: 25,
+            interrupt_before: Vec::new(),
+            interrupt_after: Vec::new(),
         }
     }
     
@@ -62,6 +79,16 @@ impl<S: StateSchema> CompiledGraph<S> {
         self
     }
     
+    pub fn with_interrupt_before(mut self, nodes: Vec<String>) -> Self {
+        self.interrupt_before = nodes;
+        self
+    }
+    
+    pub fn with_interrupt_after(mut self, nodes: Vec<String>) -> Self {
+        self.interrupt_after = nodes;
+        self
+    }
+    
     pub fn validate(&self) -> GraphResult<()> {
         for edge in &self.edges {
             match edge {
@@ -76,8 +103,13 @@ impl<S: StateSchema> CompiledGraph<S> {
                             format!("Target node '{}' not found", target)
                         ));
                     }
+                    if target == START {
+                        return Err(GraphError::ValidationError(
+                            format!("Edge cannot target START node")
+                        ));
+                    }
                 }
-                GraphEdge::Conditional { source, router_name, .. } => {
+                GraphEdge::Conditional { source, router_name, targets, default_target } => {
                     if source != START && !self.nodes.contains_key(source) {
                         return Err(GraphError::ValidationError(
                             format!("Source node '{}' not found", source)
@@ -88,10 +120,147 @@ impl<S: StateSchema> CompiledGraph<S> {
                             format!("Router '{}' not found", router_name)
                         ));
                     }
+                    for (route, target) in targets {
+                        if target != END && !self.nodes.contains_key(target) {
+                            return Err(GraphError::ValidationError(
+                                format!("Target '{}' for route '{}' not found", target, route)
+                            ));
+                        }
+                        if target == START {
+                            return Err(GraphError::ValidationError(
+                                format!("Conditional edge cannot target START node")
+                            ));
+                        }
+                    }
+                    if let Some(default) = default_target {
+                        if default != END && !self.nodes.contains_key(default) {
+                            return Err(GraphError::ValidationError(
+                                format!("Default target '{}' not found", default)
+                            ));
+                        }
+                    }
                 }
             }
         }
+        
+        self.validate_duplicate_edges()?;
+        self.validate_unreachable_nodes()?;
+        self.validate_cycles()?;
+        
         Ok(())
+    }
+    
+    fn validate_duplicate_edges(&self) -> GraphResult<()> {
+        let mut seen_fixed: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        
+        for edge in &self.edges {
+            match edge {
+                GraphEdge::Fixed { source, target } => {
+                    let key = (source.clone(), target.clone());
+                    if seen_fixed.contains(&key) {
+                        return Err(GraphError::DuplicateEdgeError(
+                            format!("Duplicate edge: {} -> {}", source, target)
+                        ));
+                    }
+                    seen_fixed.insert(key);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    
+    fn validate_unreachable_nodes(&self) -> GraphResult<()> {
+        let reachable = self.compute_reachable_nodes();
+        
+        for node_name in self.nodes.keys() {
+            if !reachable.contains(node_name) {
+                return Err(GraphError::OrphanNodeError(
+                    format!("Unreachable node: {}", node_name)
+                ));
+            }
+        }
+        Ok(())
+    }
+    
+    fn compute_reachable_nodes(&self) -> std::collections::HashSet<String> {
+        let mut reachable: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut to_visit: Vec<String> = vec![self.entry_point.clone()];
+        
+        while let Some(current) = to_visit.pop() {
+            if reachable.contains(&current) || current == END {
+                continue;
+            }
+            reachable.insert(current.clone());
+            
+            for edge in &self.edges {
+                if edge.source() == current {
+                    match edge {
+                        GraphEdge::Fixed { target, .. } => {
+                            if !reachable.contains(target) && target != END {
+                                to_visit.push(target.clone());
+                            }
+                        }
+                        GraphEdge::Conditional { targets, default_target, .. } => {
+                            for target in targets.values() {
+                                if !reachable.contains(target) && target != END {
+                                    to_visit.push(target.clone());
+                                }
+                            }
+                            if let Some(default) = default_target {
+                                if !reachable.contains(default) && default != END {
+                                    to_visit.push(default.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        reachable
+    }
+    
+    fn validate_cycles(&self) -> GraphResult<()> {
+        let reachable = self.compute_reachable_nodes();
+        let end_reachable = self.compute_end_reachable_nodes();
+        
+        for node in &reachable {
+            if !end_reachable.contains(node) {
+                return Err(GraphError::InfiniteCycleError(
+                    format!("Node '{}' in cycle with no path to END", node)
+                ));
+            }
+        }
+        Ok(())
+    }
+    
+    fn compute_end_reachable_nodes(&self) -> std::collections::HashSet<String> {
+        let mut end_reachable: std::collections::HashSet<String> = std::collections::HashSet::new();
+        end_reachable.insert(END.to_string());
+        
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for edge in &self.edges {
+                match edge {
+                    GraphEdge::Fixed { source, target } => {
+                        if end_reachable.contains(target) && !end_reachable.contains(source) {
+                            end_reachable.insert(source.clone());
+                            changed = true;
+                        }
+                    }
+                    GraphEdge::Conditional { source, targets, default_target, .. } => {
+                        let any_target_reaches_end = targets.values().any(|t| end_reachable.contains(t))
+                            || default_target.as_ref().map_or(false, |d| end_reachable.contains(d));
+                        if any_target_reaches_end && !end_reachable.contains(source) {
+                            end_reachable.insert(source.clone());
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        end_reachable
     }
     
     pub async fn invoke(&self, input: S) -> GraphResult<GraphInvocation<S>> {
@@ -106,6 +275,10 @@ impl<S: StateSchema> CompiledGraph<S> {
         }
         
         while current_node != END && recursion_count < self.recursion_limit {
+            if self.interrupt_before.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            }
+            
             recursion_count += 1;
             
             let node = self.nodes.get(&current_node)
@@ -127,6 +300,10 @@ impl<S: StateSchema> CompiledGraph<S> {
             
             steps.push(ExecutionStep::node(current_node.clone(), update.metadata.clone()));
             
+            if self.interrupt_after.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(format!("after_{}", current_node)));
+            }
+            
             let next_node = self.find_next_node(&current_node, &state).await?;
             
             if let Some(ref checkpointer) = self.checkpointer {
@@ -146,6 +323,71 @@ impl<S: StateSchema> CompiledGraph<S> {
             steps,
             recursion_count,
         })
+    }
+    
+    pub async fn invoke_with_execution(&self, execution: GraphExecution<S>) -> GraphResult<GraphInvocation<S>> {
+        let mut state = execution.state;
+        let mut current_node = if execution.interrupted_at.starts_with("after_") {
+            self.find_next_node(&execution.current_node, &state).await?
+        } else {
+            execution.current_node
+        };
+        let mut steps = execution.steps;
+        let mut recursion_count = execution.recursion_count;
+        
+        while current_node != END && recursion_count < self.recursion_limit {
+            if self.interrupt_before.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            }
+            
+            recursion_count += 1;
+            
+            let node = self.nodes.get(&current_node)
+                .ok_or_else(|| GraphError::ExecutionError(
+                    format!("Node '{}' not found", current_node)
+                ))?;
+            
+            let config = NodeConfig {
+                recursion_limit: self.recursion_limit,
+                debug: false,
+                metadata: HashMap::new(),
+            };
+            
+            let update = node.execute(&state, Some(config)).await?;
+            
+            if let Some(new_state) = update.update {
+                state = self.default_reducer.reduce(&state, &new_state);
+            }
+            
+            steps.push(ExecutionStep::node(current_node.clone(), update.metadata.clone()));
+            
+            if self.interrupt_after.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(format!("after_{}", current_node)));
+            }
+            
+            let next_node = self.find_next_node(&current_node, &state).await?;
+            
+            if let Some(ref checkpointer) = self.checkpointer {
+                let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
+            }
+            
+            current_node = next_node;
+        }
+        
+        if recursion_count >= self.recursion_limit {
+            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+        }
+        
+        Ok(GraphInvocation {
+            final_state: state,
+            steps,
+            recursion_count,
+        })
+    }
+    
+    pub async fn resume(&self, execution: GraphExecution<S>) -> GraphResult<GraphInvocation<S>> {
+        self.invoke_with_execution(execution).await
     }
     
     pub async fn stream(&self, input: S) -> GraphResult<Vec<StreamEvent<S>>> {
@@ -224,9 +466,119 @@ impl<S: StateSchema> CompiledGraph<S> {
             format!("No outgoing edge from node '{}'", current)
         ))
     }
+    
+    /// Visualize the graph structure in ASCII format
+    pub fn visualize_ascii(&self) -> String {
+        let mut output = String::new();
+        output.push_str("┌─────────────────────────────────────┐\n");
+        output.push_str("│         LangGraph Structure         │\n");
+        output.push_str("└─────────────────────────────────────┘\n\n");
+        
+        output.push_str(&format!("Entry Point: {}\n\n", self.entry_point));
+        
+        output.push_str("Nodes:\n");
+        for name in self.nodes.keys() {
+            output.push_str(&format!("  • {}\n", name));
+        }
+        
+        output.push_str("\nEdges:\n");
+        for edge in &self.edges {
+            match edge {
+                GraphEdge::Fixed { source, target } => {
+                    output.push_str(&format!("  {} → {}\n", source, target));
+                }
+                GraphEdge::Conditional { source, router_name, targets, .. } => {
+                    output.push_str(&format!("  {} → [{}]\n", source, router_name));
+                    for (route, target) in targets {
+                        output.push_str(&format!("    {} → {}\n", route, target));
+                    }
+                }
+            }
+        }
+        
+        if !self.conditional_routers.is_empty() {
+            output.push_str("\nRouters:\n");
+            for name in self.conditional_routers.keys() {
+                output.push_str(&format!("  • {}\n", name));
+            }
+        }
+        
+        output.push_str(&format!("\nRecursion Limit: {}\n", self.recursion_limit));
+        
+        output
+    }
+    
+    /// Visualize the graph structure in Mermaid format
+    pub fn visualize_mermaid(&self) -> String {
+        let mut output = String::new();
+        output.push_str("```mermaid\n");
+        output.push_str("graph TD\n");
+        
+        output.push_str(&format!("  START[\"START\"]\n"));
+        output.push_str(&format!("  END[\"END\"]\n"));
+        
+        for name in self.nodes.keys() {
+            output.push_str(&format!("  {}[\"{}\"]\n", name, name));
+        }
+        
+        for edge in &self.edges {
+            match edge {
+                GraphEdge::Fixed { source, target } => {
+                    output.push_str(&format!("  {} --> {}\n", source, target));
+                }
+                GraphEdge::Conditional { source, router_name, targets, .. } => {
+                    output.push_str(&format!("  {} --> {{{}\n", source, router_name));
+                    for (route, target) in targets {
+                        output.push_str(&format!("    {} --> {}\n", route, target));
+                    }
+                    output.push_str("  }\n");
+                }
+            }
+        }
+        
+        output.push_str("```\n");
+        output
+    }
+    
+    /// Visualize the graph structure as JSON
+    pub fn visualize_json(&self) -> serde_json::Value {
+        let nodes: Vec<String> = self.nodes.keys().cloned().collect();
+        
+        let edges: Vec<serde_json::Value> = self.edges.iter().map(|edge| {
+            match edge {
+                GraphEdge::Fixed { source, target } => {
+                    serde_json::json!({
+                        "type": "fixed",
+                        "source": source,
+                        "target": target
+                    })
+                }
+                GraphEdge::Conditional { source, router_name, targets, default_target } => {
+                    serde_json::json!({
+                        "type": "conditional",
+                        "source": source,
+                        "router": router_name,
+                        "targets": targets,
+                        "default": default_target
+                    })
+                }
+            }
+        }).collect();
+        
+        let routers: Vec<String> = self.conditional_routers.keys().cloned().collect();
+        
+        serde_json::json!({
+            "entry_point": self.entry_point,
+            "nodes": nodes,
+            "edges": edges,
+            "routers": routers,
+            "recursion_limit": self.recursion_limit
+        })
+    }
 }
 
 /// GraphInvocation - Result of graph execution
+#[derive(Debug)]
 pub struct GraphInvocation<S: StateSchema> {
     pub final_state: S,
     pub steps: Vec<ExecutionStep>,
@@ -289,6 +641,36 @@ impl<S: StateSchema> StreamEvent<S> {
     
     pub fn end(state: S) -> Self {
         Self::End(state)
+    }
+}
+
+/// GraphExecution - State for interrupted execution that can be resumed
+#[derive(Debug, Clone)]
+pub struct GraphExecution<S: StateSchema> {
+    pub state: S,
+    pub current_node: String,
+    pub steps: Vec<ExecutionStep>,
+    pub recursion_count: usize,
+    pub interrupted_at: String,
+}
+
+impl<S: StateSchema> GraphExecution<S> {
+    pub fn new(state: S, current_node: String, interrupted_at: String) -> Self {
+        Self {
+            state,
+            current_node,
+            steps: Vec::new(),
+            recursion_count: 0,
+            interrupted_at,
+        }
+    }
+    
+    pub fn state(&self) -> &S {
+        &self.state
+    }
+    
+    pub fn interrupted_at(&self) -> &str {
+        &self.interrupted_at
     }
 }
 

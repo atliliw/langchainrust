@@ -58,10 +58,10 @@ pub mod errors;
 pub mod checkpointer;
 
 // Re-export core types
-pub use state::{StateSchema, StateUpdate, Reducer, ReplaceReducer, AgentState, MessageEntry, MessageRole, StepEntry};
-pub use node::{GraphNode, NodeResult, NodeConfig};
+pub use state::{StateSchema, StateUpdate, Reducer, ReplaceReducer, AppendReducer, AppendMessagesReducer, AppendStepsReducer, AgentState, MessageEntry, MessageRole, StepEntry};
+pub use node::{GraphNode, NodeResult, NodeConfig, AsyncNode, AsyncFn};
 pub use edge::{GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter, AsyncFunctionRouter};
 pub use graph::{StateGraph, GraphBuilder, START, END};
-pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep};
+pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution};
 pub use errors::{GraphError, GraphResult};
-pub use checkpointer::{Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, CheckpointData};
+pub use checkpointer::{Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, FileCheckpointer, CheckpointData};

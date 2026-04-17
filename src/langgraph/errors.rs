@@ -1,5 +1,4 @@
 // src/langgraph/errors.rs
-//! Error types for LangGraph
 
 use thiserror::Error;
 
@@ -25,6 +24,24 @@ pub enum GraphError {
 
     #[error("State error: {0}")]
     StateError(String),
+
+    #[error("Execution interrupted: {0}")]
+    ExecutionInterrupted(String),
+
+    #[error("Resume error: {0}")]
+    ResumeError(String),
+
+    #[error("Graph contains infinite cycle: {0}")]
+    InfiniteCycleError(String),
+
+    #[error("Orphan node detected: {0}")]
+    OrphanNodeError(String),
+
+    #[error("Duplicate edge: {0}")]
+    DuplicateEdgeError(String),
+
+    #[error("Missing route target: {0}")]
+    MissingRouteTargetError(String),
 }
 
 pub type GraphResult<T> = Result<T, GraphError>;

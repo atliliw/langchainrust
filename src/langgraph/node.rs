@@ -51,6 +51,52 @@ pub struct NodeConfig {
 /// Node execution result (alias for clarity)
 pub type NodeResult<S> = Result<StateUpdate<S>, GraphError>;
 
+/// Async node function type (boxed future)
+pub type AsyncNodeFn<S> = Box<dyn Fn(&S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>> + Send + Sync>;
+
+/// AsyncFn trait for simpler async node creation
+pub trait AsyncFn<S: StateSchema>: Send + Sync {
+    fn call(&self, state: &S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>>;
+}
+
+impl<S: StateSchema, F, Fut> AsyncFn<S> for F
+where
+    F: Fn(&S) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = NodeResult<S>> + Send + 'static,
+{
+    fn call(&self, state: &S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>> {
+        Box::pin((self)(state))
+    }
+}
+
+/// AsyncNode - Simple async node wrapper
+pub struct AsyncNode<S: StateSchema, F: AsyncFn<S>> {
+    name: String,
+    func: F,
+    _marker: PhantomData<S>,
+}
+
+impl<S: StateSchema, F: AsyncFn<S>> AsyncNode<S, F> {
+    pub fn new(name: impl Into<String>, func: F) -> Self {
+        Self {
+            name: name.into(),
+            func,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema, F: AsyncFn<S>> GraphNode<S> for AsyncNode<S, F> {
+    async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
+        self.func.call(state).await
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Function-based node implementation
 ///
 /// Wraps an async function as a GraphNode.

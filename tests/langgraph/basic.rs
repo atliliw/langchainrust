@@ -1,4 +1,8 @@
 mod llm_integration;
+mod async_node;
+mod visualize;
+mod human_loop;
+mod validation;
 
 use langchainrust::{
     StateGraph, GraphBuilder, START, END,

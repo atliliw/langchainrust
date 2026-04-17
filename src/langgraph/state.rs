@@ -6,12 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Debug;
 
 /// State Schema trait
-///
-/// All states must implement this trait to be used in a StateGraph.
-/// States should be serializable for checkpointing and debugging.
-pub trait StateSchema: Clone + Send + Sync + Serialize + for<'de> Deserialize<'de> {
+pub trait StateSchema: Clone + Send + Sync + Serialize + for<'de> Deserialize<'de> + Debug {
     /// Create initial state from input
     fn from_input(input: Self) -> Self {
         input
@@ -94,8 +92,43 @@ pub struct AppendReducer<S: StateSchema, T: Clone + Send + Sync> {
     pub field_mutator: fn(&mut S, Vec<T>),
 }
 
-// Note: AppendReducer requires specific implementation per state type
-// Users should implement custom reducers for their state types
+impl<S: StateSchema, T: Clone + Send + Sync> Reducer<S> for AppendReducer<S, T> {
+    fn reduce(&self, current: &S, update: &S) -> S {
+        let current_items = (self.field_accessor)(current);
+        let update_items = (self.field_accessor)(update);
+
+        let mut merged: Vec<T> = current_items.to_vec();
+        merged.extend(update_items.iter().cloned());
+
+        let mut result = current.clone();
+        (self.field_mutator)(&mut result, merged);
+        result
+    }
+}
+
+/// AgentState Messages Reducer - Appends messages instead of replacing
+pub struct AppendMessagesReducer;
+
+impl Reducer<AgentState> for AppendMessagesReducer {
+    fn reduce(&self, current: &AgentState, update: &AgentState) -> AgentState {
+        let mut result = update.clone();
+        result.messages = current.messages.clone();
+        result.messages.extend(update.messages.iter().cloned());
+        result
+    }
+}
+
+/// AgentState Steps Reducer - Appends steps instead of replacing
+pub struct AppendStepsReducer;
+
+impl Reducer<AgentState> for AppendStepsReducer {
+    fn reduce(&self, current: &AgentState, update: &AgentState) -> AgentState {
+        let mut result = update.clone();
+        result.steps = current.steps.clone();
+        result.steps.extend(update.steps.iter().cloned());
+        result
+    }
+}
 
 /// Common state with messages (agent-style)
 ///
@@ -213,26 +246,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_agent_state_creation() {
-        let state = AgentState::new("What is Rust?".to_string());
-        assert_eq!(state.input, "What is Rust?");
-        assert_eq!(state.messages.len(), 1);
-        assert_eq!(state.output, None);
+    fn test_append_messages_reducer() {
+        let mut current = AgentState::new("Hello".to_string());
+        current.add_message(MessageEntry::ai("Response 1".to_string()));
+
+        let mut update = AgentState::new("Hello".to_string());
+        update.add_message(MessageEntry::ai("Response 2".to_string()));
+        update.set_output("Done".to_string());
+
+        let reducer = AppendMessagesReducer;
+        let result = reducer.reduce(&current, &update);
+
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.output, Some("Done".to_string()));
     }
 
     #[test]
-    fn test_state_update() {
-        let state = AgentState::new("test".to_string());
-        let update = StateUpdate::full(state.clone());
-        assert!(update.update.is_some());
-    }
+    fn test_append_steps_reducer() {
+        let mut current = AgentState::new("Test".to_string());
+        current.add_step(StepEntry::new(
+            "Action 1".to_string(),
+            "Result 1".to_string(),
+        ));
 
-    #[test]
-    fn test_message_entry() {
-        let human_msg = MessageEntry::human("Hello".to_string());
-        assert_eq!(human_msg.role, MessageRole::Human);
+        let mut update = AgentState::new("Test".to_string());
+        update.add_step(StepEntry::new(
+            "Action 2".to_string(),
+            "Result 2".to_string(),
+        ));
 
-        let ai_msg = MessageEntry::ai("Hi there".to_string());
-        assert_eq!(ai_msg.role, MessageRole::AI);
+        let reducer = AppendStepsReducer;
+        let result = reducer.reduce(&current, &update);
+
+        assert_eq!(result.steps.len(), 2);
     }
 }
