@@ -56,6 +56,7 @@ pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 
 // Retrieval
 pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, DocumentLoader, LoaderError};
+pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer};
 
 // Prompts
 pub use prompts::{PromptTemplate, ChatPromptTemplate};

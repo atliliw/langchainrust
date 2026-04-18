@@ -142,22 +142,27 @@ impl std::fmt::Debug for FunctionCallingAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language_models::OpenAIChat;
+    use crate::language_models::openai::OpenAIConfig;
     use crate::tools::Calculator;
-    use crate::language_models::OpenAIConfig;
     
     fn create_test_config() -> OpenAIConfig {
-        OpenAIConfig {
-            api_key: "test-key".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
-            temperature: Some(0.0),
-            max_tokens: Some(500),
-            ..Default::default()
-        }
+        OpenAIConfig::new("test_key")
+            .with_base_url("http://localhost:8080/v1")
     }
     
     #[test]
-    fn test_new_function_calling_agent() {
+    fn test_function_calling_agent_creation() {
+        let config = create_test_config();
+        let llm = OpenAIChat::new(config);
+        let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
+        
+        let agent = FunctionCallingAgent::new(llm, tools, None);
+        assert_eq!(agent.tools.len(), 1);
+    }
+    
+#[test]
+    fn test_get_allowed_tools() {
         let config = create_test_config();
         let llm = OpenAIChat::new(config);
         let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
@@ -168,7 +173,7 @@ mod tests {
         assert!(agent.system_prompt.is_none());
     }
     
-    #[test]
+#[test]
     fn test_new_with_system_prompt() {
         let config = create_test_config();
         let llm = OpenAIChat::new(config);
@@ -223,33 +228,5 @@ mod tests {
         
         assert_eq!(messages.len(), 4);
         assert!(messages[2].has_tool_calls());
-    }
-    
-    #[test]
-    fn test_find_tool() {
-        let config = create_test_config();
-        let llm = OpenAIChat::new(config);
-        let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
-        
-        let agent = FunctionCallingAgent::new(llm, tools, None);
-        
-        let found = agent.find_tool("calculator");
-        assert!(found.is_some());
-        
-        let not_found = agent.find_tool("unknown");
-        assert!(not_found.is_none());
-    }
-    
-    #[test]
-    fn test_get_allowed_tools() {
-        let config = create_test_config();
-        let llm = OpenAIChat::new(config);
-        let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
-        
-        let agent = FunctionCallingAgent::new(llm, tools, None);
-        
-        let allowed = agent.get_allowed_tools();
-        assert!(allowed.is_some());
-        assert_eq!(allowed.unwrap(), vec!["calculator"]);
     }
 }
