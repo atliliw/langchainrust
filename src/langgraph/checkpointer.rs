@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use super::state::StateSchema;
 use super::errors::{GraphError, GraphResult};
 use std::collections::HashMap;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
@@ -40,12 +41,12 @@ impl<S: StateSchema> CheckpointData<S> {
 
 /// In-memory checkpointer for development
 pub struct MemoryCheckpointer<S: StateSchema> {
-    checkpoints: HashMap<String, CheckpointData<S>>,
+    checkpoints: Mutex<HashMap<String, CheckpointData<S>>>,
 }
 
 impl<S: StateSchema> MemoryCheckpointer<S> {
     pub fn new() -> Self {
-        Self { checkpoints: HashMap::new() }
+        Self { checkpoints: Mutex::new(HashMap::new()) }
     }
 }
 
@@ -59,19 +60,26 @@ impl<S: StateSchema> Default for MemoryCheckpointer<S> {
 impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
     async fn save(&self, state: &S) -> GraphResult<String> {
         let data = CheckpointData::new(state.clone());
-        Ok(data.id)
+        let id = data.id.clone();
+        self.checkpoints.lock().await.insert(id.clone(), data);
+        Ok(id)
     }
     
-    async fn load(&self, _checkpoint_id: &str) -> GraphResult<S> {
-        unimplemented!("MemoryCheckpointer::load requires mutable state")
+    async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
+        self.checkpoints.lock().await.get(checkpoint_id)
+            .map(|d| d.state.clone())
+            .ok_or_else(|| GraphError::CheckpointError(
+                format!("Checkpoint '{}' not found", checkpoint_id)
+            ))
     }
     
     async fn list(&self) -> GraphResult<Vec<String>> {
-        Ok(self.checkpoints.keys().cloned().collect())
+        Ok(self.checkpoints.lock().await.keys().cloned().collect())
     }
     
-    async fn delete(&self, _checkpoint_id: &str) -> GraphResult<()> {
-        unimplemented!("MemoryCheckpointer::delete requires mutable state")
+    async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
+        self.checkpoints.lock().await.remove(checkpoint_id);
+        Ok(())
     }
 }
 

@@ -175,11 +175,36 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
     
     async fn stream(
         &self,
-        _input: Vec<Message>,
+        input: Vec<Message>,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error> {
-        // 流式实现稍后添加
-        unimplemented!("流式聊天尚未实现")
+        use futures_util::StreamExt;
+        
+        let model = self.config.model.clone();
+        let token_stream = self.stream_chat_internal(input).await?;
+        
+        let content_future = async move {
+            token_stream
+                .fold(String::new(), |mut acc, token_result| async move {
+                    if let Ok(token) = token_result {
+                        acc.push_str(&token);
+                    }
+                    acc
+                })
+                .await
+        };
+        
+        let stream = futures_util::stream::once(async move {
+            let content = content_future.await;
+            Ok(LLMResult {
+                content,
+                model,
+                token_usage: None,
+                tool_calls: None,
+            })
+        });
+        
+        Ok(Box::pin(stream))
     }
 }
 
