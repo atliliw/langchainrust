@@ -260,3 +260,7 @@ path = "tests/langgraph/subgraph_mechanism.rs"
 [[test]]
 name = "unit_bm25"
 path = "tests/unit/bm25.rs"
+
+[[test]]
+name = "integration_bm25_real_docs"
+path = "tests/integration/bm25_real_docs.rs"

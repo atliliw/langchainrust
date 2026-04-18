@@ -1,0 +1,50 @@
+LangChainRust framework implementation introduction
+
+LangChainRust is a Rust implementation of the LangChain framework.
+It provides core components for building LLM-powered applications.
+The framework includes support for multiple LLM providers.
+OpenAI and Ollama are the primary supported language models.
+The framework supports function calling and structured outputs.
+
+LangChainRust provides a complete memory system.
+ConversationBufferMemory stores the full conversation history.
+ConversationSummaryMemory uses LLM to summarize conversations.
+ConversationSummaryBufferMemory combines both approaches.
+ChatMessageHistory provides persistent message storage.
+
+LangChainRust implements various chain patterns.
+LLMChain is the basic single-step chain.
+SequentialChain executes multiple chains in sequence.
+RouterChain routes inputs to different chains.
+RetrievalQA combines retrieval with question answering.
+
+LangChainRust has a complete agent framework.
+ReActAgent uses the ReAct pattern for reasoning.
+FunctionCallingAgent uses native function calling.
+AgentExecutor manages the agent execution loop.
+Agents can use multiple tools simultaneously.
+
+LangChainRust provides RAG retrieval capabilities.
+TextSplitter splits documents into chunks.
+PDFLoader and CSVLoader load various document formats.
+SimilarityRetriever performs vector similarity search.
+BM25Retriever performs keyword-based retrieval.
+
+LangChainRust supports LangGraph workflows.
+StateGraph builds graph-based agent workflows.
+ConditionalEdge enables dynamic routing.
+Human-in-the-loop allows manual intervention.
+Subgraph supports nested workflow structures.
+Parallel enables concurrent node execution.
+
+LangChainRust includes callback and tracing support.
+CallbackManager orchestrates callback handlers.
+LangSmithHandler integrates with LangSmith tracing.
+FileCallbackHandler logs to file in various formats.
+RunTree tracks execution hierarchy.
+
+LangChainRust provides vector store integrations.
+InMemoryVectorStore provides in-memory storage.
+QdrantVectorStore integrates with Qdrant database.
+VectorStoreBuilder creates stores from configuration.
+OpenAIEmbeddings generates document embeddings.

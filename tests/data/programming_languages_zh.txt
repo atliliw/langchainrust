@@ -1,0 +1,39 @@
+Rust 是一门系统级编程语言，专注于安全、速度和并发。
+Rust 由 Mozilla 研究团队创建，于 2010 年首次发布。
+Rust 使用借用检查器来确保内存安全，无需垃圾回收机制。
+Rust 拥有强类型系统，能够在编译时捕获许多错误。
+Rust 特别适合构建命令行工具和 Web 服务。
+许多开发者使用 Rust 进行游戏开发和嵌入式系统开发。
+Rust 社区以热情友好、乐于助人而闻名。
+
+Python 是一门高级解释型编程语言。
+Python 由 Guido van Rossum 创建，于 1991 年首次发布。
+Python 以其简洁的语法和良好的可读性著称。
+Python 广泛应用于数据科学和机器学习领域。
+Python 通过 pip 和 PyPI 拥有丰富的第三方包生态。
+Django 和 Flask 是基于 Python 的流行 Web 开发框架。
+Python 通常被作为编程入门语言教授给初学者。
+
+JavaScript 是一门动态编程语言，主要用于 Web 开发。
+JavaScript 由 Brendan Eich 于 1995 年为 Netscape 浏览器创建。
+JavaScript 可以在所有现代浏览器中运行，并通过 Node.js 在服务器端运行。
+JavaScript 通过 Promise 和 async-await 支持异步编程。
+React、Vue 和 Angular 是使用 JavaScript 的流行前端框架。
+JavaScript 采用基于原型的继承模型，不同于基于类的继承。
+TypeScript 是 JavaScript 的类型化超集，增加了静态类型支持。
+
+Go 是一门编译型编程语言，由 Google 开发。
+Go 由 Robert Griesemer、Rob Pike 和 Ken Thompson 于 2007 年设计。
+Go 以其简洁性和快速编译著称。
+Go 通过 goroutine 内置支持并发编程。
+Go 常用于构建微服务和分布式系统。
+Docker 和 Kubernetes 最初都是用 Go 编写的。
+Go 语法极简，只有 25 个关键字。
+
+C++ 是一门通用编程语言，由 Bjarne Stroustrup 创建。
+C++ 于 1985 年作为 C 语言的扩展首次发布。
+C++ 支持面向对象、过程式和泛型编程风格。
+C++ 在游戏开发和系统编程中被广泛使用。
+许多操作系统和浏览器都有用 C++ 编写的组件。
+C++ 提供对硬件和内存管理的直接控制。
+现代 C++ 标准包括 C++11、C++14、C++17 和 C++20。
