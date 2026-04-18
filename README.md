@@ -28,6 +28,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 | **Loaders** | 支持 PDF 和 CSV 文档加载 |
 | **Tools** | 内置工具：计算器、日期时间、数学运算、URL抓取 |
 | **Callbacks** | 执行追踪、LangSmith 集成、日志输出 |
+| **LangGraph** | 图状工作流：StateGraph、可视化、Human-in-the-loop、Subgraph、Parallel |
 | **Tool Calling** | bind_tools()、结构化输出、ToolDefinition、to_tool_definition() |
 | **Streaming** | stream_chat() 逐 token 实时输出，打字机效果 |
 
@@ -45,7 +46,7 @@ A LangChain-inspired Rust framework for building LLM applications. Provides abst
 
 ```toml
 [dependencies]
-langchainrust = "0.2.5"
+langchainrust = "0.2.6"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -491,6 +492,7 @@ Apache License, Version 2.0 或 MIT License，任选其一。
 | **RAG** | Document splitting, vector stores, semantic retrieval |
 | **Loaders** | PDF and CSV document loading support |
 | **Tools** | Built-in: Calculator, DateTime, Math, URLFetch |
+| **LangGraph** | Graph-based workflows: StateGraph, visualization, Human-in-the-loop, Subgraph, Parallel |
 | **Tool Calling** | bind_tools(), to_tool_definition(), ToolDefinition, structured output |
 
 ### Key Benefits
@@ -507,7 +509,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.2.5"
+langchainrust = "0.2.6"
 tokio = { version = "1.0", features = ["full"] }
 ```
 

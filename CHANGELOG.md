@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2025-04-18
+
+### Added
+- **LangGraph**: 图状工作流框架
+  - `StateGraph`: 状态图构建器
+  - `CompiledGraph`: 编译后的可执行图
+  - `GraphNode` trait + `SyncNode` + `AsyncNode`: 节点抽象
+  - `GraphEdge` + `ConditionalEdge`: 边和条件路由
+  - `StateSchema` trait + `AgentState`: 状态管理
+  - `Reducer` trait + `AppendReducer`: 状态更新策略
+- **LangGraph Checkpointer**: 执行状态持久化
+  - `MemoryCheckpointer`: 内存持久化
+  - `ThreadSafeMemoryCheckpointer`: 线程安全版本
+  - `FileCheckpointer`: 文件持久化
+- **LangGraph 可视化**: 图结构可视化输出
+  - `visualize_ascii()`: ASCII 图形
+  - `visualize_mermaid()`: Mermaid 图表格式
+  - `visualize_json()`: JSON 结构输出
+- **LangGraph Human-in-the-loop**: 人工干预机制
+  - `interrupt_before`: 执行前中断
+  - `interrupt_after`: 执行后中断
+  - `resume()`: 从中断点恢复执行
+- **LangGraph Graph 验证**: 图完整性验证
+  - `validate_cycles()`: 死循环检测
+  - `validate_unreachable_nodes()`: 孤立节点检测
+  - `validate_duplicate_edges()`: 重复边检测
+- **LangGraph Subgraph**: 子图嵌套支持
+  - `SubgraphNode`: 子图节点封装
+  - 状态映射器: 父子图状态转换
+- **LangGraph Parallel**: 并行节点执行
+  - `invoke_parallel()`: 并行执行多个节点
+  - FanOut/FanIn 模式支持
+- **LangGraph Persistence**: 图定义持久化
+  - `GraphDefinition`: 图定义结构
+  - `NodeRegistry`: 节点注册表
+  - `save_to_file()` / `load_from_file()`: 序列化/反序列化
+
+### Tests
+- 新增 `tests/langgraph/` 目录 (10+ 测试文件)
+- LangGraph 基础测试、条件边、状态管理
+- 异步节点、Checkpointer、可视化测试
+- Human-in-the-loop、Subgraph、Parallel 测试
+
+### Documentation
+- README.md 更新核心特性列表
+- ROADMAP.md 添加 LangGraph 模块详情
+
 ## [0.2.5] - 2025-04-15
 
 ### Added
@@ -197,6 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.6]: https://github.com/atliliw/langchainrust/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/atliliw/langchainrust/compare/v0.2.4...v0.2.5
 [0.2.3]: https://github.com/atliliw/langchainrust/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/atliliw/langchainrust/compare/v0.2.1...v0.2.2

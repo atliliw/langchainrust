@@ -29,6 +29,14 @@
   - 自定义 Tool
   - to_tool_definition()
 - [配置与安全](#配置与安全)
+- [LangGraph](#langgraph)
+  - StateGraph 基础用法
+  - 条件边路由
+  - Human-in-the-loop
+  - Subgraph 子图嵌套
+  - Parallel 并行执行
+  - Checkpointer 持久化
+  - 可视化输出
 - [测试](#测试)
 - [模块结构](#模块结构)
 
@@ -1218,6 +1226,254 @@ let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
 - 推荐通过环境变量读取（例如 `OPENAI_API_KEY`）
 - `OpenAIConfig.streaming=true` 走流式 API；否则走非流式
 - `OpenAIConfig.factor` 用于模型路由，值越大表示模型越强/越贵
+
+---
+
+## LangGraph
+
+LangGraph 是图状工作流框架，用于构建复杂的 AI 应用流程。
+
+### 核心概念
+
+| 组件 | 说明 |
+|------|------|
+| **StateGraph** | 状态图构建器 |
+| **GraphNode** | 节点抽象（SyncNode、AsyncNode） |
+| **GraphEdge** | 边和条件路由 |
+| **StateSchema** | 状态管理（AgentState） |
+| **Reducer** | 状态更新策略（ReplaceReducer、AppendReducer） |
+| **Checkpointer** | 执行状态持久化 |
+
+### StateGraph 基础用法
+
+```rust
+use langchainrust::langgraph::{StateGraph, AgentState, START, END};
+use std::collections::HashMap;
+
+// 创建状态图
+let mut graph = StateGraph::new();
+
+// 添加节点
+graph.add_node("analyze", |state: AgentState| {
+    // 分析节点逻辑
+    let mut new_state = state.clone();
+    new_state.steps.push("已分析".to_string());
+    new_state
+});
+
+graph.add_node("process", |state: AgentState| {
+    // 处理节点逻辑
+    let mut new_state = state.clone();
+    new_state.steps.push("已处理".to_string());
+    new_state
+});
+
+graph.add_node("output", |state: AgentState| {
+    // 输出节点逻辑
+    state
+});
+
+// 添加边
+graph.add_edge(START, "analyze");
+graph.add_edge("analyze", "process");
+graph.add_edge("process", "output");
+graph.add_edge("output", END);
+
+// 编译图
+let compiled = graph.compile();
+
+// 执行
+let initial_state = AgentState::new();
+let result = compiled.invoke(initial_state).await?;
+```
+
+### 条件边路由
+
+使用条件边根据状态决定下一步：
+
+```rust
+use langchainrust::langgraph::{ConditionalEdge, FunctionRouter};
+
+// 条件路由函数
+let router = FunctionRouter::new(|state: &AgentState| {
+    if state.messages.len() > 5 {
+        "summarize"
+    } else {
+        "continue"
+    }
+});
+
+// 添加条件边
+graph.add_conditional_edge(
+    "analyze",
+    ConditionalEdge::new(router, vec!["summarize", "continue"]),
+);
+
+graph.add_edge("summarize", END);
+graph.add_edge("continue", "process");
+```
+
+### Human-in-the-loop
+
+人工干预机制，在关键节点暂停等待人工确认：
+
+```rust
+use langchainrust::langgraph::{CompiledGraph, GraphExecution};
+
+// 编译时设置中断点
+let compiled = graph.compile()
+    .with_interrupt_before(vec!["output"])  // 输出前暂停
+    .with_interrupt_after(vec!["analyze"]); // 分析后暂停
+
+// 执行到中断点会返回 GraphExecution
+let execution = compiled.invoke_with_execution(initial_state).await?;
+
+if execution.is_interrupted() {
+    println!("暂停在节点: {}", execution.current_node);
+    
+    // 人工审查状态
+    println!("当前状态: {:?}", execution.state);
+    
+    // 决定是否继续
+    let should_continue = user_approval();  // 用户确认
+    
+    if should_continue {
+        // 从中断点恢复执行
+        let result = compiled.resume(execution).await?;
+    }
+}
+```
+
+### Subgraph 子图嵌套
+
+将子图作为节点嵌入主图：
+
+```rust
+use langchainrust::langgraph::{SubgraphNode, StateMapper};
+
+// 创建子图
+let mut subgraph = StateGraph::new();
+subgraph.add_node("sub_task_1", |state| state);
+subgraph.add_node("sub_task_2", |state| state);
+subgraph.add_edge(START, "sub_task_1");
+subgraph.add_edge("sub_task_1", "sub_task_2");
+subgraph.add_edge("sub_task_2", END);
+
+let sub_compiled = subgraph.compile();
+
+// 创建状态映射器（父子图状态转换）
+let mapper = StateMapper::new(
+    |parent: &AgentState| -> SubState {  // 父 → 子
+        SubState::from_parent(parent)
+    },
+    |sub: &SubState, parent: &AgentState| -> AgentState {  // 子 → 父
+        parent.merge_sub(sub)
+    },
+);
+
+// 将子图作为节点添加到主图
+graph.add_node("subgraph", SubgraphNode::new(sub_compiled, mapper));
+```
+
+### Parallel 并行执行
+
+并行执行多个独立节点：
+
+```rust
+// 添加多个并行节点
+graph.add_node("task_a", |state| { /* ... */ });
+graph.add_node("task_b", |state| { /* ... */ });
+graph.add_node("task_c", |state| { /* ... */ });
+
+// Fan-Out: 从一个节点分发到多个并行节点
+graph.add_edge(START, "dispatch");
+graph.add_edge("dispatch", "task_a");
+graph.add_edge("dispatch", "task_b");
+graph.add_edge("dispatch", "task_c");
+
+// Fan-In: 多个并行节点汇聚到一个节点
+graph.add_edge("task_a", "merge");
+graph.add_edge("task_b", "merge");
+graph.add_edge("task_c", "merge");
+graph.add_edge("merge", END);
+
+// 编译时启用并行执行
+let compiled = graph.compile()
+    .with_parallel_execution(true);
+
+// invoke_parallel() 并行执行
+let result = compiled.invoke_parallel(initial_state).await?;
+```
+
+### Checkpointer 持久化
+
+保存和恢复执行状态：
+
+```rust
+use langchainrust::langgraph::{
+    MemoryCheckpointer, FileCheckpointer, Checkpointer,
+};
+
+// 内存 Checkpointer
+let checkpointer = MemoryCheckpointer::new();
+
+// 文件 Checkpointer
+let file_checkpointer = FileCheckpointer::new("./checkpoints/");
+
+// 编译时设置 Checkpointer
+let compiled = graph.compile()
+    .with_checkpointer(checkpointer);
+
+// 执行时指定 thread_id（用于区分不同会话）
+let thread_id = "conversation_123";
+let result = compiled.invoke_with_thread(initial_state, thread_id).await?;
+
+// 恢复之前的状态
+let previous_state = compiled.get_state(thread_id).await?;
+let resumed_result = compiled.invoke_with_thread(previous_state, thread_id).await?;
+```
+
+### 可视化输出
+
+三种可视化格式：
+
+```rust
+// ASCII 图形（终端显示）
+println!("{}", compiled.visualize_ascii());
+// 输出:
+//   START → analyze → process → output → END
+
+// Mermaid 图表（Markdown 文档）
+println!("{}", compiled.visualize_mermaid());
+// 输出:
+//   graph LR
+//     START --> analyze
+//     analyze --> process
+//     process --> output
+//     output --> END
+
+// JSON 结构（程序处理）
+let json = compiled.visualize_json();
+// 输出:
+//   {"nodes": ["analyze", "process", "output"], "edges": [...]}
+```
+
+### Graph 验证
+
+自动检测常见问题：
+
+```rust
+// 编译时自动验证
+let compiled = graph.compile();  // 会抛出验证错误
+
+// 手动验证
+graph.validate()?;  // 返回验证结果
+
+// 检测项：
+// - 死循环：validate_cycles()
+// - 孤立节点：validate_unreachable_nodes()
+// - 重复边：validate_duplicate_edges()
+```
 
 ---
 
