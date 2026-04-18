@@ -56,12 +56,22 @@ pub mod graph;
 pub mod compiled;
 pub mod errors;
 pub mod checkpointer;
+pub mod subgraph;
+pub mod persistence;
 
 // Re-export core types
 pub use state::{StateSchema, StateUpdate, Reducer, ReplaceReducer, AppendReducer, AppendMessagesReducer, AppendStepsReducer, AgentState, MessageEntry, MessageRole, StepEntry};
 pub use node::{GraphNode, NodeResult, NodeConfig, AsyncNode, AsyncFn};
 pub use edge::{GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter, AsyncFunctionRouter};
 pub use graph::{StateGraph, GraphBuilder, START, END};
-pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution};
+pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution, ParallelInvocation, ParallelBranch};
 pub use errors::{GraphError, GraphResult};
 pub use checkpointer::{Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, FileCheckpointer, CheckpointData};
+pub use subgraph::{SubgraphNode, SubgraphBuilder};
+pub use persistence::{
+    GraphPersistence, GraphDefinition, NodeDefinition, EdgeDefinition,
+    NodeType, EdgeType, RouterDefinition, MemoryPersistence, FilePersistence,
+};
+
+#[cfg(feature = "mongodb-persistence")]
+pub use persistence::{MongoPersistence, MongoConfig};

@@ -6,6 +6,7 @@ use super::edge::{ConditionalEdge, GraphEdge};
 use super::errors::{GraphError, GraphResult};
 use super::node::{AsyncFn, AsyncNode, GraphNode, SyncNode};
 use super::state::{Reducer, ReplaceReducer, StateSchema, StateUpdate};
+use super::subgraph::SubgraphNode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -65,6 +66,30 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    pub fn add_subgraph<SubS: StateSchema + 'static>(
+        &mut self,
+        name: impl Into<String>,
+        subgraph: CompiledGraph<SubS>,
+        input_mapper: impl Fn(&S) -> SubS + Send + Sync + 'static,
+        output_mapper: impl Fn(&SubS, &mut S) + Send + Sync + 'static,
+    ) -> &mut Self {
+        let node = SubgraphNode::new(name, subgraph, input_mapper, output_mapper);
+        let node_name = node.name().to_string();
+        self.nodes.insert(node_name, Arc::new(node));
+        self
+    }
+
+    pub fn add_subgraph_same_state(
+        &mut self,
+        name: impl Into<String>,
+        subgraph: CompiledGraph<S>,
+    ) -> &mut Self {
+        let node: SubgraphNode<S, S> = SubgraphNode::same_state(name, subgraph);
+        let node_name = node.name().to_string();
+        self.nodes.insert(node_name, Arc::new(node));
+        self
+    }
+
     pub fn add_edge(&mut self, source: impl Into<String>, target: impl Into<String>) -> &mut Self {
         let edge = GraphEdge::fixed(source, target);
         self.edges.push(edge);
@@ -79,6 +104,18 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         default: Option<String>,
     ) -> &mut Self {
         let edge = GraphEdge::conditional(source, router_name, targets, default);
+        self.edges.push(edge);
+        self
+    }
+
+    pub fn add_fan_out(&mut self, source: impl Into<String>, targets: Vec<String>) -> &mut Self {
+        let edge = GraphEdge::fan_out(source, targets);
+        self.edges.push(edge);
+        self
+    }
+
+    pub fn add_fan_in(&mut self, sources: Vec<String>, target: impl Into<String>) -> &mut Self {
+        let edge = GraphEdge::fan_in(sources, target);
         self.edges.push(edge);
         self
     }
@@ -193,6 +230,27 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    pub fn add_subgraph<SubS: StateSchema + 'static>(
+        mut self,
+        name: impl Into<String>,
+        subgraph: CompiledGraph<SubS>,
+        input_mapper: impl Fn(&S) -> SubS + Send + Sync + 'static,
+        output_mapper: impl Fn(&SubS, &mut S) + Send + Sync + 'static,
+    ) -> Self {
+        self.graph
+            .add_subgraph(name, subgraph, input_mapper, output_mapper);
+        self
+    }
+
+    pub fn add_subgraph_same_state(
+        mut self,
+        name: impl Into<String>,
+        subgraph: CompiledGraph<S>,
+    ) -> Self {
+        self.graph.add_subgraph_same_state(name, subgraph);
+        self
+    }
+
     pub fn add_edge(mut self, source: impl Into<String>, target: impl Into<String>) -> Self {
         self.graph.add_edge(source, target);
         self
@@ -207,6 +265,16 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
     ) -> Self {
         self.graph
             .add_conditional_edges(source, router_name, targets, default);
+        self
+    }
+
+    pub fn add_fan_out(mut self, source: impl Into<String>, targets: Vec<String>) -> Self {
+        self.graph.add_fan_out(source, targets);
+        self
+    }
+
+    pub fn add_fan_in(mut self, sources: Vec<String>, target: impl Into<String>) -> Self {
+        self.graph.add_fan_in(sources, target);
         self
     }
 

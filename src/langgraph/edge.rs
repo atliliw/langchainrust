@@ -38,25 +38,32 @@ impl EdgeTarget {
 /// - Conditional: Routes based on state via a routing function
 #[derive(Debug, Clone)]
 pub enum GraphEdge {
-    /// Fixed edge from source to target
     Fixed {
         source: String,
         target: String,
     },
     
-    /// Conditional edge with routing function
     Conditional {
         source: String,
         router_name: String,
-        /// Map of routing result -> target node
         targets: HashMap<String, String>,
-        /// Default target if no route matches
         default_target: Option<String>,
+    },
+    
+    /// FanOut edge: one source → multiple targets (parallel execution)
+    FanOut {
+        source: String,
+        targets: Vec<String>,
+    },
+    
+    /// FanIn edge: multiple sources → one target (join point)
+    FanIn {
+        sources: Vec<String>,
+        target: String,
     },
 }
 
 impl GraphEdge {
-    /// Create a fixed edge
     pub fn fixed(source: impl Into<String>, target: impl Into<String>) -> Self {
         Self::Fixed {
             source: source.into(),
@@ -64,7 +71,6 @@ impl GraphEdge {
         }
     }
     
-    /// Create a conditional edge
     pub fn conditional<R, T>(
         source: impl Into<String>,
         router_name: impl Into<String>,
@@ -83,19 +89,49 @@ impl GraphEdge {
         }
     }
     
-    /// Get source node
+    pub fn fan_out(source: impl Into<String>, targets: Vec<String>) -> Self {
+        Self::FanOut {
+            source: source.into(),
+            targets,
+        }
+    }
+    
+    pub fn fan_in(sources: Vec<String>, target: impl Into<String>) -> Self {
+        Self::FanIn {
+            sources,
+            target: target.into(),
+        }
+    }
+    
     pub fn source(&self) -> &str {
         match self {
             Self::Fixed { source, .. } => source,
             Self::Conditional { source, .. } => source,
+            Self::FanOut { source, .. } => source,
+            Self::FanIn { .. } => "__fanin__",  // FanIn has multiple sources
         }
     }
     
-    /// Get the target for a fixed edge
     pub fn fixed_target(&self) -> Option<&str> {
         match self {
             Self::Fixed { target, .. } => Some(target),
             Self::Conditional { .. } => None,
+            Self::FanOut { .. } => None,
+            Self::FanIn { target, .. } => Some(target),
+        }
+    }
+    
+    pub fn fan_out_targets(&self) -> Option<&Vec<String>> {
+        match self {
+            Self::FanOut { targets, .. } => Some(targets),
+            _ => None,
+        }
+    }
+    
+    pub fn fan_in_sources(&self) -> Option<&Vec<String>> {
+        match self {
+            Self::FanIn { sources, .. } => Some(sources),
+            _ => None,
         }
     }
 }

@@ -3,6 +3,7 @@ mod async_node;
 mod visualize;
 mod human_loop;
 mod validation;
+mod parallel;
 
 use langchainrust::{
     StateGraph, GraphBuilder, START, END,

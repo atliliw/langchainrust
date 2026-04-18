@@ -9,9 +9,11 @@ use super::node::{GraphNode, NodeConfig};
 use super::edge::{GraphEdge, ConditionalEdge};
 use super::errors::{GraphError, GraphResult};
 use super::checkpointer::{Checkpointer};
+use super::persistence::{GraphDefinition, NodeDefinition, EdgeDefinition, NodeType, EdgeType};
 use super::{START, END};
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use futures_util::future::join_all;
 
 /// CompiledGraph - Ready-to-execute graph
 ///
@@ -89,6 +91,30 @@ impl<S: StateSchema> CompiledGraph<S> {
         self
     }
     
+    pub fn node_names(&self) -> Vec<String> {
+        self.nodes.keys().cloned().collect()
+    }
+    
+    pub fn get_edges(&self) -> &[GraphEdge] {
+        &self.edges
+    }
+    
+    pub fn entry_point(&self) -> &str {
+        &self.entry_point
+    }
+    
+    pub fn recursion_limit(&self) -> usize {
+        self.recursion_limit
+    }
+    
+    pub fn interrupt_before(&self) -> &[String] {
+        &self.interrupt_before
+    }
+    
+    pub fn interrupt_after(&self) -> &[String] {
+        &self.interrupt_after
+    }
+    
     pub fn validate(&self) -> GraphResult<()> {
         for edge in &self.edges {
             match edge {
@@ -109,7 +135,7 @@ impl<S: StateSchema> CompiledGraph<S> {
                         ));
                     }
                 }
-                GraphEdge::Conditional { source, router_name, targets, default_target } => {
+GraphEdge::Conditional { source, router_name, targets, default_target } => {
                     if source != START && !self.nodes.contains_key(source) {
                         return Err(GraphError::ValidationError(
                             format!("Source node '{}' not found", source)
@@ -124,7 +150,7 @@ impl<S: StateSchema> CompiledGraph<S> {
                         if target != END && !self.nodes.contains_key(target) {
                             return Err(GraphError::ValidationError(
                                 format!("Target '{}' for route '{}' not found", target, route)
-                            ));
+                        ));
                         }
                         if target == START {
                             return Err(GraphError::ValidationError(
@@ -138,6 +164,34 @@ impl<S: StateSchema> CompiledGraph<S> {
                                 format!("Default target '{}' not found", default)
                             ));
                         }
+                    }
+                }
+                GraphEdge::FanOut { source, targets } => {
+                    if source != START && !self.nodes.contains_key(source) {
+                        return Err(GraphError::ValidationError(
+                            format!("FanOut source node '{}' not found", source)
+                        ));
+                    }
+                    for target in targets {
+                        if target != END && !self.nodes.contains_key(target) {
+                            return Err(GraphError::ValidationError(
+                                format!("FanOut target node '{}' not found", target)
+                            ));
+                        }
+                    }
+                }
+                GraphEdge::FanIn { sources, target } => {
+                    for source in sources {
+                        if source != START && !self.nodes.contains_key(source) {
+                            return Err(GraphError::ValidationError(
+                                format!("FanIn source node '{}' not found", source)
+                            ));
+                        }
+                    }
+                    if target != END && !self.nodes.contains_key(target) {
+                        return Err(GraphError::ValidationError(
+                            format!("FanIn target node '{}' not found", target)
+                        ));
                     }
                 }
             }
@@ -213,6 +267,21 @@ impl<S: StateSchema> CompiledGraph<S> {
                                 }
                             }
                         }
+                        GraphEdge::FanOut { targets, .. } => {
+                            for target in targets {
+                                if !reachable.contains(target) && target != END {
+                                    to_visit.push(target.clone());
+                                }
+                            }
+                        }
+                        GraphEdge::FanIn { sources, target } => {
+                            // FanIn: if all sources are reachable, target is reachable
+                            if sources.iter().all(|s| reachable.contains(s)) {
+                                if !reachable.contains(target) && target != END {
+                                    to_visit.push(target.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -255,6 +324,23 @@ impl<S: StateSchema> CompiledGraph<S> {
                         if any_target_reaches_end && !end_reachable.contains(source) {
                             end_reachable.insert(source.clone());
                             changed = true;
+                        }
+                    }
+                    GraphEdge::FanOut { source, targets } => {
+                        let all_targets_reach_end = targets.iter().all(|t| end_reachable.contains(t));
+                        if all_targets_reach_end && !end_reachable.contains(source) {
+                            end_reachable.insert(source.clone());
+                            changed = true;
+                        }
+                    }
+                    GraphEdge::FanIn { sources, target } => {
+                        if end_reachable.contains(target) {
+                            for source in sources {
+                                if !end_reachable.contains(source) {
+                                    end_reachable.insert(source.clone());
+                                    changed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -454,6 +540,15 @@ impl<S: StateSchema> CompiledGraph<S> {
                         
                         return Ok(target.clone());
                     }
+                    GraphEdge::FanOut { targets, .. } => {
+                        if targets.is_empty() {
+                            return Err(GraphError::RoutingError("FanOut has no targets".to_string()));
+                        }
+                        return Ok(targets[0].clone());
+                    }
+                    GraphEdge::FanIn { .. } => {
+                        continue;
+                    }
                 }
             }
         }
@@ -465,6 +560,202 @@ impl<S: StateSchema> CompiledGraph<S> {
         Err(GraphError::RoutingError(
             format!("No outgoing edge from node '{}'", current)
         ))
+    }
+    
+    fn find_fan_out_targets(&self, current: &str) -> Option<Vec<String>> {
+        for edge in &self.edges {
+            if edge.source() == current {
+                if let GraphEdge::FanOut { targets, .. } = edge {
+                    return Some(targets.clone());
+                }
+            }
+        }
+        None
+    }
+    
+    fn find_fan_in_target(&self, sources: &[String]) -> Option<String> {
+        for edge in &self.edges {
+            if let GraphEdge::FanIn { sources: edge_sources, target } = edge {
+                if edge_sources.iter().all(|s| sources.contains(s)) {
+                    return Some(target.clone());
+                }
+            }
+        }
+        None
+    }
+    
+    async fn execute_parallel_branches(
+        &self,
+        targets: &[String],
+        state: &S,
+    ) -> GraphResult<Vec<(String, GraphInvocation<S>)>> {
+        let futures: Vec<_> = targets.iter()
+            .filter(|t| *t != END)
+            .map(|target| {
+                let target = target.clone();
+                let state_clone = state.clone();
+                async move {
+                    let result = self.invoke_from_node(target.clone(), state_clone).await;
+                    result.map(|inv| (target, inv))
+                }
+            })
+            .collect();
+        
+        let results = join_all(futures).await;
+        
+        let mut successful = Vec::new();
+        for result in results {
+            match result {
+                Ok((name, inv)) => successful.push((name, inv)),
+                Err(e) => return Err(e),
+            }
+        }
+        
+        Ok(successful)
+    }
+    
+    pub async fn invoke_from_node(&self, start_node: String, input: S) -> GraphResult<GraphInvocation<S>> {
+        let mut state = input;
+        let mut current_node = start_node;
+        let mut steps: Vec<ExecutionStep> = Vec::new();
+        let mut recursion_count = 0;
+        
+        while current_node != END && recursion_count < self.recursion_limit {
+            if self.interrupt_before.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            }
+            
+            recursion_count += 1;
+            
+            let node = self.nodes.get(&current_node)
+                .ok_or_else(|| GraphError::ExecutionError(
+                    format!("Node '{}' not found", current_node)
+                ))?;
+            
+            let config = NodeConfig {
+                recursion_limit: self.recursion_limit,
+                debug: false,
+                metadata: HashMap::new(),
+            };
+            
+            let update = node.execute(&state, Some(config)).await?;
+            
+            if let Some(new_state) = update.update {
+                state = self.default_reducer.reduce(&state, &new_state);
+            }
+            
+            steps.push(ExecutionStep::node(current_node.clone(), update.metadata.clone()));
+            
+            if self.interrupt_after.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(format!("after_{}", current_node)));
+            }
+            
+            current_node = self.find_next_node(&current_node, &state).await?;
+        }
+        
+        Ok(GraphInvocation {
+            final_state: state,
+            steps,
+            recursion_count,
+        })
+    }
+    
+    pub async fn invoke_parallel(&self, input: S) -> GraphResult<ParallelInvocation<S>> {
+        let mut state = input;
+        let mut current_node = self.entry_point.clone();
+        let mut steps: Vec<ExecutionStep> = Vec::new();
+        let mut recursion_count = 0;
+        let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+        
+        if let Some(ref checkpointer) = self.checkpointer {
+            let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            steps.push(ExecutionStep::checkpoint(checkpoint_id, current_node.clone()));
+        }
+        
+        while current_node != END && recursion_count < self.recursion_limit {
+            if self.interrupt_before.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            }
+            
+            recursion_count += 1;
+            
+            let fan_out_targets = self.find_fan_out_targets(&current_node);
+            
+            if let Some(targets) = fan_out_targets {
+                let branch_results = self.execute_parallel_branches(&targets, &state).await?;
+                
+                for (name, inv) in branch_results {
+                    parallel_branches.push(ParallelBranch {
+                        name: name.clone(),
+                        final_state: inv.final_state.clone(),
+                        steps: inv.steps.clone(),
+                    });
+                    steps.push(ExecutionStep::ParallelNode { 
+                        branch: name, 
+                        metadata: HashMap::new() 
+                    });
+                }
+                
+                let merge_target = self.find_fan_in_target(&targets);
+                if let Some(merge_node) = merge_target {
+                    state = self.merge_parallel_states(&parallel_branches);
+                    current_node = merge_node;
+                } else {
+                    state = parallel_branches.last()
+                        .map(|b| b.final_state.clone())
+                        .unwrap_or(state);
+                    current_node = END.to_string();
+                }
+            } else {
+                let node = self.nodes.get(&current_node)
+                    .ok_or_else(|| GraphError::ExecutionError(
+                        format!("Node '{}' not found", current_node)
+                    ))?;
+                
+                let config = NodeConfig {
+                    recursion_limit: self.recursion_limit,
+                    debug: false,
+                    metadata: HashMap::new(),
+                };
+                
+                let update = node.execute(&state, Some(config)).await?;
+                
+                if let Some(new_state) = update.update {
+                    state = self.default_reducer.reduce(&state, &new_state);
+                }
+                
+                steps.push(ExecutionStep::node(current_node.clone(), update.metadata.clone()));
+                
+                if self.interrupt_after.contains(&current_node) {
+                    return Err(GraphError::ExecutionInterrupted(format!("after_{}", current_node)));
+                }
+                
+                current_node = self.find_next_node(&current_node, &state).await?;
+            }
+        }
+        
+        if recursion_count >= self.recursion_limit {
+            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+        }
+        
+        Ok(ParallelInvocation {
+            final_state: state,
+            steps,
+            recursion_count,
+            parallel_branches,
+        })
+    }
+    
+    fn merge_parallel_states(&self, branches: &[ParallelBranch<S>]) -> S {
+        if branches.is_empty() {
+            return branches.first().map(|b| b.final_state.clone()).unwrap();
+        }
+        
+        let mut merged = branches[0].final_state.clone();
+        for branch in branches.iter().skip(1) {
+            merged = self.default_reducer.reduce(&merged, &branch.final_state);
+        }
+        merged
     }
     
     /// Visualize the graph structure in ASCII format
@@ -491,6 +782,18 @@ impl<S: StateSchema> CompiledGraph<S> {
                     output.push_str(&format!("  {} → [{}]\n", source, router_name));
                     for (route, target) in targets {
                         output.push_str(&format!("    {} → {}\n", route, target));
+                    }
+                }
+                GraphEdge::FanOut { source, targets } => {
+                    output.push_str(&format!("  {} → [FanOut]\n", source));
+                    for target in targets {
+                        output.push_str(&format!("    → {}\n", target));
+                    }
+                }
+                GraphEdge::FanIn { sources, target } => {
+                    output.push_str(&format!("  [FanIn] → {}\n", target));
+                    for source in sources {
+                        output.push_str(&format!("    {} →\n", source));
                     }
                 }
             }
@@ -533,6 +836,18 @@ impl<S: StateSchema> CompiledGraph<S> {
                     }
                     output.push_str("  }\n");
                 }
+                GraphEdge::FanOut { source, targets } => {
+                    output.push_str(&format!("  {} --> {{\n", source));
+                    for target in targets {
+                        output.push_str(&format!("    --> {}\n", target));
+                    }
+                    output.push_str("  }\n");
+                }
+                GraphEdge::FanIn { sources, target } => {
+                    for source in sources {
+                        output.push_str(&format!("  {} --> {}\n", source, target));
+                    }
+                }
             }
         }
         
@@ -562,6 +877,20 @@ impl<S: StateSchema> CompiledGraph<S> {
                         "default": default_target
                     })
                 }
+                GraphEdge::FanOut { source, targets } => {
+                    serde_json::json!({
+                        "type": "fanout",
+                        "source": source,
+                        "targets": targets
+                    })
+                }
+                GraphEdge::FanIn { sources, target } => {
+                    serde_json::json!({
+                        "type": "fanin",
+                        "sources": sources,
+                        "target": target
+                    })
+                }
             }
         }).collect();
         
@@ -574,6 +903,44 @@ impl<S: StateSchema> CompiledGraph<S> {
             "routers": routers,
             "recursion_limit": self.recursion_limit
         })
+    }
+    
+    pub fn to_definition(&self) -> GraphDefinition {
+        let mut definition = GraphDefinition::new(self.entry_point.clone())
+            .with_recursion_limit(self.recursion_limit);
+        
+        for node_name in self.nodes.keys() {
+            definition.add_node(NodeDefinition {
+                name: node_name.clone(),
+                node_type: NodeType::Sync,
+                config: serde_json::json!({}),
+            });
+        }
+        
+        for edge in &self.edges {
+            let edge_def = match edge {
+                GraphEdge::Fixed { source, target } => {
+                    EdgeDefinition::fixed(source.clone(), target.clone())
+                }
+                GraphEdge::Conditional { source, router_name, targets, default_target } => {
+                    EdgeDefinition::conditional(
+                        source.clone(),
+                        router_name.clone(),
+                        targets.clone(),
+                        default_target.clone(),
+                    )
+                }
+                GraphEdge::FanOut { source, targets } => {
+                    EdgeDefinition::fan_out(source.clone(), targets.clone())
+                }
+                GraphEdge::FanIn { sources, target } => {
+                    EdgeDefinition::fan_in(sources.clone(), target.clone())
+                }
+            };
+            definition.add_edge(edge_def);
+        }
+        
+        definition
     }
 }
 
@@ -600,6 +967,7 @@ impl<S: StateSchema> GraphInvocation<S> {
 pub enum ExecutionStep {
     Node { name: String, metadata: HashMap<String, JsonValue> },
     Checkpoint { id: String, next_node: String },
+    ParallelNode { branch: String, metadata: HashMap<String, JsonValue> },
 }
 
 impl ExecutionStep {
@@ -609,6 +977,37 @@ impl ExecutionStep {
     
     pub fn checkpoint(id: String, next_node: String) -> Self {
         Self::Checkpoint { id, next_node }
+    }
+    
+    pub fn parallel_node(branch: String, metadata: HashMap<String, JsonValue>) -> Self {
+        Self::ParallelNode { branch, metadata }
+    }
+}
+
+/// ParallelBranch - Result of a parallel execution branch
+#[derive(Debug, Clone)]
+pub struct ParallelBranch<S: StateSchema> {
+    pub name: String,
+    pub final_state: S,
+    pub steps: Vec<ExecutionStep>,
+}
+
+/// ParallelInvocation - Result of graph execution with parallel branches
+#[derive(Debug)]
+pub struct ParallelInvocation<S: StateSchema> {
+    pub final_state: S,
+    pub steps: Vec<ExecutionStep>,
+    pub recursion_count: usize,
+    pub parallel_branches: Vec<ParallelBranch<S>>,
+}
+
+impl<S: StateSchema> ParallelInvocation<S> {
+    pub fn state(&self) -> &S {
+        &self.final_state
+    }
+    
+    pub fn branches(&self) -> &[ParallelBranch<S>] {
+        &self.parallel_branches
     }
 }
 

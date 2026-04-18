@@ -3,6 +3,10 @@
 //! API Key 配置方式：
 //! 1. 环境变量: export OPENAI_API_KEY="your-key"
 //! 2. 直接修改下方 API_KEY 常量
+//!
+//! MongoDB 配置方式：
+//! 1. 环境变量: export MONGO_URI="mongodb://localhost:27017"
+//! 2. 直接修改下方 MONGO_URI 常量
 
 use langchainrust::{OpenAIChat, OpenAIConfig, OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 use std::sync::OnceLock;
@@ -24,8 +28,28 @@ const DEFAULT_MODEL: &str = "gpt-3.5-turbo";
 const EMBEDDING_MODEL: &str = "text-embedding-ada-002";
 
 // ============================================================================
+// 🗄️ MongoDB 配置 - 修改这里或设置环境变量
+// ============================================================================
+
+/// MongoDB 连接 URI
+///
+/// 示例:
+/// - 本地: "mongodb://localhost:27017"
+/// - Atlas: "mongodb+srv://username:password@cluster.mongodb.net"
+const MONGO_URI: &str = "";
+
+/// MongoDB 数据库名称
+const MONGO_DATABASE: &str = "langgraph_test";
+
+/// MongoDB 集合名称
+const MONGO_COLLECTION: &str = "graph_definitions";
+
+// ============================================================================
 
 static CONFIG: OnceLock<TestConfig> = OnceLock::new();
+
+#[cfg(feature = "mongodb-persistence")]
+static MONGO_CONFIG: OnceLock<MongoTestConfig> = OnceLock::new();
 
 pub struct TestConfig {
     pub api_key: String,
@@ -77,5 +101,47 @@ impl TestConfig {
 
     pub fn embeddings(&self) -> OpenAIEmbeddings {
         OpenAIEmbeddings::new(self.embeddings_config())
+    }
+}
+
+/// MongoDB 测试配置
+#[cfg(feature = "mongodb-persistence")]
+pub struct MongoTestConfig {
+    pub uri: String,
+    pub database: String,
+    pub collection: String,
+}
+
+#[cfg(feature = "mongodb-persistence")]
+impl MongoTestConfig {
+    pub fn get() -> &'static Self {
+        MONGO_CONFIG.get_or_init(|| {
+            let uri = if MONGO_URI.is_empty() {
+                std::env::var("MONGO_URI")
+                    .expect("请设置 MONGO_URI 环境变量，或在 tests/common/mod.rs 中配置 MONGO_URI")
+            } else {
+                MONGO_URI.to_string()
+            };
+
+            let database =
+                std::env::var("MONGO_DATABASE").unwrap_or_else(|_| MONGO_DATABASE.to_string());
+
+            let collection =
+                std::env::var("MONGO_COLLECTION").unwrap_or_else(|_| MONGO_COLLECTION.to_string());
+
+            MongoTestConfig {
+                uri,
+                database,
+                collection,
+            }
+        })
+    }
+
+    pub fn to_mongo_config(&self) -> langchainrust::langgraph::MongoConfig {
+        langchainrust::langgraph::MongoConfig::new(
+            self.uri.clone(),
+            self.database.clone(),
+            self.collection.clone(),
+        )
     }
 }
