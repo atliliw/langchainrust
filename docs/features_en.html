@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangChainRust Features Documentation</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-bg: #0a0f1a;
+            --primary-text: #e8edf5;
+            --secondary-bg: #111827;
+            --secondary-text: #94a3b8;
+            --accent-primary: #f59e0b;
+            --accent-secondary: #06b6d4;
+            --accent-tertiary: #10b981;
+            --code-bg: #1e293b;
+            --code-border: #334155;
+            --card-bg: #151c2c;
+            --card-border: #2d3748;
+            --card-shadow: rgba(0, 0, 0, 0.4);
+            --sidebar-bg: #0d1321;
+            --sidebar-hover: #1a2332;
+            --sidebar-active: #f59e0b;
+            --link-color: #06b6d4;
+            --link-hover: #22d3ee;
+            --button-bg: #f59e0b;
+            --button-hover: #fbbf24;
+            --button-text: #0a0f1a;
+            --border-subtle: #1e293b;
+            --border-strong: #374151;
+            --gradient-header: linear-gradient(135deg, #0a0f1a 0%, #151c2c 100%);
+            --sidebar-width: 260px;
+            --content-max-width: 900px;
+            --gap-sm: 8px;
+            --gap-md: 16px;
+            --gap-lg: 24px;
+            --gap-xl: 32px;
+            --font-code: 'JetBrains Mono', monospace;
+            --font-body: system-ui, -apple-system, sans-serif;
+            --font-display: Georgia, 'Times New Roman', serif;
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --transition-fast: 150ms ease;
+            --transition-medium: 300ms ease;
+        }
+
+        * { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: var(--font-body);
+            background: var(--primary-bg);
+            color: var(--primary-text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+        }
+
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border-subtle);
+            overflow-y: auto;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            padding: var(--gap-lg);
+            background: var(--gradient-header);
+            border-bottom: 1px solid var(--border-strong);
+        }
+
+        .sidebar-logo {
+            font-family: var(--font-display);
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--accent-primary);
+        }
+
+        .sidebar-subtitle {
+            font-size: 0.7rem;
+            color: var(--secondary-text);
+            margin-top: var(--gap-sm);
+            font-family: var(--font-code);
+        }
+
+        .sidebar-nav { padding: var(--gap-md); }
+
+        .nav-section { margin-bottom: var(--gap-lg); }
+
+        .nav-section-title {
+            font-family: var(--font-code);
+            font-size: 0.65rem;
+            color: var(--secondary-text);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: var(--gap-sm) var(--gap-md);
+        }
+
+        .nav-item {
+            display: block;
+            padding: 10px var(--gap-md);
+            color: var(--secondary-text);
+            text-decoration: none;
+            font-size: 0.85rem;
+            border-radius: var(--radius-md);
+            transition: all var(--transition-fast);
+            position: relative;
+        }
+
+        .nav-item:hover {
+            background: var(--sidebar-hover);
+            color: var(--primary-text);
+        }
+
+        .nav-item.active {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--sidebar-active);
+        }
+
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 60%;
+            background: var(--accent-primary);
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            min-height: 100vh;
+            padding: var(--gap-xl);
+        }
+
+        .content-wrapper {
+            max-width: var(--content-max-width);
+            margin: 0 auto;
+        }
+
+        .doc-header {
+            margin-bottom: var(--gap-xl);
+            padding-bottom: var(--gap-lg);
+            border-bottom: 2px solid var(--accent-primary);
+        }
+
+        .doc-title {
+            font-family: var(--font-display);
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: var(--primary-text);
+            margin: 0;
+        }
+
+        .doc-title-accent { color: var(--accent-primary); }
+
+        .doc-desc {
+            font-size: 1rem;
+            color: var(--secondary-text);
+            margin-top: var(--gap-md);
+        }
+
+        .module {
+            margin-bottom: var(--gap-xl);
+            opacity: 0;
+            animation: fadeIn 0.5s ease forwards;
+        }
+
+        @keyframes fadeIn { to { opacity: 1; } }
+
+        h2 {
+            font-family: var(--font-display);
+            font-size: 1.6rem;
+            color: var(--primary-text);
+            margin: 0 0 var(--gap-lg) 0;
+            padding-bottom: var(--gap-sm);
+            border-bottom: 1px solid var(--border-strong);
+            position: relative;
+        }
+
+        h2::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            bottom: -1px;
+            width: 60px;
+            height: 2px;
+            background: var(--accent-primary);
+        }
+
+        h3 {
+            font-family: var(--font-body);
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent-secondary);
+            margin: var(--gap-lg) 0 var(--gap-md) 0;
+        }
+
+        h4 {
+            font-family: var(--font-code);
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--accent-tertiary);
+            margin: var(--gap-md) 0 var(--gap-sm) 0;
+        }
+
+        p { margin: var(--gap-md) 0; color: var(--primary-text); }
+        a { color: var(--link-color); text-decoration: none; transition: color var(--transition-fast); }
+        a:hover { color: var(--link-hover); }
+
+        .module-icon {
+            font-size: 2rem;
+            margin-right: var(--gap-md);
+        }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: var(--gap-lg);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-lg);
+            padding: var(--gap-lg);
+            margin: var(--gap-lg) 0;
+            box-shadow: 0 4px 12px var(--card-shadow);
+            transition: all var(--transition-medium);
+            position: relative;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px var(--card-shadow);
+        }
+
+        .card-title {
+            font-family: var(--font-code);
+            font-size: 0.85rem;
+            color: var(--accent-primary);
+            margin-bottom: var(--gap-md);
+            display: flex;
+            align-items: center;
+            gap: var(--gap-sm);
+        }
+
+        .card-title::before { content: '◆'; font-size: 0.7rem; }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--gap-md);
+            margin: var(--gap-lg) 0;
+        }
+
+        .feature-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-md);
+            padding: var(--gap-md);
+        }
+
+        .feature-card h3 {
+            font-size: 0.85rem;
+            color: var(--accent-primary);
+            margin: 0 0 var(--gap-sm) 0;
+        }
+
+        .feature-card p {
+            font-size: 0.8rem;
+            color: var(--secondary-text);
+            margin: 0;
+        }
+
+        .code-block {
+            position: relative;
+            background: var(--code-bg);
+            border: 1px solid var(--code-border);
+            border-radius: var(--radius-md);
+            margin: var(--gap-md) 0;
+            overflow: hidden;
+        }
+
+        .code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.2);
+            border-bottom: 1px solid var(--code-border);
+        }
+
+        .code-lang {
+            font-family: var(--font-code);
+            font-size: 0.7rem;
+            color: var(--accent-tertiary);
+        }
+
+        .copy-btn {
+            background: transparent;
+            border: 1px solid var(--border-strong);
+            color: var(--secondary-text);
+            padding: 4px 10px;
+            font-size: 0.7rem;
+            font-family: var(--font-code);
+            cursor: pointer;
+            border-radius: var(--radius-sm);
+            transition: all var(--transition-fast);
+        }
+
+        .copy-btn:hover {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: var(--button-text);
+        }
+
+        .copy-btn.copied {
+            background: var(--accent-tertiary);
+            border-color: var(--accent-tertiary);
+            color: #fff;
+        }
+
+        pre {
+            margin: 0;
+            padding: var(--gap-md);
+            overflow-x: auto;
+            font-family: var(--font-code);
+            font-size: 0.8rem;
+            line-height: 1.6;
+        }
+
+        code {
+            font-family: var(--font-code);
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            font-size: 0.85em;
+        }
+
+        pre code { background: transparent; padding: 0; }
+
+        .kw { color: #c678dd; }
+        .fn { color: #61afef; }
+        .str { color: #98c379; }
+        .num { color: #d19a66; }
+        .comment { color: #5c6370; font-style: italic; }
+        .type { color: #e5c07b; }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: var(--gap-lg) 0;
+            font-size: 0.85rem;
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .data-table thead { background: rgba(245, 158, 11, 0.1); }
+
+        .data-table th {
+            font-family: var(--font-code);
+            font-weight: 500;
+            color: var(--accent-primary);
+            text-align: left;
+            padding: 12px 16px;
+            border-bottom: 2px solid var(--accent-primary);
+        }
+
+        .data-table td {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            color: var(--primary-text);
+        }
+
+        .data-table tr:hover td { background: rgba(6, 182, 212, 0.05); }
+        .data-table tr:last-child td { border-bottom: none; }
+
+        .feature-tag {
+            display: inline-flex;
+            padding: 4px 10px;
+            background: rgba(6, 182, 212, 0.15);
+            border: 1px solid var(--accent-secondary);
+            border-radius: var(--radius-sm);
+            font-family: var(--font-code);
+            font-size: 0.7rem;
+            color: var(--accent-secondary);
+            margin: 0 4px;
+        }
+
+        .feature-tag.recommended {
+            background: rgba(245, 158, 11, 0.15);
+            border-color: var(--accent-primary);
+            color: var(--accent-primary);
+        }
+
+        .callout {
+            padding: var(--gap-md);
+            margin: var(--gap-md) 0;
+            border-radius: var(--radius-md);
+            border-left: 3px solid;
+            background: rgba(0,0,0,0.2);
+        }
+
+        .callout.info { border-left-color: var(--accent-secondary); }
+        .callout.warning { border-left-color: var(--accent-primary); }
+        .callout.success { border-left-color: var(--accent-tertiary); }
+
+        .callout-title {
+            font-family: var(--font-code);
+            font-size: 0.8rem;
+            margin-bottom: var(--gap-sm);
+        }
+
+        ul, ol { padding-left: 1.5em; margin: var(--gap-md) 0; }
+        li { margin: 6px 0; }
+        li::marker { color: var(--accent-primary); }
+
+        .divider {
+            border: 0;
+            height: 1px;
+            background: linear-gradient(to right, var(--accent-primary), transparent);
+            margin: var(--gap-xl) 0;
+        }
+
+        .highlight-row { background: rgba(245, 158, 11, 0.1); }
+        .high { color: #ef4444; font-weight: 600; }
+        .medium { color: var(--accent-primary); }
+        .low { color: var(--accent-tertiary); font-weight: 600; }
+
+        .page-footer {
+            margin-top: var(--gap-xl);
+            padding: var(--gap-lg);
+            background: var(--secondary-bg);
+            border-radius: var(--radius-lg);
+            text-align: center;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: var(--gap-lg);
+            justify-content: center;
+            margin-bottom: var(--gap-md);
+        }
+
+        .footer-links a { color: var(--secondary-text); }
+        .footer-links a:hover { color: var(--accent-primary); }
+
+        .copyright {
+            color: var(--secondary-text);
+            font-size: 0.8rem;
+        }
+
+        .sidebar-toggle {
+            display: none;
+            position: fixed;
+            top: var(--gap-md);
+            left: var(--gap-md);
+            z-index: 200;
+            background: var(--accent-primary);
+            color: var(--button-text);
+            border: none;
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        @media (max-width: 900px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main-content { margin-left: 0; padding: var(--gap-lg); }
+            .sidebar-toggle { display: block; }
+            .doc-title { font-size: 1.75rem; }
+            .card-grid { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 600px) {
+            .sidebar { width: 100%; }
+            .main-content { padding: var(--gap-md); }
+            .doc-title { font-size: 1.5rem; }
+            h2 { font-size: 1.3rem; }
+            pre { font-size: 0.75rem; padding: var(--gap-sm); }
+            .data-table { font-size: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+    <button class="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
+            <div class="sidebar-subtitle">v0.1.0 • Features</div>
+        </div>
+
+        <div class="sidebar-nav">
+            <div class="nav-section">
+                <div class="nav-section-title">Core Modules</div>
+                <a href="#agents" class="nav-item">🤖 Agents</a>
+                <a href="#chains" class="nav-item">🔗 Chains</a>
+                <a href="#memory" class="nav-item">🧠 Memory</a>
+                <a href="#tools" class="nav-item">🔧 Tools</a>
+            </div>
+
+            <div class="nav-section">
+                <div class="nav-section-title">Advanced</div>
+                <a href="#rag" class="nav-item">📚 RAG</a>
+                <a href="#prompts" class="nav-item">📝 Prompts</a>
+                <a href="#llm" class="nav-item">💬 LLM</a>
+            </div>
+
+            <div class="nav-section">
+                <div class="nav-section-title">Guide</div>
+                <a href="#best-practices" class="nav-item">💡 Best Practices</a>
+            </div>
+
+            <div class="nav-section">
+                <div class="nav-section-title">Language</div>
+                <a href="features_zh.html" class="nav-item">中文</a>
+                <a href="features_en.html" class="nav-item active">English</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="content-wrapper">
+            <header class="doc-header">
+                <h1 class="doc-title">Features <span class="doc-title-accent">Documentation</span></h1>
+                <p class="doc-desc">Comprehensive overview of LangChainRust modules</p>
+            </header>
+
+            <!-- Agents -->
+            <section class="module" id="agents" style="animation-delay: 0.1s;">
+                <div class="module-header">
+                    <span class="module-icon">🤖</span>
+                    <h2>Agents</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Agent</strong> is LangChainRust's core component that enables LLMs to autonomously decide, call tools, and execute multi-step tasks.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Break complex problems into steps, automatically select appropriate tools, iterate until task completion.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Autonomous Decision</h3><p>Agent decides next action based on question and tool descriptions</p></div>
+                    <div class="feature-card"><h3>Tool Calling</h3><p>Calculator, DateTime, URLFetch and more</p></div>
+                    <div class="feature-card"><h3>Iterative Execution</h3><p>Observe tool output and continue thinking</p></div>
+                    <div class="feature-card"><h3>Type Safety</h3><p>FunctionCallingAgent uses native FC</p></div>
+                </div>
+
+                <h3>FunctionCallingAgent (Recommended)</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Use Case</div>
+                    <p>Models supporting Function Calling (GPT-4, Claude, Gemini, etc.)</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{
+    FunctionCallingAgent, AgentExecutor, BaseAgent, BaseTool,
+    OpenAIChat, OpenAIConfig, Calculator, DateTimeTool,
+};
+
+<span class="kw">let</span> config = OpenAIConfig {
+    api_key: std::env::var(<span class="str">"OPENAI_API_KEY"</span>)?,
+    model: <span class="str">"gpt-4"</span>.to_string(),
+    ..Default::default()
+};
+<span class="kw">let</span> llm = OpenAIChat::new(config);
+
+<span class="kw">let</span> tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+<span class="kw">let</span> agent = FunctionCallingAgent::new(llm, tools.clone(), <span class="kw">None</span>);
+<span class="kw">let</span> executor = AgentExecutor::new(Arc::new(agent), tools)
+    .with_max_iterations(<span class="num">5</span>);
+
+<span class="kw">let</span> result = executor.invoke(<span class="str">"Calculate 37 + 48"</span>).await?;</code></pre>
+                </div>
+
+                <h3>ReActAgent (Legacy Models)</h3>
+
+                <div class="callout warning">
+                    <div class="callout-title">Use Case</div>
+                    <p>Models without Function Calling support (open-source, local deployment)</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">let</span> tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+<span class="kw">let</span> agent = ReActAgent::new(llm, tools.clone(), <span class="kw">None</span>);
+<span class="kw">let</span> executor = AgentExecutor::new(Arc::new(agent), tools)
+    .with_max_iterations(<span class="num">5</span>);</code></pre>
+                </div>
+
+                <h4>Agent Comparison</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Dimension</th><th>FunctionCallingAgent</th><th>ReActAgent</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Tool Calling</td><td>Native Function Calling</td><td>Text Parsing (Regex)</td></tr>
+                        <tr><td>Reliability</td><td class="low">High (Type Safe)</td><td class="medium">Medium</td></tr>
+                        <tr><td>Token Usage</td><td class="low">Low</td><td class="high">High</td></tr>
+                        <tr><td>Compatible Models</td><td>GPT-4 / Claude / Gemini</td><td>All Models</td></tr>
+                        <tr class="highlight-row"><td>Recommendation</td><td class="low">★★★★★</td><td class="medium">★★★</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Chains -->
+            <section class="module" id="chains" style="animation-delay: 0.2s;">
+                <div class="module-header">
+                    <span class="module-icon">🔗</span>
+                    <h2>Chains</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Chain</strong> is LangChain's core abstraction that combines Prompt, LLM, Memory into a processing pipeline.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>LLMChain</h3><p>Basic Chain: Prompt + LLM</p></div>
+                    <div class="feature-card"><h3>SequentialChain</h3><p>Execute multiple Chains sequentially</p></div>
+                    <div class="feature-card"><h3>ConversationChain</h3><p>Chat Chain with Memory</p></div>
+                    <div class="feature-card"><h3>RetrievalQA</h3><p>RAG Chain</p></div>
+                </div>
+
+                <h3>LLMChain Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{LLMChain, BaseChain};
+
+<span class="kw">let</span> chain = LLMChain::new(llm, <span class="str">"Explain in one sentence: {topic}"</span>);
+
+<span class="kw">let</span> inputs = HashMap::from([
+    (<span class="str">"topic"</span>, Value::String(<span class="str">"Rust language"</span>.to_string()))
+]);
+
+<span class="kw">let</span> result = chain.invoke(inputs).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Memory -->
+            <section class="module" id="memory" style="animation-delay: 0.3s;">
+                <div class="module-header">
+                    <span class="module-icon">🧠</span>
+                    <h2>Memory</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Memory</strong> manages Agent or Chain conversation history, controlling Token consumption.</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Memory</th><th>Compression</th><th>Token Control</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>BufferMemory</td><td>No compression</td><td class="high">Unlimited</td><td>Short conversations</td></tr>
+                        <tr><td>WindowMemory</td><td>Window truncation</td><td class="medium">Fixed k rounds</td><td>Simple control</td></tr>
+                        <tr><td>SummaryMemory</td><td>LLM summary</td><td class="low">Smart compression</td><td>Long conversations</td></tr>
+                        <tr class="highlight-row"><td>SummaryBufferMemory</td><td>Summary + retain</td><td class="low">Dynamic</td><td><span class="feature-tag recommended">Recommended</span></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>ConversationBufferMemory</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">let</span> <span class="kw">mut</span> memory = ConversationBufferMemory::new();
+
+<span class="kw">let</span> inputs = HashMap::from([(<span class="str">"input"</span>, <span class="str">"My name is John"</span>)]);
+<span class="kw">let</span> outputs = HashMap::from([(<span class="str">"output"</span>, <span class="str">"Hello John!"</span>)]);
+memory.save_context(&inputs, &outputs).await?;
+
+<span class="kw">let</span> vars = memory.load_memory_variables(&HashMap::new()).await?;
+<span class="comment">// Output: "Human: My name is John\nAI: Hello John!"</span></code></pre>
+                </div>
+
+                <div class="callout warning">
+                    <div class="callout-title">⚠️ SummaryMemory Cost Warning</div>
+                    <p>Each conversation round calls LLM for summary. 100 rounds = 100 LLM calls. Evaluate costs carefully.</p>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Tools -->
+            <section class="module" id="tools" style="animation-delay: 0.4s;">
+                <div class="module-header">
+                    <span class="module-icon">🔧</span>
+                    <h2>Tools</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Tool</strong> is an external function Agent can call to perform specific operations (calculation, query, fetch, etc.).</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Tool</th><th>Description</th><th>Parameters</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>Calculator</code></td><td>Math expression calculation</td><td>expression</td></tr>
+                        <tr><td><code>DateTimeTool</code></td><td>Date/time query</td><td>operation, datetime</td></tr>
+                        <tr><td><code>SimpleMathTool</code></td><td>Advanced math operations</td><td>operation, value</td></tr>
+                        <tr><td><code>URLFetchTool</code></td><td>Web page fetching</td><td>operation, url</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Custom Tool</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::core::tools::{BaseTool, ToolError};
+<span class="kw">use</span> schemars::JsonSchema;
+<span class="kw">use</span> serde::Deserialize;
+
+<span class="kw">#derive</span>[JsonSchema, Deserialize]
+<span class="kw">struct</span> <span class="type">WeatherInput</span> { city: <span class="type">String</span> }
+
+<span class="kw">pub struct</span> <span class="type">WeatherTool</span>;
+
+<span class="kw">#async_trait</span>
+<span class="kw">impl</span> BaseTool <span class="kw">for</span> WeatherTool {
+    <span class="kw">fn</span> name(&self) -> &str { <span class="str">"weather"</span> }
+    
+    <span class="kw">fn</span> description(&self) -> &str {
+        <span class="str">"Query city weather"</span>
+    }
+    
+    <span class="kw">async fn</span> run(&self, input: <span class="type">String</span>) -> Result<<span class="type">String</span>, ToolError> {
+        <span class="kw">let</span> args: WeatherInput = serde_json::from_str(&input)?;
+        Ok(format!(<span class="str">"{} weather: Sunny, 25°C"</span>, args.city))
+    }
+}</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- RAG -->
+            <section class="module" id="rag" style="animation-delay: 0.5s;">
+                <div class="module-header">
+                    <span class="module-icon">📚</span>
+                    <h2>RAG</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>RAG</strong> retrieves relevant documents from knowledge base first, then lets LLM generate answers based on retrieved content.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Let LLM access private knowledge base and latest data without retraining.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Document Loading</h3><p>PDF, CSV, and more</p></div>
+                    <div class="feature-card"><h3>Smart Splitting</h3><p>RecursiveCharacterSplitter</p></div>
+                    <div class="feature-card"><h3>Vector Embedding</h3><p>OpenAI Embeddings</p></div>
+                    <div class="feature-card"><h3>Semantic Retrieval</h3><p>Vector similarity based</p></div>
+                </div>
+
+                <h3>Complete RAG Workflow</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{
+    Document, InMemoryVectorStore, MockEmbeddings,
+    SimilarityRetriever, RecursiveCharacterSplitter,
+};
+
+<span class="comment">// 1. Prepare documents</span>
+<span class="kw">let</span> docs = vec![
+    Document::new(<span class="str">"Rust is a systems programming language..."</span>),
+];
+
+<span class="comment">// 2. Split documents</span>
+<span class="kw">let</span> splitter = RecursiveCharacterSplitter::new(<span class="num">200</span>, <span class="num">50</span>);
+<span class="kw">let</span> chunks = splitter.split_documents(&docs)?;
+
+<span class="comment">// 3. Create retriever</span>
+<span class="kw">let</span> retriever = SimilarityRetriever::new(store, embeddings);
+retriever.add_documents(chunks).await?;
+
+<span class="comment">// 4. Execute QA</span>
+<span class="kw">let</span> qa_chain = RetrievalQA::new(llm, retriever, <span class="num">3</span>);
+<span class="kw">let</span> result = qa_chain.invoke(inputs).await?;</code></pre>
+                </div>
+
+                <h4>RAG Configuration</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Parameter</th><th>Recommended</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>chunk_size</td><td>200-500</td><td>Max characters per chunk</td></tr>
+                        <tr><td>overlap</td><td>50-100</td><td>Overlap between adjacent chunks</td></tr>
+                        <tr><td>top_k</td><td>3-10</td><td>Number of documents to retrieve</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Prompts -->
+            <section class="module" id="prompts" style="animation-delay: 0.6s;">
+                <div class="module-header">
+                    <span class="module-icon">📝</span>
+                    <h2>Prompts</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>PromptTemplate</strong> and <strong>ChatPromptTemplate</strong> provide dynamic Prompt construction with variable placeholders.</p>
+                </div>
+
+                <h3>PromptTemplate</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::prompts::PromptTemplate;
+
+<span class="kw">let</span> template = PromptTemplate::new(<span class="str">"Explain {topic} in {style} style"</span>);
+
+<span class="kw">let</span> vars = HashMap::from([
+    (<span class="str">"style"</span>, <span class="str">"concise"</span>),
+    (<span class="str">"topic"</span>, <span class="str">"Rust ownership"</span>),
+]);
+
+<span class="kw">let</span> prompt = template.format(&vars)?;
+<span class="comment">// "Explain Rust ownership in concise style"</span></code></pre>
+                </div>
+
+                <h3>ChatPromptTemplate</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">let</span> template = ChatPromptTemplate::new(vec![
+    Message::system(<span class="str">"You are a {role}, expert in {domain}."</span>),
+    Message::human(<span class="str">"Hello, I'm {name}."</span>),
+    Message::human(<span class="str">"{question}"</span>),
+]);
+
+<span class="kw">let</span> messages = template.format(&vars)?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- LLM -->
+            <section class="module" id="llm" style="animation-delay: 0.7s;">
+                <div class="module-header">
+                    <span class="module-icon">💬</span>
+                    <h2>LLM</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>OpenAIChat</strong> and <strong>OllamaChat</strong> provide unified LLM interaction interface.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>OpenAI Compatible</h3><p>Support OpenAI API and proxies</p></div>
+                    <div class="feature-card"><h3>Streaming</h3><p>stream_chat() real-time output</p></div>
+                    <div class="feature-card"><h3>Function Calling</h3><p>bind_tools() attach tools</p></div>
+                    <div class="feature-card"><h3>Ollama Support</h3><p>Local deployment models</p></div>
+                </div>
+
+                <h4>OpenAIConfig Settings</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>api_key</td><td>String</td><td>API key</td></tr>
+                        <tr><td>base_url</td><td>String</td><td>API endpoint (proxy support)</td></tr>
+                        <tr><td>model</td><td>String</td><td>Model name</td></tr>
+                        <tr><td>streaming</td><td>bool</td><td>Streaming output toggle</td></tr>
+                        <tr><td>temperature</td><td>Option&lt;f32&gt;</td><td>Sampling temperature</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Best Practices -->
+            <section class="module" id="best-practices" style="animation-delay: 0.8s;">
+                <div class="module-header">
+                    <span class="module-icon">💡</span>
+                    <h2>Best Practices</h2>
+                </div>
+
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="card-title">01 Agent Selection</div>
+                        <p>Use FunctionCallingAgent first (more reliable). Use ReActAgent for local models.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">02 Model Selection</div>
+                        <p>Agents: gpt-4 recommended. Simple chat: gpt-3.5-turbo.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">03 Memory Selection</div>
+                        <p>Long conversations: SummaryBufferMemory. Short: BufferMemory.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">04 RAG Config</div>
+                        <p>chunk_size=200-500, overlap=50-100, top_k=3-10</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">05 Streaming</div>
+                        <p>Use stream_chat() for interactive scenarios to reduce perceived latency.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">06 Security</div>
+                        <p>Use environment variables for API keys. Never hardcode.</p>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="page-footer">
+                <div class="footer-links">
+                    <a href="USAGE.html">Usage Guide</a>
+                    <a href="features_zh.html">中文</a>
+                    <a href="https://docs.rs/langchainrust">API Docs</a>
+                </div>
+                <p class="copyright">LangChainRust v0.1.0 | MIT License</p>
+            </footer>
+        </div>
+    </main>
+
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        function copyCode(btn) {
+            const codeBlock = btn.closest('.code-block');
+            const code = codeBlock.querySelector('pre code').innerText;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = 'Copy';
+                    btn.classList.remove('copied');
+                }, 2000);
+            }).catch(err => {
+                console.error('Copy failed:', err);
+                btn.textContent = 'Failed';
+            });
+        }
+
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                const href = item.getAttribute('href');
+                if (href && href.startsWith('#')) {
+                    e.preventDefault();
+                    const target = document.querySelector(href);
+                    if (target) {
+                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                        item.classList.add('active');
+                    }
+                }
+            });
+        });
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                }
+            });
+        }, { threshold: 0.1 });
+
+        document.querySelectorAll('.module').forEach(section => {
+            observer.observe(section);
+        });
+    </script>
+</body>
+</html>

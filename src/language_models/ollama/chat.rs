@@ -368,6 +368,7 @@ impl std::fmt::Display for OllamaError {
 
 impl std::error::Error for OllamaError {}
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
     id: String,
@@ -378,6 +379,7 @@ struct OllamaChatResponse {
     usage: Option<OllamaUsage>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OllamaChoice {
     index: i32,
@@ -385,6 +387,7 @@ struct OllamaChoice {
     finish_reason: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OllamaMessage {
     role: String,

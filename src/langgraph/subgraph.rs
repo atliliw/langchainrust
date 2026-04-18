@@ -88,7 +88,7 @@ impl<S: StateSchema + Clone> SubgraphNode<S, S> {
 
 #[async_trait]
 impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for SubgraphNode<S, SubS> {
-    async fn execute(&self, state: &S, config: Option<NodeConfig>) -> NodeResult<S> {
+    async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
         // Map parent state to subgraph input
         let sub_input = (self.input_mapper)(state);
         

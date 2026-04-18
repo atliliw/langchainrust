@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangChainRust 功能文档</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --primary-light: #dbeafe;
+            --secondary: #64748b;
+            --accent: #f59e0b;
+            --success: #10b981;
+            --warning: #ef4444;
+            --bg: #f8fafc;
+            --bg-dark: #0f172a;
+            --card-bg: #ffffff;
+            --text: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --code-bg: #1e293a;
+            --code-text: #e2e8f0;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Noto Sans SC', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        /* 导航 */
+        .top-nav {
+            background: var(--bg-dark);
+            color: white;
+            padding: 16px 32px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .top-nav h1 {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .top-nav .version {
+            color: var(--secondary);
+            font-size: 14px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .nav-links a {
+            color: rgba(255,255,255,0.7);
+            text-decoration: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .nav-links a:hover {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+
+        /* 主内容 */
+        .main-content {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 48px 32px;
+        }
+
+        .page-header {
+            text-align: center;
+            margin-bottom: 64px;
+            padding-bottom: 32px;
+            border-bottom: 2px solid var(--primary);
+        }
+
+        .page-header h1 {
+            font-size: 42px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .page-header .tagline {
+            font-size: 18px;
+            color: var(--secondary);
+        }
+
+        /* 模块 */
+        .module {
+            margin-bottom: 80px;
+            padding-top: 32px;
+        }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .module-icon {
+            width: 56px;
+            height: 56px;
+            background: var(--primary-light);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+        }
+
+        .module-title {
+            font-size: 32px;
+            font-weight: 800;
+            color: var(--bg-dark);
+        }
+
+        .module-desc {
+            font-size: 16px;
+            color: var(--text-light);
+        }
+
+        /* 介绍卡片 */
+        .intro-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .intro-card .highlight {
+            color: var(--primary);
+            font-weight: 600;
+            background: var(--primary-light);
+            padding: 8px 16px;
+            border-radius: 6px;
+            display: inline-block;
+            margin-top: 12px;
+        }
+
+        /* 功能网格 */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .feature-card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            padding: 16px;
+        }
+
+        .feature-card h3 {
+            font-size: 14px;
+            color: var(--primary);
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            font-size: 13px;
+            color: var(--text-light);
+        }
+
+        /* 代码块 */
+        .code-block {
+            background: var(--code-bg);
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            margin: 16px 0;
+        }
+
+        .code-block pre { margin: 0; }
+        .code-block code {
+            color: var(--code-text);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        /* 表格 */
+        .data-table, .config-table, .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            margin: 16px 0;
+        }
+
+        .data-table th, .data-table td,
+        .config-table th, .config-table td,
+        .comparison-table th, .comparison-table td {
+            padding: 12px;
+            text-align: left;
+            border: 1px solid var(--border);
+        }
+
+        .data-table th, .config-table th, .comparison-table th {
+            background: var(--bg);
+            font-weight: 600;
+        }
+
+        .config-table code, .comparison-table code {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--primary);
+        }
+
+        .comparison-table .highlight-row { background: var(--primary-light); }
+        .comparison-table td.high { color: var(--warning); font-weight: 600; }
+        .comparison-table td.medium { color: var(--accent); }
+        .comparison-table td.low { color: var(--success); font-weight: 600; }
+
+        /* API 方法卡片 */
+        .method-card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 16px;
+        }
+
+        .method-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            background: var(--bg);
+            border-radius: 8px 8px 0 0;
+        }
+
+        .method-name {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .method-tag {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--accent);
+            color: white;
+        }
+
+        .method-type {
+            font-size: 13px;
+            color: var(--text-light);
+        }
+
+        .method-body { padding: 16px; }
+
+        /* 信息框 */
+        .info-box {
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 24px;
+            margin: 24px 0;
+        }
+
+        .info-box h4 { margin-bottom: 12px; }
+
+        /* 警告卡片 */
+        .warning-card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            padding: 16px;
+            margin: 16px 0;
+        }
+
+        .warning-card.critical { border-color: var(--warning); background: #fef2f2; }
+        .warning-card.info { border-color: var(--primary); background: var(--primary-light); }
+        .warning-card h4 { margin-bottom: 8px; }
+        .warning-card p { font-size: 13px; color: var(--text-light); }
+
+        /* 最佳实践 */
+        .practice-list { display: grid; gap: 16px; }
+
+        .practice-item {
+            display: flex;
+            gap: 16px;
+            background: var(--card-bg);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            padding: 20px;
+        }
+
+        .practice-number {
+            width: 40px;
+            height: 40px;
+            background: var(--primary);
+            color: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+        }
+
+        .practice-content h4 { margin-bottom: 4px; }
+        .practice-content p { font-size: 13px; color: var(--text-light); }
+
+        /* 子标题 */
+        .sub-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--bg-dark);
+            margin: 32px 0 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* 页脚 */
+        .page-footer {
+            margin-top: 64px;
+            padding: 32px;
+            background: var(--bg-dark);
+            border-radius: 12px;
+            text-align: center;
+            color: white;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            justify-content: center;
+            margin-bottom: 16px;
+        }
+
+        .footer-links a {
+            color: rgba(255,255,255,0.8);
+            text-decoration: none;
+        }
+
+        .footer-links a:hover { color: white; }
+
+        .copyright { color: rgba(255,255,255,0.5); font-size: 14px; }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .feature-grid { grid-template-columns: repeat(2, 1fr); }
+            .nav-links { display: none; }
+            .main-content { padding: 24px 16px; }
+            .page-header h1 { font-size: 28px; }
+            .module-title { font-size: 24px; }
+        }
+
+        /* 分隔线 */
+        .divider {
+            border: 0;
+            height: 2px;
+            background: linear-gradient(to right, var(--primary), transparent);
+            margin: 80px 0;
+        }
+
+        /* 快速导航 */
+        .quick-nav {
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 24px;
+            margin-bottom: 48px;
+        }
+
+        .quick-nav h3 { margin-bottom: 16px; }
+
+        .quick-nav-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+
+        .quick-nav-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--bg);
+            border-radius: 6px;
+            text-decoration: none;
+            color: var(--text);
+            transition: all 0.2s;
+        }
+
+        .quick-nav-item:hover {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .quick-nav-item span:first-child { font-size: 20px; }
+    </style>
+</head>
+<body>
+    <nav class="top-nav">
+        <div>
+            <h1>LangChainRust 功能文档</h1>
+            <span class="version">v0.2.5</span>
+        </div>
+        <div class="nav-links">
+            <a href="#agents">Agents</a>
+            <a href="#chains">Chains</a>
+            <a href="#memory">Memory</a>
+            <a href="#tools">Tools</a>
+            <a href="#rag">RAG</a>
+            <a href="#prompts">Prompts</a>
+            <a href="#llm">LLM</a>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <header class="page-header">
+            <h1>LangChainRust 功能文档</h1>
+            <p class="tagline">全面了解 LangChainRust 的各项功能模块</p>
+        </header>
+
+        <div class="quick-nav">
+            <h3>⚡ 快速导航</h3>
+            <div class="quick-nav-grid">
+                <a href="#agents" class="quick-nav-item"><span>🤖</span><span>Agents</span></a>
+                <a href="#chains" class="quick-nav-item"><span>🔗</span><span>Chains</span></a>
+                <a href="#memory" class="quick-nav-item"><span>🧠</span><span>Memory</span></a>
+                <a href="#tools" class="quick-nav-item"><span>🔧</span><span>Tools</span></a>
+                <a href="#rag" class="quick-nav-item"><span>📚</span><span>RAG</span></a>
+                <a href="#prompts" class="quick-nav-item"><span>📝</span><span>Prompts</span></a>
+                <a href="#llm" class="quick-nav-item"><span>💬</span><span>LLM</span></a>
+                <a href="#best-practices" class="quick-nav-item"><span>💡</span><span>最佳实践</span></a>
+            </div>
+        </div>
+
+        <!-- ========== Agents ========== -->
+        <section id="agents" class="module">
+            <div class="module-header">
+                <div class="module-icon">🤖</div>
+                <div>
+                    <h2 class="module-title">Agents（智能代理）</h2>
+                    <p class="module-desc">让 LLM 自动决策和调用工具，实现复杂任务自动化</p>
+                </div>
+            </div>
+
+            <div class="intro-card">
+                <p><strong>Agent</strong> 是 LangChainRust 的核心组件之一，它让 LLM 能够自主决策、调用工具、执行多步骤任务，最终给出答案。</p>
+                <p class="highlight">核心价值：将复杂问题分解为步骤，自动选择合适工具，迭代执行直到完成任务。</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card"><h3>自主决策</h3><p>Agent 根据问题内容和工具描述，自主决定下一步动作</p></div>
+                <div class="feature-card"><h3>工具调用</h3><p>支持 Calculator、DateTime、URLFetch 等多种内置工具</p></div>
+                <div class="feature-card"><h3>迭代执行</h3><p>观察工具输出后继续思考，直到得出最终答案</p></div>
+                <div class="feature-card"><h3>类型安全</h3><p>FunctionCallingAgent 使用原生 FC，参数类型安全</p></div>
+            </div>
+
+            <h3 class="sub-title">FunctionCallingAgent（推荐）</h3>
+
+            <div class="intro-card">
+                <p><strong>FunctionCallingAgent</strong> 使用 OpenAI 原生 Function Calling API，不依赖文本解析，类型安全，可靠性高。</p>
+                <p>适用场景：支持 Function Calling 的模型（GPT-4、Claude、Gemini 等）</p>
+            </div>
+
+            <div class="method-card">
+                <div class="method-header">
+                    <code class="method-name">FunctionCallingAgent::new(llm, tools, system_prompt)</code>
+                    <span class="method-type">创建 Function Calling Agent</span>
+                </div>
+                <div class="method-body">
+                    <div class="code-block">
+                        <pre><code class="language-rust">use langchainrust::{
+    FunctionCallingAgent, AgentExecutor, BaseAgent, BaseTool,
+    OpenAIChat, OpenAIConfig, Calculator, DateTimeTool,
+};
+use std::sync::Arc;
+
+// 创建 LLM
+let config = OpenAIConfig {
+    api_key: std::env::var("OPENAI_API_KEY")?,
+    model: "gpt-4".to_string(),
+    ..Default::default()
+};
+let llm = OpenAIChat::new(config);
+
+// 创建工具列表
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+];
+
+// 创建 Agent（自动绑定工具）
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
+
+// 创建执行器
+let executor = AgentExecutor::new(Arc::new(agent), tools)
+    .with_max_iterations(5);
+
+let result = executor.invoke("计算 37 + 48".to_string()).await?;</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <h3 class="sub-title">ReActAgent（兼容旧模型）</h3>
+
+            <div class="intro-card">
+                <p><strong>ReActAgent</strong> 基于 "ReAct: Synergizing Reasoning and Acting in Language Models" 论文，使用文本解析方式提取工具调用。</p>
+                <p>适用场景：不支持 Function Calling 的模型（开源模型、本地部署模型）</p>
+            </div>
+
+            <div class="code-block">
+                <pre><code class="language-rust">use langchainrust::{ReActAgent, AgentExecutor, BaseAgent, BaseTool, SimpleMathTool};
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(Calculator::new()),
+    Arc::new(DateTimeTool::new()),
+    Arc::new(SimpleMathTool::new()),
+];
+
+let agent = ReActAgent::new(llm, tools.clone(), None);
+let executor = AgentExecutor::new(Arc::new(agent), tools).with_max_iterations(5);</code></pre>
+            </div>
+
+            <h3 class="sub-title">两种 Agent 对比</h3>
+
+            <table class="comparison-table">
+                <thead><tr><th>维度</th><th>FunctionCallingAgent</th><th>ReActAgent</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>工具调用方式</strong></td><td>原生 Function Calling</td><td>文本解析（正则）</td></tr>
+                    <tr><td><strong>可靠性</strong></td><td class="low">高（类型安全）</td><td class="medium">中（依赖 Prompt 格式）</td></tr>
+                    <tr><td><strong>Token 消耗</strong></td><td class="low">低</td><td class="high">高</td></tr>
+                    <tr><td><strong>适用模型</strong></td><td>GPT-4、Claude、Gemini</td><td>所有模型</td></tr>
+                    <tr><td><strong>推荐指数</strong></td><td class="low">★★★★★</td><td class="medium">★★★</td></tr>
+                </tbody>
+            </table>
+
+            <div class="warning-card info">
+                <h4>💡 选择建议</h4>
+                <p>✅ 使用 OpenAI GPT-4/Claude/Gemini → FunctionCallingAgent</p>
+                <p>✅ 使用本地部署模型/开源模型 → ReActAgent</p>
+            </div>
+
+            <hr class="divider">
+
+            <!-- ========== Chains ========== -->
+            <section id="chains" class="module">
+                <div class="module-header">
+                    <div class="module-icon">🔗</div>
+                    <div>
+                        <h2 class="module-title">Chains（链式调用）</h2>
+                        <p class="module-desc">将 Prompt、LLM、Memory 等组件串联成处理管道</p>
+                    </div>
+                </div>
+
+                <div class="intro-card">
+                    <p><strong>Chain</strong> 是 LangChain 的核心抽象，代表一系列操作的组合。通过 Chain，你可以将 Prompt 模板、LLM 调用、Memory 管理等组件串联成一个处理管道。</p>
+                    <p class="highlight">核心价值：模块化设计，支持单步处理和多步顺序执行。</p>
+                </div>
+
+                <div class="feature-grid">
+                    <div class="feature-card"><h3>LLMChain</h3><p>最基础的 Chain，组合 Prompt + LLM</p></div>
+                    <div class="feature-card"><h3>SequentialChain</h3><p>顺序执行多个 Chain，前一步输出作为下一步输入</p></div>
+                    <div class="feature-card"><h3>ConversationChain</h3><p>带 Memory 的对话 Chain</p></div>
+                    <div class="feature-card"><h3>RetrievalQA</h3><p>RAG Chain，结合检索和生成</p></div>
+                </div>
+
+                <h3 class="sub-title">LLMChain</h3>
+
+                <div class="intro-card">
+                    <p><strong>LLMChain</strong> 是最基础的 Chain，组合 Prompt 模板和 LLM。</p>
+                </div>
+
+                <div class="code-block">
+                    <pre><code class="language-rust">use langchainrust::{LLMChain, OpenAIChat, BaseChain};
+use std::collections::HashMap;
+use serde_json::Value;
+
+// 创建 LLMChain
+let chain = LLMChain::new(llm, "请用一句话解释：{topic}");
+
+// 执行
+let inputs = HashMap::from([
+    ("topic".to_string(), Value::String("Rust 语言".to_string()))
+]);
+
+let result = chain.invoke(inputs).await?;
+println!("{}", result.get("text").unwrap());</code></pre>
+                </div>
+
+                <h3 class="sub-title">SequentialChain</h3>
+
+                <div class="intro-card">
+                    <p><strong>SequentialChain</strong> 顺序执行多个 Chain，前一个 Chain 的输出可以作为后一个 Chain 的输入。</p>
+                </div>
+
+                <div class="code-block">
+                    <pre><code class="language-rust">use langchainrust::{SequentialChain, LLMChain, BaseChain};
+use std::sync::Arc;
+
+// 第一步：分析主题
+let chain1 = LLMChain::new(llm1, "分析以下主题，提取关键词: {topic}")
+    .with_output_key("keywords");
+
+// 第二步：根据关键词生成总结
+let chain2 = LLMChain::new(llm2, "根据关键词 {keywords} 写一段总结")
+    .with_output_key("summary");
+
+// 创建 SequentialChain
+let pipeline = SequentialChain::new()
+    .add_chain(Arc::new(chain1), vec!["topic"], vec!["keywords"])
+    .add_chain(Arc::new(chain2), vec!["keywords"], vec!["summary"]);
+
+let result = pipeline.invoke(inputs).await?;
+println!("关键词: {:?}", result.get("keywords"));
+println!("总结: {:?}", result.get("summary"));</code></pre>
+                </div>
+
+                <h3 class="sub-title">ConversationChain</h3>
+
+                <div class="intro-card">
+                    <p><strong>ConversationChain</strong> 带有 Memory 的对话 Chain，支持多轮对话。</p>
+                </div>
+
+                <div class="code-block">
+                    <pre><code class="language-rust">use langchainrust::{ConversationChain, ConversationBufferMemory, BaseMemory};
+
+// 创建 Memory
+let memory = ConversationBufferMemory::new().with_return_messages(true);
+
+// 创建 ConversationChain
+let chain = ConversationChainBuilder::new(llm)
+    .memory(memory)
+    .prompt("以下是与用户的对话历史：\n{history}\n\n用户: {input}\nAI:")
+    .build();
+
+// 第一轮对话
+let result1 = chain.invoke(HashMap::from([("input", "我叫张三")])).await?;
+
+// 第二轮对话（AI 会记住"张三"）
+let result2 = chain.invoke(HashMap::from([("input", "我叫什么名字？")])).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+
+                <!-- ========== Memory ========== -->
+                <section id="memory" class="module">
+                    <div class="module-header">
+                        <div class="module-icon">🧠</div>
+                        <div>
+                            <h2 class="module-title">Memory（对话记忆）</h2>
+                            <p class="module-desc">管理对话历史，智能压缩 Token 消耗</p>
+                        </div>
+                    </div>
+
+                    <div class="intro-card">
+                        <p><strong>Memory</strong> 管理 Agent 或 Chain 的对话历史，解决多轮对话的上下文传递问题。</p>
+                        <p class="highlight">核心价值：控制 Token 消耗，避免历史无限增长。</p>
+                    </div>
+
+                    <table class="comparison-table">
+                        <thead><tr><th>Memory 类型</th><th>压缩方式</th><th>Token 管理</th><th>适用场景</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>BufferMemory</code></td><td>无压缩</td><td class="high">无限制</td><td>短对话、需要完整历史</td></tr>
+                            <tr><td><code>WindowMemory</code></td><td>窗口截断</td><td class="medium">固定 k 轮</td><td>简单控制、接受丢失</td></tr>
+                            <tr><td><code>SummaryMemory</code></td><td>LLM 摘要</td><td class="low">智能压缩</td><td>长对话、节省 token</td></tr>
+                            <tr class="highlight-row"><td><code>SummaryBufferMemory</code></td><td>摘要 + 保留最近</td><td class="low">动态压缩</td><td>平衡方案（推荐）</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h3 class="sub-title">ConversationBufferMemory</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">use langchainrust::{ConversationBufferMemory, BaseMemory};
+use std::collections::HashMap;
+
+let mut memory = ConversationBufferMemory::new();
+
+// 保存对话
+let inputs = HashMap::from([("input".to_string(), "我叫张三".to_string())]);
+let outputs = HashMap::from([("output".to_string(), "你好张三！".to_string())]);
+memory.save_context(&inputs, &outputs).await?;
+
+// 加载历史
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+// 输出: "Human: 我叫张三\nAI: 你好张三！"</code></pre>
+                    </div>
+
+                    <h3 class="sub-title">ConversationBufferWindowMemory</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">// k=2，保留最近 2 轮（4 条消息）
+let mut memory = ConversationBufferWindowMemory::new(2);
+
+for i in 1..=5 {
+    memory.save_context(&inputs, &outputs).await?;
+}
+// 只返回最近 2 轮，问题1-3 被丢弃</code></pre>
+                    </div>
+
+                    <h3 class="sub-title">ConversationSummaryBufferMemory（推荐）</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">use langchainrust::{ConversationSummaryBufferMemory, OpenAIChat};
+
+let llm = OpenAIChat::new(config);
+
+// max_token_limit = 100，超过时触发压缩
+let mut memory = ConversationSummaryBufferMemory::new(llm, 100);
+
+for i in 1..=10 {
+    memory.save_context(&inputs, &outputs).await?;
+}
+
+// 返回: "摘要: 用户讨论了...\n\nHuman: 最近消息\nAI: 回复"</code></pre>
+                    </div>
+
+                    <div class="warning-card critical">
+                        <h4>⚠️ SummaryMemory 成本注意</h4>
+                        <p>每轮对话都会调用 LLM 生成摘要。100 轮对话 = 100 次 LLM 调用，需评估成本。</p>
+                    </div>
+
+                    <hr class="divider">
+
+                    <!-- ========== Tools ========== -->
+                    <section id="tools" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">🔧</div>
+                            <div>
+                                <h2 class="module-title">Tools（工具系统）</h2>
+                                <p class="module-desc">让 Agent 执行具体操作，扩展 LLM 能力边界</p>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <p><strong>Tool</strong> 是 Agent 可以调用的外部函数，用于执行具体操作（计算、查询、抓取等）。</p>
+                            <p class="highlight">核心价值：扩展 LLM 能力，访问外部数据、执行计算、调用 API。</p>
+                        </div>
+
+                        <table class="comparison-table">
+                            <thead><tr><th>工具名</th><th>描述</th><th>参数</th><th>示例</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>Calculator</code></td><td>数学表达式计算</td><td>expression</td><td>{"expression": "37 + 48"}</td></tr>
+                                <tr><td><code>DateTimeTool</code></td><td>日期时间查询</td><td>operation, datetime</td><td>{"operation": "now"}</td></tr>
+                                <tr><td><code>SimpleMathTool</code></td><td>高级数学运算</td><td>operation, value</td><td>{"operation": "power", "value": 2}</td></tr>
+                                <tr><td><code>URLFetchTool</code></td><td>网页抓取</td><td>operation, url</td><td>{"operation": "fetch"}</td></tr>
+                            </tbody>
+                        </table>
+
+                        <h3 class="sub-title">使用工具</h3>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::{Calculator, BaseTool};
+use std::sync::Arc;
+
+let calculator = Calculator::new();
+
+// 直接调用
+let result = calculator.run(
+    r#"{"expression": "37 + 48"}"#.to_string()
+).await?;
+println!("{}", result);  // 输出: "37 + 48 = 85"</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">自定义工具</h3>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::core::tools::{BaseTool, ToolError};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(JsonSchema, Deserialize)]
+struct WeatherInput { city: String }
+
+pub struct WeatherTool;
+
+#[async_trait]
+impl BaseTool for WeatherTool {
+    fn name(&self) -> &str { "weather" }
+    
+    fn description(&self) -> &str {
+        "查询城市天气。输入城市名称，返回天气信息。"
+    }
+    
+    async fn run(&self, input: String) -> Result<String, ToolError> {
+        let args: WeatherInput = serde_json::from_str(&input)?;
+        Ok(format!("{}天气：晴，温度 25°C", args.city))
+    }
+    
+    fn args_schema(&self) -> Option<serde_json::Value> {
+        serde_json::to_value(schemars::schema_for!(WeatherInput)).ok()
+    }
+}</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                        <!-- ========== RAG ========== -->
+                        <section id="rag" class="module">
+                            <div class="module-header">
+                                <div class="module-icon">📚</div>
+                                <div>
+                                    <h2 class="module-title">RAG（检索增强生成）</h2>
+                                    <p class="module-desc">让 LLM 基于知识库回答问题，突破知识边界</p>
+                                </div>
+                            </div>
+
+                            <div class="intro-card">
+                                <p><strong>RAG (Retrieval-Augmented Generation)</strong> 先从知识库检索相关文档，再让 LLM 基于检索内容生成答案。</p>
+                                <p class="highlight">核心价值：让 LLM 访问私有知识库、最新数据，无需重新训练模型。</p>
+                            </div>
+
+                            <div class="feature-grid">
+                                <div class="feature-card"><h3>文档加载</h3><p>支持 PDF、CSV 等格式</p></div>
+                                <div class="feature-card"><h3>智能分割</h3><p>RecursiveCharacterSplitter 递归分割</p></div>
+                                <div class="feature-card"><h3>向量嵌入</h3><p>OpenAI Embeddings</p></div>
+                                <div class="feature-card"><h3>语义检索</h3><p>基于向量相似度</p></div>
+                            </div>
+
+                            <h3 class="sub-title">完整 RAG 流程</h3>
+
+                            <div class="code-block">
+                                <pre><code class="language-rust">use langchainrust::{
+    Document, InMemoryVectorStore, MockEmbeddings,
+    SimilarityRetriever, RetrieverTrait, RecursiveCharacterSplitter,
+    TextSplitter, RetrievalQA, BaseChain,
+};
+use std::sync::Arc;
+
+// 1. 准备文档
+let docs = vec![
+    Document::new("Rust 是一门系统编程语言..."),
+    Document::new("Python 是一门脚本语言..."),
+];
+
+// 2. 分割文档
+let splitter = RecursiveCharacterSplitter::new(200, 50);
+let chunks = splitter.split_documents(&docs)?;
+
+// 3. 创建检索器
+let store = Arc::new(InMemoryVectorStore::new());
+let embeddings = Arc::new(MockEmbeddings::new(128));
+let retriever = SimilarityRetriever::new(store, embeddings);
+retriever.add_documents(chunks).await?;
+
+// 4. 创建 RetrievalQA
+let qa_chain = RetrievalQA::new(llm, retriever, 3);
+
+// 5. 执行问答
+let result = qa_chain.invoke(HashMap::from([
+    ("query".to_string(), Value::String("什么是 Rust？".to_string()))
+])).await?;</code></pre>
+                            </div>
+
+                            <h3 class="sub-title">文档分割配置</h3>
+
+                            <table class="config-table">
+                                <thead><tr><th>参数</th><th>推荐值</th><th>说明</th></tr></thead>
+                                <tbody>
+                                    <tr><td><code>chunk_size</code></td><td>200-500</td><td>每个 chunk 的最大字符数</td></tr>
+                                    <tr><td><code>overlap</code></td><td>50-100</td><td>相邻 chunk 的重叠字符数</td></tr>
+                                </tbody>
+                            </table>
+
+                            <hr class="divider">
+
+                            <!-- ========== Prompts ========== -->
+                            <section id="prompts" class="module">
+                                <div class="module-header">
+                                    <div class="module-icon">📝</div>
+                                    <div>
+                        <h2 class="module-title">Prompts（提示词模板）</h2>
+                        <p class="module-desc">动态构建 Prompt，实现灵活的输入变量替换</p>
+                    </div>
+                </div>
+
+                <div class="intro-card">
+                    <p><strong>PromptTemplate</strong> 和 <strong>ChatPromptTemplate</strong> 提供动态 Prompt 构建，通过变量占位符实现参数化。</p>
+                    <p class="highlight">核心价值：通过变量占位符动态生成 Prompt，支持复用和参数化。</p>
+                </div>
+
+                <h3 class="sub-title">PromptTemplate（字符串模板）</h3>
+
+                <div class="code-block">
+                    <pre><code class="language-rust">use langchainrust::prompts::PromptTemplate;
+use std::collections::HashMap;
+
+// 创建模板
+let template = PromptTemplate::new("请用{style}风格解释{topic}");
+
+let vars = HashMap::from([
+    ("style", "简洁"),
+    ("topic", "Rust的所有权机制"),
+]);
+
+let prompt = template.format(&vars)?;
+// 结果: "请用简洁风格解释Rust的所有权机制"</code></pre>
+                </div>
+
+                <h3 class="sub-title">ChatPromptTemplate（多消息模板）</h3>
+
+                <div class="code-block">
+                    <pre><code class="language-rust">use langchainrust::prompts::ChatPromptTemplate;
+use langchainrust::schema::Message;
+
+let template = ChatPromptTemplate::new(vec![
+    Message::system("你是一个{role}，专精于{domain}。"),
+    Message::human("你好，我是{name}。"),
+    Message::human("{question}"),
+]);
+
+let vars = HashMap::from([
+    ("role", "Rust 专家"),
+    ("domain", "系统编程"),
+    ("name", "张三"),
+    ("question", "解释所有权机制"),
+]);
+
+let messages = template.format(&vars)?;</code></pre>
+                </div>
+
+                <table class="comparison-table">
+                    <thead><tr><th>消息类型</th><th>创建方法</th><th>用途</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>System</code></td><td><code>Message::system(content)</code></td><td>设定 AI 角色、行为规范</td></tr>
+                        <tr><td><code>Human</code></td><td><code>Message::human(content)</code></td><td>用户输入、问题</td></tr>
+                        <tr><td><code>AI</code></td><td><code>Message::ai(content)</code></td><td>AI 响应、历史记录</td></tr>
+                        <tr><td><code>Tool</code></td><td><code>Message::tool(id, content)</code></td><td>工具返回结果</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+
+                <!-- ========== LLM ========== -->
+                <section id="llm" class="module">
+                    <div class="module-header">
+                        <div class="module-icon">💬</div>
+                        <div>
+                            <h2 class="module-title">LLM（语言模型）</h2>
+                            <p class="module-desc">与各种 LLM 服务交互的统一接口</p>
+                        </div>
+                    </div>
+
+                    <div class="intro-card">
+                        <p><strong>OpenAIChat</strong> 和 <strong>OllamaChat</strong> 提供统一的 LLM 交互接口，支持流式输出、Function Calling。</p>
+                        <p class="highlight">核心价值：统一的 API 接口，支持流式输出、Function Calling、自定义端点。</p>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card"><h3>OpenAI 兼容</h3><p>支持 OpenAI API 和代理</p></div>
+                        <div class="feature-card"><h3>流式输出</h3><p>stream_chat() 实时输出</p></div>
+                        <div class="feature-card"><h3>Function Calling</h3><p>bind_tools() 绑定工具</p></div>
+                        <div class="feature-card"><h3>Ollama 支持</h3><p>本地部署模型</p></div>
+                    </div>
+
+                    <h3 class="sub-title">OpenAIConfig 配置</h3>
+
+                    <table class="config-table">
+                        <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>api_key</code></td><td>String</td><td>OpenAI API 密钥</td></tr>
+                            <tr><td><code>base_url</code></td><td>String</td><td>API 端点（支持代理）</td></tr>
+                            <tr><td><code>model</code></td><td>String</td><td>模型名称（gpt-4/gpt-3.5-turbo）</td></tr>
+                            <tr><td><code>streaming</code></td><td>bool</td><td>是否启用流式输出</td></tr>
+                            <tr><td><code>temperature</code></td><td>Option&lt;f32&gt;</td><td>采样温度 (0.0-2.0)</td></tr>
+                            <tr><td><code>max_tokens</code></td><td>Option&lt;usize&gt;</td><td>最大生成 token 数</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h3 class="sub-title">基础对话</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+let config = OpenAIConfig {
+    api_key: std::env::var("OPENAI_API_KEY")?,
+    model: "gpt-4".to_string(),
+    ..Default::default()
+};
+
+let llm = OpenAIChat::new(config);
+
+let messages = vec![
+    Message::system("你是一个友好的助手。"),
+    Message::human("什么是 Rust？"),
+];
+
+let response = llm.chat(messages, None).await?;
+println!("{}", response.content);</code></pre>
+                    </div>
+
+                    <h3 class="sub-title">流式输出</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">use futures_util::StreamExt;
+
+let config = OpenAIConfig { streaming: true, ..Default::default() };
+let llm = OpenAIChat::new(config);
+
+let mut stream = llm.stream_chat(messages, None).await?;
+
+while let Some(chunk) = stream.next().await {
+    if let Ok(token) = chunk {
+        print!("{}", token);  // 打字机效果
+    }
+}</code></pre>
+                    </div>
+
+                    <h3 class="sub-title">Function Calling</h3>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">use langchainrust::{ToolDefinition, BaseChatModel};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(JsonSchema, Deserialize)]
+struct CalculatorInput { expression: String }
+
+let tool = ToolDefinition::from_type::<CalculatorInput>(
+    "calculator", "计算数学表达式"
+);
+
+let llm_with_tools = llm.bind_tools(vec![tool]);
+
+let response = llm_with_tools.chat(messages, None).await?;
+
+if let Some(tool_calls) = &response.tool_calls {
+    println!("工具: {}", tool_calls[0].function.name);
+}</code></pre>
+                    </div>
+
+                    <hr class="divider">
+
+                    <!-- ========== 最佳实践 ========== -->
+                    <section id="best-practices" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">💡</div>
+                            <div>
+                                <h2 class="module-title">最佳实践</h2>
+                                <p class="module-desc">使用 LangChainRust 的推荐做法</p>
+                            </div>
+                        </div>
+
+                        <div class="practice-list">
+                            <div class="practice-item">
+                                <div class="practice-number">01</div>
+                                <div class="practice-content">
+                                    <h4>Agent 选择</h4>
+                                    <p>优先使用 FunctionCallingAgent（更可靠），本地模型用 ReActAgent</p>
+                                </div>
+                            </div>
+                            <div class="practice-item">
+                                <div class="practice-number">02</div>
+                                <div class="practice-content">
+                                    <h4>模型选择</h4>
+                                    <p>Agent 推荐 gpt-4，简单对话用 gpt-3.5-turbo</p>
+                                </div>
+                            </div>
+                            <div class="practice-item">
+                                <div class="practice-number">03</div>
+                                <div class="practice-content">
+                                    <h4>Memory 选择</h4>
+                                    <p>长对话用 SummaryBufferMemory，短对话用 BufferMemory</p>
+                                </div>
+                            </div>
+                            <div class="practice-item">
+                                <div class="practice-number">04</div>
+                                <div class="practice-content">
+                                    <h4>RAG 配置</h4>
+                                    <p>chunk_size=200-500，overlap=50-100，top_k=3-10</p>
+                                </div>
+                            </div>
+                            <div class="practice-item">
+                                <div class="practice-number">05</div>
+                                <div class="practice-content">
+                                    <h4>流式输出</h4>
+                                    <p>交互场景使用 stream_chat()，降低感知延迟</p>
+                                </div>
+                            </div>
+                            <div class="practice-item">
+                                <div class="practice-number">06</div>
+                                <div class="practice-content">
+                                    <h4>安全提示</h4>
+                                    <p>API Key 使用环境变量，不要硬编码在代码中</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <footer class="page-footer">
+                        <div class="footer-links">
+                            <a href="../README.md">README</a>
+                            <a href="../USAGE.md">使用文档</a>
+                            <a href="https://docs.rs/langchainrust">API 文档</a>
+                            <a href="https://github.com/langchain-ai/langchain">LangChain 官方</a>
+                        </div>
+                        <p class="copyright">LangChainRust v0.2.5 | MIT License</p>
+                    </footer>
+                </main>
+
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-rust.min.js"></script>
+            </body>
+            </html>

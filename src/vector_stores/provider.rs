@@ -3,7 +3,7 @@
 //!
 //! 提供多种向量存储引擎的选择：内存、持久化、Qdrant等
 
-use crate::vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
+use crate::vector_stores::{VectorStore, VectorStoreError};
 use std::sync::Arc;
 
 /// 向量存储类型枚举
@@ -45,7 +45,7 @@ impl VectorStoreProvider {
     }
 
     /// 创建 Qdrant 向量存储
-    async fn create_qdrant_store(url: String, collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
+    async fn create_qdrant_store(_url: String, _collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         #[cfg(feature = "qdrant-integration")]
         {
             use crate::vector_stores::{QdrantVectorStore, QdrantConfig};

@@ -9,9 +9,8 @@ use super::node::{GraphNode, NodeConfig};
 use super::edge::{GraphEdge, ConditionalEdge};
 use super::errors::{GraphError, GraphResult};
 use super::checkpointer::{Checkpointer};
-use super::persistence::{GraphDefinition, NodeDefinition, EdgeDefinition, NodeType, EdgeType};
+use super::persistence::{GraphDefinition, NodeDefinition, EdgeDefinition, NodeType};
 use super::{START, END};
-use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use futures_util::future::join_all;
 

@@ -202,7 +202,7 @@ impl SentinelNode {
 impl<S: StateSchema> GraphNode<S> for SentinelNode {
     async fn execute(
         &self,
-        state: &S,
+        _state: &S,
         _config: Option<NodeConfig>,
     ) -> Result<StateUpdate<S>, GraphError> {
         // Sentinel nodes don't modify state

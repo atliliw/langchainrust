@@ -3,7 +3,6 @@
 
 use schemars::{schema_for, JsonSchema};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Tool definition for LLM function calling
 ///
@@ -183,6 +182,7 @@ impl ToolCallResult {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn test_tool_definition() {

@@ -81,11 +81,6 @@ impl FunctionCallingAgent {
         
         messages
     }
-    
-    /// 查找工具
-    fn find_tool(&self, name: &str) -> Option<&Arc<dyn BaseTool>> {
-        self.tools.iter().find(|t| t.name() == name)
-    }
 }
 
 #[async_trait]

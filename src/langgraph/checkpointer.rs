@@ -62,7 +62,7 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
         Ok(data.id)
     }
     
-    async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
+    async fn load(&self, _checkpoint_id: &str) -> GraphResult<S> {
         unimplemented!("MemoryCheckpointer::load requires mutable state")
     }
     

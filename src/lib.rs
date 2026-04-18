@@ -67,10 +67,13 @@ pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmit
 pub use langgraph::{
     StateSchema, StateUpdate, Reducer, ReplaceReducer, AppendReducer, AppendMessagesReducer, AppendStepsReducer,
     GraphNode, NodeResult, NodeConfig, AsyncNode, AsyncFn,
-    GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter,
+    GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter, AsyncFunctionRouter,
     StateGraph, GraphBuilder, START, END,
-    CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution,
+    CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution, ParallelInvocation, ParallelBranch,
     GraphError, GraphResult,
     Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, FileCheckpointer, CheckpointData,
     AgentState, MessageEntry, MessageRole, StepEntry,
+    SubgraphNode, SubgraphBuilder,
+    GraphPersistence, GraphDefinition, NodeDefinition, EdgeDefinition, NodeType, EdgeType, RouterDefinition,
+    MemoryPersistence, FilePersistence,
 };
