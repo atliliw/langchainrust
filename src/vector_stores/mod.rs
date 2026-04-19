@@ -5,12 +5,22 @@
 
 mod memory;
 mod provider;
+pub mod document_store;
+pub mod chunked_vector_store;
+
+#[cfg(feature = "mongodb-persistence")]
+mod mongo_document_store;
 
 #[cfg(feature = "qdrant-integration")]
 mod qdrant;
 
 pub use memory::InMemoryVectorStore;
 pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
+pub use document_store::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore, ChunkDocument};
+pub use chunked_vector_store::ChunkedVectorStore;
+
+#[cfg(feature = "mongodb-persistence")]
+pub use mongo_document_store::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 #[cfg(feature = "qdrant-integration")]
 pub use qdrant::{QdrantVectorStore, QdrantConfig, QdrantDistance};

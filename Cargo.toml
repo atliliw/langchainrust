@@ -33,6 +33,7 @@ qdrant-client = { version = "1.7", optional = true }
 mongodb = { version = "2.8", optional = true }
 pdf-extract = "0.7"
 csv = "1.3"
+bincode = "1.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -260,6 +261,22 @@ path = "tests/langgraph/subgraph_mechanism.rs"
 [[test]]
 name = "unit_bm25"
 path = "tests/unit/bm25.rs"
+
+[[test]]
+name = "bm25_chunked"
+path = "tests/bm25/chunked.rs"
+
+[[test]]
+name = "bm25_rag"
+path = "tests/bm25/rag.rs"
+
+[[test]]
+name = "bm25_llm_integration"
+path = "tests/bm25/llm_integration.rs"
+
+[[test]]
+name = "bm25_hybrid_rag"
+path = "tests/bm25/hybrid_rag.rs"
 
 [[test]]
 name = "integration_bm25_real_docs"

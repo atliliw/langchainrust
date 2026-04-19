@@ -7,14 +7,20 @@ mod retriever;
 mod splitter;
 mod loaders;
 pub mod bm25;
+pub mod hybrid;
+pub mod chunked_hybrid;
+pub mod unified_hybrid;
 
 pub use retriever::{Retriever, SimilarityRetriever, RetrieverTrait};
 pub use splitter::{TextSplitter, RecursiveCharacterSplitter};
 pub use loaders::{PDFLoader, CSVLoader, DocumentLoader, LoaderError};
 
-// BM25 检索器
-pub use bm25::{BM25Retriever, BM25Index, BM25Params, Tokenizer};
+pub use bm25::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
 
-// 重新导出 vector_stores 和 embeddings 的类型
+pub use hybrid::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion};
+pub use chunked_hybrid::ChunkedHybridRetriever;
+pub use unified_hybrid::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
+
 pub use crate::vector_stores::{Document, SearchResult, VectorStore, InMemoryVectorStore};
+pub use crate::vector_stores::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStore, ChunkDocument, ChunkedVectorStore};
 pub use crate::embeddings::{Embeddings, MockEmbeddings, OpenAIEmbeddings, cosine_similarity};

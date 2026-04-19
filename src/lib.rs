@@ -50,13 +50,19 @@ pub use embeddings::{Embeddings, EmbeddingError, OpenAIEmbeddings, OpenAIEmbeddi
 
 // Vector Stores
 pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
+pub use vector_stores::{ChunkDocument, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore};
 
 #[cfg(feature = "qdrant-integration")]
 pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 
+#[cfg(feature = "mongodb-persistence")]
+pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
+
 // Retrieval
 pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, DocumentLoader, LoaderError};
-pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer};
+pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
+pub use retrieval::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion, ChunkedHybridRetriever};
+pub use retrieval::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
 
 // Prompts
 pub use prompts::{PromptTemplate, ChatPromptTemplate};

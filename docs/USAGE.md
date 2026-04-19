@@ -28,6 +28,18 @@
   - 内置工具
   - 自定义 Tool
   - to_tool_definition()
+- [RAG](#rag)
+  - 完整 RAG 流程
+  - 文档分割配置
+- [BM25](#bm25)
+  - BM25Retriever 基础用法
+  - BM25 参数配置
+  - ChunkedBM25Retriever（Parent-Child 结构）
+- [Hybrid（混合检索）](#hybrid混合检索)
+  - RRF 融合算法
+  - HybridRetriever 使用
+  - UnifiedHybridIndex（统一混合索引）
+  - 三种检索模式架构对比
 - [配置与安全](#配置与安全)
 - [LangGraph](#langgraph)
   - StateGraph 基础用法
@@ -39,6 +51,7 @@
   - 可视化输出
 - [测试](#测试)
 - [模块结构](#模块结构)
+- [最佳实践](#最佳实践)
 
 ---
 
@@ -807,6 +820,302 @@ if result.used_tools {
 
 ---
 
+## RAG
+
+**RAG (Retrieval-Augmented Generation)** 先从知识库检索相关文档，再让 LLM 基于检索内容生成答案。
+
+### 核心价值
+
+让 LLM 访问私有知识库、最新数据，无需重新训练模型。
+
+### 功能特性
+
+| 特性 | 说明 |
+|------|------|
+| **文档加载** | 支持 PDF、CSV 等格式 |
+| **智能分割** | RecursiveCharacterSplitter 递归分割 |
+| **向量嵌入** | OpenAI Embeddings |
+| **语义检索** | 基于向量相似度 |
+
+### 完整 RAG 流程
+
+```rust
+use langchainrust::{
+    Document, InMemoryVectorStore, MockEmbeddings,
+    SimilarityRetriever, RetrieverTrait, RecursiveCharacterSplitter,
+    TextSplitter, RetrievalQA, BaseChain,
+};
+use std::sync::Arc;
+
+// 1. 准备文档
+let docs = vec![
+    Document::new("Rust 是一门系统编程语言..."),
+    Document::new("Python 是一门脚本语言..."),
+];
+
+// 2. 分割文档
+let splitter = RecursiveCharacterSplitter::new(200, 50);
+let chunks = splitter.split_documents(&docs)?;
+
+// 3. 创建检索器
+let store = Arc::new(InMemoryVectorStore::new());
+let embeddings = Arc::new(MockEmbeddings::new(128));
+let retriever = SimilarityRetriever::new(store, embeddings);
+retriever.add_documents(chunks).await?;
+
+// 4. 创建 RetrievalQA
+let qa_chain = RetrievalQA::new(llm, retriever, 3);
+
+// 5. 执行问答
+let result = qa_chain.invoke(HashMap::from([
+    ("query".to_string(), Value::String("什么是 Rust？".to_string()))
+])).await?;
+```
+
+### 文档分割配置
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `chunk_size` | 200-500 | 每个 chunk 的最大字符数 |
+| `overlap` | 50-100 | 相邻 chunk 的重叠字符数 |
+
+---
+
+## BM25
+
+**BM25** 是一种经典的 TF-IDF 加权检索算法，通过词频（TF）和逆文档频率（IDF）计算文档与查询的相关性评分。
+
+### 核心价值
+
+不依赖 Embedding，适合关键词精确匹配、长文档检索、专业术语搜索。
+
+### 功能特性
+
+| 特性 | 说明 |
+|------|------|
+| **关键词匹配** | 精确匹配查询关键词，无需语义理解 |
+| **中英文分词** | 英文空格分割 + 中文单字/双字组合 |
+| **停用词过滤** | 自动过滤常见停用词（中英文） |
+| **参数可调** | k1 词频饱和参数、b 文档长度归一化 |
+
+### BM25Retriever 基础用法
+
+```rust
+use langchainrust::{BM25Retriever, Document};
+
+// 创建 BM25 检索器
+let mut retriever = BM25Retriever::new();
+
+// 添加文档
+retriever.add_documents_sync(vec![
+    Document::new("Rust 是一门系统编程语言"),
+    Document::new("Python 是脚本语言"),
+    Document::new("JavaScript 用于网页开发"),
+]);
+
+// 搜索关键词
+let results = retriever.search("系统编程", 3);
+
+for result in results {
+    println!("文档: {}", result.document.content);
+    println!("评分: {}", result.score);
+}
+```
+
+### BM25 参数配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `k1` | 1.5 | 词频饱和参数，控制高频词的影响 |
+| `b` | 0.75 | 文档长度归一化参数，控制长文档惩罚 |
+
+```rust
+// 自定义参数
+let mut retriever = BM25Retriever::with_params(2.0, 0.5);
+```
+
+### ChunkedBM25Retriever（Parent-Child 结构）
+
+支持 AutoMerging 模式，文档拆分为 Parent（大块）+ Leaf（小块）两层：
+
+```rust
+use langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
+use std::sync::Arc;
+
+// 配置 AutoMerging
+let config = AutoMergingConfig::new()
+    .with_leaf_size(400)     // Leaf chunk 大小
+    .with_parent_size(2000)  // Parent chunk 大小
+    .with_threshold(0.5);    // 合并阈值（50% Leaf 匹配时合并）
+
+let store = Arc::new(ChunkedDocumentStore::new());
+let mut retriever = ChunkedBM25Retriever::with_config(store, config);
+
+// 添加文档（自动分割）
+retriever.add_document(Document::new("长文档内容..."));
+
+// 搜索（自动合并）
+let results = retriever.search("关键词", 5);
+
+for result in results {
+    if result.is_merged() {
+        println!("合并结果: {}", result.content());
+    } else {
+        println!("Leaf chunk: {}", result.content());
+    }
+}
+```
+
+---
+
+## Hybrid（混合检索）
+
+**混合检索** 结合 BM25 的关键词匹配能力和向量检索的语义理解能力，通过 RRF（Reciprocal Rank Fusion）算法融合结果。
+
+### 核心价值
+
+关键词精确匹配 + 语义理解，召回率更高，覆盖更全面。
+
+### 功能特性
+
+| 特性 | 说明 |
+|------|------|
+| **BM25 检索** | 关键词精确匹配，快速高效 |
+| **向量检索** | 语义相似度匹配，理解意图 |
+| **RRF 融合** | 排序融合算法，兼顾两种结果 |
+| **统一索引** | 一次添加，双索引自动构建 |
+
+### RRF 融合算法
+
+**RRF（Reciprocal Rank Fusion）** 算法公式：
+
+```
+RRF_score(d) = Σ 1/(k + rank(d))
+```
+
+其中 k 通常为 60，rank(d) 是文档在各自检索结果中的排名。
+
+### HybridRetriever 使用
+
+```rust
+use langchainrust::{HybridRetriever, BM25Retriever, Document};
+
+// 创建混合检索器
+let retriever = HybridRetriever::with_top_k(10, 10)  // BM25_k=10, Vector_k=10
+    .with_rrf_k(60);
+
+// 分别获取 BM25 和向量检索结果
+let bm25_docs = bm25_retriever.search("查询词", 10);
+let vector_docs = vector_store.search("查询词", 10);
+
+// RRF 融合
+let fused = retriever.retrieve(bm25_docs, vector_docs);
+
+for doc in fused {
+    println!("文档: {}", doc.document.content);
+    println!("RRF 评分: {}", doc.score);
+}
+```
+
+### UnifiedHybridIndex（统一混合索引）
+
+最高级的混合检索接口，自动管理 BM25 和向量双索引：
+
+```rust
+use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
+use std::sync::Arc;
+
+// 配置混合索引
+let config = HybridIndexConfig::new()
+    .with_chunk_size(500)      // chunk 大小
+    .with_top_k(10, 10)        // BM25_k, Vector_k
+    .with_rrf_k(60)            // RRF 参数
+    .with_merge_threshold(0.5); // AutoMerging 阈值
+
+// 创建混合索引
+let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
+let index = UnifiedHybridIndex::with_config(embeddings, 1536, config);
+
+// 添加文档（自动构建双索引）
+index.add_document(Document::new("长文档内容...")).await?;
+
+// 混合检索
+let results = index.retrieve("查询词", 5).await?;
+
+for result in results {
+    println!("文档: {}", result.document.content);
+    println!("RRF 评分: {}", result.score);
+}
+```
+
+### BM25 vs 向量 vs Hybrid 对比
+
+| 维度 | BM25 | 向量检索 | Hybrid |
+|------|------|----------|--------|
+| **匹配方式** | 关键词精确匹配 | 语义相似度 | 双路融合 |
+| **召回率** | 中 | 中 | 高 |
+| **精确度** | 高 | 中 | 高 |
+| **依赖 Embedding** | 否 | 是 | 是 |
+| **专业术语** | 优秀 | 一般 | 优秀 |
+| **语义理解** | 差 | 优秀 | 优秀 |
+| **推荐场景** | 关键词搜索 | 语义搜索 | 综合搜索 |
+
+**选择建议**：
+- 关键词精确匹配 → BM25
+- 语义相似度搜索 → 向量检索
+- 综合检索、提高召回率 → Hybrid（推荐）
+
+### 三种检索模式架构对比
+
+LangChainRust 提供三种检索模式，核心差异在于**内容存储位置**和**是否回表**：
+
+| 模式 | 内容存储 | 回表 | 适用场景 |
+|------|----------|------|----------|
+| **SimpleVector** | 内容直接存 InMemoryVectorStore | ❌ 不回表 | 只用向量检索，简单快速 |
+| **BM25 Only** | 内容存 ChunkedDocumentStore，BM25 只存词频索引 | ✅ 回表 | 只用关键词检索 |
+| **Hybrid** | BM25 + 向量共用 ChunkedDocumentStore | ✅ 回表 | 混合检索，内容共享（推荐） |
+
+#### 架构图解
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  模式1: SimpleVector（不回表）                                        │
+│  ┌─────────────────────┐                                            │
+│  │  InMemoryVectorStore │                                            │
+│  │  ┌─────────────────┐ │                                            │
+│  │  │ Document        │ │  ← 内容直接存这里                           │
+│  │  │ + Embedding     │ │                                            │
+│  │  └─────────────────┘ │                                            │
+│  └─────────────────────┘                                            │
+│  搜索: 向量相似度 → 直接返回 Document（无需额外查询）                  │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  模式2/3: BM25/Hybrid（回表）                                         │
+│  ┌─────────────────┐          ┌─────────────────────┐               │
+│  │  BM25 Index     │          │  ChunkedDocumentStore│               │
+│  │  (不存内容)      │          │  (存实际内容)         │               │
+│  ├─────────────────┤          ├─────────────────────┤               │
+│  │ chunk_id_list   │          │ parent_docs         │               │
+│  │ term_freqs      │──────────│ chunks              │               │
+│  │ term_index      │  回表    │                     │               │
+│  └─────────────────┘          └─────────────────────┘               │
+│  ┌─────────────────┐                                               │
+│  │  Vector Index   │──────────回表──────────→ 同上                  │
+│  │  (只存 embedding)│                                               │
+│  └─────────────────┘                                               │
+│  搜索: 索引返回 chunk_id → 回表查询 ChunkedDocumentStore 获取内容    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 回表设计的优势
+
+- **索引体积小**：BM25/向量索引只存统计信息和向量，不存内容
+- **内容共享**：BM25 和向量共用同一份内容，避免重复存储
+- **支持 AutoMerging**：Parent-Child 结构，匹配时自动合并
+
+---
+
 ## Retrieval + Agent (RAG)
 
 将向量检索与 Agent 结合，实现 **RAG（检索增强生成）** 功能。
@@ -1556,4 +1865,89 @@ src/
 | 2. 构建上下文 | 将文档格式化为 prompt 上下文 |
 | 3. 调用 LLM | 将问题和上下文一起发送给模型 |
 | 4. 返回答案 | 模型基于上下文生成答案 |
+
+---
+
+## 最佳实践
+
+使用 LangChainRust 的推荐做法：
+
+### 01 Agent 选择
+
+优先使用 FunctionCallingAgent（更可靠），本地模型用 ReActAgent。
+
+```rust
+// 支持 Function Calling 的模型（推荐）
+let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
+
+// 不支持 Function Calling 的模型
+let agent = ReActAgent::new(llm, tools.clone(), None);
+```
+
+### 02 模型选择
+
+| 使用场景 | 推荐模型 |
+|---------|----------|
+| Agent 任务 | gpt-4 |
+| 简单对话 | gpt-3.5-turbo |
+| 代码生成 | gpt-4 |
+| 复杂推理 | gpt-4-turbo |
+
+### 03 Memory 选择
+
+| 对话类型 | 推荐 Memory |
+|---------|-------------|
+| 长对话 | SummaryBufferMemory |
+| 短对话 | BufferMemory |
+| 固定窗口 | WindowMemory |
+
+### 04 RAG 配置
+
+推荐配置值：
+
+| 参数 | 推荐值 |
+|------|--------|
+| chunk_size | 200-500 |
+| overlap | 50-100 |
+| top_k | 3-10 |
+
+### 05 流式输出
+
+交互场景使用 `stream_chat()`，降低感知延迟：
+
+```rust
+let mut stream = llm.stream_chat(messages, None).await?;
+
+while let Some(chunk) = stream.next().await {
+    if let Ok(token) = chunk {
+        print!("{}", token);  // 实时打印（打字机效果）
+    }
+}
+```
+
+### 06 安全提示
+
+API Key 使用环境变量，不要硬编码在代码中：
+
+```rust
+// 正确做法
+let api_key = std::env::var("OPENAI_API_KEY")?;
+
+// 错误做法（不要这样做）
+let api_key = "sk-xxxxxxxx";  // ❌ 禁止硬编码
+```
+
+### 07 检索模式选择
+
+| 场景 | 推荐模式 |
+|------|----------|
+| 关键词精确匹配 | BM25 |
+| 语义相似度搜索 | 向量检索 |
+| 综合搜索、提高召回率 | Hybrid（推荐） |
+
+---
+
+## 版本信息
+
+LangChainRust v0.2.6 | MIT License
 

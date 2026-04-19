@@ -5,11 +5,17 @@
 //! 适用于关键词搜索、长文档检索等场景。
 
 mod algorithm;
+mod chunked;
 mod index;
-mod tokenizer;
 mod retriever;
+mod tokenizer;
 
+pub use crate::vector_stores::document_store::ChunkDocument;
 pub use algorithm::{bm25_score, compute_idf, BM25Params};
+pub use chunked::{
+    AutoMergingConfig, ChunkedBM25Index, ChunkedBM25Retriever, ChunkedIndexData,
+    ChunkedSearchResult,
+};
 pub use index::BM25Index;
-pub use tokenizer::Tokenizer;
 pub use retriever::BM25Retriever;
+pub use tokenizer::Tokenizer;
