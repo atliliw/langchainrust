@@ -26,7 +26,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Tools** | Calculator / DateTime / Math / URLFetch |
 | **MongoDB** | Persistent storage backend (feature: mongodb-persistence) |
 
-Full documentation: [中文文档](https://atliliw.github.io/langchainrust/docs/features.html) | [English](https://atliliw.github.io/langchainrust/docs/features_en.html)
+Full documentation: [中文文档](docs/USAGE.md) | [English](docs/USAGE_EN.md)
 
 ---
 
@@ -143,18 +143,6 @@ More examples in [Usage Guide (中文)](docs/USAGE.md).
 ```bash
 cargo test
 ```
-
----
-
-## Roadmap
-
-| Status | Feature |
-|--------|---------|
-| ✅ Done | LangGraph, BM25, Hybrid, MongoDB storage |
-| ⏳ In Progress | LCEL composition operators |
-| 📋 Planned | DeepSeek LLM, MultiQueryRetriever, Redis storage |
-
-See [ROADMAP.md](ROADMAP.md) for details.
 
 ---
 
