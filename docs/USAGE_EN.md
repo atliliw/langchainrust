@@ -616,23 +616,6 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ---
 
-## Examples
-
-```bash
-# No API key
-cargo run --example prompt_template
-cargo run --example tools
-
-# With API key
-export OPENAI_API_KEY="key"
-cargo run --example hello_llm
-cargo run --example agent_with_tools
-cargo run --example bm25_basic
-cargo run --example hybrid_search
-```
-
----
-
 ## Testing
 
 ```bash

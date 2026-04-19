@@ -138,23 +138,6 @@ More examples in [Usage Guide (中文)](docs/USAGE.md).
 
 ---
 
-## Examples
-
-```bash
-# No API key required
-cargo run --example prompt_template
-cargo run --example tools
-
-# Requires API key
-export OPENAI_API_KEY="your-key"
-cargo run --example hello_llm
-cargo run --example agent_with_tools
-```
-
-See [examples/](examples/) directory for more.
-
----
-
 ## Testing
 
 ```bash
