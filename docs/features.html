@@ -77,6 +77,17 @@
             color: white;
         }
 
+        .nav-links a.new-feature {
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid #10b981;
+            color: #10b981;
+        }
+
+        .nav-links a.new-feature:hover {
+            background: rgba(16, 185, 129, 0.3);
+            color: #34d399;
+        }
+
         /* 主内容 */
         .main-content {
             max-width: 900px;
@@ -415,7 +426,7 @@
     <nav class="top-nav">
         <div>
             <h1>LangChainRust 功能文档</h1>
-            <span class="version">v0.2.5</span>
+            <span class="version">v0.2.6</span>
         </div>
         <div class="nav-links">
             <a href="#agents">Agents</a>
@@ -423,8 +434,15 @@
             <a href="#memory">Memory</a>
             <a href="#tools">Tools</a>
             <a href="#rag">RAG</a>
+            <a href="#bm25" class="new-feature">BM25</a>
+            <a href="#hybrid" class="new-feature">Hybrid</a>
+            <a href="#langgraph">LangGraph</a>
+            <a href="#task-planning" class="new-feature">任务规划</a>
+            <a href="#retrieval-agent">RAG Agent</a>
             <a href="#prompts">Prompts</a>
             <a href="#llm">LLM</a>
+            <a href="#testing">测试</a>
+            <a href="#api-reference">API速查</a>
         </div>
     </nav>
 
@@ -442,8 +460,16 @@
                 <a href="#memory" class="quick-nav-item"><span>🧠</span><span>Memory</span></a>
                 <a href="#tools" class="quick-nav-item"><span>🔧</span><span>Tools</span></a>
                 <a href="#rag" class="quick-nav-item"><span>📚</span><span>RAG</span></a>
+                <a href="#bm25" class="quick-nav-item"><span>🔍</span><span>BM25</span></a>
+                <a href="#hybrid" class="quick-nav-item"><span>⚡</span><span>Hybrid</span></a>
+                <a href="#langgraph" class="quick-nav-item"><span>📊</span><span>LangGraph</span></a>
+                <a href="#task-planning" class="quick-nav-item"><span>📋</span><span>任务规划</span></a>
+                <a href="#retrieval-agent" class="quick-nav-item"><span>🔄</span><span>RAG Agent</span></a>
                 <a href="#prompts" class="quick-nav-item"><span>📝</span><span>Prompts</span></a>
                 <a href="#llm" class="quick-nav-item"><span>💬</span><span>LLM</span></a>
+                <a href="#testing" class="quick-nav-item"><span>🧪</span><span>测试</span></a>
+                <a href="#module-structure" class="quick-nav-item"><span>📦</span><span>模块结构</span></a>
+                <a href="#api-reference" class="quick-nav-item"><span>📖</span><span>API速查</span></a>
                 <a href="#best-practices" class="quick-nav-item"><span>💡</span><span>最佳实践</span></a>
             </div>
         </div>
@@ -878,6 +904,352 @@ let result = qa_chain.invoke(HashMap::from([
 
                             <hr class="divider">
 
+                            <!-- ========== BM25 ========== -->
+                            <section id="bm25" class="module">
+                                <div class="module-header">
+                                    <div class="module-icon">🔍</div>
+                                    <div>
+                                        <h2 class="module-title">BM25（关键词检索）</h2>
+                                        <p class="module-desc">经典 TF-IDF 加权算法，适用于关键词搜索和长文档检索</p>
+                                    </div>
+                                </div>
+
+                                <div class="intro-card">
+                                    <p><strong>BM25</strong> 是一种经典的 TF-IDF 加权检索算法，通过词频（TF）和逆文档频率（IDF）计算文档与查询的相关性评分。</p>
+                                    <p class="highlight">核心价值：不依赖 Embedding，适合关键词精确匹配、长文档检索、专业术语搜索。</p>
+                                </div>
+
+                                <div class="feature-grid">
+                                    <div class="feature-card"><h3>关键词匹配</h3><p>精确匹配查询关键词，无需语义理解</p></div>
+                                    <div class="feature-card"><h3>中英文分词</h3><p>英文空格分割 + 中文单字/双字组合</p></div>
+                                    <div class="feature-card"><h3>停用词过滤</h3><p>自动过滤常见停用词（中英文）</p></div>
+                                    <div class="feature-card"><h3>参数可调</h3><p>k1 词频饱和参数、b 文档长度归一化</p></div>
+                                </div>
+
+                                <h3 class="sub-title">BM25Retriever 基础用法</h3>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">use langchainrust::{BM25Retriever, Document};
+
+// 创建 BM25 检索器
+let mut retriever = BM25Retriever::new();
+
+// 添加文档
+retriever.add_documents_sync(vec![
+    Document::new("Rust 是一门系统编程语言"),
+    Document::new("Python 是脚本语言"),
+    Document::new("JavaScript 用于网页开发"),
+]);
+
+// 搜索关键词
+let results = retriever.search("系统编程", 3);
+
+for result in results {
+    println!("文档: {}", result.document.content);
+    println!("评分: {}", result.score);
+}</code></pre>
+                                </div>
+
+                                <h3 class="sub-title">BM25 参数配置</h3>
+
+                                <table class="config-table">
+                                    <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+                                    <tbody>
+                                        <tr><td><code>k1</code></td><td>1.5</td><td>词频饱和参数，控制高频词的影响</td></tr>
+                                        <tr><td><code>b</code></td><td>0.75</td><td>文档长度归一化参数，控制长文档惩罚</td></tr>
+                                    </tbody>
+                                </table>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">// 自定义参数
+let mut retriever = BM25Retriever::with_params(2.0, 0.5);</code></pre>
+                                </div>
+
+                                <h3 class="sub-title">ChunkedBM25Retriever（Parent-Child 结构）</h3>
+
+                                <div class="intro-card">
+                                    <p><strong>ChunkedBM25Retriever</strong> 支持 Parent-Child 文档结构，实现 AutoMerging 模式：</p>
+                                    <ul style="margin-top: 12px;">
+                                        <li>文档拆分为 Parent（大块）+ Leaf（小块）两层</li>
+                                        <li>BM25 在 Leaf 层搜索，获得精确匹配</li>
+                                        <li>当同一 Parent 的多个 Leaf 匹配时，自动合并为完整 Parent</li>
+                                    </ul>
+                                </div>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">use langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
+use std::sync::Arc;
+
+// 配置 AutoMerging
+let config = AutoMergingConfig::new()
+    .with_leaf_size(400)     // Leaf chunk 大小
+    .with_parent_size(2000)  // Parent chunk 大小
+    .with_threshold(0.5);    // 合并阈值（50% Leaf 匹配时合并）
+
+let store = Arc::new(ChunkedDocumentStore::new());
+let mut retriever = ChunkedBM25Retriever::with_config(store, config);
+
+// 添加文档（自动分割）
+retriever.add_document(Document::new("长文档内容..."));
+
+// 搜索（自动合并）
+let results = retriever.search("关键词", 5);
+
+for result in results {
+    if result.is_merged() {
+        println!("合并结果: {}", result.content());
+    } else {
+        println!("Leaf chunk: {}", result.content());
+    }
+}</code></pre>
+                                </div>
+
+                                <hr class="divider">
+
+                            <!-- ========== Hybrid ========== -->
+                            <section id="hybrid" class="module">
+                                <div class="module-header">
+                                    <div class="module-icon">⚡</div>
+                                    <div>
+                                        <h2 class="module-title">Hybrid（混合检索）</h2>
+                                        <p class="module-desc">BM25 关键词检索 + 向量语义检索，融合两种检索优势</p>
+                                    </div>
+                                </div>
+
+                                <div class="intro-card">
+                                    <p><strong>混合检索</strong> 结合 BM25 的关键词匹配能力和向量检索的语义理解能力，通过 RRF（Reciprocal Rank Fusion）算法融合结果。</p>
+                                    <p class="highlight">核心价值：关键词精确匹配 + 语义理解，召回率更高，覆盖更全面。</p>
+                                </div>
+
+                                <div class="feature-grid">
+                                    <div class="feature-card"><h3>BM25 检索</h3><p>关键词精确匹配，快速高效</p></div>
+                                    <div class="feature-card"><h3>向量检索</h3><p>语义相似度匹配，理解意图</p></div>
+                                    <div class="feature-card"><h3>RRF 融合</h3><p>排序融合算法，兼顾两种结果</p></div>
+                                    <div class="feature-card"><h3>统一索引</h3><p>一次添加，双索引自动构建</p></div>
+                                </div>
+
+                                <h3 class="sub-title">RRF 融合算法</h3>
+
+                                <div class="intro-card">
+                                    <p><strong>RRF（Reciprocal Rank Fusion）</strong> 算法公式：</p>
+                                    <p style="font-family: 'JetBrains Mono', monospace; margin-top: 12px; background: var(--primary-light); padding: 12px; border-radius: 6px;">
+                                        RRF_score(d) = Σ 1/(k + rank(d))
+                                    </p>
+                                    <p style="margin-top: 12px;">其中 k 通常为 60，rank(d) 是文档在各自检索结果中的排名。</p>
+                                </div>
+
+                                <h3 class="sub-title">HybridRetriever 使用</h3>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">use langchainrust::{HybridRetriever, BM25Retriever, Document};
+
+// 创建混合检索器
+let retriever = HybridRetriever::with_top_k(10, 10)  // BM25_k=10, Vector_k=10
+    .with_rrf_k(60);
+
+// 分别获取 BM25 和向量检索结果
+let bm25_docs = bm25_retriever.search("查询词", 10);
+let vector_docs = vector_store.search("查询词", 10);
+
+// RRF 融合
+let fused = retriever.retrieve(bm25_docs, vector_docs);
+
+for doc in fused {
+    println!("文档: {}", doc.document.content);
+    println!("RRF 评分: {}", doc.score);
+}</code></pre>
+                                </div>
+
+                                <h3 class="sub-title">UnifiedHybridIndex（统一混合索引）</h3>
+
+                                <div class="intro-card">
+                                    <p><strong>UnifiedHybridIndex</strong> 是最高级的混合检索接口，自动管理 BM25 和向量双索引：</p>
+                                    <ul style="margin-top: 12px;">
+                                        <li>一次 <code>add_document()</code> 自动构建双索引</li>
+                                        <li>自动分割文档为 chunks</li>
+                                        <li>统一检索接口，自动融合结果</li>
+                                    </ul>
+                                </div>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
+use std::sync::Arc;
+
+// 配置混合索引
+let config = HybridIndexConfig::new()
+    .with_chunk_size(500)      // chunk 大小
+    .with_top_k(10, 10)        // BM25_k, Vector_k
+    .with_rrf_k(60)            // RRF 参数
+    .with_merge_threshold(0.5); // AutoMerging 阈值
+
+// 创建混合索引
+let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
+let index = UnifiedHybridIndex::with_config(embeddings, 1536, config);
+
+// 添加文档（自动构建双索引）
+index.add_document(Document::new("长文档内容...")).await?;
+
+// 混合检索
+let results = index.retrieve("查询词", 5).await?;
+
+for result in results {
+    println!("文档: {}", result.document.content);
+    println!("RRF 评分: {}", result.score);
+}</code></pre>
+                                </div>
+
+                                <h3 class="sub-title">BM25 vs 向量 vs Hybrid 对比</h3>
+
+                                <table class="comparison-table">
+                                    <thead><tr><th>维度</th><th>BM25</th><th>向量检索</th><th>Hybrid</th></tr></thead>
+                                    <tbody>
+                                        <tr><td><strong>匹配方式</strong></td><td>关键词精确匹配</td><td>语义相似度</td><td>双路融合</td></tr>
+                                        <tr><td><strong>召回率</strong></td><td class="medium">中</td><td class="medium">中</td><td class="low">高</td></tr>
+                                        <tr><td><strong>精确度</strong></td><td class="low">高</td><td class="medium">中</td><td class="low">高</td></tr>
+                                        <tr><td><strong>依赖 Embedding</strong></td><td class="low">否</td><td class="high">是</td><td class="high">是</td></tr>
+                                        <tr><td><strong>专业术语</strong></td><td class="low">优秀</td><td class="medium">一般</td><td class="low">优秀</td></tr>
+                                        <tr><td><strong>语义理解</strong></td><td class="high">差</td><td class="low">优秀</td><td class="low">优秀</td></tr>
+                                        <tr class="highlight-row"><td><strong>推荐场景</strong></td><td>关键词搜索</td><td>语义搜索</td><td>综合搜索</td></tr>
+                                    </tbody>
+                                </table>
+
+                                <div class="warning-card info">
+                                    <h4>💡 选择建议</h4>
+                                    <p>✅ 关键词精确匹配 → BM25</p>
+                                    <p>✅ 语义相似度搜索 → 向量检索</p>
+                                    <p>✅ 综合检索、提高召回率 → Hybrid（推荐）</p>
+                                </div>
+
+                                <h3 class="sub-title">三种检索模式架构对比</h3>
+
+                                <div class="intro-card">
+                                    <p>LangChainRust 提供三种检索模式，核心差异在于<strong>内容存储位置</strong>和<strong>是否回表</strong>：</p>
+                                </div>
+
+                                <table class="comparison-table">
+                                    <thead><tr><th>模式</th><th>内容存储</th><th>回表</th><th>适用场景</th></tr></thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>SimpleVector</strong></td>
+                                            <td>内容直接存 InMemoryVectorStore</td>
+                                            <td class="low">❌ 不回表</td>
+                                            <td>只用向量检索，简单快速</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>BM25 Only</strong></td>
+                                            <td>内容存 ChunkedDocumentStore，BM25 只存词频索引</td>
+                                            <td class="high">✅ 回表</td>
+                                            <td>只用关键词检索</td>
+                                        </tr>
+                                        <tr class="highlight-row">
+                                            <td><strong>Hybrid</strong></td>
+                                            <td>BM25 + 向量共用 ChunkedDocumentStore</td>
+                                            <td class="high">✅ 回表</td>
+                                            <td>混合检索，内容共享（推荐）</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h4 style="margin-top: 20px;">架构图解</h4>
+
+                                <div class="code-block" style="background: var(--code-bg); padding: 16px; border-radius: 8px;">
+                                    <pre style="color: var(--code-text); font-size: 13px;"><code>
+┌─────────────────────────────────────────────────────────────────────┐
+│  模式1: SimpleVector（不回表）                                        │
+│  ┌─────────────────────┐                                            │
+│  │  InMemoryVectorStore │                                            │
+│  │  ┌─────────────────┐ │                                            │
+│  │  │ Document        │ │  ← 内容直接存这里                           │
+│  │  │ + Embedding     │ │                                            │
+│  │  └─────────────────┘ │                                            │
+│  └─────────────────────┘                                            │
+│  搜索: 向量相似度 → 直接返回 Document（无需额外查询）                  │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  模式2/3: BM25/Hybrid（回表）                                         │
+│  ┌─────────────────┐          ┌─────────────────────┐               │
+│  │  BM25 Index     │          │  ChunkedDocumentStore│               │
+│  │  (不存内容)      │          │  (存实际内容)         │               │
+│  ├─────────────────┤          ├─────────────────────┤               │
+│  │ chunk_id_list   │          │ parent_docs         │               │
+│  │ term_freqs      │──────────│ chunks              │               │
+│  │ term_index      │  回表    │                     │               │
+│  └─────────────────┘          └─────────────────────┘               │
+│  ┌─────────────────┐                                               │
+│  │  Vector Index   │──────────回表──────────→ 同上                  │
+│  │  (只存 embedding)│                                               │
+│  └─────────────────┘                                               │
+│  搜索: 索引返回 chunk_id → 回表查询 ChunkedDocumentStore 获取内容    │
+└─────────────────────────────────────────────────────────────────────┘
+                                    </code></pre>
+                                </div>
+
+                                <div class="warning-card success">
+                                    <h4>✓ 回表设计的优势</h4>
+                                    <p>• <strong>索引体积小</strong>：BM25/向量索引只存统计信息和向量，不存内容</p>
+                                    <p>• <strong>内容共享</strong>：BM25 和向量共用同一份内容，避免重复存储</p>
+                                    <p>• <strong>支持 AutoMerging</strong>：Parent-Child 结构，匹配时自动合并</p>
+                                </div>
+
+                                <h3 class="sub-title">存储后端选择</h3>
+
+                                <div class="intro-card">
+                                    <p><strong>ChunkedDocumentStoreTrait</strong> 定义统一存储接口，支持多种后端：</p>
+                                </div>
+
+                                <table class="comparison-table">
+                                    <thead><tr><th>存储后端</th><th>特点</th><th>适用场景</th><th>启用方式</th></tr></thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>InMemory</strong></td>
+                                            <td>内存存储、零依赖</td>
+                                            <td>开发/测试、小规模数据</td>
+                                            <td>默认启用</td>
+                                        </tr>
+                                        <tr class="highlight-row">
+                                            <td><strong>MongoDB</strong></td>
+                                            <td>持久化、分片支持、生产级</td>
+                                            <td>大规模生产环境</td>
+                                            <td>feature = mongodb-persistence</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Redis</strong></td>
+                                            <td>极快、缓存层</td>
+                                            <td>高频访问缓存</td>
+                                            <td>预留接口</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>SQLite</strong></td>
+                                            <td>轻量、本地文件</td>
+                                            <td>本地/嵌入场景</td>
+                                            <td>预留接口</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+
+                                <h4 style="margin-top: 20px;">MongoDB 使用示例</h4>
+
+                                <div class="code-block">
+                                    <pre><code class="language-rust">use langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
+
+// 配置 MongoDB
+let config = MongoStoreConfig::new(
+    "mongodb://localhost:27017",
+    "langchainrust_db"
+);
+
+// 创建存储
+let store = MongoChunkedDocumentStore::new(config).await?;
+store.create_indexes().await?;
+
+// 使用（与 InMemory 相同接口）
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;</code></pre>
+                                </div>
+
+                                <hr class="divider">
+
                             <!-- ========== Prompts ========== -->
                             <section id="prompts" class="module">
                                 <div class="module-header">
@@ -1046,6 +1418,504 @@ if let Some(tool_calls) = &response.tool_calls {
 
                     <hr class="divider">
 
+                    <!-- ========== LangGraph ========== -->
+                    <section id="langgraph" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">📊</div>
+                            <div>
+                                <h2 class="module-title">LangGraph（图状工作流）</h2>
+                                <p class="module-desc">构建复杂 AI 应用流程的状态图框架</p>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <p><strong>LangGraph</strong> 是基于状态图的 workflow 框架，支持条件路由、并行执行、人工干预等高级功能。</p>
+                            <p class="highlight">核心价值：可视化流程、状态持久化、Human-in-the-loop、复杂流程编排。</p>
+                        </div>
+
+                        <div class="feature-grid">
+                            <div class="feature-card"><h3>StateGraph</h3><p>节点间共享状态，构建复杂流程</p></div>
+                            <div class="feature-card"><h3>条件边</h3><p>根据状态动态路由到不同分支</p></div>
+                            <div class="feature-card"><h3>Human-in-loop</h3><p>关键节点暂停等待人工确认</p></div>
+                            <div class="feature-card"><h3>Subgraph</h3><p>子图嵌套，模块化复杂流程</p></div>
+                        </div>
+
+                        <h3 class="sub-title">StateGraph 基础用法</h3>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::langgraph::{StateGraph, GraphBuilder, START, END};
+use std::collections::HashMap;
+
+// 定义状态
+#[derive(Default)]
+struct MyState {
+    messages: Vec<String>,
+    decision: Option<String>,
+}
+
+// 创建节点
+let graph = GraphBuilder::new()
+    .add_node("analyze", |state: &mut MyState| {
+        state.decision = Some("proceed".to_string());
+        Ok(())
+    })
+    .add_node("process", |state: &mut MyState| {
+        state.messages.push("processed".to_string());
+        Ok(())
+    })
+    .add_edge(START, "analyze")
+    .add_conditional_edge("analyze", |state| {
+        if state.decision == Some("proceed") { "process" } else { END }
+    })
+    .add_edge("process", END)
+    .build();
+
+// 执行
+let result = graph.invoke(MyState::default()).await?;</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">Human-in-the-loop</h3>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">// 在关键节点暂停，等待人工确认
+let graph = GraphBuilder::new()
+    .add_node("review", |state| {
+        // 标记需要人工审核
+        state.needs_review = true;
+        Ok(())
+    })
+    .add_interrupt("review")  // 在此节点暂停
+    .build();
+
+// 执行到 review 节点后暂停
+let invocation = graph.invoke(state).await?;
+
+// 人工确认后继续
+graph.resume(invocation, approved).await?;</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">Parallel 并行执行</h3>
+
+                        <div class="intro-card">
+                            <p>并行执行多个独立节点：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">// 添加多个并行节点
+graph.add_node("task_a", |state| { /* ... */ });
+graph.add_node("task_b", |state| { /* ... */ });
+graph.add_node("task_c", |state| { /* ... */ });
+
+// Fan-Out: 从一个节点分发到多个并行节点
+graph.add_edge(START, "dispatch");
+graph.add_edge("dispatch", "task_a");
+graph.add_edge("dispatch", "task_b");
+graph.add_edge("dispatch", "task_c");
+
+// Fan-In: 多个并行节点汇聚到一个节点
+graph.add_edge("task_a", "merge");
+graph.add_edge("task_b", "merge");
+graph.add_edge("task_c", "merge");
+graph.add_edge("merge", END);
+
+// 编译时启用并行执行
+let compiled = graph.compile()
+    .with_parallel_execution(true);
+
+// invoke_parallel() 并行执行
+let result = compiled.invoke_parallel(initial_state).await?;</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">Checkpointer 持久化</h3>
+
+                        <div class="intro-card">
+                            <p><strong>Checkpointer</strong> 保存和恢复执行状态，支持会话持久化：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::langgraph::{
+    MemoryCheckpointer, FileCheckpointer, Checkpointer,
+};
+
+// 内存 Checkpointer
+let checkpointer = MemoryCheckpointer::new();
+
+// 文件 Checkpointer
+let file_checkpointer = FileCheckpointer::new("./checkpoints/");
+
+// 编译时设置 Checkpointer
+let compiled = graph.compile()
+    .with_checkpointer(checkpointer);
+
+// 执行时指定 thread_id（用于区分不同会话）
+let thread_id = "conversation_123";
+let result = compiled.invoke_with_thread(initial_state, thread_id).await?;
+
+// 恢复之前的状态
+let previous_state = compiled.get_state(thread_id).await?;
+let resumed_result = compiled.invoke_with_thread(previous_state, thread_id).await?;</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">可视化输出</h3>
+
+                        <div class="intro-card">
+                            <p>三种可视化格式：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">// ASCII 图形（终端显示）
+println!("{}", compiled.visualize_ascii());
+// 输出:
+//   START → analyze → process → output → END
+
+// Mermaid 图表（Markdown 文档）
+println!("{}", compiled.visualize_mermaid());
+// 输出:
+//   graph LR
+//     START --> analyze
+//     analyze --> process
+//     process --> output
+//     output --> END
+
+// JSON 结构（程序处理）
+let json = compiled.visualize_json();
+// 输出:
+//   {"nodes": ["analyze", "process", "output"], "edges": [...]}</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">Graph 验证</h3>
+
+                        <div class="intro-card">
+                            <p>自动检测常见问题：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">// 编译时自动验证
+let compiled = graph.compile();  // 会抛出验证错误
+
+// 手动验证
+graph.validate()?;  // 返回验证结果
+
+// 检测项：
+// - 死循环：validate_cycles()
+// - 孤立节点：validate_unreachable_nodes()
+// - 重复边：validate_duplicate_edges()</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                    <!-- ========== 任务规划 ========== -->
+                    <section id="task-planning" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">📋</div>
+                            <div>
+                                <h2 class="module-title">任务规划（Task Planning）</h2>
+                                <p class="module-desc">将复杂任务自动分解为子任务，依次执行，最后汇总结果</p>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <p><strong>TaskPlanner</strong> 将复杂任务自动分解为子任务，依次执行，最后汇总结果。</p>
+                            <p class="highlight">核心价值：自动分解复杂任务，多步执行并汇总结果。</p>
+                        </div>
+
+                        <div class="feature-grid">
+                            <div class="feature-card"><h3>任务分解</h3><p>TaskPlanner 自动分析并分解复杂任务</p></div>
+                            <div class="feature-card"><h3>依次执行</h3><p>PlannedExecutor 依次执行每个子任务</p></div>
+                            <div class="feature-card"><h3>结果汇总</h3><p>最后汇总所有子任务结果</p></div>
+                            <div class="feature-card"><h3>依赖控制</h3><p>子任务可选择是否依赖前一任务结果</p></div>
+                        </div>
+
+                        <h3 class="sub-title">TaskPlanner（任务规划器）</h3>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::agent::TaskPlanner;
+use langchainrust::llms::LLM;
+
+let llm = LLM::new(config);
+let planner = TaskPlanner::new(llm)
+    .with_max_sub_tasks(5)
+    .with_verbose(true);  // 开启日志输出
+
+// 分解任务
+let plan = planner.plan("分析项目代码，写测试用例，运行测试").await?;
+
+println!("分解为 {} 个子任务:", plan.sub_tasks.len());
+for task in &plan.sub_tasks {
+    println!("  [{}] {}", task.id, task.description);
+}</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">PlannedExecutor（自动规划执行器）</h3>
+
+                        <div class="intro-card">
+                            <p><strong>PlannedExecutor</strong> 自动完成：规划 → 执行 → 汇总</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::agent::{PlannedExecutor, ReActAgent};
+use langchainrust::llms::LLM;
+use langchainrust::tools::Tool;
+use std::sync::Arc;
+
+let llm = LLM::new(config);
+let tools: Vec<Arc<dyn Tool>> = vec![];
+
+let planned_executor = PlannedExecutor::new(
+    llm,
+    Box::new(ReActAgent::new(LLM::new(config), tools.clone(), None)),
+    tools,
+)
+.with_max_sub_tasks(3)      // 最多 3 个子任务
+.with_max_iterations(2)    // 每个子任务最多 2 次迭代
+.with_verbose(true);       // 开启日志输出
+
+// 执行复杂任务
+let result = planned_executor
+    .run("调研 Rust 异步编程最佳实践，写示例代码，解释关键点")
+    .await?;
+
+println!("{}", result);</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">日志控制</h3>
+
+                        <div class="intro-card">
+                            <p>默认不打印工作过程日志，使用 <code>with_verbose(true)</code> 开启：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre style="color: var(--code-text); font-size: 13px;"><code>
+[规划] 正在分析任务...
+[规划] 任务已分解为 3 个子任务:
+  [1] 分析项目结构
+  [2] 提取核心功能
+  [3] 生成总结报告
+
+[执行] 任务 1/3: 分析项目结构
+[完成] 任务 1 执行成功
+[执行] 任务 2/3: 提取核心功能
+[完成] 任务 2 执行成功
+[执行] 任务 3/3: 生成总结报告
+[完成] 任务 3 执行成功
+
+[汇总] 正在汇总所有任务结果...</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                    <!-- ========== Retrieval + Agent ========== -->
+                    <section id="retrieval-agent" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">🔄</div>
+                            <div>
+                                <h2 class="module-title">Retrieval + Agent (RAG)</h2>
+                                <p class="module-desc">将向量检索与 Agent 结合，实现检索增强生成</p>
+                            </div>
+                        </div>
+
+                        <div class="intro-card">
+                            <p>将<strong>向量检索</strong>与<strong>Agent</strong>结合，实现 <strong>RAG（检索增强生成）</strong> 功能。</p>
+                            <p class="highlight">核心价值：检索器提供上下文，Agent 基于上下文回答问题。</p>
+                        </div>
+
+                        <h3 class="sub-title">工作原理</h3>
+
+                        <div class="code-block">
+                            <pre style="color: var(--code-text); font-size: 13px;"><code>
+┌─────────────┐      检索器      ┌─────────────┐
+│   用户问题   │  ─────────────>  │  向量数据库  │
+└─────────────┘                  └─────────────┘
+       │                                │
+       │                                ▼
+       │                         ┌─────────────┐
+       │                         │  相关文档   │
+       │                         └─────────────┘
+       │                                │
+       ▼                                ▼
+┌─────────────────────────────────────────────┐
+│                   LLM                        │
+│  (问题 + 检索到的文档作为上下文)              │
+└─────────────────────────────────────────────┘
+                      │
+                      ▼
+               ┌─────────────┐
+               │   最终答案   │
+               └─────────────┘</code></pre>
+                        </div>
+
+                        <h3 class="sub-title">使用 with_retriever</h3>
+
+                        <div class="intro-card">
+                            <p>通过 <code>ReActAgent::with_retriever</code> 创建带检索功能的 Agent：</p>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-rust">use langchainrust::agent::{AgentExecutor, ReActAgent};
+use langchainrust::llms::LLM;
+use langchainrust::memory::SimpleMemory;
+use langchainrust::retrieval::{
+    Document, InMemoryVectorStore, MockEmbeddingModel,
+    RecursiveCharacterSplitter, Retriever, SimilarityRetriever, TextSplitter,
+};
+use std::sync::Arc;
+
+// 1. 准备文档
+let docs = vec![
+    Document::new("Rust是一种系统编程语言...".to_string()),
+    Document::new("Python是一种脚本语言...".to_string()),
+];
+
+// 2. 分割文档
+let splitter = RecursiveCharacterSplitter::new(100, 20);
+let mut chunks = Vec::new();
+for doc in docs {
+    chunks.extend(splitter.split_document(&doc).unwrap());
+}
+
+// 3. 创建检索器
+let embedding = Arc::new(MockEmbeddingModel::new(128));
+let store = Box::new(InMemoryVectorStore::new());
+let retriever = SimilarityRetriever::new(store, embedding);
+retriever.add_documents(chunks).await?;
+
+// 4. 创建 RAG Agent（传入 retriever）
+let llm = LLM::new(config);
+let agent = ReActAgent::with_retriever(
+    llm,
+    vec![],                              // 工具（可选）
+    Some(Box::new(SimpleMemory::default())), // 记忆（可选）
+    Arc::new(retriever) as Arc<dyn Retriever>,
+    3,  // top_k
+);
+
+// 5. 执行查询
+let executor = AgentExecutor::new(Box::new(agent), vec![]);
+let result = executor.run_with_details("什么是Rust？").await?;
+println!("回答: {}", result.answer);</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                    <!-- ========== 测试 ========== -->
+                    <section id="testing" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">🧪</div>
+                            <div>
+                                <h2 class="module-title">测试</h2>
+                                <p class="module-desc">运行测试和验证功能</p>
+                            </div>
+                        </div>
+
+                        <div class="code-block">
+                            <pre><code class="language-bash"># 运行全部测试
+cargo test
+
+# 运行单元测试
+cargo test --lib
+
+# 运行 Function Calling Agent 测试
+cargo test --test function_calling_agent -- --include-ignored --nocapture
+
+# 运行 ReAct Agent 测试
+cargo test --test integration_agent_react -- --include-ignored --nocapture
+
+# 运行特定测试函数
+cargo test test_fc_agent_with_calculator -- --include-ignored --nocapture</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                    <!-- ========== 模块结构 ========== -->
+                    <section id="module-structure" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">📦</div>
+                            <div>
+                                <h2 class="module-title">模块结构</h2>
+                                <p class="module-desc">项目代码组织结构</p>
+                            </div>
+                        </div>
+
+                        <div class="code-block">
+                            <pre style="color: var(--code-text); font-size: 13px;"><code>
+src/
+├── core/                # 核心抽象
+│   ├── language_models/ # Base LLM traits
+│   ├── runnables/       # Runnable trait
+│   └── tools/           # Tool trait + ToolDefinition + to_tool_definition()
+├── language_models/     # LLM 实现
+│   └── openai/          # OpenAI 客户端（支持 bind_tools）
+├── agents/              # Agent 框架
+│   ├── react/           # ReActAgent（文本解析）
+│   └── function_calling/ # FunctionCallingAgent（原生 FC）
+├── prompts/             # 提示词模板
+├── memory/              # 记忆管理
+├── chains/              # 链式调用
+├── retrieval/           # RAG 组件
+├── embeddings/          # 文本嵌入
+├── vector_stores/       # 向量存储
+├── tools/               # 内置工具
+└── schema/              # 数据结构（Message、ToolCall）</code></pre>
+                        </div>
+
+                        <hr class="divider">
+
+                    <!-- ========== API 速查 ========== -->
+                    <section id="api-reference" class="module">
+                        <div class="module-header">
+                            <div class="module-icon">📖</div>
+                            <div>
+                                <h2 class="module-title">API 速查</h2>
+                                <p class="module-desc">常用 API 快速参考</p>
+                            </div>
+                        </div>
+
+                        <h3 class="sub-title">Agent 构造方法</h3>
+
+                        <table class="comparison-table">
+                            <thead><tr><th>Agent</th><th>方法</th><th>说明</th></tr></thead>
+                            <tbody>
+                                <tr><td><strong>FunctionCallingAgent</strong></td><td><code>new(llm, tools, system_prompt)</code></td><td>推荐，原生 FC</td></tr>
+                                <tr><td><strong>ReActAgent</strong></td><td><code>new(llm, tools, memory)</code></td><td>兼容旧模型</td></tr>
+                            </tbody>
+                        </table>
+
+                        <h3 class="sub-title">工具调用</h3>
+
+                        <table class="comparison-table">
+                            <thead><tr><th>Agent</th><th>工具调用方式</th><th>说明</th></tr></thead>
+                            <tbody>
+                                <tr><td>FunctionCallingAgent</td><td><code>tool_calls</code> JSON</td><td>类型安全</td></tr>
+                                <tr><td>ReActAgent</td><td>文本 <code>Action: xxx</code></td><td>正则提取</td></tr>
+                            </tbody>
+                        </table>
+
+                        <h3 class="sub-title">Function Calling API</h3>
+
+                        <table class="comparison-table">
+                            <thead><tr><th>方法</th><th>说明</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>bind_tools(vec![ToolDefinition])</code></td><td>绑定工具到 LLM</td></tr>
+                                <tr><td><code>to_tool_definition(&tool)</code></td><td>将 BaseTool 转为 ToolDefinition</td></tr>
+                                <tr><td><code>ToolDefinition::from_type::&lt;T&gt;()</code></td><td>从类型自动生成 Schema</td></tr>
+                                <tr><td><code>ToolCall::parse_arguments::&lt;T&gt;()</code></td><td>解析工具参数</td></tr>
+                            </tbody>
+                        </table>
+
+                        <h3 class="sub-title">RAG 执行流程</h3>
+
+                        <table class="comparison-table">
+                            <thead><tr><th>步骤</th><th>说明</th></tr></thead>
+                            <tbody>
+                                <tr><td><strong>1. 检索</strong></td><td>从向量数据库检索 top_k 个相关文档</td></tr>
+                                <tr><td><strong>2. 构建上下文</strong></td><td>将文档格式化为 prompt 上下文</td></tr>
+                                <tr><td><strong>3. 调用 LLM</strong></td><td>将问题和上下文一起发送给模型</td></tr>
+                                <tr><td><strong>4. 返回答案</strong></td><td>模型基于上下文生成答案</td></tr>
+                            </tbody>
+                        </table>
+
+                        <hr class="divider">
+
                     <!-- ========== 最佳实践 ========== -->
                     <section id="best-practices" class="module">
                         <div class="module-header">
@@ -1105,7 +1975,6 @@ if let Some(tool_calls) = &response.tool_calls {
                     <footer class="page-footer">
                         <div class="footer-links">
                             <a href="../README.md">README</a>
-                            <a href="../USAGE.md">使用文档</a>
                             <a href="https://docs.rs/langchainrust">API 文档</a>
                             <a href="https://github.com/langchain-ai/langchain">LangChain 官方</a>
                         </div>

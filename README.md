@@ -7,33 +7,30 @@
 
 A LangChain-inspired Rust framework for building LLM applications.
 
-一个受 LangChain 启发的 Rust 框架，用于构建 LLM 应用。
-
-**解决问题**：让 Rust 开发者能够快速构建 Agent、RAG、BM25 关键词检索、Hybrid 混合检索、LangGraph 工作流等 LLM 应用。
+**What it solves**: Build Agents, RAG, BM25 keyword search, Hybrid retrieval, LangGraph workflows - all in pure Rust.
 
 ---
 
+## Core Features
 
-## 核心特性
-
-| 组件 | 功能 |
-|------|------|
-| **LLM** | OpenAI / Ollama 兼容接口，流式输出，Function Calling |
+| Component | Description |
+|-----------|-------------|
+| **LLM** | OpenAI / Ollama compatible, streaming, Function Calling |
 | **Agents** | ReActAgent + FunctionCallingAgent |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer |
 | **Chains** | LLMChain / SequentialChain / RetrievalQA |
-| **RAG** | 文档分割、向量存储、语义检索 |
-| **BM25** | 关键词检索、中英文分词、AutoMerging |
-| **Hybrid** | BM25 + 向量混合检索、RRF 融合 |
-| **LangGraph** | 图状工作流、Human-in-the-loop、Subgraph |
+| **RAG** | Document splitting, vector store, semantic retrieval |
+| **BM25** | Keyword search, Chinese/English tokenization, AutoMerging |
+| **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion |
+| **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph |
 | **Tools** | Calculator / DateTime / Math / URLFetch |
-| **MongoDB** | 持久化存储后端（feature: mongodb-persistence） |
+| **MongoDB** | Persistent storage backend (feature: mongodb-persistence) |
 
-完整功能文档: [中文文档](https://atliliw.github.io/langchainrust/docs/features.html) | [英文文档](https://atliliw.github.io/langchainrust/docs/features_en.html)
+Full documentation: [中文文档](https://atliliw.github.io/langchainrust/docs/features.html) | [English](https://atliliw.github.io/langchainrust/docs/features_en.html)
 
 ---
 
-## 架构
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -66,21 +63,21 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 ---
 
-## 安装
+## Installation
 
 ```toml
 [dependencies]
 langchainrust = "0.2.6"
 tokio = { version = "1.0", features = ["full"] }
 
-# 可选功能
-langchainrust = { version = "0.2.6", features = ["mongodb-persistence"] }  # MongoDB 存储
-langchainrust = { version = "0.2.6", features = ["qdrant-integration"] }    # Qdrant 向量库
+# Optional features
+langchainrust = { version = "0.2.6", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.2.6", features = ["qdrant-integration"] }    # Qdrant vector DB
 ```
 
 ---
 
-## 快速开始
+## Quick Start
 
 ```rust
 use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
@@ -98,8 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let llm = OpenAIChat::new(config);
     
     let response = llm.chat(vec![
-        Message::system("你是一个友好的助手。"),
-        Message::human("什么是 Rust？"),
+        Message::system("You are a helpful assistant."),
+        Message::human("What is Rust?"),
     ], None).await?;
     
     println!("{}", response.content);
@@ -107,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### BM25 关键词检索
+### BM25 Keyword Search
 
 ```rust
 use langchainrust::{BM25Retriever, Document};
@@ -115,51 +112,50 @@ use langchainrust::{BM25Retriever, Document};
 let mut retriever = BM25Retriever::new();
 
 retriever.add_documents_sync(vec![
-    Document::new("Rust 是一门系统编程语言"),
-    Document::new("Python 是脚本语言"),
+    Document::new("Rust is a systems programming language"),
+    Document::new("Python is a scripting language"),
 ]);
 
-let results = retriever.search("系统编程", 3);
+let results = retriever.search("systems programming", 3);
 
 for result in results {
-    println!("文档: {}", result.document.content);
-    println!("评分: {}", result.score);
+    println!("Document: {}", result.document.content);
+    println!("Score: {}", result.score);
 }
 ```
 
-更多示例见 [使用指南](docs/USAGE.md)。
+More examples in [Usage Guide (中文)](docs/USAGE.md).
 
 ---
 
-## 文档
+## Documentation
 
-| 文档 | 内容 |
-|------|------|
-| [使用指南](docs/USAGE.md) | LLM、Agent、Memory、RAG、BM25、Hybrid、LangGraph 详细用法 |
-| [中文功能文档](https://atliliw.github.io/langchainrust/docs/features.html) | 功能总览 + 使用示例（在线） |
-| [英文功能文档](https://atliliw.github.io/langchainrust/docs/features_en.html) | 功能总览 + 使用示例（在线） |
-| [API 文档](https://docs.rs/langchainrust) | Rust API 文档 |
+| Docs | Content |
+|------|---------|
+| [Usage Guide (中文)](docs/USAGE.md) | LLM、Agent、Memory、RAG、BM25、Hybrid、LangGraph 详细用法 |
+| [Usage Guide (English)](docs/USAGE_EN.md) | Detailed usage for all components |
+| [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
 
 ---
 
-## 示例
+## Examples
 
 ```bash
-# 无需 API Key
+# No API key required
 cargo run --example prompt_template
 cargo run --example tools
 
-# 需要 API Key
+# Requires API key
 export OPENAI_API_KEY="your-key"
 cargo run --example hello_llm
 cargo run --example agent_with_tools
 ```
 
-详细用法见 [使用指南](docs/USAGE.md)。
+See [examples/](examples/) directory for more.
 
 ---
 
-## 测试
+## Testing
 
 ```bash
 cargo test
@@ -169,22 +165,22 @@ cargo test
 
 ## Roadmap
 
-| 状态 | 功能 |
-|------|------|
-| ✅ 完成 | LangGraph、BM25、Hybrid、MongoDB 存储 |
-| ⏳ 开发中 | LCEL 组合操作符 |
-| 📋 规划中 | DeepSeek LLM、MultiQueryRetriever、Redis 存储 |
+| Status | Feature |
+|--------|---------|
+| ✅ Done | LangGraph, BM25, Hybrid, MongoDB storage |
+| ⏳ In Progress | LCEL composition operators |
+| 📋 Planned | DeepSeek LLM, MultiQueryRetriever, Redis storage |
 
-详见 [ROADMAP.md](ROADMAP.md)。
-
----
-
-## 贡献
-
-欢迎贡献！见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+See [ROADMAP.md](ROADMAP.md) for details.
 
 ---
 
-## 许可证
+## Contributing
 
-MIT 或 Apache-2.0，任选其一。
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## License
+
+MIT or Apache-2.0, at your option.

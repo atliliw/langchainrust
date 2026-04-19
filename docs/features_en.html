@@ -513,7 +513,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.1.0 • Features</div>
+            <div class="sidebar-subtitle">v0.2.6 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -528,8 +528,20 @@
             <div class="nav-section">
                 <div class="nav-section-title">Advanced</div>
                 <a href="#rag" class="nav-item">📚 RAG</a>
+                <a href="#bm25" class="nav-item" style="color: var(--accent-tertiary);">🔍 BM25</a>
+                <a href="#hybrid" class="nav-item" style="color: var(--accent-tertiary);">⚡ Hybrid</a>
+                <a href="#langgraph" class="nav-item">📊 LangGraph</a>
+                <a href="#task-planning" class="nav-item" style="color: var(--accent-tertiary);">📋 Task Planning</a>
+                <a href="#retrieval-agent" class="nav-item">🔄 RAG Agent</a>
                 <a href="#prompts" class="nav-item">📝 Prompts</a>
                 <a href="#llm" class="nav-item">💬 LLM</a>
+            </div>
+
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                <a href="#testing" class="nav-item">🧪 Testing</a>
+                <a href="#module-structure" class="nav-item">📦 Module Structure</a>
+                <a href="#api-reference" class="nav-item">📖 API Reference</a>
             </div>
 
             <div class="nav-section">
@@ -539,7 +551,7 @@
 
             <div class="nav-section">
                 <div class="nav-section-title">Language</div>
-                <a href="features_zh.html" class="nav-item">中文</a>
+                <a href="features.html" class="nav-item">中文</a>
                 <a href="features_en.html" class="nav-item active">English</a>
             </div>
         </div>
@@ -856,6 +868,226 @@ retriever.add_documents(chunks).await?;
                 <hr class="divider">
             </section>
 
+            <!-- BM25 -->
+            <section class="module" id="bm25" style="animation-delay: 0.55s;">
+                <div class="module-header">
+                    <span class="module-icon">🔍</span>
+                    <h2>BM25</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>BM25</strong> is a classic TF-IDF weighted retrieval algorithm, calculating relevance scores via term frequency and inverse document frequency.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: No embedding dependency, ideal for keyword matching and technical term search.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Keyword Matching</h3><p>Exact match, no semantic understanding</p></div>
+                    <div class="feature-card"><h3>Tokenization</h3><p>English whitespace + Chinese bigram</p></div>
+                    <div class="feature-card"><h3>Stopwords</h3><p>Auto filter common stopwords</p></div>
+                    <div class="feature-card"><h3>Tunable Params</h3><p>k1 saturation, b normalization</p></div>
+                </div>
+
+                <h3>BM25Retriever Usage</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{BM25Retriever, Document};
+
+<span class="kw">let</span> <span class="kw">mut</span> retriever = BM25Retriever::new();
+
+retriever.add_documents_sync(vec![
+    Document::new(<span class="str">"Rust is a systems programming language"</span>),
+    Document::new(<span class="str">"Python is a scripting language"</span>),
+]);
+
+<span class="kw">let</span> results = retriever.search(<span class="str">"systems programming"</span>, <span class="num">3</span>);</code></pre>
+                </div>
+
+                <h4>BM25 Parameters</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Parameter</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>k1</td><td>1.5</td><td>Term frequency saturation</td></tr>
+                        <tr><td>b</td><td>0.75</td><td>Document length normalization</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Hybrid -->
+            <section class="module" id="hybrid" style="animation-delay: 0.58s;">
+                <div class="module-header">
+                    <span class="module-icon">⚡</span>
+                    <h2>Hybrid Retrieval</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Hybrid Retrieval</strong> combines BM25 keyword matching + Vector semantic understanding via RRF fusion algorithm.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Keyword precision + semantic understanding, higher recall rate.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>BM25 Search</h3><p>Keyword exact matching</p></div>
+                    <div class="feature-card"><h3>Vector Search</h3><p>Semantic similarity matching</p></div>
+                    <div class="feature-card"><h3>RRF Fusion</h3><p>Rank-based fusion algorithm</p></div>
+                    <div class="feature-card"><h3>Unified Index</h3><p>Add once, build dual index</p></div>
+                </div>
+
+                <h3>RRF Fusion Formula</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">RRF (Reciprocal Rank Fusion)</div>
+                    <p style="font-family: var(--font-code);">RRF_score(d) = Σ 1/(k + rank(d))</p>
+                    <p>k typically 60, rank(d) is document rank.</p>
+                </div>
+
+                <h3>UnifiedHybridIndex Usage</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{UnifiedHybridIndex, HybridIndexConfig};
+
+<span class="kw">let</span> config = HybridIndexConfig::new()
+    .with_chunk_size(<span class="num">500</span>)
+    .with_top_k(<span class="num">10</span>, <span class="num">10</span>);
+
+<span class="kw">let</span> index = UnifiedHybridIndex::with_config(embeddings, <span class="num">1536</span>, config);
+
+<span class="comment">// Auto-build BM25 + Vector dual index</span>
+index.add_document(Document::new(<span class="str">"Document content"</span>)).await?;
+
+<span class="comment">// Hybrid retrieval</span>
+<span class="kw">let</span> results = index.retrieve(<span class="str">"query"</span>, <span class="num">5</span>).await?;</code></pre>
+                </div>
+
+                <h4>Retrieval Comparison</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Method</th><th>Matching</th><th>Recall</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>BM25</td><td>Keyword exact</td><td class="medium">Medium</td><td>Technical term search</td></tr>
+                        <tr><td>Vector</td><td>Semantic similar</td><td class="medium">Medium</td><td>Intent understanding</td></tr>
+                        <tr class="highlight-row"><td>Hybrid</td><td>Dual fusion</td><td class="low">High</td><td>General search</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Three Retrieval Modes Architecture</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Key Difference</div>
+                    <p>LangChainRust provides three retrieval modes with different <strong>content storage</strong> and <strong>lookup strategies</strong>:</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Mode</th><th>Content Storage</th><th>Lookup</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>SimpleVector</strong></td>
+                            <td>Content stored directly in InMemoryVectorStore</td>
+                            <td class="low">❌ No lookup</td>
+                            <td>Vector-only, simple & fast</td>
+                        </tr>
+                        <tr>
+                            <td><strong>BM25 Only</strong></td>
+                            <td>Content in ChunkedDocumentStore, BM25 stores term freq only</td>
+                            <td class="high">✅ Lookup</td>
+                            <td>Keyword-only retrieval</td>
+                        </tr>
+                        <tr class="highlight-row">
+                            <td><strong>Hybrid</strong></td>
+                            <td>BM25 + Vector share ChunkedDocumentStore</td>
+                            <td class="high">✅ Lookup</td>
+                            <td>Hybrid search, content shared</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ Benefits of Lookup Design</div>
+                    <ul>
+                        <li><strong>Small Index</strong>: BM25/Vector store only statistics and embeddings, not content</li>
+                        <li><strong>Content Shared</strong>: BM25 and Vector share the same content, avoid duplication</li>
+                        <li><strong>AutoMerging</strong>: Parent-Child structure, auto-merge when matched</li>
+                    </ul>
+                </div>
+
+                <h3>Storage Backend Options</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">ChunkedDocumentStoreTrait</div>
+                    <p>Unified storage interface supporting multiple backends:</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Backend</th><th>Features</th><th>Use Case</th><th>Enable</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>InMemory</strong></td>
+                            <td>In-memory, zero dependency</td>
+                            <td>Dev/test, small scale</td>
+                            <td>Default</td>
+                        </tr>
+                        <tr class="highlight-row">
+                            <td><strong>MongoDB</strong></td>
+                            <td>Persistent, sharding, production-ready</td>
+                            <td>Large-scale production</td>
+                            <td>feature = mongodb-persistence</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Redis</strong></td>
+                            <td>Ultra-fast, cache layer</td>
+                            <td>High-frequency cache</td>
+                            <td>Reserved</td>
+                        </tr>
+                        <tr>
+                            <td><strong>SQLite</strong></td>
+                            <td>Lightweight, local file</td>
+                            <td>Local/embedded</td>
+                            <td>Reserved</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4 style="margin-top: 16px;">MongoDB Usage</h4>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig};
+
+<span class="kw">let</span> config = MongoStoreConfig::new(
+    <span class="str">"mongodb://localhost:27017"</span>,
+    <span class="str">"langchainrust_db"</span>
+);
+
+<span class="kw">let</span> store = MongoChunkedDocumentStore::new(config).await?;
+store.create_indexes().await?;
+
+<span class="comment">// Same interface as InMemory</span>
+<span class="kw">let</span> (parent_id, chunks) = store.add_parent_document(doc, <span class="num">500</span>).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
             <!-- Prompts -->
             <section class="module" id="prompts" style="animation-delay: 0.6s;">
                 <div class="module-header">
@@ -942,6 +1174,367 @@ retriever.add_documents(chunks).await?;
                 <hr class="divider">
             </section>
 
+            <!-- LangGraph -->
+            <section class="module" id="langgraph" style="animation-delay: 0.75s;">
+                <div class="module-header">
+                    <span class="module-icon">📊</span>
+                    <h2>LangGraph</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>LangGraph</strong> is a state-graph workflow framework for building complex AI applications.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>StateGraph</h3><p>Shared state between nodes</p></div>
+                    <div class="feature-card"><h3>Conditional Edge</h3><p>Dynamic routing based on state</p></div>
+                    <div class="feature-card"><h3>Human-in-loop</h3><p>Pause for human approval</p></div>
+                    <div class="feature-card"><h3>Subgraph</h3><p>Nested graph modules</p></div>
+                </div>
+
+                <h3>Basic Usage</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::langgraph::{StateGraph, START, END};
+
+<span class="kw">let</span> graph = GraphBuilder::new()
+    .add_node(<span class="str">"analyze"</span>, |state| { Ok(()) })
+    .add_edge(START, <span class="str">"analyze"</span>)
+    .add_edge(<span class="str">"analyze"</span>, END)
+    .build();
+
+<span class="kw">let</span> result = graph.invoke(state).await?;</code></pre>
+                </div>
+
+                <h3>Parallel Execution</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Fan-Out / Fan-In</div>
+                    <p>Execute multiple independent nodes in parallel:</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// Add parallel nodes</span>
+graph.add_node(<span class="str">"task_a"</span>, |state| { /* ... */ });
+graph.add_node(<span class="str">"task_b"</span>, |state| { /* ... */ });
+graph.add_node(<span class="str">"task_c"</span>, |state| { /* ... */ });
+
+<span class="comment">// Fan-Out</span>
+graph.add_edge(START, <span class="str">"dispatch"</span>);
+graph.add_edge(<span class="str">"dispatch"</span>, <span class="str">"task_a"</span>);
+graph.add_edge(<span class="str">"dispatch"</span>, <span class="str">"task_b"</span>);
+graph.add_edge(<span class="str">"dispatch"</span>, <span class="str">"task_c"</span>);
+
+<span class="comment">// Fan-In</span>
+graph.add_edge(<span class="str">"task_a"</span>, <span class="str">"merge"</span>);
+graph.add_edge(<span class="str">"task_b"</span>, <span class="str">"merge"</span>);
+graph.add_edge(<span class="str">"task_c"</span>, <span class="str">"merge"</span>);
+graph.add_edge(<span class="str">"merge"</span>, END);
+
+let compiled = graph.compile().with_parallel_execution(true);
+let result = compiled.invoke_parallel(state).await?;</code></pre>
+                </div>
+
+                <h3>Checkpointer (Persistence)</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">State Persistence</div>
+                    <p>Save and restore execution state for session persistence:</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::langgraph::{MemoryCheckpointer, FileCheckpointer};
+
+<span class="comment">// Memory checkpointer</span>
+let checkpointer = MemoryCheckpointer::new();
+
+<span class="comment">// File checkpointer</span>
+let file_checkpointer = FileCheckpointer::new(<span class="str">"./checkpoints/"</span>);
+
+let compiled = graph.compile().with_checkpointer(checkpointer);
+
+<span class="comment">// Execute with thread_id</span>
+let thread_id = <span class="str">"conversation_123"</span>;
+let result = compiled.invoke_with_thread(state, thread_id).await?;
+
+<span class="comment">// Restore previous state</span>
+let previous = compiled.get_state(thread_id).await?;
+let resumed = compiled.invoke_with_thread(previous, thread_id).await?;</code></pre>
+                </div>
+
+                <h3>Visualization</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Three Output Formats</div>
+                    <p>ASCII (terminal), Mermaid (Markdown), JSON (programmatic):</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// ASCII (terminal)</span>
+println!(<span class="str">"{}"</span>, compiled.visualize_ascii());
+<span class="comment">// START → analyze → process → END</span>
+
+<span class="comment">// Mermaid (Markdown)</span>
+println!(<span class="str">"{}"</span>, compiled.visualize_mermaid());
+<span class="comment">// graph LR: START --> analyze --> process --> END</span>
+
+<span class="comment">// JSON</span>
+let json = compiled.visualize_json();
+<span class="comment">// {"nodes": [...], "edges": [...]}</span></code></pre>
+                </div>
+
+                <h3>Graph Validation</h3>
+
+                <div class="callout warning">
+                    <div class="callout-title">Auto-Detection</div>
+                    <p>Automatically detect common issues:</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// Auto validation on compile</span>
+let compiled = graph.compile();  <span class="comment">// throws validation error</span>
+
+<span class="comment">// Manual validation</span>
+graph.validate()?;
+
+<span class="comment">// Checks:</span>
+<span class="comment">// - Dead cycles: validate_cycles()</span>
+<span class="comment">// - Unreachable nodes: validate_unreachable_nodes()</span>
+<span class="comment">// - Duplicate edges: validate_duplicate_edges()</span></code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Task Planning -->
+            <section class="module" id="task-planning" style="animation-delay: 0.82s;">
+                <div class="module-header">
+                    <span class="module-icon">📋</span>
+                    <h2>Task Planning</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>TaskPlanner</strong> automatically decomposes complex tasks into subtasks, executes sequentially, then aggregates results.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Auto decompose complex tasks, multi-step execution with result aggregation.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Task Decomposition</h3><p>TaskPlanner analyzes and splits complex tasks</p></div>
+                    <div class="feature-card"><h3>Sequential Execution</h3><p>PlannedExecutor runs each subtask</p></div>
+                    <div class="feature-card"><h3>Result Aggregation</h3><p>Summarize all subtask results</p></div>
+                    <div class="feature-card"><h3>Dependency Control</h3><p>Subtasks can depend on previous results</p></div>
+                </div>
+
+                <h3>TaskPlanner Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::agent::TaskPlanner;
+
+let planner = TaskPlanner::new(llm)
+    .with_max_sub_tasks(<span class="num">5</span>)
+    .with_verbose(<span class="kw">true</span>);
+
+let plan = planner.plan(<span class="str">"Analyze code, write tests, run tests"</span>).await?;
+
+<span class="kw">for</span> task <span class="kw">in</span> &plan.sub_tasks {
+    println!(<span class="str">"[{}] {}"</span>, task.id, task.description);
+}</code></pre>
+                </div>
+
+                <h3>PlannedExecutor</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Auto Workflow</div>
+                    <p>Plan → Execute → Aggregate automatically:</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::agent::{PlannedExecutor, ReActAgent};
+
+let executor = PlannedExecutor::new(llm, agent, tools)
+    .with_max_sub_tasks(<span class="num">3</span>)
+    .with_max_iterations(<span class="num">2</span>)
+    .with_verbose(<span class="kw">true</span>);
+
+let result = executor
+    .run(<span class="str">"Research async best practices, write code, explain"</span>)
+    .await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- RAG Agent -->
+            <section class="module" id="retrieval-agent" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🔄</span>
+                    <h2>Retrieval + Agent (RAG)</h2>
+                </div>
+
+                <div class="card">
+                    <p>Combine <strong>vector retrieval</strong> with <strong>Agent</strong> to implement RAG functionality.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Retriever provides context, Agent answers based on context.</p>
+                </div>
+
+                <h3>with_retriever Usage</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::retrieval::{Document, SimilarityRetriever};
+<span class="kw">use</span> langchainrust::agent::ReActAgent;
+
+<span class="comment">// 1. Prepare documents</span>
+let docs = vec![
+    Document::new(<span class="str">"Rust is a systems language..."</span>),
+];
+
+<span class="comment">// 2. Create retriever</span>
+let retriever = SimilarityRetriever::new(store, embedding);
+retriever.add_documents(chunks).await?;
+
+<span class="comment">// 3. Create RAG Agent</span>
+let agent = ReActAgent::with_retriever(
+    llm,
+    tools,
+    memory,
+    retriever,
+    <span class="num">3</span>  <span class="comment">// top_k</span>
+);
+
+<span class="comment">// 4. Execute</span>
+let result = executor.run_with_details(<span class="str">"What is Rust?"</span>).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Testing -->
+            <section class="module" id="testing" style="animation-delay: 0.86s;">
+                <div class="module-header">
+                    <span class="module-icon">🧪</span>
+                    <h2>Testing</h2>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">bash</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment"># Run all tests</span>
+cargo test
+
+<span class="comment"># Run unit tests</span>
+cargo test --lib
+
+<span class="comment"># Run Function Calling Agent tests</span>
+cargo test --test function_calling_agent -- --include-ignored
+
+<span class="comment"># Run ReAct Agent tests</span>
+cargo test --test integration_agent_react -- --include-ignored</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Module Structure -->
+            <section class="module" id="module-structure" style="animation-delay: 0.88s;">
+                <div class="module-header">
+                    <span class="module-icon">📦</span>
+                    <h2>Module Structure</h2>
+                </div>
+
+                <div class="code-block">
+                    <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
+src/
+├── core/                # Core abstractions
+│   ├── language_models/ # Base LLM traits
+│   ├── runnables/       # Runnable trait
+│   └── tools/           # Tool trait + ToolDefinition
+├── language_models/     # LLM implementations
+│   └── openai/          # OpenAI client (bind_tools)
+├── agents/              # Agent framework
+│   ├── react/           # ReActAgent (text parsing)
+│   └── function_calling/ # FunctionCallingAgent
+├── prompts/             # Prompt templates
+├── memory/              # Memory management
+├── chains/              # Chain operations
+├── retrieval/           # RAG components
+├── embeddings/          # Text embeddings
+├── vector_stores/       # Vector storage
+├── tools/               # Built-in tools
+└── schema/              # Data structures</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- API Reference -->
+            <section class="module" id="api-reference" style="animation-delay: 0.9s;">
+                <div class="module-header">
+                    <span class="module-icon">📖</span>
+                    <h2>API Reference</h2>
+                </div>
+
+                <h3>Agent Constructors</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Agent</th><th>Method</th><th>Note</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>FunctionCallingAgent</td><td><code>new(llm, tools, prompt)</code></td><td>Recommended, native FC</td></tr>
+                        <tr><td>ReActAgent</td><td><code>new(llm, tools, memory)</code></td><td>Legacy models</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Function Calling API</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Method</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>bind_tools(vec![ToolDef])</code></td><td>Attach tools to LLM</td></tr>
+                        <tr><td><code>to_tool_definition(&tool)</code></td><td>Convert BaseTool to ToolDef</td></tr>
+                        <tr><td><code>ToolDefinition::from_type()</code></td><td>Auto-generate JSON Schema</td></tr>
+                        <tr><td><code>ToolCall::parse_arguments()</code></td><td>Parse tool arguments</td></tr>
+                    </tbody>
+                </table>
+
+                <hr class="divider">
+            </section>
+
             <!-- Best Practices -->
             <section class="module" id="best-practices" style="animation-delay: 0.8s;">
                 <div class="module-header">
@@ -979,11 +1572,10 @@ retriever.add_documents(chunks).await?;
 
             <footer class="page-footer">
                 <div class="footer-links">
-                    <a href="USAGE.html">Usage Guide</a>
-                    <a href="features_zh.html">中文</a>
+                    <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.1.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.2.6 | MIT License</p>
             </footer>
         </div>
     </main>
