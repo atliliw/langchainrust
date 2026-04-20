@@ -22,6 +22,7 @@
             --border: #e2e8f0;
             --code-bg: #1e293a;
             --code-text: #e2e8f0;
+            --sidebar-width: 240px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -32,44 +33,65 @@
             background: var(--bg);
             color: var(--text);
             line-height: 1.6;
+            display: flex;
         }
 
-        /* 导航 */
-        .top-nav {
+        /* 左侧导航 */
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
             background: var(--bg-dark);
             color: white;
-            padding: 16px 32px;
-            position: sticky;
-            top: 0;
+            overflow-y: auto;
             z-index: 100;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
         }
 
-        .top-nav h1 {
-            font-size: 20px;
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-header h1 {
+            font-size: 18px;
             font-weight: 700;
+            margin-bottom: 4px;
         }
 
-        .top-nav .version {
+        .sidebar-header .version {
             color: var(--secondary);
-            font-size: 14px;
+            font-size: 12px;
+        }
+
+        .nav-section {
+            padding: 12px 16px 4px;
+        }
+
+        .nav-section-title {
+            font-size: 11px;
+            color: var(--secondary);
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
         }
 
         .nav-links {
             display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
+            flex-direction: column;
+            gap: 2px;
         }
 
         .nav-links a {
             color: rgba(255,255,255,0.7);
             text-decoration: none;
-            padding: 6px 12px;
+            padding: 8px 16px;
             border-radius: 6px;
             font-size: 13px;
             transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .nav-links a:hover {
@@ -77,22 +99,53 @@
             color: white;
         }
 
+        .nav-links a.active {
+            background: rgba(37, 99, 235, 0.2);
+            color: var(--primary-light);
+        }
+
         .nav-links a.new-feature {
-            background: rgba(16, 185, 129, 0.2);
-            border: 1px solid #10b981;
             color: #10b981;
         }
 
         .nav-links a.new-feature:hover {
-            background: rgba(16, 185, 129, 0.3);
             color: #34d399;
+        }
+
+        .nav-links .nav-icon {
+            font-size: 16px;
+        }
+
+        /* 语言切换 */
+        .lang-switch {
+            margin-top: 20px;
+            padding: 12px 16px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .lang-switch a {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .lang-switch a.active {
+            background: var(--primary);
+            color: white;
         }
 
         /* 主内容 */
         .main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            min-height: 100vh;
+            padding: 48px 32px;
+        }
+
+        .content-wrapper {
             max-width: 900px;
             margin: 0 auto;
-            padding: 48px 32px;
         }
 
         .page-header {
@@ -385,96 +438,131 @@
             margin: 80px 0;
         }
 
-        /* 快速导航 */
-        .quick-nav {
-            background: var(--card-bg);
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            padding: 24px;
-            margin-bottom: 48px;
+        /* 响应式 */
+        @media (max-width: 900px) {
+            .sidebar {
+                width: 200px;
+            }
+            .main-content {
+                margin-left: 200px;
+                padding: 32px 16px;
+            }
+            .page-header h1 { font-size: 28px; }
+            .module-title { font-size: 24px; }
+            .feature-grid { grid-template-columns: repeat(2, 1fr); }
         }
 
-        .quick-nav h3 { margin-bottom: 16px; }
-
-        .quick-nav-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
+        @media (max-width: 600px) {
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 24px 16px;
+            }
+            .page-header h1 { font-size: 24px; }
+            .module-title { font-size: 20px; }
         }
 
-        .quick-nav-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 12px;
-            background: var(--bg);
+        /* 移动端菜单按钮 */
+        .menu-toggle {
+            display: none;
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            z-index: 200;
+            background: var(--bg-dark);
+            color: white;
+            border: none;
+            padding: 10px 12px;
             border-radius: 6px;
-            text-decoration: none;
-            color: var(--text);
-            transition: all 0.2s;
+            cursor: pointer;
+            font-size: 18px;
         }
 
-        .quick-nav-item:hover {
-            background: var(--primary-light);
-            color: var(--primary);
+        @media (max-width: 600px) {
+            .menu-toggle { display: block; }
         }
-
-        .quick-nav-item span:first-child { font-size: 20px; }
     </style>
 </head>
 <body>
-    <nav class="top-nav">
-        <div>
-            <h1>LangChainRust 功能文档</h1>
-            <span class="version">v0.2.6</span>
+    <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h1>LangChainRust</h1>
+            <span class="version">v0.2.6 功能文档</span>
         </div>
-        <div class="nav-links">
-            <a href="#agents">Agents</a>
-            <a href="#chains">Chains</a>
-            <a href="#memory">Memory</a>
-            <a href="#tools">Tools</a>
-            <a href="#rag">RAG</a>
-            <a href="#bm25" class="new-feature">BM25</a>
-            <a href="#hybrid" class="new-feature">Hybrid</a>
-            <a href="#langgraph">LangGraph</a>
-            <a href="#task-planning" class="new-feature">任务规划</a>
-            <a href="#retrieval-agent">RAG Agent</a>
-            <a href="#prompts">Prompts</a>
-            <a href="#llm">LLM</a>
-            <a href="#testing">测试</a>
-            <a href="#api-reference">API速查</a>
+
+        <div class="nav-section">
+            <div class="nav-section-title">核心模块</div>
+            <div class="nav-links">
+                <a href="#agents"><span class="nav-icon">🤖</span>Agents</a>
+                <a href="#chains"><span class="nav-icon">🔗</span>Chains</a>
+                <a href="#memory"><span class="nav-icon">🧠</span>Memory</a>
+                <a href="#tools"><span class="nav-icon">🔧</span>Tools</a>
+            </div>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">检索增强</div>
+            <div class="nav-links">
+                <a href="#rag"><span class="nav-icon">📚</span>RAG</a>
+                <a href="#bm25" class="new-feature"><span class="nav-icon">🔍</span>BM25</a>
+                <a href="#hybrid" class="new-feature"><span class="nav-icon">⚡</span>Hybrid</a>
+                <a href="#retrieval-agent"><span class="nav-icon">🔄</span>RAG Agent</a>
+            </div>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">高级功能</div>
+            <div class="nav-links">
+                <a href="#langgraph"><span class="nav-icon">📊</span>LangGraph</a>
+                <a href="#task-planning" class="new-feature"><span class="nav-icon">📋</span>任务规划</a>
+            </div>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">基础组件</div>
+            <div class="nav-links">
+                <a href="#prompts"><span class="nav-icon">📝</span>Prompts</a>
+                <a href="#llm"><span class="nav-icon">💬</span>LLM</a>
+            </div>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">参考</div>
+            <div class="nav-links">
+                <a href="#testing"><span class="nav-icon">🧪</span>测试</a>
+                <a href="#module-structure"><span class="nav-icon">📦</span>模块结构</a>
+                <a href="#api-reference"><span class="nav-icon">📖</span>API速查</a>
+            </div>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">指南</div>
+            <div class="nav-links">
+                <a href="#best-practices"><span class="nav-icon">💡</span>最佳实践</a>
+            </div>
+        </div>
+
+        <div class="lang-switch">
+            <a href="features.html" class="active">中文</a>
+            <a href="features_en.html">English</a>
         </div>
     </nav>
 
     <main class="main-content">
-        <header class="page-header">
-            <h1>LangChainRust 功能文档</h1>
-            <p class="tagline">全面了解 LangChainRust 的各项功能模块</p>
-        </header>
+        <div class="content-wrapper">
+            <header class="page-header">
+                <h1>LangChainRust 功能文档</h1>
+                <p class="tagline">全面了解 LangChainRust 的各项功能模块</p>
+            </header>
 
-        <div class="quick-nav">
-            <h3>⚡ 快速导航</h3>
-            <div class="quick-nav-grid">
-                <a href="#agents" class="quick-nav-item"><span>🤖</span><span>Agents</span></a>
-                <a href="#chains" class="quick-nav-item"><span>🔗</span><span>Chains</span></a>
-                <a href="#memory" class="quick-nav-item"><span>🧠</span><span>Memory</span></a>
-                <a href="#tools" class="quick-nav-item"><span>🔧</span><span>Tools</span></a>
-                <a href="#rag" class="quick-nav-item"><span>📚</span><span>RAG</span></a>
-                <a href="#bm25" class="quick-nav-item"><span>🔍</span><span>BM25</span></a>
-                <a href="#hybrid" class="quick-nav-item"><span>⚡</span><span>Hybrid</span></a>
-                <a href="#langgraph" class="quick-nav-item"><span>📊</span><span>LangGraph</span></a>
-                <a href="#task-planning" class="quick-nav-item"><span>📋</span><span>任务规划</span></a>
-                <a href="#retrieval-agent" class="quick-nav-item"><span>🔄</span><span>RAG Agent</span></a>
-                <a href="#prompts" class="quick-nav-item"><span>📝</span><span>Prompts</span></a>
-                <a href="#llm" class="quick-nav-item"><span>💬</span><span>LLM</span></a>
-                <a href="#testing" class="quick-nav-item"><span>🧪</span><span>测试</span></a>
-                <a href="#module-structure" class="quick-nav-item"><span>📦</span><span>模块结构</span></a>
-                <a href="#api-reference" class="quick-nav-item"><span>📖</span><span>API速查</span></a>
-                <a href="#best-practices" class="quick-nav-item"><span>💡</span><span>最佳实践</span></a>
-            </div>
-        </div>
-
-        <!-- ========== Agents ========== -->
+            <!-- ========== Agents ========== -->
         <section id="agents" class="module">
             <div class="module-header">
                 <div class="module-icon">🤖</div>
@@ -1984,5 +2072,40 @@ src/
 
                 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
                 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-rust.min.js"></script>
+                <script>
+                    function toggleSidebar() {
+                        document.getElementById('sidebar').classList.toggle('open');
+                    }
+
+                    // 点击导航链接后关闭侧边栏（移动端）
+                    document.querySelectorAll('.sidebar .nav-links a').forEach(link => {
+                        link.addEventListener('click', () => {
+                            if (window.innerWidth <= 600) {
+                                document.getElementById('sidebar').classList.remove('open');
+                            }
+                        });
+                    });
+
+                    // 滚动时高亮当前章节
+                    const sections = document.querySelectorAll('.module');
+                    const navLinks = document.querySelectorAll('.sidebar .nav-links a');
+
+                    window.addEventListener('scroll', () => {
+                        let current = '';
+                        sections.forEach(section => {
+                            const sectionTop = section.offsetTop;
+                            if (window.scrollY >= sectionTop - 100) {
+                                current = section.getAttribute('id');
+                            }
+                        });
+
+                        navLinks.forEach(link => {
+                            link.classList.remove('active');
+                            if (link.getAttribute('href') === '#' + current) {
+                                link.classList.add('active');
+                            }
+                        });
+                    });
+                </script>
             </body>
             </html>

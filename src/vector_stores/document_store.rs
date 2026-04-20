@@ -160,12 +160,11 @@ pub trait ChunkedDocumentStoreTrait: Send + Sync {
     async fn clear(&self) -> Result<(), VectorStoreError>;
     
     /// 持久化存储（可选实现）
-    async fn save(&self, path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
+async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
         Err(VectorStoreError::StorageError("save not implemented for this store".to_string()))
     }
     
-    /// 从持久化加载（可选实现）
-    async fn load(path: impl AsRef<Path> + Send) -> Result<Self, VectorStoreError> where Self: Sized {
+    async fn load(_path: impl AsRef<Path> + Send) -> Result<Self, VectorStoreError> where Self: Sized {
         Err(VectorStoreError::StorageError("load not implemented for this store".to_string()))
     }
 }

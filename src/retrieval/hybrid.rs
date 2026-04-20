@@ -49,7 +49,7 @@ pub fn reciprocal_rank_fusion(
 
         rrf_scores
             .entry(doc_id.clone())
-            .and_modify(|(score, existing_doc)| {
+            .and_modify(|(score, _existing_doc)| {
                 *score += rrf_contribution;
             })
             .or_insert((rrf_contribution, doc.clone()));
@@ -104,7 +104,7 @@ pub fn reciprocal_rank_fusion_with_scores(
 
         rrf_scores
             .entry(doc_id.clone())
-            .and_modify(|(score, _, bm25, vector)| {
+            .and_modify(|(score, _, bm25, _vector)| {
                 *score += rrf_contribution;
                 *bm25 = Some(*bm25_score);
             })
@@ -118,7 +118,7 @@ pub fn reciprocal_rank_fusion_with_scores(
 
         rrf_scores
             .entry(doc_id.clone())
-            .and_modify(|(score, _, bm25, vector)| {
+            .and_modify(|(score, _, _bm25, vector)| {
                 *score += rrf_contribution;
                 *vector = Some(*vector_score);
             })
@@ -145,6 +145,7 @@ pub fn reciprocal_rank_fusion_with_scores(
 }
 
 /// 混合检索器
+#[allow(dead_code)]
 pub struct HybridRetriever {
     bm25_k: usize,
     vector_k: usize,

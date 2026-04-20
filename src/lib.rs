@@ -59,10 +59,13 @@ pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
-pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, DocumentLoader, LoaderError};
+pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, DocumentLoader, LoaderError};
 pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
 pub use retrieval::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion, ChunkedHybridRetriever};
 pub use retrieval::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
+pub use retrieval::{MultiQueryRetriever, MultiQueryConfig, MultiQueryError, StaticQueryGenerator};
+pub use retrieval::{HyDERetriever, HyDEConfig, HyDEError};
+pub use retrieval::{Reranker, KeywordReranker, BM25Reranker, RerankingExecutor, RerankingConfig, RerankingError};
 
 // Prompts
 pub use prompts::{PromptTemplate, ChatPromptTemplate};

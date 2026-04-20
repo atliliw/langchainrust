@@ -5,7 +5,7 @@
 
 use crate::retrieval::bm25::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedSearchResult};
 use crate::retrieval::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
-use crate::vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait, DocumentStore};
+use crate::vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait};
 use crate::vector_stores::{Document, VectorStoreError};
 use crate::embeddings::Embeddings;
 use std::sync::Arc;
@@ -83,6 +83,7 @@ pub struct UnifiedHybridIndex {
     document_store: Arc<ChunkedDocumentStore>,
     bm25_retriever: Arc<std::sync::Mutex<ChunkedBM25Retriever>>,
     embeddings: Arc<dyn Embeddings>,
+    #[allow(dead_code)]
     vector_size: usize,
     pub config: HybridIndexConfig,
     vector_index: Arc<RwLock<Vec<VectorEntry>>>,
@@ -285,6 +286,7 @@ impl UnifiedHybridIndex {
         Ok(hybrid_results)
     }
 
+    #[allow(dead_code)]
     fn bm25_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
         let mut retriever = self.bm25_retriever.lock().unwrap();
         let results = retriever.search(query, self.config.bm25_k);
@@ -297,6 +299,7 @@ impl UnifiedHybridIndex {
         Ok(docs)
     }
 
+    #[allow(dead_code)]
     fn bm25_search_with_scores(&self, query: &str) -> Result<Vec<(Document, f32)>, VectorStoreError> {
         let mut retriever = self.bm25_retriever.lock().unwrap();
         let results = retriever.search(query, self.config.bm25_k);

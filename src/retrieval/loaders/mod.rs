@@ -1,13 +1,19 @@
 // src/retrieval/loaders/mod.rs
 //! 文档加载器实现
 //!
-//! 提供从不同格式文件加载文档的功能，包括 PDF、CSV 等。
+//! 提供从不同格式文件加载文档的功能，包括 PDF、CSV、Text、JSON、Markdown 等。
 
 mod pdf;
 mod csv;
+mod text;
+mod json;
+mod markdown;
 
 pub use pdf::PDFLoader;
 pub use csv::CSVLoader;
+pub use text::TextLoader;
+pub use json::JSONLoader;
+pub use markdown::MarkdownLoader;
 
 use crate::vector_stores::Document;
 use async_trait::async_trait;
@@ -25,6 +31,9 @@ pub enum LoaderError {
     /// PDF 解析错误
     PdfError(String),
     
+    /// JSON 解析错误
+    JsonError(String),
+    
     /// 未知错误
     Other(String),
 }
@@ -35,6 +44,7 @@ impl std::fmt::Display for LoaderError {
             LoaderError::IoError(e) => write!(f, "IO 错误: {}", e),
             LoaderError::CsvError(msg) => write!(f, "CSV 解析错误: {}", msg),
             LoaderError::PdfError(msg) => write!(f, "PDF 解析错误: {}", msg),
+            LoaderError::JsonError(msg) => write!(f, "JSON 解析错误: {}", msg),
             LoaderError::Other(msg) => write!(f, "未知错误: {}", msg),
         }
     }
@@ -48,8 +58,6 @@ impl From<std::io::Error> for LoaderError {
     }
 }
 
-// 为了绕过编译错误，我们从 CSVLoader 内部处理错误
-// 仅实现 PDF 的 From 转换
 impl From<pdf_extract::Error> for LoaderError {
     fn from(err: pdf_extract::Error) -> Self {
         LoaderError::PdfError(err.to_string())

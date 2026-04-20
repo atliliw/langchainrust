@@ -281,3 +281,36 @@ path = "tests/bm25/hybrid_rag.rs"
 [[test]]
 name = "integration_bm25_real_docs"
 path = "tests/integration/bm25_real_docs.rs"
+
+# ============================================================================
+# Document Loaders 测试
+# ============================================================================
+[[test]]
+name = "unit_loaders_text"
+path = "tests/loaders/text_loader_test.rs"
+
+[[test]]
+name = "unit_loaders_json"
+path = "tests/loaders/json_loader_test.rs"
+
+[[test]]
+name = "unit_loaders_markdown"
+path = "tests/loaders/markdown_loader_test.rs"
+
+# ============================================================================
+# MultiQuery Retriever 测试
+# ============================================================================
+[[test]]
+name = "unit_multi_query"
+path = "tests/multi_query/multi_query_test.rs"
+
+# ============================================================================
+# HyDE & Reranking 测试
+# ============================================================================
+[[test]]
+name = "unit_hyde"
+path = "tests/hyde_reranking/hyde_test.rs"
+
+[[test]]
+name = "unit_reranking"
+path = "tests/hyde_reranking/reranking_test.rs"
