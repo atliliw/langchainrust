@@ -40,6 +40,20 @@
   - HybridRetriever 使用
   - UnifiedHybridIndex（统一混合索引）
   - 三种检索模式架构对比
+- [Document Loaders](#document-loaders)
+  - TextLoader
+  - JSONLoader
+  - MarkdownLoader
+- [MultiQueryRetriever](#multiqueryretriever)
+  - 多查询检索原理
+  - StaticQueryGenerator
+- [HyDE Retriever](#hyde-retriever)
+  - 假设文档生成
+  - 工作流程
+- [Reranking](#reranking)
+  - KeywordReranker
+  - BM25Reranker
+  - RerankingExecutor
 - [配置与安全](#配置与安全)
 - [LangGraph](#langgraph)
   - StateGraph 基础用法
@@ -1113,6 +1127,238 @@ LangChainRust 提供三种检索模式，核心差异在于**内容存储位置*
 - **索引体积小**：BM25/向量索引只存统计信息和向量，不存内容
 - **内容共享**：BM25 和向量共用同一份内容，避免重复存储
 - **支持 AutoMerging**：Parent-Child 结构，匹配时自动合并
+
+---
+
+## Document Loaders
+
+文档加载器用于从不同格式文件加载内容到 Document 对象。
+
+### 支持的格式
+
+| Loader | 格式 | 特性 |
+|--------|------|------|
+| **TextLoader** | .txt | 支持按行分割 |
+| **JSONLoader** | .json | 支持指定 content_key |
+| **MarkdownLoader** | .md | 支持按标题级别分割 |
+| **PDFLoader** | .pdf | 提取 PDF 文本 |
+| **CSVLoader** | .csv | 每行作为一个文档 |
+
+### TextLoader
+
+```rust
+use langchainrust::{TextLoader, DocumentLoader};
+
+// 加载整个文件作为一个文档
+let loader = TextLoader::new("document.txt");
+let docs = loader.load().await?;
+
+// 按行分割
+let loader = TextLoader::new_with_line_split("document.txt");
+let docs = loader.load().await?;
+
+// 每个文档包含 line_number 元数据
+for doc in docs {
+    println!("行 {}: {}", doc.metadata.get("line_number"), doc.content);
+}
+```
+
+### JSONLoader
+
+```rust
+use langchainrust::{JSONLoader, DocumentLoader};
+
+// 加载 JSON 数组
+let loader = JSONLoader::new("data.json");
+let docs = loader.load().await?;
+
+// 指定内容字段
+let loader = JSONLoader::new_with_content_key("data.json", "content");
+let docs = loader.load().await?;
+
+// 保留原始 JSON
+let loader = JSONLoader::new("data.json")
+    .with_preserve_raw(true);
+let docs = loader.load().await?;
+```
+
+### MarkdownLoader
+
+```rust
+use langchainrust::{MarkdownLoader, DocumentLoader};
+
+// 加载整个文件
+let loader = MarkdownLoader::new("guide.md");
+let docs = loader.load().await?;
+
+// 按一级标题分割
+let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
+let docs = loader.load().await?;
+
+// 每个文档包含 heading 元数据
+for doc in docs {
+    println!("标题: {}", doc.metadata.get("heading"));
+}
+```
+
+---
+
+## MultiQueryRetriever
+
+多查询检索器，使用 LLM 生成多个查询变体，提高检索召回率。
+
+### 工作原理
+
+```
+用户查询 → LLM 生成 N 个变体 → 分别检索 → 合并去重 → 返回结果
+
+例如：
+用户问："数据库超时怎么处理？"
+
+LLM 生成变体：
+- "数据库连接失败怎么解决"
+- "数据库响应慢的排查方法"
+- "MySQL PostgreSQL 连接问题"
+```
+
+### 使用方法
+
+```rust
+use langchainrust::{MultiQueryRetriever, SimilarityRetriever, InMemoryVectorStore, MockEmbeddings, OpenAIChat};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(config);
+let retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
+
+let multi_query = MultiQueryRetriever::new(llm, retriever)
+    .with_num_queries(3)        // 生成 3 个变体
+    .with_k_per_query(5)        // 每个查询返回 5 个文档
+    .with_final_k(10);          // 最终返回 10 个文档
+
+let docs = multi_query.retrieve_multi("数据库超时").await?;
+```
+
+### StaticQueryGenerator（不依赖 LLM）
+
+```rust
+use langchainrust::StaticQueryGenerator;
+use std::collections::HashMap;
+
+let synonyms: HashMap<String, Vec<String>> = HashMap::from([
+    ("数据库".to_string(), vec!["DB".to_string(), "存储".to_string()),
+]);
+
+let generator = StaticQueryGenerator::new()
+    .with_synonym_expansion(synonyms)
+    .with_prefix_expansion(vec!["如何".to_string(), "怎么".to_string()]);
+
+let queries = generator.generate("数据库连接失败");
+// 生成: ["DB连接失败", "存储连接失败", "如何 数据库连接失败", "怎么 数据库连接失败"]
+```
+
+---
+
+## HyDE Retriever
+
+**HyDE (Hypothetical Document Embedding)** 使用 LLM 生成假设文档，然后用假设文档检索真实文档。
+
+### 工作原理
+
+```
+用户查询 → LLM 生成假设文档 → 用假设文档检索 → 返回真实文档
+
+例如：
+用户问："Rust 怎么处理并发？"
+
+HyDE 生成假设文档：
+"Rust 处理并发主要通过 async/await 和 tokio 库..."
+（这是一个理想的答案）
+
+然后用这个假设文档去检索，找到真实的类似文档
+```
+
+### 使用方法
+
+```rust
+use langchainrust::{HyDERetriever, SimilarityRetriever, OpenAIChat, OpenAIEmbeddings};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(config);
+let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
+let base_retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
+
+let hyde = HyDERetriever::new(llm, embeddings, base_retriever)
+    .with_k(5)                      // 返回 5 个文档
+    .with_include_original_query(true); // 同时用原始查询检索
+
+let docs = hyde.retrieve("Rust 并发").await?;
+
+// 获取生成的假设文档（调试用）
+let hypothetical = hyde.get_hypothetical_document("Rust 并发").await?;
+println!("假设文档: {}", hypothetical);
+```
+
+---
+
+## Reranking
+
+重排序对检索结果重新评分，提升精确度。
+
+### 支持的 Reranker
+
+| Reranker | 说明 |
+|----------|------|
+| **KeywordReranker** | 基于关键词匹配重排序 |
+| **BM25Reranker** | BM25 公式重排序 |
+
+### KeywordReranker
+
+```rust
+use langchainrust::{KeywordReranker, RerankingExecutor, SearchResult};
+use std::collections::HashMap;
+
+let reranker = Box::new(KeywordReranker::new());
+
+// 可设置关键词权重
+let weights: HashMap<String, f32> = HashMap::from([
+    ("rust".to_string(), 2.0),
+]);
+let reranker = Box::new(KeywordReranker::new()
+    .with_keyword_weights(weights));
+
+let executor = RerankingExecutor::new(reranker)
+    .with_top_n(5)          // 返回前 5 个
+    .with_min_score(0.5);   // 最小分数阈值
+
+let reranked = executor.rerank("Rust programming", search_results)?;
+```
+
+### BM25Reranker
+
+```rust
+use langchainrust::{BM25Reranker, RerankingExecutor};
+
+let reranker = Box::new(BM25Reranker::new()
+    .with_params(2.0, 0.5));  // k1=2.0, b=0.5
+
+let executor = RerankingExecutor::new(reranker)
+    .with_top_n(5);
+
+let reranked = executor.rerank("Rust programming", search_results)?;
+```
+
+### 检索 + Reranking 流程
+
+```rust
+// 1. 检索
+let results = retriever.retrieve_with_scores("Rust 并发", 20).await?;
+
+// 2. Reranking
+let reranker = Box::new(KeywordReranker::new());
+let executor = RerankingExecutor::new(reranker).with_top_n(5);
+
+let final_results = executor.rerank("Rust 并发", results)?;
+```
 
 ---
 
