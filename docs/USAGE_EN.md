@@ -19,6 +19,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [MultiQueryRetriever](#multiqueryretriever)
 - [HyDE Retriever](#hyde-retriever)
 - [Reranking](#reranking)
+- [Callbacks](#callbacks)
 - [LangGraph](#langgraph)
 - [MongoDB Storage](#mongodb-storage)
 
@@ -754,6 +755,102 @@ let executor = RerankingExecutor::new(reranker).with_top_n(5);
 
 let reranked = executor.rerank("Rust programming", results)?;
 ```
+
+---
+
+## Callbacks
+
+Callback system for tracing, monitoring, and logging LLM application execution.
+
+### CallbackManager
+
+Manage multiple callback handlers:
+
+```rust
+use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
+use std::sync::Arc;
+
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(LangSmithHandler::from_env()?));
+```
+
+### StdOutHandler
+
+Output to stdout (for debugging):
+
+```rust
+use langchainrust::StdOutHandler;
+
+let handler = StdOutHandler::new();
+```
+
+### FileCallbackHandler
+
+Output to file:
+
+```rust
+use langchainrust::{FileCallbackHandler, LogFormat};
+
+// JSON format
+let handler = FileCallbackHandler::new("trace.json", LogFormat::Json);
+
+// Text format
+let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
+```
+
+### LangSmith Tracing
+
+LangSmith is LangChain's official tracing platform for monitoring and debugging LLM applications.
+
+#### Environment Variables
+
+```bash
+export LANGSMITH_API_KEY="ls_xxxxx"       # Required
+export LANGSMITH_PROJECT="my-project"      # Project name
+export LANGSMITH_TRACING="true"            # Enable tracing
+export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+```
+
+#### Use LangSmithHandler
+
+```rust
+use langchainrust::{CallbackManager, LangSmithHandler, StdOutHandler};
+use std::sync::Arc;
+
+// Auto-configure from environment
+let langsmith = LangSmithHandler::from_env()?;
+
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(langsmith));
+```
+
+#### Manual Configuration
+
+```rust
+use langchainrust::{LangSmithHandler, LangSmithConfig};
+
+let config = LangSmithConfig {
+    api_key: "ls_xxxxx".to_string(),
+    project: "my-project".to_string(),
+    endpoint: "https://api.smith.langchain.com".to_string(),
+    tracing: true,
+    workspace_id: None,
+};
+
+let handler = LangSmithHandler::new(config);
+```
+
+#### LangSmith Features
+
+| Feature | Description |
+|---------|-------------|
+| **Tracing** | Record every LLM call |
+| **Monitoring** | View token usage, latency |
+| **Debugging** | Compare different version outputs |
+| **Evaluation** | Test set evaluation |
+| **Sharing** | Share trace links |
 
 ---
 

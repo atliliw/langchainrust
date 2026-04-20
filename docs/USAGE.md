@@ -54,6 +54,10 @@
   - KeywordReranker
   - BM25Reranker
   - RerankingExecutor
+- [Callbacks](#callbacks)
+  - CallbackManager
+  - StdOutHandler
+  - LangSmith 追踪
 - [配置与安全](#配置与安全)
 - [LangGraph](#langgraph)
   - StateGraph 基础用法
@@ -1772,6 +1776,128 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![
 
 let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
 ```
+
+---
+
+## Callbacks
+
+回调系统用于追踪、监控和记录 LLM 应用执行过程。
+
+### CallbackManager
+
+管理多个回调处理器：
+
+```rust
+use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
+use std::sync::Arc;
+
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(LangSmithHandler::from_env()?));
+
+// 使用回调
+let llm = OpenAIChat::new(config);
+// llm.with_callbacks(Arc::new(manager));
+```
+
+### StdOutHandler
+
+输出到标准输出（调试用）：
+
+```rust
+use langchainrust::StdOutHandler;
+
+let handler = StdOutHandler::new();
+```
+
+### FileCallbackHandler
+
+输出到文件：
+
+```rust
+use langchainrust::{FileCallbackHandler, LogFormat};
+
+// JSON 格式
+let handler = FileCallbackHandler::new("trace.json", LogFormat::Json);
+
+// 纯文本格式
+let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
+```
+
+### LangSmith 追踪
+
+LangSmith 是 LangChain 官方的追踪平台，用于监控和调试 LLM 应用。
+
+#### 配置环境变量
+
+```bash
+export LANGSMITH_API_KEY="ls_xxxxx"       # API Key（必须）
+export LANGSMITH_PROJECT="my-project"      # 项目名称
+export LANGSMITH_TRACING="true"            # 启用追踪
+export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # API 端点
+```
+
+#### 使用 LangSmithHandler
+
+```rust
+use langchainrust::{CallbackManager, LangSmithHandler, StdOutHandler};
+use std::sync::Arc;
+
+// 从环境变量自动配置
+let langsmith = LangSmithHandler::from_env()?;
+
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(langsmith));
+```
+
+#### 手动配置
+
+```rust
+use langchainrust::{LangSmithHandler, LangSmithConfig};
+
+let config = LangSmithConfig {
+    api_key: "ls_xxxxx".to_string(),
+    project: "my-project".to_string(),
+    endpoint: "https://api.smith.langchain.com".to_string(),
+    tracing: true,
+    workspace_id: None,  // 组织账号需要
+};
+
+let handler = LangSmithHandler::new(config);
+```
+
+#### RunTree
+
+追踪执行树结构：
+
+```rust
+use langchainrust::{RunTree, RunType};
+
+let run = RunTree::new(
+    "my-run-id",
+    RunType::LLM,      // 类型：LLM/Chain/Agent/Tool
+    "GPT-4",           // 运行名称
+);
+
+// 更新运行状态
+run.update_status("completed");
+run.update_output("Response content...");
+
+// 发送到 LangSmith
+let client = LangSmithClient::new(config);
+client.create_run(&run).await?;
+```
+
+#### LangSmith 功能
+
+| 功能 | 说明 |
+|------|------|
+| **追踪** | 记录每次 LLM 调用 |
+| **监控** | 查看 Token 使用、延迟 |
+| **调试** | 对比不同版本输出 |
+| **评估** | 测试集评估、对比 |
+| **分享** | 分享追踪链接 |
 
 ---
 
