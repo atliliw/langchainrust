@@ -1,14 +1,14 @@
 [package]
 name = "langchainrust"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, RAG, BM25, Hybrid Retrieval, LangGraph, and native Function Calling."
+description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, RAG, BM25, Hybrid Retrieval, LangGraph, HyDE, Reranking, MultiQuery, and native Function Calling."
 repository = "https://github.com/atliliw/langchainrust"
 homepage = "https://github.com/atliliw/langchainrust"
 documentation = "https://docs.rs/langchainrust"
 readme = "README.md"
-keywords = ["llm", "langchain", "ai", "rust", "agent"]
+keywords = ["llm", "langchain", "ai", "rust", "agent", "rag", "hyde", "reranking", "bm25"]
 categories = ["algorithms", "asynchronous", "api-bindings", "science"]
 authors = ["atliliw"]
 exclude = [
