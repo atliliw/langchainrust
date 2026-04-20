@@ -15,6 +15,10 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [RAG](#rag)
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
+- [Document Loaders](#document-loaders)
+- [MultiQueryRetriever](#multiqueryretriever)
+- [HyDE Retriever](#hyde-retriever)
+- [Reranking](#reranking)
 - [LangGraph](#langgraph)
 - [MongoDB Storage](#mongodb-storage)
 
@@ -583,6 +587,172 @@ if execution.is_interrupted() {
     // Resume after approval
     let result = compiled.resume(execution).await?;
 }
+```
+
+---
+
+## Document Loaders
+
+Load documents from various file formats.
+
+### Supported Formats
+
+| Loader | Format | Features |
+|--------|--------|----------|
+| **TextLoader** | .txt | Line-by-line splitting |
+| **JSONLoader** | .json | Specify content_key |
+| **MarkdownLoader** | .md | Split by heading level |
+| **PDFLoader** | .pdf | Extract PDF text |
+| **CSVLoader** | .csv | Each row as document |
+
+### TextLoader
+
+```rust
+use langchainrust::{TextLoader, DocumentLoader};
+
+let loader = TextLoader::new("document.txt");
+let docs = loader.load().await?;
+
+// Split by lines
+let loader = TextLoader::new_with_line_split("document.txt");
+let docs = loader.load().await?;
+```
+
+### JSONLoader
+
+```rust
+use langchainrust::{JSONLoader, DocumentLoader};
+
+let loader = JSONLoader::new("data.json");
+let docs = loader.load().await?;
+
+// Specify content field
+let loader = JSONLoader::new_with_content_key("data.json", "content");
+let docs = loader.load().await?;
+```
+
+### MarkdownLoader
+
+```rust
+use langchainrust::{MarkdownLoader, DocumentLoader};
+
+// Split by heading level
+let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
+let docs = loader.load().await?;
+```
+
+---
+
+## MultiQueryRetriever
+
+Generate multiple query variations using LLM to improve retrieval recall.
+
+### How It Works
+
+```
+User query → LLM generates N variations → Retrieve each → Merge & dedupe → Return results
+```
+
+### Usage
+
+```rust
+use langchainrust::{MultiQueryRetriever, SimilarityRetriever, OpenAIChat};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(config);
+let retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
+
+let multi_query = MultiQueryRetriever::new(llm, retriever)
+    .with_num_queries(3)
+    .with_k_per_query(5)
+    .with_final_k(10);
+
+let docs = multi_query.retrieve_multi("database timeout").await?;
+```
+
+### StaticQueryGenerator (No LLM)
+
+```rust
+use langchainrust::StaticQueryGenerator;
+use std::collections::HashMap;
+
+let synonyms: HashMap<String, Vec<String>> = HashMap::from([
+    ("database".to_string(), vec!["DB".to_string(), "storage".to_string()),
+]);
+
+let generator = StaticQueryGenerator::new()
+    .with_synonym_expansion(synonyms);
+
+let queries = generator.generate("database connection failed");
+```
+
+---
+
+## HyDE Retriever
+
+**HyDE (Hypothetical Document Embedding)** generates a hypothetical document using LLM, then retrieves real documents similar to it.
+
+### How It Works
+
+```
+User query → LLM generates hypothetical document → Retrieve using hypothetical doc → Return real docs
+```
+
+### Usage
+
+```rust
+use langchainrust::{HyDERetriever, SimilarityRetriever, OpenAIChat, OpenAIEmbeddings};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(config);
+let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
+let base_retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
+
+let hyde = HyDERetriever::new(llm, embeddings, base_retriever)
+    .with_k(5)
+    .with_include_original_query(true);
+
+let docs = hyde.retrieve("Rust concurrency").await?;
+```
+
+---
+
+## Reranking
+
+Re-score retrieval results to improve precision.
+
+### Supported Rerankers
+
+| Reranker | Description |
+|----------|-------------|
+| **KeywordReranker** | Keyword matching reranking |
+| **BM25Reranker** | BM25 formula reranking |
+
+### KeywordReranker
+
+```rust
+use langchainrust::{KeywordReranker, RerankingExecutor};
+
+let reranker = Box::new(KeywordReranker::new());
+
+let executor = RerankingExecutor::new(reranker)
+    .with_top_n(5)
+    .with_min_score(0.5);
+
+let reranked = executor.rerank("Rust programming", search_results)?;
+```
+
+### BM25Reranker
+
+```rust
+use langchainrust::{BM25Reranker, RerankingExecutor};
+
+let reranker = Box::new(BM25Reranker::new()
+    .with_params(2.0, 0.5));
+
+let executor = RerankingExecutor::new(reranker).with_top_n(5);
+
+let reranked = executor.rerank("Rust programming", results)?;
 ```
 
 ---
