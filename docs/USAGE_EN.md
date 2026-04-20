@@ -628,6 +628,5 @@ cargo test
 
 | Resource | Content |
 |----------|---------|
-| [ROADMAP.md](../ROADMAP.md) | Development roadmap |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Contribution guide |
 | [API Docs](https://docs.rs/langchainrust) | Rust API reference |

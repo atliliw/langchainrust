@@ -26,7 +26,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Tools** | Calculator / DateTime / Math / URLFetch |
 | **MongoDB** | Persistent storage backend (feature: mongodb-persistence) |
 
-Full documentation: [中文文档](docs/USAGE.md) | [English](docs/USAGE_EN.md)
+Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [English](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)
 
 ---
 
@@ -124,7 +124,7 @@ for result in results {
 }
 ```
 
-More examples in [Usage Guide (中文)](docs/USAGE.md).
+More examples in [Usage Guide (中文)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md).
 
 ---
 
@@ -132,8 +132,8 @@ More examples in [Usage Guide (中文)](docs/USAGE.md).
 
 | Docs | Content |
 |------|---------|
-| [Usage Guide (中文)](docs/USAGE.md) | LLM、Agent、Memory、RAG、BM25、Hybrid、LangGraph 详细用法 |
-| [Usage Guide (English)](docs/USAGE_EN.md) | Detailed usage for all components |
+| [Usage Guide (中文)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | LLM、Agent、Memory、RAG、BM25、Hybrid、LangGraph 详细用法 |
+| [Usage Guide (English)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
 | [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
 
 ---
