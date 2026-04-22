@@ -1,5 +1,5 @@
 // src/prompts/mod.rs
-//! 提示词模板模块
+//! Prompt template module.
 
 mod chat_prompt_template;
 mod prompt_template;

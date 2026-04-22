@@ -1,15 +1,15 @@
 // src/memory/mod.rs
-//! Memory 系统
+//! Memory system for conversation history management.
 //!
-//! 提供对话记忆管理功能。
+//! Provides conversation memory management functionality.
 //!
-//! # 核心概念
+//! # Core Concepts
 //!
-//! - **BaseMemory**: Memory 的基础 trait
-//! - **ConversationBufferMemory**: 简单的对话缓冲区
-//! - **ConversationBufferWindowMemory**: 带窗口的对话缓冲区
+//! - **BaseMemory**: Base trait for memory.
+//! - **ConversationBufferMemory**: Simple conversation buffer.
+//! - **ConversationBufferWindowMemory**: Conversation buffer with window.
 //!
-//! # 示例
+//! # Example
 //!
 //! ```ignore
 //! use langchainrust::{ConversationBufferMemory, BaseMemory};
@@ -17,12 +17,12 @@
 //!
 //! let mut memory = ConversationBufferMemory::new();
 //!
-//! // 保存对话
-//! let inputs = HashMap::from([("input".to_string(), "你好".to_string())]);
-//! let outputs = HashMap::from([("output".to_string(), "你好！".to_string())]);
+//! // Save conversation
+//! let inputs = HashMap::from([("input".to_string(), "Hello".to_string())]);
+//! let outputs = HashMap::from([("output".to_string(), "Hi!".to_string())]);
 //! memory.save_context(&inputs, &outputs).await?;
 //!
-//! // 加载记忆
+//! // Load memory
 //! let vars = memory.load_memory_variables(&HashMap::new()).await?;
 //! println!("{:?}", vars.get("history"));
 //! ```

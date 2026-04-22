@@ -1,7 +1,7 @@
 // src/vector_stores/mod.rs
-//! 向量存储实现
+//! Vector store implementations.
 //!
-//! 提供文档向量存储和检索功能。
+//! Provides document vector storage and retrieval functionality.
 
 mod memory;
 mod provider;
@@ -30,50 +30,50 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 
-/// 向量存储错误类型
+/// Vector store error types.
 #[derive(Debug)]
 pub enum VectorStoreError {
-    /// 文档不存在
+    /// Document not found.
     DocumentNotFound(String),
     
-    /// 嵌入错误
+    /// Embedding error.
     EmbeddingError(String),
     
-    /// 存储错误
+    /// Storage error.
     StorageError(String),
     
-    /// 连接错误 (用于远程向量数据库)
+    /// Connection error (for remote vector databases).
     ConnectionError(String),
 }
 
 impl std::fmt::Display for VectorStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VectorStoreError::DocumentNotFound(id) => write!(f, "文档不存在: {}", id),
-            VectorStoreError::EmbeddingError(msg) => write!(f, "嵌入错误: {}", msg),
-            VectorStoreError::StorageError(msg) => write!(f, "存储错误: {}", msg),
-            VectorStoreError::ConnectionError(msg) => write!(f, "连接错误: {}", msg),
+            VectorStoreError::DocumentNotFound(id) => write!(f, "Document not found: {}", id),
+            VectorStoreError::EmbeddingError(msg) => write!(f, "Embedding error: {}", msg),
+            VectorStoreError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+            VectorStoreError::ConnectionError(msg) => write!(f, "Connection error: {}", msg),
         }
     }
 }
 
 impl Error for VectorStoreError {}
 
-/// 文档结构
+/// Document structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
-    /// 文档内容
+    /// Document content.
     pub content: String,
     
-    /// 文档元数据
+    /// Document metadata.
     pub metadata: HashMap<String, String>,
     
-    /// 文档 ID（可选）
+    /// Document ID (optional).
     pub id: Option<String>,
 }
 
 impl Document {
-    /// 创建新文档
+    /// Creates a new document.
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -82,88 +82,88 @@ impl Document {
         }
     }
     
-    /// 添加元数据
+    /// Adds metadata.
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
     
-    /// 设置 ID
+    /// Sets ID.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
     
-    /// 获取页面内容（别名）
+    /// Returns page content (alias).
     pub fn page_content(&self) -> &str {
         &self.content
     }
 }
 
-/// 向量文档（带嵌入向量）
+/// Vector document with embedding.
 #[derive(Debug, Clone)]
 pub struct VectorDocument {
-    /// 文档
+    /// Document.
     pub document: Document,
     
-    /// 嵌入向量
+    /// Embedding vector.
     pub embedding: Vec<f32>,
 }
 
-/// 检索结果
+/// Search result.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    /// 文档
+    /// Document.
     pub document: Document,
     
-    /// 相似度分数
+    /// Similarity score.
     pub score: f32,
 }
 
-/// 向量存储 trait
+/// Vector store trait.
 #[async_trait]
 pub trait VectorStore: Send + Sync {
-    /// 添加文档
+    /// Adds documents.
     ///
-    /// # 参数
-    /// * `documents` - 文档列表
-    /// * `embeddings` - 文档的嵌入向量列表
+    /// # Arguments
+    /// * `documents` - Document list.
+    /// * `embeddings` - Embedding vectors for documents.
     ///
-    /// # 返回
-    /// 文档 ID 列表
+    /// # Returns
+    /// Document ID list.
     async fn add_documents(
         &self,
         documents: Vec<Document>,
         embeddings: Vec<Vec<f32>>,
     ) -> Result<Vec<String>, VectorStoreError>;
     
-    /// 检索相似文档
+    /// Searches similar documents.
     ///
-    /// # 参数
-    /// * `query_embedding` - 查询向量
-    /// * `k` - 返回的文档数量
+    /// # Arguments
+    /// * `query_embedding` - Query vector.
+    /// * `k` - Number of documents to return.
     ///
-    /// # 返回
-    /// 相似文档列表（按相似度降序）
+    /// # Returns
+    /// Similar document list (sorted by similarity descending).
     async fn similarity_search(
         &self,
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError>;
     
-    /// 根据 ID 获取文档
+    /// Gets document by ID.
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError>;
     
-    /// 根据 ID 获取文档的向量
+    /// Gets document embedding by ID.
     async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError>;
     
-    /// 删除文档
+    /// Deletes document.
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError>;
     
-    /// 获取文档数量
+    /// Returns document count.
     async fn count(&self) -> usize;
     
-    /// 清空存储
+    /// Clears store.
     async fn clear(&self) -> Result<(), VectorStoreError>;
 }
 
