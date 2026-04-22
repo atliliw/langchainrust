@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.14] - 2025-04-23
+
+### Changed
+- **ChunkedDocumentStoreTrait**: 添加 blocking 方法支持
+  - `add_parent_document_blocking`: 同步添加父文档
+  - `get_parent_document_blocking`: 同步获取父文档
+  - `get_chunk_blocking`: 同步获取 chunk
+  - `blocking_get_chunks_for_parent`: 同步获取父文档的所有 chunks
+- **MongoChunkedDocumentStore**: 实现 blocking 方法（使用 tokio runtime 桥接）
+- **ChunkedBM25Retriever/ChunkedBM25Index**: 改为泛型结构，支持多种 DocumentStore 后端
+  - 默认类型参数：`ChunkedBM25Retriever<S: ChunkedDocumentStoreTrait = ChunkedDocumentStore>`
+  - 向后兼容：现有代码无需修改即可继续使用
+
+### Fixed
+- BM25 MongoDB 持久化支持：现在可以使用 `MongoChunkedDocumentStore` 作为 BM25 检索器的存储后端
+
 ## [0.2.13] - 2025-04-22
 
 ### Added
@@ -301,6 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.14]: https://github.com/atliliw/langchainrust/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/atliliw/langchainrust/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/atliliw/langchainrust/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/atliliw/langchainrust/compare/v0.2.6...v0.2.11

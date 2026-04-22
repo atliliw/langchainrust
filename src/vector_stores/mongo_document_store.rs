@@ -333,6 +333,34 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
         
         Ok(())
     }
+    
+    fn add_parent_document_blocking(
+        &self,
+        document: Document,
+        chunk_size: usize,
+    ) -> Result<(String, Vec<String>), VectorStoreError> {
+        tokio::runtime::Runtime::new()
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
+            .block_on(self.add_parent_document(document, chunk_size))
+    }
+    
+    fn get_parent_document_blocking(&self, parent_id: &str) -> Result<Option<Document>, VectorStoreError> {
+        tokio::runtime::Runtime::new()
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
+            .block_on(self.get_parent_document(parent_id))
+    }
+    
+    fn get_chunk_blocking(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
+        tokio::runtime::Runtime::new()
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
+            .block_on(self.get_chunk(chunk_id))
+    }
+    
+    fn blocking_get_chunks_for_parent(&self, parent_id: &str) -> Result<Vec<ChunkDocument>, VectorStoreError> {
+        tokio::runtime::Runtime::new()
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
+            .block_on(self.get_chunks_for_parent(parent_id))
+    }
 }
 
 #[cfg(test)]
@@ -359,7 +387,7 @@ mod tests {
     
     #[test]
     fn test_mongo_chunk_doc_conversion() {
-        let chunk = ChunkDocument::new("chunk_0", "parent_1", "content", 0);
+        let chunk = ChunkDocument::new("chunk_0".to_string(), "parent_1".to_string(), "content".to_string(), 0);
         let mongo: MongoChunkDoc = chunk.clone().into();
         assert_eq!(mongo.chunk_id, "chunk_0");
         assert_eq!(mongo.parent_id, "parent_1");

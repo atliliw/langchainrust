@@ -9,7 +9,7 @@
 
 use super::algorithm::{bm25_score, compute_idf, BM25Params};
 use super::tokenizer::Tokenizer;
-use crate::vector_stores::document_store::{ChunkDocument, ChunkedDocumentStore, ChunkedDocumentStoreTrait};
+use crate::vector_stores::document_store::{ChunkDocument, ChunkedDocumentStoreTrait};
 use crate::vector_stores::Document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -131,50 +131,27 @@ pub struct ChunkedIndexData {
 // ChunkedBM25Index 索引结构
 // ============================================================================
 
-pub struct ChunkedBM25Index {
-    /// 内容仓库引用（不再存储内容）
-    store: Arc<ChunkedDocumentStore>,
-
-    /// chunk_idx → chunk_id 映射
+pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore> {
+    store: Arc<S>,
     chunk_id_list: Vec<String>,
-
-    /// 每个chunk的词频（BM25计算需要）
     chunk_term_freqs: Vec<HashMap<String, usize>>,
-
-    /// 倒排索引: term → [(chunk_idx, 词频)]
     term_index: HashMap<String, Vec<(usize, usize)>>,
-
-    /// parent → chunk_idx列表
     parent_to_leaves: HashMap<String, Vec<usize>>,
-
-    /// 文档长度
     doc_lengths: Vec<usize>,
-
-    /// 平均文档长度
     avgdl: f64,
-
-    /// 文档总数
     n_docs: usize,
-
-    /// IDF缓存
     idf_cache: HashMap<String, f64>,
-
-    /// BM25参数
     params: BM25Params,
-
-    /// 分词器
     tokenizer: Tokenizer,
-
-    /// AutoMerging配置
     config: AutoMergingConfig,
 }
 
-impl ChunkedBM25Index {
-    pub fn new(store: Arc<ChunkedDocumentStore>) -> Self {
+impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
+    pub fn new(store: Arc<S>) -> Self {
         Self::with_config(store, AutoMergingConfig::default())
     }
 
-    pub fn with_config(store: Arc<ChunkedDocumentStore>, config: AutoMergingConfig) -> Self {
+    pub fn with_config(store: Arc<S>, config: AutoMergingConfig) -> Self {
         Self {
             store,
             chunk_id_list: Vec::new(),
@@ -191,7 +168,7 @@ impl ChunkedBM25Index {
         }
     }
 
-    pub fn with_params(store: Arc<ChunkedDocumentStore>, params: BM25Params) -> Self {
+    pub fn with_params(store: Arc<S>, params: BM25Params) -> Self {
         let mut index = Self::new(store);
         index.params = params;
         index
@@ -288,7 +265,7 @@ impl ChunkedBM25Index {
         self.n_docs
     }
 
-    pub fn store(&self) -> &Arc<ChunkedDocumentStore> {
+    pub fn store(&self) -> &Arc<S> {
         &self.store
     }
 
@@ -304,9 +281,9 @@ impl ChunkedBM25Index {
     }
 }
 
-impl Default for ChunkedBM25Index {
+impl Default for ChunkedBM25Index<crate::vector_stores::ChunkedDocumentStore> {
     fn default() -> Self {
-        Self::new(Arc::new(ChunkedDocumentStore::new()))
+        Self::new(Arc::new(crate::vector_stores::ChunkedDocumentStore::new()))
     }
 }
 
@@ -314,30 +291,30 @@ impl Default for ChunkedBM25Index {
 // ChunkedBM25Retriever 检索器
 // ============================================================================
 
-pub struct ChunkedBM25Retriever {
-    index: ChunkedBM25Index,
+pub struct ChunkedBM25Retriever<S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore> {
+    index: ChunkedBM25Index<S>,
 }
 
-impl ChunkedBM25Retriever {
-    pub fn new(store: Arc<ChunkedDocumentStore>) -> Self {
+impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
+    pub fn new(store: Arc<S>) -> Self {
         Self {
             index: ChunkedBM25Index::new(store),
         }
     }
 
-    pub fn with_config(store: Arc<ChunkedDocumentStore>, config: AutoMergingConfig) -> Self {
+    pub fn with_config(store: Arc<S>, config: AutoMergingConfig) -> Self {
         Self {
             index: ChunkedBM25Index::with_config(store, config),
         }
     }
 
-    pub fn with_params(store: Arc<ChunkedDocumentStore>, k1: f64, b: f64) -> Self {
+    pub fn with_params(store: Arc<S>, k1: f64, b: f64) -> Self {
         Self {
             index: ChunkedBM25Index::with_params(store, BM25Params::with_values(k1, b)),
         }
     }
 
-    pub fn store(&self) -> &Arc<ChunkedDocumentStore> {
+    pub fn store(&self) -> &Arc<S> {
         self.index.store()
     }
 
@@ -693,9 +670,11 @@ impl ChunkedBM25Retriever {
         std::fs::write(path.as_ref(), encoded)?;
         Ok(())
     }
+}
 
+impl ChunkedBM25Retriever<crate::vector_stores::ChunkedDocumentStore> {
     pub fn load(
-        store: Arc<ChunkedDocumentStore>,
+        store: Arc<crate::vector_stores::ChunkedDocumentStore>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let bytes = std::fs::read(path.as_ref())?;
@@ -721,8 +700,8 @@ impl ChunkedBM25Retriever {
     }
 }
 
-impl Default for ChunkedBM25Retriever {
+impl Default for ChunkedBM25Retriever<crate::vector_stores::ChunkedDocumentStore> {
     fn default() -> Self {
-        Self::new(Arc::new(ChunkedDocumentStore::new()))
+        Self::new(Arc::new(crate::vector_stores::ChunkedDocumentStore::new()))
     }
 }

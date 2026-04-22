@@ -159,14 +159,34 @@ pub trait ChunkedDocumentStoreTrait: Send + Sync {
     /// 清空所有数据
     async fn clear(&self) -> Result<(), VectorStoreError>;
     
-    /// 持久化存储（可选实现）
-async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
+/// 持久化存储（可选实现）
+    async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
         Err(VectorStoreError::StorageError("save not implemented for this store".to_string()))
     }
     
     async fn load(_path: impl AsRef<Path> + Send) -> Result<Self, VectorStoreError> where Self: Sized {
         Err(VectorStoreError::StorageError("load not implemented for this store".to_string()))
     }
+    
+    // ========================================================================
+    // Blocking 方法（同步版本，用于 BM25 等同步检索场景）
+    // ========================================================================
+    
+    /// 添加 Parent 文档（阻塞版本）
+    fn add_parent_document_blocking(
+        &self,
+        document: Document,
+        chunk_size: usize,
+    ) -> Result<(String, Vec<String>), VectorStoreError>;
+    
+    /// 获取 Parent 文档（阻塞版本）
+    fn get_parent_document_blocking(&self, parent_id: &str) -> Result<Option<Document>, VectorStoreError>;
+    
+    /// 获取单个 Chunk（阻塞版本）
+    fn get_chunk_blocking(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError>;
+    
+    /// 获取 Parent 的所有 Chunks（阻塞版本）
+    fn blocking_get_chunks_for_parent(&self, parent_id: &str) -> Result<Vec<ChunkDocument>, VectorStoreError>;
 }
 
 // ============================================================================
@@ -261,50 +281,9 @@ impl InMemoryChunkedDocumentStore {
         }
     }
     
-    pub fn add_parent_document_blocking(
-        &self,
-        document: Document,
-        chunk_size: usize,
-    ) -> Result<(String, Vec<String>), VectorStoreError> {
-        let parent_id = document.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-        
-        {
-            let mut parents = self.parent_docs.blocking_write();
-            parents.insert(parent_id.clone(), document.clone());
-        }
-        
-        let chunk_ids = self.split_and_store_chunks_blocking(&parent_id, &document.content, chunk_size)?;
-        
-        Ok((parent_id, chunk_ids))
-    }
-    
-    pub fn get_parent_document_blocking(&self, parent_id: &str) -> Result<Option<Document>, VectorStoreError> {
-        let parents = self.parent_docs.blocking_read();
-        Ok(parents.get(parent_id).cloned())
-    }
-    
-    pub fn get_chunk_blocking(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.blocking_read();
-        Ok(chunks.get(chunk_id).cloned())
-    }
-    
     pub fn get_chunk_document_blocking(&self, chunk_id: &str) -> Result<Option<Document>, VectorStoreError> {
         let chunks = self.chunks.blocking_read();
         Ok(chunks.get(chunk_id).map(|c| c.to_document()))
-    }
-    
-    pub fn blocking_get_chunks_for_parent(&self, parent_id: &str) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let mapping = self.parent_to_chunks.blocking_read();
-        let chunks = self.chunks.blocking_read();
-        
-        let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
-        
-        let result = chunk_ids
-            .iter()
-            .filter_map(|id| chunks.get(id).cloned())
-            .collect();
-        
-        Ok(result)
     }
     
     fn split_and_store_chunks_blocking(
@@ -559,6 +538,47 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             chunks: Arc::new(RwLock::new(data.chunks)),
             parent_to_chunks: Arc::new(RwLock::new(data.parent_to_chunks)),
         })
+    }
+    
+    fn add_parent_document_blocking(
+        &self,
+        document: Document,
+        chunk_size: usize,
+    ) -> Result<(String, Vec<String>), VectorStoreError> {
+        let parent_id = document.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+        
+        {
+            let mut parents = self.parent_docs.blocking_write();
+            parents.insert(parent_id.clone(), document.clone());
+        }
+        
+        let chunk_ids = self.split_and_store_chunks_blocking(&parent_id, &document.content, chunk_size)?;
+        
+        Ok((parent_id, chunk_ids))
+    }
+    
+    fn get_parent_document_blocking(&self, parent_id: &str) -> Result<Option<Document>, VectorStoreError> {
+        let parents = self.parent_docs.blocking_read();
+        Ok(parents.get(parent_id).cloned())
+    }
+    
+    fn get_chunk_blocking(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
+        let chunks = self.chunks.blocking_read();
+        Ok(chunks.get(chunk_id).cloned())
+    }
+    
+    fn blocking_get_chunks_for_parent(&self, parent_id: &str) -> Result<Vec<ChunkDocument>, VectorStoreError> {
+        let mapping = self.parent_to_chunks.blocking_read();
+        let chunks = self.chunks.blocking_read();
+        
+        let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
+        
+        let result = chunk_ids
+            .iter()
+            .filter_map(|id| chunks.get(id).cloned())
+            .collect();
+        
+        Ok(result)
     }
 }
 
