@@ -1,20 +1,21 @@
 // src/embeddings/mock.rs
-//! Mock Embeddings 实现
+//! Mock embeddings implementation for testing.
 //!
-//! 用于测试的模拟嵌入模型。
+//! Generates deterministic pseudo-random embeddings based on text hash.
 
 use super::{Embeddings, EmbeddingError};
 use async_trait::async_trait;
 
-/// Mock Embeddings
+/// Mock embeddings for testing purposes.
 ///
-/// 生成固定模式的嵌入向量，用于测试。
+/// Generates fixed-pattern embedding vectors based on text hash,
+/// useful for unit tests without real API calls.
 pub struct MockEmbeddings {
     dimension: usize,
 }
 
 impl MockEmbeddings {
-    /// 创建新的 Mock Embeddings
+    /// Creates a new MockEmbeddings with specified dimension.
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }

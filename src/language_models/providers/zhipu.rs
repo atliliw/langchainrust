@@ -38,6 +38,7 @@ impl Default for ZhipuConfig {
 }
 
 impl ZhipuConfig {
+    /// Creates a new ZhipuConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -45,6 +46,7 @@ impl ZhipuConfig {
         }
     }
 
+    /// Creates a ZhipuConfig from environment variables.
     pub fn from_env() -> Self {
         let api_key =
             env::var("ZHIPU_API_KEY").expect("ZHIPU_API_KEY environment variable not set");
@@ -61,6 +63,7 @@ impl ZhipuConfig {
         }
     }
 
+    /// Sets the model name (e.g., glm-4, glm-4-flash).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
@@ -101,16 +104,19 @@ pub struct ZhipuChat {
 }
 
 impl ZhipuChat {
+    /// Creates a ZhipuChat with the given configuration.
     pub fn new(config: ZhipuConfig) -> Self {
         Self {
             inner: OpenAIChat::new(config.into_openai_config()),
         }
     }
 
+    /// Creates a ZhipuChat from environment variables.
     pub fn from_env() -> Self {
         Self::new(ZhipuConfig::from_env())
     }
 
+    /// Creates a ZhipuChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Self {
         let config = ZhipuConfig::from_env().with_model(model);
         Self::new(config)

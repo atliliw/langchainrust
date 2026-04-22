@@ -1,4 +1,8 @@
 // src/language_models/ollama/chat.rs
+//! Ollama chat model implementation for local LLM deployment.
+//!
+//! Ollama allows running open-source LLMs locally (Llama, Mistral, CodeLlama, etc.)
+//! with an OpenAI-compatible API interface.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -18,12 +22,32 @@ use crate::callbacks::{RunTree, RunType};
 use crate::language_models::openai::sse::SSEParser;
 use super::OllamaConfig;
 
+/// Ollama chat model client for local LLM deployment.
+///
+/// Provides an OpenAI-compatible interface to interact with Ollama server
+/// running local models like Llama, Mistral, etc.
+///
+/// # Example
+/// ```rust
+/// use langchainrust::{OllamaChat, Message};
+///
+/// let llm = OllamaChat::new("llama3.2");
+/// let response = llm.chat(vec![
+///     Message::human("What is Rust?"),
+/// ], None).await?;
+/// ```
 pub struct OllamaChat {
     config: OllamaConfig,
     client: reqwest::Client,
 }
 
 impl OllamaChat {
+    /// Creates a new OllamaChat client with the specified model.
+    ///
+    /// Uses default localhost:11434 as the server URL.
+    ///
+    /// # Arguments
+    /// * `model` - The model name (e.g., "llama3.2", "mistral").
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             config: OllamaConfig::new(model),
@@ -31,6 +55,10 @@ impl OllamaChat {
         }
     }
 
+    /// Creates a new OllamaChat with a custom configuration.
+    ///
+    /// # Arguments
+    /// * `config` - A pre-configured OllamaConfig instance.
     pub fn with_config(config: OllamaConfig) -> Self {
         Self {
             config,
@@ -38,6 +66,9 @@ impl OllamaChat {
         }
     }
 
+    /// Creates an OllamaChat from environment variables.
+    ///
+    /// Reads `OLLAMA_BASE_URL` and `OLLAMA_MODEL` from environment.
     pub fn from_env() -> Self {
         Self::with_config(OllamaConfig::from_env())
     }
@@ -99,6 +130,10 @@ impl OllamaChat {
         body
     }
 
+    /// Binds tool definitions to the model for function calling.
+    ///
+    /// # Arguments
+    /// * `tools` - List of tool definitions available to the model.
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         let config = OllamaConfig {
             tools: Some(tools),
@@ -110,11 +145,19 @@ impl OllamaChat {
         }
     }
 
+    /// Sets the tool choice strategy.
+    ///
+    /// # Arguments
+    /// * `choice` - "auto", "none", or specific tool name.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.config.tool_choice = Some(choice.into());
         self
     }
 
+    /// Enables structured JSON output with a specific schema.
+    ///
+    /// # Type Parameters
+    /// * `T` - The output type implementing Deserialize and JsonSchema.
     pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> OllamaStructuredOutput<T> {
         use schemars::schema_for;
         let schema = serde_json::to_value(schema_for!(T))

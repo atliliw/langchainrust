@@ -40,6 +40,7 @@ impl Default for QwenConfig {
 }
 
 impl QwenConfig {
+    /// Creates a new QwenConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -47,6 +48,7 @@ impl QwenConfig {
         }
     }
 
+    /// Creates a QwenConfig from environment variables.
     pub fn from_env() -> Self {
         let api_key = env::var("QWEN_API_KEY").expect("QWEN_API_KEY environment variable not set");
 
@@ -62,6 +64,7 @@ impl QwenConfig {
         }
     }
 
+    /// Sets the model name (e.g., qwen-plus, qwen-max).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
@@ -102,16 +105,19 @@ pub struct QwenChat {
 }
 
 impl QwenChat {
+    /// Creates a QwenChat with the given configuration.
     pub fn new(config: QwenConfig) -> Self {
         Self {
             inner: OpenAIChat::new(config.into_openai_config()),
         }
     }
 
+    /// Creates a QwenChat from environment variables.
     pub fn from_env() -> Self {
         Self::new(QwenConfig::from_env())
     }
 
+    /// Creates a QwenChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Self {
         let config = QwenConfig::from_env().with_model(model);
         Self::new(config)

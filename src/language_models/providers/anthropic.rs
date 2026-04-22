@@ -1,5 +1,5 @@
 // src/language_models/providers/anthropic.rs
-//! Anthropic Claude API 实现 (自有 API 格式)
+//! Anthropic Claude API implementation (native API format).
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt, FutureExt};
@@ -14,10 +14,10 @@ use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, 
 use crate::core::runnables::Runnable;
 use crate::callbacks::{RunTree, RunType};
 
-/// Anthropic API 端点
+/// Anthropic API endpoint.
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
-/// Claude 模型列表
+/// Claude model list.
 pub const CLAUDE_MODELS: [&str; 5] = [
     "claude-3-5-sonnet-20241022",  // Claude 3.5 Sonnet
     "claude-3-5-haiku-20241022",   // Claude 3.5 Haiku
@@ -26,7 +26,7 @@ pub const CLAUDE_MODELS: [&str; 5] = [
     "claude-3-haiku-20240307",     // Claude 3 Haiku
 ];
 
-/// Anthropic 配置
+/// Anthropic Claude configuration.
 #[derive(Debug, Clone)]
 pub struct AnthropicConfig {
     pub api_key: String,
@@ -51,6 +51,7 @@ impl Default for AnthropicConfig {
 }
 
 impl AnthropicConfig {
+    /// Creates a new AnthropicConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -58,6 +59,7 @@ impl AnthropicConfig {
         }
     }
 
+    /// Creates an AnthropicConfig from environment variables.
     pub fn from_env() -> Self {
         let api_key = env::var("ANTHROPIC_API_KEY")
             .expect("ANTHROPIC_API_KEY environment variable not set");
@@ -82,28 +84,32 @@ impl AnthropicConfig {
         }
     }
 
+    /// Sets the Claude model name.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 
+    /// Sets the max tokens limit.
     pub fn with_max_tokens(mut self, max: usize) -> Self {
         self.max_tokens = max;
         self
     }
 
+    /// Sets the temperature parameter.
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
+    /// Sets a custom system prompt.
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 }
 
-/// Anthropic Claude 聊天客户端
+/// Anthropic Claude chat client.
 pub struct AnthropicChat {
     config: AnthropicConfig,
     client: reqwest::Client,

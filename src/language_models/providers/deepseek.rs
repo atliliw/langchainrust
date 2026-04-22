@@ -38,6 +38,7 @@ impl Default for DeepSeekConfig {
 }
 
 impl DeepSeekConfig {
+    /// Creates a new DeepSeekConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -45,6 +46,8 @@ impl DeepSeekConfig {
         }
     }
 
+    /// Creates a DeepSeekConfig from environment variables.
+    /// Reads DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL.
     pub fn from_env() -> Self {
         let api_key =
             env::var("DEEPSEEK_API_KEY").expect("DEEPSEEK_API_KEY environment variable not set");
@@ -62,16 +65,19 @@ impl DeepSeekConfig {
         }
     }
 
+    /// Sets the model name.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 
+    /// Sets the temperature parameter.
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
+    /// Sets the max tokens limit.
     pub fn with_max_tokens(mut self, max: usize) -> Self {
         self.max_tokens = Some(max);
         self
@@ -102,16 +108,19 @@ pub struct DeepSeekChat {
 }
 
 impl DeepSeekChat {
+    /// Creates a DeepSeekChat with the given configuration.
     pub fn new(config: DeepSeekConfig) -> Self {
         Self {
             inner: OpenAIChat::new(config.into_openai_config()),
         }
     }
 
+    /// Creates a DeepSeekChat from environment variables.
     pub fn from_env() -> Self {
         Self::new(DeepSeekConfig::from_env())
     }
 
+    /// Creates a DeepSeekChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Self {
         let config = DeepSeekConfig::from_env().with_model(model);
         Self::new(config)

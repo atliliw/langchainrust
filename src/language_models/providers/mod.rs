@@ -1,4 +1,13 @@
 // src/language_models/providers/mod.rs
+//! Third-party LLM provider integrations.
+//!
+//! This module provides unified API wrappers for various LLM providers:
+//! - DeepSeek: Cost-effective Chinese LLM provider
+//! - Moonshot (Kimi): Long-context Chinese LLM
+//! - Qwen: Alibaba Cloud's Qwen series
+//! - Zhipu (ChatGLM): Chinese enterprise LLM
+//! - Anthropic (Claude): Safety-focused Western LLM
+
 pub mod deepseek;
 pub mod moonshot;
 pub mod zhipu;

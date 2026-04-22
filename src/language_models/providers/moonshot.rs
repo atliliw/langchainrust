@@ -37,6 +37,7 @@ impl Default for MoonshotConfig {
 }
 
 impl MoonshotConfig {
+    /// Creates a new MoonshotConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -44,6 +45,7 @@ impl MoonshotConfig {
         }
     }
 
+    /// Creates a MoonshotConfig from environment variables.
     pub fn from_env() -> Self {
         let api_key =
             env::var("MOONSHOT_API_KEY").expect("MOONSHOT_API_KEY environment variable not set");
@@ -61,6 +63,7 @@ impl MoonshotConfig {
         }
     }
 
+    /// Sets the model name (e.g., moonshot-v1-128k for long context).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
@@ -101,6 +104,7 @@ pub struct MoonshotChat {
 }
 
 impl MoonshotChat {
+    /// Creates a MoonshotChat with the given configuration.
     pub fn new(config: MoonshotConfig) -> Self {
         Self {
             inner: OpenAIChat::new(config.into_openai_config()),
@@ -111,6 +115,7 @@ impl MoonshotChat {
         Self::new(MoonshotConfig::from_env())
     }
 
+    /// Creates a MoonshotChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Self {
         let config = MoonshotConfig::from_env().with_model(model);
         Self::new(config)

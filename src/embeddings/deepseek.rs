@@ -1,13 +1,15 @@
 // src/embeddings/deepseek.rs
-//! DeepSeek Embeddings 实现
+//! DeepSeek embeddings implementation.
 
 use crate::embeddings::{Embeddings, EmbeddingError};
 use crate::language_models::providers::DEEPSEEK_BASE_URL;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+/// Default embedding model for DeepSeek.
 pub const DEEPSEEK_EMBED_MODEL: &str = "deepseek-embedding";
 
+/// Configuration for DeepSeek embeddings API.
 #[derive(Debug, Clone)]
 pub struct DeepSeekEmbeddingsConfig {
     pub api_key: String,
@@ -26,6 +28,7 @@ impl Default for DeepSeekEmbeddingsConfig {
 }
 
 impl DeepSeekEmbeddingsConfig {
+    /// Creates a new DeepSeekEmbeddingsConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -33,22 +36,26 @@ impl DeepSeekEmbeddingsConfig {
         }
     }
 
+    /// Creates a DeepSeekEmbeddingsConfig from environment variables.
     pub fn from_env() -> Self {
         Self::default()
     }
 
+    /// Sets the embedding model.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 }
 
+/// DeepSeek embeddings client for generating vector embeddings.
 pub struct DeepSeekEmbeddings {
     config: DeepSeekEmbeddingsConfig,
     client: reqwest::Client,
 }
 
 impl DeepSeekEmbeddings {
+    /// Creates a DeepSeekEmbeddings with the given configuration.
     pub fn new(config: DeepSeekEmbeddingsConfig) -> Self {
         Self {
             config,
@@ -56,6 +63,7 @@ impl DeepSeekEmbeddings {
         }
     }
 
+    /// Creates a DeepSeekEmbeddings from environment variables.
     pub fn from_env() -> Self {
         Self::new(DeepSeekEmbeddingsConfig::from_env())
     }

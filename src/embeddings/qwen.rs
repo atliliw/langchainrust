@@ -1,13 +1,15 @@
 // src/embeddings/qwen.rs
-//! Qwen Embeddings 实现
+//! Qwen (Alibaba Cloud) embeddings implementation.
 
 use crate::embeddings::{Embeddings, EmbeddingError};
 use crate::language_models::providers::QWEN_BASE_URL;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+/// Default embedding model for Qwen.
 pub const QWEN_EMBED_MODEL: &str = "text-embedding-v1";
 
+/// Configuration for Qwen embeddings API.
 #[derive(Debug, Clone)]
 pub struct QwenEmbeddingsConfig {
     pub api_key: String,
@@ -26,6 +28,7 @@ impl Default for QwenEmbeddingsConfig {
 }
 
 impl QwenEmbeddingsConfig {
+    /// Creates a new QwenEmbeddingsConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -33,22 +36,26 @@ impl QwenEmbeddingsConfig {
         }
     }
 
+    /// Creates a QwenEmbeddingsConfig from environment variables.
     pub fn from_env() -> Self {
         Self::default()
     }
 
+    /// Sets the embedding model.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 }
 
+/// Qwen embeddings client for generating vector embeddings.
 pub struct QwenEmbeddings {
     config: QwenEmbeddingsConfig,
     client: reqwest::Client,
 }
 
 impl QwenEmbeddings {
+    /// Creates a QwenEmbeddings with the given configuration.
     pub fn new(config: QwenEmbeddingsConfig) -> Self {
         Self {
             config,
@@ -56,6 +63,7 @@ impl QwenEmbeddings {
         }
     }
 
+    /// Creates a QwenEmbeddings from environment variables.
     pub fn from_env() -> Self {
         Self::new(QwenEmbeddingsConfig::from_env())
     }

@@ -1,7 +1,7 @@
 // src/tools/math.rs
-//! 高级数学工具
+//! Advanced math tool for agents.
 //!
-//! 提供更复杂的数学运算功能，包括指数、对数、三角函数等。
+//! Provides complex mathematical operations including exponent, logarithm, trigonometry, etc.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -9,39 +9,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::tools::{BaseTool, Tool, ToolError};
 
-/// SimpleMath 工具输入
+/// Math tool input parameters.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MathInput {
-    /// 操作类型: "power", "sqrt", "log", "ln", "sin", "cos", "tan", "abs", "factorial", "mod", "gcd", "lcm"
+    /// Operation type: "power", "sqrt", "log", "ln", "sin", "cos", "tan", "abs", "factorial", "mod", "gcd", "lcm".
     pub operation: String,
     
-    /// 第一个数值
+    /// First value for calculation.
     pub value: Option<f64>,
     
-    /// 第二个数值（用于需要两个参数的操作，如 power, mod, gcd, lcm）
+    /// Second value for operations requiring two parameters (power, mod, gcd, lcm).
     pub value2: Option<f64>,
     
-    /// 对数的底数（用于 log 操作，默认为 10）
+    /// Logarithm base for log operation (default: 10).
     pub base: Option<f64>,
 }
 
-/// SimpleMath 工具输出
+/// Math tool output result.
 #[derive(Debug, Serialize)]
 pub struct MathOutput {
-    /// 计算结果
+    /// Calculation result.
     pub result: f64,
     
-    /// 操作类型
+    /// Operation type.
     pub operation: String,
     
-    /// 额外信息
+    /// Additional details.
     pub details: Option<String>,
 }
 
-/// 高级数学工具
+/// Advanced math tool for agents.
 pub struct SimpleMathTool;
 
 impl SimpleMathTool {
+    /// Creates a new SimpleMathTool instance.
     pub fn new() -> Self {
         Self
     }

@@ -1,4 +1,5 @@
 // src/language_models/openai/chat.rs
+//! OpenAI chat model implementation.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -17,14 +18,14 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 
-/// OpenAI 聊天客户端
+/// OpenAI chat client for GPT models.
 pub struct OpenAIChat {
     config: OpenAIConfig,
     client: reqwest::Client,
 }
 
 impl OpenAIChat {
-    /// 创建新的 OpenAI 聊天客户端
+    /// Creates a new OpenAIChat with the given configuration.
     pub fn new(config: OpenAIConfig) -> Self {
         Self {
             config,
@@ -32,12 +33,12 @@ impl OpenAIChat {
         }
     }
     
-    /// 从环境变量创建
+    /// Creates an OpenAIChat from environment variables.
     pub fn from_env() -> Self {
         Self::new(OpenAIConfig::from_env())
     }
     
-    /// 将消息转换为 OpenAI 格式
+    /// Converts a Message to OpenAI API format.
     fn message_to_openai_format(message: &Message) -> serde_json::Value {
         match &message.message_type {
             crate::schema::MessageType::System => json!({
@@ -66,7 +67,7 @@ impl OpenAIChat {
         }
     }
     
-    /// 构建请求体
+    /// Builds the API request body.
     fn build_request_body(&self, messages: Vec<Message>, stream: bool) -> serde_json::Value {
         let openai_messages: Vec<serde_json::Value> = messages
             .iter()
@@ -102,6 +103,7 @@ impl OpenAIChat {
         body
     }
     
+    /// Binds tool definitions for function calling.
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         let config = OpenAIConfig {
             tools: Some(tools),
@@ -113,11 +115,13 @@ impl OpenAIChat {
         }
     }
     
+    /// Sets the tool choice strategy.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.config.tool_choice = Some(choice.into());
         self
     }
     
+    /// Enables structured JSON output with schema validation.
     pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> StructuredOutputMethod<T> {
         use schemars::schema_for;
         let schema = serde_json::to_value(schema_for!(T))

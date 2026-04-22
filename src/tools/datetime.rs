@@ -1,7 +1,7 @@
 // src/tools/datetime.rs
-//! 日期时间工具
+//! Date and time tool for agents.
 //!
-//! 提供日期时间查询和计算功能。
+//! Provides date/time query and calculation functionality.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -10,42 +10,43 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Duration, Datelike, Week
 
 use crate::core::tools::{BaseTool, Tool, ToolError};
 
-/// DateTime 工具输入
+/// DateTime tool input parameters.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DateTimeInput {
-    /// 操作类型: "now", "format", "add", "subtract", "weekday", "diff"
+    /// Operation type: "now", "format", "add", "subtract", "weekday", "diff".
     pub operation: String,
     
-    /// 日期时间字符串（可选，格式: YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS）
+    /// Date/time string (optional, format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS).
     pub datetime: Option<String>,
     
-    /// 时间单位: "days", "hours", "minutes", "weeks", "months", "years"
+    /// Time unit: "days", "hours", "minutes", "weeks", "months", "years".
     pub unit: Option<String>,
     
-    /// 数值（用于 add/subtract 操作）
+    /// Value for add/subtract operations.
     pub value: Option<i64>,
     
-    /// 目标日期时间（用于 diff 操作）
+    /// Target date/time for diff operation.
     pub target: Option<String>,
 }
 
-/// DateTime 工具输出
+/// DateTime tool output result.
 #[derive(Debug, Serialize)]
 pub struct DateTimeOutput {
-    /// 操作结果
+    /// Operation result.
     pub result: String,
     
-    /// 操作类型
+    /// Operation type.
     pub operation: String,
     
-    /// 额外信息
+    /// Additional details.
     pub details: Option<String>,
 }
 
-/// DateTime 工具
+/// DateTime tool for querying and manipulating dates and times.
 pub struct DateTimeTool;
 
 impl DateTimeTool {
+    /// Creates a new DateTimeTool instance.
     pub fn new() -> Self {
         Self
     }
