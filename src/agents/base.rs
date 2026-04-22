@@ -1,4 +1,5 @@
 // src/agents/base.rs
+//! Agent base traits and executor implementation.
 
 use super::types::{AgentAction, AgentFinish, AgentOutput, AgentStep};
 use async_trait::async_trait;
@@ -9,71 +10,71 @@ use crate::core::tools::BaseTool;
 use crate::memory::BaseMemory;
 use crate::callbacks::{CallbackManager, RunTree, RunType};
 
-/// Agent 错误类型
+/// Agent error types.
 #[derive(Debug)]
 pub enum AgentError {
-    /// 输出解析错误
+    /// Output parsing error.
     OutputParsingError(String),
     
-    /// 工具未找到
+    /// Tool not found.
     ToolNotFound(String),
     
-    /// 工具执行错误
+    /// Tool execution error.
     ToolExecutionError(String),
     
-    /// 达到最大迭代次数
+    /// Max iterations reached.
     MaxIterationsReached,
     
-    /// 其他错误
+    /// Other error.
     Other(String),
 }
 
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AgentError::OutputParsingError(msg) => write!(f, "输出解析错误: {}", msg),
-            AgentError::ToolNotFound(name) => write!(f, "工具未找到: {}", name),
-            AgentError::ToolExecutionError(msg) => write!(f, "工具执行错误: {}", msg),
-            AgentError::MaxIterationsReached => write!(f, "达到最大迭代次数"),
-            AgentError::Other(msg) => write!(f, "Agent 错误: {}", msg),
+            AgentError::OutputParsingError(msg) => write!(f, "Output parsing error: {}", msg),
+            AgentError::ToolNotFound(name) => write!(f, "Tool not found: {}", name),
+            AgentError::ToolExecutionError(msg) => write!(f, "Tool execution error: {}", msg),
+            AgentError::MaxIterationsReached => write!(f, "Max iterations reached"),
+            AgentError::Other(msg) => write!(f, "Agent error: {}", msg),
         }
     }
 }
 
 impl std::error::Error for AgentError {}
 
-/// Base Agent trait
-/// 
-/// 定义 Agent 的核心接口。Agent 负责决策（plan），不负责执行。
-/// 执行由 AgentExecutor 处理。
+/// Base Agent trait.
+///
+/// Defines the core interface for agents. Agent is responsible for planning,
+/// not execution. Execution is handled by AgentExecutor.
 #[async_trait]
 pub trait BaseAgent: Send + Sync {
-    /// 规划下一步行动
-    /// 
-    /// # 参数
-    /// * `intermediate_steps` - 已执行的步骤历史
-    /// * `inputs` - 用户输入
-    /// 
-    /// # 返回
-    /// * `AgentOutput::Action` - 需要执行的动作
-    /// * `AgentOutput::Finish` - 最终答案
+    /// Plans the next action.
+    ///
+    /// # Arguments
+    /// * `intermediate_steps` - History of executed steps.
+    /// * `inputs` - User input.
+    ///
+    /// # Returns
+    /// * `AgentOutput::Action` - Action to execute.
+    /// * `AgentOutput::Finish` - Final answer.
     async fn plan(
         &self,
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
     ) -> Result<AgentOutput, AgentError>;
     
-    /// 获取输入键
+    /// Returns input keys.
     fn input_keys(&self) -> Vec<&str> {
         vec!["input"]
     }
     
-    /// 获取允许的工具列表
+    /// Returns allowed tools list.
     fn get_allowed_tools(&self) -> Option<Vec<&str>> {
         None
     }
     
-    /// 当达到最大迭代次数时的停止响应
+    /// Returns stopped response when max iterations reached.
     fn return_stopped_response(
         &self,
         _intermediate_steps: &[AgentStep],
@@ -85,31 +86,31 @@ pub trait BaseAgent: Send + Sync {
     }
 }
 
-/// Agent 执行器
-/// 
-/// 负责执行 Agent 的决策循环：Plan → Act → Observe
+/// Agent executor.
+///
+/// Responsible for executing the agent's decision loop: Plan → Act → Observe.
 pub struct AgentExecutor {
-    /// Agent 实例
+    /// Agent instance.
     agent: Arc<dyn BaseAgent>,
     
-    /// 可用工具
+    /// Available tools.
     tools: Vec<Arc<dyn BaseTool>>,
     
-    /// 最大迭代次数
+    /// Max iterations.
     max_iterations: usize,
     
-    /// 是否详细输出
+    /// Verbose output.
     verbose: bool,
     
-    /// 记忆（可选）
+    /// Memory (optional).
     memory: Option<Arc<tokio::sync::Mutex<dyn BaseMemory>>>,
     
-    /// 回调管理器（可选）
+    /// Callback manager (optional).
     callbacks: Option<Arc<CallbackManager>>,
 }
 
 impl AgentExecutor {
-    /// 创建新的 AgentExecutor
+    /// Creates a new AgentExecutor.
     pub fn new(agent: Arc<dyn BaseAgent>, tools: Vec<Arc<dyn BaseTool>>) -> Self {
         Self {
             agent,
@@ -121,31 +122,31 @@ impl AgentExecutor {
         }
     }
     
-    /// 设置最大迭代次数
+    /// Sets max iterations.
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self
     }
     
-    /// 设置详细输出
+    /// Sets verbose output.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
     
-    /// 设置记忆
+    /// Sets memory.
     pub fn with_memory(mut self, memory: Arc<tokio::sync::Mutex<dyn BaseMemory>>) -> Self {
         self.memory = Some(memory);
         self
     }
     
-    /// 设置回调管理器
+    /// Sets callback manager.
     pub fn with_callbacks(mut self, callbacks: Arc<CallbackManager>) -> Self {
         self.callbacks = Some(callbacks);
         self
     }
     
-    /// 执行 Agent
+    /// Executes the agent.
     pub async fn invoke(&self, input: String) -> Result<String, AgentError> {
         let mut root_run = RunTree::new(
             "AgentExecutor",
@@ -165,7 +166,7 @@ impl AgentExecutor {
         if let Some(memory) = &self.memory {
             let memory_vars = memory.lock().await
                 .load_memory_variables(&inputs).await
-                .map_err(|e| AgentError::Other(format!("加载记忆失败: {}", e)))?;
+                .map_err(|e| AgentError::Other(format!("Failed to load memory: {}", e)))?;
             
             if let Some(history) = memory_vars.get("history") {
                 if let Some(history_str) = history.as_str() {
@@ -185,7 +186,7 @@ impl AgentExecutor {
                 
                 memory.lock().await
                     .save_context(&inputs, &outputs).await
-                    .map_err(|e| AgentError::Other(format!("保存记忆失败: {}", e)))?;
+                    .map_err(|e| AgentError::Other(format!("Failed to save memory: {}", e)))?;
             }
         }
         
@@ -213,7 +214,7 @@ impl AgentExecutor {
         result
     }
     
-    /// 运行 Agent 循环
+    /// Runs the agent loop.
     async fn run_agent_loop(
         &self,
         inputs: HashMap<String, String>,
@@ -222,7 +223,7 @@ impl AgentExecutor {
     ) -> Result<String, AgentError> {
         for iteration in 0..self.max_iterations {
             if self.verbose {
-                println!("\n=== 迭代 {} ===", iteration + 1);
+                println!("\n=== Iteration {} ===", iteration + 1);
             }
             
             let output = self.agent.plan(&intermediate_steps, &inputs).await?;
@@ -230,20 +231,20 @@ impl AgentExecutor {
             match output {
                 AgentOutput::Finish(finish) => {
                     if self.verbose {
-                        println!("最终答案: {:?}", finish.return_values);
+                        println!("Final answer: {:?}", finish.return_values);
                     }
                     return Ok(finish.output().unwrap_or("").to_string());
                 }
                 
                 AgentOutput::Action(action) => {
                     if self.verbose {
-                        println!("动作: {}({})", action.tool, action.tool_input);
+                        println!("Action: {}({})", action.tool, action.tool_input);
                     }
                     
                     let observation = self.execute_tool(&action, root_run).await?;
                     
                     if self.verbose {
-                        println!("观察: {}", observation);
+                        println!("Observation: {}", observation);
                     }
                     
                     intermediate_steps.push(AgentStep::new(action, observation));
@@ -251,7 +252,7 @@ impl AgentExecutor {
                 
                 AgentOutput::Actions(actions) => {
                     if self.verbose {
-                        println!("并行动作: {} 个", actions.len());
+                        println!("Parallel actions: {} count", actions.len());
                         for action in &actions {
                             println!("  - {}({})", action.tool, action.tool_input);
                         }
@@ -261,7 +262,7 @@ impl AgentExecutor {
                     
                     if self.verbose {
                         for (i, obs) in observations.iter().enumerate() {
-                            println!("观察 {}: {}", i + 1, obs);
+                            println!("Observation {}: {}", i + 1, obs);
                         }
                     }
                     
@@ -273,14 +274,14 @@ impl AgentExecutor {
         }
         
         if self.verbose {
-            println!("达到最大迭代次数: {}", self.max_iterations);
+            println!("Max iterations reached: {}", self.max_iterations);
         }
         
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())
     }
     
-    /// 并行执行多个工具
+    /// Executes multiple tools in parallel.
     async fn execute_tools_parallel(
         &self,
         actions: &[super::types::AgentAction],
@@ -295,7 +296,7 @@ impl AgentExecutor {
         join_all(futures).await.into_iter().collect()
     }
     
-    /// 执行工具
+    /// Executes a single tool.
     async fn execute_tool(&self, action: &AgentAction, root_run: &RunTree) -> Result<String, AgentError> {
         let tool = self.tools.iter()
             .find(|t| t.name() == action.tool)
@@ -360,10 +361,10 @@ mod tests {
     use super::*;
     use crate::memory::ConversationBufferMemory;
     
-    /// 测试 AgentExecutor with memory
+    /// Tests AgentExecutor with memory.
     #[tokio::test]
     async fn test_agent_executor_with_memory() {
-        // 创建简单的 mock agent
+        // Create simple mock agent
         struct TestAgent;
         
         #[async_trait]
@@ -373,40 +374,40 @@ mod tests {
                 _intermediate_steps: &[AgentStep],
                 inputs: &HashMap<String, String>,
             ) -> Result<AgentOutput, AgentError> {
-                // 如果有历史，检查是否包含之前的信息
+                // If history exists, check if it contains previous info
                 if let Some(history) = inputs.get("history") {
-                    if history.contains("张三") {
+                    if history.contains("Zhang San") {
                         return Ok(AgentOutput::Finish(AgentFinish::new(
-                            "你叫张三".to_string(),
+                            "Your name is Zhang San".to_string(),
                             String::new(),
                         )));
                     }
                 }
                 
-                // 否则返回输入内容
+                // Otherwise return input content
                 let input = inputs.get("input").unwrap();
                 Ok(AgentOutput::Finish(AgentFinish::new(
-                    format!("收到: {}", input),
+                    format!("Received: {}", input),
                     String::new(),
                 )))
             }
         }
         
-        // 创建 memory
+        // Create memory
         let memory = Arc::new(tokio::sync::Mutex::new(ConversationBufferMemory::new()));
         
-        // 创建 executor
+        // Create executor
         let executor = AgentExecutor::new(Arc::new(TestAgent), vec![])
             .with_memory(memory);
         
-        // 第一轮对话
-        let result1 = executor.invoke("我叫张三".to_string()).await.unwrap();
-        println!("第一轮: {}", result1);
+        // First conversation round
+        let result1 = executor.invoke("My name is Zhang San".to_string()).await.unwrap();
+        println!("Round 1: {}", result1);
         
-        // 第二轮对话 - 应该记得名字
-        let result2 = executor.invoke("我叫什么名字？".to_string()).await.unwrap();
-        println!("第二轮: {}", result2);
+        // Second conversation round - should remember the name
+        let result2 = executor.invoke("What is my name?".to_string()).await.unwrap();
+        println!("Round 2: {}", result2);
         
-        assert!(result2.contains("张三"));
+        assert!(result2.contains("Zhang San"));
     }
 }

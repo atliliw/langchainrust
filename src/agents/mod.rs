@@ -1,26 +1,26 @@
 // src/agents/mod.rs
-//! Agent 系统
+//! Agent system for building autonomous LLM applications.
 //!
-//! 提供构建 Agent 的核心抽象和实现。
+//! Provides core abstractions and implementations for agents.
 //!
-//! # 核心概念
+//! # Core Concepts
 //!
-//! - **Agent**: 负责决策（plan），决定下一步执行什么动作
-//! - **AgentExecutor**: 负责执行循环（plan → act → observe）
-//! - **Tool**: 可被 Agent 调用的工具
+//! - **Agent**: Responsible for planning, deciding what action to execute next.
+//! - **AgentExecutor**: Responsible for execution loop (plan → act → observe).
+//! - **Tool**: Callable tools that agents can invoke.
 //!
-//! # 执行流程
+//! # Execution Flow
 //!
 //! ```text
-//! 输入问题
+//! Input question
 //!     ↓
-//! Agent.plan() → AgentAction 或 AgentFinish
+//! Agent.plan() → AgentAction or AgentFinish
 //!     ↓
-//! 如果是 Action: 执行工具 → 得到 observation
+//! If Action: execute tool → get observation
 //!     ↓
-//! 添加到 intermediate_steps
+//! Add to intermediate_steps
 //!     ↓
-//! 循环直到返回 AgentFinish
+//! Loop until AgentFinish returned
 //! ```
 
 pub mod types;
