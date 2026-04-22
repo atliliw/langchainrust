@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.13] - 2025-04-22
+
+### Added
+- **LLM Providers**: 统一的第三方 LLM 提供者支持
+  - `DeepSeekChat`: DeepSeek API 支持
+  - `MoonshotChat`: Moonshot (Kimi) API 支持
+  - `QwenChat`: 阿里云通义千问 API 支持
+  - `ZhipuChat`: 智谱 ChatGLM API 支持
+  - `AnthropicChat`: Anthropic Claude API 支持
+  - 所有 providers 使用 OpenAI 兼容接口或原生 API
+- **Embeddings 扩展**: 新增向量生成服务
+  - `DeepSeekEmbeddings`: DeepSeek 向量生成
+  - `QwenEmbeddings`: 通义千问向量生成
+- **Ollama 增强**: 多模态和工具调用改进
+  - Vision 参数支持：`with_image()`, `with_images()`
+  - 工具调用改进：更好的 function calling 支持
+  - 配置增强：新增 `OllamaConfig` 配置项
+
+### Changed
+- **LangSmith Client**: `request_id` 追踪增强
+  - 优化请求追踪链路
+  - 支持多层级 run 追踪
+- **Qdrant Vector Store**: 重构优化
+  - 更好的错误处理
+  - 改进的连接管理
+- **LangGraph Compiled**: 状态管理改进
+- **MultiQuery Retriever**: 错误处理优化
+
+### Configuration
+- **Cargo.toml**: demo 目录已 exclude (不上传 crates.io)
+
+## [0.2.12] - 2025-04-19
+
+### Documentation
+- **Callbacks 文档**: LangSmith 追踪完整说明
+- **README**: 更新多 Provider 支持列表
+
+## [0.2.11] - 2025-04-17
+
+### Added
+- **Document Loaders**: 文档加载器系列
+  - `TextLoader`: 纯文本加载
+  - `JSONLoader`: JSON 文档加载
+  - `MarkdownLoader`: Markdown 文档加载
+  - `PDFLoader`: PDF 文档提取
+  - `CSVLoader`: CSV 数据加载
+- **MultiQuery Retriever**: 多查询扩展检索
+  - 自动生成多个相关查询
+  - 合并多查询结果
+  - 提升检索召回率
+- **HyDE (Hypothetical Document Embeddings)**: 假设文档嵌入
+  - 基于问题生成假设答案
+  - 使用假设答案检索相关文档
+- **Reranking**: 重排序模块
+  - 支持多种重排序策略
+  - 提升检索精准度
+
 ## [0.2.6] - 2025-04-18
 
 ### Added
@@ -244,6 +301,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.13]: https://github.com/atliliw/langchainrust/compare/v0.2.12...v0.2.13
+[0.2.12]: https://github.com/atliliw/langchainrust/compare/v0.2.11...v0.2.12
+[0.2.11]: https://github.com/atliliw/langchainrust/compare/v0.2.6...v0.2.11
 [0.2.6]: https://github.com/atliliw/langchainrust/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/atliliw/langchainrust/compare/v0.2.4...v0.2.5
 [0.2.3]: https://github.com/atliliw/langchainrust/compare/v0.2.2...v0.2.3
