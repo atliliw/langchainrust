@@ -513,7 +513,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.2.6 • Features</div>
+            <div class="sidebar-subtitle">v0.2.13 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -1154,7 +1154,54 @@ store.create_indexes().await?;
                 </div>
 
                 <div class="card">
-                    <p><strong>OpenAIChat</strong> and <strong>OllamaChat</strong> provide unified LLM interaction interface.</p>
+                    <p><strong>LangChainRust supports multiple LLM providers</strong> with unified API: OpenAI, DeepSeek, Moonshot, Qwen, Zhipu, Anthropic Claude, Ollama.</p>
+                </div>
+
+                <h3>Multi-Provider Support</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Provider</th><th>Class</th><th>Features</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>OpenAI</strong></td><td><code>OpenAIChat</code></td><td>GPT-4, GPT-3.5-turbo</td><td>General purpose</td></tr>
+                        <tr class="highlight-row"><td><strong>DeepSeek</strong></td><td><code>DeepSeekChat</code></td><td>DeepSeek-V3, cost-effective</td><td>Budget-friendly</td></tr>
+                        <tr><td><strong>Moonshot</strong></td><td><code>MoonshotChat</code></td><td>Kimi, 128K context</td><td>Long documents</td></tr>
+                        <tr><td><strong>Qwen</strong></td><td><code>QwenChat</code></td><td>Alibaba Cloud</td><td>Chinese content</td></tr>
+                        <tr><td><strong>Zhipu</strong></td><td><code>ZhipuChat</code></td><td>ChatGLM</td><td>Chinese enterprise</td></tr>
+                        <tr><td><strong>Anthropic</strong></td><td><code>AnthropicChat</code></td><td>Claude, safety-focused</td><td>Security sensitive</td></tr>
+                        <tr><td><strong>Ollama</strong></td><td><code>OllamaChat</code></td><td>Local deployment</td><td>Privacy, offline</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// DeepSeek (Cost-Effective)</span>
+<span class="kw">use</span> langchainrust::DeepSeekChat;
+<span class="kw">let</span> llm = DeepSeekChat::from_env();
+
+<span class="comment">// Moonshot (Long Context)</span>
+<span class="kw">use</span> langchainrust::MoonshotChat;
+<span class="kw">let</span> llm = MoonshotChat::with_model(<span class="str">"moonshot-v1-128k"</span>);
+
+<span class="comment">// Qwen</span>
+<span class="kw">use</span> langchainrust::QwenChat;
+<span class="kw">let</span> llm = QwenChat::from_env();
+
+<span class="comment">// Anthropic Claude</span>
+<span class="kw">use</span> langchainrust::{AnthropicChat, AnthropicConfig};
+<span class="kw">let</span> llm = AnthropicChat::new(AnthropicConfig {
+    api_key: std::env::var(<span class="str">"ANTHROPIC_API_KEY"</span>)?,
+    model: <span class="str">"claude-3-opus"</span>.to_string(),
+    ..Default::default()
+});
+
+<span class="comment">// Ollama (Local)</span>
+<span class="kw">use</span> langchainrust::OllamaChat;
+<span class="kw">let</span> llm = OllamaChat::new(<span class="str">"llama3.2"</span>);</code></pre>
                 </div>
 
                 <div class="card-grid">

@@ -7,6 +7,15 @@ This document provides detailed usage instructions. For a quick overview, see [R
 ## Table of Contents
 
 - [LLM](#llm)
+  - Multi-Provider Support
+  - OpenAI Chat
+  - Streaming
+  - Function Calling
+  - Ollama (Local LLM)
+- [Embeddings](#embeddings)
+  - OpenAI Embeddings
+  - DeepSeek Embeddings
+  - Qwen Embeddings
 - [Prompts](#prompts)
 - [Memory](#memory)
 - [Chains](#chains)
@@ -26,6 +35,90 @@ This document provides detailed usage instructions. For a quick overview, see [R
 ---
 
 ## LLM
+
+### Multi-Provider Support
+
+LangChainRust supports multiple LLM providers with unified API:
+
+| Provider | Class | Features |
+|----------|-------|----------|
+| **OpenAI** | `OpenAIChat` | GPT-4, GPT-3.5-turbo |
+| **DeepSeek** | `DeepSeekChat` | DeepSeek-V3, cost-effective |
+| **Moonshot** | `MoonshotChat` | Kimi, long context |
+| **Qwen** | `QwenChat` | Alibaba Cloud |
+| **Zhipu** | `ZhipuChat` | ChatGLM |
+| **Anthropic** | `AnthropicChat` | Claude, safety-focused |
+| **Ollama** | `OllamaChat` | Local deployment |
+
+#### DeepSeek (Cost-Effective)
+
+```rust
+use langchainrust::{DeepSeekChat, BaseChatModel};
+use langchainrust::schema::Message;
+
+// From environment
+let llm = DeepSeekChat::from_env();
+
+// Or manual config
+let llm = DeepSeekChat::with_model("deepseek-chat");
+
+let response = llm.chat(vec![
+    Message::human("Explain Rust ownership"),
+], None).await?;
+```
+
+#### Moonshot (Long Context)
+
+```rust
+use langchainrust::MoonshotChat;
+
+let llm = MoonshotChat::with_model("moonshot-v1-128k");  // 128K context
+
+let response = llm.chat(vec![
+    Message::human("Analyze this long document..."),
+], None).await?;
+```
+
+#### Qwen
+
+```rust
+use langchainrust::QwenChat;
+
+let llm = QwenChat::from_env();  // Or QwenChat::with_model("qwen-plus")
+
+let response = llm.chat(vec![
+    Message::human("Explain microservices in Chinese"),
+], None).await?;
+```
+
+#### Zhipu (ChatGLM)
+
+```rust
+use langchainrust::ZhipuChat;
+
+let llm = ZhipuChat::from_env();  // Or ZhipuChat::with_model("glm-4")
+
+let response = llm.chat(vec![
+    Message::human("Write Rust concurrent code"),
+], None).await?;
+```
+
+#### Anthropic Claude
+
+```rust
+use langchainrust::{AnthropicChat, AnthropicConfig};
+
+let config = AnthropicConfig {
+    api_key: std::env::var("ANTHROPIC_API_KEY")?,
+    model: "claude-3-opus-20240229".to_string(),
+    ..Default::default()
+};
+let llm = AnthropicChat::new(config);
+
+let response = llm.chat(vec![
+    Message::human("Analyze this code safely"),
+], None).await?;
+```
 
 ### OpenAI Chat
 
@@ -381,6 +474,78 @@ impl BaseTool for EchoTool {
         Some(serde_json::to_value(schemars::schema_for!(EchoInput)).unwrap())
     }
 }
+```
+
+---
+
+## Embeddings
+
+**Embeddings** convert text to vectors for semantic retrieval and similarity calculation.
+
+### Supported Embeddings
+
+| Provider | Class | Dimension | Features |
+|----------|-------|-----------|----------|
+| **OpenAI** | `OpenAIEmbeddings` | 1536 | High quality |
+| **DeepSeek** | `DeepSeekEmbeddings` | 1536 | Cost-effective |
+| **Qwen** | `QwenEmbeddings` | 1536 | Chinese optimized |
+| **Mock** | `MockEmbeddings` | Custom | Testing |
+
+### OpenAI Embeddings
+
+```rust
+use langchainrust::{OpenAIEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(OpenAIEmbeddings::new(
+    std::env::var("OPENAI_API_KEY")?
+));
+
+// Single text embedding
+let vector = embeddings.embed("Rust is a systems language").await?;
+println!("Dimension: {}", vector.len());  // 1536
+
+// Batch embedding
+let texts = vec![
+    "Rust is a systems language",
+    "Python is a scripting language",
+];
+let vectors = embeddings.embed_batch(texts).await?;
+```
+
+### DeepSeek Embeddings
+
+```rust
+use langchainrust::{DeepSeekEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(DeepSeekEmbeddings::from_env());
+
+let vector = embeddings.embed("Deep learning fundamentals").await?;
+```
+
+### Qwen Embeddings
+
+```rust
+use langchainrust::{QwenEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(QwenEmbeddings::from_env());
+
+let vector = embeddings.embed("Qwen vector generation").await?;
+```
+
+### Mock Embeddings (Testing)
+
+```rust
+use langchainrust::{MockEmbeddings, Embeddings};
+use std::sync::Arc;
+
+// Custom dimension
+let embeddings = Arc::new(MockEmbeddings::new(128));
+
+let vector = embeddings.embed("Test text").await?;
+println!("Dimension: {}", vector.len());  // 128
 ```
 
 ---

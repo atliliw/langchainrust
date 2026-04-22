@@ -494,7 +494,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <h1>LangChainRust</h1>
-            <span class="version">v0.2.6 功能文档</span>
+            <span class="version">v0.2.13 功能文档</span>
         </div>
 
         <div class="nav-section">
@@ -1416,8 +1416,49 @@ let messages = template.format(&vars)?;</code></pre>
                     </div>
 
                     <div class="intro-card">
-                        <p><strong>OpenAIChat</strong> 和 <strong>OllamaChat</strong> 提供统一的 LLM 交互接口，支持流式输出、Function Calling。</p>
-                        <p class="highlight">核心价值：统一的 API 接口，支持流式输出、Function Calling、自定义端点。</p>
+                        <p><strong>LangChainRust 支持多种 LLM 提供商</strong>，使用统一的 API 接口：OpenAI、DeepSeek、Moonshot、Qwen、Zhipu、Anthropic Claude、Ollama。</p>
+                        <p class="highlight">核心价值：统一的 API 接口，一次学习，多平台通用。</p>
+                    </div>
+
+                    <h3 class="sub-title">多 Provider 支持</h3>
+
+                    <table class="comparison-table">
+                        <thead><tr><th>Provider</th><th>类名</th><th>特点</th><th>推荐场景</th></tr></thead>
+                        <tbody>
+                            <tr><td><strong>OpenAI</strong></td><td><code>OpenAIChat</code></td><td>GPT-4、GPT-3.5-turbo</td><td>通用场景</td></tr>
+                            <tr class="highlight-row"><td><strong>DeepSeek</strong></td><td><code>DeepSeekChat</code></td><td>DeepSeek-V3、性价比高</td><td>预算有限、大批量</td></tr>
+                            <tr><td><strong>Moonshot</strong></td><td><code>MoonshotChat</code></td><td>Kimi、128K 长上下文</td><td>长文档处理</td></tr>
+                            <tr><td><strong>Qwen</strong></td><td><code>QwenChat</code></td><td>通义千问、中文优化</td><td>中文场景</td></tr>
+                            <tr><td><strong>Zhipu</strong></td><td><code>ZhipuChat</code></td><td>ChatGLM、智谱</td><td>国内企业</td></tr>
+                            <tr><td><strong>Anthropic</strong></td><td><code>AnthropicChat</code></td><td>Claude、安全性强</td><td>安全敏感场景</td></tr>
+                            <tr><td><strong>Ollama</strong></td><td><code>OllamaChat</code></td><td>本地部署、开源模型</td><td>隐私保护、离线</td></tr>
+                        </tbody>
+                    </table>
+
+                    <div class="code-block">
+                        <pre><code class="language-rust">// DeepSeek（性价比推荐）
+use langchainrust::DeepSeekChat;
+let llm = DeepSeekChat::from_env();
+
+// Moonshot（长上下文）
+use langchainrust::MoonshotChat;
+let llm = MoonshotChat::with_model("moonshot-v1-128k");
+
+// Qwen（中文优化）
+use langchainrust::QwenChat;
+let llm = QwenChat::from_env();
+
+// Anthropic Claude
+use langchainrust::{AnthropicChat, AnthropicConfig};
+let llm = AnthropicChat::new(AnthropicConfig {
+    api_key: std::env::var("ANTHROPIC_API_KEY")?,
+    model: "claude-3-opus".to_string(),
+    ..Default::default()
+});
+
+// Ollama（本地部署）
+use langchainrust::OllamaChat;
+let llm = OllamaChat::new("llama3.2");</code></pre>
                     </div>
 
                     <div class="feature-grid">

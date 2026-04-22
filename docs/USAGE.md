@@ -5,9 +5,11 @@
 ## 目录
 
 - [LLM](#llm)
+  - 多 Provider 支持
   - 直接调用（纯文本）
   - 流式输出（streaming）
   - Function Calling（bind_tools）
+  - OpenAIConfig 配置项
 - [Prompts](#prompts)
   - PromptTemplate
   - ChatPromptTemplate
@@ -28,6 +30,10 @@
   - 内置工具
   - 自定义 Tool
   - to_tool_definition()
+- [Embeddings](#embeddings)
+  - OpenAI Embeddings
+  - DeepSeek Embeddings
+  - Qwen Embeddings
 - [RAG](#rag)
   - 完整 RAG 流程
   - 文档分割配置
@@ -74,6 +80,120 @@
 ---
 
 ## LLM
+
+### 多 Provider 支持
+
+LangChainRust 支持多种 LLM 提供商，使用统一的 API 接口：
+
+| Provider | 类名 | 特点 |
+|----------|------|------|
+| **OpenAI** | `OpenAIChat` | GPT-4、GPT-3.5-turbo |
+| **DeepSeek** | `DeepSeekChat` | DeepSeek-V3、性价比高 |
+| **Moonshot** | `MoonshotChat` | Kimi、长上下文 |
+| **Qwen** | `QwenChat` | 通义千问、阿里云 |
+| **Zhipu** | `ZhipuChat` | ChatGLM、智谱 |
+| **Anthropic** | `AnthropicChat` | Claude、安全性强 |
+| **Ollama** | `OllamaChat` | 本地部署、开源模型 |
+
+#### DeepSeek（推荐性价比）
+
+```rust
+use langchainrust::{DeepSeekChat, DeepSeekConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+// 从环境变量创建
+let llm = DeepSeekChat::from_env();
+
+// 或手动配置
+let config = DeepSeekConfig {
+    api_key: "sk-xxx".to_string(),
+    base_url: "https://api.deepseek.com/v1".to_string(),
+    model: "deepseek-chat".to_string(),  // 或 "deepseek-reasoner"
+    ..Default::default()
+};
+let llm = DeepSeekChat::new(config);
+
+let response = llm.chat(vec![
+    Message::human("解释 Rust 的所有权机制"),
+], None).await?;
+```
+
+#### Moonshot（长上下文）
+
+```rust
+use langchainrust::{MoonshotChat, MoonshotConfig};
+
+let llm = MoonshotChat::with_model("moonshot-v1-128k");  // 128K 上下文
+
+let response = llm.chat(vec![
+    Message::human("分析这篇长文档..."),
+], None).await?;
+```
+
+#### Qwen（通义千问）
+
+```rust
+use langchainrust::{QwenChat, QwenConfig};
+
+let llm = QwenChat::from_env();  // 或 QwenChat::with_model("qwen-plus")
+
+let response = llm.chat(vec![
+    Message::human("用中文解释微服务架构"),
+], None).await?;
+```
+
+#### Zhipu（ChatGLM）
+
+```rust
+use langchainrust::{ZhipuChat, ZhipuConfig};
+
+let llm = ZhipuChat::from_env();  // 或 ZhipuChat::with_model("glm-4")
+
+let response = llm.chat(vec![
+    Message::human("写一段 Rust 并发代码"),
+], None).await?;
+```
+
+#### Anthropic Claude
+
+```rust
+use langchainrust::{AnthropicChat, AnthropicConfig};
+
+let config = AnthropicConfig {
+    api_key: std::env::var("ANTHROPIC_API_KEY")?,
+    model: "claude-3-opus-20240229".to_string(),  // 或 claude-3-sonnet
+    ..Default::default()
+};
+let llm = AnthropicChat::new(config);
+
+let response = llm.chat(vec![
+    Message::human("安全地分析这段代码"),
+], None).await?;
+```
+
+#### Ollama（本地部署）
+
+```rust
+use langchainrust::{OllamaChat, OllamaConfig};
+
+// 基础用法
+let llm = OllamaChat::new("llama3.2");  // 默认 localhost:11434
+
+// 自定义配置
+let config = OllamaConfig {
+    base_url: "http://localhost:11434".to_string(),
+    model: "llama3.2".to_string(),
+    ..Default::default()
+};
+let llm = OllamaChat::with_config(config);
+
+// 多模态支持（vision）
+let llm = OllamaChat::new("llava");
+let response = llm.chat_with_image(
+    vec![Message::human("描述这张图片")],
+    "path/to/image.png",
+).await?;
+```
 
 ### 直接调用 LLM（纯文本）
 
@@ -835,6 +955,87 @@ if result.used_tools {
 [工具调用] calculator {"expression": "37+48"}
 [工具结果] 85
 ```
+
+---
+
+## Embeddings
+
+**Embeddings** 将文本转换为向量，用于语义检索、相似度计算等场景。
+
+### 支持的 Embeddings
+
+| Provider | 类名 | 向量维度 | 特点 |
+|----------|------|----------|------|
+| **OpenAI** | `OpenAIEmbeddings` | 1536 | 高质量、稳定 |
+| **DeepSeek** | `DeepSeekEmbeddings` | 1536 | 性价比高 |
+| **Qwen** | `QwenEmbeddings` | 1536 | 阿里云、中文优化 |
+| **Mock** | `MockEmbeddings` | 自定义 | 测试用 |
+
+### OpenAI Embeddings
+
+```rust
+use langchainrust::{OpenAIEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(OpenAIEmbeddings::new(
+    std::env::var("OPENAI_API_KEY")?
+));
+
+// 单文本嵌入
+let vector = embeddings.embed("Rust 是一门系统编程语言").await?;
+println!("向量维度: {}", vector.len());  // 1536
+
+// 批量嵌入
+let texts = vec![
+    "Rust 是一门系统编程语言",
+    "Python 是一门脚本语言",
+];
+let vectors = embeddings.embed_batch(texts).await?;
+println!("批量向量数: {}", vectors.len());
+```
+
+### DeepSeek Embeddings
+
+```rust
+use langchainrust::{DeepSeekEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(DeepSeekEmbeddings::from_env());
+
+let vector = embeddings.embed("深度学习的核心原理").await?;
+```
+
+### Qwen Embeddings
+
+```rust
+use langchainrust::{QwenEmbeddings, Embeddings};
+use std::sync::Arc;
+
+let embeddings = Arc::new(QwenEmbeddings::from_env());
+
+let vector = embeddings.embed("通义千问的向量生成").await?;
+```
+
+### Mock Embeddings（测试用）
+
+```rust
+use langchainrust::{MockEmbeddings, Embeddings};
+use std::sync::Arc;
+
+// 指定向量维度
+let embeddings = Arc::new(MockEmbeddings::new(128));
+
+let vector = embeddings.embed("测试文本").await?;
+println!("向量维度: {}", vector.len());  // 128
+```
+
+### Embeddings 配置项
+
+| 字段 | 说明 |
+|------|------|
+| `api_key` | API 密钥 |
+| `base_url` | API 地址（支持代理） |
+| `model` | 模型名称 |
 
 ---
 
