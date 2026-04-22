@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.15] - 2025-04-23
+
+### Fixed
+- **MongoChunkedDocumentStore**: 修复 blocking 方法在 tokio runtime 内部的兼容性问题
+  - 使用 `tokio::task::block_in_place` + `Handle::current().block_on` 替代创建新 runtime
+  - 解决 "Cannot block the current thread from within a runtime" 错误
+
 ## [0.2.14] - 2025-04-23
 
 ### Changed
@@ -317,6 +324,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.2.15]: https://github.com/atliliw/langchainrust/compare/v0.2.14...v0.2.15
 [0.2.14]: https://github.com/atliliw/langchainrust/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/atliliw/langchainrust/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/atliliw/langchainrust/compare/v0.2.11...v0.2.12

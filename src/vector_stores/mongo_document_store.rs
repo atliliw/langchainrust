@@ -339,27 +339,35 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
         document: Document,
         chunk_size: usize,
     ) -> Result<(String, Vec<String>), VectorStoreError> {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .block_on(self.add_parent_document(document, chunk_size))
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                self.add_parent_document(document, chunk_size)
+            )
+        })
     }
     
     fn get_parent_document_blocking(&self, parent_id: &str) -> Result<Option<Document>, VectorStoreError> {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .block_on(self.get_parent_document(parent_id))
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                self.get_parent_document(parent_id)
+            )
+        })
     }
     
     fn get_chunk_blocking(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .block_on(self.get_chunk(chunk_id))
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                self.get_chunk(chunk_id)
+            )
+        })
     }
     
     fn blocking_get_chunks_for_parent(&self, parent_id: &str) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .block_on(self.get_chunks_for_parent(parent_id))
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                self.get_chunks_for_parent(parent_id)
+            )
+        })
     }
 }
 
