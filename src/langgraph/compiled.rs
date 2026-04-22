@@ -419,9 +419,10 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
         };
         let mut steps = execution.steps;
         let mut recursion_count = execution.recursion_count;
+        let first_node = current_node.clone();
         
         while current_node != END && recursion_count < self.recursion_limit {
-            if self.interrupt_before.contains(&current_node) {
+            if current_node != first_node && self.interrupt_before.contains(&current_node) {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
             

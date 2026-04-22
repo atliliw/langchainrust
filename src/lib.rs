@@ -38,7 +38,15 @@ pub use core::{
 };
 pub use core::tools::StructuredOutput;
 pub use schema::{Message, MessageType};
-pub use language_models::{OpenAIChat, OpenAIConfig, OllamaChat, OllamaConfig};
+pub use language_models::{
+    OpenAIChat, OpenAIConfig, 
+    OllamaChat, OllamaConfig,
+    DeepSeekChat, DeepSeekConfig,
+    MoonshotChat, MoonshotConfig,
+    ZhipuChat, ZhipuConfig,
+    QwenChat, QwenConfig,
+    AnthropicChat, AnthropicConfig, AnthropicError,
+};
 pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput};
 pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent, FunctionCallingAgent};
 pub use core::tools::to_tool_definition;
@@ -46,7 +54,14 @@ pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBuffer
 pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA};
 
 // Embeddings
-pub use embeddings::{Embeddings, EmbeddingError, OpenAIEmbeddings, OpenAIEmbeddingsConfig, MockEmbeddings, cosine_similarity};
+pub use embeddings::{
+    Embeddings, EmbeddingError, 
+    OpenAIEmbeddings, OpenAIEmbeddingsConfig, 
+    MockEmbeddings, 
+    DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
+    QwenEmbeddings, QwenEmbeddingsConfig,
+    cosine_similarity,
+};
 
 // Vector Stores
 pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder};

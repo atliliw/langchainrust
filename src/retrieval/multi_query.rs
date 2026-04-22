@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_static_query_generator_prefix() {
         let generator = StaticQueryGenerator::new()
-            .with_prefix_expansion(vec!["如何", "怎么"]);
+            .with_prefix_expansion(vec!["如何".to_string(), "怎么".to_string()]);
         
         let queries = generator.generate("处理错误");
         

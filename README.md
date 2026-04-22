@@ -15,7 +15,8 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Component | Description |
 |-----------|-------------|
-| **LLM** | OpenAI / Ollama compatible, streaming, Function Calling |
+| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude |
+| **Embeddings** | OpenAI / DeepSeek / Qwen embeddings |
 | **Agents** | ReActAgent + FunctionCallingAgent |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer |
 | **Chains** | LLMChain / SequentialChain / RetrievalQA |
@@ -24,7 +25,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion |
 | **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph |
 | **Tools** | Calculator / DateTime / Math / URLFetch |
-| **MongoDB** | Persistent storage backend (feature: mongodb-persistence) |
+| **Vector DB** | InMemory / Qdrant / MongoDB |
 
 Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [English](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)
 
@@ -38,8 +39,14 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 ├─────────────────────────────────────────────────────────────┤
 │  LLM Layer                                                   │
 │  ├── OpenAIChat / OllamaChat                                 │
+│  ├── DeepSeek / Moonshot / Zhipu / Qwen (OpenAI compatible) │
+│  ├── AnthropicChat (Claude API)                              │
 │  ├── Function Calling (bind_tools)                          │
 │  └── Streaming (stream_chat)                                │
+├─────────────────────────────────────────────────────────────┤
+│  Embeddings Layer                                            │
+│  ├── OpenAIEmbeddings / DeepSeekEmbeddings                   │
+│  └── QwenEmbeddings / MockEmbeddings                         │
 ├─────────────────────────────────────────────────────────────┤
 │  Agent Layer                                                 │
 │  ├── ReActAgent / FunctionCallingAgent                      │
@@ -50,14 +57,15 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── RAG (TextSplitter, VectorStore)                        │
 │  ├── BM25 (Keyword Search, AutoMerging)                     │
 │  ├── Hybrid (BM25 + Vector, RRF Fusion)                     │
-│  └── Storage (InMemory, MongoDB)                            │
+│  └── HyDE / MultiQuery / Reranking                          │
+│  └── Storage (InMemory, Qdrant, MongoDB)                    │
 ├─────────────────────────────────────────────────────────────┤
 │  Utility Layer                                               │
 │  ├── Memory (Buffer, Window, Summary)                       │
 │  ├── Chains (LLMChain, SequentialChain)                     │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate)           │
 │  ├── Tools (Calculator, DateTime, URLFetch)                 │
-│  └── Callbacks (LangSmith, StdOut)                          │
+│  └── Callbacks (LangSmith, StdOut, multipart batch)         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,6 +110,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", response.content);
     Ok(())
 }
+```
+
+### Multi-Provider Support
+
+```rust
+use langchainrust::{
+    DeepSeekChat, MoonshotChat, ZhipuChat, QwenChat,
+    AnthropicChat, OllamaChat,
+};
+
+let deepseek = DeepSeekChat::from_env();
+let moonshot = MoonshotChat::with_model("moonshot-v1-128k");
+let claude = AnthropicChat::from_env();
+let ollama = OllamaChat::new("llama3.2");
 ```
 
 ### BM25 Keyword Search

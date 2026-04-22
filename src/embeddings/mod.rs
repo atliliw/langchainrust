@@ -1,13 +1,15 @@
 // src/embeddings/mod.rs
 //! Embedding 模型实现
-//!
-//! 提供文本嵌入向量生成功能，用于语义搜索和相似度计算。
 
 mod openai;
 mod mock;
+mod deepseek;
+mod qwen;
 
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use mock::MockEmbeddings;
+pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
+pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
 
 use async_trait::async_trait;
 use std::error::Error;

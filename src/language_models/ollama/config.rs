@@ -1,5 +1,6 @@
 // src/language_models/ollama/config.rs
 
+use crate::core::tools::ToolDefinition;
 use std::env;
 
 #[derive(Debug, Clone)]
@@ -10,6 +11,8 @@ pub struct OllamaConfig {
     pub max_tokens: Option<usize>,
     pub top_p: Option<f32>,
     pub streaming: bool,
+    pub tools: Option<Vec<ToolDefinition>>,
+    pub tool_choice: Option<String>,
 }
 
 impl Default for OllamaConfig {
@@ -21,6 +24,8 @@ impl Default for OllamaConfig {
             max_tokens: None,
             top_p: None,
             streaming: false,
+            tools: None,
+            tool_choice: None,
         }
     }
 }
@@ -68,6 +73,16 @@ impl OllamaConfig {
 
     pub fn with_streaming(mut self, streaming: bool) -> Self {
         self.streaming = streaming;
+        self
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.tool_choice = Some(choice.into());
         self
     }
 }

@@ -1,37 +1,116 @@
-// src/language_models/ollama/chat.rs
+// src/language_models/providers/anthropic.rs
+//! Anthropic Claude API 实现 (自有 API 格式)
 
 use async_trait::async_trait;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt, FutureExt};
 use std::pin::Pin;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
-use std::marker::PhantomData;
+use std::env;
 
 use crate::schema::Message;
 use crate::RunnableConfig;
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
-use crate::core::tools::{ToolDefinition, StructuredOutput, ToolCall};
 use crate::callbacks::{RunTree, RunType};
-use crate::language_models::openai::sse::SSEParser;
-use super::OllamaConfig;
 
-pub struct OllamaChat {
-    config: OllamaConfig,
-    client: reqwest::Client,
+/// Anthropic API 端点
+pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+
+/// Claude 模型列表
+pub const CLAUDE_MODELS: [&str; 5] = [
+    "claude-3-5-sonnet-20241022",  // Claude 3.5 Sonnet
+    "claude-3-5-haiku-20241022",   // Claude 3.5 Haiku
+    "claude-3-opus-20240229",      // Claude 3 Opus
+    "claude-3-sonnet-20240229",    // Claude 3 Sonnet
+    "claude-3-haiku-20240307",     // Claude 3 Haiku
+];
+
+/// Anthropic 配置
+#[derive(Debug, Clone)]
+pub struct AnthropicConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: usize,
+    pub temperature: Option<f32>,
+    pub system_prompt: Option<String>,
 }
 
-impl OllamaChat {
-    pub fn new(model: impl Into<String>) -> Self {
+impl Default for AnthropicConfig {
+    fn default() -> Self {
         Self {
-            config: OllamaConfig::new(model),
-            client: reqwest::Client::new(),
+            api_key: String::new(),
+            base_url: ANTHROPIC_BASE_URL.to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            max_tokens: 4096,
+            temperature: None,
+            system_prompt: None,
+        }
+    }
+}
+
+impl AnthropicConfig {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            ..Default::default()
         }
     }
 
-    pub fn with_config(config: OllamaConfig) -> Self {
+    pub fn from_env() -> Self {
+        let api_key = env::var("ANTHROPIC_API_KEY")
+            .expect("ANTHROPIC_API_KEY environment variable not set");
+        
+        let base_url = env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| ANTHROPIC_BASE_URL.to_string());
+        
+        let model = env::var("ANTHROPIC_MODEL")
+            .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".to_string());
+        
+        let max_tokens = env::var("ANTHROPIC_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4096);
+
+        Self {
+            api_key,
+            base_url,
+            model,
+            max_tokens,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max: usize) -> Self {
+        self.max_tokens = max;
+        self
+    }
+
+    pub fn with_temperature(mut self, temp: f32) -> Self {
+        self.temperature = Some(temp);
+        self
+    }
+
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
+    }
+}
+
+/// Anthropic Claude 聊天客户端
+pub struct AnthropicChat {
+    config: AnthropicConfig,
+    client: reqwest::Client,
+}
+
+impl AnthropicChat {
+    pub fn new(config: AnthropicConfig) -> Self {
         Self {
             config,
             client: reqwest::Client::new(),
@@ -39,40 +118,37 @@ impl OllamaChat {
     }
 
     pub fn from_env() -> Self {
-        Self::with_config(OllamaConfig::from_env())
+        Self::new(AnthropicConfig::from_env())
     }
 
-    fn message_to_openai_format(message: &Message) -> serde_json::Value {
-        match &message.message_type {
-            crate::schema::MessageType::System => json!({
-                "role": "system",
-                "content": message.content,
-            }),
-            crate::schema::MessageType::Human => json!({
-                "role": "user",
-                "content": message.content,
-            }),
-            crate::schema::MessageType::AI => json!({
-                "role": "assistant",
-                "content": message.content,
-            }),
-            crate::schema::MessageType::Tool { tool_call_id } => json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": message.content,
-            }),
+    pub fn with_model(model: impl Into<String>) -> Self {
+        Self::new(AnthropicConfig::from_env().with_model(model))
+    }
+
+    fn message_to_anthropic_format(message: &Message) -> AnthropicMessage {
+        let role = match &message.message_type {
+            crate::schema::MessageType::Human => "user",
+            crate::schema::MessageType::AI => "assistant",
+            _ => "user",
+        };
+        
+        AnthropicMessage {
+            role: role.to_string(),
+            content: message.content.clone(),
         }
     }
 
     fn build_request_body(&self, messages: Vec<Message>, stream: bool) -> serde_json::Value {
-        let formatted_messages: Vec<serde_json::Value> = messages
+        let anthropic_messages: Vec<AnthropicMessage> = messages
             .iter()
-            .map(Self::message_to_openai_format)
+            .filter(|m| m.message_type != crate::schema::MessageType::System)
+            .map(Self::message_to_anthropic_format)
             .collect();
 
         let mut body = json!({
             "model": self.config.model,
-            "messages": formatted_messages,
+            "max_tokens": self.config.max_tokens,
+            "messages": anthropic_messages,
             "stream": stream,
         });
 
@@ -80,149 +156,114 @@ impl OllamaChat {
             body["temperature"] = json!(temp);
         }
 
-        if let Some(max) = self.config.max_tokens {
-            body["max_tokens"] = json!(max);
-        }
-
-        if let Some(top_p) = self.config.top_p {
-            body["top_p"] = json!(top_p);
-        }
-
-        if let Some(tools) = &self.config.tools {
-            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
-        }
-
-        if let Some(tool_choice) = &self.config.tool_choice {
-            body["tool_choice"] = json!(tool_choice);
+        if let Some(system) = &self.config.system_prompt {
+            body["system"] = json!(system);
         }
 
         body
     }
 
-    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
-        let config = OllamaConfig {
-            tools: Some(tools),
-            ..self.config.clone()
-        };
-        Self {
-            config,
-            client: self.client.clone(),
-        }
-    }
-
-    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
-        self.config.tool_choice = Some(choice.into());
-        self
-    }
-
-    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> OllamaStructuredOutput<T> {
-        use schemars::schema_for;
-        let schema = serde_json::to_value(schema_for!(T))
-            .unwrap_or(serde_json::Value::Null);
-        
-        let tool = ToolDefinition::new("structured_output", "Return structured JSON output")
-            .with_parameters(schema);
-        
-        let config = OllamaConfig {
-            tools: Some(vec![tool]),
-            tool_choice: Some("auto".to_string()),
-            ..self.config.clone()
-        };
-        
-        OllamaStructuredOutput {
-            config,
-            client: self.client.clone(),
-            _phantom: PhantomData,
-        }
-    }
-
-    async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, OllamaError> {
-        let url = format!("{}/chat/completions", self.config.base_url);
+    async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, AnthropicError> {
+        let url = format!("{}/messages", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
         let response = self.client
             .post(&url)
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| OllamaError::Http(e.to_string()))?;
+            .map_err(|e| AnthropicError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(OllamaError::Api(format!("HTTP {}: {}", status, error_text)));
+            return Err(AnthropicError::Api(format!("HTTP {}: {}", status, error_text)));
         }
 
-        let chat_response: OllamaChatResponse = response
+        let anthropic_response: AnthropicResponse = response
             .json()
             .await
-            .map_err(|e| OllamaError::Parse(e.to_string()))?;
+            .map_err(|e| AnthropicError::Parse(e.to_string()))?;
 
-        let message = &chat_response.choices[0].message;
+        let content = anthropic_response.content
+            .first()
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
 
         Ok(LLMResult {
-            content: message.content.clone(),
-            model: chat_response.model,
-            token_usage: chat_response.usage.map(|u| TokenUsage {
-                prompt_tokens: u.prompt_tokens,
-                completion_tokens: u.completion_tokens,
-                total_tokens: u.total_tokens,
+            content,
+            model: anthropic_response.model,
+            token_usage: anthropic_response.usage.map(|u| TokenUsage {
+                prompt_tokens: u.input_tokens,
+                completion_tokens: u.output_tokens,
+                total_tokens: u.input_tokens + u.output_tokens,
             }),
-            tool_calls: message.tool_calls.clone(),
+            tool_calls: None,
         })
     }
 
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaError>> + Send>>, OllamaError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, AnthropicError>> + Send>>, AnthropicError> {
         use futures_util::StreamExt;
-
-        let url = format!("{}/chat/completions", self.config.base_url);
+        
+        let url = format!("{}/messages", self.config.base_url);
         let body = self.build_request_body(messages, true);
 
         let response = self.client
             .post(&url)
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| OllamaError::Http(e.to_string()))?;
+            .map_err(|e| AnthropicError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(OllamaError::Api(format!("HTTP {}: {}", status, error_text)));
+            return Err(AnthropicError::Api(format!("HTTP {}: {}", status, error_text)));
         }
 
         let byte_stream = response.bytes_stream();
-
         let stream = byte_stream
             .then(|chunk_result| async move {
-                let mut parser = SSEParser::new();
                 match chunk_result {
                     Ok(bytes) => {
                         let chunk_str = String::from_utf8_lossy(&bytes);
-                        let events = parser.parse(&chunk_str);
-
-                        for event in events {
-                            if event.is_done() {
-                                return None;
-                            }
-
-                            if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                                if let Some(choice) = chunk.choices.first() {
-                                    if let Some(content) = &choice.delta.content {
-                                        return Some(Ok(content.clone()));
+                        let mut content = String::new();
+                        
+                        for line in chunk_str.lines() {
+                            if line.starts_with("data: ") {
+                                let data = line.trim_start_matches("data: ");
+                                if data == "[DONE]" {
+                                    return None;
+                                }
+                                
+                                if let Ok(event) = serde_json::from_str::<AnthropicStreamEvent>(data) {
+                                    if event.type_field == "content_block_delta" {
+                                        if let Some(delta) = event.delta {
+                                            if delta.type_field == "text_delta" {
+                                                content.push_str(&delta.text);
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-
-                        None
+                        
+                        if content.is_empty() {
+                            None
+                        } else {
+                            Some(Ok(content))
+                        }
                     },
-                    Err(e) => Some(Err(OllamaError::Http(e.to_string()))),
+                    Err(e) => Some(Err(AnthropicError::Http(e.to_string()))),
                 }
             })
             .filter_map(|x| async move { x });
@@ -231,9 +272,50 @@ impl OllamaChat {
     }
 }
 
+#[derive(Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    id: String,
+    model: String,
+    content: Vec<AnthropicContent>,
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicUsage {
+    input_tokens: usize,
+    output_tokens: usize,
+}
+
+#[derive(Deserialize)]
+struct AnthropicStreamEvent {
+    #[serde(rename = "type")]
+    type_field: String,
+    delta: Option<AnthropicDelta>,
+}
+
+#[derive(Deserialize)]
+struct AnthropicDelta {
+    #[serde(rename = "type")]
+    type_field: String,
+    text: String,
+}
+
 #[async_trait]
-impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
-    type Error = OllamaError;
+impl Runnable<Vec<Message>, LLMResult> for AnthropicChat {
+    type Error = AnthropicError;
 
     async fn invoke(
         &self,
@@ -248,8 +330,6 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
         input: Vec<Message>,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error> {
-        use futures_util::StreamExt;
-        
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
         
@@ -279,7 +359,7 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
 }
 
 #[async_trait]
-impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
+impl BaseLanguageModel<Vec<Message>, LLMResult> for AnthropicChat {
     fn model_name(&self) -> &str {
         &self.config.model
     }
@@ -293,7 +373,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
     }
 
     fn max_tokens(&self) -> Option<usize> {
-        self.config.max_tokens
+        Some(self.config.max_tokens)
     }
 
     fn with_temperature(mut self, temp: f32) -> Self {
@@ -302,13 +382,13 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
     }
 
     fn with_max_tokens(mut self, max: usize) -> Self {
-        self.config.max_tokens = Some(max);
+        self.config.max_tokens = max;
         self
     }
 }
 
 #[async_trait]
-impl BaseChatModel for OllamaChat {
+impl BaseChatModel for AnthropicChat {
     async fn chat(
         &self,
         messages: Vec<Message>,
@@ -425,73 +505,20 @@ impl BaseChatModel for OllamaChat {
 }
 
 #[derive(Debug)]
-pub enum OllamaError {
+pub enum AnthropicError {
     Http(String),
     Api(String),
     Parse(String),
 }
 
-impl std::fmt::Display for OllamaError {
+impl std::fmt::Display for AnthropicError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OllamaError::Http(msg) => write!(f, "HTTP error: {}", msg),
-            OllamaError::Api(msg) => write!(f, "API error: {}", msg),
-            OllamaError::Parse(msg) => write!(f, "Parse error: {}", msg),
+            AnthropicError::Http(msg) => write!(f, "HTTP error: {}", msg),
+            AnthropicError::Api(msg) => write!(f, "API error: {}", msg),
+            AnthropicError::Parse(msg) => write!(f, "Parse error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for OllamaError {}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct OllamaChatResponse {
-    id: String,
-    object: String,
-    created: i64,
-    model: String,
-    choices: Vec<OllamaChoice>,
-    usage: Option<OllamaUsage>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct OllamaChoice {
-    index: i32,
-    message: OllamaMessage,
-    finish_reason: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct OllamaMessage {
-    role: String,
-    content: String,
-    tool_calls: Option<Vec<ToolCall>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaUsage {
-    prompt_tokens: usize,
-    completion_tokens: usize,
-    total_tokens: usize,
-}
-
-pub struct OllamaStructuredOutput<T: DeserializeOwned + JsonSchema> {
-    config: OllamaConfig,
-    client: reqwest::Client,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: DeserializeOwned + JsonSchema> OllamaStructuredOutput<T> {
-    pub async fn invoke(&self, messages: Vec<Message>) -> Result<T, OllamaError> {
-        let chat = OllamaChat {
-            config: self.config.clone(),
-            client: self.client.clone(),
-        };
-        
-        let result = chat.chat_internal(messages).await?;
-        let structured = StructuredOutput::<T>::new(result);
-        structured.parse().map_err(|e| OllamaError::Parse(e.to_string()))
-    }
-}
+impl std::error::Error for AnthropicError {}

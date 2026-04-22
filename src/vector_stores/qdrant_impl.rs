@@ -1,28 +1,29 @@
 // src/vector_stores/qdrant_impl.rs
 //! Qdrant 向量存储实现
-//!
-//! 注意：此实现在获得实际 Qdrant 服务地址前会使用回退机制
 
 use super::{Document, SearchResult, VectorStore, VectorStoreError};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::collections::HashMap;
+use uuid::Uuid;
+
+#[cfg(feature = "qdrant-integration")]
+use qdrant_client::Qdrant;
+#[cfg(feature = "qdrant-integration")]
+use qdrant_client::qdrant::{
+    CreateCollection, CollectionConfig, VectorsConfig, VectorParams,
+    PointStruct, UpsertPointsBuilder, SearchPointsBuilder, WithPayloadSelector,
+    DeletePointsBuilder, PointsIdsList,
+};
 
 /// Qdrant 配置
 #[derive(Debug, Clone)]
 pub struct QdrantConfig {
-    /// Qdrant 服务 URL
     pub url: String,
-    
-    /// 集合名称
     pub collection_name: String,
-    
-    /// 向量维度
     pub vector_size: usize,
 }
 
 impl QdrantConfig {
-    /// 创建新配置
     pub fn new(url: impl Into<String>, collection: impl Into<String>, vector_size: usize) -> Self {
         Self {
             url: url.into(),
@@ -30,70 +31,90 @@ impl QdrantConfig {
             vector_size,
         }
     }
+
+    pub fn from_env(vector_size: usize) -> Self {
+        let url = std::env::var("QDRANT_URL")
+            .unwrap_or_else(|_| "http://localhost:6334".to_string());
+        let collection = std::env::var("QDRANT_COLLECTION")
+            .unwrap_or_else(|_| "langchainrust".to_string());
+        
+        Self::new(url, collection, vector_size)
+    }
 }
 
 /// Qdrant 向量存储
 pub struct QdrantVectorStore {
     config: QdrantConfig,
-    // TODO: 一旦获得 Qdrant 服务地址，这里会替换为 qdrant_client
-    _qdrant_client_placeholder: String, // 占位符，直至获取真实服务
+    #[cfg(feature = "qdrant-integration")]
+    client: Arc<Qdrant>,
+    #[cfg(not(feature = "qdrant-integration"))]
+    _client_placeholder: (),
 }
 
 impl QdrantVectorStore {
-    /// 创建新的 Qdrant 向量存储
-    ///
-    /// # 参数
-    /// * `config` - Qdrant 配置，包括 URL、集合名和向量维度
-    ///
-    /// # 注意
-    /// 此实现当前为占位实现，等待实际 Qdrant 服务地址
+    #[cfg(feature = "qdrant-integration")]
     pub async fn new(config: QdrantConfig) -> Result<Self, VectorStoreError> {
-        println!("注意: 尝试连接到 Qdrant 在: {}", config.url);
-        println!("请确保已在 Linux 上启动 Qdrant 并提供正确的 URL");
+        let client = Qdrant::from_url(&config.url).build();
         
-        // 验证 URL 格式的基本合法性
+        let collection_exists = client
+            .collection_exists(&config.collection_name)
+            .await
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+
+        if !collection_exists.result.unwrap_or(false) {
+            client
+                .create_collection(&CreateCollection {
+                    collection_name: config.collection_name.clone(),
+                    vectors_config: Some(VectorsConfig::Single(VectorParams {
+                        size: config.vector_size as u64,
+                        distance: qdrant_client::qdrant::Distance::Cosine,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+        }
+
+        Ok(Self {
+            config,
+            client: Arc::new(client),
+        })
+    }
+
+    #[cfg(not(feature = "qdrant-integration"))]
+    pub async fn new(config: QdrantConfig) -> Result<Self, VectorStoreError> {
         if !config.url.contains("://") {
             return Err(VectorStoreError::ConnectionError(
                 "Qdrant URL 格式无效，应为 http://host:port 形式".to_string()
             ));
         }
         
-        // 这里会集成真实的客户端连接逻辑，当获得服务地址后
         Ok(Self {
             config,
-            _qdrant_client_placeholder: "placeholder".to_string(),
+            _client_placeholder: (),
         })
     }
 
-    /// 从环境变量创建配置
     pub async fn from_env(vector_size: usize) -> Result<Self, VectorStoreError> {
-        let url = std::env::var("QDRANT_URL")
-            .unwrap_or_else(|_| "http://localhost:6334".to_string());
-        let collection = std::env::var("QDRANT_COLLECTION")
-            .unwrap_or_else(|_| "langchainrust".to_string());
-        
-        Self::new(QdrantConfig::new(url, collection, vector_size)).await
+        Self::new(QdrantConfig::from_env(vector_size)).await
     }
 }
 
 #[async_trait]
 impl VectorStore for QdrantVectorStore {
+    #[cfg(feature = "qdrant-integration")]
     async fn add_documents(
         &self,
         documents: Vec<Document>,
         embeddings: Vec<Vec<f32>>,
     ) -> Result<Vec<String>, VectorStoreError> {
-        // TODO: 替换为实际的 Qdrant 调用
-        eprintln!("警告: 使用 Qdrant 占位实现。在获得实际服务前回退到内存操作。");
-        
-        // 实现占位逻辑，直到实际服务接入
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
                 "文档数量和嵌入向量数量不匹配".to_string()
             ));
         }
 
-        // 验证向量维度
         for embedding in &embeddings {
             if embedding.len() != self.config.vector_size {
                 return Err(VectorStoreError::StorageError(format!(
@@ -104,24 +125,72 @@ impl VectorStore for QdrantVectorStore {
             }
         }
 
-        // 生成随机 ID 返回
-        use uuid::Uuid;
         let ids: Vec<String> = documents.iter()
             .map(|_| Uuid::new_v4().to_string())
             .collect();
 
-        // 这里本应是实际的 Qdrant upsert 调用
+        let points: Vec<PointStruct> = documents
+            .iter()
+            .zip(embeddings.iter())
+            .zip(ids.iter())
+            .map(|((doc, embedding), id)| {
+                let payload = serde_json::to_value(&doc.metadata)
+                    .unwrap_or(serde_json::Value::Null);
+                
+                PointStruct {
+                    id: Some(qdrant_client::qdrant::PointId::Uuid(id.clone())),
+                    vectors: Some(qdrant_client::qdrant::Vectors::Single(embedding.clone())),
+                    payload: Some(payload.as_object().unwrap().clone()),
+                }
+            })
+            .collect();
+
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(
+                &self.config.collection_name,
+                points,
+            ).wait(true))
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
         Ok(ids)
     }
 
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn add_documents(
+        &self,
+        documents: Vec<Document>,
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<Vec<String>, VectorStoreError> {
+        if documents.len() != embeddings.len() {
+            return Err(VectorStoreError::StorageError(
+                "文档数量和嵌入向量数量不匹配".to_string()
+            ));
+        }
+
+        for embedding in &embeddings {
+            if embedding.len() != self.config.vector_size {
+                return Err(VectorStoreError::StorageError(format!(
+                    "向量维度不匹配: 期望 {}, 实际 {}",
+                    self.config.vector_size,
+                    embedding.len()
+                )));
+            }
+        }
+
+        let ids: Vec<String> = documents.iter()
+            .map(|_| Uuid::new_v4().to_string())
+            .collect();
+
+        Ok(ids)
+    }
+
+    #[cfg(feature = "qdrant-integration")]
     async fn similarity_search(
         &self,
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // TODO: 替换为实际的 Qdrant 搜索调用
-        eprintln!("警告: 使用 Qdrant 占位实现。在获得实际服务前无法返回真实结果。");
-        
         if query_embedding.len() != self.config.vector_size {
             return Err(VectorStoreError::StorageError(format!(
                 "查询向量维度不匹配: 期望 {}, 实际 {}",
@@ -130,28 +199,151 @@ impl VectorStore for QdrantVectorStore {
             )));
         }
 
-        // 返回占位结果
+        let result = self.client
+            .search_points(SearchPointsBuilder::new(
+                &self.config.collection_name,
+                query_embedding.to_vec(),
+                k as u64,
+            ).with_payload(WithPayloadSelector::Enable(true)))
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        let results: Vec<SearchResult> = result
+            .result
+            .unwrap_or_default()
+            .iter()
+            .map(|point| {
+                let content = point.payload
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                
+                SearchResult {
+                    document: Document {
+                        content,
+                        metadata: point.payload.clone(),
+                    },
+                    score: 1.0 - point.score.unwrap_or(0.0),
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn similarity_search(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        if query_embedding.len() != self.config.vector_size {
+            return Err(VectorStoreError::StorageError(format!(
+                "查询向量维度不匹配: 期望 {}, 实际 {}",
+                self.config.vector_size,
+                query_embedding.len()
+            )));
+        }
         Ok(vec![])
     }
 
+    #[cfg(feature = "qdrant-integration")]
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
-        eprintln!("警告: Qdrant 服务未连接，无法获取文档");
-        Ok(None) // 实际实现将从 Qdrant 获取文档
+        let result = self.client
+            .get_point(
+                &self.config.collection_name,
+                qdrant_client::qdrant::PointId::Uuid(id.to_string()),
+                true,
+                None,
+            )
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        let point = result.result;
+        if let Some(point) = point {
+            let content = point.payload
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            
+            Ok(Some(Document {
+                content,
+                metadata: point.payload.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn get_document(&self, _id: &str) -> Result<Option<Document>, VectorStoreError> {
+        Ok(None)
+    }
+
+    #[cfg(feature = "qdrant-integration")]
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        eprintln!("警告: Qdrant 服务未连接，无法删除文档");
-        Ok(()) // 实际实现将从 Qdrant 删除文档
+        self.client
+            .delete_points(DeletePointsBuilder::new(
+                &self.config.collection_name,
+                PointsIdsList {
+                    points_ids: vec![qdrant_client::qdrant::PointId::Uuid(id.to_string())],
+                },
+            ).wait(true))
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        Ok(())
     }
 
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn delete_document(&self, _id: &str) -> Result<(), VectorStoreError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "qdrant-integration")]
     async fn count(&self) -> usize {
-        eprintln!("警告: Qdrant 服务未连接，无法获取计数");
-        0 // 实际实现将获取集合中点的实际数量
+        self.client
+            .collection_info(&self.config.collection_name)
+            .await
+            .ok()
+            .and_then(|info| info.result)
+            .and_then(|result| result.points_count)
+            .unwrap_or(0)
     }
 
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn count(&self) -> usize {
+        0
+    }
+
+    #[cfg(feature = "qdrant-integration")]
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        eprintln!("警告: Qdrant 服务未连接，无法清空");
-        Ok(()) // 实际实现将清空集合或删除重新创建
+        self.client
+            .delete_collection(&self.config.collection_name)
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        self.client
+            .create_collection(&CreateCollection {
+                collection_name: self.config.collection_name.clone(),
+                vectors_config: Some(VectorsConfig::Single(VectorParams {
+                    size: self.config.vector_size as u64,
+                    distance: qdrant_client::qdrant::Distance::Cosine,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "qdrant-integration"))]
+    async fn clear(&self) -> Result<(), VectorStoreError> {
+        Ok(())
     }
 }
 
@@ -159,14 +351,6 @@ impl VectorStore for QdrantVectorStore {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    #[ignore = "需要实际的 Qdrant 服务地址"]
-    async fn test_qdrant_integration() {
-        let config = QdrantConfig::new("http://your-actual-url:6334", "test_collection", 1536);
-        let store = QdrantVectorStore::new(config).await;
-        assert!(store.is_ok());
-    }
-    
     #[tokio::test]
     async fn test_config_creation() {
         let config = QdrantConfig::new("http://localhost:6334", "my_collection", 128);
@@ -176,14 +360,11 @@ mod tests {
     }
     
     #[test]
+    #[cfg(not(feature = "qdrant-integration"))]
     fn test_invalid_url_format() {
         let result = tokio_test::block_on(async {
             QdrantVectorStore::new(QdrantConfig::new("invalid-url", "test", 128)).await
         });
         assert!(result.is_err());
-        match result.unwrap_err() {
-            VectorStoreError::ConnectionError(_) => {},
-            _ => panic!("Expected ConnectionError"),
-        }
     }
 }

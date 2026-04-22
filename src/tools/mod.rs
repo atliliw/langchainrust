@@ -1,6 +1,4 @@
 // src/tools/mod.rs
-//! 内置工具实现
-
 mod calculator;
 mod datetime;
 mod math;

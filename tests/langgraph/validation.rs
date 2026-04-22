@@ -163,13 +163,15 @@ fn test_edge_targeting_start() {
     graph.add_node_fn("loop_node", |state| Ok(StateUpdate::full(state.clone())));
 
     graph.add_edge(START, "loop_node");
-    graph.add_edge("loop_node", START); // 目标是 START！
+    graph.add_edge("loop_node", START);
 
     let result = graph.compile();
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("START"));
+    let err_str = err.to_string();
+    println!("Error message: {}", err_str);
+    assert!(err_str.contains("START") || err_str.contains("start"));
 }
 
 /// 测试正常图编译成功

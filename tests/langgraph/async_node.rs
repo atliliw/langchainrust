@@ -115,7 +115,9 @@ async fn test_multiple_async_nodes() {
     
     assert_eq!(result.recursion_count, 3);
     assert_eq!(result.final_state.output, Some("Done".to_string()));
-    assert_eq!(result.final_state.messages.len(), 4);
+    // step3 只调用了 set_output，没有 add_message，所以只有 3 条消息
+    // 初始 1 (human) + step1 1 (ai) + step2 1 (ai) = 3
+    assert_eq!(result.final_state.messages.len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
