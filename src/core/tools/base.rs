@@ -1,116 +1,116 @@
 // src/core/tools/base.rs
-//! 工具基础 trait
+//! Tool base traits.
 //!
-//! Python 的 BaseTool 使用 run(input: str) -> str 的简化接口。
+//! Python's BaseTool uses a simplified run(input: str) -> str interface.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
-/// 工具基础 trait（对象安全版本）
+/// Base tool trait (object-safe version).
 ///
-/// 这是用于工具注册表和 Agent 的基础接口。
-/// 使用字符串输入/输出，简化 LLM 调用。
-/// 
-/// 所有工具必须实现这个接口才能被 Agent 使用。
+/// This is the base interface for tool registries and Agents.
+/// Uses string input/output to simplify LLM calls.
+///
+/// All tools must implement this interface to be used by Agents.
 #[async_trait]
 pub trait BaseTool: Send + Sync {
-    /// 获取工具名称
-    /// 
-    /// 名称应该是唯一的，能清晰表达工具的用途。
+    /// Returns the tool name.
+    ///
+    /// Name should be unique and clearly express the tool's purpose.
     fn name(&self) -> &str;
     
-    /// 获取工具描述
-    /// 
-    /// 描述应该详细说明工具的用途、输入格式和输出格式。
+    /// Returns the tool description.
+    ///
+    /// Description should detail the tool's purpose, input format, and output format.
     fn description(&self) -> &str;
     
-    /// 执行工具（字符串版本）
-    /// 
-    /// 这是 Agent 调用的主要接口。
-    /// 输入通常是 JSON 字符串，输出是执行结果。
-    /// 
-    /// # 参数
-    /// * `input` - 工具输入（通常是 JSON 格式的字符串）
-    /// 
-    /// # 返回
-    /// 执行结果的字符串表示
+    /// Execute the tool (string version).
+    ///
+    /// This is the primary interface called by Agents.
+    /// Input is typically a JSON string, output is the execution result.
+    ///
+    /// # Arguments
+    /// * `input` - Tool input (typically JSON-formatted string).
+    ///
+    /// # Returns
+    /// String representation of execution result.
     async fn run(&self, input: String) -> Result<String, ToolError>;
     
-    /// 获取输入的 JSON Schema
-    /// 
-    /// 用于向 LLM 描述工具的输入格式。
+    /// Returns the input JSON Schema.
+    ///
+    /// Used to describe the tool's input format to the LLM.
     fn args_schema(&self) -> Option<Value> {
         None
     }
     
-    /// 是否直接返回结果给用户
-    /// 
-    /// 如果为 true，工具的输出会直接返回给用户，而不是传给 Agent。
+    /// Whether to return result directly to user.
+    ///
+    /// If true, tool output is returned directly to user, not passed to Agent.
     fn return_direct(&self) -> bool {
         false
     }
     
-    /// 处理执行错误
-    /// 
-    /// 当工具执行失败时，可以返回一个友好的错误消息。
+    /// Handle execution error.
+    ///
+    /// Returns a friendly error message when tool execution fails.
     async fn handle_error(&self, error: ToolError) -> String {
-        format!("工具 '{}' 执行失败: {}", self.name(), error)
+        format!("Tool '{}' execution failed: {}", self.name(), error)
     }
 }
 
-/// 泛型工具 trait（类型安全版本）
+/// Generic tool trait (type-safe version).
 ///
-/// 用于需要类型安全输入/输出的场景。
-/// 实现这个 trait 的工具可以自动包装为 BaseTool。
+/// For scenarios requiring type-safe input/output.
+/// Tools implementing this trait can be automatically wrapped as BaseTool.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// 输入类型（必须支持反序列化和 JSON Schema）
+    /// Input type (must support deserialization and JSON Schema).
     type Input: DeserializeOwned + JsonSchema + Send + Sync + 'static;
     
-    /// 输出类型（必须支持序列化）
+    /// Output type (must support serialization).
     type Output: Serialize + Send + Sync;
     
-    /// 执行工具
-    /// 
-    /// # 参数
-    /// * `input` - 工具输入
-    /// 
-    /// # 返回
-    /// 工具输出
+    /// Execute the tool.
+    ///
+    /// # Arguments
+    /// * `input` - Tool input.
+    ///
+    /// # Returns
+    /// Tool output.
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError>;
     
-    /// 获取输入的 JSON Schema
+    /// Returns the input JSON Schema.
     fn args_schema(&self) -> Option<Value> {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(Self::Input)).ok()
     }
 }
 
-/// 工具错误类型
+/// Tool error type.
 #[derive(Debug)]
 pub enum ToolError {
-    /// 输入验证错误
+    /// Input validation error.
     InvalidInput(String),
     
-    /// 执行错误
+    /// Execution error.
     ExecutionFailed(String),
     
-    /// 超时
+    /// Timeout.
     Timeout(u64),
     
-    /// 工具未找到
+    /// Tool not found.
     ToolNotFound(String),
 }
 
 impl std::fmt::Display for ToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ToolError::InvalidInput(msg) => write!(f, "输入无效: {}", msg),
-            ToolError::ExecutionFailed(msg) => write!(f, "执行失败: {}", msg),
-            ToolError::Timeout(seconds) => write!(f, "执行超时: {}秒", seconds),
-            ToolError::ToolNotFound(name) => write!(f, "工具未找到: {}", name),
+            ToolError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            ToolError::ExecutionFailed(msg) => write!(f, "Execution failed: {}", msg),
+            ToolError::Timeout(seconds) => write!(f, "Timeout: {} seconds", seconds),
+            ToolError::ToolNotFound(name) => write!(f, "Tool not found: {}", name),
         }
     }
 }
@@ -119,15 +119,15 @@ impl std::error::Error for ToolError {}
 
 use super::ToolDefinition;
 
-/// 将 BaseTool 转为 ToolDefinition（用于 Function Calling）
+/// Converts BaseTool to ToolDefinition (for function calling).
 ///
-/// # 参数
-/// * `tool` - 实现 BaseTool trait 的工具
+/// # Arguments
+/// * `tool` - Tool implementing BaseTool trait.
 ///
-/// # 返回
-/// ToolDefinition，可用于 bind_tools()
+/// # Returns
+/// ToolDefinition for bind_tools().
 ///
-/// # 示例
+/// # Example
 /// ```
 /// use langchainrust::{Calculator, BaseTool, to_tool_definition};
 /// use std::sync::Arc;

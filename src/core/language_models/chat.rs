@@ -1,4 +1,5 @@
 // src/core/language_models/chat.rs
+//! Chat model base trait.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -9,7 +10,7 @@ use crate::RunnableConfig;
 use crate::core::tools::ToolCall;
 use super::BaseLanguageModel;
 
-/// LLM 结果
+/// LLM result containing response content and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMResult {
     pub content: String,
@@ -18,61 +19,61 @@ pub struct LLMResult {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-/// Token 使用情况
+/// Token usage statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
-    /// 输入 token 数
+    /// Input token count.
     pub prompt_tokens: usize,
     
-    /// 输出 token 数
+    /// Output token count.
     pub completion_tokens: usize,
     
-    /// 总 token 数
+    /// Total token count.
     pub total_tokens: usize,
 }
 
-/// 聊天模型基础 trait
+/// Base trait for chat models.
 ///
-/// 继承自 BaseLanguageModel，专门用于聊天场景。
-/// 接受消息列表作为输入，返回 AI 消息。
+/// Extends BaseLanguageModel for chat scenarios.
+/// Accepts message list as input, returns AI message.
 #[async_trait]
 pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
-    /// 与模型聊天
+    /// Chat with the model.
     /// 
-    /// # 参数
-    /// * `messages` - 消息列表
-    /// * `config` - 可选配置
+    /// # Arguments
+    /// * `messages` - Message list.
+    /// * `config` - Optional configuration.
     /// 
-    /// # 返回
-    /// LLM 结果
+    /// # Returns
+    /// LLM result.
     async fn chat(
         &self, 
         messages: Vec<Message>, 
         config: Option<RunnableConfig>
     ) -> Result<LLMResult, Self::Error>;
     
-    /// 流式聊天
+    /// Stream chat with the model.
     /// 
-    /// # 参数
-    /// * `messages` - 消息列表
-    /// * `config` - 可选配置
+    /// # Arguments
+    /// * `messages` - Message list.
+    /// * `config` - Optional configuration.
     /// 
-    /// # 返回
-    /// 流式输出
+    /// # Returns
+    /// Stream of output chunks.
     async fn stream_chat(
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>;
     
-    /// 与系统提示聊天
+    /// Chat with system prompt.
     /// 
-    /// # 参数
-    /// * `system` - 系统提示
-    /// * `messages` - 消息列表
+    /// # Arguments
+    /// * `system` - System prompt.
+    /// * `messages` - Message list.
     /// 
-    /// # 返回
-    /// LLM 结果
+    /// # Returns
+    /// LLM result.
     async fn chat_with_system(
         &self,
         system: String,

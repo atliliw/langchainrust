@@ -1,28 +1,28 @@
 // src/core/runnables/runnable_trait.rs
-//! Runnable trait - LCEL (LangChain Expression Language) 的基础
+//! Runnable trait - foundation of LCEL (LangChain Expression Language).
 //!
-//! LangChain 中的每个组件都实现 Runnable，使它们可以
-//! 链式调用、组合和互操作。
+//! Every LangChain component implements Runnable, enabling
+//! chaining, composition, and interoperability.
 
 use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
 use super::RunnableConfig;
 
-/// LangChain 所有组件的基础 trait
+/// Base trait for all LangChain components.
 ///
-/// 这个 trait 定义了每个组件必须实现的核心接口：
-/// - 单次执行 via `invoke`
-/// - 批量处理 via `batch`
-/// - 流式输出 via `stream`
+/// This trait defines the core interface every component must implement:
+/// - Single execution via `invoke`
+/// - Batch processing via `batch`
+/// - Streaming output via `stream`
 ///
-/// # 示例
+/// # Example
 /// ```rust
 /// use langchainrust::core::runnables::Runnable;
 /// use langchainrust::RunnableConfig;
 /// use async_trait::async_trait;
 ///
-/// // 定义一个简单的 Runnable：加一
+/// // Define a simple Runnable: add one
 /// struct AddOne;
 ///
 /// #[async_trait]
@@ -36,32 +36,32 @@ use super::RunnableConfig;
 /// ```
 #[async_trait]
 pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>: Send + Sync {
-    /// 错误类型
+    /// Error type.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// 将单个输入转换为输出
+    /// Transforms single input to output.
     ///
-    /// 这是单次执行的主要方法。
+    /// This is the primary method for single execution.
     ///
-    /// # 参数
-    /// * `input` - 要处理的输入
-    /// * `config` - 可选的执行配置
+    /// # Arguments
+    /// * `input` - Input to process.
+    /// * `config` - Optional execution configuration.
     ///
-    /// # 返回
-    /// * `Result<Output, Self::Error>` - 执行结果
+    /// # Returns
+    /// Execution result.
     async fn invoke(&self, input: Input, config: Option<RunnableConfig>) -> Result<Output, Self::Error>;
 
-    /// 批量处理 - 将多个输入转换为多个输出
+    /// Batch processing - transforms multiple inputs to outputs.
     ///
-    /// 默认实现是顺序处理输入。
-    /// 可以重写此方法以实现并发执行或优化批处理。
+    /// Default implementation processes inputs sequentially.
+    /// Override for concurrent execution or batch optimization.
     ///
-    /// # 参数
-    /// * `inputs` - 输入向量
-    /// * `config` - 可选的批处理配置
+    /// # Arguments
+    /// * `inputs` - Input vector.
+    /// * `config` - Optional batch configuration.
     ///
-    /// # 返回
-    /// * `Result<Vec<Output>, Self::Error>` - 结果向量
+    /// # Returns
+    /// Result vector.
     async fn batch(
         &self,
         inputs: Vec<Input>,
@@ -69,7 +69,7 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     ) -> Result<Vec<Output>, Self::Error> {
         let mut results = Vec::with_capacity(inputs.len());
 
-        // 顺序处理每个输入
+        // Process each input sequentially
         for input in inputs {
             let result = self.invoke(input, config.clone()).await?;
             results.push(result);
@@ -78,29 +78,29 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
         Ok(results)
     }
 
-    /// 流式输出 - 用于流式响应 (LLM 等)
+    /// Streaming output - for real-time responses (LLM, etc).
     ///
-    /// 此方法启用输出的实时流式处理，
-    /// 适用于聊天模型、token 生成等场景。
+    /// Enables real-time stream processing of output,
+    /// suitable for chat models, token generation, etc.
     ///
-    /// # 参数
-    /// * `input` - 要处理的输入
-    /// * `config` - 可选配置
+    /// # Arguments
+    /// * `input` - Input to process.
+    /// * `config` - Optional configuration.
     ///
-    /// # 返回
-    /// * `Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error>` - 输出流
+    /// # Returns
+    /// Output stream.
     ///
-    /// # 默认实现
-    /// 默认将 invoke 结果包装为单元素流。
-    /// 支持真正流式的类型应重写此方法。
+    /// # Default Implementation
+    /// Wraps invoke result as single-element stream.
+    /// Types supporting true streaming should override.
     async fn stream(
         &self,
         input: Input,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error> {
-        // 默认实现：将 invoke 结果包装为单元素流
-        // 这样所有 Runnable 都自动获得 stream 能力
-        // 支持真正流式的类型（如 LLM）应重写此方法
+        // Default: wrap invoke result as single-element stream
+        // All Runables automatically get stream capability
+        // Types with true streaming (like LLM) should override
         let result = self.invoke(input, config).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))

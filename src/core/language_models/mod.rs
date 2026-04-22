@@ -1,5 +1,5 @@
 // src/core/language_models/mod.rs
-//! 语言模型基础模块
+//! Language model base traits.
 
 mod base;
 mod chat;

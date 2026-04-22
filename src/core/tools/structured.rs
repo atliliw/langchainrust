@@ -1,34 +1,34 @@
 // src/core/tools/structured.rs
-//! 结构化工具
+//! Structured tool wrapper.
 //!
-//! 将泛型 Tool 包装为 BaseTool，提供字符串接口。
+//! Wraps generic Tool as BaseTool with string interface.
 
 use super::{BaseTool, Tool, ToolError};
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// 结构化工具包装器
-/// 
-/// 将实现了 `Tool` trait 的工具包装为 `BaseTool`，
-/// 自动处理 JSON 输入解析和输出序列化。
+/// Structured tool wrapper.
+///
+/// Wraps a Tool trait implementation as BaseTool,
+/// automatically handling JSON input parsing and output serialization.
 pub struct StructuredTool<T: Tool> {
-    /// 内部工具
+    /// Inner tool instance.
     inner: T,
-    /// 工具名称
+    /// Tool name.
     name: String,
-    /// 工具描述
+    /// Tool description.
     description: String,
-    /// JSON Schema
+    /// JSON Schema.
     schema: Option<Value>,
 }
 
 impl<T: Tool> StructuredTool<T> {
-    /// 创建结构化工具
-    /// 
-    /// # 参数
-    /// * `tool` - 内部工具实例
-    /// * `name` - 工具名称（可选，默认使用内部工具名称）
-    /// * `description` - 工具描述（可选，默认使用内部工具描述）
+    /// Creates a structured tool.
+    ///
+    /// # Arguments
+    /// * `tool` - Inner tool instance.
+    /// * `name` - Tool name (optional, defaults to "tool").
+    /// * `description` - Tool description (optional, defaults to "A tool").
     pub fn new(tool: T, name: Option<&str>, description: Option<&str>) -> Self {
         let schema = tool.args_schema();
         Self {
@@ -39,23 +39,21 @@ impl<T: Tool> StructuredTool<T> {
         }
     }
     
-    /// 验证输入
-    /// 
-    /// 将 JSON 字符串转换为工具的输入类型。
+    /// Parses JSON string to tool input type.
     fn parse_input(&self, input: String) -> Result<T::Input, ToolError> {
-        // 尝试解析为 JSON
+        // Parse as JSON
         let json: Value = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
         
-        // 转换为目标类型
+        // Convert to target type
         serde_json::from_value(json)
-            .map_err(|e| ToolError::InvalidInput(format!("输入格式不匹配: {}", e)))
+            .map_err(|e| ToolError::InvalidInput(format!("Input format mismatch: {}", e)))
     }
     
-    /// 序列化输出
+    /// Serializes output to JSON string.
     fn serialize_output(output: T::Output) -> Result<String, ToolError> {
         serde_json::to_string(&output)
-            .map_err(|e| ToolError::ExecutionFailed(format!("输出序列化失败: {}", e)))
+            .map_err(|e| ToolError::ExecutionFailed(format!("Output serialization failed: {}", e)))
     }
 }
 
@@ -70,13 +68,13 @@ impl<T: Tool> BaseTool for StructuredTool<T> {
     }
     
     async fn run(&self, input: String) -> Result<String, ToolError> {
-        // 解析输入
+        // Parse input
         let parsed_input = self.parse_input(input)?;
         
-        // 执行工具
+        // Execute tool
         let output = self.inner.invoke(parsed_input).await?;
         
-        // 序列化输出
+        // Serialize output
         Self::serialize_output(output)
     }
     
@@ -89,7 +87,7 @@ impl<T: Tool> BaseTool for StructuredTool<T> {
     }
     
     async fn handle_error(&self, error: ToolError) -> String {
-        format!("工具 '{}' 执行失败: {}", self.name, error)
+        format!("Tool '{}' execution failed: {}", self.name, error)
     }
 }
 

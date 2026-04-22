@@ -1,4 +1,5 @@
 // src/core/runnables/config.rs
+//! Runnable execution configuration.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -7,81 +8,81 @@ use uuid::Uuid;
 
 use crate::callbacks::CallbackManager;
 
-/// Runnable 执行配置
+/// Runnable execution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct RunnableConfig {
-    /// 标签 - 用于过滤和追踪
+    /// Tags for filtering and tracking.
     pub tags: Vec<String>,
 
-    /// 元数据 - 自定义数据 (JSON 可序列化)
+    /// Metadata - custom data (JSON serializable).
     pub metadata: HashMap<String, Value>,
 
-    /// 最大并发数 - 用于批量操作
+    /// Max concurrency for batch operations.
     pub max_concurrency: Option<usize>,
 
-    /// 运行 ID - 用于追踪
+    /// Run ID for tracking.
     pub run_id: Option<Uuid>,
 
-    /// 运行名称 - 用于调试
+    /// Run name for debugging.
     pub run_name: Option<String>,
 
-    /// 回调管理器 - 用于追踪和监控
+    /// Callback manager for tracing and monitoring.
     pub callbacks: Option<Arc<CallbackManager>>,
 }
 
 impl RunnableConfig {
-    /// 创建空配置
+    /// Creates an empty configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 添加标签
+    /// Adds a tag.
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
-    /// 添加元数据
+    /// Adds metadata.
     pub fn with_metadata(mut self, key: impl Into<String>, value: Value) -> Self {
         self.metadata.insert(key.into(), value);
         self
     }
 
-    /// 设置最大并发数
+    /// Sets max concurrency.
     pub fn with_max_concurrency(mut self, max: usize) -> Self {
         self.max_concurrency = Some(max);
         self
     }
 
-    /// 设置运行 ID
+    /// Sets run ID.
     pub fn with_run_id(mut self, id: Uuid) -> Self {
         self.run_id = Some(id);
         self
     }
 
-    /// 设置运行名称
+    /// Sets run name.
     pub fn with_run_name(mut self, name: impl Into<String>) -> Self {
         self.run_name = Some(name.into());
         self
     }
 
-    /// 设置回调管理器
+    /// Sets callback manager.
     pub fn with_callbacks(mut self, callbacks: Arc<CallbackManager>) -> Self {
         self.callbacks = Some(callbacks);
         self
     }
 
-    /// 合并两个配置 (后面的配置覆盖前面的)
+    /// Merges two configurations (later overrides earlier).
     pub fn merge(mut self, other: RunnableConfig) -> Self {
-        // 合并标签 (取并集)
+        // Merge tags (union)
         self.tags.extend(other.tags);
         self.tags.sort();
         self.tags.dedup();
 
-        // 合并元数据 (覆盖)
+        // Merge metadata (override)
         self.metadata.extend(other.metadata);
 
-        // 覆盖其他字段
+        // Override other fields
         if other.max_concurrency.is_some() {
             self.max_concurrency = other.max_concurrency;
         }
