@@ -6,6 +6,7 @@
 
 use super::{Document, VectorStoreError};
 use async_trait::async_trait;
+use crate::retrieval::{RecursiveCharacterSplitter, TextSplitter};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -292,17 +293,12 @@ impl InMemoryChunkedDocumentStore {
         content: &str,
         chunk_size: usize,
     ) -> Result<Vec<String>, VectorStoreError> {
-        let chars: Vec<char> = content.chars().collect();
-        let total_len = chars.len();
+        let splitter = RecursiveCharacterSplitter::new(chunk_size, chunk_size / 10);
+        let chunks = splitter.split_text(content);
         
         let mut chunk_ids = Vec::new();
-        let mut segment = 0;
-        let mut start = 0;
         
-        while start < total_len {
-            let end = std::cmp::min(start + chunk_size, total_len);
-            let chunk_content: String = chars[start..end].iter().collect();
-            
+        for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}_{}", parent_id, segment);
             
             let chunk = ChunkDocument::new(
@@ -313,8 +309,8 @@ impl InMemoryChunkedDocumentStore {
             );
             
             {
-                let mut chunks = self.chunks.blocking_write();
-                chunks.insert(chunk_id.clone(), chunk);
+                let mut chunks_store = self.chunks.blocking_write();
+                chunks_store.insert(chunk_id.clone(), chunk);
             }
             
             {
@@ -326,8 +322,6 @@ impl InMemoryChunkedDocumentStore {
             }
             
             chunk_ids.push(chunk_id);
-            segment += 1;
-            start = end;
         }
         
         Ok(chunk_ids)
@@ -339,17 +333,12 @@ impl InMemoryChunkedDocumentStore {
         content: &str,
         chunk_size: usize,
     ) -> Result<Vec<String>, VectorStoreError> {
-        let chars: Vec<char> = content.chars().collect();
-        let total_len = chars.len();
+        let splitter = RecursiveCharacterSplitter::new(chunk_size, chunk_size / 10);
+        let chunks = splitter.split_text(content);
         
         let mut chunk_ids = Vec::new();
-        let mut segment = 0;
-        let mut start = 0;
         
-        while start < total_len {
-            let end = std::cmp::min(start + chunk_size, total_len);
-            let chunk_content: String = chars[start..end].iter().collect();
-            
+        for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}_{}", parent_id, segment);
             
             let chunk = ChunkDocument::new(
@@ -360,8 +349,8 @@ impl InMemoryChunkedDocumentStore {
             );
             
             {
-                let mut chunks = self.chunks.write().await;
-                chunks.insert(chunk_id.clone(), chunk);
+                let mut chunks_store = self.chunks.write().await;
+                chunks_store.insert(chunk_id.clone(), chunk);
             }
             
             {
@@ -373,8 +362,6 @@ impl InMemoryChunkedDocumentStore {
             }
             
             chunk_ids.push(chunk_id);
-            segment += 1;
-            start = end;
         }
         
         Ok(chunk_ids)

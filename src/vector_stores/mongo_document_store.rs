@@ -9,6 +9,7 @@
 
 use super::{Document, VectorStoreError};
 use super::document_store::{ChunkDocument, ChunkedDocumentStoreTrait};
+use crate::retrieval::{RecursiveCharacterSplitter, TextSplitter};
 use async_trait::async_trait;
 use mongodb::{
     bson::doc,
@@ -183,15 +184,12 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
             .await
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         
-        let chars: Vec<char> = document.content.chars().collect();
-        let total_len = chars.len();
-        let mut chunk_ids = Vec::new();
-        let mut segment = 0;
-        let mut start = 0;
+        let splitter = RecursiveCharacterSplitter::new(chunk_size, chunk_size / 10);
+        let chunks = splitter.split_text(&document.content);
         
-        while start < total_len {
-            let end = std::cmp::min(start + chunk_size, total_len);
-            let chunk_content: String = chars[start..end].iter().collect();
+        let mut chunk_ids = Vec::new();
+        
+        for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}_{}", parent_id, segment);
             
             let mongo_chunk = MongoChunkDoc {
@@ -208,8 +206,6 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
             
             chunk_ids.push(chunk_id);
-            segment += 1;
-            start = end;
         }
         
         Ok((parent_id, chunk_ids))
