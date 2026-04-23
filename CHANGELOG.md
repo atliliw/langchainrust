@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.16] - 2025-04-24
+
+### Fixed
+- **BM25 分割算法**: 修复 Parent-Child 分割使用简单字符切分导致语义边界破坏的问题
+  - `InMemoryChunkedDocumentStore`: 使用 `RecursiveCharacterSplitter` 替代 `chars[start..end]`
+  - `MongoChunkedDocumentStore`: 同样修改，MongoDB 存储也使用语义分割
+  - 分隔符优先级：段落 > 行 > 句号 > 空格 > 字符
+  - 添加 chunk_overlap（默认 chunk_size / 10）避免边界信息丢失
+
+### Added
+- **文档**: `docs/bm25_split_fix.md` 详细说明分割算法修复
+
 ## [0.2.15] - 2025-04-23
 
 ### Fixed
