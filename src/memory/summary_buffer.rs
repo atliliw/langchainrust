@@ -100,6 +100,10 @@ impl ConversationSummaryBufferMemory {
         &self.chat_memory
     }
     
+    pub fn chat_memory_mut(&mut self) -> &mut ChatMessageHistory {
+        &mut self.chat_memory
+    }
+    
     pub fn max_token_limit(&self) -> usize {
         self.max_token_limit
     }
