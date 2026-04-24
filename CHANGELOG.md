@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.17] - 2025-04-24
+
+### Added
+- **Memory 持久化**: 新增 PersistentMemory trait 和 MongoPersistentMemory 实现
+  - `PersistentMemory` trait: 框架层持久化接口，支持 load_from_store/save_to_store/delete_session
+  - `MongoPersistentMemory`: MongoDB 存储，组合 ConversationSummaryBufferMemory 压缩逻辑
+  - `PersistenceConfig`: 配置 auto_save/auto_load/token_limit
+  - `MemoryData`: 内存数据序列化结构
+  - 框架负责压缩算法，业务层负责存储实现
+- **ConversationSummaryBufferMemory**: 添加 `chat_memory_mut()` 方法支持可变访问
+
 ## [0.2.16] - 2025-04-24
 
 ### Fixed

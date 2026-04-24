@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "langchainrust"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "async-trait",
  "bincode",
