@@ -122,6 +122,20 @@ impl QdrantVectorStore {
 
         Self::new(QdrantConfig::new(url, collection_name)).await
     }
+
+    pub async fn delete_by_metadata(&self, key: &str, value: &str) -> Result<usize, VectorStoreError> {
+        let filter = Filter::must([Condition::matches(key, value.to_string())]);
+
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&self.config.collection_name)
+                    .points(filter)
+            )
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("按metadata删除失败: {}", e)))?;
+
+        Ok(0)
+    }
 }
 
 #[async_trait]
