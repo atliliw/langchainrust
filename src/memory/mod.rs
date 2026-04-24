@@ -54,6 +54,8 @@ pub mod window;
 pub mod summary;
 pub mod summary_buffer;
 pub mod persistent;
+
+#[cfg(feature = "mongodb-persistence")]
 pub mod mongo_memory;
 
 pub use base::{BaseMemory, MemoryError, ChatMessageHistory};
@@ -62,4 +64,6 @@ pub use window::ConversationBufferWindowMemory;
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;
 pub use persistent::{PersistentMemory, PersistenceConfig, MemoryData};
+
+#[cfg(feature = "mongodb-persistence")]
 pub use mongo_memory::MongoPersistentMemory;
