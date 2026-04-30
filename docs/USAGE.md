@@ -13,6 +13,8 @@
 - [Prompts](#prompts)
   - PromptTemplate
   - ChatPromptTemplate
+  - FewShotPromptTemplate
+  - ExampleSelector
 - [Memory](#memory)
   - ConversationBufferMemory
   - ConversationBufferWindowMemory
@@ -20,6 +22,8 @@
   - ConversationSummaryBufferMemory
   - Memory 类型对比
 - [Chains](#chains)
+  - SequentialChain（带 memory 注入）
+  - ConversationRetrievalChain（对话检索）
 - [Agent](#agent)
   - FunctionCallingAgent（推荐）
   - ReActAgent（兼容旧模型）
@@ -28,6 +32,9 @@
   - Tool 调用输出格式约定
 - [Tools](#tools)
   - 内置工具
+  - WikipediaTool
+  - DuckDuckGoSearchTool
+  - PythonREPLTool
   - 自定义 Tool
   - to_tool_definition()
 - [Embeddings](#embeddings)
@@ -60,6 +67,25 @@
   - KeywordReranker
   - BM25Reranker
   - RerankingExecutor
+- [Output Parsers](#output-parsers)
+  - StrOutputParser
+  - CommaSeparatedListOutputParser
+  - JsonOutputParser
+  - StructuredOutputParser
+  - TypedOutputParser
+- [Document Chains](#document-chains)
+  - StuffDocumentsChain
+  - RefineDocumentsChain
+  - MapReduceDocumentsChain
+  - MapRerankDocumentsChain
+- [Vector Stores](#vector-stores)
+  - ChromaDB
+- [LLM Cache](#llm-cache)
+  - 内存缓存 + TTL
+  - CacheConfig 配置
+- [存储后端](#存储后端)
+  - RedisDocumentStore
+  - SQLiteDocumentStore
 - [Callbacks](#callbacks)
   - CallbackManager
   - StdOutHandler
@@ -94,6 +120,7 @@ LangChainRust 支持多种 LLM 提供商，使用统一的 API 接口：
 | **Zhipu** | `ZhipuChat` | ChatGLM、智谱 |
 | **Anthropic** | `AnthropicChat` | Claude、安全性强 |
 | **Ollama** | `OllamaChat` | 本地部署、开源模型 |
+| **Gemini** | `GeminiChat` | Google Gemini、多模态 |
 
 #### DeepSeek（推荐性价比）
 
@@ -194,6 +221,40 @@ let response = llm.chat_with_image(
     "path/to/image.png",
 ).await?;
 ```
+
+#### Gemini（Google）
+
+```rust
+use langchainrust::{GeminiChat, GeminiConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+// 从环境变量创建（读取 GEMINI_API_KEY 或 GOOGLE_API_KEY）
+let llm = GeminiChat::from_env();
+
+// 或手动配置
+let config = GeminiConfig {
+    api_key: std::env::var("GEMINI_API_KEY")?,
+    model: "gemini-1.5-flash".to_string(),  // 或 gemini-1.5-pro
+    ..Default::default()
+};
+let llm = GeminiChat::new(config);
+
+let response = llm.chat(vec![
+    Message::human("介绍 Google Gemini 模型的特点"),
+], None).await?;
+```
+
+#### Gemini 配置项
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `api_key` | String | API 密钥 |
+| `base_url` | String | API 基础 URL |
+| `model` | String | 模型名称 |
+| `temperature` | Option<f32> | 采样温度 (0.0-2.0) |
+| `max_output_tokens` | Option<usize> | 最大生成 token 数 |
+| `top_p` | Option<f32> | Top-p 采样 |
+| `top_k` | Option<i32> | Top-k 采样 |
 
 ### 直接调用 LLM（纯文本）
 
@@ -407,6 +468,57 @@ fn main() {
 }
 ```
 
+### FewShotPromptTemplate（少样本提示模板）
+
+嵌入示例到 Prompt 中，帮助 LLM 理解期望的输出格式：
+
+```rust
+use langchainrust::prompts::{FewShotPromptTemplate, PromptTemplate};
+use std::collections::HashMap;
+
+let examples = vec![
+    HashMap::from([("input", "开心"), ("output", "😊 开心")]),
+    HashMap::from([("input", "悲伤"), ("output", "😢 悲伤")]),
+];
+
+let example_prompt = PromptTemplate::new("输入: {input}\n输出: {output}");
+
+let prompt = FewShotPromptTemplate::new(examples, example_prompt)
+    .with_prefix("请将以下文本翻译为表情符号：")
+    .with_suffix("输入: {input}\n输出:");
+
+let values = HashMap::from([("input", "兴奋")]);
+let result = prompt.format(&values).unwrap();
+// 输出包含示例 + 输入
+```
+
+### ExampleSelector（示例选择器）
+
+使用 `LengthBasedExampleSelector` 根据输入长度动态选择适量示例：
+
+```rust
+use langchainrust::prompts::{LengthBasedExampleSelector, FewShotPromptTemplate, PromptTemplate};
+use std::collections::HashMap;
+
+let examples = vec![
+    HashMap::from([("input", "开心"), ("output", "😊")]),
+    HashMap::from([("input", "悲伤"), ("output", "😢")]),
+    HashMap::from([("input", "愤怒"), ("output", "😡")]),
+];
+
+let selector = LengthBasedExampleSelector::new(examples)
+    .with_max_length(100);  // 最大文本长度
+
+let example_prompt = PromptTemplate::new("{input} -> {output}");
+
+let prompt = FewShotPromptTemplate::with_selector(selector, example_prompt)
+    .with_prefix("表情符号翻译：")
+    .with_suffix("输入: {input}\n输出:");
+
+let values = HashMap::from([("input", "惊讶")]);
+let result = prompt.format(&values).unwrap();
+```
+
 ---
 
 ## Memory
@@ -598,6 +710,44 @@ println!("格式化: {}", history.to_string());
 核心思路：
 - `SequentialChain` 串联多个 `PromptChain`
 - `SimpleMemory` 会把历史写入，下一步将 `chat_history` 作为 system message 注入模板
+
+### ConversationRetrievalChain（对话检索 Chain）
+
+带记忆的检索增强对话 Chain，自动完成：加载对话历史 → 检索相关文档 → 组合上下文 → LLM 生成 → 保存记忆。
+
+```rust
+use langchainrust::{
+    ConversationRetrievalChain, OpenAIChat, SimilarityRetriever,
+    ConversationBufferMemory, BaseChain,
+};
+use std::sync::Arc;
+
+let llm = OpenAIChat::from_env();
+let retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
+let memory = ConversationBufferMemory::new()
+    .with_return_messages(true);
+
+let chain = ConversationRetrievalChain::new(llm, retriever, memory)
+    .with_k(4)                          // 检索 4 个相关文档
+    .with_verbose(true)                 // 开启执行日志
+    .with_return_source_documents(true); // 返回来源文档
+
+let result = chain.query("什么是 Rust 的所有权？").await?;
+println!("回答: {}", result);
+```
+
+#### 配置方法
+
+| 方法 | 说明 |
+|------|------|
+| `with_k(usize)` | 检索文档数量（默认 4） |
+| `with_system_prompt(str)` | 自定义系统提示词 |
+| `with_qa_prompt(str)` | 自定义 QA 模板 |
+| `with_input_key(str)` | 输入键名（默认 query） |
+| `with_output_key(str)` | 输出键名（默认 result） |
+| `with_memory_key(str)` | 记忆键名（默认 history） |
+| `with_return_source_documents(bool)` | 是否返回来源文档 |
+| `with_verbose(bool)` | 是否打印执行日志 |
 
 ---
 
@@ -1882,6 +2032,9 @@ pub struct SubTask {
 | `SimpleMathTool` | 高级数学运算（幂、开方、三角函数等） | `operation`: 操作类型, `value`: 数值 |
 | `DateTimeTool` | 日期时间查询和计算 | `operation`: 操作类型, `datetime`: 日期时间 |
 | `URLFetchTool` | 网页抓取和解析 | `operation`: 操作类型, `url`: 网址 |
+| `WikipediaTool` | Wikipedia 百科搜索 | `query`: 搜索词, `lang`: 语言, `top_k`: 结果数 |
+| `DuckDuckGoSearchTool` | 网页搜索引擎（无需 API Key） | `query`: 搜索词, `top_k`: 结果数 |
+| `PythonREPLTool` | Python 代码执行 | `code`: Python 代码, `timeout_seconds`: 超时 |
 
 ### 使用工具
 
@@ -1894,6 +2047,70 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![
     Arc::new(DateTimeTool::new()),
     Arc::new(SimpleMathTool::new()),
 ];
+```
+
+### WikipediaTool
+
+```rust
+use langchainrust::tools::{WikipediaTool, Tool};
+use langchainrust::tools::WikipediaInput;
+
+let tool = WikipediaTool::new();
+let result = tool.invoke(WikipediaInput {
+    query: "Rust 编程语言".into(),
+    top_k: Some(3),
+    lang: Some("zh".into()),
+    full_content: Some(false),
+}).await?;
+
+for r in &result.results {
+    println!("标题: {}", r.title);
+    println!("摘要: {}", r.snippet);
+}
+```
+
+### DuckDuckGoSearchTool
+
+无需 API Key 的网页搜索工具：
+
+```rust
+use langchainrust::tools::{DuckDuckGoSearchTool, Tool};
+use langchainrust::tools::SearchInput;
+
+let tool = DuckDuckGoSearchTool::new();
+let result = tool.invoke(SearchInput {
+    query: "Rust async/await 教程".into(),
+    top_k: Some(5),
+}).await?;
+
+for r in &result.results {
+    println!("{}: {}", r.title, r.url);
+}
+```
+
+### PythonREPLTool
+
+在本地 Python 环境执行代码，适合数学计算、数据处理场景：
+
+```rust
+use langchainrust::tools::{PythonREPLTool, Tool};
+use langchainrust::tools::PythonREPLInput;
+
+let tool = PythonREPLTool::new();  // 自动查找系统 Python
+
+// 使用自定义 Python 路径
+let tool = PythonREPLTool::with_python_path("/usr/bin/python3");
+
+let result = tool.invoke(PythonREPLInput {
+    code: r#"
+import math
+print(f"π = {math.pi}")
+print(f"sin(π/2) = {math.sin(math.pi/2)}")
+"#.into(),
+    timeout_seconds: Some(30),
+}).await?;
+
+println!("{}", result.stdout);
 ```
 
 ### 直接调用工具
@@ -2355,6 +2572,332 @@ graph.validate()?;  // 返回验证结果
 // - 死循环：validate_cycles()
 // - 孤立节点：validate_unreachable_nodes()
 // - 重复边：validate_duplicate_edges()
+```
+
+---
+
+## Output Parsers
+
+输出解析器将 LLM 的文本输出解析为结构化数据。
+
+### StrOutputParser（字符串透传）
+
+最简单的解析器，直接将 LLM 输出作为字符串返回：
+
+```rust
+use langchainrust::output_parsers::StrOutputParser;
+
+let parser = StrOutputParser::new();
+let result = parser.parse("Hello, world!").await?;
+assert_eq!(result, "Hello, world!");
+```
+
+### CommaSeparatedListOutputParser（逗号分隔列表）
+
+将逗号分隔的文本解析为列表，支持中英文逗号：
+
+```rust
+use langchainrust::output_parsers::CommaSeparatedListOutputParser;
+
+let parser = CommaSeparatedListOutputParser::new();
+
+// 英文逗号
+let list = parser.parse("apple,banana,orange").await?;
+assert_eq!(list, vec!["apple", "banana", "orange"]);
+
+// 中文逗号
+let list = parser.parse("苹果，香蕉，橙子").await?;
+assert_eq!(list, vec!["苹果", "香蕉", "橙子"]);
+```
+
+### JsonOutputParser（JSON 解析）
+
+从 LLM 输出中提取并解析 JSON，支持 Markdown 代码块包裹和部分解析：
+
+```rust
+use langchainrust::output_parsers::JsonOutputParser;
+use serde_json::Value;
+
+let parser = JsonOutputParser::new();
+
+// 纯 JSON
+let val: Value = parser.parse(r#"{"name": "Rust", "year": 2015}"#).await?;
+
+// Markdown 代码块包裹
+let md = "```json\n{\"name\": \"Rust\", \"year\": 2015}\n```";
+let val: Value = parser.parse(md).await?;  // 自动提取
+
+// 部分解析（流式场景）
+let partial = parser.parse_partial(r#"{"name": "Rust"#).await?;
+// 返回完成的部分
+```
+
+### StructuredOutputParser（键值对格式解析）
+
+解析键值对格式的输出，每行一个字段：
+
+```rust
+use langchainrust::output_parsers::StructuredOutputParser;
+use std::collections::HashMap;
+
+let parser = StructuredOutputParser::new();
+
+let output = "\
+name: Rust
+year: 2015
+paradigm: 系统编程";
+
+let result: HashMap<String, String> = parser.parse(output).await?;
+assert_eq!(result.get("name").unwrap(), "Rust");
+assert_eq!(result.get("year").unwrap(), "2015");
+```
+
+### TypedOutputParser\<T\>（类型化 JSON 反序列化）
+
+将 JSON 输出直接反序列化为任意 `Deserialize` 类型：
+
+```rust
+use langchainrust::output_parsers::TypedOutputParser;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Language {
+    name: String,
+    year: u32,
+    paradigm: String,
+}
+
+let parser = TypedOutputParser::<Language>::new();
+let lang: Language = parser.parse(r#"{"name": "Rust", "year": 2015, "paradigm": "系统编程"}"#).await?;
+
+println!("{} 诞生于 {}", lang.name, lang.year);
+```
+
+---
+
+## Document Chains
+
+文档处理 Chain 用于处理大量文档，提供不同的文档整合策略。
+
+### StuffDocumentsChain（全文填充）
+
+将所有文档拼接后一次性送入 LLM：
+
+```rust
+use langchainrust::{StuffDocumentsChain, OpenAIChat, Document};
+
+let llm = OpenAIChat::from_env();
+let chain = StuffDocumentsChain::new(llm)
+    .with_max_doc_length(2000);  // 单文档最大字符数
+
+let docs = vec![
+    Document::new("Rust 是一门系统编程语言..."),
+    Document::new("它的所有权机制保证了内存安全..."),
+];
+
+let answer = chain.invoke_with_documents(docs, "总结 Rust 的特点").await?;
+```
+
+适用场景：文档总量不超过 LLM 上下文窗口。
+
+### RefineDocumentsChain（迭代优化）
+
+逐个文档迭代，每次用前一轮输出 + 新文档联合生成：
+
+```rust
+use langchainrust::{RefineDocumentsChain, OpenAIChat, Document};
+
+let llm = OpenAIChat::from_env();
+let chain = RefineDocumentsChain::new(llm);
+
+let docs = vec![
+    Document::new("第一份文档内容..."),
+    Document::new("第二份文档内容..."),
+    Document::new("第三份文档内容..."),
+];
+
+let answer = chain.invoke_with_documents(docs, "综合分析这些问题").await?;
+```
+
+适用场景：文档总量超过上下文窗口，需要逐步精炼。
+
+### MapReduceDocumentsChain（并行映射 + 合并）
+
+先并行处理每个文档，再合并所有中间结果：
+
+```rust
+use langchainrust::{MapReduceDocumentsChain, OpenAIChat, Document};
+
+let llm = OpenAIChat::from_env();
+let chain = MapReduceDocumentsChain::new(llm);
+
+let docs = vec![
+    Document::new("Rust 的所有权系统..."),
+    Document::new("Rust 的生命周期..."),
+    Document::new("Rust 的 trait 系统..."),
+];
+
+let summary = chain.invoke_with_documents(docs, "用一句话总结").await?;
+```
+
+流程：并行映射（Map）→ 合并缩减（Reduce），适合大规模文档。
+
+### MapRerankDocumentsChain（评分排序）
+
+并行处理每个文档后按评分排序，返回最高分结果：
+
+```rust
+use langchainrust::{MapRerankDocumentsChain, OpenAIChat, Document};
+
+let llm = OpenAIChat::from_env();
+let chain = MapRerankDocumentsChain::new(llm);
+
+let docs = vec![
+    Document::new("方案 A：使用 async/await..."),
+    Document::new("方案 B：使用线程..."),
+    Document::new("方案 C：使用 Actor 模型..."),
+];
+
+let best_answer = chain.invoke_with_documents(docs, "哪个并发方案最适合？").await?;
+// 返回评分最高的方案
+```
+
+---
+
+## Vector Stores
+
+### ChromaDB（轻量级向量数据库）
+
+通过 ChromaDB HTTP API 进行向量存储和检索：
+
+```rust
+use langchainrust::{ChromaDBVectorStore, ChromaDBConfig, VectorStore, Document};
+use std::sync::Arc;
+
+// 配置连接（默认 http://localhost:8000）
+let config = ChromaDBConfig::new(
+    "http://localhost:8000",
+    "my_collection",
+    1536,  // 向量维度
+);
+
+let store = Arc::new(ChromaDBVectorStore::new(config).await?);
+
+// 添加文档
+store.add_documents(vec![
+    Document::new("Rust 是一门系统编程语言"),
+    Document::new("Python 是一门脚本语言"),
+]).await?;
+
+// 检索
+let results = store.search("系统编程", 3).await?;
+```
+
+启动 ChromaDB：
+
+```bash
+docker run -p 8000:8000 chromadb/chroma
+```
+
+---
+
+## LLM Cache
+
+内存缓存避免重复的 LLM 调用，减少延迟和费用。
+
+### 基础用法
+
+```rust
+use langchainrust::core::cache::{LLMCache, CacheConfig};
+use std::time::Duration;
+
+// 默认配置：最多 1000 条目，1 小时 TTL
+let cache = LLMCache::new();
+
+// 缓存 LLM 调用
+let key = "user_query_hash";
+cache.put(key, llm_result).await;
+
+// 获取缓存
+if let Some(cached) = cache.get(key).await {
+    println!("缓存命中: {}", cached.result.content);
+}
+```
+
+### CacheConfig 配置
+
+```rust
+use langchainrust::core::cache::CacheConfig;
+use std::time::Duration;
+
+// 自定义配置：500 条缓存，5 分钟过期
+let config = CacheConfig::new()
+    .with_max_entries(500)
+    .with_ttl(Duration::from_secs(300));
+
+// 永不过期
+let config = CacheConfig::new()
+    .no_ttl();
+
+// 禁用缓存
+let config = CacheConfig::new()
+    .disabled();
+
+let cache = LLMCache::with_config(config);
+```
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `max_entries` | 1000 | 最大缓存条目数 |
+| `ttl` | Some(1 小时) | 过期时间，None 永不过期 |
+| `enabled` | true | 是否启用 |
+
+---
+
+## 存储后端
+
+### RedisDocumentStore
+
+基于 Redis 的文档存储，支持持久化和分布式共享：
+
+```rust
+use langchainrust::{RedisDocumentStore, RedisStoreConfig};
+
+let config = RedisStoreConfig::new("redis://127.0.0.1:6379")
+    .with_prefix("myapp");
+
+let store = RedisDocumentStore::new(config).await?;
+
+store.add_document(doc).await?;
+let doc = store.get_document("doc_id").await?;
+```
+
+需要启用 feature `redis-storage`：
+
+```toml
+[dependencies]
+langchainrust = { features = ["redis-storage"] }
+```
+
+### SQLiteDocumentStore
+
+基于 SQLite 的本地文档存储，零配置开箱即用：
+
+```rust
+use langchainrust::{SQLiteDocumentStore, SQLiteStoreConfig};
+
+let config = SQLiteStoreConfig::new("data.db");
+let store = SQLiteDocumentStore::new(config)?;
+
+store.add_document(doc).await?;
+let doc = store.get_document("doc_id").await?;
+```
+
+需要启用 feature `sqlite-storage`：
+
+```toml
+[dependencies]
+langchainrust = { features = ["sqlite-storage"] }
 ```
 
 ---

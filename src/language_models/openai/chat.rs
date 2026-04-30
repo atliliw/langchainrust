@@ -402,6 +402,7 @@ impl OpenAIChat {
     async fn stream_chat_internal(&self, messages: Vec<Message>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
         use super::sse::SSEParser;
         use futures_util::StreamExt;
+        use std::sync::{Arc, Mutex};
         
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, true);
@@ -423,31 +424,46 @@ impl OpenAIChat {
         
         let byte_stream = response.bytes_stream();
         
+        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        
         let stream = byte_stream
-            .then(|chunk_result| async move {
-                let mut parser = SSEParser::new();
-                match chunk_result {
-                    Ok(bytes) => {
-                        let chunk_str = String::from_utf8_lossy(&bytes);
-                        let events = parser.parse(&chunk_str);
-                        
-                        for event in events {
-                            if event.is_done() {
-                                return None;
-                            }
+            .then(move |chunk_result| {
+                let parser = parser.clone();
+                async move {
+                    let mut parser_guard = parser.lock().unwrap();
+                    match chunk_result {
+                        Ok(bytes) => {
+                            let chunk_str = String::from_utf8_lossy(&bytes);
+                            let events = parser_guard.parse(&chunk_str);
                             
-                            if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                                if let Some(choice) = chunk.choices.first() {
-                                    if let Some(content) = &choice.delta.content {
-                                        return Some(Ok(content.clone()));
+                            let mut tokens = Vec::new();
+                            for event in events {
+                                if event.is_done() {
+                                    return None;
+                                }
+                                
+                                if let Ok(Some(chunk)) = event.parse_openai_chunk() {
+                                    if let Some(choice) = chunk.choices.first() {
+                                        if let Some(content) = &choice.delta.content {
+                                            tokens.push(Ok(content.clone()));
+                                        }
                                     }
                                 }
                             }
-                        }
-                        
-                        None
-                    },
-                    Err(e) => Some(Err(OpenAIError::Http(e.to_string()))),
+                            
+                            if tokens.is_empty() {
+                                None
+                            } else {
+                                let combined: String = tokens.into_iter().filter_map(|t: Result<String, OpenAIError>| t.ok()).collect();
+                                if combined.is_empty() {
+                                    None
+                                } else {
+                                    Some(Ok(combined))
+                                }
+                            }
+                        },
+                        Err(e) => Some(Err(OpenAIError::Http(e.to_string()))),
+                    }
                 }
             })
             .filter_map(|x| async move { x });

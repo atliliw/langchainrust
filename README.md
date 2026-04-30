@@ -15,17 +15,21 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Component | Description |
 |-----------|-------------|
-| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude |
+| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini |
 | **Embeddings** | OpenAI / DeepSeek / Qwen embeddings |
 | **Agents** | ReActAgent + FunctionCallingAgent |
-| **Memory** | Buffer / Window / Summary / SummaryBuffer |
-| **Chains** | LLMChain / SequentialChain / RetrievalQA |
-| **RAG** | Document splitting, vector store, semantic retrieval |
-| **BM25** | Keyword search, Chinese/English tokenization, AutoMerging |
-| **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion |
-| **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph |
-| **Tools** | Calculator / DateTime / Math / URLFetch |
-| **Vector DB** | InMemory / Qdrant / MongoDB |
+| **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent |
+| **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce |
+| **RAG** | Document splitting, vector store, semantic retrieval, MultiQuery, HyDE, Reranking |
+| **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
+| **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion, Unified index |
+| **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph, Parallel, Checkpointer |
+| **Output Parsers** | StrOutputParser, JsonOutputParser, CommaSeparatedList, Structured, Typed |
+| **Tools** | Calculator / DateTime / Math / URLFetch / Wikipedia / WebSearch / PythonREPL |
+| **Vector DB** | InMemory / Qdrant / MongoDB / ChromaDB / Redis / SQLite |
+| **Cache** | LLMCache with TTL support |
+| **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
+| **Callbacks** | StdOut / LangSmith / FileHandler |
 
 Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [English](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)
 
@@ -41,6 +45,7 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── OpenAIChat / OllamaChat                                 │
 │  ├── DeepSeek / Moonshot / Zhipu / Qwen (OpenAI compatible) │
 │  ├── AnthropicChat (Claude API)                              │
+│  ├── GeminiChat                                              │
 │  ├── Function Calling (bind_tools)                          │
 │  └── Streaming (stream_chat)                                │
 ├─────────────────────────────────────────────────────────────┤
@@ -65,6 +70,8 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── Chains (LLMChain, SequentialChain)                     │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate)           │
 │  ├── Tools (Calculator, DateTime, URLFetch)                 │
+│  ├── Output Parsers                                         │
+│  ├── LLM Cache                                              │
 │  └── Callbacks (LangSmith, StdOut, multipart batch)         │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -75,12 +82,14 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 
 ```toml
 [dependencies]
-langchainrust = "0.2.6"
+langchainrust = "0.2.18"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.2.6", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.2.6", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.2.18", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.2.18", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.2.18", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.2.18", features = ["sqlite-storage"] }        # SQLite storage
 ```
 
 ---

@@ -1,0 +1,79 @@
+use async_trait::async_trait;
+use futures_util::Stream;
+use std::pin::Pin;
+
+use crate::core::runnables::{Runnable, RunnableConfig};
+use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+
+/// 逗号分隔列表输出解析器
+///
+/// 将 LLM 输出的逗号分隔文本解析为字符串列表。
+/// 支持中文逗号（，）和英文逗号（,）。
+/// 自动去除每个项目的空白字符和空项目。
+///
+/// 相当于 Python LangChain 的 `CommaSeparatedListOutputParser`。
+///
+/// # 示例
+/// ```ignore
+/// use langchainrust::output_parsers::CommaSeparatedListOutputParser;
+///
+/// let parser = CommaSeparatedListOutputParser::new();
+/// let result = parser.parse("apple, banana, cherry").await?;
+/// assert_eq!(result, vec!["apple", "banana", "cherry"]);
+/// ```
+pub struct CommaSeparatedListOutputParser;
+
+impl CommaSeparatedListOutputParser {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CommaSeparatedListOutputParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl BaseOutputParser<Vec<String>> for CommaSeparatedListOutputParser {
+    async fn parse(&self, text: &str) -> OutputParserResult<Vec<String>> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 支持中文逗号和英文逗号
+        let items: Vec<String> = text
+            .split(',')
+            .flat_map(|item| item.split('，'))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        Ok(items)
+    }
+
+    fn get_format_instructions(&self) -> String {
+        "请用逗号分隔的列表形式输出，例如：项目1, 项目2, 项目3".to_string()
+    }
+}
+
+#[async_trait]
+impl Runnable<String, Vec<String>> for CommaSeparatedListOutputParser {
+    type Error = OutputParserError;
+
+    async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<Vec<String>, Self::Error> {
+        self.parse(&input).await
+    }
+
+    async fn stream(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Vec<String>, Self::Error>> + Send>>, Self::Error> {
+        let result = self.parse(&input).await?;
+        let stream = futures_util::stream::once(async move { Ok(result) });
+        Ok(Box::pin(stream))
+    }
+}

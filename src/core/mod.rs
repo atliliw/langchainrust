@@ -10,6 +10,8 @@
 pub mod runnables;
 pub mod language_models;
 pub mod tools;
+pub mod output_parsers;
+pub mod cache;
 
 pub use runnables::{Runnable, RunnableConfig};
 pub use language_models::{BaseLanguageModel, BaseChatModel};
@@ -17,4 +19,9 @@ pub use tools::{
     BaseTool, Tool, ToolError, ToolRegistry,
     ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
     StructuredOutput,
+};
+pub use output_parsers::{
+    BaseOutputParser, OutputParserError, OutputParserResult,
+    StrOutputParser, CommaSeparatedListOutputParser,
+    JsonOutputParser, StructuredOutputParser, TypedOutputParser,
 };

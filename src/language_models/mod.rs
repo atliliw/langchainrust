@@ -25,4 +25,5 @@ pub use providers::{
     ZhipuChat, ZhipuConfig,
     QwenChat, QwenConfig,
     AnthropicChat, AnthropicConfig, AnthropicError,
+    GeminiChat, GeminiConfig, GeminiError,
 };
