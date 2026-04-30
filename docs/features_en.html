@@ -137,6 +137,10 @@
             background: var(--accent-primary);
         }
 
+        .nav-item.new {
+            color: var(--accent-tertiary);
+        }
+
         .main-content {
             margin-left: var(--sidebar-width);
             flex: 1;
@@ -416,6 +420,12 @@
             color: var(--accent-primary);
         }
 
+        .feature-tag.new {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: var(--accent-tertiary);
+            color: var(--accent-tertiary);
+        }
+
         .callout {
             padding: var(--gap-md);
             margin: var(--gap-md) 0;
@@ -513,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.2.14 • Features</div>
+            <div class="sidebar-subtitle">v0.2.18 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -521,6 +531,7 @@
                 <div class="nav-section-title">Core Modules</div>
                 <a href="#agents" class="nav-item">🤖 Agents</a>
                 <a href="#chains" class="nav-item">🔗 Chains</a>
+                <a href="#document-chains" class="nav-item new">📄 Document Chains</a>
                 <a href="#memory" class="nav-item">🧠 Memory</a>
                 <a href="#tools" class="nav-item">🔧 Tools</a>
             </div>
@@ -530,6 +541,8 @@
                 <a href="#rag" class="nav-item">📚 RAG</a>
                 <a href="#bm25" class="nav-item" style="color: var(--accent-tertiary);">🔍 BM25</a>
                 <a href="#hybrid" class="nav-item" style="color: var(--accent-tertiary);">⚡ Hybrid</a>
+                <a href="#chromadb" class="nav-item new">💜 ChromaDB</a>
+                <a href="#storage" class="nav-item new">💾 Storage</a>
                 <a href="#retrieval-agent" class="nav-item">🔄 RAG Agent</a>
             </div>
 
@@ -537,11 +550,13 @@
                 <div class="nav-section-title">Advanced</div>
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
                 <a href="#task-planning" class="nav-item" style="color: var(--accent-tertiary);">📋 Task Planning</a>
+                <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
             </div>
 
             <div class="nav-section">
                 <div class="nav-section-title">Basic Components</div>
                 <a href="#prompts" class="nav-item">📝 Prompts</a>
+                <a href="#output-parsers" class="nav-item new">🔤 Output Parsers</a>
                 <a href="#llm" class="nav-item">💬 LLM</a>
             </div>
 
@@ -682,6 +697,7 @@
                     <div class="feature-card"><h3>LLMChain</h3><p>Basic Chain: Prompt + LLM</p></div>
                     <div class="feature-card"><h3>SequentialChain</h3><p>Execute multiple Chains sequentially</p></div>
                     <div class="feature-card"><h3>ConversationChain</h3><p>Chat Chain with Memory</p></div>
+                    <div class="feature-card"><h3>ConversationRetrievalChain</h3><p>Chat with Memory + Retrieval</p></div>
                     <div class="feature-card"><h3>RetrievalQA</h3><p>RAG Chain</p></div>
                 </div>
 
@@ -701,6 +717,153 @@
 ]);
 
 <span class="kw">let</span> result = chain.invoke(inputs).await?;</code></pre>
+                </div>
+
+                <h3>ConversationRetrievalChain</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">New in 0.2.18</div>
+                    <p>Combines conversation memory with document retrieval for context-aware Q&A over your data.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::chains::ConversationRetrievalChain;
+<span class="kw">use</span> langchainrust::memory::ConversationBufferMemory;
+
+<span class="kw">let</span> memory = ConversationBufferMemory::new()
+    .with_return_messages(<span class="kw">true</span>);
+
+<span class="kw">let</span> chain = ConversationRetrievalChain::new(
+    llm,
+    retriever,
+    memory,
+    <span class="kw">None</span>, <span class="comment">// optional custom prompt</span>
+);
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"question"</span>, <span class="str">"What is Rust ownership?"</span>)
+])).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Document Chains -->
+            <section class="module" id="document-chains" style="animation-delay: 0.22s;">
+                <div class="module-header">
+                    <span class="module-icon">📄</span>
+                    <h2>Document Chains</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Document Chains</strong> process multiple documents by combining LLM calls with different strategies: Stuff, Refine, MapReduce, and MapRerank.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Handle large document volumes with different trade-offs between speed, cost, and quality.</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Strategy</th><th>Approach</th><th>Best For</th><th>Token Usage</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Stuff</strong></td><td>Concatenate all docs into one prompt</td><td>Small doc sets, simple tasks</td><td class="low">Lowest</td></tr>
+                        <tr><td><strong>Refine</strong></td><td>Iteratively refine answer doc by doc</td><td>Sequential reasoning tasks</td><td class="medium">Medium</td></tr>
+                        <tr><td><strong>MapReduce</strong></td><td>Map each doc, then reduce results</td><td>Large doc sets, parallelizable</td><td class="high">High</td></tr>
+                        <tr class="highlight-row"><td><strong>MapRerank</strong></td><td>Map each doc with score, pick best</td><td>Factual accuracy priority</td><td class="high">High</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>StuffDocumentChain</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::chains::StuffDocumentChain;
+
+<span class="kw">let</span> chain = StuffDocumentChain::new(llm, <span class="kw">None</span>);
+
+<span class="kw">let</span> docs = vec![
+    Document::new(<span class="str">"Rust is memory-safe without a garbage collector."</span>),
+    Document::new(<span class="str">"It provides zero-cost abstractions."</span>),
+];
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"input_documents"</span>, docs),
+    (<span class="str">"question"</span>, <span class="str">"What are Rust's key features?"</span>),
+])).await?;</code></pre>
+                </div>
+
+                <h3>RefineDocumentChain</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::chains::RefineDocumentChain;
+
+<span class="kw">let</span> chain = RefineDocumentChain::new(llm, <span class="kw">None</span>, <span class="kw">None</span>);
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"input_documents"</span>, docs),
+    (<span class="str">"question"</span>, <span class="str">"Summarize Rust features"</span>),
+])).await?;</code></pre>
+                </div>
+
+                <h3>MapReduceDocumentChain</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::chains::MapReduceDocumentsChain;
+
+<span class="kw">let</span> chain = MapReduceDocumentsChain::new(
+    llm_map,  <span class="comment">// LLM for individual doc processing</span>
+    llm_reduce, <span class="comment">// LLM for combining results</span>
+    <span class="kw">None</span>, <span class="kw">None</span>,
+);
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"input_documents"</span>, docs),
+])).await?;</code></pre>
+                </div>
+
+                <h3>MapRerankDocumentChain</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::chains::MapRerankDocumentsChain;
+
+<span class="kw">let</span> chain = MapRerankDocumentsChain::new(
+    llm,
+    <span class="kw">None</span>,  <span class="comment">// optional map prompt</span>
+    <span class="kw">None</span>,  <span class="comment">// optional rerank prompt</span>
+);
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"input_documents"</span>, docs),
+    (<span class="str">"question"</span>, <span class="str">"What is the most important feature?"</span>),
+])).await?;</code></pre>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ Strategy Selection Guide</div>
+                    <ul>
+                        <li><strong>Stuff</strong> — Few small docs, simple queries (fastest, cheapest)</li>
+                        <li><strong>Refine</strong> — Sequential context building, each doc builds on previous answer</li>
+                        <li><strong>MapReduce</strong> — Many docs, parallel processing, then combine</li>
+                        <li><strong>MapRerank</strong> — When factual accuracy is critical, pick best answer by score</li>
+                    </ul>
                 </div>
 
                 <hr class="divider">
@@ -774,8 +937,46 @@ memory.save_context(&inputs, &outputs).await?;
                         <tr><td><code>DateTimeTool</code></td><td>Date/time query</td><td>operation, datetime</td></tr>
                         <tr><td><code>SimpleMathTool</code></td><td>Advanced math operations</td><td>operation, value</td></tr>
                         <tr><td><code>URLFetchTool</code></td><td>Web page fetching</td><td>operation, url</td></tr>
+                        <tr><td><code>WikipediaTool</code></td><td>Wikipedia knowledge query</td><td>query</td></tr>
+                        <tr><td><code>DuckDuckGoSearch</code></td><td>Web search via DuckDuckGo</td><td>query</td></tr>
+                        <tr><td><code>PythonREPLTool</code></td><td>Execute Python code</td><td>code</td></tr>
                     </tbody>
                 </table>
+
+                <h3>Wikipedia, DuckDuckGo & PythonREPL</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">New in 0.2.18</div>
+                    <p>Expand Agent capabilities with real-time web search, encyclopedia knowledge, and code execution.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::tools::{
+    WikipediaTool, DuckDuckGoSearch, PythonREPLTool,
+};
+
+<span class="kw">let</span> tools: Vec<Arc<dyn BaseTool>> = vec![
+    Arc::new(WikipediaTool::new()),
+    Arc::new(DuckDuckGoSearch::new()),
+    Arc::new(PythonREPLTool::new()),
+];
+
+<span class="comment">// Wikipedia: query knowledge</span>
+<span class="kw">let</span> wiki = WikipediaTool::new();
+<span class="kw">let</span> result = wiki.run(<span class="str">"Rust programming language"</span>).await?;
+
+<span class="comment">// DuckDuckGo: web search</span>
+<span class="kw">let</span> search = DuckDuckGoSearch::new();
+<span class="kw">let</span> result = search.run(<span class="str">"latest Rust version 2024"</span>).await?;
+
+<span class="comment">// PythonREPL: execute Python code</span>
+<span class="kw">let</span> python = PythonREPLTool::new();
+<span class="kw">let</span> result = python.run(<span class="str">"print(sum(range(100)))"</span>).await?;</code></pre>
+                </div>
 
                 <h3>Custom Tool</h3>
 
@@ -1033,11 +1234,81 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                     </ul>
                 </div>
 
-                <h3>Storage Backend Options</h3>
+                <hr class="divider">
+            </section>
 
-                <div class="callout info">
-                    <div class="callout-title">ChunkedDocumentStoreTrait</div>
-                    <p>Unified storage interface supporting multiple backends:</p>
+            <!-- ChromaDB -->
+            <section class="module" id="chromadb" style="animation-delay: 0.59s;">
+                <div class="module-header">
+                    <span class="module-icon">💜</span>
+                    <h2>ChromaDB</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>ChromaDB</strong> is an open-source embedding database integrated as a vector store backend in LangChainRust.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Persistent, scalable vector storage with built-in filtering and metadata support.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Persistent Storage</h3><p>Data persisted to disk, survives restarts</p></div>
+                    <div class="feature-card"><h3>Metadata Filtering</h3><p>Filter by document metadata</p></div>
+                    <div class="feature-card"><h3>Collection Management</h3><p>Multiple named collections</p></div>
+                    <div class="feature-card"><h3>Open Source</h3><p>Free, self-hosted, no vendor lock-in</p></div>
+                </div>
+
+                <h3>ChromaDB Vector Store</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::ChromaVectorStore;
+<span class="kw">use</span> langchainrust::embeddings::OpenAIEmbeddings;
+
+<span class="comment">// Create ChromaDB store</span>
+<span class="kw">let</span> store = ChromaVectorStore::new(
+    <span class="str">"http://localhost:8000"</span>,  <span class="comment">// ChromaDB server URL</span>
+    <span class="str">"my_collection"</span>,            <span class="comment">// collection name</span>
+    embeddings,
+).await?;
+
+<span class="comment">// Add documents with metadata</span>
+store.add_documents(vec![
+    Document::with_metadata(
+        <span class="str">"Rust is a systems language"</span>,
+        HashMap::from([(<span class="str">"source"</span>, <span class="str">"wiki"</span>)])
+    ),
+]).await?;
+
+<span class="comment">// Similarity search</span>
+<span class="kw">let</span> results = store
+    .similarity_search(<span class="str">"systems programming"</span>, <span class="num">5</span>)
+    .await?;</code></pre>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ Benefits</div>
+                    <ul>
+                        <li><strong>Production-ready</strong>: Persistent, scalable, suitable for production deployments</li>
+                        <li><strong>Filtering</strong>: Filter by metadata fields during search</li>
+                        <li><strong>Multi-collection</strong>: Organize embeddings into separate collections</li>
+                    </ul>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Storage -->
+            <section class="module" id="storage" style="animation-delay: 0.6s;">
+                <div class="module-header">
+                    <span class="module-icon">💾</span>
+                    <h2>Storage Backends</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>ChunkedDocumentStoreTrait</strong> provides a unified storage interface with Redis and SQLite backends for production document storage.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Persistent, scalable document storage beyond in-memory only.</p>
                 </div>
 
                 <table class="data-table">
@@ -1059,52 +1330,78 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                         </tr>
                         <tr>
                             <td><strong>Redis</strong></td>
-                            <td>Ultra-fast, cache layer</td>
-                            <td>High-frequency cache</td>
-                            <td>Reserved</td>
+                            <td>Ultra-fast in-memory cache, persistence opt</td>
+                            <td>High-frequency, caching</td>
+                            <td>feature = redis-persistence</td>
                         </tr>
                         <tr>
                             <td><strong>SQLite</strong></td>
-                            <td>Lightweight, local file</td>
-                            <td>Local/embedded</td>
-                            <td>Reserved</td>
+                            <td>Lightweight, local file, zero config</td>
+                            <td>Local/embedded, single-user</td>
+                            <td>feature = sqlite-persistence</td>
                         </tr>
                     </tbody>
                 </table>
 
-                <h4 style="margin-top: 16px;">MongoDB Usage</h4>
+                <h3>Redis Storage</h3>
 
                 <div class="code-block">
                     <div class="code-header">
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig};
+                    <pre><code><span class="kw">use</span> langchainrust::storage::RedisChunkedDocumentStore;
 
-<span class="kw">let</span> config = MongoStoreConfig::new(
-    <span class="str">"mongodb://localhost:27017"</span>,
-    <span class="str">"langchainrust_db"</span>
-);
+<span class="comment">// Cargo.toml: langchainrust = { features = ["redis-persistence"] }</span>
+<span class="kw">let</span> store = RedisChunkedDocumentStore::new(
+    <span class="str">"redis://127.0.0.1:6379"</span>
+).await?;
 
-<span class="kw">let</span> store = MongoChunkedDocumentStore::new(config).await?;
-store.create_indexes().await?;
+<span class="kw">let</span> (parent_id, chunks) = store
+    .add_parent_document(doc, <span class="num">500</span>)
+    .await?;
 
-<span class="comment">// Same interface as InMemory</span>
-<span class="kw">let</span> (parent_id, chunks) = store.add_parent_document(doc, <span class="num">500</span>).await?;</code></pre>
+<span class="comment">// Retrieve by parent</span>
+<span class="kw">let</span> parent = store.get_parent(&parent_id).await?;</code></pre>
+                </div>
+
+                <h3>SQLite Storage</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::storage::SqliteChunkedDocumentStore;
+
+<span class="comment">// Cargo.toml: langchainrust = { features = ["sqlite-persistence"] }</span>
+<span class="kw">let</span> store = SqliteChunkedDocumentStore::new(
+    <span class="str">"./data/chroma.db"</span>  <span class="comment">// local SQLite file</span>
+).await?;
+
+<span class="comment">// Same ChunkedDocumentStoreTrait interface</span>
+<span class="kw">let</span> (parent_id, chunks) = store
+    .add_parent_document(doc, <span class="num">500</span>)
+    .await?;</code></pre>
+                </div>
+
+                <div class="callout info">
+                    <div class="callout-title">Unified Interface</div>
+                    <p>All storage backends implement the <code>ChunkedDocumentStoreTrait</code>, making them swappable without changing application code.</p>
                 </div>
 
                 <hr class="divider">
             </section>
 
             <!-- Prompts -->
-            <section class="module" id="prompts" style="animation-delay: 0.6s;">
+            <section class="module" id="prompts" style="animation-delay: 0.65s;">
                 <div class="module-header">
                     <span class="module-icon">📝</span>
                     <h2>Prompts</h2>
                 </div>
 
                 <div class="card">
-                    <p><strong>PromptTemplate</strong> and <strong>ChatPromptTemplate</strong> provide dynamic Prompt construction with variable placeholders.</p>
+                    <p><strong>PromptTemplate</strong>, <strong>ChatPromptTemplate</strong>, and <strong>FewShotPromptTemplate</strong> provide dynamic Prompt construction with variable placeholders and example injection.</p>
                 </div>
 
                 <h3>PromptTemplate</h3>
@@ -1143,6 +1440,140 @@ store.create_indexes().await?;
 <span class="kw">let</span> messages = template.format(&vars)?;</code></pre>
                 </div>
 
+                <h3>FewShotPromptTemplate</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">New in 0.2.18</div>
+                    <p>Inject example input-output pairs into prompts to guide LLM behavior via few-shot learning.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::prompts::FewShotPromptTemplate;
+
+<span class="kw">let</span> examples = vec![
+    HashMap::from([
+        (<span class="str">"question"</span>, <span class="str">"What is the capital of France?"</span>),
+        (<span class="str">"answer"</span>, <span class="str">"Paris"</span>),
+    ]),
+    HashMap::from([
+        (<span class="str">"question"</span>, <span class="str">"What is 2+2?"</span>),
+        (<span class="str">"answer"</span>, <span class="str">"4"</span>),
+    ]),
+];
+
+<span class="kw">let</span> template = FewShotPromptTemplate::new(
+    examples,
+    <span class="str">"Question: {question}\nAnswer: {answer}"</span>,  <span class="comment">// example format</span>
+    <span class="str">"Question: {input}"</span>,                          <span class="comment">// main prompt</span>
+);
+
+<span class="kw">let</span> vars = HashMap::from([
+    (<span class="str">"input"</span>, <span class="str">"What is the capital of Japan?"</span>),
+]);
+
+<span class="kw">let</span> prompt = template.format(&vars)?;
+<span class="comment">// Question: What is the capital of France?
+// Answer: Paris
+// Question: What is 2+2?
+// Answer: 4
+// Question: What is the capital of Japan?</span></code></pre>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ When to Use FewShot</div>
+                    <ul>
+                        <li>Guide output format (e.g., JSON, XML)</li>
+                        <li>Teach the model a specific reasoning pattern</li>
+                        <li>Set tone, style, or domain-specific conventions</li>
+                    </ul>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Output Parsers -->
+            <section class="module" id="output-parsers" style="animation-delay: 0.67s;">
+                <div class="module-header">
+                    <span class="module-icon">🔤</span>
+                    <h2>Output Parsers</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Output Parsers</strong> transform raw LLM string output into structured formats (JSON, lists, and more).</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Convert free-text LLM responses into type-safe, programmatically usable data.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>CommaSeparatedList</h3><p>Parse comma-separated text into Vec&lt;String&gt;</p></div>
+                    <div class="feature-card"><h3>Structured Output</h3><p>Parse JSON into typed structs</p></div>
+                    <div class="feature-card"><h3>Custom Parsers</h3><p>Implement BaseOutputParser trait</p></div>
+                    <div class="feature-card"><h3>Chain Integration</h3><p>Plug directly into Chains</p></div>
+                </div>
+
+                <h3>CommaSeparatedListOutputParser</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::CommaSeparatedListOutputParser;
+
+<span class="kw">let</span> parser = CommaSeparatedListOutputParser::new();
+
+<span class="kw">let</span> result = parser.parse(<span class="str">"apple, banana, cherry"</span>)?;
+<span class="comment">// vec!["apple", "banana", "cherry"]</span></code></pre>
+                </div>
+
+                <h3>Structured Output with Serde</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::StructuredOutputParser;
+<span class="kw">use</span> serde::Deserialize;
+
+<span class="kw">#derive</span>[Deserialize]
+<span class="kw">struct</span> <span class="type">Person</span> {
+    name: <span class="type">String</span>,
+    age: <span class="type">u32</span>,
+    city: <span class="type">String</span>,
+}
+
+<span class="kw">let</span> parser = StructuredOutputParser::<Person>::new();
+
+<span class="kw">let</span> json = r#"{"name": "Alice", "age": 30, "city": "NYC"}"#;
+<span class="kw">let</span> person: Person = parser.parse(json)?;
+println!(<span class="str">"{} is {} years old"</span>, person.name, person.age);</code></pre>
+                </div>
+
+                <h3>Using Output Parser with LLMChain</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::CommaSeparatedListOutputParser;
+
+<span class="kw">let</span> parser = Arc::new(CommaSeparatedListOutputParser::new());
+
+<span class="kw">let</span> chain = LLMChain::new(llm, <span class="str">"List 3 {topic}: "</span>)
+    .with_output_parser(parser);
+
+<span class="kw">let</span> result = chain.invoke(HashMap::from([
+    (<span class="str">"topic"</span>, <span class="str">"Rust frameworks"</span>),
+])).await?;
+
+<span class="comment">// result["text"] is automatically parsed to Vec&lt;String&gt;</span></code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -1154,7 +1585,7 @@ store.create_indexes().await?;
                 </div>
 
                 <div class="card">
-                    <p><strong>LangChainRust supports multiple LLM providers</strong> with unified API: OpenAI, DeepSeek, Moonshot, Qwen, Zhipu, Anthropic Claude, Ollama.</p>
+                    <p><strong>LangChainRust supports multiple LLM providers</strong> with unified API: OpenAI, DeepSeek, Moonshot, Qwen, Zhipu, Anthropic Claude, Google Gemini, Ollama.</p>
                 </div>
 
                 <h3>Multi-Provider Support</h3>
@@ -1170,6 +1601,7 @@ store.create_indexes().await?;
                         <tr><td><strong>Qwen</strong></td><td><code>QwenChat</code></td><td>Alibaba Cloud</td><td>Chinese content</td></tr>
                         <tr><td><strong>Zhipu</strong></td><td><code>ZhipuChat</code></td><td>ChatGLM</td><td>Chinese enterprise</td></tr>
                         <tr><td><strong>Anthropic</strong></td><td><code>AnthropicChat</code></td><td>Claude, safety-focused</td><td>Security sensitive</td></tr>
+                        <tr><td><strong>Google Gemini</strong></td><td><code>GeminiChat</code></td><td>Gemini Pro, multimodal</td><td> multimodal, Google ecosystem</td></tr>
                         <tr><td><strong>Ollama</strong></td><td><code>OllamaChat</code></td><td>Local deployment</td><td>Privacy, offline</td></tr>
                     </tbody>
                 </table>
@@ -1199,6 +1631,14 @@ store.create_indexes().await?;
     ..Default::default()
 });
 
+<span class="comment">// Google Gemini</span>
+<span class="kw">use</span> langchainrust::{GeminiChat, GeminiConfig};
+<span class="kw">let</span> llm = GeminiChat::new(GeminiConfig {
+    api_key: std::env::var(<span class="str">"GEMINI_API_KEY"</span>)?,
+    model: <span class="str">"gemini-pro"</span>.to_string(),
+    ..Default::default()
+});
+
 <span class="comment">// Ollama (Local)</span>
 <span class="kw">use</span> langchainrust::OllamaChat;
 <span class="kw">let</span> llm = OllamaChat::new(<span class="str">"llama3.2"</span>);</code></pre>
@@ -1208,7 +1648,7 @@ store.create_indexes().await?;
                     <div class="feature-card"><h3>OpenAI Compatible</h3><p>Support OpenAI API and proxies</p></div>
                     <div class="feature-card"><h3>Streaming</h3><p>stream_chat() real-time output</p></div>
                     <div class="feature-card"><h3>Function Calling</h3><p>bind_tools() attach tools</p></div>
-                    <div class="feature-card"><h3>Ollama Support</h3><p>Local deployment models</p></div>
+                    <div class="feature-card"><h3>Multi-Provider</h3><p>8+ providers, unified API</p></div>
                 </div>
 
                 <h4>OpenAIConfig Settings</h4>
@@ -1225,6 +1665,79 @@ store.create_indexes().await?;
                         <tr><td>temperature</td><td>Option&lt;f32&gt;</td><td>Sampling temperature</td></tr>
                     </tbody>
                 </table>
+
+                <hr class="divider">
+            </section>
+
+            <!-- LLM Cache -->
+            <section class="module" id="llm-cache" style="animation-delay: 0.72s;">
+                <div class="module-header">
+                    <span class="module-icon">⚡</span>
+                    <h2>LLM Cache</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>LLM Cache</strong> caches LLM responses to reduce API calls, lower costs, and improve response latency for repeated queries.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Cache identical requests, reduce API costs by up to 90% for repetitive queries.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>InMemory Cache</h3><p>Fast in-process caching, zero deps</p></div>
+                    <div class="feature-card"><h3>Redis Cache</h3><p>Distributed caching across processes</p></div>
+                    <div class="feature-card"><h3>TTL Support</h3><p>Time-based cache expiration</p></div>
+                    <div class="feature-card"><h3>Auto Cache-Aside</h3><p>Check cache first, fallback to LLM</p></div>
+                </div>
+
+                <h3>InMemory LLM Cache</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::cache::InMemoryCache;
+
+<span class="comment">// Create cache and attach to LLM</span>
+<span class="kw">let</span> cache = Arc::new(InMemoryCache::new());
+llm.with_cache(cache);
+
+<span class="comment">// First call hits the API</span>
+<span class="kw">let</span> result1 = llm.invoke(<span class="str">"What is Rust?"</span>).await?;
+
+<span class="comment">// Second call with same input returns cached result</span>
+<span class="kw">let</span> result2 = llm.invoke(<span class="str">"What is Rust?"</span>).await?;
+<span class="comment">// Instant response, no API call</span></code></pre>
+                </div>
+
+                <h3>Redis LLM Cache</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::cache::RedisCache;
+
+<span class="comment">// Distributed cache across services</span>
+<span class="kw">let</span> cache = RedisCache::new(
+    <span class="str">"redis://127.0.0.1:6379"</span>,
+    <span class="kw">Some</span>(Duration::from_secs(<span class="num">3600</span>))  <span class="comment">// TTL: 1 hour</span>
+).await?;
+
+llm.with_cache(Arc::new(cache));
+
+<span class="comment">// Works across process restarts and multiple instances</span>
+<span class="kw">let</span> result = llm.invoke(<span class="str">"Explain Rust ownership"</span>).await?;</code></pre>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ Cache Best Practices</div>
+                    <ul>
+                        <li><strong>Deterministic queries</strong>: Cache works best when same input always needs same output</li>
+                        <li><strong>TTL tuning</strong>: Set appropriate TTL based on data freshness requirements</li>
+                        <li><strong>Redis for production</strong>: Use Redis cache in multi-instance deployments</li>
+                    </ul>
+                </div>
 
                 <hr class="divider">
             </section>
@@ -1537,17 +2050,22 @@ src/
 │   ├── runnables/       # Runnable trait
 │   └── tools/           # Tool trait + ToolDefinition
 ├── language_models/     # LLM implementations
-│   └── openai/          # OpenAI client (bind_tools)
+│   ├── openai/          # OpenAI client (bind_tools)
+│   ├── gemini/          # Google Gemini client
+│   └── ...              # DeepSeek, Moonshot, Qwen, etc.
 ├── agents/              # Agent framework
 │   ├── react/           # ReActAgent (text parsing)
 │   └── function_calling/ # FunctionCallingAgent
-├── prompts/             # Prompt templates
+├── prompts/             # Prompt templates (incl. FewShot)
+├── output_parsers/      # Output parsers
 ├── memory/              # Memory management
-├── chains/              # Chain operations
+├── chains/              # Chain operations (incl. Document Chains)
 ├── retrieval/           # RAG components
 ├── embeddings/          # Text embeddings
-├── vector_stores/       # Vector storage
-├── tools/               # Built-in tools
+├── vector_stores/       # Vector storage (incl. ChromaDB)
+├── storage/             # Storage backends (Redis, SQLite)
+├── cache/               # LLM Cache (InMemory, Redis)
+├── tools/               # Built-in tools (incl. Wikipedia, DuckDuckGo, PythonREPL)
 └── schema/              # Data structures</code></pre>
                 </div>
 
@@ -1573,6 +2091,22 @@ src/
                     </tbody>
                 </table>
 
+                <h3>Chain Constructors</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Chain</th><th>Method</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>LLMChain</td><td><code>new(llm, prompt_template)</code></td></tr>
+                        <tr><td>ConversationRetrievalChain</td><td><code>new(llm, retriever, memory, prompt)</code></td></tr>
+                        <tr><td>StuffDocumentChain</td><td><code>new(llm, prompt)</code></td></tr>
+                        <tr><td>RefineDocumentChain</td><td><code>new(llm, prompt, refine_prompt)</code></td></tr>
+                        <tr><td>MapReduceDocumentsChain</td><td><code>new(map_llm, reduce_llm, map_prompt, reduce_prompt)</code></td></tr>
+                        <tr><td>MapRerankDocumentsChain</td><td><code>new(llm, map_prompt, rerank_prompt)</code></td></tr>
+                    </tbody>
+                </table>
+
                 <h3>Function Calling API</h3>
 
                 <table class="data-table">
@@ -1584,6 +2118,30 @@ src/
                         <tr><td><code>to_tool_definition(&tool)</code></td><td>Convert BaseTool to ToolDef</td></tr>
                         <tr><td><code>ToolDefinition::from_type()</code></td><td>Auto-generate JSON Schema</td></tr>
                         <tr><td><code>ToolCall::parse_arguments()</code></td><td>Parse tool arguments</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Output Parsers</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Parser</th><th>Output Type</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>CommaSeparatedListOutputParser</td><td><code>Vec&lt;String&gt;</code></td></tr>
+                        <tr><td>StructuredOutputParser&lt;T&gt;</td><td><code>T: Deserialize</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Cache</h3>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Cache</th><th>Backend</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>InMemoryCache</td><td>In-process memory</td></tr>
+                        <tr><td>RedisCache</td><td>Redis</td></tr>
                     </tbody>
                 </table>
 
@@ -1604,7 +2162,7 @@ src/
                     </div>
                     <div class="card">
                         <div class="card-title">02 Model Selection</div>
-                        <p>Agents: gpt-4 recommended. Simple chat: gpt-3.5-turbo.</p>
+                        <p>Agents: gpt-4 recommended. Simple chat: gpt-3.5-turbo. Gemini for multimodal.</p>
                     </div>
                     <div class="card">
                         <div class="card-title">03 Memory Selection</div>
@@ -1619,7 +2177,15 @@ src/
                         <p>Use stream_chat() for interactive scenarios to reduce perceived latency.</p>
                     </div>
                     <div class="card">
-                        <div class="card-title">06 Security</div>
+                        <div class="card-title">06 Caching</div>
+                        <p>Enable LLM cache for repetitive queries to reduce costs and latency.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">07 Document Strategy</div>
+                        <p>Few small docs → Stuff. Many docs → MapReduce. Accuracy critical → MapRerank.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">08 Security</div>
                         <p>Use environment variables for API keys. Never hardcode.</p>
                     </div>
                 </div>
@@ -1630,7 +2196,7 @@ src/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.2.6 | MIT License</p>
+                <p class="copyright">LangChainRust v0.2.18 | MIT License</p>
             </footer>
         </div>
     </main>

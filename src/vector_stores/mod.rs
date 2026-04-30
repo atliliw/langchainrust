@@ -7,12 +7,19 @@ mod memory;
 mod provider;
 pub mod document_store;
 pub mod chunked_vector_store;
+pub mod chromadb;
 
 #[cfg(feature = "mongodb-persistence")]
 mod mongo_document_store;
 
 #[cfg(feature = "qdrant-integration")]
 mod qdrant;
+
+#[cfg(feature = "redis-storage")]
+pub mod redis_store;
+
+#[cfg(feature = "sqlite-storage")]
+pub mod sqlite_store;
 
 pub use memory::InMemoryVectorStore;
 pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
@@ -24,6 +31,14 @@ pub use mongo_document_store::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 #[cfg(feature = "qdrant-integration")]
 pub use qdrant::{QdrantVectorStore, QdrantConfig, QdrantDistance};
+
+pub use chromadb::{ChromaDBVectorStore, ChromaDBConfig};
+
+#[cfg(feature = "redis-storage")]
+pub use redis_store::{RedisDocumentStore, RedisStoreConfig};
+
+#[cfg(feature = "sqlite-storage")]
+pub use sqlite_store::{SQLiteDocumentStore, SQLiteStoreConfig};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

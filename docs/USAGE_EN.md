@@ -12,16 +12,26 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Streaming
   - Function Calling
   - Ollama (Local LLM)
+  - Google Gemini
 - [Embeddings](#embeddings)
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
 - [Prompts](#prompts)
+  - FewShotPrompt + ExampleSelectors
+- [Output Parsers](#output-parsers)
 - [Memory](#memory)
+- [LLM Cache](#llm-cache)
 - [Chains](#chains)
+  - ConversationRetrievalChain
+- [Document Chains](#document-chains)
 - [Agents](#agents)
 - [Tools](#tools)
+  - WikipediaTool
+  - DuckDuckGoSearchTool
+  - PythonREPLTool
 - [RAG](#rag)
+  - ChromaDB
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Document Loaders](#document-loaders)
@@ -31,6 +41,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Callbacks](#callbacks)
 - [LangGraph](#langgraph)
 - [MongoDB Storage](#mongodb-storage)
+- [Redis / SQLite Storage](#redis--sqlite-storage)
 
 ---
 
@@ -49,6 +60,7 @@ LangChainRust supports multiple LLM providers with unified API:
 | **Zhipu** | `ZhipuChat` | ChatGLM |
 | **Anthropic** | `AnthropicChat` | Claude, safety-focused |
 | **Ollama** | `OllamaChat` | Local deployment |
+| **Gemini** | `GeminiChat` | Google Gemini, multimodal |
 
 #### DeepSeek (Cost-Effective)
 
@@ -117,6 +129,25 @@ let llm = AnthropicChat::new(config);
 
 let response = llm.chat(vec![
     Message::human("Analyze this code safely"),
+], None).await?;
+```
+
+### Google Gemini
+
+```rust
+use langchainrust::{GeminiChat, GeminiConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+let config = GeminiConfig {
+    api_key: std::env::var("GEMINI_API_KEY")?,
+    model: "gemini-2.0-flash".to_string(),
+    ..Default::default()
+};
+
+let llm = GeminiChat::new(config);
+
+let response = llm.chat(vec![
+    Message::human("Explain Rust enums"),
 ], None).await?;
 ```
 
@@ -259,6 +290,108 @@ let vars = HashMap::from([
 let messages = template.format(&vars)?;
 ```
 
+### FewShotPromptTemplate
+
+```rust
+use langchainrust::prompts::{FewShotPromptTemplate, PromptTemplate};
+use std::collections::HashMap;
+
+let examples = vec![
+    HashMap::from([("input", "happy"), ("output", "sad")]),
+    HashMap::from([("input", "tall"), ("output", "short")]),
+];
+
+let example_prompt = PromptTemplate::new("Input: {input}\nOutput: {output}");
+
+let prompt = FewShotPromptTemplate::new(
+    examples,
+    example_prompt,
+    "Input: {input}\nOutput:",
+);
+```
+
+### ExampleSelectors
+
+```rust
+use langchainrust::prompts::{LengthBasedExampleSelector, SemanticExampleSelector};
+
+// Length-based: selects examples up to max length
+let selector = LengthBasedExampleSelector::new(examples, example_prompt, 50);
+
+// Semantic: selects most similar examples via embeddings
+let selector = SemanticExampleSelector::new(embeddings, examples, 2);
+```
+
+---
+
+## Output Parsers
+
+### StrOutputParser
+
+```rust
+use langchainrust::output_parsers::{StrOutputParser, BaseOutputParser};
+
+let parser = StrOutputParser::new();
+let result = parser.parse("Hello world")?;
+```
+
+### CommaSeparatedListOutputParser
+
+```rust
+use langchainrust::output_parsers::CommaSeparatedListOutputParser;
+
+let parser = CommaSeparatedListOutputParser::new();
+let result = parser.parse("apple, banana, cherry")?;
+```
+
+### JsonOutputParser
+
+```rust
+use langchainrust::output_parsers::JsonOutputParser;
+use serde_json::Value;
+
+// Full JSON parsing
+let parser = JsonOutputParser::<Value>::new();
+let result: Value = parser.parse(r#"{"name": "Rust"}"#)?;
+
+// Partial parsing (extract JSON from markdown)
+let partial = parser.parse_partial("Here is the JSON:\n```json\n{\"name\": \"Rust\"\n}")?;
+```
+
+### StructuredOutputParser
+
+```rust
+use langchainrust::output_parsers::StructuredOutputParser;
+use std::collections::HashMap;
+
+let parser = StructuredOutputParser::new(vec![
+    ("name".to_string(), "string".to_string()),
+    ("age".to_string(), "integer".to_string()),
+]);
+
+let result: HashMap<String, String> = parser.parse(
+    "name: Alice\nage: 30"
+)?;
+```
+
+### TypedOutputParser\<T\>
+
+```rust
+use langchainrust::output_parsers::TypedOutputParser;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+let parser = TypedOutputParser::<Person>::new();
+let person: Person = parser.parse(
+    r#"{"name": "Alice", "age": 30}"#
+)?;
+```
+
 ---
 
 ## Memory
@@ -331,6 +464,31 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ---
 
+## LLM Cache
+
+### In-Memory Cache with TTL
+
+```rust
+use langchainrust::cache::{LLMCache, CacheConfig};
+use std::time::Duration;
+
+let config = CacheConfig::new()
+    .with_ttl(Duration::from_secs(3600))  // 1 hour
+    .with_max_size(1000);                 // 1000 entries
+
+let cache = LLMCache::new(config);
+
+// Use with LLM
+let llm = OpenAIChat::new(config)
+    .with_cache(cache);
+
+// Subsequent identical calls return cached result
+let r1 = llm.chat(vec![Message::human("Hello")], None).await?;
+let r2 = llm.chat(vec![Message::human("Hello")], None).await?;  // cache hit
+```
+
+---
+
 ## Chains
 
 ### LLMChain
@@ -378,6 +536,89 @@ let qa = RetrievalQA::new(llm, retriever, 3);
 let answer = qa.invoke(HashMap::from([
     ("query", "What is BM25?"),
 ])).await?;
+```
+
+### ConversationRetrievalChain
+
+Retrieval-augmented conversation with memory:
+
+```rust
+use langchainrust::{ConversationRetrievalChain, ConversationBufferMemory};
+use std::sync::Arc;
+
+let memory = Arc::new(ConversationBufferMemory::new());
+
+let chain = ConversationRetrievalChain::new(
+    llm,
+    retriever,
+    memory,
+).with_k(3);
+
+let answer = chain.invoke(HashMap::from([
+    ("question", "What is BM25?"),
+])).await?;
+```
+
+---
+
+## Document Chains
+
+### StuffDocumentsChain
+
+Combine all documents with a prompt:
+
+```rust
+use langchainrust::chains::{StuffDocumentsChain, LLMChain};
+use std::sync::Arc;
+
+let llm_chain = Arc::new(LLMChain::new(
+    llm,
+    "Summarize the following documents:\n{documents}"
+));
+
+let chain = StuffDocumentsChain::new(llm_chain);
+let result = chain.invoke(documents).await?;
+```
+
+### RefineDocumentsChain
+
+Iteratively refine by processing one document at a time:
+
+```rust
+use langchainrust::chains::RefineDocumentsChain;
+
+let initial_llm = Arc::new(LLMChain::new(llm.clone(), "Summarize: {text}"));
+let refine_llm = Arc::new(LLMChain::new(llm, "Refine summary with: {text}"));
+
+let chain = RefineDocumentsChain::new(initial_llm, refine_llm);
+let result = chain.invoke(documents).await?;
+```
+
+### MapReduceDocumentsChain
+
+Map each document then reduce:
+
+```rust
+use langchainrust::chains::MapReduceDocumentsChain;
+
+let map_chain = Arc::new(LLMChain::new(llm.clone(), "Summarize: {text}"));
+let reduce_chain = Arc::new(LLMChain::new(llm, "Combine: {summaries}"));
+
+let chain = MapReduceDocumentsChain::new(map_chain, reduce_chain);
+let result = chain.invoke(documents).await?;
+```
+
+### MapRerankDocumentsChain
+
+Map and rerank by score:
+
+```rust
+use langchainrust::chains::MapRerankDocumentsChain;
+
+let map_chain = Arc::new(LLMChain::new(llm, "{text}\nScore (0-10):"));
+
+let chain = MapRerankDocumentsChain::new(map_chain);
+let (best_doc, score) = chain.invoke(documents).await?;
 ```
 
 ---
@@ -444,6 +685,9 @@ let executor = AgentExecutor::new(
 | DateTimeTool | Date/time queries | `operation`, `datetime` |
 | SimpleMathTool | Power, sqrt, trig | `operation`, `value` |
 | URLFetchTool | Fetch URLs | `url` |
+| WikipediaTool | Wikipedia search | `query` |
+| DuckDuckGoSearchTool | Web search | `query` |
+| PythonREPLTool | Execute Python | `code` |
 
 ### Custom Tool
 
@@ -474,6 +718,33 @@ impl BaseTool for EchoTool {
         Some(serde_json::to_value(schemars::schema_for!(EchoInput)).unwrap())
     }
 }
+```
+
+### WikipediaTool
+
+```rust
+use langchainrust::WikipediaTool;
+
+let tool = WikipediaTool::new();
+let result = tool.run(r#"{"query": "Rust programming"}"#).await?;
+```
+
+### DuckDuckGoSearchTool
+
+```rust
+use langchainrust::DuckDuckGoSearchTool;
+
+let tool = DuckDuckGoSearchTool::new();
+let result = tool.run(r#"{"query": "langchain rust"}"#).await?;
+```
+
+### PythonREPLTool
+
+```rust
+use langchainrust::PythonREPLTool;
+
+let tool = PythonREPLTool::new();
+let result = tool.run(r#"{"code": "print(sum(range(10)))"}"#).await?;
 ```
 
 ---
@@ -578,6 +849,33 @@ let retriever = SimilarityRetriever::new(store.clone(), embeddings);
 retriever.add_documents(vec![
     Document::new("Rust is a systems language"),
     Document::new("Python is a scripting language"),
+]).await?;
+
+let docs = retriever.retrieve("systems programming", 3).await?;
+```
+
+### ChromaDB
+
+Persistent vector store using Chroma:
+
+```toml
+[dependencies]
+langchainrust = { version = "0.2.6", features = ["chromadb"] }
+```
+
+```rust
+use langchainrust::{ChromaVectorStore, SimilarityRetriever};
+use std::sync::Arc;
+
+let store = Arc::new(ChromaVectorStore::new(
+    "http://localhost:8000",
+    "my_collection",
+).await?);
+
+let retriever = SimilarityRetriever::new(store.clone(), embeddings);
+
+retriever.add_documents(vec![
+    Document::new("Rust is a systems language"),
 ]).await?;
 
 let docs = retriever.retrieve("systems programming", 3).await?;
@@ -1045,6 +1343,54 @@ store.create_indexes().await?;
 let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
 let chunks = store.get_chunks_for_parent(&parent_id).await?;
 ```
+
+---
+
+## Redis / SQLite Storage
+
+### Enable Feature
+
+```toml
+[dependencies]
+langchainrust = { version = "0.2.6", features = ["redis-storage"] }
+```
+
+or
+
+```toml
+[dependencies]
+langchainrust = { version = "0.2.6", features = ["sqlite-storage"] }
+```
+
+### RedisDocumentStore
+
+```rust
+use langchainrust::{RedisDocumentStore, ChunkedDocumentStoreTrait};
+
+let store = RedisDocumentStore::new("redis://127.0.0.1:6379").await?;
+
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;
+```
+
+### SQLiteDocumentStore
+
+```rust
+use langchainrust::{SQLiteDocumentStore, ChunkedDocumentStoreTrait};
+
+let store = SQLiteDocumentStore::new("langchain.db").await?;
+
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;
+```
+
+### Feature Gating
+
+| Feature Flag | Storage Backend | Dependencies |
+|-------------|-----------------|--------------|
+| `redis-storage` | Redis | redis crate |
+| `sqlite-storage` | SQLite | rusqlite crate |
+| `mongodb-persistence` | MongoDB | mongodb crate |
 
 ---
 

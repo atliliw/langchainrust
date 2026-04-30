@@ -63,6 +63,7 @@ pub use core::{
     BaseTool, Tool, ToolError, ToolRegistry,
     ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
 };
+pub use core::language_models::LLMResult;
 pub use core::tools::StructuredOutput;
 pub use schema::{Message, MessageType};
 pub use language_models::{
@@ -73,15 +74,16 @@ pub use language_models::{
     ZhipuChat, ZhipuConfig,
     QwenChat, QwenConfig,
     AnthropicChat, AnthropicConfig, AnthropicError,
+    GeminiChat, GeminiConfig, GeminiError,
 };
-pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput};
+pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput, WikipediaTool, WikipediaInput, PythonREPLTool, PythonREPLInput, DuckDuckGoSearchTool, SearchInput};
 pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent, FunctionCallingAgent};
 pub use core::tools::to_tool_definition;
 pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use memory::MongoPersistentMemory;
-pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA};
+pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA, ConversationRetrievalChain, StuffDocumentsChain, RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain};
 
 // Embeddings
 pub use embeddings::{
@@ -94,7 +96,13 @@ pub use embeddings::{
 };
 
 // Vector Stores
-pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
+pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder, ChromaDBVectorStore, ChromaDBConfig};
+
+#[cfg(feature = "redis-storage")]
+pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
+
+#[cfg(feature = "sqlite-storage")]
+pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
 pub use vector_stores::{ChunkDocument, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore};
 
 #[cfg(feature = "qdrant-integration")]
@@ -113,10 +121,17 @@ pub use retrieval::{HyDERetriever, HyDEConfig, HyDEError};
 pub use retrieval::{Reranker, KeywordReranker, BM25Reranker, RerankingExecutor, RerankingConfig, RerankingError};
 
 // Prompts
-pub use prompts::{PromptTemplate, ChatPromptTemplate};
+pub use prompts::{PromptTemplate, ChatPromptTemplate, FewShotPromptTemplate, ExampleSelector, LengthBasedExampleSelector};
 
 // Callbacks
 pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler, FileCallbackHandler, LogFormat};
+
+// Output Parsers
+pub use core::output_parsers::{
+    BaseOutputParser, OutputParserError, OutputParserResult,
+    StrOutputParser, CommaSeparatedListOutputParser,
+    JsonOutputParser, StructuredOutputParser, TypedOutputParser,
+};
 
 // LangGraph
 pub use langgraph::{
