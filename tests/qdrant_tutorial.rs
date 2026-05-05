@@ -7,6 +7,8 @@
 
 #![cfg(feature = "qdrant-integration")]
 
+mod bm25;
+
 use langchainrust::vector_stores::{
     Document, VectorStore, QdrantVectorStore, QdrantConfig, QdrantDistance,
 };

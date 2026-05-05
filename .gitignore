@@ -36,6 +36,7 @@ Thumbs.db
 *.temp
 *.log
 *.tar
+nul
 
 # Demo application
 /demo/

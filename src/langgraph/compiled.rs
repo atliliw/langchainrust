@@ -128,11 +128,13 @@ impl<S: StateSchema> CompiledGraph<S> {
     }
     
     /// 创建恢复执行上下文（从最后一个检查点恢复）
+    /// interrupted_node 可能是 "node_name" 或 "after_node_name"
     pub async fn create_resume_execution(&self, interrupted_node: &str) -> Option<GraphExecution<S>> {
         let state = self.last_checkpoint_state().await?;
+        let current = interrupted_node.strip_prefix("after_").unwrap_or(interrupted_node);
         Some(GraphExecution {
             state,
-            current_node: interrupted_node.to_string(),
+            current_node: current.to_string(),
             steps: Vec::new(),
             recursion_count: 0,
             interrupted_at: interrupted_node.to_string(),
