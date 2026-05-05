@@ -1036,20 +1036,25 @@ graph.add_conditional_edge(
 );
 ```
 
-### Human-in-the-loop
+### Human-in-the-loop / Interrupt & Resume
 
 ```rust
+use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
+
 let compiled = graph.compile()
-    .with_interrupt_before(vec!["output"]);
+    .map_err(|e| ...)?
+    .with_checkpointer(MemoryCheckpointer::new())
+    .with_interrupt_before(vec!["output", "analyze"]);
 
-let execution = compiled.invoke_with_execution(state).await?;
-
-if execution.is_interrupted() {
-    // Review state
-    println!("Paused at: {}", execution.current_node);
-    
-    // Resume after approval
-    let result = compiled.resume(execution).await?;
+match compiled.invoke(state).await {
+    Ok(result) => { /* complete */ }
+    Err(GraphError::ExecutionInterrupted(node)) => {
+        println!("Paused at: {}", node);
+        if let Some(exec) = compiled.create_resume_execution(&node).await {
+            let result = compiled.resume(exec).await?;
+        }
+    }
+    Err(e) => { /* error */ }
 }
 ```
 
