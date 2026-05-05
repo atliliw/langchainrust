@@ -2412,34 +2412,41 @@ graph.add_edge("summarize", END);
 graph.add_edge("continue", "process");
 ```
 
-### Human-in-the-loop
+### Human-in-the-loop / 中断恢复
 
-人工干预机制，在关键节点暂停等待人工确认：
+在节点执行前/后中断，支持逐步执行和人工确认：
 
 ```rust
-use langchainrust::langgraph::{CompiledGraph, GraphExecution};
+use langchainrust::langgraph::{CompiledGraph, GraphExecution, MemoryCheckpointer};
 
-// 编译时设置中断点
+// 编译时设置中断点 + 检查点存储
 let compiled = graph.compile()
-    .with_interrupt_before(vec!["output"])  // 输出前暂停
-    .with_interrupt_after(vec!["analyze"]); // 分析后暂停
+    .map_err(|e| ...)?
+    .with_checkpointer(MemoryCheckpointer::new())
+    .with_interrupt_before(vec!["output", "analyze"]);  // 这些节点执行前暂停
+    .with_interrupt_after(vec!["review"]);              // review节点执行后暂停
 
-// 执行到中断点会返回 GraphExecution
-let execution = compiled.invoke_with_execution(initial_state).await?;
-
-if execution.is_interrupted() {
-    println!("暂停在节点: {}", execution.current_node);
-    
-    // 人工审查状态
-    println!("当前状态: {:?}", execution.state);
-    
-    // 决定是否继续
-    let should_continue = user_approval();  // 用户确认
-    
-    if should_continue {
-        // 从中断点恢复执行
-        let result = compiled.resume(execution).await?;
+// 执行，到达中断点时返回 ExecutionInterrupted 错误
+match compiled.invoke(initial_state).await {
+    Ok(result) => { /* 全部完成 */ }
+    Err(GraphError::ExecutionInterrupted(node)) => {
+        println!("暂停在节点: {}", node);
+        
+        // 从检查点恢复执行上下文
+        if let Some(execution) = compiled.create_resume_execution(&node).await {
+            // 可以选择修改状态后继续
+            let result = compiled.resume(execution).await?;
+        }
     }
+    Err(e) => { /* 其他错误 */ }
+}
+```
+
+`last_checkpoint_state()` 可获取最后一个检查点的状态：
+
+```rust
+if let Some(state) = compiled.last_checkpoint_state().await {
+    println!("检查点状态: {:?}", state);
 }
 ```
 
