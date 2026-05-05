@@ -114,6 +114,31 @@ impl<S: StateSchema> CompiledGraph<S> {
         &self.interrupt_after
     }
     
+    /// 获取最后一个检查点的状态（用于中断恢复）
+    pub async fn last_checkpoint_state(&self) -> Option<S> {
+        if let Some(ref cp) = self.checkpointer {
+            let guard = cp.lock().await;
+            // 通过 list 获取所有 checkpoint id，加载最后一个
+            let ids = guard.list().await.ok()?;
+            let last_id = ids.last()?.clone();
+            guard.load(&last_id).await.ok()
+        } else {
+            None
+        }
+    }
+    
+    /// 创建恢复执行上下文（从最后一个检查点恢复）
+    pub async fn create_resume_execution(&self, interrupted_node: &str) -> Option<GraphExecution<S>> {
+        let state = self.last_checkpoint_state().await?;
+        Some(GraphExecution {
+            state,
+            current_node: interrupted_node.to_string(),
+            steps: Vec::new(),
+            recursion_count: 0,
+            interrupted_at: interrupted_node.to_string(),
+        })
+    }
+    
     pub fn validate(&self) -> GraphResult<()> {
         for edge in &self.edges {
             match edge {
