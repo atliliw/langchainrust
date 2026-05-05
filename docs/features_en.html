@@ -1833,13 +1833,18 @@ let file_checkpointer = FileCheckpointer::new(<span class="str">"./checkpoints/"
 
 let compiled = graph.compile().with_checkpointer(checkpointer);
 
-<span class="comment">// Execute with thread_id</span>
-let thread_id = <span class="str">"conversation_123"</span>;
-let result = compiled.invoke_with_thread(state, thread_id).await?;
+<span class="comment">// Execute</span>
+let result = compiled.invoke(state).await;
 
-<span class="comment">// Restore previous state</span>
-let previous = compiled.get_state(thread_id).await?;
-let resumed = compiled.invoke_with_thread(previous, thread_id).await?;</code></pre>
+<span class="comment">// Get last checkpoint state</span>
+<span class="kw">if</span> let Some(state) = compiled.last_checkpoint_state().await {
+    println!(<span class="str">"Checkpoint state: {:?}"</span>, state);
+}
+
+<span class="comment">// Resume from interruption</span>
+<span class="kw">if</span> let Some(exec) = compiled.create_resume_execution(<span class="str">"node_name"</span>).await {
+    let result = compiled.resume(exec).await;
+}</code></pre>
                 </div>
 
                 <h3>Visualization</h3>

@@ -2005,24 +2005,27 @@ let graph = GraphBuilder::new()
 let result = graph.invoke(MyState::default()).await?;</code></pre>
                             </div>
 
-                            <h3 class="sub-title">Human-in-the-loop</h3>
+                            <h3 class="sub-title">Human-in-the-loop / 中断恢复</h3>
 
                             <div class="code-block">
-                                <pre><code class="language-rust">// 在关键节点暂停，等待人工确认
-let graph = GraphBuilder::new()
-    .add_node("review", |state| {
-        // 标记需要人工审核
-        state.needs_review = true;
-        Ok(())
-    })
-    .add_interrupt("review")  // 在此节点暂停
-    .build();
+                                <pre><code class="language-rust">use langchainrust::langgraph::{
+    GraphError, MemoryCheckpointer, CompiledGraph,
+};
 
-// 执行到 review 节点后暂停
-let invocation = graph.invoke(state).await?;
+let compiled = graph.compile()?
+    .with_checkpointer(MemoryCheckpointer::new())
+    .with_interrupt_before(vec!["review"]);
 
-// 人工确认后继续
-graph.resume(invocation, approved).await?;</code></pre>
+match compiled.invoke(state).await {
+    Ok(result) => { /* 全部完成 */ }
+    Err(GraphError::ExecutionInterrupted(node)) => {
+        // 从检查点恢复
+        if let Some(exec) = compiled.create_resume_execution(&node).await {
+            let result = compiled.resume(exec).await?;
+        }
+    }
+    Err(e) => { /* 错误处理 */ }
+}</code></pre>
                             </div>
 
                             <h3 class="sub-title">Parallel 并行执行</h3>
@@ -2078,13 +2081,13 @@ let file_checkpointer = FileCheckpointer::new("./checkpoints/");
 let compiled = graph.compile()
     .with_checkpointer(checkpointer);
 
-// 执行时指定 thread_id（用于区分不同会话）
-let thread_id = "conversation_123";
-let result = compiled.invoke_with_thread(initial_state, thread_id).await?;
+// 执行，中断时可获取检查点状态
+let result = compiled.invoke(initial_state).await;
 
-// 恢复之前的状态
-let previous_state = compiled.get_state(thread_id).await?;
-let resumed_result = compiled.invoke_with_thread(previous_state, thread_id).await?;</code></pre>
+// 从检查点加载最近的状态
+if let Some(state) = compiled.last_checkpoint_state().await {
+    println!("检查点状态: {:?}", state);
+}</code></pre>
                             </div>
 
                             <h3 class="sub-title">可视化输出</h3>
