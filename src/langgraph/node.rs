@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 /// Nodes are async functions that take a state and return a state update.
 /// They represent the work units in the graph.
 #[async_trait]
-pub trait GraphNode<S: StateSchema>: Send + Sync {
+pub trait GraphNode<S: StateSchema>: Send + Sync + 'static {
     /// Execute the node
     ///
     /// # Parameters
@@ -87,7 +87,7 @@ impl<S: StateSchema, F: AsyncFn<S>> AsyncNode<S, F> {
 }
 
 #[async_trait]
-impl<S: StateSchema, F: AsyncFn<S>> GraphNode<S> for AsyncNode<S, F> {
+impl<S: StateSchema, F: AsyncFn<S> + 'static> GraphNode<S> for AsyncNode<S, F> {
     async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
         self.func.call(state).await
     }
@@ -121,7 +121,7 @@ where
 }
 
 #[async_trait]
-impl<S: StateSchema, F> GraphNode<S> for FunctionNode<S, F>
+impl<S: StateSchema, F: 'static> GraphNode<S> for FunctionNode<S, F>
 where
     F: Fn(&S) -> Pin<Box<dyn Future<Output = Result<StateUpdate<S>, GraphError>> + Send>> + Send + Sync,
 {
@@ -162,7 +162,7 @@ where
 }
 
 #[async_trait]
-impl<S: StateSchema, F> GraphNode<S> for SyncNode<S, F>
+impl<S: StateSchema, F: 'static> GraphNode<S> for SyncNode<S, F>
 where
     F: Fn(&S) -> Result<StateUpdate<S>, GraphError> + Send + Sync,
 {

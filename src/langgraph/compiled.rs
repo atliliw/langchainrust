@@ -3,13 +3,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::Mutex;
+use async_trait::async_trait;
 use super::state::{StateSchema, StateUpdate, Reducer};
 use super::node::{GraphNode, NodeConfig};
 use super::edge::{GraphEdge, ConditionalEdge};
 use super::errors::{GraphError, GraphResult};
 use super::checkpointer::{Checkpointer};
 use super::persistence::{GraphDefinition, NodeDefinition, EdgeDefinition, NodeType};
+use super::subgraph::SubgraphNode;
 use super::{START, END};
 use serde_json::Value as JsonValue;
 use futures_util::future::join_all;
@@ -31,6 +34,11 @@ pub struct CompiledGraph<S: StateSchema> {
     recursion_limit: usize,
     interrupt_before: Vec<String>,
     interrupt_after: Vec<String>,
+
+    runtime_nodes: Arc<RwLock<HashMap<String, Arc<dyn GraphNode<S>>>>>,
+    runtime_edges: Arc<RwLock<Vec<GraphEdge>>>,
+    runtime_conditional_routers: Arc<RwLock<HashMap<String, Arc<dyn ConditionalEdge<S>>>>>,
+    task_inbox: Arc<Mutex<Vec<DynamicTask>>>,
 }
 
 impl<S: StateSchema> std::fmt::Debug for CompiledGraph<S> {
@@ -63,6 +71,10 @@ impl<S: StateSchema> CompiledGraph<S> {
             recursion_limit: 25,
             interrupt_before: Vec::new(),
             interrupt_after: Vec::new(),
+            runtime_nodes: Arc::new(RwLock::new(HashMap::new())),
+            runtime_edges: Arc::new(RwLock::new(Vec::new())),
+            runtime_conditional_routers: Arc::new(RwLock::new(HashMap::new())),
+            task_inbox: Arc::new(Mutex::new(Vec::new())),
         }
     }
     
@@ -141,6 +153,54 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
     
+    fn get_node(&self, name: &str) -> GraphResult<Arc<dyn GraphNode<S>>> {
+        if let Some(node) = self.nodes.get(name) {
+            return Ok(node.clone());
+        }
+        if let Some(node) = self.runtime_nodes.read().map_err(|e| GraphError::RuntimeError(e.to_string()))?.get(name) {
+            return Ok(node.clone());
+        }
+        Err(GraphError::ExecutionError(format!("Node '{}' not found", name)))
+    }
+
+    /// Submit a new task for dynamic planning mid-execution
+    pub fn submit_task(&self, description: String) {
+        if let Ok(mut inbox) = self.task_inbox.try_lock() {
+            inbox.push(DynamicTask {
+                id: uuid::Uuid::new_v4().to_string(),
+                description,
+            });
+        }
+    }
+
+    /// Inject a runtime node directly
+    pub fn inject_node(&self, name: &str, node: Arc<dyn GraphNode<S>>) {
+        if let Ok(mut rn) = self.runtime_nodes.write() {
+            rn.insert(name.to_string(), node);
+        }
+    }
+
+    /// Inject a runtime edge directly
+    pub fn inject_edge(&self, source: &str, target: &str) {
+        if let Ok(mut re) = self.runtime_edges.write() {
+            re.push(GraphEdge::fixed(source, target));
+        }
+    }
+
+    /// Inject a subgraph as a runtime node
+    pub fn inject_subgraph<SubS: StateSchema + 'static>(
+        &self,
+        name: &str,
+        subgraph: CompiledGraph<SubS>,
+        input_mapper: impl Fn(&S) -> SubS + Send + Sync + 'static,
+        output_mapper: impl Fn(&SubS, &mut S) + Send + Sync + 'static,
+    ) {
+        let node = SubgraphNode::new(name, subgraph, input_mapper, output_mapper);
+        if let Ok(mut rn) = self.runtime_nodes.write() {
+            rn.insert(name.to_string(), Arc::new(node));
+        }
+    }
+
     pub fn validate(&self) -> GraphResult<()> {
         for edge in &self.edges {
             match edge {
@@ -393,10 +453,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
             
             recursion_count += 1;
             
-            let node = self.nodes.get(&current_node)
-                .ok_or_else(|| GraphError::ExecutionError(
-                    format!("Node '{}' not found", current_node)
-                ))?;
+            let node = self.get_node(&current_node)?;
             
             let config = NodeConfig {
                 recursion_limit: self.recursion_limit,
@@ -455,10 +512,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
             
             recursion_count += 1;
             
-            let node = self.nodes.get(&current_node)
-                .ok_or_else(|| GraphError::ExecutionError(
-                    format!("Node '{}' not found", current_node)
-                ))?;
+            let node = self.get_node(&current_node)?;
             
             let config = NodeConfig {
                 recursion_limit: self.recursion_limit,
@@ -516,10 +570,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
             
             events.push(StreamEvent::enter_node(current_node.clone(), state.clone()));
             
-            let node = self.nodes.get(&current_node)
-                .ok_or_else(|| GraphError::ExecutionError(
-                    format!("Node '{}' not found", current_node)
-                ))?;
+            let node = self.get_node(&current_node)?;
             
             let config = NodeConfig {
                 recursion_limit: self.recursion_limit,
@@ -545,6 +596,48 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
     }
     
     async fn find_next_node(&self, current: &str, state: &S) -> GraphResult<String> {
+        // 1. Check runtime edges — edge is cloned out of the guard before any .await
+        'rt: {
+            let edge = {
+                let re = match self.runtime_edges.read() {
+                    Ok(g) => g,
+                    Err(_) => break 'rt,
+                };
+                match re.iter().find(|e| e.source() == current) {
+                    Some(e) => e.clone(),
+                    None => break 'rt,
+                }
+            }; // re dropped here
+            match edge {
+                GraphEdge::Fixed { target, .. } => return Ok(target),
+                GraphEdge::Conditional { router_name, targets, default_target, .. } => {
+                    let router = self.conditional_routers.get(&router_name).cloned()
+                        .or_else(|| {
+                            self.runtime_conditional_routers.read().ok()
+                                .and_then(|guard| guard.get(&router_name).cloned())
+                        })
+                        .ok_or_else(|| GraphError::ExecutionError(
+                            format!("Router '{}' not found (runtime)", router_name)
+                        ))?;
+                    let route_key = router.route(state).await?;
+                    let target = targets.get(&route_key)
+                        .or_else(|| default_target.as_ref())
+                        .ok_or_else(|| GraphError::RoutingError(
+                            format!("No target for route '{}' (runtime)", route_key)
+                        ))?;
+                    return Ok(target.clone());
+                }
+                GraphEdge::FanOut { targets, .. } => {
+                    if targets.is_empty() {
+                        return Err(GraphError::RoutingError("FanOut has no targets (runtime)".to_string()));
+                    }
+                    return Ok(targets[0].clone());
+                }
+                GraphEdge::FanIn { .. } => {}
+            }
+        }
+
+        // 2. Check static edges
         for edge in &self.edges {
             if edge.source() == current {
                 match edge {
@@ -552,7 +645,11 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                         return Ok(target.clone());
                     }
                     GraphEdge::Conditional { router_name, targets, default_target, .. } => {
-                        let router = self.conditional_routers.get(router_name)
+                        let router = self.conditional_routers.get(router_name).cloned()
+                            .or_else(|| {
+                                self.runtime_conditional_routers.read().ok()
+                                    .and_then(|guard| guard.get(router_name).cloned())
+                            })
                             .ok_or_else(|| GraphError::ExecutionError(
                                 format!("Router '{}' not found", router_name)
                             ))?;
@@ -590,6 +687,13 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
     }
     
     fn find_fan_out_targets(&self, current: &str) -> Option<Vec<String>> {
+        if let Ok(re) = self.runtime_edges.read() {
+            if let Some(edge) = re.iter().find(|e| e.source() == current) {
+                if let GraphEdge::FanOut { targets, .. } = edge {
+                    return Some(targets.clone());
+                }
+            }
+        }
         for edge in &self.edges {
             if edge.source() == current {
                 if let GraphEdge::FanOut { targets, .. } = edge {
@@ -601,6 +705,15 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
     }
     
     fn find_fan_in_target(&self, sources: &[String]) -> Option<String> {
+        if let Ok(re) = self.runtime_edges.read() {
+            if let Some(edge) = re.iter().find(|e| matches!(e, GraphEdge::FanIn { .. })) {
+                if let GraphEdge::FanIn { sources: edge_sources, target } = edge {
+                    if edge_sources.iter().all(|s| sources.contains(s)) {
+                        return Some(target.clone());
+                    }
+                }
+            }
+        }
         for edge in &self.edges {
             if let GraphEdge::FanIn { sources: edge_sources, target } = edge {
                 if edge_sources.iter().all(|s| sources.contains(s)) {
@@ -654,10 +767,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
             
             recursion_count += 1;
             
-            let node = self.nodes.get(&current_node)
-                .ok_or_else(|| GraphError::ExecutionError(
-                    format!("Node '{}' not found", current_node)
-                ))?;
+            let node = self.get_node(&current_node)?;
             
             let config = NodeConfig {
                 recursion_limit: self.recursion_limit,
@@ -734,10 +844,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                     current_node = END.to_string();
                 }
             } else {
-                let node = self.nodes.get(&current_node)
-                    .ok_or_else(|| GraphError::ExecutionError(
-                        format!("Node '{}' not found", current_node)
-                    ))?;
+                let node = self.get_node(&current_node)?;
                 
                 let config = NodeConfig {
                     recursion_limit: self.recursion_limit,
@@ -770,6 +877,90 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
             steps,
             recursion_count,
             parallel_branches,
+        })
+    }
+
+    /// Execute the graph with dynamic task injection support.
+    ///
+    /// After each node completes, checks the task_inbox for newly submitted tasks.
+    /// If tasks are found, uses the provided `planner` to convert them into new
+    /// nodes/edges and injects them into the runtime registries before continuing.
+    pub async fn invoke_dynamic(
+        &self,
+        input: S,
+        planner: &dyn DynamicPlanner<S>,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let mut state = input;
+        let mut current_node = self.entry_point.clone();
+        let mut steps: Vec<ExecutionStep> = Vec::new();
+        let mut recursion_count = 0;
+
+        if let Some(ref checkpointer) = self.checkpointer {
+            let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            steps.push(ExecutionStep::checkpoint(checkpoint_id, current_node.clone()));
+        }
+
+        while current_node != END && recursion_count < self.recursion_limit {
+            // Check for pending dynamically-submitted tasks
+            let pending = {
+                let mut inbox = self.task_inbox.lock().await;
+                inbox.drain(..).collect::<Vec<_>>()
+            };
+            if !pending.is_empty() {
+                let injection = planner.plan(&pending, &state).await
+                    .map_err(|e| GraphError::RuntimeError(e.to_string()))?;
+
+                if let Ok(mut rn) = self.runtime_nodes.write() {
+                    for (name, node) in injection.nodes {
+                        rn.insert(name, node);
+                    }
+                }
+                if let Ok(mut re) = self.runtime_edges.write() {
+                    re.extend(injection.edges);
+                }
+            }
+
+            if self.interrupt_before.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            }
+
+            recursion_count += 1;
+
+            let node = self.get_node(&current_node)?;
+            let config = NodeConfig {
+                recursion_limit: self.recursion_limit,
+                debug: false,
+                metadata: HashMap::new(),
+            };
+            let update = node.execute(&state, Some(config)).await?;
+
+            if let Some(new_state) = update.update {
+                state = self.default_reducer.reduce(&state, &new_state);
+            }
+            steps.push(ExecutionStep::node(current_node.clone(), update.metadata.clone()));
+
+            if self.interrupt_after.contains(&current_node) {
+                return Err(GraphError::ExecutionInterrupted(format!("after_{}", current_node)));
+            }
+
+            let next_node = self.find_next_node(&current_node, &state).await?;
+
+            if let Some(ref checkpointer) = self.checkpointer {
+                let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
+            }
+
+            current_node = next_node;
+        }
+
+        if recursion_count >= self.recursion_limit {
+            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+        }
+
+        Ok(GraphInvocation {
+            final_state: state,
+            steps,
+            recursion_count,
         })
     }
     
@@ -1098,6 +1289,28 @@ impl<S: StateSchema> GraphExecution<S> {
     pub fn interrupted_at(&self) -> &str {
         &self.interrupted_at
     }
+}
+
+// ── Dynamic extension types ──
+
+/// A task submitted externally for dynamic planning mid-execution.
+#[derive(Debug, Clone)]
+pub struct DynamicTask {
+    pub id: String,
+    pub description: String,
+}
+
+/// Result of dynamic planning: nodes and edges to inject into a running graph.
+pub struct DynamicInjection<S: StateSchema> {
+    pub nodes: Vec<(String, Arc<dyn GraphNode<S>>)>,
+    pub edges: Vec<GraphEdge>,
+}
+
+/// Planner trait for converting external tasks into graph nodes/edges at runtime.
+#[async_trait]
+pub trait DynamicPlanner<S: StateSchema>: Send + Sync {
+    /// Given pending tasks and current state, produce nodes/edges to inject.
+    async fn plan(&self, tasks: &[DynamicTask], current_state: &S) -> Result<DynamicInjection<S>, String>;
 }
 
 #[cfg(test)]

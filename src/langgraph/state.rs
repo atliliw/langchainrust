@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 /// State Schema trait
-pub trait StateSchema: Clone + Send + Sync + Serialize + for<'de> Deserialize<'de> + Debug {
+pub trait StateSchema: Clone + Send + Sync + 'static + Serialize + for<'de> Deserialize<'de> + Debug {
     /// Create initial state from input
     fn from_input(input: Self) -> Self {
         input

@@ -42,6 +42,9 @@ pub enum GraphError {
 
     #[error("Missing route target: {0}")]
     MissingRouteTargetError(String),
+
+    #[error("Runtime error: {0}")]
+    RuntimeError(String),
 }
 
 pub type GraphResult<T> = Result<T, GraphError>;

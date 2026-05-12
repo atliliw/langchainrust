@@ -64,7 +64,7 @@ pub use state::{StateSchema, StateUpdate, Reducer, ReplaceReducer, AppendReducer
 pub use node::{GraphNode, NodeResult, NodeConfig, AsyncNode, AsyncFn};
 pub use edge::{GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter, AsyncFunctionRouter};
 pub use graph::{StateGraph, GraphBuilder, START, END};
-pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution, ParallelInvocation, ParallelBranch};
+pub use compiled::{CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution, ParallelInvocation, ParallelBranch, DynamicTask, DynamicInjection, DynamicPlanner};
 pub use errors::{GraphError, GraphResult};
 pub use checkpointer::{Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, FileCheckpointer, CheckpointData};
 pub use subgraph::{SubgraphNode, SubgraphBuilder};
