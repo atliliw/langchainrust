@@ -426,47 +426,32 @@ impl OpenAIChat {
         
         let parser = Arc::new(Mutex::new(SSEParser::new()));
         
-        let stream = byte_stream
-            .then(move |chunk_result| {
-                let parser = parser.clone();
-                async move {
-                    let mut parser_guard = parser.lock().unwrap();
-                    match chunk_result {
-                        Ok(bytes) => {
-                            let chunk_str = String::from_utf8_lossy(&bytes);
-                            let events = parser_guard.parse(&chunk_str);
-                            
-                            let mut tokens = Vec::new();
-                            for event in events {
-                                if event.is_done() {
-                                    return None;
-                                }
-                                
-                                if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                                    if let Some(choice) = chunk.choices.first() {
-                                        if let Some(content) = &choice.delta.content {
-                                            tokens.push(Ok(content.clone()));
-                                        }
-                                    }
+        let token_tx = parser.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, OpenAIError>>();
+        let byte_stream2 = byte_stream;
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let parser2 = token_tx;
+            let mut byte_stream2 = byte_stream2;
+            while let Some(chunk_result) = byte_stream2.next().await {
+                let mut parser_guard = parser2.lock().unwrap();
+                if let Ok(bytes) = chunk_result {
+                    let chunk_str = String::from_utf8_lossy(&bytes);
+                    let events = parser_guard.parse(&chunk_str);
+                    for event in events {
+                        if event.is_done() { break; }
+                        if let Ok(Some(chunk)) = event.parse_openai_chunk() {
+                            if let Some(choice) = chunk.choices.first() {
+                                if let Some(content) = &choice.delta.content {
+                                    let _ = tx.send(Ok(content.clone()));
                                 }
                             }
-                            
-                            if tokens.is_empty() {
-                                None
-                            } else {
-                                let combined: String = tokens.into_iter().filter_map(|t: Result<String, OpenAIError>| t.ok()).collect();
-                                if combined.is_empty() {
-                                    None
-                                } else {
-                                    Some(Ok(combined))
-                                }
-                            }
-                        },
-                        Err(e) => Some(Err(OpenAIError::Http(e.to_string()))),
+                        }
                     }
                 }
-            })
-            .filter_map(|x| async move { x });
+            }
+        });
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
         
         Ok(Box::pin(stream))
     }

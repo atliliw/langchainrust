@@ -130,39 +130,47 @@ impl Embeddings for OpenAIEmbeddings {
         }
         
         let url = format!("{}/embeddings", self.config.base_url);
+        let batch_size = self.config.batch_size.max(1);
+        let mut all_results = vec![Vec::new(); texts.len()];
+        let mut offset = 0;
         
-        let body = serde_json::json!({
-            "model": self.config.model,
-            "input": texts,
-        });
-        
-        let response = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-        
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+        // 按 batch_size 分批调用 API
+        for chunk in texts.chunks(batch_size) {
+            let body = serde_json::json!({
+                "model": self.config.model,
+                "input": chunk,
+            });
+            
+            let response = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
+            
+            let status = response.status();
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+            }
+            
+            let embedding_response: OpenAIEmbeddingResponse = response
+                .json()
+                .await
+                .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
+            
+            for item in embedding_response.data {
+                let global_index = offset + item.index as usize;
+                if global_index < all_results.len() {
+                    all_results[global_index] = item.embedding;
+                }
+            }
+            offset += chunk.len();
         }
         
-        let embedding_response: OpenAIEmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-        
-        // 按索引排序
-        let mut results = vec![Vec::new(); texts.len()];
-        for item in embedding_response.data {
-            results[item.index as usize] = item.embedding;
-        }
-        
-        Ok(results)
+        Ok(all_results)
     }
     
     fn dimension(&self) -> usize {
