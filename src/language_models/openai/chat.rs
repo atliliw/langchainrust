@@ -19,6 +19,7 @@ use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 
 /// OpenAI chat client for GPT models.
+#[derive(Clone)]
 pub struct OpenAIChat {
     config: OpenAIConfig,
     client: reqwest::Client,
