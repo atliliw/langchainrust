@@ -38,6 +38,7 @@ rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 pdf-extract = "0.7"
 csv = "1.3"
 bincode = "1.3"
+tiktoken-rs = "0.5"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -214,6 +215,10 @@ path = "tests/integration/multimodal.rs"
 [[test]]
 name = "integration_sessions"
 path = "tests/integration/sessions.rs"
+
+[[test]]
+name = "integration_token_counter"
+path = "tests/integration/token_counter.rs"
 
 # ============================================================================
 # 端到端测试 - 完整应用流程

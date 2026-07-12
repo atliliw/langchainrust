@@ -12,6 +12,7 @@ pub mod language_models;
 pub mod tools;
 pub mod output_parsers;
 pub mod cache;
+pub mod token_counter;
 
 pub use runnables::{Runnable, RunnableConfig};
 pub use language_models::{BaseLanguageModel, BaseChatModel};

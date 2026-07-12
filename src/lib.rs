@@ -70,6 +70,7 @@ pub use core::{
     ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
 };
 pub use core::language_models::LLMResult;
+pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
 pub use core::tools::StructuredOutput;
 pub use schema::{ImageContent, Message, MessageType};
 pub use language_models::{
