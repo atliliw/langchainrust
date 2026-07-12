@@ -57,6 +57,9 @@ pub mod callbacks;
 /// LangGraph: StateGraph, CompiledGraph, Checkpointer.
 pub mod langgraph;
 
+/// MCP: Model Context Protocol client.
+pub mod mcp;
+
 // 重新导出常用类型
 pub use core::{
     Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
