@@ -220,6 +220,10 @@ path = "tests/integration/sessions.rs"
 name = "integration_token_counter"
 path = "tests/integration/token_counter.rs"
 
+[[test]]
+name = "integration_guardrails"
+path = "tests/integration/guardrails.rs"
+
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================

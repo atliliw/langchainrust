@@ -63,6 +63,9 @@ pub mod mcp;
 /// Sessions: conversation lifecycle management.
 pub mod sessions;
 
+/// Guardrails: input/output safety validation.
+pub mod guardrails;
+
 // 重新导出常用类型
 pub use core::{
     Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
@@ -71,6 +74,10 @@ pub use core::{
 };
 pub use core::language_models::LLMResult;
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
+pub use guardrails::{
+    ForbiddenWordsGuardrail, GuardedAgent, GuardrailError, GuardrailRunner, GuardrailsConfig,
+    InputGuardrail, MaxLengthGuardrail, OutputGuardrail, SensitiveInfoGuardrail,
+};
 pub use core::tools::StructuredOutput;
 pub use schema::{ImageContent, Message, MessageType};
 pub use language_models::{
