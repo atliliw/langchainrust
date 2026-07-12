@@ -1,7 +1,8 @@
+#![allow(dead_code)]
 // tests/multi_query/multi_query_test.rs
 //! MultiQueryRetriever 测试用例
 
-use langchainrust::{MultiQueryRetriever, MultiQueryConfig, StaticQueryGenerator, Document, RetrieverTrait, RetrieverError, SimilarityRetriever, InMemoryVectorStore, MockEmbeddings, SearchResult};
+use langchainrust::{MultiQueryConfig, StaticQueryGenerator, Document, RetrieverTrait, SimilarityRetriever, InMemoryVectorStore, MockEmbeddings};
 use std::sync::Arc;
 use std::collections::HashMap;
 

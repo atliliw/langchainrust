@@ -2,7 +2,7 @@
 //! Anthropic Claude API implementation (native API format).
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt, FutureExt};
+use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -285,6 +285,7 @@ struct AnthropicMessage {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct AnthropicResponse {
     id: String,
     model: String,
@@ -293,6 +294,7 @@ struct AnthropicResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct AnthropicContent {
     #[serde(rename = "type")]
     content_type: String,
@@ -499,7 +501,7 @@ impl BaseChatModel for AnthropicChat {
             if let Some(ref cbs) = callbacks {
                 if let Ok(ref token) = token_result {
                     for handler in cbs.handlers() {
-                        let _ = handler.on_llm_new_token(&run, token);
+                        drop(handler.on_llm_new_token(&run, token));
                     }
                 }
             }

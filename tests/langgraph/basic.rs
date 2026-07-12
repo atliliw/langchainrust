@@ -10,7 +10,6 @@ use langchainrust::{
     AgentState, StateUpdate,
     ThreadSafeMemoryCheckpointer, Checkpointer,
 };
-use std::collections::HashMap;
 
 // 测试线性图执行: START -> node1 -> node2 -> END
 // 验证: 状态在节点间正确传递, 递归计数正确

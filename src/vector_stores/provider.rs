@@ -45,7 +45,7 @@ impl VectorStoreProvider {
     }
 
     /// 创建 Qdrant 向量存储
-    async fn create_qdrant_store(url: String, collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
+    async fn create_qdrant_store(_url: String, _collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         #[cfg(feature = "qdrant-integration")]
         {
             use crate::vector_stores::{QdrantVectorStore, QdrantConfig};
@@ -66,6 +66,12 @@ impl VectorStoreProvider {
 /// 向量存储构建器，提供便利的创建方法
 pub struct VectorStoreBuilder {
     store_type: VectorStoreType,
+}
+
+impl Default for VectorStoreBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VectorStoreBuilder {

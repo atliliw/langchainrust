@@ -188,9 +188,7 @@ fn test_gemini_with_max_tokens() {
 #[test]
 fn test_gemini_build_contents_basic() {
     let chat = GeminiChat::new(GeminiConfig::new("test-key"));
-    let messages = vec![
-        Message::human("Hello"),
-    ];
+    let messages = [Message::human("Hello")];
 
     // 这里只需要验证类型正确
     assert_eq!(messages.len(), 1);
@@ -202,10 +200,8 @@ fn test_gemini_build_contents_basic() {
 /// 验证：System 消息被提取为 system_instruction。
 #[test]
 fn test_gemini_build_contents_with_system() {
-    let messages = vec![
-        Message::system("You are a helpful assistant"),
-        Message::human("Tell me about Rust"),
-    ];
+    let messages = [Message::system("You are a helpful assistant"),
+        Message::human("Tell me about Rust")];
 
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "You are a helpful assistant");
@@ -216,11 +212,9 @@ fn test_gemini_build_contents_with_system() {
 /// 验证：Human/AI 交替消息被正确保留顺序。
 #[test]
 fn test_gemini_build_multi_turn() {
-    let messages = vec![
-        Message::human("Hi"),
+    let messages = [Message::human("Hi"),
         Message::ai("Hello! How can I help?"),
-        Message::human("What is Rust?"),
-    ];
+        Message::human("What is Rust?")];
 
     assert_eq!(messages.len(), 3);
 }

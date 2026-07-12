@@ -107,11 +107,9 @@ impl MarkdownLoader {
                     .map(|m| m.as_str().trim().to_string())
                     .unwrap_or_else(|| "Untitled".to_string());
                 current_content = String::new();
-            } else {
-                if !line.trim().is_empty() {
-                    current_content.push_str(line);
-                    current_content.push('\n');
-                }
+            } else if !line.trim().is_empty() {
+                current_content.push_str(line);
+                current_content.push('\n');
             }
         }
 
@@ -171,7 +169,7 @@ mod tests {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "# Section 1").unwrap();
         writeln!(temp_file, "Content for section 1.").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "# Section 2").unwrap();
         writeln!(temp_file, "Content for section 2.").unwrap();
         
@@ -190,10 +188,10 @@ mod tests {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "# Main Title").unwrap();
         writeln!(temp_file, "Intro.").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "## Subsection 1").unwrap();
         writeln!(temp_file, "Sub content 1.").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "## Subsection 2").unwrap();
         writeln!(temp_file, "Sub content 2.").unwrap();
         

@@ -225,6 +225,6 @@ async fn test_return_messages_mode() {
     if history.is_array() {
         let arr = history.as_array().unwrap();
         println!("数组长度: {}", arr.len());
-        assert!(arr.len() > 0);
+        assert!(!arr.is_empty());
     }
 }

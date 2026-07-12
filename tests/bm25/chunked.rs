@@ -7,7 +7,7 @@ mod full_flow;
 use langchainrust::retrieval::bm25::{
     AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult,
 };
-use langchainrust::vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait};
+use langchainrust::vector_stores::document_store::ChunkedDocumentStore;
 use langchainrust::Document;
 use tempfile::NamedTempFile;
 use std::sync::Arc;

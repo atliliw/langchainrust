@@ -224,14 +224,14 @@ impl UnifiedHybridIndex {
         let bm25_scores: HashMap<String, f32> = bm25_results
             .iter()
             .map(|(doc, score)| {
-                (doc.id.clone().unwrap_or_default(), score.clone())
+                (doc.id.clone().unwrap_or_default(), *score)
             })
             .collect();
 
         let vector_scores: HashMap<String, f32> = vector_results
             .iter()
             .map(|(doc, score)| {
-                (doc.id.clone().unwrap_or_default(), score.clone())
+                (doc.id.clone().unwrap_or_default(), *score)
             })
             .collect();
 

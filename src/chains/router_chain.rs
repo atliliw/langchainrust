@@ -507,7 +507,7 @@ mod tests {
             vec!["output"]
         }
         
-        async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
             let mut result = HashMap::new();
             result.insert("output".to_string(), Value::String(self.output.clone()));
             Ok(result)

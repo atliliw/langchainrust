@@ -365,7 +365,7 @@ fn test_bm25_retriever_chinese_search() {
     ]);
 
     let results = retriever.search("编程语言", 2);
-    assert!(results.len() > 0, "应返回至少 1 个结果");
+    assert!(!results.is_empty(), "应返回至少 1 个结果");
 
     // 应返回包含 "编程" 的文档
     assert!(
@@ -475,5 +475,5 @@ fn test_bm25_retriever_document_length_normalization() {
     let results = retriever.search("rust", 2);
 
     // 短文档可能得更高分（关键词密度高）
-    assert!(results.len() > 0, "应有匹配结果");
+    assert!(!results.is_empty(), "应有匹配结果");
 }

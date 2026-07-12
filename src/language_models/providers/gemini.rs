@@ -153,6 +153,7 @@ struct GeminiResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GeminiCandidate {
     content: Option<GeminiContent>,
     finish_reason: Option<String>,

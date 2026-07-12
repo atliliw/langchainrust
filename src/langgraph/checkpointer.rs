@@ -199,13 +199,11 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         let entries = std::fs::read_dir(&self.directory)
             .map_err(|e| GraphError::CheckpointError(format!("Read dir error: {}", e)))?;
         
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                        ids.push(id.to_string());
-                    }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                    ids.push(id.to_string());
                 }
             }
         }
@@ -274,7 +272,7 @@ mod tests {
         
         let id1 = checkpointer.save(&AgentState::new("state1".to_string())).await.unwrap();
         let id2 = checkpointer.save(&AgentState::new("state2".to_string())).await.unwrap();
-        let id3 = checkpointer.save(&AgentState::new("state3".to_string())).await.unwrap();
+        let _id3 = checkpointer.save(&AgentState::new("state3".to_string())).await.unwrap();
         
         let list = checkpointer.list().await.unwrap();
         assert_eq!(list.len(), 3);

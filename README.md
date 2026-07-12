@@ -82,14 +82,14 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 
 ```toml
 [dependencies]
-langchainrust = "0.2.18"
+langchainrust = "0.2.20"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.2.18", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.2.18", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.2.18", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.2.18", features = ["sqlite-storage"] }        # SQLite storage
+langchainrust = { version = "0.2.20", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.2.20", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.2.20", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.2.20", features = ["sqlite-storage"] }        # SQLite storage
 ```
 
 ---

@@ -299,11 +299,10 @@ impl Tokenizer {
                 .collect::<String>()
                 .to_lowercase();
 
-            if !word_lower.is_empty() {
-                if self.keep_stopwords || !self.stopwords_en.contains(&word_lower) {
+            if !word_lower.is_empty()
+                && (self.keep_stopwords || !self.stopwords_en.contains(&word_lower)) {
                     terms.push(word_lower);
                 }
-            }
         }
 
         terms

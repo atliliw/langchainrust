@@ -38,16 +38,14 @@ async fn test_full_ai_application() {
     
     println!("=== 构建知识库 ===");
     
-    let knowledge = vec![
-        Document::new("公司名称：智能科技有限公司。成立年份：2015年。员工人数：500人。"),
+    let knowledge = [Document::new("公司名称：智能科技有限公司。成立年份：2015年。员工人数：500人。"),
         Document::new("主要产品：智能音箱、智能灯泡。年营业额：2亿元。"),
-        Document::new("公司地址：北京市海淀区科技园路100号。邮编：100080。"),
-    ];
+        Document::new("公司地址：北京市海淀区科技园路100号。邮编：100080。")];
     
     let splitter = RecursiveCharacterSplitter::new(100, 20);
     let chunks: Vec<Document> = knowledge.iter()
         .flat_map(|doc| {
-            splitter.split_text(&doc.page_content())
+            splitter.split_text(doc.page_content())
                 .into_iter()
                 .map(Document::new)
                 .collect::<Vec<_>>()
@@ -66,7 +64,7 @@ async fn test_full_ai_application() {
     
     let messages1 = vec![
         Message::system("根据资料回答问题。"),
-        Message::human(&format!("资料：{}\n\n问题：{}", context1, query1)),
+        Message::human(format!("资料：{}\n\n问题：{}", context1, query1)),
     ];
     
     let answer1 = llm.chat(messages1, None).await.unwrap();
@@ -101,7 +99,7 @@ async fn test_full_ai_application() {
     let docs3 = retriever.retrieve("成立年份 2015", 1).await.unwrap();
     let context3 = docs3.first().map(|d| d.page_content()).unwrap_or("");
     
-    messages3.push(Message::human(&format!("资料：{}\n\n问题：{}", context3, query3)));
+    messages3.push(Message::human(format!("资料：{}\n\n问题：{}", context3, query3)));
     
     let answer3 = llm.chat(messages3, None).await.unwrap();
     println!("Q: {}", query3);

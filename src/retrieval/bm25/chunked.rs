@@ -185,14 +185,14 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         for (term, freq) in &term_freq {
             self.term_index
                 .entry(term.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((chunk_idx, *freq));
         }
 
         // 更新parent到chunk的映射
         self.parent_to_leaves
             .entry(parent_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(chunk_idx);
 
         // 存储chunk_id和词频（BM25计算需要）
@@ -489,7 +489,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                         let chunk = self
                             .index
                             .store()
-                            .get_chunk_blocking(&chunk_id)
+                            .get_chunk_blocking(chunk_id)
                             .ok()
                             .flatten()?;
                         Some(chunk)
@@ -515,8 +515,6 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
     }
 
     async fn auto_merge_async(&self, scored_chunks: Vec<(usize, f64)>, k: usize) -> Vec<ChunkedSearchResult> {
-        use crate::vector_stores::document_store::ChunkedDocumentStoreTrait;
-        
         let threshold = self.index.config.merge_threshold;
         let leaves_per_parent = self.index.config.leaves_per_parent;
 
@@ -556,7 +554,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 let mut leaf_chunks = Vec::new();
                 for (idx, _) in matched_leaves {
                     if let Some(chunk_id) = self.index.get_chunk_id(idx) {
-                        if let Some(chunk) = self.index.store().get_chunk(&chunk_id).await.ok().flatten() {
+                        if let Some(chunk) = self.index.store().get_chunk(chunk_id).await.ok().flatten() {
                             leaf_chunks.push(chunk);
                         }
                     }
@@ -621,7 +619,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 let parent_id = chunk_id.split('_').next().unwrap_or_default().to_string();
                 stats
                     .entry(parent_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((*chunk_idx, *score));
             }
         }

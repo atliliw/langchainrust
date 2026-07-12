@@ -16,17 +16,17 @@ async fn test_ollama_chat_basic() {
     
     let result = llm.chat(messages, None).await;
     
-    if result.is_err() {
-        let err = result.unwrap_err();
-        if err.to_string().contains("Connection refused") 
-            || err.to_string().contains("HTTP 404") {
-            println!("Ollama service not available, skipping test");
-            return;
+    let response = match result {
+        Ok(r) => r,
+        Err(err) => {
+            if err.to_string().contains("Connection refused")
+                || err.to_string().contains("HTTP 404") {
+                println!("Ollama service not available, skipping test");
+                return;
+            }
+            panic!("Ollama chat failed: {}", err);
         }
-        panic!("Ollama chat failed: {}", err);
-    }
-    
-    let response = result.unwrap();
+    };
     assert!(!response.content.is_empty());
     println!("Response: {}", response.content);
 }
@@ -43,17 +43,17 @@ async fn test_ollama_chat_multi_turn() {
     
     let result = llm.chat(messages, None).await;
     
-    if result.is_err() {
-        let err = result.unwrap_err();
-        if err.to_string().contains("Connection refused") 
-            || err.to_string().contains("HTTP 404") {
-            println!("Ollama service not available, skipping test");
-            return;
+    let response = match result {
+        Ok(r) => r,
+        Err(err) => {
+            if err.to_string().contains("Connection refused")
+                || err.to_string().contains("HTTP 404") {
+                println!("Ollama service not available, skipping test");
+                return;
+            }
+            panic!("Ollama chat failed: {}", err);
         }
-        panic!("Ollama chat failed: {}", err);
-    }
-    
-    let response = result.unwrap();
+    };
     assert!(!response.content.is_empty());
     println!("Response: {}", response.content);
 }
@@ -73,17 +73,17 @@ async fn test_ollama_chat_with_custom_config() {
     
     let result = llm.chat(messages, None).await;
     
-    if result.is_err() {
-        let err = result.unwrap_err();
-        if err.to_string().contains("Connection refused") 
-            || err.to_string().contains("HTTP 404") {
-            println!("Ollama service not available, skipping test");
-            return;
+    let response = match result {
+        Ok(r) => r,
+        Err(err) => {
+            if err.to_string().contains("Connection refused")
+                || err.to_string().contains("HTTP 404") {
+                println!("Ollama service not available, skipping test");
+                return;
+            }
+            panic!("Ollama chat failed: {}", err);
         }
-        panic!("Ollama chat failed: {}", err);
-    }
-    
-    let response = result.unwrap();
+    };
     assert!(!response.content.is_empty());
     println!("Response: {}", response.content);
     println!("Token usage: {:?}", response.token_usage);

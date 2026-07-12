@@ -50,8 +50,8 @@ impl DocumentLoader for PDFLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Write;
+    
+    
 
     #[tokio::test]
     async fn test_pdf_loader_nonexistent() {
@@ -73,8 +73,7 @@ mod tests {
         let result = loader.load().await;
         
         // 应该成功返回至少一个文档
-        if result.is_ok() {
-            let docs = result.unwrap();
+        if let Ok(docs) = result {
             assert!(!docs.is_empty());
             assert!(docs[0].content.contains("PDF"));
         }

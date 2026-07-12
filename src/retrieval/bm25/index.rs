@@ -72,7 +72,7 @@ impl BM25Index {
         for (term, freq) in &term_freq {
             self.term_doc_freqs
                 .entry(term.clone())
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(doc_id, *freq);
         }
 

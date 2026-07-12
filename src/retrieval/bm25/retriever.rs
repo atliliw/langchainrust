@@ -153,7 +153,7 @@ mod tests {
         ]);
 
         let results = retriever.search("编程语言", 2);
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
 
         assert!(results[0].document.content.contains("编程"));
     }

@@ -45,6 +45,7 @@ use super::errors::{GraphError, GraphResult};
 ///
 /// This allows composition of graphs by embedding one graph inside another.
 /// The subgraph receives mapped input state and returns mapped output state.
+#[allow(clippy::type_complexity)]
 pub struct SubgraphNode<S: StateSchema, SubS: StateSchema> {
     name: String,
     subgraph: CompiledGraph<SubS>,
@@ -122,6 +123,7 @@ impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for Sub
 }
 
 /// Builder for creating subgraph nodes with fluent API
+#[allow(clippy::type_complexity)]
 pub struct SubgraphBuilder<S: StateSchema, SubS: StateSchema> {
     name: String,
     subgraph: Option<CompiledGraph<SubS>>,

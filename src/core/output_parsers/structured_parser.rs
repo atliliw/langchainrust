@@ -192,10 +192,9 @@ impl<T: DeserializeOwned> TypedOutputParser<T> {
         None
     }
 
+    #[allow(dead_code)]
     fn get_format_instructions(&self) -> String {
-        format!(
-            "请输出符合以下 JSON Schema 的合法 JSON：\n```json\n{{\n  // 目标类型的字段定义\n}}\n```"
-        )
+        "请输出符合以下 JSON Schema 的合法 JSON：\n```json\n{\n  // 目标类型的字段定义\n}\n```".to_string()
     }
 }
 

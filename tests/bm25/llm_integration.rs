@@ -15,7 +15,7 @@ fn build_rag_messages(query: &str, contexts: &[String]) -> Vec<Message> {
     
     vec![
         Message::system("基于提供的上下文回答问题。如果上下文中没有相关信息，请说\"我不知道\"。"),
-        Message::human(&format!(
+        Message::human(format!(
             "上下文：\n{}\n\n\
             问题：{}\n\n\
             请根据上下文回答问题。",

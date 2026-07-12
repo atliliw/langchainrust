@@ -41,6 +41,7 @@ impl LengthBasedExampleSelector {
     }
 
     /// 计算格式化后的示例长度
+    #[allow(dead_code)]
     fn format_example_length(&self, example: &HashMap<String, String>, prefix: &str, suffix: &str) -> usize {
         let mut formatted = prefix.to_string();
         for val in example.values() {
@@ -61,11 +62,7 @@ impl LengthBasedExampleSelector {
         // 计算输入长度
         let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
         let input_len = prefix.len() + suffix.len() + input_text.len();
-        let available = if self.max_length > input_len {
-            self.max_length - input_len
-        } else {
-            0
-        };
+        let available = self.max_length.saturating_sub(input_len);
 
         let mut selected = Vec::new();
         let mut used = 0usize;

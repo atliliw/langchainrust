@@ -121,6 +121,7 @@ struct EmbeddingResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct EmbeddingData {
     embedding: Vec<f32>,
     index: i32,

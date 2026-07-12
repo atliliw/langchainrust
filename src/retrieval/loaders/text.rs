@@ -146,7 +146,7 @@ mod tests {
     async fn test_text_loader_skip_empty_lines() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Line 1").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "   ").unwrap();
         writeln!(temp_file, "Line 2").unwrap();
         

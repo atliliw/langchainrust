@@ -1,15 +1,12 @@
 use langchainrust::{
-    Document, 
-    MockEmbeddings, 
-    VectorStore,
-    PDFLoader, 
-    CSVLoader, 
+    Document,
+    MockEmbeddings,
+    PDFLoader,
+    CSVLoader,
     DocumentLoader,
     VectorStoreProvider,
     VectorStoreType,
     VectorStoreBuilder,
-    SimilarityRetriever,
-    RetrieverTrait,
     RecursiveCharacterSplitter,
     TextSplitter,
     Embeddings,
@@ -87,7 +84,7 @@ async fn test_vector_store_builder_pattern_works() {
 
     let result = store.add_documents(doc, embeddings).await;
     
-    assert!(result.is_ok() || true);  // 类型正确就不会编译错误
+    let _ = result;  // 类型正确就不会编译错误
     
     println!("✅ Vector Store Builder pattern test passed");
 }

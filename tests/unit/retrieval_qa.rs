@@ -94,7 +94,7 @@ async fn test_retrieval_qa_with_sources() {
     let sources = result.get("source_documents").unwrap().as_array().unwrap();
     println!("检索到 {} 个来源文档", sources.len());
     
-    assert!(sources.len() > 0, "应至少返回一个来源文档");
+    assert!(!sources.is_empty(), "应至少返回一个来源文档");
 }
 
 /// 测试 RetrievalQA 自定义 prompt

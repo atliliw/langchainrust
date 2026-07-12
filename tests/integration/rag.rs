@@ -38,7 +38,7 @@ async fn test_rag_retrieval() {
     
     // 分割文档为小块
     let splitter = RecursiveCharacterSplitter::new(50, 10);
-    let chunks: Vec<Document> = splitter.split_text(&doc.page_content())
+    let chunks: Vec<Document> = splitter.split_text(doc.page_content())
         .into_iter()
         .map(Document::new)
         .collect();
@@ -95,7 +95,7 @@ async fn test_rag_with_llm_generation() {
     // 使用 LLM 基于上下文生成答案
     let messages = vec![
         Message::system("Answer based on the context provided."),
-        Message::human(&format!("Context:\n{}\n\nQuestion: When was Rust 1.0 released?", context)),
+        Message::human(format!("Context:\n{}\n\nQuestion: When was Rust 1.0 released?", context)),
     ];
     
     let response = llm.chat(messages, None).await.unwrap();

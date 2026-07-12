@@ -281,6 +281,7 @@ impl MultiQueryRetriever {
 }
 
 /// 静态查询生成器（不依赖 LLM）
+#[allow(clippy::type_complexity)]
 pub struct StaticQueryGenerator {
     expansions: Vec<Box<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
 }

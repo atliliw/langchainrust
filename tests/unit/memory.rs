@@ -24,7 +24,7 @@ fn test_chat_message_history_basic() {
         println!("  [{}] {:?}: {}", i, msg.message_type, msg.content);
     }
     
-    println!("\n格式化输出:\n{}", history.to_string());
+    println!("\n格式化输出:\n{}", history);
     
     assert_eq!(history.messages().len(), 4);
     assert!(matches!(history.messages()[0].message_type, MessageType::Human));

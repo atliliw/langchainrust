@@ -39,7 +39,7 @@ async fn test_markdown_loader_split_by_heading_level_1() {
     let docs = result.unwrap();
     
     // sample.md 只有一个一级标题，所以只有 1 个文档
-    assert!(docs.len() >= 1, "按一级标题分割应返回至少 1 个文档");
+    assert!(!docs.is_empty(), "按一级标题分割应返回至少 1 个文档");
     
     let headings: Vec<&str> = docs.iter()
         .filter_map(|d| d.metadata.get("heading").map(|s| s.as_str()))

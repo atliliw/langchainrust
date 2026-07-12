@@ -2,8 +2,7 @@
 //! Unit tests for LLM providers
 
 use langchainrust::{
-    AnthropicChat, AnthropicConfig, DeepSeekChat, DeepSeekConfig, MoonshotChat, MoonshotConfig,
-    QwenChat, QwenConfig, ZhipuChat, ZhipuConfig,
+    AnthropicConfig, DeepSeekConfig, MoonshotConfig, QwenConfig, ZhipuConfig,
 };
 
 #[test]

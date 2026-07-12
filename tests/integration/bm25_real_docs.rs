@@ -17,7 +17,7 @@ use std::fs;
 ///
 /// 每行作为一个独立文档
 fn load_documents_from_file(path: &str) -> Vec<Document> {
-    let content = fs::read_to_string(path).expect(&format!("Failed to load file: {}", path));
+    let content = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to load file: {}", path));
 
     content
         .lines()
@@ -42,11 +42,11 @@ fn test_bm25_english_programming_languages() {
     retriever.add_documents_sync(documents);
 
     // 验证文档数量（7种编程语言）
-    assert!(retriever.len() > 0, "应加载至少 1 个文档");
+    assert!(!retriever.is_empty(), "应加载至少 1 个文档");
 
     // 搜索 "systems programming" 应返回 Rust 文档
     let results = retriever.search("systems programming language", 3);
-    assert!(results.len() > 0, "应返回匹配结果");
+    assert!(!results.is_empty(), "应返回匹配结果");
 
     // Rust 文档应排在前列（包含 "systems programming language"）
     let rust_found = results
@@ -92,11 +92,11 @@ fn test_bm25_chinese_programming_languages() {
     retriever.add_documents_sync(documents);
 
     // 验证文档加载
-    assert!(retriever.len() > 0, "应加载中文文档");
+    assert!(!retriever.is_empty(), "应加载中文文档");
 
     // 搜索 "系统级编程"
     let results = retriever.search("系统级编程", 3);
-    assert!(results.len() > 0, "应返回中文匹配结果");
+    assert!(!results.is_empty(), "应返回中文匹配结果");
 
     // Rust 文档包含 "系统级编程"
     let rust_found = results.iter().any(|r| r.document.content.contains("Rust"));
@@ -318,7 +318,7 @@ fn test_bm25_multi_file_collection() {
     let results = retriever.search("Rust", 5);
 
     // 应同时返回编程语言文档和框架文档中的 Rust 相关内容
-    assert!(results.len() > 0, "应返回 Rust 相关结果");
+    assert!(!results.is_empty(), "应返回 Rust 相关结果");
 }
 
 /// 测试长文档与短文档检索
@@ -337,7 +337,7 @@ fn test_bm25_document_length_effect() {
     let results = retriever.search("Python", 5);
 
     // 验证检索结果
-    assert!(results.len() > 0, "应返回 Python 相关文档");
+    assert!(!results.is_empty(), "应返回 Python 相关文档");
 
     // 检查评分排序
     for i in 0..results.len().saturating_sub(1) {

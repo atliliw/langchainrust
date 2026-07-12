@@ -18,7 +18,7 @@ fn build_rag_messages(query: &str, contexts: &[String]) -> Vec<Message> {
     
     vec![
         Message::system("基于提供的上下文回答问题。如果上下文中没有相关信息，请说\"我不知道\"。"),
-        Message::human(&format!(
+        Message::human(format!(
             "上下文：\n{}\n\n问题：{}\n\n请根据上下文回答问题。",
             context_text, query
         )),
@@ -279,7 +279,7 @@ async fn test_hybrid_rag_with_persistence() {
     ];
     
     // [1] BM25 创建并保存
-    let mut bm25_retriever = ChunkedBM25Retriever::new(doc_store.clone());
+    let bm25_retriever = ChunkedBM25Retriever::new(doc_store.clone());
     
     let temp_file = NamedTempFile::new().unwrap();
     bm25_retriever.save(temp_file.path()).unwrap();

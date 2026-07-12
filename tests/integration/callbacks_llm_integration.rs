@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // tests/integration/callbacks_llm_integration.rs
 //! LLM 回调集成测试
 //!
@@ -210,7 +211,7 @@ async fn test_llm_tracing_with_callbacks() {
         }
     }
     
-    let response = result.unwrap();
+    let _response = result.unwrap();
     
     // 验证追踪信息
     let calls = calls.lock().unwrap();
@@ -245,7 +246,7 @@ async fn test_llm_streaming_with_callbacks() {
     // 每个 token 都会触发 on_llm_new_token 回调
     
     let handler = Arc::new(TracingCallbackHandler::new());
-    let streamed = Arc::clone(&handler.streamed_tokens);
+    let _streamed = Arc::clone(&handler.streamed_tokens);
     
     let callbacks = Arc::new(CallbackManager::new().add_handler(handler));
     

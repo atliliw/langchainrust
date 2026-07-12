@@ -456,7 +456,7 @@ impl BaseChatModel for OllamaChat {
             if let Some(ref cbs) = callbacks {
                 if let Ok(ref token) = token_result {
                     for handler in cbs.handlers() {
-                        let _ = handler.on_llm_new_token(&run, token);
+                        drop(handler.on_llm_new_token(&run, token));
                     }
                 }
             }

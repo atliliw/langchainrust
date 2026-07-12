@@ -421,13 +421,11 @@ impl GraphPersistence for FilePersistence {
         let entries = std::fs::read_dir(&self.directory)
             .map_err(|e| PersistenceError::IoError(e.to_string()))?;
         
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
-                        ids.push(id.to_string());
-                    }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                    ids.push(id.to_string());
                 }
             }
         }

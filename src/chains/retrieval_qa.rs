@@ -229,11 +229,10 @@ impl BaseChain for RetrievalQA {
             }
         }
         
-        if documents.is_empty() {
-            if self.verbose {
+        if documents.is_empty()
+            && self.verbose {
                 println!("警告: 没有检索到相关文档");
             }
-        }
         
         if self.verbose {
             println!("\n--- 步骤 2: 组装 Prompt ---");

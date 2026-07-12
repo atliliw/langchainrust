@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.20] - 2026-05-05
+
+### Fixed
+- **create_resume_execution**: 修复 strip `after_` 前缀问题
+
+### Changed
+- **文档**: 更新 HTML interrupt/checkpointer API
+
+## [0.2.19] - 2026-05-05
+
+### Added
+- **Interrupt/Resume 支持**: LangGraph 中断/恢复执行
+  - `last_checkpoint_state` 状态保存
+  - `create_resume_execution` 从中断点恢复执行
+
+### Changed
+- **文档**: 更新 interrupt/resume API 文档(中英文)
+
+## [0.2.18] - 2026-04-30
+
+### Added
+- **Output Parsers**: StrOutputParser + CommaSeparatedListOutputParser + JsonOutputParser + StructuredOutputParser + TypedOutputParser
+- **Document Chains**: StuffDocumentsChain + RefineDocumentsChain + MapReduceDocumentsChain + MapRerankDocumentsChain
+- **ConversationRetrievalChain**: 带记忆的检索增强对话
+- **Google Gemini**: GeminiChat (native API)
+- **ChromaDB**: 轻量级向量数据库 HTTP API
+- **LLM Cache**: 内存缓存 + TTL
+- **Redis/SQLite 存储**: RedisDocumentStore + SQLiteDocumentStore
+- **Tools 扩展**: Wikipedia + DuckDuckGo + PythonREPL
+- **FewShotPrompt + ExampleSelectors**: 少样本提示模板 + 示例选择器
+- **LCEL 组合操作符**: RunnableSequence + RunnableParallel + RunnablePassthrough + RunnableLambda + BitOr trait
+- **Qdrant**: `delete_by_metadata` 方法
+- **MongoPersistentMemory**: 条件编译(仅在 `mongodb-persistence` feature 启用时可用)
+
 ## [0.2.17] - 2025-04-24
 
 ### Added

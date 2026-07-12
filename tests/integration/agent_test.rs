@@ -3,8 +3,7 @@
 
 mod tool_callbacks_integration;
 
-use langchainrust::{AgentAction, AgentFinish, AgentStep, AgentOutput, BaseAgent, AgentExecutor, AgentError, Calculator, ToolRegistry, Tool};
-use langchainrust::tools::CalculatorInput;
+use langchainrust::{AgentAction, AgentFinish, AgentStep, AgentOutput, BaseAgent, AgentExecutor, AgentError, Calculator};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;

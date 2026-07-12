@@ -9,7 +9,7 @@ mod tests {
     use langchainrust::retrieval::{SimilarityRetriever, RetrieverTrait};
     use langchainrust::embeddings::{MockEmbeddings, cosine_similarity};
     use std::sync::Arc;
-    use std::collections::HashMap;
+    
 
     // ============================================================
     // Document 测试

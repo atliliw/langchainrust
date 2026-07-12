@@ -8,6 +8,8 @@
 //! 1. 环境变量: export MONGO_URI="mongodb://localhost:27017"
 //! 2. 直接修改下方 MONGO_URI 常量
 
+#![allow(dead_code)]
+
 use langchainrust::{OpenAIChat, OpenAIConfig, OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 use std::sync::OnceLock;
 

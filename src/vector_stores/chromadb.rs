@@ -48,6 +48,7 @@ impl ChromaDBConfig {
 
 /// ChromaDB 集合信息（从 API 返回解析）
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ChromaCollection {
     id: String,
     name: String,

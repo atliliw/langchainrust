@@ -27,7 +27,7 @@
 //! ```
 
 use langchainrust::{
-    StateGraph, GraphBuilder, START, END,
+    GraphBuilder, START, END,
     AgentState, StateUpdate,
 };
 

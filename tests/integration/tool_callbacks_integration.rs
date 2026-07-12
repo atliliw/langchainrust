@@ -40,6 +40,12 @@ pub struct ToolTrackingHandler {
     tool_durations: Arc<Mutex<Vec<(String, i64)>>>,
 }
 
+impl Default for ToolTrackingHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolTrackingHandler {
     pub fn new() -> Self {
         Self {
@@ -216,7 +222,7 @@ impl BaseAgent for ToolCallingAgent {
     async fn plan(
         &self,
         intermediate_steps: &[AgentStep],
-        inputs: &HashMap<String, String>,
+        _inputs: &HashMap<String, String>,
     ) -> Result<AgentOutput, AgentError> {
         // 第一轮：调用工具
         if intermediate_steps.is_empty() {
@@ -259,7 +265,7 @@ impl BaseAgent for MultiToolAgent {
     async fn plan(
         &self,
         intermediate_steps: &[AgentStep],
-        inputs: &HashMap<String, String>,
+        _inputs: &HashMap<String, String>,
     ) -> Result<AgentOutput, AgentError> {
         let mut index = self.current_index.lock().unwrap();
         
@@ -467,7 +473,7 @@ async fn test_tool_invalid_input_callback() {
     let executor = AgentExecutor::new(agent, tools)
         .with_callbacks(callbacks);
     
-    let result = executor.invoke("测试无效输入".to_string()).await;
+    let _result = executor.invoke("测试无效输入".to_string()).await;
     
     // 工具可能返回错误信息或处理结果
     // 验证回调被触发
@@ -595,7 +601,7 @@ async fn test_tool_input_output_integrity() {
 #[tokio::test]
 async fn test_direct_tool_run_no_callback() {
     let handler = Arc::new(ToolTrackingHandler::new());
-    let callbacks = Arc::new(CallbackManager::new().add_handler(handler.clone()));
+    let _callbacks = Arc::new(CallbackManager::new().add_handler(handler.clone()));
     
     // 直接调用工具（不通过 AgentExecutor）
     let calc = Calculator::new();

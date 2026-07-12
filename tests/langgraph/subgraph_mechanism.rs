@@ -4,7 +4,7 @@
 
 use langchainrust::{
     AgentState, StateUpdate,
-    GraphBuilder, START, END, Runnable,
+    GraphBuilder, START, END,
 };
 use std::time::{Duration, Instant};
 

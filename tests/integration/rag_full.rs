@@ -266,7 +266,7 @@ async fn test_rag_with_document_splitting() {
     
     let messages = vec![
         Message::system("根据提供的上下文回答问题。"),
-        Message::human(&format!("上下文:\n{}\n\n问题: {}", context, question)),
+        Message::human(format!("上下文:\n{}\n\n问题: {}", context, question)),
     ];
     
     println!("\n🤖 LLM 回答:");
@@ -471,7 +471,7 @@ async fn test_rag_multi_turn_conversation() {
     
     let resp1 = llm.chat(vec![
         Message::system("根据上下文回答，简洁明了。"),
-        Message::human(&format!("上下文:\n{}\n问题: {}", ctx1, q1)),
+        Message::human(format!("上下文:\n{}\n问题: {}", ctx1, q1)),
     ], None).await.unwrap();
     
     println!("🤖 回答: {}\n", resp1.content);
@@ -485,7 +485,7 @@ async fn test_rag_multi_turn_conversation() {
     
     let resp2 = llm.chat(vec![
         Message::system("根据上下文回答，简洁明了。"),
-        Message::human(&format!("上下文:\n{}\n问题: {}", ctx2, q2)),
+        Message::human(format!("上下文:\n{}\n问题: {}", ctx2, q2)),
     ], None).await.unwrap();
     
     println!("🤖 回答: {}\n", resp2.content);

@@ -3,7 +3,7 @@
 
 use langchainrust::{
     OpenAIChat, OpenAIConfig, BaseChatModel,
-    CallbackManager, LangSmithHandler, RunTree, RunType,
+    CallbackManager, LangSmithHandler,
     RunnableConfig,
 };
 use langchainrust::schema::Message;

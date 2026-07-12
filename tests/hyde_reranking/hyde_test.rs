@@ -1,7 +1,7 @@
 // tests/hyde_reranking/hyde_test.rs
 //! HyDE Retriever 测试用例
 
-use langchainrust::{HyDERetriever, HyDEConfig, HyDEError, Document, SimilarityRetriever, InMemoryVectorStore, MockEmbeddings, RetrieverTrait};
+use langchainrust::{HyDEConfig, HyDEError, Document, SimilarityRetriever, InMemoryVectorStore, MockEmbeddings, RetrieverTrait};
 use std::sync::Arc;
 
 fn create_test_retriever() -> Arc<dyn RetrieverTrait> {

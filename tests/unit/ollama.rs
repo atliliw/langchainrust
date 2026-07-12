@@ -71,10 +71,8 @@ fn test_ollama_base_language_model_traits() {
 // 测试消息构建，不调用 API
 #[test]
 fn test_ollama_message_format() {
-    let messages = vec![
-        Message::system("You are a helpful assistant"),
-        Message::human("Hello"),
-    ];
+    let messages = [Message::system("You are a helpful assistant"),
+        Message::human("Hello")];
 
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "You are a helpful assistant");

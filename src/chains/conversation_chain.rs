@@ -321,7 +321,7 @@ impl ConversationChainBuilder {
     }
     
     pub fn build(self) -> ConversationChain {
-        let memory = self.memory.unwrap_or_else(ConversationBufferMemory::new);
+        let memory = self.memory.unwrap_or_default();
         let mut chain = ConversationChain::new(self.llm, memory);
         
         if let Some(prompt) = self.system_prompt {

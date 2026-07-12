@@ -317,7 +317,7 @@ impl InMemoryChunkedDocumentStore {
                 let mut mapping = self.parent_to_chunks.blocking_write();
                 mapping
                     .entry(parent_id.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(chunk_id.clone());
             }
             

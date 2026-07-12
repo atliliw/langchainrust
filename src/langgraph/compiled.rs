@@ -217,7 +217,7 @@ impl<S: StateSchema> CompiledGraph<S> {
                     }
                     if target == START {
                         return Err(GraphError::ValidationError(
-                            format!("Edge cannot target START node")
+                            "Edge cannot target START node".to_string()
                         ));
                     }
                 }
@@ -240,7 +240,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                         }
                         if target == START {
                             return Err(GraphError::ValidationError(
-                                format!("Conditional edge cannot target START node")
+                                "Conditional edge cannot target START node".to_string()
                             ));
                         }
                     }
@@ -294,17 +294,14 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
         let mut seen_fixed: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         
         for edge in &self.edges {
-            match edge {
-                GraphEdge::Fixed { source, target } => {
-                    let key = (source.clone(), target.clone());
-                    if seen_fixed.contains(&key) {
-                        return Err(GraphError::DuplicateEdgeError(
-                            format!("Duplicate edge: {} -> {}", source, target)
-                        ));
-                    }
-                    seen_fixed.insert(key);
+            if let GraphEdge::Fixed { source, target } = edge {
+                let key = (source.clone(), target.clone());
+                if seen_fixed.contains(&key) {
+                    return Err(GraphError::DuplicateEdgeError(
+                        format!("Duplicate edge: {} -> {}", source, target)
+                    ));
                 }
-                _ => {}
+                seen_fixed.insert(key);
             }
         }
         Ok(())
@@ -362,11 +359,10 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                         }
                         GraphEdge::FanIn { sources, target } => {
                             // FanIn: if all sources are reachable, target is reachable
-                            if sources.iter().all(|s| reachable.contains(s)) {
-                                if !reachable.contains(target) && target != END {
+                            if sources.iter().all(|s| reachable.contains(s))
+                                && !reachable.contains(target) && target != END {
                                     to_visit.push(target.clone());
                                 }
-                            }
                         }
                     }
                 }
@@ -406,7 +402,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                     }
                     GraphEdge::Conditional { source, targets, default_target, .. } => {
                         let any_target_reaches_end = targets.values().any(|t| end_reachable.contains(t))
-                            || default_target.as_ref().map_or(false, |d| end_reachable.contains(d));
+                            || default_target.as_ref().is_some_and(|d| end_reachable.contains(d));
                         if any_target_reaches_end && !end_reachable.contains(source) {
                             end_reachable.insert(source.clone());
                             changed = true;
@@ -657,7 +653,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                         let route_key = router.route(state).await?;
                         
                         let target = targets.get(&route_key)
-                            .or_else(|| default_target.as_ref())
+                            .or(default_target.as_ref())
                             .ok_or_else(|| GraphError::RoutingError(
                                 format!("No target for route '{}'", route_key)
                             ))?;
@@ -1035,8 +1031,8 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
         output.push_str("```mermaid\n");
         output.push_str("graph TD\n");
         
-        output.push_str(&format!("  START[\"START\"]\n"));
-        output.push_str(&format!("  END[\"END\"]\n"));
+        output.push_str("  START[\"START\"]\n");
+        output.push_str("  END[\"END\"]\n");
         
         for name in self.nodes.keys() {
             output.push_str(&format!("  {}[\"{}\"]\n", name, name));

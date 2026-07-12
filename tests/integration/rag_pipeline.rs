@@ -22,12 +22,10 @@ async fn test_rag_full_pipeline() {
     
     println!("=== 1. 创建知识文档 ===");
     
-    let knowledge_base = vec![
-        Document::new("Rust 是一门系统编程语言，由 Mozilla 研发。Rust 专注于安全性、速度和并发性。"),
+    let knowledge_base = [Document::new("Rust 是一门系统编程语言，由 Mozilla 研发。Rust 专注于安全性、速度和并发性。"),
         Document::new("Rust 1.0 于 2015 年 5 月 15 日发布。Rust 的创始人是 Graydon Hoare。"),
         Document::new("Rust 的所有权系统包含三个核心概念：所有权、借用和生命周期。"),
-        Document::new("Rust 的内存安全不需要垃圾回收器。Rust 广泛应用于 WebAssembly 和嵌入式系统。"),
-    ];
+        Document::new("Rust 的内存安全不需要垃圾回收器。Rust 广泛应用于 WebAssembly 和嵌入式系统。")];
     
     println!("创建了 {} 个知识文档", knowledge_base.len());
     
@@ -36,7 +34,7 @@ async fn test_rag_full_pipeline() {
     let splitter = RecursiveCharacterSplitter::new(100, 20);
     let chunks: Vec<Document> = knowledge_base.iter()
         .flat_map(|doc| {
-            splitter.split_text(&doc.page_content())
+            splitter.split_text(doc.page_content())
                 .into_iter()
                 .map(Document::new)
                 .collect::<Vec<_>>()
@@ -76,7 +74,7 @@ async fn test_rag_full_pipeline() {
         
         let messages = vec![
             Message::system("根据资料回答问题。"),
-            Message::human(&format!("资料：\n{}\n\n问题：{}", context, query)),
+            Message::human(format!("资料：\n{}\n\n问题：{}", context, query)),
         ];
         
         let response = llm.chat(messages, None).await.unwrap();

@@ -189,8 +189,8 @@ fn test_stuff_documents_build_prompt() {
 
     assert!(prompt.contains("这是上下文"));
     assert!(prompt.contains("这是问题"));
-    assert!(prompt.contains("{context}") == false); // 变量已被替换
-    assert!(prompt.contains("{input}") == false);
+    assert!(!prompt.contains("{context}")); // 变量已被替换
+    assert!(!prompt.contains("{input}"));
 }
 
 /// 测试 StuffDocumentsChain 自定义模板
@@ -430,7 +430,7 @@ fn test_map_rerank_extract_score() {
     assert!(answer.contains("Rust"));
 
     // 英文格式
-    let (score2, answer2) = MapRerankDocumentsChain::extract_score("Score: 92\nAnswer: It's a programming language");
+    let (score2, _answer2) = MapRerankDocumentsChain::extract_score("Score: 92\nAnswer: It's a programming language");
     assert_eq!(score2, 92);
 
     // 无评分格式（默认 50）

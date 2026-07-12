@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 // tests/unit/tool_calling.rs
 //! Unit tests for tool calling functionality
 
 use langchainrust::{
-    FunctionCall, FunctionDefinition, Message, MessageType, ToolCall, ToolCallResult,
+    FunctionDefinition, Message, MessageType, ToolCall, ToolCallResult,
     ToolDefinition,
 };
 use schemars::JsonSchema;
