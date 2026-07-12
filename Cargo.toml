@@ -211,6 +211,10 @@ path = "tests/integration/mcp.rs"
 name = "integration_multimodal"
 path = "tests/integration/multimodal.rs"
 
+[[test]]
+name = "integration_sessions"
+path = "tests/integration/sessions.rs"
+
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================

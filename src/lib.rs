@@ -60,6 +60,9 @@ pub mod langgraph;
 /// MCP: Model Context Protocol client.
 pub mod mcp;
 
+/// Sessions: conversation lifecycle management.
+pub mod sessions;
+
 // 重新导出常用类型
 pub use core::{
     Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
