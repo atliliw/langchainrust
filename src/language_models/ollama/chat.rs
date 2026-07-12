@@ -79,10 +79,17 @@ impl OllamaChat {
                 "role": "system",
                 "content": message.content,
             }),
-            crate::schema::MessageType::Human => json!({
-                "role": "user",
-                "content": message.content,
-            }),
+            crate::schema::MessageType::Human => {
+                if message.has_images() {
+                    let mut content = vec![json!({"type": "text", "text": &message.content})];
+                    for img in &message.images {
+                        content.push(json!({"type": "image_url", "image_url": {"url": &img.url}}));
+                    }
+                    json!({"role": "user", "content": content})
+                } else {
+                    json!({"role": "user", "content": &message.content})
+                }
+            }
             crate::schema::MessageType::AI => json!({
                 "role": "assistant",
                 "content": message.content,

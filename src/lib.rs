@@ -68,7 +68,7 @@ pub use core::{
 };
 pub use core::language_models::LLMResult;
 pub use core::tools::StructuredOutput;
-pub use schema::{Message, MessageType};
+pub use schema::{ImageContent, Message, MessageType};
 pub use language_models::{
     OpenAIChat, OpenAIConfig, 
     OllamaChat, OllamaConfig,
