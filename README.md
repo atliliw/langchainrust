@@ -159,6 +159,30 @@ More examples in [Usage Guide (中文)](https://github.com/atliliw/langchainrust
 
 ---
 
+## Examples
+
+`examples/` 目录提供 12 个可运行示例,覆盖核心功能:
+
+| 分类 | 示例 | 运行命令 | 需 API Key |
+|------|------|---------|-----------|
+| basic | chat / streaming / multi_provider | `cargo run --example basic_chat` | 是 |
+| agent | function_calling / multi_tool | `cargo run --example agent_function_calling` | 是 |
+| rag | bm25_search / document_loaders | `cargo run --example rag_bm25_search` | 否 |
+| langgraph | basic_graph / conditional_edge | `cargo run --example langgraph_basic_graph` | 否 |
+| memory | buffer_memory | `cargo run --example memory_buffer_memory` | 否 |
+| chains | llm_chain / sequential_chain | `cargo run --example chains_llm_chain` | 是 |
+
+需要 API Key 的示例从环境变量读取:
+
+```bash
+export OPENAI_API_KEY="your-key"
+cargo run --example basic_chat
+```
+
+无需 API Key 的示例(BM25 / LangGraph / Memory / Loader)可直接运行,适合快速体验。
+
+---
+
 ## Documentation
 
 | Docs | Content |

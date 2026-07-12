@@ -349,3 +349,54 @@ path = "tests/hyde_reranking/hyde_test.rs"
 [[test]]
 name = "unit_reranking"
 path = "tests/hyde_reranking/reranking_test.rs"
+
+# ============================================================================
+# 示例 - examples
+# ============================================================================
+[[example]]
+name = "basic_chat"
+path = "examples/basic/chat.rs"
+
+[[example]]
+name = "basic_streaming"
+path = "examples/basic/streaming.rs"
+
+[[example]]
+name = "basic_multi_provider"
+path = "examples/basic/multi_provider.rs"
+
+[[example]]
+name = "agent_function_calling"
+path = "examples/agent/function_calling.rs"
+
+[[example]]
+name = "agent_multi_tool"
+path = "examples/agent/multi_tool.rs"
+
+[[example]]
+name = "rag_bm25_search"
+path = "examples/rag/bm25_search.rs"
+
+[[example]]
+name = "rag_document_loaders"
+path = "examples/rag/document_loaders.rs"
+
+[[example]]
+name = "langgraph_basic_graph"
+path = "examples/langgraph/basic_graph.rs"
+
+[[example]]
+name = "langgraph_conditional_edge"
+path = "examples/langgraph/conditional_edge.rs"
+
+[[example]]
+name = "memory_buffer_memory"
+path = "examples/memory/buffer_memory.rs"
+
+[[example]]
+name = "chains_llm_chain"
+path = "examples/chains/llm_chain.rs"
+
+[[example]]
+name = "chains_sequential_chain"
+path = "examples/chains/sequential_chain.rs"
