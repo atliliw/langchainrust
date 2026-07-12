@@ -24,6 +24,7 @@ use futures_util::future::join_all;
 /// - Edge routing (fixed and conditional)
 /// - Execution with recursion limits
 /// - Checkpointing for persistence
+#[allow(clippy::type_complexity)]
 pub struct CompiledGraph<S: StateSchema> {
     nodes: HashMap<String, Arc<dyn GraphNode<S>>>,
     edges: Vec<GraphEdge>,
@@ -617,7 +618,7 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
                         ))?;
                     let route_key = router.route(state).await?;
                     let target = targets.get(&route_key)
-                        .or_else(|| default_target.as_ref())
+                        .or(default_target.as_ref())
                         .ok_or_else(|| GraphError::RoutingError(
                             format!("No target for route '{}' (runtime)", route_key)
                         ))?;
@@ -684,10 +685,10 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
     
     fn find_fan_out_targets(&self, current: &str) -> Option<Vec<String>> {
         if let Ok(re) = self.runtime_edges.read() {
-            if let Some(edge) = re.iter().find(|e| e.source() == current) {
-                if let GraphEdge::FanOut { targets, .. } = edge {
-                    return Some(targets.clone());
-                }
+            if let Some(GraphEdge::FanOut { targets, .. }) =
+                re.iter().find(|e| e.source() == current)
+            {
+                return Some(targets.clone());
             }
         }
         for edge in &self.edges {
@@ -702,11 +703,11 @@ GraphEdge::Conditional { source, router_name, targets, default_target } => {
     
     fn find_fan_in_target(&self, sources: &[String]) -> Option<String> {
         if let Ok(re) = self.runtime_edges.read() {
-            if let Some(edge) = re.iter().find(|e| matches!(e, GraphEdge::FanIn { .. })) {
-                if let GraphEdge::FanIn { sources: edge_sources, target } = edge {
-                    if edge_sources.iter().all(|s| sources.contains(s)) {
-                        return Some(target.clone());
-                    }
+            if let Some(GraphEdge::FanIn { sources: edge_sources, target }) =
+                re.iter().find(|e| matches!(e, GraphEdge::FanIn { .. }))
+            {
+                if edge_sources.iter().all(|s| sources.contains(s)) {
+                    return Some(target.clone());
                 }
             }
         }

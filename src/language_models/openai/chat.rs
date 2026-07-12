@@ -401,7 +401,6 @@ impl OpenAIChat {
     
     async fn stream_chat_internal(&self, messages: Vec<Message>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
         use super::sse::SSEParser;
-        use futures_util::StreamExt;
         use std::sync::{Arc, Mutex};
         
         let url = format!("{}/chat/completions", self.config.base_url);
