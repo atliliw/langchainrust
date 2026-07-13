@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-12
+
+### Added
+- **examples 目录**: 12 个可运行示例(basic / agent / rag / langgraph / memory / chains)
+- **MCP 协议支持**: `MCPClient`(Stdio + SSE 传输,`tools/list` + `tools/call`,MCPTool -> BaseTool 适配)
+- **多模态 vision**: `ImageContent` + `Message::human_with_image`(OpenAI / Ollama Vision 序列化)
+- **Sessions 会话管理**: `SessionManager` + `SessionStore`(Memory)+ 多轮对话记忆
+- **Token 计数器**: `TiktokenCounter` + `TokenTrackingLLM` + `ModelPricing`(成本估算)
+- **Guardrails 安全护栏**: `InputGuardrail` / `OutputGuardrail` + `SensitiveInfoGuardrail` + `GuardedAgent`
+- **Plan-Execute Agent**: `Planner` + `PlanExecuteAgent`(规划 - 执行 - 重规划)
+- **Handoffs 多 Agent 交接**: `HandoffManager` + `HandoffTool`
+- **Streaming Tool Calls**: `StreamingFunctionCallingAgent`(`invoke_stream`)
+- **工具扩展**: `SQLTool`(只读 + 表白名单)+ `HTTPTool` + `FileTool`(沙箱 + 扩展名白名单)
+- **PGVector 向量库**: `PGVectorStore`(feature `pgvector-storage`,需用户配置 sqlx/pgvector 依赖)
+- **Pinecone 向量库**: `PineconeStore`(reqwest HTTP API)
+- **HTML Loader**: `HTMLLoader`(regex 提取文本,去 script/style)
+
+### Changed
+- **OpenAIChat**: 加 `Clone` derive(支持 PlanExecuteAgent / Streaming 复用)
+- **Message**: 加 `images` 字段(多模态)+ `additional_kwargs` 加 `serde(default)` 向后兼容
+- **清理**: `compiled.rs` clippy(type_complexity / collapsible_match / unnecessary_lazy_evaluations)
+
 ## [0.2.20] - 2026-05-05
 
 ### Fixed
