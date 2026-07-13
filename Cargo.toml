@@ -228,6 +228,10 @@ path = "tests/integration/guardrails.rs"
 name = "integration_plan_execute"
 path = "tests/integration/plan_execute.rs"
 
+[[test]]
+name = "integration_handoffs"
+path = "tests/integration/handoffs.rs"
+
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================

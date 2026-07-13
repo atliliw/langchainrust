@@ -28,9 +28,11 @@ pub mod base;
 pub mod react;
 pub mod function_calling;
 pub mod plan_execute;
+pub mod handoffs;
 
 pub use types::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput};
 pub use base::{BaseAgent, AgentExecutor, AgentError};
 pub use react::ReActAgent;
 pub use function_calling::FunctionCallingAgent;
 pub use plan_execute::PlanExecuteAgent;
+pub use handoffs::HandoffManager;
