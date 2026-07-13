@@ -8,12 +8,14 @@ mod csv;
 mod text;
 mod json;
 mod markdown;
+mod html;
 
 pub use pdf::PDFLoader;
 pub use csv::CSVLoader;
 pub use text::TextLoader;
 pub use json::JSONLoader;
 pub use markdown::MarkdownLoader;
+pub use html::HTMLLoader;
 
 use crate::vector_stores::Document;
 use async_trait::async_trait;
