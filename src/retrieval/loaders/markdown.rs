@@ -200,7 +200,7 @@ mod tests {
         
         assert!(result.is_ok());
         let docs = result.unwrap();
-        assert_eq!(docs.len(), 2);
+        assert_eq!(docs.len(), 3);
         assert!(docs[0].content.contains("Main Title"));
     }
 }

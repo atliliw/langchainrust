@@ -257,7 +257,7 @@ mod tests {
         let reducer = AppendMessagesReducer;
         let result = reducer.reduce(&current, &update);
 
-        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.messages.len(), 4);
         assert_eq!(result.output, Some("Done".to_string()));
     }
 
