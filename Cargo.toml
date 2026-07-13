@@ -232,6 +232,10 @@ path = "tests/integration/plan_execute.rs"
 name = "integration_handoffs"
 path = "tests/integration/handoffs.rs"
 
+[[test]]
+name = "integration_streaming"
+path = "tests/integration/streaming.rs"
+
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================
