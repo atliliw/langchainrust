@@ -14,6 +14,8 @@ use super::types::MCPConfig;
 pub trait MCPTransport: Send + Sync {
     /// 发送请求并等待响应
     async fn request(&self, req: MCPRequest) -> Result<MCPResponse, MCPError>;
+    /// 发送通知(不等响应)
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError>;
     /// 关闭连接
     async fn close(&self) -> Result<(), MCPError>;
 }
@@ -111,6 +113,34 @@ impl MCPTransport for StdioTransport {
         let _ = child.kill().await;
         Ok(())
     }
+
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError> {
+        // JSON-RPC 2.0 notification: 无 id 字段
+        let notif = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+        });
+        let mut payload = notif;
+        if let Some(p) = params {
+            payload.as_object_mut().unwrap().insert("params".to_string(), p);
+        }
+        let json = serde_json::to_string(&payload)
+            .map_err(|e| MCPError::new(-1, format!("序列化通知失败: {}", e)))?;
+        let mut stdin = self.stdin.lock().await;
+        stdin
+            .write_all(json.as_bytes())
+            .await
+            .map_err(|e| MCPError::new(-1, format!("写通知到 stdin 失败: {}", e)))?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| MCPError::new(-1, format!("写换行失败: {}", e)))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| MCPError::new(-1, format!("flush stdin 失败: {}", e)))?;
+        Ok(())
+    }
 }
 
 /// SSE 传输(简化版):通过 HTTP POST 发送请求,读取 JSON 响应
@@ -159,9 +189,26 @@ impl MCPTransport for SseTransport {
     async fn close(&self) -> Result<(), MCPError> {
         Ok(())
     }
-}
 
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError> {
+        let mut payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+        });
+        if let Some(p) = params {
+            payload.as_object_mut().unwrap().insert("params".to_string(), p);
+        }
+        self.client
+            .post(&self.url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| MCPError::new(-1, format!("发送通知失败: {}", e)))?;
+        Ok(())
+    }
+}
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
 

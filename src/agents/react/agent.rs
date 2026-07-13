@@ -151,9 +151,9 @@ mod tests {
     /// 创建测试用的 OpenAI 配置
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
-            api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string(),
-            base_url: "https://api.openai-proxy.org/v1".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
+            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
+            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "glm-5.2".to_string(),
             temperature: Some(0.0),
             max_tokens: Some(500),
             top_p: None,

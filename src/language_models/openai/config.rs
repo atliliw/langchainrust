@@ -24,11 +24,11 @@ pub struct OpenAIConfig {
 impl Default for OpenAIConfig {
     fn default() -> Self {
         Self {
-            api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6"
+            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7"
                 .parse()
                 .unwrap(),
-            base_url: "https://api.openai-proxy.org/v1".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
+            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "glm-5.2".to_string(),
             temperature: None,
             max_tokens: None,
             top_p: None,
@@ -60,11 +60,11 @@ impl OpenAIConfig {
     pub fn from_env() -> Self {
         let api_key = env::var("OPENAI_API_KEY").unwrap_or_else(|_| {
             // 使用默认 key (仅用于开发测试)
-            "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string()
+            "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string()
         });
 
         let base_url = env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai-proxy.org/v1".to_string());
+            .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string());
 
         let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 

@@ -28,7 +28,7 @@ use super::OllamaConfig;
 /// running local models like Llama, Mistral, etc.
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// use langchainrust::{OllamaChat, Message};
 ///
 /// let llm = OllamaChat::new("llama3.2");

@@ -394,9 +394,16 @@ impl OpenAIChat {
             .map_err(|e| OpenAIError::Parse(e.to_string()))?;
         
         let message = &chat_response.choices[0].message;
-        
+
+        // 推理模型(如 glm-5.2, DeepSeek-R1)的 content 可能为空,
+        // 实际回答在 reasoning_content 中;优先用 content,fallback 到 reasoning_content
+        let content = message.content.clone()
+            .filter(|c| !c.is_empty())
+            .or_else(|| message.reasoning_content.clone())
+            .unwrap_or_default();
+
         Ok(LLMResult {
-            content: message.content.clone().unwrap_or_default(),
+            content,
             model: chat_response.model,
             token_usage: chat_response.usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
@@ -509,6 +516,8 @@ struct OpenAIChoice {
 struct OpenAIMessage {
     role: String,
     content: Option<String>,
+    /// 推理模型的思维链内容(如 glm-5.2, DeepSeek-R1 等)
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<crate::core::tools::ToolCall>>,
 }
 

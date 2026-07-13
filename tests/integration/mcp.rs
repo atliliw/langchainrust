@@ -13,10 +13,16 @@ use langchainrust::mcp::{MCPClient, MCPConfig};
 use serde_json::json;
 
 fn filesystem_config() -> MCPConfig {
+    // Windows 上 npx 是 npx.cmd,需要加后缀
+    let npx_cmd = if cfg!(target_os = "windows") {
+        "npx.cmd"
+    } else {
+        "npx"
+    };
     MCPConfig::stdio(
-        "npx",
+        npx_cmd,
         vec![
-            "@anthropic/mcp-server-filesystem".to_string(),
+            "@modelcontextprotocol/server-filesystem".to_string(),
             std::env::temp_dir().to_string_lossy().to_string(),
         ],
     )

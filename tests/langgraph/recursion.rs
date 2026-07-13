@@ -1,20 +1,31 @@
 use langchainrust::{
-    GraphBuilder, START, END,
+    GraphBuilder, StateGraph, START, END,
     AgentState, StateUpdate,
+    FunctionRouter,
 };
+use std::collections::HashMap;
 
 // 测试递归限制生效
-// 验证: 自循环图在达到递归限制时抛出错误
+// 验证: 运行时无限循环的图在达到递归限制时抛出错误
 #[tokio::test]
 async fn test_recursion_limit_respected() {
-    // 创建自循环图: loop_node -> loop_node
-    let compiled = GraphBuilder::<AgentState>::new()
-        .add_node_fn("loop_node", |state| Ok(StateUpdate::full(state.clone())))
-        .add_edge(START, "loop_node")
-        .add_edge("loop_node", "loop_node")  // 自循环
-        .compile()
-        .unwrap()
-        .with_recursion_limit(5);  // 限制5次
+    // 构造“编译期有到 END 路径、运行时却永远自循环”的图:
+    // 条件边 targets 含 "exit" -> END(让 cycle 校验通过),
+    // 但 router 永远返回 "loop"(自循环),运行时无法到达 END
+    let mut graph: StateGraph<AgentState> = StateGraph::new();
+    graph.add_node_fn("loop_node", |state| Ok(StateUpdate::full(state.clone())));
+    graph.add_edge(START, "loop_node");
+
+    let targets = HashMap::from([
+        ("loop".to_string(), "loop_node".to_string()),
+        ("exit".to_string(), END.to_string()),
+    ]);
+    graph.add_conditional_edges("loop_node", "router", targets, None);
+
+    let router = FunctionRouter::new(|_: &AgentState| "loop".to_string());
+    graph.set_conditional_router("router", router);
+
+    let compiled = graph.compile().unwrap().with_recursion_limit(5); // 限制5次
 
     // 执行应因递归限制而失败
     let result = compiled.invoke(AgentState::new("test".to_string())).await;

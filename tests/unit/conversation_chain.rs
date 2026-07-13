@@ -188,6 +188,7 @@ fn test_conversation_chain_default_memory() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_llm_single_call() {
     let llm = TestConfig::get().openai_chat();
     let memory = ConversationBufferMemory::new();
@@ -209,6 +210,7 @@ async fn test_llm_single_call() {
 }
 
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_llm_multi_turn_memory() {
     let llm = TestConfig::get().openai_chat();
     let memory = ConversationBufferMemory::new();
@@ -242,6 +244,7 @@ async fn test_llm_multi_turn_memory() {
 }
 
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_llm_clear_memory() {
     let llm = TestConfig::get().openai_chat();
     let memory = ConversationBufferMemory::new();

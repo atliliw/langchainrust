@@ -32,18 +32,38 @@ impl Clone for MCPClient {
 
 impl MCPClient {
     /// 连接 MCP Server
+    ///
+    /// 建立传输层连接后,发送 MCP `initialize` 握手请求,
+    /// 再发送 `notifications/initialized` 通知,完成协议握手。
     pub async fn connect(config: MCPConfig) -> Result<Self, MCPError> {
         let transport: Box<dyn MCPTransport + Send + Sync> = match &config {
             MCPConfig::Stdio { .. } => Box::new(StdioTransport::new(&config).await?),
             MCPConfig::Sse { .. } => Box::new(SseTransport::new(&config)?),
         };
-        Ok(Self {
+
+        let client = Self {
             inner: Arc::new(MCPClientInner {
                 transport,
                 tools: Mutex::new(Vec::new()),
                 request_id: AtomicU64::new(1),
             }),
-        })
+        };
+
+        // MCP 协议握手: initialize + initialized 通知
+        let init_params = json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "langchainrust-mcp-client",
+                "version": "0.3.0"
+            }
+        });
+        client.send_request("initialize", Some(init_params)).await?;
+
+        // 发送 initialized 通知(无 id,不等响应)
+        client.inner.transport.notify("notifications/initialized", None).await?;
+
+        Ok(client)
     }
 
     fn next_id(&self) -> u64 {
@@ -114,6 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "需要本地 MCP SSE Server"]
     async fn test_connect_sse_creates_client() {
         // SSE transport 惰性创建(不立即连接),应成功
         let config = MCPConfig::sse("http://localhost:3001/sse");
@@ -122,6 +143,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "需要本地 MCP SSE Server"]
     async fn test_next_id_increments() {
         let client = MCPClient::connect(MCPConfig::sse("http://localhost:3001/sse"))
             .await

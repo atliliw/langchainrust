@@ -13,7 +13,7 @@
 //! - 等等
 //!
 //! # 使用示例
-//! ```rust
+//! ```rust,ignore
 //! use langchainrust::{OllamaChat, OllamaConfig, BaseChatModel};
 //! use langchainrust::schema::Message;
 //!

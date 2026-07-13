@@ -5,12 +5,12 @@
 //! - AgentExecutor 能够并行执行多个工具
 //! - 结果正确聚合到 intermediate_steps
 //!
-//! 测试策略：使用真实工具（Calculator, DateTimeTool, SimpleMathTool）
+//! 测试策略：使用真实工具（Calculator, DateTimeTool）
 //! 而非 Mock，确保与实际运行时行为一致。
 
 use langchainrust::{
     AgentAction, AgentOutput, AgentStep, ToolInput, AgentFinish,
-    Calculator, DateTimeTool, SimpleMathTool, BaseTool,
+    Calculator, DateTimeTool, BaseTool,
     AgentExecutor, BaseAgent, AgentError,
 };
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ use std::sync::Arc;
 ///
 /// 注意：真实工具需要特定输入格式：
 /// - Calculator: {"expression": "100 + 200"} (JSON)
-/// - DateTimeTool: "now" (字符串)
+/// - DateTimeTool: {"operation": "now"} (JSON)
 struct MultiActionAgent;
 
 #[async_trait]
@@ -58,7 +58,7 @@ impl BaseAgent for MultiActionAgent {
         let actions = vec![
             AgentAction {
                 tool: "datetime".to_string(),
-                tool_input: ToolInput::String("now".to_string()),
+                tool_input: ToolInput::Object(serde_json::json!({"operation": "now"})),
                 log: "call_datetime_1".to_string(),
             },
             AgentAction {
@@ -245,7 +245,7 @@ mod tests {
     /// 场景：用户问 "现在几点？顺便算一下 100 + 200"
     /// 工具：
     /// - DateTimeTool（获取当前时间）
-    /// - SimpleMathTool（计算 100 + 200 = 300）
+    /// - Calculator（计算 100 + 200 = 300）
     ///
     /// 验证：
     /// - 两个工具并发执行（futures::join_all）
@@ -256,7 +256,7 @@ mod tests {
     async fn test_executor_parallel_actions_with_real_tools() {
         let tools: Vec<Arc<dyn BaseTool>> = vec![
             Arc::new(DateTimeTool::new()),
-            Arc::new(SimpleMathTool::new()),
+            Arc::new(Calculator::new()),
         ];
         
         let executor = AgentExecutor::new(

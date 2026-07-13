@@ -60,6 +60,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "需要本地 MCP SSE Server"]
     async fn test_adapter_metadata() {
         let client = MCPClient::connect(MCPConfig::sse("http://localhost:3001/sse"))
             .await

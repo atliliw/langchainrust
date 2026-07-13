@@ -8,8 +8,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolDefinition {
     pub name: String,
+    #[serde(default)]
     pub description: String,
     /// 工具参数的 JSON Schema
+    #[serde(rename = "inputSchema")]
     pub input_schema: Value,
 }
 
@@ -99,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_tool_definition_deserialization() {
-        let json = r#"{"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}"#;
+        let json = r#"{"name":"read_file","description":"Read a file","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}"#;
         let tool: MCPToolDefinition = serde_json::from_str(json).unwrap();
         assert_eq!(tool.name, "read_file");
         assert_eq!(tool.description, "Read a file");

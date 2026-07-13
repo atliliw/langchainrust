@@ -18,13 +18,13 @@ use std::sync::OnceLock;
 // ============================================================================
 
 /// API Key - 修改这里或设置环境变量 OPENAI_API_KEY
-const API_KEY: &str = "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6";
+const API_KEY: &str = "sk-6eb65fcf5d17491ca10b984efe1f43e7";
 
 /// Base URL - 可选修改
-const BASE_URL: &str = "https://api.openai-proxy.org/v1";
+const BASE_URL: &str = "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 
 /// 默认模型
-const DEFAULT_MODEL: &str = "gpt-3.5-turbo";
+const DEFAULT_MODEL: &str = "glm-5.2";
 
 /// Embedding 模型
 const EMBEDDING_MODEL: &str = "text-embedding-ada-002";
@@ -83,7 +83,7 @@ impl TestConfig {
             model: DEFAULT_MODEL.to_string(),
             streaming: false,
             temperature: Some(0.7),
-            max_tokens: Some(100),
+            max_tokens: Some(2000),
             ..Default::default()
         }
     }

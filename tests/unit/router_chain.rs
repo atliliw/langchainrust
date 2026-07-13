@@ -21,6 +21,7 @@ use serde_json::Value;
 /// - 多个关键词匹配时选择第一个匹配的
 /// - 未匹配时使用默认 Chain
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_router_keywords_match() {
     let config = TestConfig::get();
     
@@ -74,6 +75,7 @@ async fn test_router_keywords_match() {
 /// - 先尝试关键词匹配，失败则使用 LLM
 /// - 关键词匹配优先于 LLM 判断
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_llm_router_intelligent() {
     let config = TestConfig::get();
     
@@ -110,6 +112,7 @@ async fn test_llm_router_intelligent() {
 /// - 没有配置默认 Chain 时，未匹配输入返回错误
 /// - 有默认 Chain 时，未匹配输入路由到默认 Chain
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_router_fallback() {
     let config = TestConfig::get();
     

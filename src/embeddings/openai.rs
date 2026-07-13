@@ -232,8 +232,8 @@ mod tests {
     #[ignore = "需要真实 API 调用"]
     async fn test_real_embedding() {
         let config = OpenAIEmbeddingsConfig {
-            api_key: "sk-l0YYMX65mCYRlTJYH0ptf4BFpqJwm8Xo9Z5IMqSZD0yOafl6".to_string(),
-            base_url: "https://api.openai-proxy.org/v1".to_string(),
+            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
+            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
             model: "text-embedding-ada-002".to_string(),
             batch_size: 2048,
         };

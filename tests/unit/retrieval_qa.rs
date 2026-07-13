@@ -23,6 +23,7 @@ use serde_json::Value;
 /// - 组装 prompt（上下文 + 问题）
 /// - LLM 生成答案
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_retrieval_qa_basic() {
     let config = TestConfig::get();
     
@@ -62,6 +63,7 @@ async fn test_retrieval_qa_basic() {
 /// - result 包含 source_documents 字段
 /// - source_documents 包含检索到的文档列表
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_retrieval_qa_with_sources() {
     let config = TestConfig::get();
     
@@ -103,6 +105,7 @@ async fn test_retrieval_qa_with_sources() {
 /// - with_prompt_template() 自定义 prompt 模板
 /// - 自定义模板正确应用到 LLM 调用
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_retrieval_qa_custom_prompt() {
     let config = TestConfig::get();
     
@@ -148,6 +151,7 @@ async fn test_retrieval_qa_custom_prompt() {
 /// - query() 方法直接传入字符串
 /// - 返回答案字符串而非 HashMap
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_retrieval_qa_query_interface() {
     let config = TestConfig::get();
     

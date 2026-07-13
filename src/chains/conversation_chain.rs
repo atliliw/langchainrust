@@ -362,7 +362,7 @@ mod tests {
         OpenAIConfig {
             api_key: "sk-test".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-3.5-turbo".to_string(),
+            model: "glm-5.2".to_string(),
             streaming: false,
             organization: None,
             frequency_penalty: None,
@@ -456,8 +456,8 @@ mod tests {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            model: "gpt-3.5-turbo".to_string(),
+                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()
         };
@@ -485,8 +485,8 @@ mod tests {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            model: "gpt-3.5-turbo".to_string(),
+                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()
         };
@@ -527,8 +527,8 @@ mod tests {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            model: "gpt-3.5-turbo".to_string(),
+                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()
         };

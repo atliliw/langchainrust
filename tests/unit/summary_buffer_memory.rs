@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 /// 测试压缩触发 - 使用长消息和小 limit
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_compression_trigger() {
     let config = TestConfig::get();
     

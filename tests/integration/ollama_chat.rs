@@ -7,6 +7,7 @@ use langchainrust::schema::Message;
 // 测试基本聊天功能，需要 Ollama 服务运行
 // 运行前确保: ollama serve
 #[tokio::test]
+#[ignore = "需要启动 Ollama 服务: ollama serve"]
 async fn test_ollama_chat_basic() {
     let llm = OllamaChat::new("qwen2.5:7b");
     
@@ -33,6 +34,7 @@ async fn test_ollama_chat_basic() {
 
 // 测试多轮对话，需要 Ollama 服务运行
 #[tokio::test]
+#[ignore = "需要启动 Ollama 服务: ollama serve"]
 async fn test_ollama_chat_multi_turn() {
     let llm = OllamaChat::new("qwen2.5:7b");
     
@@ -60,6 +62,7 @@ async fn test_ollama_chat_multi_turn() {
 
 // 测试自定义配置，需要 Ollama 服务运行
 #[tokio::test]
+#[ignore = "需要启动 Ollama 服务: ollama serve"]
 async fn test_ollama_chat_with_custom_config() {
     let config = OllamaConfig::new("qwen2.5:7b")
         .with_temperature(0.1)
@@ -91,6 +94,7 @@ async fn test_ollama_chat_with_custom_config() {
 
 // 测试流式输出，需要 Ollama 服务运行
 #[tokio::test]
+#[ignore = "需要启动 Ollama 服务: ollama serve"]
 async fn test_ollama_stream_chat() {
     use futures_util::StreamExt;
     

@@ -32,11 +32,11 @@ pub enum AgentError {
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AgentError::OutputParsingError(msg) => write!(f, "Output parsing error: {}", msg),
-            AgentError::ToolNotFound(name) => write!(f, "Tool not found: {}", name),
-            AgentError::ToolExecutionError(msg) => write!(f, "Tool execution error: {}", msg),
-            AgentError::MaxIterationsReached => write!(f, "Max iterations reached"),
-            AgentError::Other(msg) => write!(f, "Agent error: {}", msg),
+            AgentError::OutputParsingError(msg) => write!(f, "输出解析错误: {}", msg),
+            AgentError::ToolNotFound(name) => write!(f, "工具未找到: {}", name),
+            AgentError::ToolExecutionError(msg) => write!(f, "工具执行错误: {}", msg),
+            AgentError::MaxIterationsReached => write!(f, "已达到最大迭代次数"),
+            AgentError::Other(msg) => write!(f, "代理错误: {}", msg),
         }
     }
 }

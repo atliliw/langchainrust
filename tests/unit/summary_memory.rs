@@ -17,6 +17,7 @@ use std::collections::HashMap;
 ///
 /// 场景：技术咨询 - 用户询问 Rust 项目架构问题
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_summary_memory_single_turn() {
     let llm = TestConfig::get().openai_chat();
     let mut memory = ConversationSummaryMemory::new(llm);
@@ -63,6 +64,7 @@ async fn test_summary_memory_single_turn() {
 ///
 /// 场景：产品需求讨论 - 多轮深入讨论一个产品的功能设计
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_summary_memory_multi_turn() {
     let llm = TestConfig::get().openai_chat();
     let mut memory = ConversationSummaryMemory::new(llm);
@@ -173,6 +175,7 @@ async fn test_summary_memory_multi_turn() {
 ///
 /// 场景：用户会话结束后清空记忆
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_summary_memory_clear() {
     let llm = TestConfig::get().openai_chat();
     let mut memory = ConversationSummaryMemory::new(llm);
@@ -215,6 +218,7 @@ async fn test_summary_memory_clear() {
 ///
 /// 场景：用户偏好设置，后续 Chain 可以读取这些偏好
 #[tokio::test]
+#[ignore = "需要 LLM API Key 且账户余额充足"]
 async fn test_summary_memory_load_for_chain() {
     let llm = TestConfig::get().openai_chat();
     let mut memory = ConversationSummaryMemory::new(llm);
