@@ -117,6 +117,9 @@ pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
 
 #[cfg(feature = "sqlite-storage")]
 pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
+
+#[cfg(feature = "pgvector-storage")]
+pub use vector_stores::PGVectorStore;
 pub use vector_stores::{ChunkDocument, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore};
 
 #[cfg(feature = "qdrant-integration")]

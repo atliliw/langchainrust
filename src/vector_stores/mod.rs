@@ -21,6 +21,9 @@ pub mod redis_store;
 #[cfg(feature = "sqlite-storage")]
 pub mod sqlite_store;
 
+#[cfg(feature = "pgvector-storage")]
+pub mod pgvector;
+
 pub use memory::InMemoryVectorStore;
 pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
 pub use document_store::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore, ChunkDocument};
