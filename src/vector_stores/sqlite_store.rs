@@ -1,8 +1,6 @@
 // src/vector_stores/sqlite_store.rs
 //! SQLite 文档存储实现
 
-#![cfg(feature = "sqlite-storage")]
-
 use async_trait::async_trait;
 use rusqlite::Connection;
 use std::sync::Arc;
