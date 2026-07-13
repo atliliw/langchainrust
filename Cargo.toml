@@ -239,6 +239,10 @@ path = "tests/integration/handoffs.rs"
 name = "integration_streaming"
 path = "tests/integration/streaming.rs"
 
+[[test]]
+name = "integration_pinecone"
+path = "tests/integration/pinecone.rs"
+
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================

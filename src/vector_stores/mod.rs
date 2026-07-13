@@ -24,7 +24,10 @@ pub mod sqlite_store;
 #[cfg(feature = "pgvector-storage")]
 pub mod pgvector;
 
+pub mod pinecone;
+
 pub use memory::InMemoryVectorStore;
+pub use pinecone::PineconeStore;
 pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
 pub use document_store::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore, ChunkDocument};
 pub use chunked_vector_store::ChunkedVectorStore;
