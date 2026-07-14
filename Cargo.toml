@@ -16,6 +16,7 @@ exclude = [
     "/.github",
     "/langchain",
     "/demo",
+    "/CONTRIBUTING.md",
 ]
 
 [dependencies]
