@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.2.18 • Features</div>
+            <div class="sidebar-subtitle">v0.3.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -549,7 +549,8 @@
             <div class="nav-section">
                 <div class="nav-section-title">Advanced</div>
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
-                <a href="#task-planning" class="nav-item" style="color: var(--accent-tertiary);">📋 Task Planning</a>
+                <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan-Execute</a>
+                <a href="#whats-new-030" class="nav-item new">✨ v0.3.0 New</a>
                 <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
             </div>
 
@@ -1899,73 +1900,75 @@ graph.validate()?;
                 <hr class="divider">
             </section>
 
-            <!-- Task Planning -->
-            <section class="module" id="task-planning" style="animation-delay: 0.82s;">
+                        <!-- Plan-Execute Agent -->
+            <section class="module" id="plan-execute" style="animation-delay: 0.82s;">
                 <div class="module-header">
                     <span class="module-icon">📋</span>
-                    <h2>Task Planning</h2>
+                    <h2>Plan-Execute Agent</h2>
                 </div>
 
                 <div class="card">
-                    <p><strong>TaskPlanner</strong> automatically decomposes complex tasks into subtasks, executes sequentially, then aggregates results.</p>
-                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Auto decompose complex tasks, multi-step execution with result aggregation.</p>
+                    <p><strong>PlanExecuteAgent</strong> plans task steps with an LLM, executes them step by step, re-plans on failure, then summarizes.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Auto planning, re-planning on failure, multi-step aggregation.</p>
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>Task Decomposition</h3><p>TaskPlanner analyzes and splits complex tasks</p></div>
-                    <div class="feature-card"><h3>Sequential Execution</h3><p>PlannedExecutor runs each subtask</p></div>
-                    <div class="feature-card"><h3>Result Aggregation</h3><p>Summarize all subtask results</p></div>
-                    <div class="feature-card"><h3>Dependency Control</h3><p>Subtasks can depend on previous results</p></div>
+                    <div class="feature-card"><h3>Auto Planning</h3><p>LLM decomposes the goal into steps</p></div>
+                    <div class="feature-card"><h3>Step Execution</h3><p>FunctionCallingAgent + tools per step</p></div>
+                    <div class="feature-card"><h3>Re-planning</h3><p>Re-plans on failure (configurable)</p></div>
+                    <div class="feature-card"><h3>Aggregation</h3><p>Summarizes all step results</p></div>
                 </div>
 
-                <h3>TaskPlanner Example</h3>
+                <h3>PlanExecuteAgent Example</h3>
 
                 <div class="code-block">
                     <div class="code-header">
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::agent::TaskPlanner;
+                    <pre><code><span class="kw">use</span> langchainrust::{OpenAIChat, OpenAIConfig, PlanExecuteAgent, BaseTool};
+<span class="kw">use</span> std::sync::Arc;
 
-let planner = TaskPlanner::new(llm)
-    .with_max_sub_tasks(<span class="num">5</span>)
-    .with_verbose(<span class="kw">true</span>);
+<span class="kw">let</span> agent = PlanExecuteAgent::new(llm, tools)
+    .with_max_replans(<span class="num">2</span>);
 
-let plan = planner.plan(<span class="str">"Analyze code, write tests, run tests"</span>).await?;
-
-<span class="kw">for</span> task <span class="kw">in</span> &plan.sub_tasks {
-    println!(<span class="str">"[{}] {}"</span>, task.id, task.description);
-}</code></pre>
-                </div>
-
-                <h3>PlannedExecutor</h3>
-
-                <div class="callout info">
-                    <div class="callout-title">Auto Workflow</div>
-                    <p>Plan → Execute → Aggregate automatically:</p>
-                </div>
-
-                <div class="code-block">
-                    <div class="code-header">
-                        <span class="code-lang">rust</span>
-                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-                    </div>
-                    <pre><code><span class="kw">use</span> langchainrust::agent::{PlannedExecutor, ReActAgent};
-
-let executor = PlannedExecutor::new(llm, agent, tools)
-    .with_max_sub_tasks(<span class="num">3</span>)
-    .with_max_iterations(<span class="num">2</span>)
-    .with_verbose(<span class="kw">true</span>);
-
-let result = executor
-    .run(<span class="str">"Research async best practices, write code, explain"</span>)
+<span class="kw">let</span> result = agent
+    .run(<span class="str">"Research Rust async runtimes, write code, explain"</span>)
     .await?;</code></pre>
                 </div>
 
                 <hr class="divider">
             </section>
 
-            <!-- RAG Agent -->
+            <!-- v0.3.0 New Features -->
+            <section class="module" id="whats-new-030" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">✨</span>
+                    <h2>v0.3.0 New Features</h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.3.0 adds production-grade capabilities: MCP, multimodal vision, sessions, token cost tracking, guardrails, multi-agent handoffs, streaming tool calls, extended tools and new vector stores.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: MCP ecosystem, production safety, cost control, multi-agent collaboration.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>MCP</h3><p>MCPClient connects MCP Server, tools as BaseTool</p></div>
+                    <div class="feature-card"><h3>Multimodal Vision</h3><p>ImageContent + human_with_image (OpenAI/Ollama)</p></div>
+                    <div class="feature-card"><h3>Sessions</h3><p>SessionManager multi-turn session lifecycle</p></div>
+                    <div class="feature-card"><h3>Token Counter</h3><p>TiktokenCounter + TokenTrackingLLM + cost</p></div>
+                    <div class="feature-card"><h3>Guardrails</h3><p>Input/output safety, GuardedAgent</p></div>
+                    <div class="feature-card"><h3>Handoffs</h3><p>Multi-agent handoff, HandoffManager + HandoffTool</p></div>
+                    <div class="feature-card"><h3>Streaming FC</h3><p>StreamingFunctionCallingAgent + tool events</p></div>
+                    <div class="feature-card"><h3>Extended Tools</h3><p>HTTPTool / FileTool(sandbox) / SQLTool(readonly)</p></div>
+                    <div class="feature-card"><h3>PGVector / Pinecone</h3><p>Two new vector store backends</p></div>
+                    <div class="feature-card"><h3>HTML Loader</h3><p>Strip tags/scripts/styles, extract text</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+<!-- RAG Agent -->
             <section class="module" id="retrieval-agent" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🔄</span>
@@ -2201,7 +2204,7 @@ src/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.2.18 | MIT License</p>
+                <p class="copyright">LangChainRust v0.3.0 | MIT License</p>
             </footer>
         </div>
     </main>

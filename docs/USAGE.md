@@ -10,6 +10,7 @@
   - 流式输出（streaming）
   - Function Calling（bind_tools）
   - OpenAIConfig 配置项
+  - 多模态 Vision
 - [Prompts](#prompts)
   - PromptTemplate
   - ChatPromptTemplate
@@ -30,6 +31,13 @@
   - 两种 Agent 对比
   - 模型路由（智能选择模型）
   - Tool 调用输出格式约定
+- [Plan-Execute Agent](#plan-execute-agent)
+- [Handoffs 多 Agent 交接](#handoffs-多-agent-交接)
+- [Streaming Tool Calls](#streaming-tool-calls)
+- [Guardrails 安全护栏](#guardrails-安全护栏)
+- [Token 计数器与成本估算](#token-计数器与成本估算)
+- [Sessions 会话管理](#sessions-会话管理)
+- [MCP 协议](#mcp-协议)
 - [Tools](#tools)
   - 内置工具
   - WikipediaTool
@@ -37,6 +45,7 @@
   - PythonREPLTool
   - 自定义 Tool
   - to_tool_definition()
+  - 扩展工具（HTTPTool / FileTool / SQLTool）
 - [Embeddings](#embeddings)
   - OpenAI Embeddings
   - DeepSeek Embeddings
@@ -57,6 +66,7 @@
   - TextLoader
   - JSONLoader
   - MarkdownLoader
+  - HTMLLoader
 - [MultiQueryRetriever](#multiqueryretriever)
   - 多查询检索原理
   - StaticQueryGenerator
@@ -80,6 +90,8 @@
   - MapRerankDocumentsChain
 - [Vector Stores](#vector-stores)
   - ChromaDB
+  - PGVectorStore
+  - PineconeStore
 - [LLM Cache](#llm-cache)
   - 内存缓存 + TTL
   - CacheConfig 配置
@@ -430,6 +442,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `temperature` | Option<f32> | 采样温度 (0.0-2.0) |
 | `max_tokens` | Option<usize> | 最大生成 token 数 |
 | `tools` | Option<Vec<ToolDefinition>> | 绑定的工具定义 |
+
+### 多模态 Vision
+
+`ImageContent` 表示图片（URL 或 base64 data URI），通过 `Message::human_with_image` 构造带图消息；OpenAIChat 与 OllamaChat 均会自动序列化为对应的多模态格式。
+
+```rust
+use langchainrust::schema::{ImageContent, Message};
+use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+
+let msg = Message::human_with_image("描述这张图", "https://example.com/cat.jpg");
+// 或多图：
+// let msg = Message::human_with_images("对比这两张", vec![
+//     ImageContent::from_url("https://example.com/a.jpg"),
+//     ImageContent::from_base64_with_mime(base64_str, "image/png"),
+// ]);
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let resp = llm.chat(vec![msg], None).await?;
+println!("{}", resp.content);
+```
+
+`ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`；也可用 `Message::human(text).with_image(ImageContent)` 链式追加。Ollama 用 `OllamaChat` 同理。
 
 ---
 
@@ -1556,6 +1590,27 @@ for doc in docs {
 }
 ```
 
+### HTMLLoader
+
+去除 `<script>`/`<style>`、剥离标签、解码常见 HTML 实体、压缩空白，从 HTML 字符串或 URL 提取纯文本。
+
+```rust
+use langchainrust::retrieval::HTMLLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+// 从 HTML 字符串
+let loader = HTMLLoader::new("<p>Hello <b>world</b></p>");
+let docs = loader.load().await?; // content: "Hello world"
+
+// 从 URL（异步抓取后解析）
+let loader = HTMLLoader::from_url("https://example.com");
+let docs = loader.load().await?;
+
+// 纯函数：直接提取文本
+let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
+// -> "a & b"
+```
+
 ---
 
 ## MultiQueryRetriever
@@ -1843,182 +1898,206 @@ let agent = ReActAgent::with_retriever(llm, tools, memory, retriever, 3);
 
 ---
 
-## 任务规划（Task Planning）
+## Plan-Execute Agent
 
-将复杂任务自动分解为子任务，依次执行，最后汇总结果。
+Plan-Execute Agent 先用 LLM 规划任务步骤，逐步执行，失败时自动重规划，最后汇总结果。适合复杂、多步任务。
 
-### 工作原理
-
-```
-┌─────────────────┐
-│   复杂问题       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  TaskPlanner    │  ← 分解任务
-│  分解为子任务    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  子任务 1       │ → 结果 1
-├─────────────────┤
-│  子任务 2       │ → 结果 2
-├─────────────────┤
-│  子任务 3       │ → 结果 3
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    汇总结果      │
-└─────────────────┘
-```
-
-### TaskPlanner（任务规划器）
+> 注：内部用 `FunctionCallingAgent` + 工具执行每一步，`llm` 当前需为 `OpenAIChat`。
 
 ```rust
-use langchainrust::agent::TaskPlanner;
-use langchainrust::llms::LLM;
-
-let llm = LLM::new(config);
-let planner = TaskPlanner::new(llm)
-    .with_max_sub_tasks(5)
-    .with_verbose(true);  // 开启日志输出
-
-// 分解任务
-let plan = planner.plan("分析项目代码，写测试用例，运行测试").await?;
-
-println!("分解为 {} 个子任务:", plan.sub_tasks.len());
-for task in &plan.sub_tasks {
-    println!("  [{}] {}", task.id, task.description);
-}
-```
-
-### PlannedExecutor（自动规划执行器）
-
-自动完成：规划 → 执行 → 汇总
-
-```rust
-use langchainrust::agent::{PlannedExecutor, ReActAgent};
-use langchainrust::llms::LLM;
-use langchainrust::tools::Tool;
+use langchainrust::{OpenAIChat, OpenAIConfig, PlanExecuteAgent, BaseTool};
 use std::sync::Arc;
 
-let llm = LLM::new(config);
-let tools: Vec<Arc<dyn Tool>> = vec![];
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let tools: Vec<Arc<dyn BaseTool>> = vec![]; // 传入真实工具
 
-let planned_executor = PlannedExecutor::new(
-    llm,
-    Box::new(ReActAgent::new(LLM::new(config), tools.clone(), None)),
-    tools,
-)
-.with_max_sub_tasks(3)      // 最多 3 个子任务
-.with_max_iterations(2)    // 每个子任务最多 2 次迭代
-.with_verbose(true);       // 开启日志输出
+let agent = PlanExecuteAgent::new(llm, tools)
+    .with_max_replans(2); // 失败后最多重规划 2 次
 
-// 执行复杂任务
-let result = planned_executor
-    .run("调研 Rust 异步编程最佳实践，写示例代码，解释关键点")
+let result = agent
+    .run("调研 Rust 异步运行时，写示例代码，解释关键点")
     .await?;
-
 println!("{}", result);
 ```
 
-### 日志控制
+工作流程：规划 -> 逐步执行（FunctionCallingAgent + tools）-> 失败重规划 -> 汇总。
 
-默认不打印工作过程日志，使用 `with_verbose(true)` 开启：
+---
 
-```rust
-// 不打印日志（默认）
-let executor = PlannedExecutor::new(llm, agent, tools);
+## Handoffs 多 Agent 交接
 
-// 打印详细日志
-let executor = PlannedExecutor::new(llm, agent, tools)
-    .with_verbose(true);
-```
-
-开启日志后的输出示例：
-
-```
-[规划] 正在分析任务...
-[规划] 任务已分解为 3 个子任务:
-  [1] 分析项目结构
-  [2] 提取核心功能
-  [3] 生成总结报告
-
-[执行] 任务 1/3: 分析项目结构
-[完成] 任务 1 执行成功
-...
-
-[汇总] 正在汇总所有任务结果...
-```
-
-### 获取详细执行结果
+参考 OpenAI Agents SDK：主 Agent 可通过 `HandoffTool` 将任务委托给注册的专业 Agent。
 
 ```rust
-// 返回规划详情和每个子任务的结果
-let (plan, results) = planned_executor
-    .run_with_plan("复杂问题")
-    .await?;
+use langchainrust::agents::HandoffManager;
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
 
-for result in &results {
-    println!("任务 {}: {} - {}",
-        result.id,
-        result.description,
-        if result.success { "成功" } else { "失败" }
-    );
+let llm = OpenAIChat::new(OpenAIConfig::default());
+
+let mgr = HandoffManager::new();
+let writer = Arc::new(AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm.clone(), vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+));
+let researcher = Arc::new(AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm.clone(), vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+));
+mgr.register_agent("writer", writer)?;
+mgr.register_agent("researcher", researcher)?;
+mgr.set_primary("researcher")?;
+
+// 运行主 Agent
+let result = mgr.run("调研并写一篇文章".to_string()).await?;
+
+// 为每个注册 Agent 生成 HandoffTool（名为 handoff_to_{agent}），供主 Agent 调用
+let mgr = Arc::new(mgr);
+let handoff_tools = mgr.handoff_tools();
+let history = mgr.history(); // 交接历史
+```
+
+`handoff_tools()` 返回的工具名为 `handoff_to_{agent}`；也可用 `execute_handoff(Handoff)` 直接交接。
+
+---
+
+## Streaming Tool Calls
+
+`StreamingFunctionCallingAgent` 流式输出 LLM 文本（逐 token），并通过事件流暴露工具调用状态。
+
+```rust
+use langchainrust::StreamingFunctionCallingAgent;
+use langchainrust::agents::streaming::AgentStreamEvent;
+use futures_util::StreamExt;
+
+let agent = StreamingFunctionCallingAgent::new(llm);
+let mut stream = agent.invoke_stream("用一句话介绍 Rust".to_string()).await;
+
+while let Some(event) = stream.next().await {
+    match event {
+        AgentStreamEvent::Text { content } => print!("{}", content),
+        AgentStreamEvent::ToolCall { state } => {
+            // state: Started / ArgumentsStreaming / Completed / Failed ...
+        }
+        AgentStreamEvent::FinalAnswer { content } => println!("\n[完成] {}", content),
+    }
 }
 ```
 
-### 执行日志
+事件见 `AgentStreamEvent`（`Text` / `ToolCall` / `FinalAnswer`）与 `ToolCallState`。
 
-```
-[规划] 正在分析任务...
-[规划] 任务已分解为 3 个子任务:
-  [1] 分析项目结构
-  [2] 提取核心功能
-  [3] 生成总结报告
+---
 
-[执行] 任务 1/3: 分析项目结构
-[完成] 任务 1 执行成功
-[执行] 任务 2/3: 提取核心功能
-[完成] 任务 2 执行成功
-[执行] 任务 3/3: 生成总结报告
-[完成] 任务 3 执行成功
+## Guardrails 安全护栏
 
-[汇总] 正在汇总所有任务结果...
-```
-
-### SimplePlannedExecutor（简化版）
-
-只规划不执行：
+输入/输出验证，防恶意输入、防敏感信息泄露。实现 `InputGuardrail` / `OutputGuardrail` trait，或用内置验证器，再用 `GuardedAgent` 包装 Agent。
 
 ```rust
-use langchainrust::agent::SimplePlannedExecutor;
+use langchainrust::guardrails::{
+    GuardrailsConfig, MaxLengthGuardrail, SensitiveInfoGuardrail, GuardedAgent,
+};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
 
-let executor = SimplePlannedExecutor::new(llm);
+let config = GuardrailsConfig::new()
+    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // 输入限长
+    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // 输出防敏感信息
 
-// 只获取任务规划
-let plan = executor.plan("复杂问题").await?;
+let agent = FunctionCallingAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![], None);
+let executor = Arc::new(AgentExecutor::new(
+    Arc::new(agent) as Arc<dyn BaseAgent>,
+    vec![],
+));
 
-// 手动执行每个子任务...
-
-// 汇总结果
-let summary = executor.summarize("原始问题", &results).await?;
+let mut guarded = GuardedAgent::new(executor, config);
+let result = guarded.invoke("帮我总结这段内容".to_string()).await?; // 验输入 -> Agent -> 验输出
+let violations = guarded.violations();
 ```
 
-### 子任务依赖关系
+内置验证器：`MaxLengthGuardrail`（输入限长）、`ForbiddenWordsGuardrail`（禁用词）、`SensitiveInfoGuardrail`（API key / 邮箱 / 信用卡 / 关键词，可 `with_keywords` 扩展）。也可用 `GuardrailRunner` 手动驱动验证流程。
+
+---
+
+## Token 计数器与成本估算
+
+`TiktokenCounter` 用 cl100k_base（GPT-3.5/4/4o）计数；`TokenTrackingLLM` 包装 LLM 自动累计用量；`ModelPricing` 估算成本。
 
 ```rust
-pub struct SubTask {
-    pub id: usize,
-    pub description: String,
-    pub depends_on_previous: bool,  // 是否依赖前一个任务
-}
+use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+let tracked = TokenTrackingLLM::for_openai(OpenAIChat::new(OpenAIConfig::default()))?;
+
+let result = tracked.chat(vec![Message::human("你好")], None).await?;
+
+let usage = tracked.get_usage();                               // prompt / completion / total tokens
+let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // 美元
 ```
 
-当 `depends_on_previous = true` 时，执行器会自动将上一个任务的结果附加到当前任务的输入中。
+`ModelPricing::gpt4o()` / `gpt4o_mini()` 为内置定价，也可 `ModelPricing::new(prompt_per_1k, completion_per_1k)` 自定义。
+
+---
+
+## Sessions 会话管理
+
+`SessionManager` 管理多轮对话会话生命周期：创建/获取/归档，对话时自动维护历史，存储可插拔（`SessionStore` trait）。
+
+```rust
+use langchainrust::sessions::{SessionManager, MemorySessionStore};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
+let id = manager.create_session_for("user_1").await?;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "我叫小明".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "我叫什么？".to_string()).await?; // 记得上一轮
+
+let history = manager.history(&id).await?;  // Vec<Message>
+manager.clear(&id).await?;                   // 清空历史（保留会话）
+manager.archive(&id).await?;                 // 归档
+let sessions = manager.list_by_user("user_1").await?;
+```
+
+`SessionStore` trait 含 `create/get/update/delete/list_by_user`，可自行实现持久化后端（Redis/DB）；内置 `MemorySessionStore` 用于测试与单进程。
+
+---
+
+## MCP 协议
+
+[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。`MCPClient` 连接任意 MCP Server 获取工具，并适配为 `BaseTool` 供 Agent 使用。
+
+```rust
+use langchainrust::mcp::{MCPClient, MCPConfig};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+// Stdio：启动 MCP Server 子进程
+let config = MCPConfig::stdio(
+    "npx",
+    vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
+);
+// 或 SSE：MCPConfig::sse("http://localhost:3001/sse")
+
+let mut client = MCPClient::connect(config).await?;
+let tools = client.list_tools().await?;           // tools/list
+println!("MCP 工具数量: {}", tools.len());
+
+// 适配为 BaseTool 列表，直接喂给 Agent
+let mcp_tools = client.as_tools().await;
+let agent = FunctionCallingAgent::new(
+    OpenAIChat::new(OpenAIConfig::default()),
+    mcp_tools,
+    None,
+);
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, vec![]);
+let result = executor.invoke("读取 /tmp/notes.txt".to_string()).await?;
+
+client.close().await?;
+```
+
+`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`；`client.call_tool(name, arguments)` 直接调用工具；`as_tools()` 把工具包装为 `MCPToolAdapter`（实现 `BaseTool`）。
 
 ---
 
@@ -2194,6 +2273,48 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![
 
 let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
 ```
+
+### 扩展工具（HTTPTool / FileTool / SQLTool）
+
+v0.3.0 新增三个面向生产环境的工具，均实现 `BaseTool`。
+
+**HTTPTool** —— 发起 GET/POST 请求：
+
+```rust
+use langchainrust::HTTPTool;
+use serde_json::json;
+
+let http = HTTPTool::new();
+let body = http.post("https://httpbin.org/post", json!({"k": "v"})).await?;
+// 作为 BaseTool：输入 JSON {"url":"...","method":"get|post","body":{...}}
+```
+
+**FileTool** —— 沙箱文件读写（限制 `base_path`、扩展名白名单、大小上限、防路径越界）：
+
+```rust
+use langchainrust::FileTool;
+use std::path::PathBuf;
+
+let file = FileTool::new(PathBuf::from("./workspace"))
+    .with_allowed_extensions(vec!["txt".into(), "md".into(), "json".into()])
+    .with_max_size(10 * 1024 * 1024);
+let content = file.read("notes.txt").await?;
+file.write("out.txt", "hello").await?;
+// 作为 BaseTool：输入 JSON {"op":"read|write|list","path":"...","content":"..."}
+```
+
+**SQLTool** —— 只读 SQL 查询（仅 SELECT，表白名单；需 `sqlite-storage` feature）：
+
+```rust
+use langchainrust::tools::extended::SQLTool;
+
+let sql = SQLTool::new("data.db")?
+    .with_allowed_tables(vec!["users".into()]);
+let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,String>>
+// 非 SELECT（如 DROP/INSERT）会被拒绝
+```
+
+> `SQLTool` 在 `sqlite-storage` feature 下可用；`HTTPTool` / `FileTool` 默认可用。
 
 ---
 
@@ -2806,6 +2927,47 @@ let results = store.search("系统编程", 3).await?;
 docker run -p 8000:8000 chromadb/chroma
 ```
 
+### PGVectorStore
+
+PostgreSQL + pgvector 扩展向量库。需 `pgvector-storage` feature；因 `sqlx` / `pgvector` 依赖未在 crate 内启用，用户需自行在 `Cargo.toml` 添加 `sqlx` 与 `pgvector` 依赖。
+
+```rust
+use langchainrust::vector_stores::PGVectorStore;
+use langchainrust::embeddings::Embeddings;
+
+let store = PGVectorStore::new(
+    "postgres://user:pass@localhost/db",
+    "docs",
+    1536, // 向量维度
+).await?;
+// embeddings: impl Embeddings（如 OpenAIEmbeddings）；docs: &[Document]
+store.add_documents(&docs, &embeddings).await?;
+let found = store.similarity_search("查询", 5, &embeddings).await?;
+store.delete("doc-id").await?;
+```
+
+`PGVectorStore::new` 会自动 `CREATE EXTENSION IF NOT EXISTS vector` 并建表；`build_table_sql(table, dim)` 是可单独测试的建表 SQL 纯函数。
+
+### PineconeStore
+
+Pinecone 向量库（reqwest HTTP API，无需 feature，默认可用）。
+
+```rust
+use langchainrust::vector_stores::PineconeStore;
+use langchainrust::embeddings::Embeddings;
+
+// host 格式：https://{index-name}.svc.{environment}.pinecone.io
+let store = PineconeStore::new("your-api-key", "https://my-index.svc.prod.pinecone.io");
+
+// embeddings: impl Embeddings
+store.upsert(&docs, &embeddings).await?;       // 自动 embed 文档
+let qvec: Vec<f32> = embeddings.embed_query("查询").await?; // query 需传已 embed 的向量
+let found = store.query(qvec, 5).await?;
+store.delete(&["id1".to_string()]).await?;
+```
+
+`upsert` 自动调用 `embed_documents`；`query` 需传入已 embed 的向量（`embed_query` 的结果）。
+
 ---
 
 ## LLM Cache
@@ -3072,5 +3234,5 @@ let api_key = "sk-xxxxxxxx";  // ❌ 禁止硬编码
 
 ## 版本信息
 
-LangChainRust v0.2.6 | MIT License
+LangChainRust v0.3.0 | MIT License
 

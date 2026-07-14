@@ -13,6 +13,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Function Calling
   - Ollama (Local LLM)
   - Google Gemini
+  - Multimodal Vision
 - [Embeddings](#embeddings)
   - OpenAI Embeddings
   - DeepSeek Embeddings
@@ -26,15 +27,26 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - ConversationRetrievalChain
 - [Document Chains](#document-chains)
 - [Agents](#agents)
+- [Plan-Execute Agent](#plan-execute-agent)
+- [Handoffs](#handoffs)
+- [Streaming Tool Calls](#streaming-tool-calls)
+- [Guardrails](#guardrails)
+- [Token Counter](#token-counter)
+- [Sessions](#sessions)
+- [MCP](#mcp)
 - [Tools](#tools)
   - WikipediaTool
   - DuckDuckGoSearchTool
   - PythonREPLTool
+  - Extended Tools (HTTPTool / FileTool / SQLTool)
 - [RAG](#rag)
   - ChromaDB
+  - PGVectorStore
+  - PineconeStore
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Document Loaders](#document-loaders)
+  - HTMLLoader
 - [MultiQueryRetriever](#multiqueryretriever)
 - [HyDE Retriever](#hyde-retriever)
 - [Reranking](#reranking)
@@ -246,6 +258,28 @@ let response = llm.chat(vec![
     Message::human("Hello!"),
 ], None).await?;
 ```
+
+### Multimodal Vision
+
+`ImageContent` represents an image (URL or base64 data URI). Build image-bearing messages with `Message::human_with_image`; both `OpenAIChat` and `OllamaChat` serialize them to their native multimodal formats automatically.
+
+```rust
+use langchainrust::schema::{ImageContent, Message};
+use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
+
+let msg = Message::human_with_image("Describe this image", "https://example.com/cat.jpg");
+// Or multiple images:
+// let msg = Message::human_with_images("Compare these two", vec![
+//     ImageContent::from_url("https://example.com/a.jpg"),
+//     ImageContent::from_base64_with_mime(base64_str, "image/png"),
+// ]);
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let resp = llm.chat(vec![msg], None).await?;
+println!("{}", resp.content);
+```
+
+`ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`; you can also chain with `Message::human(text).with_image(ImageContent)`. Same for `OllamaChat`.
 
 ---
 
@@ -673,6 +707,207 @@ let executor = AgentExecutor::new(
 | FunctionCallingAgent | Native FC | High (type-safe) | GPT-4, Claude, Gemini |
 | ReActAgent | Text parsing | Medium | Models without FC support |
 
+## Plan-Execute Agent
+
+The Plan-Execute Agent first plans task steps with an LLM, executes them step by step, re-plans on failure, and finally summarizes. Suited for complex, multi-step tasks.
+
+> Note: each step runs via `FunctionCallingAgent` + tools; `llm` must currently be `OpenAIChat`.
+
+```rust
+use langchainrust::{OpenAIChat, OpenAIConfig, PlanExecuteAgent, BaseTool};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let tools: Vec<Arc<dyn BaseTool>> = vec![]; // pass real tools
+
+let agent = PlanExecuteAgent::new(llm, tools)
+    .with_max_replans(2); // re-plan at most 2 times on failure
+
+let result = agent
+    .run("Research Rust async runtimes, write example code, explain key points")
+    .await?;
+println!("{}", result);
+```
+
+Flow: plan -> execute each step (FunctionCallingAgent + tools) -> re-plan on failure -> summarize.
+
+---
+
+## Handoffs
+
+Inspired by the OpenAI Agents SDK: a primary agent can delegate tasks to registered specialist agents via `HandoffTool`.
+
+```rust
+use langchainrust::agents::HandoffManager;
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+
+let mgr = HandoffManager::new();
+let writer = Arc::new(AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm.clone(), vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+));
+let researcher = Arc::new(AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm.clone(), vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+));
+mgr.register_agent("writer", writer)?;
+mgr.register_agent("researcher", researcher)?;
+mgr.set_primary("researcher")?;
+
+// Run the primary agent
+let result = mgr.run("Research and write an article".to_string()).await?;
+
+// Generate a HandoffTool for each registered agent (named handoff_to_{agent})
+let mgr = Arc::new(mgr);
+let handoff_tools = mgr.handoff_tools();
+let history = mgr.history(); // handoff history
+```
+
+`handoff_tools()` returns tools named `handoff_to_{agent}`; you can also hand off directly with `execute_handoff(Handoff)`.
+
+---
+
+## Streaming Tool Calls
+
+`StreamingFunctionCallingAgent` streams LLM text token by token and exposes tool-call state through the event stream.
+
+```rust
+use langchainrust::StreamingFunctionCallingAgent;
+use langchainrust::agents::streaming::AgentStreamEvent;
+use futures_util::StreamExt;
+
+let agent = StreamingFunctionCallingAgent::new(llm);
+let mut stream = agent.invoke_stream("Describe Rust in one sentence".to_string()).await;
+
+while let Some(event) = stream.next().await {
+    match event {
+        AgentStreamEvent::Text { content } => print!("{}", content),
+        AgentStreamEvent::ToolCall { state } => {
+            // state: Started / ArgumentsStreaming / Completed / Failed ...
+        }
+        AgentStreamEvent::FinalAnswer { content } => println!("\n[done] {}", content),
+    }
+}
+```
+
+Events: `AgentStreamEvent` (`Text` / `ToolCall` / `FinalAnswer`) and `ToolCallState`.
+
+---
+
+## Guardrails
+
+Input/output validation to block malicious input and sensitive-information leakage. Implement `InputGuardrail` / `OutputGuardrail`, or use built-in validators, then wrap an agent with `GuardedAgent`.
+
+```rust
+use langchainrust::guardrails::{
+    GuardrailsConfig, MaxLengthGuardrail, SensitiveInfoGuardrail, GuardedAgent,
+};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let config = GuardrailsConfig::new()
+    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // limit input length
+    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // block sensitive output
+
+let agent = FunctionCallingAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![], None);
+let executor = Arc::new(AgentExecutor::new(
+    Arc::new(agent) as Arc<dyn BaseAgent>,
+    vec![],
+));
+
+let mut guarded = GuardedAgent::new(executor, config);
+let result = guarded.invoke("Summarize this content".to_string()).await?; // validate input -> agent -> validate output
+let violations = guarded.violations();
+```
+
+Built-in validators: `MaxLengthGuardrail` (input length), `ForbiddenWordsGuardrail` (banned words), `SensitiveInfoGuardrail` (API keys / emails / credit cards / keywords, extend with `with_keywords`). You can also drive validation manually with `GuardrailRunner`.
+
+---
+
+## Token Counter
+
+`TiktokenCounter` counts with cl100k_base (GPT-3.5/4/4o); `TokenTrackingLLM` wraps an LLM to accumulate usage; `ModelPricing` estimates cost.
+
+```rust
+use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+let tracked = TokenTrackingLLM::for_openai(OpenAIChat::new(OpenAIConfig::default()))?;
+
+let result = tracked.chat(vec![Message::human("hi")], None).await?;
+
+let usage = tracked.get_usage();                               // prompt / completion / total tokens
+let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
+```
+
+`ModelPricing::gpt4o()` / `gpt4o_mini()` are built-in; use `ModelPricing::new(prompt_per_1k, completion_per_1k)` for custom pricing.
+
+---
+
+## Sessions
+
+`SessionManager` manages the lifecycle of multi-turn conversation sessions: create/get/archive, auto-maintain history on each chat, with pluggable storage (`SessionStore` trait).
+
+```rust
+use langchainrust::sessions::{SessionManager, MemorySessionStore};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
+let id = manager.create_session_for("user_1").await?;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?; // remembers the previous turn
+
+let history = manager.history(&id).await?;  // Vec<Message>
+manager.clear(&id).await?;                   // clear history (keep session)
+manager.archive(&id).await?;                 // archive
+let sessions = manager.list_by_user("user_1").await?;
+```
+
+The `SessionStore` trait has `create/get/update/delete/list_by_user`; implement your own backend (Redis/DB). `MemorySessionStore` is built-in for tests and single-process use.
+
+---
+
+## MCP
+
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. `MCPClient` connects to any MCP Server to obtain tools and adapts them as `BaseTool` for agents.
+
+```rust
+use langchainrust::mcp::{MCPClient, MCPConfig};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+// Stdio: spawn an MCP Server subprocess
+let config = MCPConfig::stdio(
+    "npx",
+    vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
+);
+// Or SSE: MCPConfig::sse("http://localhost:3001/sse");
+
+let mut client = MCPClient::connect(config).await?;
+let tools = client.list_tools().await?;           // tools/list
+println!("MCP tool count: {}", tools.len());
+
+// Adapt to a BaseTool list and hand it to an agent
+let mcp_tools = client.as_tools().await;
+let agent = FunctionCallingAgent::new(
+    OpenAIChat::new(OpenAIConfig::default()),
+    mcp_tools,
+    None,
+);
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, vec![]);
+let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
+
+client.close().await?;
+```
+
+`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`; `client.call_tool(name, arguments)` calls a tool directly; `as_tools()` wraps tools as `MCPToolAdapter` (implements `BaseTool`).
+
 ---
 
 ## Tools
@@ -746,6 +981,48 @@ use langchainrust::PythonREPLTool;
 let tool = PythonREPLTool::new();
 let result = tool.run(r#"{"code": "print(sum(range(10)))"}"#).await?;
 ```
+
+### Extended Tools (HTTPTool / FileTool / SQLTool)
+
+Three production-oriented tools added in v0.3.0, all implementing `BaseTool`.
+
+**HTTPTool** -- issue GET/POST requests:
+
+```rust
+use langchainrust::HTTPTool;
+use serde_json::json;
+
+let http = HTTPTool::new();
+let body = http.post("https://httpbin.org/post", json!({"k": "v"})).await?;
+// As BaseTool: input JSON {"url":"...","method":"get|post","body":{...}}
+```
+
+**FileTool** -- sandboxed file read/write (confined to `base_path`, extension allowlist, size cap, path-traversal protection):
+
+```rust
+use langchainrust::FileTool;
+use std::path::PathBuf;
+
+let file = FileTool::new(PathBuf::from("./workspace"))
+    .with_allowed_extensions(vec!["txt".into(), "md".into(), "json".into()])
+    .with_max_size(10 * 1024 * 1024);
+let content = file.read("notes.txt").await?;
+file.write("out.txt", "hello").await?;
+// As BaseTool: input JSON {"op":"read|write|list","path":"...","content":"..."}
+```
+
+**SQLTool** -- read-only SQL queries (SELECT only, table allowlist; requires `sqlite-storage` feature):
+
+```rust
+use langchainrust::tools::extended::SQLTool;
+
+let sql = SQLTool::new("data.db")?
+    .with_allowed_tables(vec!["users".into()]);
+let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,String>>
+// Non-SELECT (e.g. DROP/INSERT) is rejected
+```
+
+> `SQLTool` is available under the `sqlite-storage` feature; `HTTPTool` / `FileTool` are available by default.
 
 ---
 
@@ -880,6 +1157,47 @@ retriever.add_documents(vec![
 
 let docs = retriever.retrieve("systems programming", 3).await?;
 ```
+
+### PGVectorStore
+
+PostgreSQL + pgvector extension vector store. Requires the `pgvector-storage` feature; since `sqlx` / `pgvector` deps are not enabled inside the crate, add `sqlx` and `pgvector` to your `Cargo.toml` yourself.
+
+```rust
+use langchainrust::vector_stores::PGVectorStore;
+use langchainrust::embeddings::Embeddings;
+
+let store = PGVectorStore::new(
+    "postgres://user:pass@localhost/db",
+    "docs",
+    1536, // vector dimension
+).await?;
+// embeddings: impl Embeddings (e.g. OpenAIEmbeddings); docs: &[Document]
+store.add_documents(&docs, &embeddings).await?;
+let found = store.similarity_search("query", 5, &embeddings).await?;
+store.delete("doc-id").await?;
+```
+
+`PGVectorStore::new` runs `CREATE EXTENSION IF NOT EXISTS vector` and creates the table; `build_table_sql(table, dim)` is a pure function for the table DDL.
+
+### PineconeStore
+
+Pinecone vector store (reqwest HTTP API, no feature required, available by default).
+
+```rust
+use langchainrust::vector_stores::PineconeStore;
+use langchainrust::embeddings::Embeddings;
+
+// host format: https://{index-name}.svc.{environment}.pinecone.io
+let store = PineconeStore::new("your-api-key", "https://my-index.svc.prod.pinecone.io");
+
+// embeddings: impl Embeddings
+store.upsert(&docs, &embeddings).await?;       // auto-embeds documents
+let qvec: Vec<f32> = embeddings.embed_query("query").await?; // query takes an embedded vector
+let found = store.query(qvec, 5).await?;
+store.delete(&["id1".to_string()]).await?;
+```
+
+`upsert` calls `embed_documents` automatically; `query` takes an already-embedded vector (result of `embed_query`).
 
 ---
 
@@ -1108,6 +1426,27 @@ use langchainrust::{MarkdownLoader, DocumentLoader};
 // Split by heading level
 let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
 let docs = loader.load().await?;
+```
+
+### HTMLLoader
+
+Strips `<script>`/`<style>`, removes tags, decodes common HTML entities, and collapses whitespace to extract plain text from an HTML string or URL.
+
+```rust
+use langchainrust::retrieval::HTMLLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+// From an HTML string
+let loader = HTMLLoader::new("<p>Hello <b>world</b></p>");
+let docs = loader.load().await?; // content: "Hello world"
+
+// From a URL (fetched asynchronously, then parsed)
+let loader = HTMLLoader::from_url("https://example.com");
+let docs = loader.load().await?;
+
+// Pure function: extract text directly
+let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
+// -> "a & b"
 ```
 
 ---
