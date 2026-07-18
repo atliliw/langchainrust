@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-14
+
+### Added
+- **Evaluation 评估模块**: 10 种评测器(5 类),框架含 `Score` / `Example` / `Dataset` / `Evaluator` / `Predictor` / `EvalRunner` / `Report`
+  - 字面: `ExactMatch` / `StringDistance`(Levenshtein 编辑距离归一)
+  - 语义: `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge`(交换 A/B 消位置偏差)
+  - 规则: `ContainsKeyword` / `RegexMatch` / `LengthCheck`
+  - 经典 NLP: `Bleu`(字符级分词 + 平滑)
+  - RAG: `Faithfulness`(拆主张逐条验证抓幻觉,`join_all` 并发,`llm_split` / `empty_score` 可配)
+- **MCP Server**: `MCPServer` 把本地 `BaseTool` 暴露为 MCP Server(`initialize` / `tools/list` / `tools/call`),供 Claude Desktop / Cursor 等 host 调用,与 `MCPClient` 对称
+- **VectorStoreRetrieverMemory**: 向量检索记忆,每轮对话嵌入存向量库,按当前输入语义召回 top-k 历史
+- **OpenAIAssistant**: 封装 OpenAI Assistants API(`Assistants` / `Threads` / `Run`,服务端会话状态)
+- **SemanticSplitter**: 语义分块器,相邻句相似度骤降处断块,中英文分句
+- **LocalEmbeddings**: 轻量本地嵌入(词频 hash + L2 归一,纯 Rust 无外部依赖)
+- **OtelHandler**: OpenTelemetry callback handler,执行事件转 OTel span(feature `opentelemetry`)
+
+### Changed
+- **依赖**: 新增可选依赖 `opentelemetry` + feature flag `opentelemetry`(默认关闭,不影响默认编译)
+- **导出**: `lib.rs` 导出 evaluation 模块、`MCPServer`、`OpenAIAssistant`、`VectorStoreRetrieverMemory`、`LocalEmbeddings`、`SemanticSplitter`、`OtelHandler`
+
 ## [0.3.0] - 2026-07-12
 
 ### Added

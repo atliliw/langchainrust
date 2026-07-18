@@ -11,6 +11,7 @@
   - Function Calling（bind_tools）
   - OpenAIConfig 配置项
   - 多模态 Vision
+  - OpenAI Assistants API
 - [Prompts](#prompts)
   - PromptTemplate
   - ChatPromptTemplate
@@ -21,6 +22,7 @@
   - ConversationBufferWindowMemory
   - ConversationSummaryMemory
   - ConversationSummaryBufferMemory
+  - VectorStoreRetrieverMemory（向量检索）
   - Memory 类型对比
 - [Chains](#chains)
   - SequentialChain（带 memory 注入）
@@ -38,6 +40,7 @@
 - [Token 计数器与成本估算](#token-计数器与成本估算)
 - [Sessions 会话管理](#sessions-会话管理)
 - [MCP 协议](#mcp-协议)
+  - MCPServer（暴露本地工具）
 - [Tools](#tools)
   - 内置工具
   - WikipediaTool
@@ -50,9 +53,11 @@
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
+  - LocalEmbeddings（离线）
 - [RAG](#rag)
   - 完整 RAG 流程
   - 文档分割配置
+  - SemanticSplitter（语义分块）
 - [BM25](#bm25)
   - BM25Retriever 基础用法
   - BM25 参数配置
@@ -102,6 +107,10 @@
   - CallbackManager
   - StdOutHandler
   - LangSmith 追踪
+  - OtelHandler（OpenTelemetry）
+- [Evaluation 评估](#evaluation-评估)
+  - 评测器（10 种）
+  - EvalRunner（批量评测）
 - [配置与安全](#配置与安全)
 - [LangGraph](#langgraph)
   - StateGraph 基础用法
@@ -375,7 +384,6 @@ while let Some(chunk) = stream.next().await {
 
 println!("部分收集: {}", partial);
 ```
-```
 
 ### Function Calling（bind_tools）
 
@@ -466,6 +474,24 @@ println!("{}", resp.content);
 `ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`；也可用 `Message::human(text).with_image(ImageContent)` 链式追加。Ollama 用 `OllamaChat` 同理。
 
 ---
+
+### OpenAI Assistants API
+
+`OpenAIAssistant` 封装 OpenAI 官方 Assistants API（Assistants / Threads / Run），会话状态托管在服务端，适合多轮复杂任务。需 OpenAI 官方端点，部分 compatible-mode 端点可能不支持。
+
+```rust
+use langchainrust::{OpenAIAssistant, OpenAIConfig};
+
+let config = OpenAIConfig::default();
+// 创建 Assistant（模型 + 系统指令）
+let assistant = OpenAIAssistant::create(&config, "gpt-4o", "你是一个翻译助手").await?;
+// 或复用已有：OpenAIAssistant::from_id(config, "asst_xxx")
+
+// run_once：创建线程 + 发消息 + 运行到终态，一步到位
+let answer = assistant.run_once("请翻译：Hello").await?;
+```
+
+**限制**：Run 遇到工具调用（`requires_action`）当前未实现调度，返回 `AssistantError::RequiresAction`；需要工具调用请用 `FunctionCallingAgent`。
 
 ## Prompts
 
@@ -734,6 +760,27 @@ println!("格式化: {}", history.to_string());
 ```
 
 ---
+
+### VectorStoreRetrieverMemory（向量检索）
+
+每轮对话嵌入后存入向量库，加载时按当前输入的语义相关性召回 top-k 历史。相比固定窗口的 buffer memory，长对话 / 跨会话能保留更多有效上下文。
+
+```rust
+use langchainrust::{VectorStoreRetrieverMemory, MockEmbeddings, BaseMemory};
+use langchainrust::vector_stores::InMemoryVectorStore;
+use std::collections::HashMap;
+
+let mut memory = VectorStoreRetrieverMemory::new(
+    InMemoryVectorStore::new(),
+    MockEmbeddings::new(1536),
+    4,  // 召回 4 条相关历史
+);
+
+memory.save_context(&inputs, &outputs).await?;
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+```
+
+**特点**：语义召回，长对话不丢关键信息；依赖向量库与 embedding 模型，有额外开销。
 
 ## Chains
 
@@ -1213,6 +1260,20 @@ let vector = embeddings.embed("测试文本").await?;
 println!("向量维度: {}", vector.len());  // 128
 ```
 
+### LocalEmbeddings（离线）
+
+纯 Rust 实现的轻量本地嵌入（词频 hash + L2 归一），不调用任何 API，适合离线、隐私、零成本场景的粗粒度检索。
+
+```rust
+use langchainrust::LocalEmbeddings;
+
+// 指定维度，或用默认 256 维
+let emb = LocalEmbeddings::default_dim();
+let vec = emb.embed_query("你好世界").await?;
+```
+
+**限制**：词袋 hash，语义质量有限（无法识别同义 / 上下文）；需高质量语义嵌入请用 `OpenAIEmbeddings` 等，或等待 BGE / E5 集成。
+
 ### Embeddings 配置项
 
 | 字段 | 说明 |
@@ -1281,6 +1342,22 @@ let result = qa_chain.invoke(HashMap::from([
 |------|--------|------|
 | `chunk_size` | 200-500 | 每个 chunk 的最大字符数 |
 | `overlap` | 50-100 | 相邻 chunk 的重叠字符数 |
+
+### SemanticSplitter（语义分块）
+
+按语义相关性切分：先分句并嵌入，在相邻句向量相似度骤降处断块，相比字符级分割能更好保留语义完整性，提升检索质量。中英文分句（`。!?;` / `.!?\n`）。
+
+```rust
+use langchainrust::SemanticSplitter;
+use langchainrust::OpenAIEmbeddings;
+
+let splitter = SemanticSplitter::with_defaults(OpenAIEmbeddings::new(config));
+// 或自定义：SemanticSplitter::new(emb, 0.5, 1000)  // 阈值 0.5，单块最大 1000 字符
+
+let chunks = splitter.split_text(long_text).await;  // Vec<String>
+```
+
+**注意**：嵌入是异步操作，而 `TextSplitter` trait 是同步签名；为不破坏现有 trait，本分块器提供独立的异步接口 `split_text` / `split_document`，不实现同步 `TextSplitter`。
 
 ---
 
@@ -2101,6 +2178,25 @@ client.close().await?;
 
 ---
 
+### MCPServer（暴露本地工具）
+
+`MCPServer` 与 `MCPClient` 对称：把本地 `BaseTool` 暴露为 MCP Server，供 Claude Desktop / Cursor 等 host 调用。支持 `initialize` 握手、`tools/list`、`tools/call`。
+
+```rust
+use langchainrust::{MCPServer, Calculator, BaseTool};
+use std::sync::Arc;
+
+let tool: Arc<dyn BaseTool> = Arc::new(Calculator::new());
+let server = MCPServer::new()
+    .with_tool(tool)
+    .with_server_info("my-tools", "0.1.0");
+
+// 监听 stdio，供 host 连接（如 Claude Desktop 配置该命令）
+server.serve_stdio().await?;
+```
+
+也可用 `server.handle_request(req)` 单步处理 JSON-RPC 请求，自行管理 transport。
+
 ## Tools
 
 ### 内置工具
@@ -2437,6 +2533,96 @@ client.create_run(&run).await?;
 | **调试** | 对比不同版本输出 |
 | **评估** | 测试集评估、对比 |
 | **分享** | 分享追踪链接 |
+
+---
+
+### OtelHandler（OpenTelemetry）
+
+把 LLM / Chain / Tool / Retriever 的开始 / 结束 / 错误转为 OpenTelemetry span，接入 OTel 链路追踪。需开启 `opentelemetry` feature，并先配置全局 tracer provider。
+
+```toml
+[dependencies]
+langchainrust = { version = "0.4", features = ["opentelemetry"] }
+```
+
+```rust
+use langchainrust::{CallbackManager, OtelHandler};
+use std::sync::Arc;
+
+// 需先 opentelemetry::global::set_tracer_provider(...) 配置 OTLP exporter
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(OtelHandler::from_global("langchainrust")));
+// llm.with_callbacks(Arc::new(manager));
+```
+
+执行事件会生成嵌套 span，可对接 Jaeger / Tempo / Grafana 等后端。
+
+---
+
+## Evaluation 评估
+
+评估模块用于量化 LLM 输出质量：改了 prompt / 换了模型 / 接了 RAG，跑评测集看分数涨没涨。10 种评测器，分 5 类：
+
+| 类别 | 评测器 | 说明 |
+|------|--------|------|
+| 字面 | `ExactMatch` / `StringDistance` | 完全相等 / Levenshtein 编辑距离归一 |
+| 语义 | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | 向量余弦 / LLM 当裁判 / 成对二选一（交换 A/B 消位置偏差） |
+| 规则 | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | 关键词 / 正则 / 长度 |
+| 经典 NLP | `Bleu` | n-gram 精度（字符级分词 + 平滑） |
+| RAG | `Faithfulness` | 拆主张逐条验证，检测幻觉 |
+
+### EvalRunner（批量评测）
+
+`EvalRunner` 在 `Dataset` 上跑一组评测器，产出 `Report`（每条得分 + 各评测器均分）。
+
+```rust
+use langchainrust::evaluation::*;
+use async_trait::async_trait;
+
+// 1. 数据集：input + reference（参考答案）
+let dataset = Dataset::new(vec![
+    Example::new("2+2=?", "4"),
+    Example::new("中国首都?", "北京"),
+]);
+// 或从 jsonl 加载：Dataset::from_jsonl("eval.jsonl")?
+
+// 2. Predictor：被测对象（LLM / Chain / Agent），实现 predict
+struct MyLLM;
+#[async_trait]
+impl Predictor for MyLLM {
+    async fn predict(&self, input: &str) -> Result<String, EvalError> {
+        Ok("4".to_string()) // 实际调用你的 LLM
+    }
+}
+
+// 3. 评测器 + 运行
+let runner = EvalRunner::new(vec![
+    Box::new(ExactMatch),
+    Box::new(StringDistance),
+]);
+let report = runner.run(&dataset, &MyLLM).await?;
+println!("{:?}", report.summary);
+// {"ExactMatch": 1.0, "StringDistance": 1.0}
+```
+
+### Faithfulness（RAG 幻觉检测）
+
+`Faithfulness` 把预测拆成原子主张，逐条对照参考（上下文）验证，检测回答有没有编造。RAG 场景最实用。
+
+```rust
+use langchainrust::evaluation::{Faithfulness, Evaluator};
+use langchainrust::OpenAIChat;
+
+let judge = Faithfulness::new(OpenAIChat::new(config));
+// reference 是上下文：「年假 15 天」
+let ok = judge.eval("", "年假 15 天，可累积", "年假 15 天").await?;
+assert_eq!(ok.value, 1.0); // 忠实
+
+let halluc = judge.eval("", "年假 20 天", "年假 15 天").await?;
+assert_eq!(halluc.value, 0.0); // 编造，抓到
+```
+
+`with_llm_split(true)` 用 LLM 拆主张（默认按句号），`with_empty_score(x)` 设无主张时的得分。验证并发执行（`join_all`）。
 
 ---
 

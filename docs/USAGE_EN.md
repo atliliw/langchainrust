@@ -14,14 +14,17 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Ollama (Local LLM)
   - Google Gemini
   - Multimodal Vision
+  - OpenAI Assistants API
 - [Embeddings](#embeddings)
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
+  - LocalEmbeddings
 - [Prompts](#prompts)
   - FewShotPrompt + ExampleSelectors
 - [Output Parsers](#output-parsers)
 - [Memory](#memory)
+  - VectorStoreRetrieverMemory
 - [LLM Cache](#llm-cache)
 - [Chains](#chains)
   - ConversationRetrievalChain
@@ -34,6 +37,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Token Counter](#token-counter)
 - [Sessions](#sessions)
 - [MCP](#mcp)
+  - MCPServer
 - [Tools](#tools)
   - WikipediaTool
   - DuckDuckGoSearchTool
@@ -43,6 +47,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - ChromaDB
   - PGVectorStore
   - PineconeStore
+  - SemanticSplitter
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Document Loaders](#document-loaders)
@@ -51,6 +56,10 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [HyDE Retriever](#hyde-retriever)
 - [Reranking](#reranking)
 - [Callbacks](#callbacks)
+  - OtelHandler
+- [Evaluation](#evaluation)
+  - Evaluators (10 types)
+  - EvalRunner
 - [LangGraph](#langgraph)
 - [MongoDB Storage](#mongodb-storage)
 - [Redis / SQLite Storage](#redis--sqlite-storage)
@@ -283,6 +292,22 @@ println!("{}", resp.content);
 
 ---
 
+### OpenAI Assistants API
+
+`OpenAIAssistant` wraps the official OpenAI Assistants API (Assistants / Threads / Run) with server-side session state, suited for multi-turn complex tasks. Requires the OpenAI official endpoint; some compatible-mode endpoints may not support it.
+
+```rust
+use langchainrust::{OpenAIAssistant, OpenAIConfig};
+
+let config = OpenAIConfig::default();
+let assistant = OpenAIAssistant::create(&config, "gpt-4o", "You are a translator").await?;
+// or reuse: OpenAIAssistant::from_id(config, "asst_xxx")
+
+let answer = assistant.run_once("Translate: Hello").await?;
+```
+
+**Limitation**: Run with tool calls (`requires_action`) is not implemented; returns `AssistantError::RequiresAction`. Use `FunctionCallingAgent` for tool calls.
+
 ## Prompts
 
 ### PromptTemplate
@@ -497,6 +522,27 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 | SummaryBufferMemory | Hybrid | Dynamic + keep recent | Balanced (recommended) |
 
 ---
+
+### VectorStoreRetrieverMemory
+
+Embeds each turn into a vector store and recalls top-k relevant history by semantic similarity to the current input. Compared to fixed-window buffer memory, it preserves more useful context in long / cross-session conversations.
+
+```rust
+use langchainrust::{VectorStoreRetrieverMemory, MockEmbeddings, BaseMemory};
+use langchainrust::vector_stores::InMemoryVectorStore;
+use std::collections::HashMap;
+
+let mut memory = VectorStoreRetrieverMemory::new(
+    InMemoryVectorStore::new(),
+    MockEmbeddings::new(1536),
+    4,
+);
+
+memory.save_context(&inputs, &outputs).await?;
+let vars = memory.load_memory_variables(&HashMap::new()).await?;
+```
+
+**Trade-off**: semantic recall keeps key info in long chats; depends on a vector store + embedding model (extra cost).
 
 ## LLM Cache
 
@@ -910,6 +956,24 @@ client.close().await?;
 
 ---
 
+### MCPServer
+
+Symmetric to `MCPClient`: expose local `BaseTool`s as an MCP Server for Claude Desktop / Cursor hosts. Supports `initialize` / `tools/list` / `tools/call`.
+
+```rust
+use langchainrust::{MCPServer, Calculator, BaseTool};
+use std::sync::Arc;
+
+let tool: Arc<dyn BaseTool> = Arc::new(Calculator::new());
+let server = MCPServer::new()
+    .with_tool(tool)
+    .with_server_info("my-tools", "0.1.0");
+
+server.serve_stdio().await?;
+```
+
+`server.handle_request(req)` for single-step JSON-RPC handling with custom transport.
+
 ## Tools
 
 ### Built-in Tools
@@ -1098,6 +1162,19 @@ println!("Dimension: {}", vector.len());  // 128
 
 ---
 
+### LocalEmbeddings
+
+Lightweight local embeddings in pure Rust (word-frequency hash + L2 normalization), no API calls. For offline / privacy / zero-cost coarse retrieval.
+
+```rust
+use langchainrust::LocalEmbeddings;
+
+let emb = LocalEmbeddings::default_dim();
+let vec = emb.embed_query("hello world").await?;
+```
+
+**Limitation**: bag-of-words hash, limited semantic quality. Use `OpenAIEmbeddings` etc. for high-quality embeddings.
+
 ## RAG
 
 ### Document Splitting
@@ -1111,6 +1188,22 @@ let chunks = splitter.split_document(&Document::new(
     "Long text to split..."
 ))?;
 ```
+
+### SemanticSplitter
+
+Splits by semantic relevance: sentence-tokenize + embed, break where adjacent similarity drops sharply. Better semantic integrity than character-level splitting. Chinese/English sentence boundaries (`。!?;` / `.!?\n`).
+
+```rust
+use langchainrust::SemanticSplitter;
+use langchainrust::OpenAIEmbeddings;
+
+let splitter = SemanticSplitter::with_defaults(OpenAIEmbeddings::new(config));
+// or: SemanticSplitter::new(emb, 0.5, 1000)
+
+let chunks = splitter.split_text(long_text).await;  // Vec<String>
+```
+
+**Note**: embedding is async while `TextSplitter` is sync; to avoid breaking the sync trait, this splitter exposes async `split_text` / `split_document` and does not implement sync `TextSplitter`.
 
 ### Vector Store
 
@@ -1658,6 +1751,93 @@ let handler = LangSmithHandler::new(config);
 | **Debugging** | Compare different version outputs |
 | **Evaluation** | Test set evaluation |
 | **Sharing** | Share trace links |
+
+---
+
+### OtelHandler
+
+Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTelemetry spans. Requires the `opentelemetry` feature and a configured global tracer provider.
+
+```toml
+[dependencies]
+langchainrust = { version = "0.4", features = ["opentelemetry"] }
+```
+
+```rust
+use langchainrust::{CallbackManager, OtelHandler};
+use std::sync::Arc;
+
+// set tracer provider first: opentelemetry::global::set_tracer_provider(...)
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(OtelHandler::from_global("langchainrust")));
+// llm.with_callbacks(Arc::new(manager));
+```
+
+Nested spans; export to Jaeger / Tempo / Grafana.
+
+---
+
+## Evaluation
+
+Quantify LLM output quality: after changing prompts / models / adding RAG, run an eval set and see if scores improved. 10 evaluators in 5 categories:
+
+| Category | Evaluators | Description |
+|----------|-----------|-------------|
+| Literal | `ExactMatch` / `StringDistance` | exact equal / Levenshtein distance normalized |
+| Semantic | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | cosine / LLM judge / pairwise (swap A/B to remove position bias) |
+| Rule | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | keyword / regex / length |
+| Classic NLP | `Bleu` | n-gram precision (char-level + smoothing) |
+| RAG | `Faithfulness` | split claims, verify each, detect hallucination |
+
+### EvalRunner
+
+Run a set of evaluators over a `Dataset`, produce a `Report` (per-example scores + per-evaluator averages).
+
+```rust
+use langchainrust::evaluation::*;
+use async_trait::async_trait;
+
+let dataset = Dataset::new(vec![
+    Example::new("2+2=?", "4"),
+    Example::new("capital of China?", "Beijing"),
+]);
+// or: Dataset::from_jsonl("eval.jsonl")?
+
+struct MyLLM;
+#[async_trait]
+impl Predictor for MyLLM {
+    async fn predict(&self, input: &str) -> Result<String, EvalError> {
+        Ok("4".to_string())
+    }
+}
+
+let runner = EvalRunner::new(vec![
+    Box::new(ExactMatch),
+    Box::new(StringDistance),
+]);
+let report = runner.run(&dataset, &MyLLM).await?;
+println!("{:?}", report.summary);
+// {"ExactMatch": 1.0, "StringDistance": 1.0}
+```
+
+### Faithfulness
+
+Splits the prediction into atomic claims and verifies each against the reference (context), detecting fabrication. Most useful for RAG.
+
+```rust
+use langchainrust::evaluation::{Faithfulness, Evaluator};
+use langchainrust::OpenAIChat;
+
+let judge = Faithfulness::new(OpenAIChat::new(config));
+// reference is context: "annual leave 15 days"
+let ok = judge.eval("", "annual leave 15 days, accruable", "annual leave 15 days").await?;
+assert_eq!(ok.value, 1.0); // faithful
+
+let halluc = judge.eval("", "annual leave 20 days", "annual leave 15 days").await?;
+assert_eq!(halluc.value, 0.0); // fabricated, caught
+```
+
+`with_llm_split(true)` uses LLM to split claims (default: by period); `with_empty_score(x)` sets the score when no claims. Verification runs concurrently (`join_all`).
 
 ---
 

@@ -15,14 +15,14 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Component | Description |
 |-----------|-------------|
-| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + 多模态 Vision |
-| **Embeddings** | OpenAI / DeepSeek / Qwen embeddings |
+| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + 多模态 Vision + Assistants API |
+| **Embeddings** | OpenAI / DeepSeek / Qwen / Local(离线)embeddings |
 | **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs 多 Agent 交接 / Streaming Function Calling |
-| **MCP** | Model Context Protocol Client(Stdio + SSE),MCP 工具适配为 BaseTool |
-| **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent |
+| **MCP** | Model Context Protocol Client + Server(Stdio + SSE),MCP 工具适配为 BaseTool |
+| **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore(语义检索) |
 | **Sessions** | 多轮会话生命周期管理,可插拔存储(SessionManager + SessionStore) |
 | **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce |
-| **RAG** | Document splitting, vector store, semantic retrieval, MultiQuery, HyDE, Reranking |
+| **RAG** | Document splitting(含 SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
 | **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion, Unified index |
 | **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph, Parallel, Checkpointer |
@@ -34,7 +34,8 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Document Loaders** | Text / JSON / Markdown / PDF / CSV / HTML |
 | **Cache** | LLMCache with TTL support |
 | **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
-| **Callbacks** | StdOut / LangSmith / FileHandler |
+| **Callbacks** | StdOut / LangSmith / FileHandler / OpenTelemetry |
+| **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness |
 
 Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [English](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)
 
@@ -51,11 +52,13 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── DeepSeek / Moonshot / Zhipu / Qwen (OpenAI compatible) │
 │  ├── AnthropicChat (Claude API) / GeminiChat                 │
 │  ├── Function Calling (bind_tools) / Streaming (stream_chat)│
-│  └── 多模态 Vision (ImageContent + human_with_image)        │
+│  ├── 多模态 Vision (ImageContent + human_with_image)        │
+│  └── OpenAI Assistants API (服务端会话状态)                 │
 ├─────────────────────────────────────────────────────────────┤
 │  Embeddings Layer                                            │
 │  ├── OpenAIEmbeddings / DeepSeekEmbeddings                   │
-│  └── QwenEmbeddings / MockEmbeddings                         │
+│  ├── QwenEmbeddings / MockEmbeddings                         │
+│  └── LocalEmbeddings (离线 hash, 无外部依赖)                │
 ├─────────────────────────────────────────────────────────────┤
 │  Agent Layer                                                 │
 │  ├── ReActAgent / FunctionCallingAgent                      │
@@ -66,10 +69,11 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  └── LangGraph (StateGraph, Subgraph, Parallel)             │
 ├─────────────────────────────────────────────────────────────┤
 │  MCP Layer                                                   │
-│  └── MCPClient (Stdio + SSE) -> MCPToolAdapter -> BaseTool   │
+│  ├── MCPClient (Stdio + SSE) -> MCPToolAdapter -> BaseTool   │
+│  └── MCPServer (暴露 BaseTool 给 host 调用)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  Retrieval Layer                                             │
-│  ├── RAG (TextSplitter, VectorStore)                        │
+│  ├── RAG (TextSplitter, SemanticSplitter, VectorStore)      │
 │  ├── BM25 (Keyword Search, AutoMerging)                     │
 │  ├── Hybrid (BM25 + Vector, RRF Fusion)                     │
 │  ├── HyDE / MultiQuery / Reranking                          │
@@ -81,16 +85,29 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  └── Sessions (SessionManager + SessionStore)               │
 ├─────────────────────────────────────────────────────────────┤
 │  Utility Layer                                               │
-│  ├── Memory (Buffer, Window, Summary, SummaryBuffer)        │
+│  ├── Memory (Buffer, Window, Summary, SummaryBuffer, Vector)│
 │  ├── Chains (LLMChain, SequentialChain, RetrievalQA, ...)   │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate, FewShot)  │
 │  ├── Tools (Calculator, DateTime, URLFetch, HTTP/File/SQL)  │
 │  ├── Output Parsers                                         │
 │  ├── Token Counter (Tiktoken + Cost Tracking)               │
 │  ├── LLM Cache                                              │
-│  └── Callbacks (LangSmith, StdOut, FileHandler)             │
+│  ├── Evaluation (10 种评测器, 含 Faithfulness)             │
+│  └── Callbacks (LangSmith, StdOut, FileHandler, Otel)       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## What's New in 0.4.0
+
+- **Evaluation 评估模块**: 10 种评测器(字面 / 语义 / 规则 / 经典 NLP / RAG),`EvalRunner` 跑评测集出报告,`Faithfulness` 检测 RAG 幻觉
+- **MCP Server**: `MCPServer` 把本地工具暴露为 MCP Server,供 Claude Desktop / Cursor 调用
+- **向量检索记忆**: `VectorStoreRetrieverMemory` 按当前输入语义召回历史
+- **OpenAI Assistants API**: `OpenAIAssistant` 服务端会话状态(Assistants / Threads / Run)
+- **语义分块**: `SemanticSplitter` 相邻句相似度骤降处断块
+- **本地嵌入**: `LocalEmbeddings` 离线,纯 Rust 无外部依赖
+- **OpenTelemetry 追踪**: `OtelHandler` 执行事件转 OTel span(feature `opentelemetry`)
 
 ---
 
