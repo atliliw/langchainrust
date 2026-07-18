@@ -5,11 +5,13 @@ mod openai;
 mod mock;
 mod deepseek;
 mod qwen;
+mod local;
 
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use mock::MockEmbeddings;
 pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
+pub use local::LocalEmbeddings;
 
 use async_trait::async_trait;
 use std::error::Error;

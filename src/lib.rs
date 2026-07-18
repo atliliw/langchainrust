@@ -59,12 +59,14 @@ pub mod langgraph;
 
 /// MCP: Model Context Protocol client.
 pub mod mcp;
+pub use mcp::MCPServer;
 
 /// Sessions: conversation lifecycle management.
 pub mod sessions;
 
 /// Guardrails: input/output safety validation.
 pub mod guardrails;
+pub mod evaluation;
 
 // 重新导出常用类型
 pub use core::{
@@ -78,10 +80,16 @@ pub use guardrails::{
     ForbiddenWordsGuardrail, GuardedAgent, GuardrailError, GuardrailRunner, GuardrailsConfig,
     InputGuardrail, MaxLengthGuardrail, OutputGuardrail, SensitiveInfoGuardrail,
 };
+pub use evaluation::{
+    EvalError, Score, Example, Dataset, Evaluator, Predictor, EvalRunner, Report,
+    ExactMatch, StringDistance, EmbeddingSimilarity, LLMAsJudge,
+    Bleu, ContainsKeyword, LengthCheck, RegexMatch,
+    Faithfulness, PairwiseJudge, Verdict,
+};
 pub use core::tools::StructuredOutput;
 pub use schema::{ImageContent, Message, MessageType};
 pub use language_models::{
-    OpenAIChat, OpenAIConfig, 
+    OpenAIChat, OpenAIConfig, OpenAIAssistant, AssistantError,
     OllamaChat, OllamaConfig,
     DeepSeekChat, DeepSeekConfig,
     MoonshotChat, MoonshotConfig,
@@ -93,7 +101,7 @@ pub use language_models::{
 pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput, WikipediaTool, WikipediaInput, PythonREPLTool, PythonREPLInput, DuckDuckGoSearchTool, SearchInput, HTTPTool, FileTool};
 pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent, FunctionCallingAgent, PlanExecuteAgent, HandoffManager, StreamingFunctionCallingAgent};
 pub use core::tools::to_tool_definition;
-pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData};
+pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData, VectorStoreRetrieverMemory};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use memory::MongoPersistentMemory;
@@ -104,6 +112,7 @@ pub use embeddings::{
     Embeddings, EmbeddingError, 
     OpenAIEmbeddings, OpenAIEmbeddingsConfig, 
     MockEmbeddings, 
+    LocalEmbeddings,
     DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
     QwenEmbeddings, QwenEmbeddingsConfig,
     cosine_similarity,
@@ -131,7 +140,7 @@ pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
-pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, DocumentLoader, LoaderError};
+pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, SemanticSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, DocumentLoader, LoaderError};
 pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
 pub use retrieval::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion, ChunkedHybridRetriever};
 pub use retrieval::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
@@ -144,6 +153,8 @@ pub use prompts::{PromptTemplate, ChatPromptTemplate, FewShotPromptTemplate, Exa
 
 // Callbacks
 pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler, FileCallbackHandler, LogFormat};
+#[cfg(feature = "opentelemetry")]
+pub use callbacks::OtelHandler;
 
 // Output Parsers
 pub use core::output_parsers::{

@@ -25,9 +25,11 @@ pub mod types;
 pub mod transport;
 pub mod client;
 pub mod tool_adapter;
+pub mod server;
 
 pub use protocol::{MCPError, MCPRequest, MCPResponse, MCP_VERSION};
 pub use types::{MCPConfig, MCPContent, MCPToolDefinition, MCPToolResult};
 pub use transport::{MCPTransport, SseTransport, StdioTransport};
 pub use client::MCPClient;
 pub use tool_adapter::MCPToolAdapter;
+pub use server::MCPServer;

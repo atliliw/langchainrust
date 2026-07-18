@@ -38,3 +38,5 @@ pub use run_tree::{RunCreate, RunTree, RunUpdate};
 pub use base::{CallbackHandler, CallbackManager};
 pub use langsmith_client::{LangSmithClient, LangSmithConfig, LangSmithError};
 pub use handlers::{LangSmithHandler, StdOutHandler, FileCallbackHandler, LogFormat};
+#[cfg(feature = "opentelemetry")]
+pub use handlers::OtelHandler;

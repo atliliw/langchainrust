@@ -17,7 +17,7 @@ pub mod ollama;
 /// Third-party provider integrations.
 pub mod providers;
 
-pub use openai::{OpenAIChat, OpenAIConfig};
+pub use openai::{OpenAIChat, OpenAIConfig, OpenAIAssistant, AssistantError};
 pub use ollama::{OllamaChat, OllamaConfig};
 pub use providers::{
     DeepSeekChat, DeepSeekConfig,

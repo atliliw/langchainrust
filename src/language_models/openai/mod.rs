@@ -3,8 +3,10 @@
 mod config;
 mod chat;
 pub mod sse;
+pub mod assistants;
 
 pub use config::OpenAIConfig;
 pub use chat::OpenAIChat;
 pub use chat::OpenAIError;
 pub use sse::{SSEParser, SSEEvent};
+pub use assistants::{OpenAIAssistant, AssistantError};

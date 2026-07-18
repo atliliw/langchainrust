@@ -54,6 +54,7 @@ pub mod window;
 pub mod summary;
 pub mod summary_buffer;
 pub mod persistent;
+pub mod vectorstore_memory;
 
 #[cfg(feature = "mongodb-persistence")]
 pub mod mongo_memory;
@@ -64,6 +65,7 @@ pub use window::ConversationBufferWindowMemory;
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;
 pub use persistent::{PersistentMemory, PersistenceConfig, MemoryData};
+pub use vectorstore_memory::VectorStoreRetrieverMemory;
 
 #[cfg(feature = "mongodb-persistence")]
 pub use mongo_memory::MongoPersistentMemory;
