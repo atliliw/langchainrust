@@ -23,10 +23,12 @@
   - ConversationSummaryMemory
   - ConversationSummaryBufferMemory
   - VectorStoreRetrieverMemory（向量检索）
+  - ContextWindow（长上下文管理）✨ v0.4.1
   - Memory 类型对比
 - [Chains](#chains)
   - SequentialChain（带 memory 注入）
   - ConversationRetrievalChain（对话检索）
+  - Chain 流式输出 ✨ v0.4.1
 - [Agent](#agent)
   - FunctionCallingAgent（推荐）
   - ReActAgent（兼容旧模型）
@@ -72,6 +74,9 @@
   - JSONLoader
   - MarkdownLoader
   - HTMLLoader
+  - DocxLoader ✨ v0.4.1
+  - WebScraperLoader ✨ v0.4.1
+  - SitemapLoader ✨ v0.4.1
 - [MultiQueryRetriever](#multiqueryretriever)
   - 多查询检索原理
   - StaticQueryGenerator
@@ -120,6 +125,12 @@
   - Parallel 并行执行
   - Checkpointer 持久化
   - 可视化输出
+- [A2A Agent 协议](#a2a-agent-协议) ✨ v0.4.1
+  - A2AServer（暴露 agent）
+  - A2AClient（调用远程 agent）
+- [with_structured_output](#with_structured_output) ✨ v0.4.1
+- [FileVectorStore](#filevectorstore) ✨ v0.4.1
+- [ComputerUseTool](#computerusetool) ✨ v0.4.1
 - [测试](#测试)
 - [模块结构](#模块结构)
 - [最佳实践](#最佳实践)
@@ -493,6 +504,23 @@ let answer = assistant.run_once("请翻译：Hello").await?;
 
 **限制**：Run 遇到工具调用（`requires_action`）当前未实现调度，返回 `AssistantError::RequiresAction`；需要工具调用请用 `FunctionCallingAgent`。
 
+> ✨ **v0.4.1 更新**：Assistants API 已完整支持 `requires_action` 工具调度。遇到 `requires_action` 状态时，自动解析 `tool_calls` → 经 `ToolRegistry` 执行 → `submit_tool_outputs` → 继续轮询至 `completed`。可搭配任意 `BaseTool` 使用。
+
+```rust
+use langchainrust::{OpenAIAssistant, OpenAIConfig, ToolRegistry, Calculator, BaseTool};
+use std::sync::Arc;
+
+let config = OpenAIConfig::default();
+let mut assistant = OpenAIAssistant::create(&config, "gpt-4o", "你是一个计算助手").await?;
+
+// 注册工具，requires_action 时自动调度
+let mut registry = ToolRegistry::new();
+registry.register(Arc::new(Calculator::new()));
+assistant.with_tool_registry(registry);
+
+let answer = assistant.run_once("计算 37 + 48").await?;
+```
+
 ## Prompts
 
 ### PromptTemplate（字符串模板）
@@ -782,6 +810,36 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 **特点**：语义召回，长对话不丢关键信息；依赖向量库与 embedding 模型，有额外开销。
 
+### ContextWindow（长上下文管理）✨ v0.4.1
+
+`ContextWindow` 管理超长对话的 token 预算，提供两种策略：截断(Truncate)和摘要(Summarize)。
+
+```rust
+use langchainrust::{ContextWindow, Message, OpenAIChat, Strategy};
+use langchainrust::BaseChatModel;
+
+// 策略1：截断 — 超 token 预算时丢弃最旧消息
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+// 等价于 ContextWindow::new(4096).with_strategy(Strategy::Truncate)
+
+// 策略2：摘要 — 超 token 预算时用 LLM 摘要压缩旧对话
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)
+    .with_strategy(Strategy::Summarize)
+    .with_llm(OpenAIChat::new(config));
+
+// 添加消息，自动管理上下文窗口
+cw.add_message(Message::human("你好")).await;
+cw.add_message(Message::ai("你好！有什么可以帮你的？")).await;
+
+// 获取窗口内的消息（已截断/已摘要）
+let messages = cw.get_messages().await;
+```
+
+| 策略 | 行为 | 适用场景 |
+|------|------|----------|
+| `Truncate` | 超 token 预算直接丢弃最旧消息 | 简单场景、不需要保留旧信息 |
+| `Summarize` | 超 token 预算用 LLM 压缩旧对话为摘要 | 长对话、需保留关键信息 |
+
 ## Chains
 
 ### SequentialChain（带 memory 注入）
@@ -829,6 +887,27 @@ println!("回答: {}", result);
 | `with_memory_key(str)` | 记忆键名（默认 history） |
 | `with_return_source_documents(bool)` | 是否返回来源文档 |
 | `with_verbose(bool)` | 是否打印执行日志 |
+
+### Chain 流式输出 ✨ v0.4.1
+
+`BaseChain::stream()` 提供逐 token 流式输出，`LLMChain` 和 `ConversationChain` 均已覆写。
+
+```rust
+use langchainrust::{LLMChain, BaseChain};
+use futures_util::StreamExt;
+
+let chain = LLMChain::new(llm, "你是一个有帮助的助手");
+let mut stream = chain.stream(inputs).await?;
+
+while let Some(token) = stream.next().await {
+    match token {
+        Ok(t) => print!("{}", t),  // 逐 token 输出（打字机效果）
+        Err(e) => eprintln!("流式错误: {}", e),
+    }
+}
+```
+
+**特点**：与 `Runnable::stream()` 不同，Chain 流式会触发 `on_llm_new_token` 回调，可在 CallbackHandler 中监听。
 
 ---
 
@@ -1686,6 +1765,48 @@ let docs = loader.load().await?;
 // 纯函数：直接提取文本
 let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
 // -> "a & b"
+```
+
+### DocxLoader ✨ v0.4.1
+
+解析 Word `.docx` 文件：ZIP 解压 + XML 提取 `<w:t>` 文本节点。
+
+```rust
+use langchainrust::retrieval::loaders::DocxLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = DocxLoader::new("document.docx");
+let docs = loader.load().await?;
+for doc in docs {
+    println!("{}", doc.content);
+}
+```
+
+### WebScraperLoader ✨ v0.4.1
+
+网页爬取：提取页面文本，可递归跟踪同域链接。
+
+```rust
+use langchainrust::retrieval::loaders::WebScraperLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = WebScraperLoader::new("https://example.com")
+    .with_max_depth(2)       // 递归深度
+    .with_max_pages(10);     // 最大页面数
+let docs = loader.load().await?;
+```
+
+### SitemapLoader ✨ v0.4.1
+
+解析 `sitemap.xml`，批量爬取页面。
+
+```rust
+use langchainrust::retrieval::loaders::SitemapLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = SitemapLoader::new("https://example.com/sitemap.xml")
+    .with_max_pages(50);     // 最大页面数
+let docs = loader.load().await?;
 ```
 
 ---
@@ -3418,7 +3539,133 @@ let api_key = "sk-xxxxxxxx";  // ❌ 禁止硬编码
 
 ---
 
+## A2A Agent 协议 ✨ v0.4.1
+
+[A2A](https://github.com/google/A2A)（Agent-to-Agent）是 Google 提出的 Agent 间互调协议。LangChainRust 实现了完整的 A2A 支持：Server 暴露 agent、Client 调远程 agent，JSON-RPC 2.0 风格通信。
+
+### A2AServer（暴露 agent）
+
+`A2AServer` 不启动自己的 HTTP 服务器，而是提供 handler 函数，让你插入任意 HTTP 框架。
+
+```rust
+use langchainrust::a2a::{A2AServer, AgentCard};
+use langchainrust::LLMChain;
+use std::sync::Arc;
+
+let chain = Arc::new(LLMChain::new(llm, "You are a helpful assistant"));
+let server = A2AServer::new(chain)
+    .with_card(AgentCard::new("my-agent", "A helpful agent", "http://localhost:8080"));
+
+// 在 axum/actix 路由里调用:
+// GET  /.well-known/agent.json → server.get_agent_card()
+// POST /                       → server.handle_a2a_request(body).await
+```
+
+**Task Persistence**: `tasks/send` 创建的任务存入内存 `RwLock<HashMap>`，`tasks/get` 可查询，`tasks/cancel` 可状态转换。生产环境可替换为数据库后端。
+
+### A2AClient（调用远程 agent）
+
+```rust
+use langchainrust::a2a::{A2AClient, A2AMessage};
+
+let client = A2AClient::new("http://remote-agent:8080".to_string());
+
+// 发现 agent
+let card = client.get_agent_card().await?;
+println!("Agent: {}", card.name);
+
+// 发送任务
+let task = client.send_task(A2AMessage::user("hello")).await?;
+println!("Task ID: {}, Status: {}", task.id, task.status);
+
+// 查询任务
+let task = client.get_task(&task.id).await?;
+
+// 取消任务
+let task = client.cancel_task(&task.id).await?;
+```
+
+---
+
+## with_structured_output ✨ v0.4.1
+
+`StructuredOutputExt` trait 让 LLM 一行输出强类型结构，按 provider 能力走 function calling 或 JsonOutputParser 降级。
+
+```rust
+use langchainrust::StructuredOutputExt;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(JsonSchema, Deserialize)]
+struct Answer {
+    city: String,
+    population: u64,
+}
+
+let llm = OpenAIChat::new(config);
+let answer: Answer = llm.with_structured_output::<Answer>().await?;
+// answer.city = "北京", answer.population = 21540000
+```
+
+**降级策略**：若 provider 不支持原生 structured output，自动降级为 JsonOutputParser + JSON mode。
+
+---
+
+## FileVectorStore ✨ v0.4.1
+
+JSON 持久化向量存储，填补 InMemory（不持久）与外部数据库（太重）之间的空缺。
+
+```rust
+use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
+use std::path::PathBuf;
+
+let path = PathBuf::from("./vectors.json");
+let store = FileVectorStore::new(path, 4)?;  // 4 维
+
+// 添加文档
+let docs = vec![
+    Document::new("Rust 注重安全和性能").with_id("rust"),
+    Document::new("Python 适合快速开发").with_id("python"),
+];
+let embeddings = vec![
+    vec![1.0, 0.0, 0.0, 0.0],
+    vec![0.0, 1.0, 0.0, 0.0],
+];
+let ids = store.add_documents(docs, embeddings).await?;
+
+// 语义搜索
+let query = vec![0.9, 0.1, 0.0, 0.0];
+let results = store.similarity_search(&query, 2).await?;
+
+// 持久化：文件已自动写入磁盘，重启后 new(path, dim) 即加载
+store.clear().await?;
+```
+
+**特性**：原子写入(tmp+rename)、维度校验、跨实例持久化。
+
+---
+
+## ComputerUseTool ✨ v0.4.1
+
+对标 Anthropic computer use，提供截图、鼠标点击、键盘输入能力。
+
+```rust
+use langchainrust::ComputerUseTool;
+use std::sync::Arc;
+
+// Anthropic API 模式（默认）
+let tool = ComputerUseTool::new();
+
+// 或 Native 模式（需 feature computer-use-native）
+// let tool = ComputerUseTool::new_native();
+
+// 作为 BaseTool 使用
+let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
+```
+
+---
+
 ## 版本信息
 
-LangChainRust v0.3.0 | MIT License
+LangChainRust v0.4.1 | MIT License
 

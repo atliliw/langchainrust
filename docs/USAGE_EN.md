@@ -25,9 +25,11 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Output Parsers](#output-parsers)
 - [Memory](#memory)
   - VectorStoreRetrieverMemory
+  - ContextWindow (Long Context Management) ✨ v0.4.1
 - [LLM Cache](#llm-cache)
 - [Chains](#chains)
   - ConversationRetrievalChain
+  - Chain Streaming ✨ v0.4.1
 - [Document Chains](#document-chains)
 - [Agents](#agents)
 - [Plan-Execute Agent](#plan-execute-agent)
@@ -52,6 +54,9 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Document Loaders](#document-loaders)
   - HTMLLoader
+  - DocxLoader ✨ v0.4.1
+  - WebScraperLoader ✨ v0.4.1
+  - SitemapLoader ✨ v0.4.1
 - [MultiQueryRetriever](#multiqueryretriever)
 - [HyDE Retriever](#hyde-retriever)
 - [Reranking](#reranking)
@@ -61,6 +66,10 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Evaluators (10 types)
   - EvalRunner
 - [LangGraph](#langgraph)
+- [A2A Agent Protocol](#a2a-agent-protocol) ✨ v0.4.1
+- [with_structured_output](#with_structured_output) ✨ v0.4.1
+- [FileVectorStore](#filevectorstore) ✨ v0.4.1
+- [ComputerUseTool](#computerusetool) ✨ v0.4.1
 - [MongoDB Storage](#mongodb-storage)
 - [Redis / SQLite Storage](#redis--sqlite-storage)
 
@@ -544,6 +553,33 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 **Trade-off**: semantic recall keeps key info in long chats; depends on a vector store + embedding model (extra cost).
 
+### ContextWindow (Long Context Management) ✨ v0.4.1
+
+`ContextWindow` manages token budget for long conversations with two strategies: Truncate and Summarize.
+
+```rust
+use langchainrust::{ContextWindow, Message, OpenAIChat, Strategy};
+use langchainrust::BaseChatModel;
+
+// Strategy 1: Truncate — discard oldest messages when over token budget
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+
+// Strategy 2: Summarize — use LLM to compress old conversation when over budget
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)
+    .with_strategy(Strategy::Summarize)
+    .with_llm(OpenAIChat::new(config));
+
+cw.add_message(Message::human("hello")).await;
+cw.add_message(Message::ai("Hi! How can I help?")).await;
+
+let messages = cw.get_messages().await;
+```
+
+| Strategy | Behavior | Use Case |
+|----------|----------|----------|
+| `Truncate` | Discard oldest messages over budget | Simple scenarios |
+| `Summarize` | LLM compresses old conversation into summary | Long conversations needing key info |
+
 ## LLM Cache
 
 ### In-Memory Cache with TTL
@@ -699,6 +735,27 @@ let map_chain = Arc::new(LLMChain::new(llm, "{text}\nScore (0-10):"));
 
 let chain = MapRerankDocumentsChain::new(map_chain);
 let (best_doc, score) = chain.invoke(documents).await?;
+```
+
+---
+
+### Chain Streaming ✨ v0.4.1
+
+`BaseChain::stream()` provides token-by-token streaming output. `LLMChain` and `ConversationChain` have overridden implementations.
+
+```rust
+use langchainrust::{LLMChain, BaseChain};
+use futures_util::StreamExt;
+
+let chain = LLMChain::new(llm, "You are a helpful assistant");
+let mut stream = chain.stream(inputs).await?;
+
+while let Some(token) = stream.next().await {
+    match token {
+        Ok(t) => print!("{}", t),
+        Err(e) => eprintln!("Stream error: {}", e),
+    }
+}
 ```
 
 ---
@@ -1542,6 +1599,45 @@ let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
 // -> "a & b"
 ```
 
+### DocxLoader ✨ v0.4.1
+
+Parse Word `.docx` files: ZIP extraction + XML `<w:t>` text node parsing.
+
+```rust
+use langchainrust::retrieval::loaders::DocxLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = DocxLoader::new("document.docx");
+let docs = loader.load().await?;
+```
+
+### WebScraperLoader ✨ v0.4.1
+
+Web page scraping: extract page text, with recursive same-domain link following.
+
+```rust
+use langchainrust::retrieval::loaders::WebScraperLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = WebScraperLoader::new("https://example.com")
+    .with_max_depth(2)
+    .with_max_pages(10);
+let docs = loader.load().await?;
+```
+
+### SitemapLoader ✨ v0.4.1
+
+Parse `sitemap.xml` and batch-crawl pages.
+
+```rust
+use langchainrust::retrieval::loaders::SitemapLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = SitemapLoader::new("https://example.com/sitemap.xml")
+    .with_max_pages(50);
+let docs = loader.load().await?;
+```
+
 ---
 
 ## MultiQueryRetriever
@@ -1922,6 +2018,125 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```bash
 cargo test
+```
+
+---
+
+## A2A Agent Protocol ✨ v0.4.1
+
+[A2A](https://github.com/google/A2A) (Agent-to-Agent) is Google's protocol for inter-agent communication. LangChainRust provides full A2A support: Server to expose agents, Client to call remote agents, using JSON-RPC 2.0 style messaging.
+
+### A2AServer (Expose Your Agent)
+
+`A2AServer` provides handler functions that you plug into any HTTP framework (axum, actix, warp) — it does NOT start its own HTTP listener.
+
+```rust
+use langchainrust::a2a::{A2AServer, AgentCard};
+use langchainrust::LLMChain;
+use std::sync::Arc;
+
+let chain = Arc::new(LLMChain::new(llm, "You are a helpful assistant"));
+let server = A2AServer::new(chain)
+    .with_card(AgentCard::new("my-agent", "A helpful agent", "http://localhost:8080"));
+
+// In your HTTP handler:
+// GET  /.well-known/agent.json → server.get_agent_card()
+// POST /                       → server.handle_a2a_request(body).await
+```
+
+**Task Persistence**: Tasks from `tasks/send` are stored in an in-memory `RwLock<HashMap>`. `tasks/get` retrieves them, `tasks/cancel` transitions their status. For production, wrap with your own database-backed store.
+
+### A2AClient (Call Remote Agent)
+
+```rust
+use langchainrust::a2a::{A2AClient, A2AMessage};
+
+let client = A2AClient::new("http://remote-agent:8080".to_string());
+
+// Discover agent
+let card = client.get_agent_card().await?;
+
+// Send task
+let task = client.send_task(A2AMessage::user("hello")).await?;
+
+// Get task
+let task = client.get_task(&task.id).await?;
+
+// Cancel task
+let task = client.cancel_task(&task.id).await?;
+```
+
+---
+
+## with_structured_output ✨ v0.4.1
+
+`StructuredOutputExt` trait lets you get strongly-typed output from an LLM in one call. Uses function calling when available, falls back to JsonOutputParser.
+
+```rust
+use langchainrust::StructuredOutputExt;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(JsonSchema, Deserialize)]
+struct Answer {
+    city: String,
+    population: u64,
+}
+
+let llm = OpenAIChat::new(config);
+let answer: Answer = llm.with_structured_output::<Answer>().await?;
+```
+
+---
+
+## FileVectorStore ✨ v0.4.1
+
+JSON-persisted vector store. Bridges the gap between InMemory (not persistent) and external databases (too heavy).
+
+```rust
+use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
+use std::path::PathBuf;
+
+let path = PathBuf::from("./vectors.json");
+let store = FileVectorStore::new(path, 4)?;  // 4 dimensions
+
+let docs = vec![
+    Document::new("Rust focuses on safety and performance").with_id("rust"),
+    Document::new("Python is great for rapid development").with_id("python"),
+];
+let embeddings = vec![
+    vec![1.0, 0.0, 0.0, 0.0],
+    vec![0.0, 1.0, 0.0, 0.0],
+];
+let ids = store.add_documents(docs, embeddings).await?;
+
+let query = vec![0.9, 0.1, 0.0, 0.0];
+let results = store.similarity_search(&query, 2).await?;
+
+// Persistence: file is automatically written; load with new(path, dim) on restart
+store.clear().await?;
+```
+
+**Features**: Atomic write (tmp+rename), dimension validation, cross-instance persistence.
+
+---
+
+## ComputerUseTool ✨ v0.4.1
+
+Computer use tool aligned with Anthropic's computer use API. Provides screenshot, mouse click, and keyboard input capabilities.
+
+```rust
+use langchainrust::ComputerUseTool;
+use std::sync::Arc;
+
+// Anthropic API mode (default)
+let tool = ComputerUseTool::new();
+
+// Or Native mode (requires feature computer-use-native)
+// let tool = ComputerUseTool::new_native();
+
+// Use as BaseTool
+let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 ```
 
 ---

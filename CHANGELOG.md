@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-20
+
+### Added
+- **Assistants requires_action 工具调度**: `OpenAIAssistant` 轮询遇 `requires_action` → 解析 `tool_calls` → 经 `ToolRegistry` 执行 → `submit_tool_outputs` → 继续轮询至 `completed`/`failed`/`cancelled`
+- **A2A Agent 协议**: 新增 `src/a2a/` 模块
+  - `AgentCard` / `A2ATask` / `A2AMessage` / `TaskStatus` / `A2ARequest` / `A2AResponse` / `A2AErrorData` 协议类型
+  - `A2AServer`: handler 函数(`tasks/send`/`tasks/get`/`tasks/cancel`),可插入任意 HTTP 框架(axum/actix/warp),含 `RwLock<HashMap>` 内存 task persistence
+  - `A2AClient`: reqwest HTTP 客户端,`get_agent_card()`/`send_task()`/`get_task()`/`cancel_task()`
+- **with_structured_output**: `StructuredOutputExt` trait + 独立函数,按 provider 走 function calling 或 `JsonOutputParser` 降级,11 个测试
+- **Chain 流式**: `BaseChain::stream()` 默认实现 + `LLMChain`/`ConversationChain` 覆写,逐 token 回调 `on_llm_new_token`
+- **ContextWindow 长上下文管理**: `ContextWindow<M: BaseChatModel>`,两种策略:
+  - `Strategy::Truncate`: 按 token 数截断旧消息
+  - `Strategy::Summarize`: 超限时用 LLM 摘要压缩旧对话
+  - `TiktokenCounter` 集成,18 个测试
+- **FileVectorStore**: JSON 持久化向量存储,原子写入(tmp+rename),跨实例持久化,维度校验,`VectorStore` trait 完整实现
+- **ComputerUseTool**: Anthropic computer use API 接入 + Native 截图/键盘/鼠标(feature gate `computer-use-native`)
+- **DocxLoader**: ZIP 解压 + XML 解析 `<w:t>` 文本节点
+- **WebScraperLoader**: 网页爬取,递归链接跟踪,同域过滤,可配最大深度/页面数
+- **SitemapLoader**: 解析 sitemap.xml,批量爬取页面
+- **LocalEmbeddings ort**: ONNX Runtime 神经网络嵌入(feature gate `local-embeddings`,依赖 `ort` + `ndarray`),替代原 bag-of-words 占位实现
+- **wiremock 测试基础设施**: `wiremock` 作为 dev-dependency,mock 辅助函数,示范测试,默认测试不打真实网络
+- **MSRV 声明**: `rust-version = "1.82"`,CI 矩阵含 1.82
+- **criterion benchmark**: `benches/` 下 retrieval(6)/splitter(4)/embedding(4) 组基准
+- **12+ 新 examples**: evaluation / mcp_server / guardrails / sessions / context_window / vectorstore_memory / semantic_splitter / file_vectorstore / otel / assistants / handoffs / plan_execute / token_counter
+
+### Changed
+- **unused import 修复**: `evaluation/pairwise.rs` 中 `async_trait` 移入 `#[cfg(test)]`
+- **LocalEmbeddings**: 原 bag-of-words 实现保留为默认,ort 实现在 `local-embeddings` feature 下
+- **VectorStoreProvider**: `provider.rs` 新增 `FileVectorStore` 工厂方法
+- **lib.rs**: 导出 A2A 模块、`ContextWindow`、`FileVectorStore`、`StructuredOutputExt`、新 loaders 等公开 API
+
+### Fixed
+- **Examples 编译修复**: 全部 25 个 example 编译通过(修复 API 名不匹配/类型推断/未用导入/async 缺失等)
+- **A2A server task persistence**: `tasks/get` 和 `tasks/cancel` 原本总是返回"not found",现已实现内存存储和状态查询/转换
+
 ## [0.4.0] - 2026-07-14
 
 ### Added
@@ -423,7 +458,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
-[0.2.15]: https://github.com/atliliw/langchainrust/compare/v0.2.14...v0.2.15
+[0.4.1]: https://github.com/atliliw/langchainrust/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/atliliw/langchainrust/compare/v0.3.0...v0.4.0
 [0.2.14]: https://github.com/atliliw/langchainrust/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/atliliw/langchainrust/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/atliliw/langchainrust/compare/v0.2.11...v0.2.12
