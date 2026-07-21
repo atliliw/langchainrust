@@ -15,4 +15,4 @@ pub use url_fetch::{URLFetchTool, URLFetchInput, URLFetchOutput};
 pub use wikipedia::{WikipediaTool, WikipediaInput, WikipediaOutput};
 pub use python_repl::{PythonREPLTool, PythonREPLInput, PythonREPLOutput};
 pub use search::{DuckDuckGoSearchTool, SearchInput, SearchOutput};
-pub use extended::{FileTool, HTTPTool};
+pub use extended::{ComputerUseTool, ComputerMode, ComputerUseInput, ComputerUseOutput, FileTool, HTTPTool};

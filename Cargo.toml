@@ -10,6 +10,7 @@ documentation = "https://docs.rs/langchainrust"
 readme = "README.md"
 keywords = ["llm", "langchain", "ai", "rag", "agent"]
 categories = ["algorithms", "asynchronous", "api-bindings", "science"]
+rust-version = "1.82"
 authors = ["atliliw"]
 exclude = [
     "/docs",
@@ -43,10 +44,15 @@ csv = "1.3"
 bincode = "1.3"
 tiktoken-rs = "0.5"
 opentelemetry = { version = "0.27", optional = true }
+ort = { version = "2.0.0-rc.12", optional = true }
+ndarray = { version = "0.17", optional = true }
+zip = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.0"
+wiremock = "0.6"
+criterion = "0.5"
 
 [features]
 default = []
@@ -57,6 +63,8 @@ redis-storage = ["redis"]
 sqlite-storage = ["rusqlite"]
 pgvector-storage = []  # 需用户自行配置 sqlx/pgvector 依赖(见 src/vector_stores/pgvector.rs)
 opentelemetry = ["dep:opentelemetry"]
+local-embeddings = ["ort", "ndarray"]
+native-computer = []
 
 [package.metadata.docs.rs]
 all-features = true
@@ -68,6 +76,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[test]]
 name = "unit_schema"
 path = "tests/unit/schema.rs"
+
+[[test]]
+name = "unit_mock_chat"
+path = "tests/unit/mock_chat.rs"
 
 [[test]]
 name = "unit_prompts"
@@ -443,3 +455,77 @@ path = "examples/chains/llm_chain.rs"
 [[example]]
 name = "chains_sequential_chain"
 path = "examples/chains/sequential_chain.rs"
+
+# v0.4.1 新增 examples
+
+[[example]]
+name = "evaluation"
+path = "examples/evaluation/evaluation.rs"
+
+[[example]]
+name = "mcp_server"
+path = "examples/mcp_server/mcp_server.rs"
+
+[[example]]
+name = "vectorstore_memory"
+path = "examples/memory/vectorstore_memory.rs"
+
+[[example]]
+name = "semantic_splitter"
+path = "examples/rag/semantic_splitter.rs"
+
+[[example]]
+name = "file_vectorstore"
+path = "examples/rag/file_vectorstore.rs"
+
+[[example]]
+name = "otel_tracing"
+path = "examples/otel/otel_tracing.rs"
+required-features = ["opentelemetry"]
+
+[[example]]
+name = "agent_assistants"
+path = "examples/agent/assistants.rs"
+
+[[example]]
+name = "agent_plan_execute"
+path = "examples/agent/plan_execute.rs"
+
+[[example]]
+name = "agent_handoffs"
+path = "examples/agent/handoffs.rs"
+
+[[example]]
+name = "memory_sessions"
+path = "examples/memory/sessions.rs"
+
+[[example]]
+name = "memory_context_window"
+path = "examples/memory/context_window.rs"
+
+[[example]]
+name = "guardrails"
+path = "examples/guardrails/guardrails.rs"
+
+[[example]]
+name = "basic_token_counter"
+path = "examples/basic/token_counter.rs"
+
+# ============================================================================
+# Criterion Benchmarks
+# ============================================================================
+
+[[bench]]
+name = "retrieval"
+path = "benches/retrieval.rs"
+harness = false
+
+[[bench]]
+name = "splitter"
+path = "benches/splitter.rs"
+harness = false
+
+[[bench]]
+name = "embedding"
+path = "benches/embedding.rs"
+harness = false

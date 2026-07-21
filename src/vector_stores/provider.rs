@@ -13,7 +13,12 @@ pub enum VectorStoreType {
     InMemory,
     
     /// 文件持久化存储，适用于个人知识库
-    FileBacked,
+    FileBacked {
+        /// 存储文件路径
+        path: String,
+        /// 向量维度
+        dimension: usize,
+    },
     
     /// Qdrant 向量数据库，适用于生产环境
     Qdrant {
@@ -33,10 +38,11 @@ impl VectorStoreProvider {
                 use crate::vector_stores::InMemoryVectorStore;
                 Ok(Arc::new(InMemoryVectorStore::new()))
             }
-            VectorStoreType::FileBacked => {
-                // 暂时返回内存存储，等待实现文件存储
-                use crate::vector_stores::InMemoryVectorStore;
-                Ok(Arc::new(InMemoryVectorStore::new()))
+            VectorStoreType::FileBacked { path, dimension } => {
+                use crate::vector_stores::FileVectorStore;
+                let store = FileVectorStore::new(std::path::PathBuf::from(path), dimension)
+                    .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+                Ok(Arc::new(store))
             }
             VectorStoreType::Qdrant { url, collection } => {
                 Self::create_qdrant_store(url, collection).await
@@ -87,9 +93,12 @@ impl VectorStoreBuilder {
         }
     }
     
-    pub fn file_backed() -> Self {
+    pub fn file_backed(path: impl Into<String>, dimension: usize) -> Self {
         Self {
-            store_type: VectorStoreType::FileBacked,
+            store_type: VectorStoreType::FileBacked {
+                path: path.into(),
+                dimension,
+            },
         }
     }
     

@@ -69,6 +69,8 @@ jobs:
         include:
           - os: ubuntu-latest
             rust: beta
+          - os: ubuntu-latest
+            rust: "1.82"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -39,7 +39,7 @@ pub mod retrieval_qa;
 pub mod conversation_retrieval;
 pub mod document_chains;
 
-pub use base::{BaseChain, ChainError, ChainResult};
+pub use base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 pub use llm_chain::{LLMChain, LLMChainBuilder};
 pub use sequential_chain::SequentialChain;
 pub use conversation_chain::{ConversationChain, ConversationChainBuilder};

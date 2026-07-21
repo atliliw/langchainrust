@@ -14,7 +14,7 @@ pub mod reranking;
 pub use retriever::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError};
 pub use splitter::{TextSplitter, RecursiveCharacterSplitter};
 pub use semantic_splitter::SemanticSplitter;
-pub use loaders::{PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, DocumentLoader, LoaderError};
+pub use loaders::{PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, WebScraperLoader, SitemapLoader, DocxLoader, DocumentLoader, LoaderError};
 
 pub use bm25::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
 

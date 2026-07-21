@@ -7,9 +7,11 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use serde_json::Value;
+use futures_util::StreamExt;
 
-use super::base::{BaseChain, ChainResult, ChainError};
+use super::base::{BaseChain, ChainResult, ChainError, ChainStream, StreamToken};
 use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::memory::{ConversationBufferMemory, BaseMemory};
 use crate::schema::Message;
 use crate::Runnable;
@@ -248,8 +250,50 @@ impl BaseChain for ConversationChain {
         // 构造输出
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
-        
+
         Ok(result)
+    }
+
+    /// 流式执行 ConversationChain -- 逐 token 输出
+    ///
+    /// 内部调 `OpenAIChat::stream_chat`,逐 token 回调。
+    /// 流式完成后自动保存对话上下文。
+    async fn stream(
+        &self,
+        inputs: HashMap<String, Value>,
+    ) -> Result<ChainStream, ChainError> {
+        // 验证输入
+        self.validate_inputs(&inputs)?;
+
+        // 获取用户输入
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        // 加载历史消息
+        let history_messages = self.load_history().await?;
+
+        // 准备消息列表
+        let messages = self.prepare_messages(input, &history_messages);
+
+        // 调用 LLM stream_chat
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, None)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM 流式调用失败: {}", e)))?;
+
+        // 将 LLM stream 映射为 ChainStream
+        let stream = llm_stream.map(move |result: Result<String, crate::language_models::openai::OpenAIError>| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!("流式 token 错误: {}", e))),
+        });
+
+        Ok(Box::pin(stream))
     }
     
     fn name(&self) -> &str {

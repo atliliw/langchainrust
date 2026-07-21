@@ -11,7 +11,7 @@ pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use mock::MockEmbeddings;
 pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
-pub use local::LocalEmbeddings;
+pub use local::{BagOfWordsEmbeddings, LocalEmbeddings};
 
 use async_trait::async_trait;
 use std::error::Error;
@@ -21,13 +21,13 @@ use std::error::Error;
 pub enum EmbeddingError {
     /// HTTP 请求错误
     HttpError(String),
-    
+
     /// API 错误
     ApiError(String),
-    
+
     /// 解析错误
     ParseError(String),
-    
+
     /// 空输入
     EmptyInput,
 }

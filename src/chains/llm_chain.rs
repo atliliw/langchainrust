@@ -6,9 +6,11 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use serde_json::Value;
+use futures_util::StreamExt;
 
-use super::base::{BaseChain, ChainResult, ChainError};
+use super::base::{BaseChain, ChainResult, ChainError, ChainStream, StreamToken};
 use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::schema::Message;
 use crate::Runnable;
 
@@ -108,20 +110,52 @@ impl BaseChain for LLMChain {
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
         // 验证输入
         self.validate_inputs(&inputs)?;
-        
+
         // 渲染 Prompt
         let prompt = self.render_prompt(&inputs)?;
-        
+
         // 调用 LLM
         let messages = vec![Message::human(&prompt)];
         let result = self.llm.invoke(messages, None).await
             .map_err(|e| ChainError::ExecutionError(format!("LLM 调用失败: {}", e)))?;
-        
+
         // 构造输出
         let mut output = HashMap::new();
         output.insert(self.output_key.clone(), Value::String(result.content));
-        
+
         Ok(output)
+    }
+
+    /// 流式执行 LLMChain -- 逐 token 输出
+    ///
+    /// 内部调 `OpenAIChat::stream_chat`,逐 token 回调。
+    async fn stream(
+        &self,
+        inputs: HashMap<String, Value>,
+    ) -> Result<ChainStream, ChainError> {
+        // 验证输入
+        self.validate_inputs(&inputs)?;
+
+        // 渲染 Prompt
+        let prompt = self.render_prompt(&inputs)?;
+
+        // 调用 LLM stream_chat
+        let messages = vec![Message::human(&prompt)];
+        let llm_stream = self.llm.stream_chat(messages, None).await
+            .map_err(|e| ChainError::StreamError(format!("LLM 流式调用失败: {}", e)))?;
+
+        // 将 LLM stream 映射为 ChainStream
+        let stream = llm_stream.map(move |result: Result<String, crate::language_models::openai::OpenAIError>| {
+            match result {
+                Ok(token) => Ok(StreamToken {
+                    token,
+                    is_final: false,
+                }),
+                Err(e) => Err(ChainError::StreamError(format!("流式 token 错误: {}", e))),
+            }
+        });
+
+        Ok(Box::pin(stream))
     }
     
     fn name(&self) -> &str {

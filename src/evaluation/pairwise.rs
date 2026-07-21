@@ -2,8 +2,6 @@
 //!
 //! 带位置偏差缓解:交换 A/B 顺序跑两次,两次都选同一个才算真赢,否则判平局。
 
-use async_trait::async_trait;
-
 use crate::{BaseChatModel, Message};
 
 use super::EvalError;
@@ -113,6 +111,7 @@ fn parse_pick(raw: &str) -> Pick {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use crate::{BaseLanguageModel, LLMResult, Runnable, RunnableConfig};
     use futures_util::Stream;
     use std::pin::Pin;

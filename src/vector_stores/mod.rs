@@ -4,6 +4,7 @@
 //! Provides document vector storage and retrieval functionality.
 
 mod memory;
+mod file_store;
 mod provider;
 pub mod document_store;
 pub mod chunked_vector_store;
@@ -27,6 +28,7 @@ pub mod pgvector;
 pub mod pinecone;
 
 pub use memory::InMemoryVectorStore;
+pub use file_store::FileVectorStore;
 pub use pinecone::PineconeStore;
 pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
 pub use document_store::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore, ChunkDocument};
@@ -122,7 +124,7 @@ impl Document {
 }
 
 /// Vector document with embedding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VectorDocument {
     /// Document.
     pub document: Document,

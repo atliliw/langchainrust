@@ -68,6 +68,9 @@ pub mod sessions;
 pub mod guardrails;
 pub mod evaluation;
 
+/// A2A: Agent-to-Agent protocol for inter-agent communication.
+pub mod a2a;
+
 // 重新导出常用类型
 pub use core::{
     Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
@@ -98,28 +101,28 @@ pub use language_models::{
     AnthropicChat, AnthropicConfig, AnthropicError,
     GeminiChat, GeminiConfig, GeminiError,
 };
-pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput, WikipediaTool, WikipediaInput, PythonREPLTool, PythonREPLInput, DuckDuckGoSearchTool, SearchInput, HTTPTool, FileTool};
+pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput, WikipediaTool, WikipediaInput, PythonREPLTool, PythonREPLInput, DuckDuckGoSearchTool, SearchInput, HTTPTool, FileTool, ComputerUseTool, ComputerMode, ComputerUseInput, ComputerUseOutput};
 pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent, FunctionCallingAgent, PlanExecuteAgent, HandoffManager, StreamingFunctionCallingAgent};
 pub use core::tools::to_tool_definition;
-pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData, VectorStoreRetrieverMemory};
+pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData, VectorStoreRetrieverMemory, ContextWindow, Strategy};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use memory::MongoPersistentMemory;
-pub use chains::{BaseChain, ChainError, ChainResult, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA, ConversationRetrievalChain, StuffDocumentsChain, RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain};
+pub use chains::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA, ConversationRetrievalChain, StuffDocumentsChain, RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain};
 
 // Embeddings
 pub use embeddings::{
-    Embeddings, EmbeddingError, 
-    OpenAIEmbeddings, OpenAIEmbeddingsConfig, 
-    MockEmbeddings, 
-    LocalEmbeddings,
+    Embeddings, EmbeddingError,
+    OpenAIEmbeddings, OpenAIEmbeddingsConfig,
+    MockEmbeddings,
+    BagOfWordsEmbeddings, LocalEmbeddings,
     DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
     QwenEmbeddings, QwenEmbeddingsConfig,
     cosine_similarity,
 };
 
 // Vector Stores
-pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder, ChromaDBVectorStore, ChromaDBConfig};
+pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, FileVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder, ChromaDBVectorStore, ChromaDBConfig};
 
 #[cfg(feature = "redis-storage")]
 pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
@@ -140,7 +143,7 @@ pub use vector_stores::{QdrantVectorStore, QdrantConfig};
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
-pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, SemanticSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, DocumentLoader, LoaderError};
+pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, SemanticSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, WebScraperLoader, SitemapLoader, DocxLoader, DocumentLoader, LoaderError};
 pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
 pub use retrieval::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion, ChunkedHybridRetriever};
 pub use retrieval::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
@@ -161,6 +164,16 @@ pub use core::output_parsers::{
     BaseOutputParser, OutputParserError, OutputParserResult,
     StrOutputParser, CommaSeparatedListOutputParser,
     JsonOutputParser, StructuredOutputParser, TypedOutputParser,
+};
+
+// Structured Output
+pub use core::structured_output::{StructuredOutputExt, StructuredOutputError, with_structured_output};
+
+// A2A
+pub use a2a::{
+    A2AServer, A2AClient, A2AError,
+    AgentCard, A2ATask, A2AMessage, TaskStatus,
+    A2ARequest, A2AResponse, A2ATaskResult, A2AErrorData,
 };
 
 // LangGraph

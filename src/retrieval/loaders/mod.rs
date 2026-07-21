@@ -1,7 +1,8 @@
 // src/retrieval/loaders/mod.rs
 //! 文档加载器实现
 //!
-//! 提供从不同格式文件加载文档的功能，包括 PDF、CSV、Text、JSON、Markdown 等。
+//! 提供从不同格式文件加载文档的功能，包括 PDF、CSV、Text、JSON、Markdown、HTML 等。
+//! v0.4.1 新增: WebScraper、Sitemap、Docx 加载器。
 
 mod pdf;
 mod csv;
@@ -9,6 +10,9 @@ mod text;
 mod json;
 mod markdown;
 mod html;
+mod web_scraper;
+mod sitemap;
+mod docx;
 
 pub use pdf::PDFLoader;
 pub use csv::CSVLoader;
@@ -16,6 +20,9 @@ pub use text::TextLoader;
 pub use json::JSONLoader;
 pub use markdown::MarkdownLoader;
 pub use html::HTMLLoader;
+pub use web_scraper::WebScraperLoader;
+pub use sitemap::SitemapLoader;
+pub use docx::DocxLoader;
 
 use crate::vector_stores::Document;
 use async_trait::async_trait;

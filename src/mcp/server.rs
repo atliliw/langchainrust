@@ -127,7 +127,7 @@ impl MCPServer {
                     },
                 };
                 let result_val =
-                    serde_json::to_value(&mcp_result).unwrap_or_else(|_| Value::Null);
+                    serde_json::to_value(&mcp_result).unwrap_or(Value::Null);
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req.id,

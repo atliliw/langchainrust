@@ -13,6 +13,7 @@ pub mod tools;
 pub mod output_parsers;
 pub mod cache;
 pub mod token_counter;
+pub mod structured_output;
 
 pub use runnables::{Runnable, RunnableConfig};
 pub use language_models::{BaseLanguageModel, BaseChatModel};
@@ -26,3 +27,4 @@ pub use output_parsers::{
     StrOutputParser, CommaSeparatedListOutputParser,
     JsonOutputParser, StructuredOutputParser, TypedOutputParser,
 };
+pub use structured_output::{StructuredOutputExt, StructuredOutputError, with_structured_output};

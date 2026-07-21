@@ -12,6 +12,8 @@
 
 use langchainrust::{OpenAIChat, OpenAIConfig, OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 use std::sync::OnceLock;
+use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{method, path};
 
 // ============================================================================
 // 🔑 在这里配置你的 API Key
@@ -146,4 +148,38 @@ impl MongoTestConfig {
             self.collection.clone(),
         )
     }
+}
+
+// ============================================================================
+// 🧪 Mock 测试支持(wiremock)-- 默认测试不打真实网络
+// ============================================================================
+
+/// 起一个 wiremock server,stub OpenAI chat completions 响应。
+///
+/// 返回 `(server, base_url)`:server 需在测试中持有以保活;
+/// `base_url` 可直接传给 `OpenAIConfig`(已带 `/v1`,与真实 endpoint 路径一致)。
+///
+/// 真实 API key 按决策保留不动;mock 不校验 key,可用任意值。
+pub async fn mock_openai_chat_server(reply: &str) -> (MockServer, String) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-mock",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "mock",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": reply},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })),
+        )
+        .mount(&server)
+        .await;
+    let base_url = format!("{}/v1", server.uri());
+    (server, base_url)
 }
