@@ -3,6 +3,11 @@
 
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{(\w+)\}").unwrap()
+});
 
 /// 提示词模板
 ///
@@ -45,9 +50,7 @@ impl PromptTemplate {
         let mut result = self.template.clone();
 
         // 找到所有 {variable} 格式的变量
-        let re = Regex::new(r"\{(\w+)\}").unwrap();
-
-        for cap in re.captures_iter(&self.template) {
+        for cap in VARIABLE_RE.captures_iter(&self.template) {
             let var_name = cap.get(1).unwrap().as_str();
             if let Some(value) = variables.get(var_name) {
                 result = result.replace(&format!("{{{}}}", var_name), value);
@@ -64,8 +67,7 @@ impl PromptTemplate {
     /// # 返回
     /// 变量名列表
     pub fn variables(&self) -> Vec<String> {
-        let re = Regex::new(r"\{(\w+)\}").unwrap();
-        re.captures_iter(&self.template)
+        VARIABLE_RE.captures_iter(&self.template)
             .map(|cap| cap.get(1).unwrap().as_str().to_string())
             .collect()
     }

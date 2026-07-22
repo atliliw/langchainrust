@@ -23,23 +23,6 @@ impl InMemoryVectorStore {
             documents: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
-    /// 计算余弦相似度
-    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() || a.is_empty() {
-            return 0.0;
-        }
-        
-        let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        
-        if norm_a == 0.0 || norm_b == 0.0 {
-            return 0.0;
-        }
-        
-        dot_product / (norm_a * norm_b)
-    }
 }
 
 impl Default for InMemoryVectorStore {
@@ -94,7 +77,7 @@ impl VectorStore for InMemoryVectorStore {
         let mut results: Vec<SearchResult> = store
             .values()
             .map(|vd| {
-                let score = Self::cosine_similarity(query_embedding, &vd.embedding);
+                let score = crate::core::math::cosine_similarity(query_embedding, &vd.embedding);
                 SearchResult {
                     document: vd.document.clone(),
                     score,
@@ -217,14 +200,14 @@ mod tests {
     
     #[test]
     fn test_cosine_similarity() {
-        // 相同向量
+        // Identical vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert!((InMemoryVectorStore::cosine_similarity(&a, &b) - 1.0).abs() < 0.0001);
-        
-        // 正交向量
+        assert!((crate::core::math::cosine_similarity(&a, &b) - 1.0).abs() < 0.0001);
+
+        // Orthogonal vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        assert!((InMemoryVectorStore::cosine_similarity(&a, &b) - 0.0).abs() < 0.0001);
+        assert!((crate::core::math::cosine_similarity(&a, &b) - 0.0).abs() < 0.0001);
     }
 }

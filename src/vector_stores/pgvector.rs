@@ -1,21 +1,38 @@
-//! PGVector 向量库(PostgreSQL + pgvector 扩展)
+//! PGVector vector store (PostgreSQL + pgvector extension)
 
 use std::collections::HashMap;
 
 use pgvector::Vector;
+use regex::Regex;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 use crate::embeddings::Embeddings;
 use crate::vector_stores::Document;
 
-/// PGVector 向量库
+/// Validate that a table name is safe for SQL interpolation.
+///
+/// Only allows: `^[a-zA-Z_][a-zA-Z0-9_]*$`
+/// This prevents SQL injection via table names.
+fn validate_table_name(table: &str) -> Result<(), String> {
+    let re = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap();
+    if re.is_match(table) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid table name '{}': must match ^[a-zA-Z_][a-zA-Z0-9_]*$",
+            table
+        ))
+    }
+}
+
+/// PGVector vector store
 pub struct PGVectorStore {
     pool: PgPool,
     table: String,
 }
 
-/// 构造建表 SQL(纯函数,便于测试)
+/// Build CREATE TABLE SQL (pure function, convenient for testing)
 pub fn build_table_sql(table: &str, dim: usize) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, content TEXT, metadata JSONB, embedding vector({}))",
@@ -25,6 +42,7 @@ pub fn build_table_sql(table: &str, dim: usize) -> String {
 
 impl PGVectorStore {
     pub async fn new(url: &str, table: &str, dim: usize) -> Result<Self, String> {
+        validate_table_name(table)?;
         let pool = PgPoolOptions::new()
             .connect(url)
             .await
@@ -156,5 +174,24 @@ mod tests {
         let sql = build_table_sql("docs", 1536);
         assert!(sql.contains("metadata JSONB"));
         assert!(sql.contains("id TEXT PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_validate_table_name_valid() {
+        assert!(validate_table_name("users").is_ok());
+        assert!(validate_table_name("my_table").is_ok());
+        assert!(validate_table_name("_private").is_ok());
+        assert!(validate_table_name("Table123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_table_name_invalid() {
+        // SQL injection attempts
+        assert!(validate_table_name("users; DROP TABLE users--").is_err());
+        assert!(validate_table_name("users; DROP TABLE users").is_err());
+        assert!(validate_table_name("123table").is_err()); // starts with digit
+        assert!(validate_table_name("user-table").is_err()); // contains hyphen
+        assert!(validate_table_name("user.table").is_err()); // contains dot
+        assert!(validate_table_name("").is_err()); // empty
     }
 }

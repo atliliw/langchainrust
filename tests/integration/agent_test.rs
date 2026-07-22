@@ -204,11 +204,11 @@ fn test_tool_input_display() {
 #[test]
 fn test_agent_error_display() {
     let error = AgentError::ToolNotFound("test".to_string());
-    assert!(error.to_string().contains("工具未找到"));
-    
+    assert!(error.to_string().contains("Tool not found"));
+
     let error = AgentError::MaxIterationsReached;
-    assert!(error.to_string().contains("最大迭代次数"));
-    
+    assert!(error.to_string().contains("Max iterations reached"));
+
     let error = AgentError::OutputParsingError("parse error".to_string());
-    assert!(error.to_string().contains("解析错误"));
+    assert!(error.to_string().contains("Output parsing error"));
 }

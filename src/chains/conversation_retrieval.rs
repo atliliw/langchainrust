@@ -1,8 +1,9 @@
 // src/chains/conversation_retrieval.rs
 //! ConversationRetrieval Chain
 //!
-//! 带记忆的检索增强生成 Chain，将对话历史与文档检索相结合。
-//! 适用于需要同时利用对话上下文和外部知识的问答场景。
+//! Retrieval-augmented generation chain with memory, combining conversation
+//! history with document retrieval. Suitable for Q&A scenarios that require
+//! both conversational context and external knowledge.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -10,44 +11,44 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::base::{BaseChain, ChainResult, ChainError};
-use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
+use crate::Runnable;
 use crate::memory::{ConversationBufferMemory, BaseMemory};
 use crate::retrieval::{RetrieverTrait, Document};
 use crate::schema::Message;
-use crate::Runnable;
 use tokio::sync::Mutex;
 
-/// 默认的检索增强对话提示词模板
-const DEFAULT_QA_PROMPT: &str = "你是一个人工智能助手，请根据对话历史和参考信息回答用户的问题。
+/// Default retrieval-augmented conversation prompt template
+const DEFAULT_QA_PROMPT: &str = "You are an AI assistant. Please answer the user's question based on the conversation history and reference information.
 
-对话历史：
+Conversation history:
 {history}
 
-参考信息：
+Reference information:
 {context}
 
-问题：{question}
+Question: {question}
 
-回答：";
+Answer:";
 
 /// ConversationRetrievalChain
 ///
-/// 带记忆的检索增强对话 Chain，自动完成：
-/// 1. 加载对话历史
-/// 2. 检索相关文档
-/// 3. 组合历史 + 上下文 + 问题
-/// 4. LLM 生成答案
-/// 5. 保存到对话记忆
+/// Retrieval-augmented conversation chain with memory that automatically:
+/// 1. Loads conversation history
+/// 2. Retrieves relevant documents
+/// 3. Combines history + context + question
+/// 4. LLM generates answer
+/// 5. Saves to conversation memory
 ///
-/// # 示例
+/// # Examples
 /// ```ignore
 /// use langchainrust::{ConversationRetrievalChain, OpenAIChat, SimilarityRetriever, ConversationBufferMemory};
 ///
 /// let chain = ConversationRetrievalChain::new(llm, retriever, memory);
-/// let answer = chain.query("什么是 Rust？").await?;
+/// let answer = chain.query("What is Rust?").await?;
 /// ```
-pub struct ConversationRetrievalChain {
-    llm: OpenAIChat,
+pub struct ConversationRetrievalChain<M: BaseChatModel> {
+    llm: M,
     retriever: Arc<dyn RetrieverTrait>,
     memory: Arc<Mutex<ConversationBufferMemory>>,
 
@@ -64,9 +65,9 @@ pub struct ConversationRetrievalChain {
     source_document_key: String,
 }
 
-impl ConversationRetrievalChain {
+impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
     pub fn new(
-        llm: OpenAIChat,
+        llm: M,
         retriever: Arc<dyn RetrieverTrait>,
         memory: ConversationBufferMemory,
     ) -> Self {
@@ -139,12 +140,12 @@ impl ConversationRetrievalChain {
     pub async fn clear_memory(&self) -> Result<(), ChainError> {
         let mut memory = self.memory.lock().await;
         memory.clear().await.map_err(|e|
-            ChainError::ExecutionError(format!("清空记忆失败: {}", e))
+            ChainError::ExecutionError(format!("Failed to clear memory: {}", e))
         )?;
         Ok(())
     }
 
-    /// 简化的查询接口
+    /// Simplified query interface
     pub async fn query(&self, question: impl Into<String>) -> Result<String, ChainError> {
         let inputs = HashMap::from([
             (self.input_key.clone(), Value::String(question.into()))
@@ -153,7 +154,7 @@ impl ConversationRetrievalChain {
         result.get(&self.output_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| ChainError::OutputError("缺少输出结果".to_string()))
+            .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))
     }
 
     fn format_context(&self, documents: &[Document]) -> String {
@@ -167,9 +168,9 @@ impl ConversationRetrievalChain {
         messages.iter()
             .map(|msg| {
                 let role = match msg.message_type {
-                    crate::schema::MessageType::Human => "用户",
-                    crate::schema::MessageType::AI => "助手",
-                    _ => "系统",
+                    crate::schema::MessageType::Human => "User",
+                    crate::schema::MessageType::AI => "Assistant",
+                    _ => "System",
                 };
                 format!("{}: {}", role, msg.content)
             })
@@ -203,13 +204,16 @@ impl ConversationRetrievalChain {
         let inputs = HashMap::from([(self.input_key.clone(), input.to_string())]);
         let outputs = HashMap::from([(self.output_key.clone(), output.to_string())]);
         memory.save_context(&inputs, &outputs).await
-            .map_err(|e| ChainError::ExecutionError(format!("保存上下文失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("Failed to save context: {}", e)))?;
         Ok(())
     }
 }
 
 #[async_trait]
-impl BaseChain for ConversationRetrievalChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for ConversationRetrievalChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -230,71 +234,71 @@ impl BaseChain for ConversationRetrievalChain {
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
         if self.verbose {
-            println!("\n=== ConversationRetrievalChain 执行 ===");
-            println!("问题: {}", question);
+            println!("\n=== ConversationRetrievalChain Execution ===");
+            println!("Question: {}", question);
         }
 
-        // 步骤 1: 加载对话历史
+        // Step 1: Load conversation history
         let history_messages = self.load_history().await?;
         let history = self.format_history(&history_messages);
 
         if self.verbose {
-            println!("历史消息: {} 条", history_messages.len());
+            println!("History messages: {}", history_messages.len());
         }
 
-        // 步骤 2: 检索相关文档
+        // Step 2: Retrieve relevant documents
         if self.verbose {
-            println!("\n--- 步骤 2: 检索相关文档 ---");
+            println!("\n--- Step 2: Retrieve relevant documents ---");
         }
 
         let documents = self.retriever.retrieve(question, self.k).await
-            .map_err(|e| ChainError::ExecutionError(format!("检索失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
 
         if self.verbose {
-            println!("检索到 {} 个文档", documents.len());
+            println!("Retrieved {} documents", documents.len());
             for (i, doc) in documents.iter().enumerate() {
                 let preview = if doc.content.len() > 100 {
                     &doc.content[..100]
                 } else {
                     &doc.content
                 };
-                println!("文档 {}: {}", i + 1, preview);
+                println!("Document {}: {}", i + 1, preview);
             }
         }
 
-        // 步骤 3: 组装 Prompt
+        // Step 3: Assemble Prompt
         if self.verbose {
-            println!("\n--- 步骤 3: 组装 Prompt ---");
+            println!("\n--- Step 3: Assemble Prompt ---");
         }
 
         let context = self.format_context(&documents);
         let prompt = self.build_prompt(&history, &context, question);
 
         if self.verbose {
-            println!("历史长度: {} 字符", history.len());
-            println!("上下文长度: {} 字符", context.len());
+            println!("History length: {} characters", history.len());
+            println!("Context length: {} characters", context.len());
         }
 
-        // 步骤 4: LLM 生成答案
+        // Step 4: LLM generates answer
         if self.verbose {
-            println!("\n--- 步骤 4: LLM 生成答案 ---");
+            println!("\n--- Step 4: LLM generates answer ---");
         }
 
         let messages = vec![Message::human(&prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM 调用失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let answer = response.content;
 
         if self.verbose {
-            println!("答案: {}", answer);
+            println!("Answer: {}", answer);
         }
 
-        // 步骤 5: 保存到记忆
+        // Step 5: Save to memory
         self.save_context(question, &answer).await?;
 
         if self.verbose {
-            println!("=== ConversationRetrievalChain 完成 ===\n");
+            println!("=== ConversationRetrievalChain Complete ===\n");
         }
 
         let mut result = HashMap::new();
@@ -312,5 +316,107 @@ impl BaseChain for ConversationRetrievalChain {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language_models::OpenAIChat;
+
+    #[test]
+    fn test_new() {
+        let llm = OpenAIChat::new(crate::OpenAIConfig::default());
+        let retriever = Arc::new(crate::retrieval::SimilarityRetriever::new(
+            Arc::new(crate::vector_stores::InMemoryVectorStore::new()),
+            Arc::new(crate::embeddings::MockEmbeddings::new(64)),
+        ));
+        let memory = ConversationBufferMemory::new();
+
+        let chain = ConversationRetrievalChain::new(llm, retriever, memory);
+
+        assert_eq!(chain.input_keys(), vec!["query"]);
+        assert_eq!(chain.output_keys(), vec!["result"]);
+        assert_eq!(chain.name(), "conversation_retrieval");
+    }
+
+    #[test]
+    fn test_with_options() {
+        let llm = OpenAIChat::new(crate::OpenAIConfig::default());
+        let retriever = Arc::new(crate::retrieval::SimilarityRetriever::new(
+            Arc::new(crate::vector_stores::InMemoryVectorStore::new()),
+            Arc::new(crate::embeddings::MockEmbeddings::new(64)),
+        ));
+        let memory = ConversationBufferMemory::new();
+
+        let chain = ConversationRetrievalChain::new(llm, retriever, memory)
+            .with_k(5)
+            .with_input_key("question")
+            .with_output_key("answer")
+            .with_return_source_documents(true)
+            .with_verbose(true);
+
+        assert_eq!(chain.input_keys(), vec!["question"]);
+        assert_eq!(chain.output_keys(), vec!["answer", "source_documents"]);
+    }
+
+    #[test]
+    fn test_format_context() {
+        let llm = OpenAIChat::new(crate::OpenAIConfig::default());
+        let retriever = Arc::new(crate::retrieval::SimilarityRetriever::new(
+            Arc::new(crate::vector_stores::InMemoryVectorStore::new()),
+            Arc::new(crate::embeddings::MockEmbeddings::new(64)),
+        ));
+        let memory = ConversationBufferMemory::new();
+
+        let chain = ConversationRetrievalChain::new(llm, retriever, memory);
+
+        let docs = vec![
+            Document::new("Document 1 content"),
+            Document::new("Document 2 content"),
+        ];
+
+        let context = chain.format_context(&docs);
+        assert!(context.contains("Document 1 content"));
+        assert!(context.contains("Document 2 content"));
+    }
+
+    #[test]
+    fn test_build_prompt() {
+        let llm = OpenAIChat::new(crate::OpenAIConfig::default());
+        let retriever = Arc::new(crate::retrieval::SimilarityRetriever::new(
+            Arc::new(crate::vector_stores::InMemoryVectorStore::new()),
+            Arc::new(crate::embeddings::MockEmbeddings::new(64)),
+        ));
+        let memory = ConversationBufferMemory::new();
+
+        let chain = ConversationRetrievalChain::new(llm, retriever, memory);
+
+        let prompt = chain.build_prompt("History text", "Context text", "What is Rust?");
+
+        assert!(prompt.contains("History text"));
+        assert!(prompt.contains("Context text"));
+        assert!(prompt.contains("What is Rust?"));
+    }
+
+    #[test]
+    fn test_custom_prompt_template() {
+        let llm = OpenAIChat::new(crate::OpenAIConfig::default());
+        let retriever = Arc::new(crate::retrieval::SimilarityRetriever::new(
+            Arc::new(crate::vector_stores::InMemoryVectorStore::new()),
+            Arc::new(crate::embeddings::MockEmbeddings::new(64)),
+        ));
+        let memory = ConversationBufferMemory::new();
+
+        let custom_template = "History: {history}\nContext: {context}\nQuestion: {question}";
+
+        let chain = ConversationRetrievalChain::new(llm, retriever, memory)
+            .with_qa_prompt(custom_template);
+
+        let prompt = chain.build_prompt("Test history", "Test context", "Test question");
+
+        assert!(prompt.contains("Test history"));
+        assert!(prompt.contains("Test context"));
+        assert!(prompt.contains("Test question"));
     }
 }

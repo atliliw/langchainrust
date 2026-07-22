@@ -1,7 +1,7 @@
 // src/chains/llm_chain.rs
 //! LLM Chain
 //!
-//! 最基础的 Chain，组合 Prompt 和 LLM。
+//! The most basic Chain, combining a Prompt and an LLM.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -9,49 +9,48 @@ use serde_json::Value;
 use futures_util::StreamExt;
 
 use super::base::{BaseChain, ChainResult, ChainError, ChainStream, StreamToken};
-use crate::language_models::OpenAIChat;
 use crate::BaseChatModel;
 use crate::schema::Message;
 use crate::Runnable;
 
 /// LLM Chain
-/// 
-/// 组合 Prompt 模板和 LLM，是最基础的 Chain。
-/// 
-/// # 示例
+///
+/// Combines a Prompt template and an LLM. The most basic Chain.
+///
+/// # Examples
 /// ```ignore
 /// use langchainrust::{LLMChain, OpenAIChat, OpenAIConfig};
-/// 
+///
 /// let llm = OpenAIChat::new(config);
 /// let chain = LLMChain::new(llm, "{question}");
-/// 
-/// let inputs = HashMap::from([("question".to_string(), "什么是Rust?".into())]);
+///
+/// let inputs = HashMap::from([("question".to_string(), "What is Rust?".into())]);
 /// let result = chain.invoke(inputs).await?;
 /// ```
-pub struct LLMChain {
-    /// LLM 客户端
-    llm: OpenAIChat,
-    
-    /// Prompt 模板
+pub struct LLMChain<M: BaseChatModel> {
+    /// LLM client
+    llm: M,
+
+    /// Prompt template
     prompt_template: String,
-    
-    /// 输入键名
+
+    /// Input key name
     input_key: String,
-    
-    /// 输出键名
+
+    /// Output key name
     output_key: String,
-    
-    /// Chain 名称
+
+    /// Chain name
     name: String,
 }
 
-impl LLMChain {
-    /// 创建新的 LLMChain
-    /// 
-    /// # 参数
-    /// * `llm` - LLM 客户端
-    /// * `prompt_template` - Prompt 模板字符串，使用 {variable} 作为占位符
-    pub fn new(llm: OpenAIChat, prompt_template: impl Into<String>) -> Self {
+impl<M: BaseChatModel> LLMChain<M> {
+    /// Create a new LLMChain
+    ///
+    /// # Arguments
+    /// * `llm` - LLM client (any type implementing BaseChatModel)
+    /// * `prompt_template` - Prompt template string with {variable} placeholders
+    pub fn new(llm: M, prompt_template: impl Into<String>) -> Self {
         Self {
             llm,
             prompt_template: prompt_template.into(),
@@ -60,31 +59,31 @@ impl LLMChain {
             name: "llm_chain".to_string(),
         }
     }
-    
-    /// 设置输入键名
+
+    /// Set input key name
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
-    
-    /// 设置输出键名
+
+    /// Set output key name
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
-    
-    /// 设置 Chain 名称
+
+    /// Set chain name
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
-    
-    /// 渲染 Prompt 模板
+
+    /// Render the Prompt template
     fn render_prompt(&self, inputs: &HashMap<String, Value>) -> Result<String, ChainError> {
         let mut prompt = self.prompt_template.clone();
-        
+
         for (key, value) in inputs {
-            // 替换 {key} 占位符
+            // Replace {key} placeholders
             let placeholder = format!("{{{}}}", key);
             let value_str = match value {
                 Value::String(s) => s.clone(),
@@ -92,90 +91,89 @@ impl LLMChain {
             };
             prompt = prompt.replace(&placeholder, &value_str);
         }
-        
+
         Ok(prompt)
     }
 }
 
 #[async_trait]
-impl BaseChain for LLMChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for LLMChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
-    
+
     fn output_keys(&self) -> Vec<&str> {
         vec![&self.output_key]
     }
-    
+
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        // 验证输入
+        // Validate inputs
         self.validate_inputs(&inputs)?;
 
-        // 渲染 Prompt
+        // Render prompt
         let prompt = self.render_prompt(&inputs)?;
 
-        // 调用 LLM
+        // Call LLM
         let messages = vec![Message::human(&prompt)];
         let result = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM 调用失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
-        // 构造输出
+        // Build output
         let mut output = HashMap::new();
         output.insert(self.output_key.clone(), Value::String(result.content));
 
         Ok(output)
     }
 
-    /// 流式执行 LLMChain -- 逐 token 输出
-    ///
-    /// 内部调 `OpenAIChat::stream_chat`,逐 token 回调。
+    /// Stream execution for LLMChain -- token by token output
     async fn stream(
         &self,
         inputs: HashMap<String, Value>,
     ) -> Result<ChainStream, ChainError> {
-        // 验证输入
+        // Validate inputs
         self.validate_inputs(&inputs)?;
 
-        // 渲染 Prompt
+        // Render prompt
         let prompt = self.render_prompt(&inputs)?;
 
-        // 调用 LLM stream_chat
+        // Call LLM stream_chat
         let messages = vec![Message::human(&prompt)];
         let llm_stream = self.llm.stream_chat(messages, None).await
-            .map_err(|e| ChainError::StreamError(format!("LLM 流式调用失败: {}", e)))?;
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
-        // 将 LLM stream 映射为 ChainStream
-        let stream = llm_stream.map(move |result: Result<String, crate::language_models::openai::OpenAIError>| {
-            match result {
-                Ok(token) => Ok(StreamToken {
-                    token,
-                    is_final: false,
-                }),
-                Err(e) => Err(ChainError::StreamError(format!("流式 token 错误: {}", e))),
-            }
+        // Map LLM stream to ChainStream
+        let stream = llm_stream.map(move |result| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!("Stream token error: {}", e))),
         });
 
         Ok(Box::pin(stream))
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
 }
 
 /// LLMChain Builder
-/// 
-/// 方便构建 LLMChain。
-pub struct LLMChainBuilder {
-    llm: OpenAIChat,
+///
+/// Convenience builder for LLMChain.
+pub struct LLMChainBuilder<M: BaseChatModel> {
+    llm: M,
     prompt_template: String,
     input_key: Option<String>,
     output_key: Option<String>,
     name: Option<String>,
 }
 
-impl LLMChainBuilder {
-    pub fn new(llm: OpenAIChat, prompt_template: impl Into<String>) -> Self {
+impl<M: BaseChatModel> LLMChainBuilder<M> {
+    pub fn new(llm: M, prompt_template: impl Into<String>) -> Self {
         Self {
             llm,
             prompt_template: prompt_template.into(),
@@ -184,37 +182,37 @@ impl LLMChainBuilder {
             name: None,
         }
     }
-    
+
     pub fn input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = Some(key.into());
         self
     }
-    
+
     pub fn output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = Some(key.into());
         self
     }
-    
+
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
-    
-    pub fn build(self) -> LLMChain {
+
+    pub fn build(self) -> LLMChain<M> {
         let mut chain = LLMChain::new(self.llm, self.prompt_template);
-        
+
         if let Some(key) = self.input_key {
             chain = chain.with_input_key(key);
         }
-        
+
         if let Some(key) = self.output_key {
             chain = chain.with_output_key(key);
         }
-        
+
         if let Some(name) = self.name {
             chain = chain.with_name(name);
         }
-        
+
         chain
     }
 }
@@ -222,8 +220,9 @@ impl LLMChainBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language_models::OpenAIChat;
     use crate::OpenAIConfig;
-    
+
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
             api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
@@ -240,98 +239,98 @@ mod tests {
             tool_choice: None,
         }
     }
-    
+
     #[test]
     fn test_render_prompt() {
         let llm = OpenAIChat::new(create_test_config());
-        let chain = LLMChain::new(llm, "问题: {question}");
-        
+        let chain = LLMChain::new(llm, "Question: {question}");
+
         let inputs = HashMap::from([
-            ("question".to_string(), Value::String("什么是Rust?".to_string()))
+            ("question".to_string(), Value::String("What is Rust?".to_string()))
         ]);
-        
+
         let prompt = chain.render_prompt(&inputs).unwrap();
-        assert_eq!(prompt, "问题: 什么是Rust?");
+        assert_eq!(prompt, "Question: What is Rust?");
     }
-    
+
     #[test]
     fn test_render_prompt_multiple_vars() {
         let llm = OpenAIChat::new(create_test_config());
-        let chain = LLMChain::new(llm, "名字: {name}, 年龄: {age}");
-        
+        let chain = LLMChain::new(llm, "Name: {name}, Age: {age}");
+
         let inputs = HashMap::from([
-            ("name".to_string(), Value::String("张三".to_string())),
+            ("name".to_string(), Value::String("Alice".to_string())),
             ("age".to_string(), Value::Number(25.into())),
         ]);
-        
+
         let prompt = chain.render_prompt(&inputs).unwrap();
-        assert_eq!(prompt, "名字: 张三, 年龄: 25");
+        assert_eq!(prompt, "Name: Alice, Age: 25");
     }
-    
-    /// 真实 API 测试 - 简单问题
-    /// 运行: cargo test test_llm_chain_simple -- --ignored --nocapture
+
+    /// Real API test - simple question
+    /// Run: cargo test test_llm_chain_simple -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn test_llm_chain_simple() {
         let llm = OpenAIChat::new(create_test_config());
-        let chain = LLMChain::new(llm, "请用一句话回答: {question}");
-        
+        let chain = LLMChain::new(llm, "Answer in one sentence: {question}");
+
         let inputs = HashMap::from([
-            ("question".to_string(), Value::String("什么是 Rust?".to_string()))
+            ("question".to_string(), Value::String("What is Rust?".to_string()))
         ]);
-        
-        println!("\n=== 测试 LLMChain - 简单问题 ===");
+
+        println!("\n=== Test LLMChain - simple question ===");
         let result = chain.invoke(inputs).await.unwrap();
-        
-        println!("输出: {:?}", result);
+
+        println!("Output: {:?}", result);
         assert!(result.contains_key("text"));
         assert!(!result.get("text").unwrap().as_str().unwrap().is_empty());
     }
-    
-    /// 真实 API 测试 - 多变量模板
-    /// 运行: cargo test test_llm_chain_template -- --ignored --nocapture
+
+    /// Real API test - multi-variable template
+    /// Run: cargo test test_llm_chain_template -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn test_llm_chain_template() {
         let llm = OpenAIChat::new(create_test_config());
-        let chain = LLMChain::new(llm, 
-            "请用{style}的语气回答问题: {question}"
+        let chain = LLMChain::new(llm,
+            "Answer in {style} style: {question}"
         );
-        
+
         let inputs = HashMap::from([
-            ("style".to_string(), Value::String("幽默".to_string())),
-            ("question".to_string(), Value::String("什么是编程?".to_string()))
+            ("style".to_string(), Value::String("humorous".to_string())),
+            ("question".to_string(), Value::String("What is programming?".to_string()))
         ]);
-        
-        println!("\n=== 测试 LLMChain - 多变量模板 ===");
+
+        println!("\n=== Test LLMChain - multi-variable template ===");
         let result = chain.invoke(inputs).await.unwrap();
-        
-        println!("输出: {:?}", result);
+
+        println!("Output: {:?}", result);
         assert!(result.contains_key("text"));
     }
-    
-    /// 真实 API 测试 - 使用 Builder
-    /// 运行: cargo test test_llm_chain_builder -- --ignored --nocapture
+
+    /// Real API test - using Builder
+    /// Run: cargo test test_llm_chain_builder -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn test_llm_chain_builder() {
         let llm = OpenAIChat::new(create_test_config());
-        
-        let chain = LLMChainBuilder::new(llm, "翻译以下内容到{language}: {text}")
+
+        let chain = LLMChainBuilder::new(llm, "Translate to {language}: {text}")
             .input_key("text")
             .output_key("translation")
             .name("translator")
             .build();
-        
+
         let inputs = HashMap::from([
-            ("language".to_string(), Value::String("英文".to_string())),
-            ("text".to_string(), Value::String("你好，世界".to_string()))
+            ("language".to_string(), Value::String("English".to_string())),
+            ("text".to_string(), Value::String("Hello, world".to_string()))
         ]);
-        
-        println!("\n=== 测试 LLMChain - Builder ===");
+
+        println!("\n=== Test LLMChain - Builder ===");
         let result = chain.invoke(inputs).await.unwrap();
-        
-        println!("输出: {:?}", result);
+
+        println!("Output: {:?}", result);
         assert!(result.contains_key("translation"));
     }
 }

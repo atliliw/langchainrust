@@ -7,38 +7,29 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 
-/// Chain 错误类型
-#[derive(Debug)]
+/// Chain error type
+#[derive(Debug, thiserror::Error)]
 pub enum ChainError {
-    /// 输入缺失
+    /// Missing input
+    #[error("Missing input: {0}")]
     MissingInput(String),
 
-    /// 输出错误
+    /// Output error
+    #[error("Output error: {0}")]
     OutputError(String),
 
-    /// 执行错误
+    /// Execution error
+    #[error("Execution error: {0}")]
     ExecutionError(String),
 
-    /// 流式输出错误
+    /// Stream error
+    #[error("Stream error: {0}")]
     StreamError(String),
 
-    /// 其他错误
+    /// Other error
+    #[error("Chain error: {0}")]
     Other(String),
 }
-
-impl std::fmt::Display for ChainError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChainError::MissingInput(key) => write!(f, "缺少输入: {}", key),
-            ChainError::OutputError(msg) => write!(f, "输出错误: {}", msg),
-            ChainError::ExecutionError(msg) => write!(f, "执行错误: {}", msg),
-            ChainError::StreamError(msg) => write!(f, "流式错误: {}", msg),
-            ChainError::Other(msg) => write!(f, "Chain 错误: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ChainError {}
 
 /// Chain 执行结果
 pub type ChainResult = HashMap<String, Value>;
@@ -130,9 +121,9 @@ mod tests {
     #[test]
     fn test_chain_error_display() {
         let error = ChainError::MissingInput("test".to_string());
-        assert!(error.to_string().contains("缺少输入"));
-        
+        assert!(error.to_string().contains("Missing input"));
+
         let error = ChainError::ExecutionError("test".to_string());
-        assert!(error.to_string().contains("执行错误"));
+        assert!(error.to_string().contains("Execution error"));
     }
 }

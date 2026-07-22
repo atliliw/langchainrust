@@ -11,37 +11,28 @@ use crate::memory::BaseMemory;
 use crate::callbacks::{CallbackManager, RunTree, RunType};
 
 /// Agent error types.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     /// Output parsing error.
+    #[error("Output parsing error: {0}")]
     OutputParsingError(String),
-    
+
     /// Tool not found.
+    #[error("Tool not found: {0}")]
     ToolNotFound(String),
-    
+
     /// Tool execution error.
+    #[error("Tool execution error: {0}")]
     ToolExecutionError(String),
-    
+
     /// Max iterations reached.
+    #[error("Max iterations reached")]
     MaxIterationsReached,
-    
+
     /// Other error.
+    #[error("Agent error: {0}")]
     Other(String),
 }
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AgentError::OutputParsingError(msg) => write!(f, "输出解析错误: {}", msg),
-            AgentError::ToolNotFound(name) => write!(f, "工具未找到: {}", name),
-            AgentError::ToolExecutionError(msg) => write!(f, "工具执行错误: {}", msg),
-            AgentError::MaxIterationsReached => write!(f, "已达到最大迭代次数"),
-            AgentError::Other(msg) => write!(f, "代理错误: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {}
 
 /// Base Agent trait.
 ///

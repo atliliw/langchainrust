@@ -60,7 +60,7 @@ impl From<MongoMemoryDoc> for MemoryData {
 
 /// MongoDB Persistent Memory
 pub struct MongoPersistentMemory {
-    inner: RwLock<ConversationSummaryBufferMemory>,
+    inner: RwLock<ConversationSummaryBufferMemory<OpenAIChat>>,
     database: Database,
     collection_name: String,
     session_id: RwLock<Option<String>>,
@@ -84,7 +84,7 @@ impl MongoPersistentMemory {
         
         let database = client.database(database_name);
         
-        let inner = ConversationSummaryBufferMemory::new(llm, token_limit);
+        let inner = ConversationSummaryBufferMemory::<OpenAIChat>::new(llm, token_limit);
         
         Ok(Self {
             inner: RwLock::new(inner),

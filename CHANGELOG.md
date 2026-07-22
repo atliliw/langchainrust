@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-22
+
+### Added
+- **共享数学工具 `core::math`**: 新增 `src/core/math.rs`,提取 `cosine_similarity` 共享实现(带 doctest + 单元测试),供 vector_stores / retrieval / embeddings / evaluation 等 12 处复用,去除各模块内联重复实现
+- **Calculator 安全表达式求值**: `Calculator` 工具接入 `meval` crate(`meval::eval_str`),支持算术 / 幂 / 函数(sin/cos/tan/sqrt/log/exp/abs)/ 常量(pi/e),替代手写解析
+- **HTTP 工具 URL 解析**: `HTTPTool` 接入 `url` crate,用 `url::Url::parse` 规范化 URL
+
+### Changed
+- **reqwest 0.11 -> 0.12**(breaking): 全量迁移 HTTP 客户端代码,涉及 providers / embeddings / tools / mcp / a2a / vector_stores 等模块
+- **内部重构与去重**: chains(document_chains / conversation_chain / retrieval_qa / llm_chain / router_chain)、tools(calculator / http / url_fetch / python_repl)、embeddings(deepseek / qwen)、vector_stores(memory / file_store / chunked)、mcp/transport、a2a/server、pinecone 等模块代码整理,统一复用 `core::math::cosine_similarity`
+
+### Fixed
+- `MapRerankDocumentsChain::extract_score` 集成测试调用泛型 `M` 推断失败(`tests/unit/conversation_retrieval_chains.rs`),对齐源码写法显式指定类型
+
 ## [0.4.1] - 2026-07-20
 
 ### Added

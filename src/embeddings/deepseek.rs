@@ -75,14 +75,14 @@ impl Embeddings for DeepSeekEmbeddings {
         if text.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
-        
+
         let url = format!("{}/embeddings", self.config.base_url);
-        
+
         let body = serde_json::json!({
             "model": self.config.model,
             "input": text,
         });
-        
+
         let response = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
@@ -91,25 +91,73 @@ impl Embeddings for DeepSeekEmbeddings {
             .send()
             .await
             .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-        
+
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
         }
-        
+
         let embedding_response: EmbeddingResponse = response
             .json()
             .await
             .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-        
+
         Ok(embedding_response.data[0].embedding.clone())
     }
-    
+
+    async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = format!("{}/embeddings", self.config.base_url);
+        let batch_size = 64; // DeepSeek API batch limit
+        let mut all_results = vec![Vec::new(); texts.len()];
+        let mut offset = 0;
+
+        for chunk in texts.chunks(batch_size) {
+            let body = serde_json::json!({
+                "model": self.config.model,
+                "input": chunk,
+            });
+
+            let response = self.client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+            }
+
+            let embedding_response: EmbeddingResponse = response
+                .json()
+                .await
+                .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
+
+            for item in embedding_response.data {
+                let global_index = offset + item.index as usize;
+                if global_index < all_results.len() {
+                    all_results[global_index] = item.embedding;
+                }
+            }
+            offset += chunk.len();
+        }
+
+        Ok(all_results)
+    }
+
     fn dimension(&self) -> usize {
         1536
     }
-    
+
     fn model_name(&self) -> &str {
         &self.config.model
     }

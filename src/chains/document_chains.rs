@@ -1,11 +1,11 @@
 // src/chains/document_chains.rs
 //! Document processing chains
 //!
-//! 文档处理 Chain，提供对多个文档进行 LLM 处理的能力：
-//! - StuffDocumentsChain: 将所有文档一次性填充到 prompt 中
-//! - RefineDocumentsChain: 逐文档迭代优化答案
-//! - MapReduceDocumentsChain: 并行处理文档后合并结果
-//! - MapRerankDocumentsChain: 并行处理文档后按相关性排序
+//! Document processing chains that provide LLM processing capabilities for multiple documents:
+//! - StuffDocumentsChain: Stuff all documents into a single prompt
+//! - RefineDocumentsChain: Iteratively refine the answer document by document
+//! - MapReduceDocumentsChain: Process documents in parallel then merge results
+//! - MapRerankDocumentsChain: Process documents in parallel then rank by relevance
 
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
@@ -14,7 +14,7 @@ use serde_json::Value;
 
 
 use super::base::{BaseChain, ChainResult, ChainError};
-use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::retrieval::Document;
 use crate::schema::Message;
 use crate::Runnable;
@@ -23,42 +23,42 @@ use crate::Runnable;
 // StuffDocumentsChain
 // ============================================================
 
-/// 默认的 Stuff 处理提示词模板
-const DEFAULT_STUFF_PROMPT: &str = "请根据以下参考信息回答用户的问题。
+/// Default Stuff prompt template
+const DEFAULT_STUFF_PROMPT: &str = "Answer the user's question based on the following reference information.
 
-参考信息：
+Reference information:
 {context}
 
-问题：{input}
+Question: {input}
 
-回答：";
+Answer:";
 
 /// StuffDocumentsChain
 ///
-/// 将所有文档一次性填充到 prompt 中交给 LLM 处理。
-/// 适用于文档总量不超过 LLM 上下文窗口的场景。
+/// Stuffs all documents into a single prompt for LLM processing.
+/// Suitable when the total document content fits within the LLM context window.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::{StuffDocumentsChain, OpenAIChat};
 ///
 /// let chain = StuffDocumentsChain::new(llm);
-/// let result = chain.invoke_with_documents(docs, "问题").await?;
+/// let result = chain.invoke_with_documents(docs, "question").await?;
 /// ```
-pub struct StuffDocumentsChain {
-    llm: OpenAIChat,
+pub struct StuffDocumentsChain<M: BaseChatModel> {
+    llm: M,
     prompt_template: String,
     document_variable_name: String,
     input_key: String,
     output_key: String,
     name: String,
     verbose: bool,
-    /// 文档最大字符数（超过则截断）
+    /// Maximum character count per document (truncated if exceeded)
     max_doc_length: Option<usize>,
 }
 
-impl StuffDocumentsChain {
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> StuffDocumentsChain<M> {
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             prompt_template: DEFAULT_STUFF_PROMPT.to_string(),
@@ -106,7 +106,7 @@ impl StuffDocumentsChain {
         self
     }
 
-    /// 格式化文档列表为上下文文本
+    /// Format document list into context text
     pub fn format_documents(&self, documents: &[Document]) -> String {
         let mut parts = Vec::new();
         for (i, doc) in documents.iter().enumerate() {
@@ -115,15 +115,15 @@ impl StuffDocumentsChain {
                 let char_count: usize = content.chars().count();
                 if char_count > max_len {
                     content = content.chars().take(max_len).collect::<String>();
-                    content.push_str("...\n[文档已截断]");
+                    content.push_str("...\n[document truncated]");
                 }
             }
-            parts.push(format!("文档 {}:\n{}", i + 1, content));
+            parts.push(format!("Document {}:\n{}", i + 1, content));
         }
         parts.join("\n\n---\n\n")
     }
 
-    /// 构建 prompt
+    /// Build prompt
     pub fn build_prompt(&self, context: &str, input: &str) -> String {
         let template = self.prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
@@ -131,35 +131,38 @@ impl StuffDocumentsChain {
         template
     }
 
-    /// 直接使用文档和输入调用
+    /// Invoke with documents and input directly
     pub async fn invoke_with_documents(
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError> {
+    ) -> Result<String, ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         let context = self.format_documents(&documents);
 
         if self.verbose {
             println!("\n=== StuffDocumentsChain ===");
-            println!("文档数量: {}", documents.len());
-            println!("上下文长度: {} 字符", context.len());
+            println!("Document count: {}", documents.len());
+            println!("Context length: {} characters", context.len());
         }
 
         let prompt = self.build_prompt(&context, input);
 
         if self.verbose {
-            println!("Prompt 长度: {} 字符", prompt.len());
+            println!("Prompt length: {} characters", prompt.len());
         }
 
         let messages = vec![Message::human(&prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM 调用失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let output = response.content;
 
         if self.verbose {
-            println!("输出: {}", output);
-            println!("=== StuffDocumentsChain 完成 ===\n");
+            println!("Output: {}", output);
+            println!("=== StuffDocumentsChain complete ===\n");
         }
 
         Ok(output)
@@ -167,7 +170,10 @@ impl StuffDocumentsChain {
 }
 
 #[async_trait]
-impl BaseChain for StuffDocumentsChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for StuffDocumentsChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -206,46 +212,46 @@ impl BaseChain for StuffDocumentsChain {
 // RefineDocumentsChain
 // ============================================================
 
-/// 默认的初始处理提示词模板
-const DEFAULT_REFINE_INITIAL_PROMPT: &str = "请根据以下参考信息回答问题。
+/// Default initial processing prompt template
+const DEFAULT_REFINE_INITIAL_PROMPT: &str = "Answer the question based on the following reference information.
 
-参考信息：
+Reference information:
 {context}
 
-问题：{input}
+Question: {input}
 
-回答：";
+Answer:";
 
-/// 默认的迭代优化提示词模板
-const DEFAULT_REFINE_PROMPT: &str = "你已基于部分信息给出了一个答案。以下是更多参考信息。
+/// Default iterative refinement prompt template
+const DEFAULT_REFINE_PROMPT: &str = "You have provided an answer based on partial information. Here is additional reference information.
 
-已有的答案：
+Existing answer:
 {existing_answer}
 
-新的参考信息：
+New reference information:
 {context}
 
-请根据新的信息完善或修改你的答案。如果新信息与已有答案不冲突，请合并它们。如果新信息与已有答案冲突，请以新信息为准。
+Please refine or modify your answer based on the new information. If the new information does not conflict with the existing answer, merge them. If the new information conflicts with the existing answer, prioritize the new information.
 
-问题：{input}
+Question: {input}
 
-完善后的答案：";
+Refined answer:";
 
 /// RefineDocumentsChain
 ///
-/// 逐文档迭代优化答案。
-/// 先用第一个文档生成初始答案，然后用后续文档不断优化。
-/// 适用于文档总量较大的场景（逐个处理避免超出上下文窗口）。
+/// Iteratively refines the answer document by document.
+/// Generates an initial answer from the first document, then refines with each subsequent document.
+/// Suitable when the total document content is large (processing one at a time avoids exceeding the context window).
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::{RefineDocumentsChain, OpenAIChat};
 ///
 /// let chain = RefineDocumentsChain::new(llm);
-/// let result = chain.invoke_with_documents(docs, "问题").await?;
+/// let result = chain.invoke_with_documents(docs, "question").await?;
 /// ```
-pub struct RefineDocumentsChain {
-    llm: OpenAIChat,
+pub struct RefineDocumentsChain<M: BaseChatModel> {
+    llm: M,
     initial_prompt_template: String,
     refine_prompt_template: String,
     document_variable_name: String,
@@ -255,8 +261,8 @@ pub struct RefineDocumentsChain {
     verbose: bool,
 }
 
-impl RefineDocumentsChain {
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> RefineDocumentsChain<M> {
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             initial_prompt_template: DEFAULT_REFINE_INITIAL_PROMPT.to_string(),
@@ -317,59 +323,62 @@ impl RefineDocumentsChain {
             .replace("{existing_answer}", existing_answer)
     }
 
-    /// 直接使用文档和输入调用（迭代优化）
+    /// Invoke with documents and input directly (iterative refinement)
     pub async fn invoke_with_documents(
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError> {
+    ) -> Result<String, ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("文档列表为空".to_string()));
+            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
         }
 
         if self.verbose {
             println!("\n=== RefineDocumentsChain ===");
-            println!("文档数量: {}", documents.len());
-            println!("输入: {}", input);
+            println!("Document count: {}", documents.len());
+            println!("Input: {}", input);
         }
 
-        // 第一步：用第一个文档生成初始答案
+        // Step 1: Generate initial answer from the first document
         let first_context = &documents[0].content;
         let initial_prompt = self.build_initial_prompt(first_context, input);
 
         if self.verbose {
-            println!("\n--- 初始处理（文档 1）---");
+            println!("\n--- Initial processing (document 1) ---");
         }
 
         let messages = vec![Message::human(&initial_prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM 初始调用失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("LLM initial call failed: {}", e)))?;
         let mut answer = response.content;
 
         if self.verbose {
-            println!("初始答案: {}", answer);
+            println!("Initial answer: {}", answer);
         }
 
-        // 后续步骤：用剩余文档迭代优化
+        // Subsequent steps: iteratively refine with remaining documents
         for (i, doc) in documents[1..].iter().enumerate() {
             if self.verbose {
-                println!("\n--- 优化步骤 {}（文档 {}）---", i + 1, i + 2);
+                println!("\n--- Refinement step {} (document {}) ---", i + 1, i + 2);
             }
 
             let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
 
             let messages = vec![Message::human(&refine_prompt)];
             let response = self.llm.invoke(messages, None).await
-                .map_err(|e| ChainError::ExecutionError(format!("LLM 优化调用失败: {}", e)))?;
+                .map_err(|e| ChainError::ExecutionError(format!("LLM refinement call failed: {}", e)))?;
             answer = response.content;
 
             if self.verbose {
-                println!("优化后答案: {}", answer);
+                println!("Refined answer: {}", answer);
             }
         }
 
         if self.verbose {
-            println!("=== RefineDocumentsChain 完成 ===\n");
+            println!("=== RefineDocumentsChain complete ===\n");
         }
 
         Ok(answer)
@@ -377,7 +386,10 @@ impl RefineDocumentsChain {
 }
 
 #[async_trait]
-impl BaseChain for RefineDocumentsChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for RefineDocumentsChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -416,46 +428,46 @@ impl BaseChain for RefineDocumentsChain {
 // MapRerankDocumentsChain
 // ============================================================
 
-/// 默认的 Map + Rerank 提示词模板
-const DEFAULT_MAP_RERANK_PROMPT: &str = "请根据以下文档回答问题，并给出你对答案的相关性评分（0-100分，越高越相关）。
+/// Default Map + Rerank prompt template
+const DEFAULT_MAP_RERANK_PROMPT: &str = "Answer the question based on the following document, and provide a relevance score (0-100, higher is more relevant).
 
-文档内容：
+Document content:
 {context}
 
-问题：{input}
+Question: {input}
 
-请按以下格式输出：
-相关性评分：<分数>
-答案：<你的答案>";
+Please output in the following format:
+Relevance score: <score>
+Answer: <your answer>";
 
 /// MapRerankDocumentsChain
 ///
-/// 先对每个文档独立调用 LLM 生成答案并评分，
-/// 然后按相关性评分排序，返回最高分的答案。
+/// First calls LLM independently for each document to generate an answer and score,
+/// then ranks by relevance score and returns the highest-scoring answer.
 ///
-/// 适用于需要从多个文档中选取最佳答案的场景。
+/// Suitable for scenarios where the best answer needs to be selected from multiple documents.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::{MapRerankDocumentsChain, OpenAIChat};
 ///
 /// let chain = MapRerankDocumentsChain::new(llm);
-/// let result = chain.invoke_with_documents(docs, "问题").await?;
+/// let result = chain.invoke_with_documents(docs, "question").await?;
 /// ```
-pub struct MapRerankDocumentsChain {
-    llm: OpenAIChat,
+pub struct MapRerankDocumentsChain<M: BaseChatModel> {
+    llm: M,
     map_prompt_template: String,
     document_variable_name: String,
     input_key: String,
     output_key: String,
     name: String,
     verbose: bool,
-    /// 返回前 k 个结果（默认 1，即只返回最高分）
+    /// Return top k results (default 1, i.e. only the highest score)
     top_k: usize,
 }
 
-impl MapRerankDocumentsChain {
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             map_prompt_template: DEFAULT_MAP_RERANK_PROMPT.to_string(),
@@ -498,26 +510,30 @@ impl MapRerankDocumentsChain {
         self
     }
 
-    /// 设置返回前 k 个结果
+    /// Set the number of top results to return
     pub fn with_top_k(mut self, k: usize) -> Self {
         self.top_k = k;
         self
     }
 
-    /// 构建 Map 阶段的 prompt
+    /// Build Map stage prompt
     pub fn build_map_prompt(&self, context: &str, input: &str) -> String {
         self.map_prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
             .replace("{input}", input)
     }
 
-    /// 从 LLM 输出中提取评分和答案
+    /// Extract score and answer from LLM output
     pub fn extract_score(text: &str) -> (u32, String) {
-        let score_re = regex::Regex::new(r"(?i)相关性评分\s*[:：]\s*(\d+)").unwrap();
+        let score_re = regex::Regex::new(r"(?i)(?:relevance\s*score|相关性评分)\s*[:：]\s*(\d+)").unwrap();
         if let Some(caps) = score_re.captures(text) {
             if let Ok(score) = caps[1].parse::<u32>() {
                 let cleaned = score_re.replace(text, "").trim().to_string();
-                let cleaned = cleaned.trim_start_matches("答案").trim_start_matches(&[':', '：'][..]).trim().to_string();
+                let cleaned = cleaned.trim_start_matches("Answer")
+                    .trim_start_matches("答案")
+                    .trim_start_matches(&[':', '：'][..])
+                    .trim()
+                    .to_string();
                 return (std::cmp::min(score, 100), if cleaned.is_empty() { text.to_string() } else { cleaned });
             }
         }
@@ -538,36 +554,42 @@ impl MapRerankDocumentsChain {
         doc: &Document,
         input: &str,
         index: usize,
-    ) -> Result<(u32, String), ChainError> {
+    ) -> Result<(u32, String), ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
-            println!("\n--- Map 文档 {} ---", index + 1);
+            println!("\n--- Map document {} ---", index + 1);
         }
         let messages = vec![Message::human(&prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("Map 调用失败（文档 {}）: {}", index + 1, e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e)))?;
         let (score, answer) = Self::extract_score(&response.content);
         if self.verbose {
-            println!("文档 {} 评分: {}，答案: {}", index + 1, score,
+            println!("Document {} score: {}, answer: {}", index + 1, score,
                 if answer.len() > 80 { &answer[..80] } else { &answer });
         }
         Ok((score, answer))
     }
 
-    /// 直接使用文档和输入调用
+    /// Invoke with documents and input directly
     pub async fn invoke_with_documents(
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<Vec<(u32, String)>, ChainError> {
+    ) -> Result<Vec<(u32, String)>, ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("文档列表为空".to_string()));
+            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
         }
 
         if self.verbose {
             println!("\n=== MapRerankDocumentsChain ===");
-            println!("文档数量: {}, 输入: {}", documents.len(), input);
-            println!("\n--- Map 阶段 ---");
+            println!("Document count: {}, Input: {}", documents.len(), input);
+            println!("\n--- Map phase ---");
         }
 
         let mut map_futures = Vec::new();
@@ -579,24 +601,27 @@ impl MapRerankDocumentsChain {
         results.sort_by(|a, b| b.0.cmp(&a.0));
 
         if self.verbose {
-            println!("\n--- Rerank 阶段 ---");
+            println!("\n--- Rerank phase ---");
             for (i, (score, answer)) in results.iter().enumerate() {
-                println!("排名 {}: 评分={}, 答案={}", i + 1, score,
+                println!("Rank {}: score={}, answer={}", i + 1, score,
                     if answer.len() > 100 { &answer[..100] } else { &answer });
             }
         }
 
         let top_results: Vec<(u32, String)> = results.into_iter().take(self.top_k).collect();
         if self.verbose {
-            println!("最终选取 {} 个最佳结果", top_results.len());
-            println!("=== MapRerankDocumentsChain 完成 ===\n");
+            println!("Selected {} best results", top_results.len());
+            println!("=== MapRerankDocumentsChain complete ===\n");
         }
         Ok(top_results)
     }
 }
 
 #[async_trait]
-impl BaseChain for MapRerankDocumentsChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapRerankDocumentsChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> { vec![&self.input_key, "documents"] }
     fn output_keys(&self) -> Vec<&str> { vec![&self.output_key] }
 
@@ -627,43 +652,43 @@ impl BaseChain for MapRerankDocumentsChain {
 // MapReduceDocumentsChain
 // ============================================================
 
-/// 默认的 Map 处理提示词模板
-const DEFAULT_MAP_PROMPT: &str = "请根据以下文档内容回答用户的问题。请基于文档内容给出简洁的答案。
+/// Default Map processing prompt template
+const DEFAULT_MAP_PROMPT: &str = "Answer the user's question based on the following document content. Provide a concise answer based on the document content.
 
-文档内容：
+Document content:
 {context}
 
-问题：{input}
+Question: {input}
 
-基于此文档的答案：";
+Answer based on this document:";
 
-/// 默认的 Reduce 合并提示词模板
-const DEFAULT_REDUCE_PROMPT: &str = "以下是多个文档分别给出的答案，请将它们合并为一个完整、连贯的最终答案。
+/// Default Reduce merge prompt template
+const DEFAULT_REDUCE_PROMPT: &str = "Below are answers from multiple documents. Please merge them into a single complete and coherent final answer.
 
-各文档的答案：
+Answers from each document:
 {summaries}
 
-原始问题：{input}
+Original question: {input}
 
-最终综合答案：";
+Final consolidated answer:";
 
 /// MapReduceDocumentsChain
 ///
-/// 分两步处理文档：
-/// 1. Map：对每个文档独立调用 LLM 生成答案
-/// 2. Reduce：将所有独立答案合并为最终答案
+/// Processes documents in two steps:
+/// 1. Map: Calls LLM independently for each document to generate an answer
+/// 2. Reduce: Merges all independent answers into a final answer
 ///
-/// 适用于文档量非常大的场景，map 阶段可以并行处理。
+/// Suitable for scenarios with a very large number of documents, as the map phase can process in parallel.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::{MapReduceDocumentsChain, OpenAIChat};
 ///
 /// let chain = MapReduceDocumentsChain::new(llm);
-/// let result = chain.invoke_with_documents(docs, "问题").await?;
+/// let result = chain.invoke_with_documents(docs, "question").await?;
 /// ```
-pub struct MapReduceDocumentsChain {
-    llm: OpenAIChat,
+pub struct MapReduceDocumentsChain<M: BaseChatModel> {
+    llm: M,
     map_prompt_template: String,
     reduce_prompt_template: String,
     document_variable_name: String,
@@ -673,8 +698,8 @@ pub struct MapReduceDocumentsChain {
     verbose: bool,
 }
 
-impl MapReduceDocumentsChain {
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             map_prompt_template: DEFAULT_MAP_PROMPT.to_string(),
@@ -731,7 +756,7 @@ impl MapReduceDocumentsChain {
     pub fn build_reduce_prompt(&self, summaries: &[String], input: &str) -> String {
         let summaries_text = summaries.iter()
             .enumerate()
-            .map(|(i, s)| format!("文档 {} 的答案：\n{}", i + 1, s))
+            .map(|(i, s)| format!("Answer from document {}:\n{}", i + 1, s))
             .collect::<Vec<_>>()
             .join("\n\n");
 
@@ -740,49 +765,55 @@ impl MapReduceDocumentsChain {
             .replace("{input}", input)
     }
 
-    /// Map 阶段：对单个文档调用 LLM
+    /// Map phase: call LLM for a single document
     async fn map_document(
         &self,
         doc: &Document,
         input: &str,
         index: usize,
-    ) -> Result<String, ChainError> {
+    ) -> Result<String, ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         let prompt = self.build_map_prompt(&doc.content, input);
 
         if self.verbose {
-            println!("\n--- Map 文档 {} ---", index + 1);
+            println!("\n--- Map document {} ---", index + 1);
         }
 
         let messages = vec![Message::human(&prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("Map 调用失败（文档 {}）: {}", index + 1, e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e)))?;
 
         if self.verbose {
-            println!("文档 {} 答案: {}", index + 1, response.content);
+            println!("Document {} answer: {}", index + 1, response.content);
         }
 
         Ok(response.content)
     }
 
-    /// 直接使用文档和输入调用
+    /// Invoke with documents and input directly
     pub async fn invoke_with_documents(
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError> {
+    ) -> Result<String, ChainError>
+    where
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("文档列表为空".to_string()));
+            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
         }
 
         if self.verbose {
             println!("\n=== MapReduceDocumentsChain ===");
-            println!("文档数量: {}", documents.len());
-            println!("输入: {}", input);
+            println!("Document count: {}", documents.len());
+            println!("Input: {}", input);
         }
 
-        // Map 阶段：并行处理每个文档
+        // Map phase: process each document in parallel
         if self.verbose {
-            println!("\n--- Map 阶段 ---");
+            println!("\n--- Map phase ---");
         }
 
         let mut map_futures = Vec::new();
@@ -792,25 +823,25 @@ impl MapReduceDocumentsChain {
         let summaries: Vec<String> = try_join_all(map_futures).await?;
 
         if self.verbose {
-            println!("\n--- Reduce 阶段 ---");
+            println!("\n--- Reduce phase ---");
         }
 
-        // Reduce 阶段：合并所有答案
+        // Reduce phase: merge all answers
         let reduce_prompt = self.build_reduce_prompt(&summaries, input);
 
         if self.verbose {
-            println!("合并 {} 个文档的答案", summaries.len());
+            println!("Merging answers from {} documents", summaries.len());
         }
 
         let messages = vec![Message::human(&reduce_prompt)];
         let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("Reduce 调用失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("Reduce call failed: {}", e)))?;
 
         let final_answer = response.content;
 
         if self.verbose {
-            println!("最终答案: {}", final_answer);
-            println!("=== MapReduceDocumentsChain 完成 ===\n");
+            println!("Final answer: {}", final_answer);
+            println!("=== MapReduceDocumentsChain complete ===\n");
         }
 
         Ok(final_answer)
@@ -818,7 +849,10 @@ impl MapReduceDocumentsChain {
 }
 
 #[async_trait]
-impl BaseChain for MapReduceDocumentsChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapReduceDocumentsChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -850,5 +884,203 @@ impl BaseChain for MapReduceDocumentsChain {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language_models::OpenAIChat;
+    use crate::OpenAIConfig;
+
+    fn create_test_config() -> OpenAIConfig {
+        OpenAIConfig {
+            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
+            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            model: "glm-5.2".to_string(),
+            streaming: false,
+            organization: None,
+            frequency_penalty: None,
+            max_tokens: None,
+            presence_penalty: None,
+            temperature: None,
+            top_p: None,
+            tools: None,
+            tool_choice: None,
+        }
+    }
+
+    #[test]
+    fn test_stuff_documents_format_documents() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm);
+
+        let docs = vec![
+            Document { content: "Hello world".to_string(), metadata: HashMap::new(), id: None },
+            Document { content: "Rust programming".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        let formatted = chain.format_documents(&docs);
+        assert!(formatted.contains("Document 1:"));
+        assert!(formatted.contains("Hello world"));
+        assert!(formatted.contains("Document 2:"));
+        assert!(formatted.contains("Rust programming"));
+    }
+
+    #[test]
+    fn test_stuff_documents_build_prompt() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm);
+
+        let prompt = chain.build_prompt("some context", "what is Rust?");
+        assert!(prompt.contains("some context"));
+        assert!(prompt.contains("what is Rust?"));
+    }
+
+    #[test]
+    fn test_stuff_documents_truncation() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm)
+            .with_max_doc_length(5);
+
+        let docs = vec![
+            Document { content: "Hello world this is a long string".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        let formatted = chain.format_documents(&docs);
+        assert!(formatted.contains("[document truncated]"));
+    }
+
+    #[test]
+    fn test_refine_documents_build_prompts() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: RefineDocumentsChain<OpenAIChat> = RefineDocumentsChain::new(llm);
+
+        let initial = chain.build_initial_prompt("context1", "question");
+        assert!(initial.contains("context1"));
+        assert!(initial.contains("question"));
+
+        let refine = chain.build_refine_prompt("context2", "question", "existing answer");
+        assert!(refine.contains("context2"));
+        assert!(refine.contains("question"));
+        assert!(refine.contains("existing answer"));
+    }
+
+    #[test]
+    fn test_map_rerank_extract_score() {
+        let text1 = "Relevance score: 85\nAnswer: The answer is 42";
+        let (score1, answer1) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text1);
+        assert_eq!(score1, 85);
+        assert!(answer1.contains("42"));
+
+        let text2 = "Score: 70\nSome answer text";
+        let (score2, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text2);
+        assert_eq!(score2, 70);
+
+        let text3 = "No score here, just an answer";
+        let (score3, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text3);
+        assert_eq!(score3, 50);
+    }
+
+    #[test]
+    fn test_map_rerank_build_map_prompt() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: MapRerankDocumentsChain<OpenAIChat> = MapRerankDocumentsChain::new(llm);
+
+        let prompt = chain.build_map_prompt("doc content", "what is this?");
+        assert!(prompt.contains("doc content"));
+        assert!(prompt.contains("what is this?"));
+    }
+
+    #[test]
+    fn test_map_reduce_build_prompts() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: MapReduceDocumentsChain<OpenAIChat> = MapReduceDocumentsChain::new(llm);
+
+        let map_prompt = chain.build_map_prompt("doc content", "question");
+        assert!(map_prompt.contains("doc content"));
+        assert!(map_prompt.contains("question"));
+
+        let summaries = vec!["Answer 1".to_string(), "Answer 2".to_string()];
+        let reduce_prompt = chain.build_reduce_prompt(&summaries, "question");
+        assert!(reduce_prompt.contains("Answer 1"));
+        assert!(reduce_prompt.contains("Answer 2"));
+        assert!(reduce_prompt.contains("question"));
+    }
+
+    /// Real API test - StuffDocumentsChain
+    /// Run: cargo test test_stuff_documents_chain_invoke -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn test_stuff_documents_chain_invoke() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm);
+
+        let docs = vec![
+            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
+            Document { content: "Rust emphasizes safety and performance.".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        println!("\n=== Test StuffDocumentsChain ===");
+        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        println!("Output: {}", result);
+        assert!(!result.is_empty());
+    }
+
+    /// Real API test - RefineDocumentsChain
+    /// Run: cargo test test_refine_documents_chain_invoke -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn test_refine_documents_chain_invoke() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: RefineDocumentsChain<OpenAIChat> = RefineDocumentsChain::new(llm);
+
+        let docs = vec![
+            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
+            Document { content: "Rust was created by Mozilla.".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        println!("\n=== Test RefineDocumentsChain ===");
+        let result = chain.invoke_with_documents(docs, "What is Rust and who created it?").await.unwrap();
+        println!("Output: {}", result);
+        assert!(!result.is_empty());
+    }
+
+    /// Real API test - MapRerankDocumentsChain
+    /// Run: cargo test test_map_rerank_documents_chain_invoke -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn test_map_rerank_documents_chain_invoke() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: MapRerankDocumentsChain<OpenAIChat> = MapRerankDocumentsChain::new(llm);
+
+        let docs = vec![
+            Document { content: "Python is a high-level programming language.".to_string(), metadata: HashMap::new(), id: None },
+            Document { content: "Rust is a systems programming language focused on safety.".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        println!("\n=== Test MapRerankDocumentsChain ===");
+        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        println!("Output: {:?}", result);
+        assert!(!result.is_empty());
+    }
+
+    /// Real API test - MapReduceDocumentsChain
+    /// Run: cargo test test_map_reduce_documents_chain_invoke -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn test_map_reduce_documents_chain_invoke() {
+        let llm = OpenAIChat::new(create_test_config());
+        let chain: MapReduceDocumentsChain<OpenAIChat> = MapReduceDocumentsChain::new(llm);
+
+        let docs = vec![
+            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
+            Document { content: "Rust emphasizes memory safety without garbage collection.".to_string(), metadata: HashMap::new(), id: None },
+        ];
+
+        println!("\n=== Test MapReduceDocumentsChain ===");
+        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        println!("Output: {}", result);
+        assert!(!result.is_empty());
     }
 }

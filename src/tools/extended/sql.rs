@@ -1,15 +1,16 @@
-//! SQL 工具(只读,SQLite)
+//! SQL tool (read-only, SQLite)
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use regex::Regex;
 use rusqlite::Connection;
 
 use crate::core::tools::ToolError;
 use crate::BaseTool;
 
-/// SQL 查询工具(只读 SELECT,表白名单)
+/// SQL query tool (read-only SELECT, table whitelist)
 pub struct SQLTool {
     conn: Mutex<Connection>,
     allowed_tables: Vec<String>,
@@ -17,7 +18,8 @@ pub struct SQLTool {
 
 impl SQLTool {
     pub fn new(path: &str) -> Result<Self, ToolError> {
-        let conn = Connection::open(path).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let conn =
+            Connection::open(path).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
             allowed_tables: Vec::new(),
@@ -29,23 +31,47 @@ impl SQLTool {
         self
     }
 
-    /// 执行 SELECT 查询(只读)
+    /// Extract table names from a SELECT SQL statement.
+    ///
+    /// Matches patterns like `FROM table`, `JOIN table`, `FROM t1, t2`.
+    /// Returns lowercase table names for comparison.
+    fn extract_table_names(sql: &str) -> Vec<String> {
+        // Match FROM/JOIN followed by table names (possibly comma-separated)
+        let re = Regex::new(r"(?i)\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)").unwrap();
+        let mut tables = Vec::new();
+        for cap in re.captures_iter(sql) {
+            // Split comma-separated table names
+            for name in cap[1].split(',') {
+                let trimmed = name.trim().to_lowercase();
+                if !trimmed.is_empty() {
+                    tables.push(trimmed);
+                }
+            }
+        }
+        tables
+    }
+
+    /// Execute a SELECT query (read-only)
     pub fn execute(&self, sql: &str) -> Result<Vec<HashMap<String, String>>, ToolError> {
         let lower = sql.trim().to_lowercase();
         if !lower.starts_with("select") {
-            return Err(ToolError::InvalidInput("只允许 SELECT(只读)".to_string()));
+            return Err(ToolError::InvalidInput(
+                "Only SELECT queries are allowed (read-only)".to_string(),
+            ));
         }
 
-        // 表白名单检查(简单 contains)
+        // Table whitelist check: exact match on extracted table names
         if !self.allowed_tables.is_empty() {
-            let any_allowed = self
-                .allowed_tables
+            let tables_in_sql = Self::extract_table_names(sql);
+            let allowed_lower: Vec<String> =
+                self.allowed_tables.iter().map(|t| t.to_lowercase()).collect();
+            let any_allowed = tables_in_sql
                 .iter()
-                .any(|t| lower.contains(&t.to_lowercase()));
+                .any(|t| allowed_lower.contains(t));
             if !any_allowed {
                 return Err(ToolError::InvalidInput(format!(
-                    "SQL 未涉及允许的表: {:?}",
-                    self.allowed_tables
+                    "SQL does not reference any allowed table. Allowed: {:?}, found: {:?}",
+                    self.allowed_tables, tables_in_sql
                 )));
             }
         }
@@ -66,7 +92,10 @@ impl SQLTool {
             .query_map([], |row| {
                 let mut m = HashMap::new();
                 for (i, col) in col_names.iter().enumerate() {
-                    let val: String = row.get::<_, Option<String>>(i).unwrap_or(None).unwrap_or_default();
+                    let val: String = row
+                        .get::<_, Option<String>>(i)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
                     m.insert(col.clone(), val);
                 }
                 Ok(m)
@@ -87,7 +116,7 @@ impl BaseTool for SQLTool {
     }
 
     fn description(&self) -> &str {
-        "执行 SQL SELECT 查询(只读)。输入 SQL 字符串。"
+        "Execute SQL SELECT queries (read-only). Input: SQL string."
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
@@ -129,17 +158,36 @@ mod tests {
     }
 
     #[test]
-    fn test_allowed_tables() {
+    fn test_allowed_tables_exact_match() {
         let tool = tool_with_data().with_allowed_tables(vec!["users".to_string()]);
         assert!(tool.execute("SELECT * FROM users").is_ok());
-        // 查询不存在的表(涉及允许表名但表不存在)-> SQL 错误
+        // "users2" should NOT match "users" — exact table name matching
         assert!(tool.execute("SELECT * FROM users2").is_err());
     }
 
     #[test]
     fn test_allowed_tables_blocks_unknown() {
         let tool = tool_with_data().with_allowed_tables(vec!["orders".to_string()]);
-        // SQL 不含允许的表名
+        // SQL does not reference any allowed table
         assert!(tool.execute("SELECT * FROM users").is_err());
+    }
+
+    #[test]
+    fn test_extract_table_names() {
+        let tables = SQLTool::extract_table_names("SELECT * FROM users WHERE id = 1");
+        assert_eq!(tables, vec!["users"]);
+
+        let tables = SQLTool::extract_table_names("SELECT * FROM users JOIN orders ON users.id = orders.user_id");
+        assert_eq!(tables, vec!["users", "orders"]);
+
+        let tables = SQLTool::extract_table_names("SELECT * FROM users, orders");
+        assert_eq!(tables, vec!["users", "orders"]);
+    }
+
+    #[test]
+    fn test_allowed_tables_with_join() {
+        let tool = tool_with_data().with_allowed_tables(vec!["users".to_string()]);
+        // JOIN with allowed table should pass
+        assert!(tool.execute("SELECT * FROM users JOIN orders ON users.id = orders.user_id").is_ok());
     }
 }

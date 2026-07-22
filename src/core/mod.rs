@@ -14,6 +14,7 @@ pub mod output_parsers;
 pub mod cache;
 pub mod token_counter;
 pub mod structured_output;
+pub mod math;
 
 pub use runnables::{Runnable, RunnableConfig};
 pub use language_models::{BaseLanguageModel, BaseChatModel};

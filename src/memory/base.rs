@@ -5,34 +5,25 @@ use async_trait::async_trait;
 use crate::schema::Message;
 use std::collections::HashMap;
 
-/// Memory 错误类型
-#[derive(Debug)]
+/// Memory error type
+#[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
-    /// 加载错误
+    /// Load error
+    #[error("Failed to load memory: {0}")]
     LoadError(String),
-    
-    /// 保存错误
+
+    /// Save error
+    #[error("Failed to save memory: {0}")]
     SaveError(String),
-    
-    /// 清空错误
+
+    /// Clear error
+    #[error("Failed to clear memory: {0}")]
     ClearError(String),
-    
-    /// 其他错误
+
+    /// Other error
+    #[error("Memory error: {0}")]
     Other(String),
 }
-
-impl std::fmt::Display for MemoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MemoryError::LoadError(msg) => write!(f, "加载记忆失败: {}", msg),
-            MemoryError::SaveError(msg) => write!(f, "保存记忆失败: {}", msg),
-            MemoryError::ClearError(msg) => write!(f, "清空记忆失败: {}", msg),
-            MemoryError::Other(msg) => write!(f, "Memory 错误: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for MemoryError {}
 
 /// Base Memory trait
 /// 

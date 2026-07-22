@@ -31,10 +31,33 @@ pub struct AgentCard {
     /// Protocol version string.
     #[serde(default = "default_version")]
     pub version: String,
+    /// Provider/organization name (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Documentation URL (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation_url: Option<String>,
+    /// Authentication schemes supported (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<Vec<String>>,
+    /// Default input modes (e.g. ["text", "image"]).
+    #[serde(default = "default_input_modes")]
+    pub default_input_modes: Vec<String>,
+    /// Default output modes (e.g. ["text"]).
+    #[serde(default = "default_output_modes")]
+    pub default_output_modes: Vec<String>,
 }
 
 fn default_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn default_input_modes() -> Vec<String> {
+    vec!["text".to_string()]
+}
+
+fn default_output_modes() -> Vec<String> {
+    vec!["text".to_string()]
 }
 
 impl AgentCard {
@@ -50,6 +73,11 @@ impl AgentCard {
             url: url.into(),
             capabilities: Vec::new(),
             version: default_version(),
+            provider: None,
+            documentation_url: None,
+            authentication: None,
+            default_input_modes: default_input_modes(),
+            default_output_modes: default_output_modes(),
         }
     }
 
@@ -64,6 +92,24 @@ impl AgentCard {
         self.version = version.into();
         self
     }
+
+    /// Set the provider/organization name.
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
+    }
+
+    /// Set the documentation URL.
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
+        self.documentation_url = Some(url.into());
+        self
+    }
+
+    /// Set the authentication schemes.
+    pub fn with_authentication(mut self, schemes: Vec<String>) -> Self {
+        self.authentication = Some(schemes);
+        self
+    }
 }
 
 /// Task lifecycle status.
@@ -74,6 +120,8 @@ pub enum TaskStatus {
     Submitted,
     /// Task is currently being processed.
     Working,
+    /// Task requires additional input from the user.
+    InputRequired,
     /// Task completed successfully.
     Completed,
     /// Task failed.
@@ -87,6 +135,7 @@ impl std::fmt::Display for TaskStatus {
         match self {
             TaskStatus::Submitted => write!(f, "submitted"),
             TaskStatus::Working => write!(f, "working"),
+            TaskStatus::InputRequired => write!(f, "input_required"),
             TaskStatus::Completed => write!(f, "completed"),
             TaskStatus::Failed => write!(f, "failed"),
             TaskStatus::Cancelled => write!(f, "cancelled"),

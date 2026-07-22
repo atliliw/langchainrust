@@ -153,9 +153,9 @@ fn test_stuff_documents_format_documents() {
     ];
     let formatted = chain.format_documents(&docs);
 
-    assert!(formatted.contains("文档 1:"));
+    assert!(formatted.contains("Document 1:"));
     assert!(formatted.contains("文档一的内容"));
-    assert!(formatted.contains("文档 2:"));
+    assert!(formatted.contains("Document 2:"));
     assert!(formatted.contains("文档二的内容"));
 }
 
@@ -173,7 +173,7 @@ fn test_stuff_documents_truncation() {
     ];
     let formatted = chain.format_documents(&docs);
 
-    assert!(formatted.contains("[文档已截断]"));
+    assert!(formatted.contains("[document truncated]"));
     assert!(formatted.len() < 100);
 }
 
@@ -425,19 +425,19 @@ fn test_map_rerank_build_prompt() {
 #[test]
 fn test_map_rerank_extract_score() {
     // 中文格式
-    let (score, answer) = MapRerankDocumentsChain::extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言");
+    let (score, answer) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言");
     assert_eq!(score, 85);
     assert!(answer.contains("Rust"));
 
     // 英文格式
-    let (score2, _answer2) = MapRerankDocumentsChain::extract_score("Score: 92\nAnswer: It's a programming language");
+    let (score2, _answer2) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("Score: 92\nAnswer: It's a programming language");
     assert_eq!(score2, 92);
 
     // 无评分格式（默认 50）
-    let (score3, _) = MapRerankDocumentsChain::extract_score("这是一段普通文本");
+    let (score3, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("这是一段普通文本");
     assert_eq!(score3, 50);
 
     // 评分超过 100 时取 100
-    let (score4, _) = MapRerankDocumentsChain::extract_score("相关性评分：150");
+    let (score4, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("相关性评分：150");
     assert_eq!(score4, 100);
 }

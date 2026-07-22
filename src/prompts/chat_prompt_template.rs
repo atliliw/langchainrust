@@ -4,6 +4,11 @@
 use crate::schema::Message;
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{(\w+)\}").unwrap()
+});
 
 /// 聊天提示词模板
 ///
@@ -44,14 +49,12 @@ impl ChatPromptTemplate {
     /// # 错误
     /// 如果任何消息中有变量但 `variables` 中没有提供对应的值，返回错误
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, String> {
-        let re = Regex::new(r"\{(\w+)\}").unwrap();
-
         self.messages
             .iter()
             .map(|msg| {
                 let mut content = msg.content.clone();
 
-                for cap in re.captures_iter(&msg.content) {
+                for cap in VARIABLE_RE.captures_iter(&msg.content) {
                     let var_name = cap.get(1).unwrap().as_str();
                     if let Some(value) = variables.get(var_name) {
                         content = content.replace(&format!("{{{}}}", var_name), value);
@@ -78,11 +81,10 @@ impl ChatPromptTemplate {
     /// # 返回
     /// 变量名列表（去重）
     pub fn variables(&self) -> Vec<String> {
-        let re = Regex::new(r"\{(\w+)\}").unwrap();
         let mut vars = std::collections::HashSet::new();
 
         for msg in &self.messages {
-            for cap in re.captures_iter(&msg.content) {
+            for cap in VARIABLE_RE.captures_iter(&msg.content) {
                 vars.insert(cap.get(1).unwrap().as_str().to_string());
             }
         }

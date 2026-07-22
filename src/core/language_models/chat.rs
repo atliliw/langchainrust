@@ -8,6 +8,7 @@ use std::pin::Pin;
 use crate::schema::Message;
 use crate::RunnableConfig;
 use crate::core::tools::ToolCall;
+use crate::core::tools::ToolDefinition;
 use super::BaseLanguageModel;
 
 /// LLM result containing response content and metadata.
@@ -24,10 +25,10 @@ pub struct LLMResult {
 pub struct TokenUsage {
     /// Input token count.
     pub prompt_tokens: usize,
-    
+
     /// Output token count.
     pub completion_tokens: usize,
-    
+
     /// Total token count.
     pub total_tokens: usize,
 }
@@ -39,25 +40,25 @@ pub struct TokenUsage {
 #[async_trait]
 pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
     /// Chat with the model.
-    /// 
+    ///
     /// # Arguments
     /// * `messages` - Message list.
     /// * `config` - Optional configuration.
-    /// 
+    ///
     /// # Returns
     /// LLM result.
     async fn chat(
-        &self, 
-        messages: Vec<Message>, 
+        &self,
+        messages: Vec<Message>,
         config: Option<RunnableConfig>
     ) -> Result<LLMResult, Self::Error>;
-    
+
     /// Stream chat with the model.
-    /// 
+    ///
     /// # Arguments
     /// * `messages` - Message list.
     /// * `config` - Optional configuration.
-    /// 
+    ///
     /// # Returns
     /// Stream of output chunks.
     async fn stream_chat(
@@ -65,13 +66,13 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
         messages: Vec<Message>,
         config: Option<RunnableConfig>
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>;
-    
+
     /// Chat with system prompt.
-    /// 
+    ///
     /// # Arguments
     /// * `system` - System prompt.
     /// * `messages` - Message list.
-    /// 
+    ///
     /// # Returns
     /// LLM result.
     async fn chat_with_system(
@@ -83,7 +84,16 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
             .into_iter()
             .chain(messages)
             .collect();
-        
+
         self.chat(full_messages, None).await
+    }
+
+    /// Bind tool definitions for function calling.
+    ///
+    /// Returns `None` by default if the provider does not support tool binding.
+    /// Providers that support function calling (OpenAI, Ollama) override this
+    /// to return a boxed chat model with the tools attached.
+    fn bind_tools(&self, _tools: Vec<ToolDefinition>) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+        None
     }
 }

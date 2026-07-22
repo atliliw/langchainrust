@@ -227,9 +227,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OpenAIChat {
     }
     
     fn get_num_tokens(&self, text: &str) -> usize {
-        // 简单估算：平均每个 token 约 4 个字符
-        // 实际应用中应该使用 tiktoken 或类似的库
-        text.len() / 4
+        crate::core::token_counter::count_tokens(text)
     }
     
     fn temperature(&self) -> Option<f32> {

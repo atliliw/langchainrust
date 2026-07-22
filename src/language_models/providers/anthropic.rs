@@ -60,28 +60,28 @@ impl AnthropicConfig {
     }
 
     /// Creates an AnthropicConfig from environment variables.
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, String> {
         let api_key = env::var("ANTHROPIC_API_KEY")
-            .expect("ANTHROPIC_API_KEY environment variable not set");
-        
+            .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
+
         let base_url = env::var("ANTHROPIC_BASE_URL")
             .unwrap_or_else(|_| ANTHROPIC_BASE_URL.to_string());
-        
+
         let model = env::var("ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".to_string());
-        
+
         let max_tokens = env::var("ANTHROPIC_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4096);
 
-        Self {
+        Ok(Self {
             api_key,
             base_url,
             model,
             max_tokens,
             ..Default::default()
-        }
+        })
     }
 
     /// Sets the Claude model name.
@@ -123,12 +123,12 @@ impl AnthropicChat {
         }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(AnthropicConfig::from_env())
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self::new(AnthropicConfig::from_env()?))
     }
 
-    pub fn with_model(model: impl Into<String>) -> Self {
-        Self::new(AnthropicConfig::from_env().with_model(model))
+    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
+        Ok(Self::new(AnthropicConfig::from_env()?.with_model(model)))
     }
 
     fn message_to_anthropic_format(message: &Message) -> AnthropicMessage {
@@ -373,7 +373,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for AnthropicChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        text.len() / 4
+        crate::core::token_counter::count_tokens(text)
     }
 
     fn temperature(&self) -> Option<f32> {

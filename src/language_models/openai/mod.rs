@@ -8,5 +8,6 @@ pub mod assistants;
 pub use config::OpenAIConfig;
 pub use chat::OpenAIChat;
 pub use chat::OpenAIError;
+pub use chat::StructuredOutputMethod;
 pub use sse::{SSEParser, SSEEvent};
 pub use assistants::{OpenAIAssistant, AssistantError};

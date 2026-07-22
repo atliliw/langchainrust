@@ -57,11 +57,15 @@ struct StoredTask {
 /// A2A Server - wraps an agent and provides handler functions.
 ///
 /// The server does NOT start its own HTTP listener. Instead, it provides
+/// Default maximum number of tasks stored before LRU eviction.
+const DEFAULT_MAX_TASKS: usize = 10_000;
+
 /// `handle_a2a_request()` and `get_agent_card()` that you can call from
 /// any HTTP framework's route handler.
 ///
 /// Tasks are stored in-memory so that `tasks/get` can retrieve them and
-/// `tasks/cancel` can transition their status.
+/// `tasks/cancel` can transition their status. When the task store exceeds
+/// `max_tasks`, the oldest completed/failed/cancelled tasks are evicted first.
 pub struct A2AServer {
     /// The underlying chain/agent.
     chain: Arc<dyn BaseChain>,
@@ -69,6 +73,8 @@ pub struct A2AServer {
     card: AgentCard,
     /// In-memory task store.
     tasks: RwLock<HashMap<String, StoredTask>>,
+    /// Maximum number of tasks before eviction.
+    max_tasks: usize,
 }
 
 impl A2AServer {
@@ -83,6 +89,38 @@ impl A2AServer {
             chain,
             card,
             tasks: RwLock::new(HashMap::new()),
+            max_tasks: DEFAULT_MAX_TASKS,
+        }
+    }
+
+    /// Set the maximum number of tasks before LRU eviction.
+    pub fn with_max_tasks(mut self, max: usize) -> Self {
+        self.max_tasks = max.max(1);
+        self
+    }
+
+    /// Evict oldest completed/failed/cancelled tasks if over capacity.
+    async fn evict_if_needed(&self) {
+        let mut tasks = self.tasks.write().await;
+        if tasks.len() <= self.max_tasks {
+            return;
+        }
+
+        // Evict terminal tasks (completed/failed/cancelled) to make room
+        let terminal_ids: Vec<String> = tasks
+            .iter()
+            .filter(|(_, t)| {
+                matches!(
+                    t.task.status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let excess = tasks.len().saturating_sub(self.max_tasks);
+        for id in terminal_ids.into_iter().take(excess) {
+            tasks.remove(&id);
         }
     }
 
@@ -175,13 +213,16 @@ impl A2AServer {
                 let task_result = A2ATaskResult::new(output);
 
                 // Store the task in-memory.
-                self.tasks.write().await.insert(
-                    task_id,
-                    StoredTask {
-                        task: task.clone(),
-                        result: Some(task_result.clone()),
-                    },
-                );
+                {
+                    self.tasks.write().await.insert(
+                        task_id,
+                        StoredTask {
+                            task: task.clone(),
+                            result: Some(task_result.clone()),
+                        },
+                    );
+                }
+                self.evict_if_needed().await;
 
                 A2AResponse::ok(
                     req.id,
@@ -200,13 +241,16 @@ impl A2AServer {
                 };
 
                 // Store the failed task in-memory.
-                self.tasks.write().await.insert(
-                    task_id,
-                    StoredTask {
-                        task: task.clone(),
-                        result: None,
-                    },
-                );
+                {
+                    self.tasks.write().await.insert(
+                        task_id,
+                        StoredTask {
+                            task: task.clone(),
+                            result: None,
+                        },
+                    );
+                }
+                self.evict_if_needed().await;
 
                 A2AResponse::ok(
                     req.id,

@@ -89,33 +89,24 @@ pub trait Tool: Send + Sync {
 }
 
 /// Tool error type.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     /// Input validation error.
+    #[error("Invalid input: {0}")]
     InvalidInput(String),
-    
+
     /// Execution error.
+    #[error("Execution failed: {0}")]
     ExecutionFailed(String),
-    
+
     /// Timeout.
+    #[error("Timeout: {0} seconds")]
     Timeout(u64),
-    
+
     /// Tool not found.
+    #[error("Tool not found: {0}")]
     ToolNotFound(String),
 }
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ToolError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
-            ToolError::ExecutionFailed(msg) => write!(f, "Execution failed: {}", msg),
-            ToolError::Timeout(seconds) => write!(f, "Timeout: {} seconds", seconds),
-            ToolError::ToolNotFound(name) => write!(f, "Tool not found: {}", name),
-        }
-    }
-}
-
-impl std::error::Error for ToolError {}
 
 use super::ToolDefinition;
 

@@ -154,7 +154,7 @@ impl BaseChain for SequentialChain {
                     chain_inputs.insert(chain_key.clone(), value.clone());
                 } else {
                     return Err(ChainError::MissingInput(format!(
-                        "Step {}: 缺少输入 '{}' (映射自 '{}')",
+                        "Step {}: missing input '{}' (mapped from '{}')",
                         step_index, chain_key, global_key
                     )));
                 }
@@ -162,7 +162,7 @@ impl BaseChain for SequentialChain {
             
             // 执行 Chain
             let chain_output = step.chain.invoke(chain_inputs).await.map_err(|e| {
-                ChainError::ExecutionError(format!("Step {} ({}) 执行失败: {}", step_index, step.chain.name(), e))
+                ChainError::ExecutionError(format!("Step {} ({}) execution failed: {}", step_index, step.chain.name(), e))
             })?;
             
             // 更新状态

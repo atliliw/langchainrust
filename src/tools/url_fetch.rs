@@ -10,6 +10,42 @@ use regex::Regex;
 
 use crate::core::tools::{BaseTool, Tool, ToolError};
 
+static SCRIPT_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<script[^>]*>.*?</script>").unwrap()
+});
+
+static STYLE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<style[^>]*>.*?</style>").unwrap()
+});
+
+static TAG_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<[^>]+>").unwrap()
+});
+
+static WHITESPACE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"\s+").unwrap()
+});
+
+static LINK_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<a[^>]+href\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap()
+});
+
+static IMG_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<img[^>]+src\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap()
+});
+
+static TITLE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<title[^>]*>(.*?)</title>").unwrap()
+});
+
+static DESC_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<meta[^>]+name\s*=\s*['"]description['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#).unwrap()
+});
+
+static KW_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<meta[^>]+name\s*=\s*['"]keywords['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#).unwrap()
+});
+
 /// URLFetch 工具输入
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct URLFetchInput {
@@ -122,18 +158,14 @@ impl URLFetchTool {
         let html = &fetch_result.result;
         
         // 移除 script 和 style 标签内容
-        let script_regex = Regex::new(r"<script[^>]*>.*?</script>").unwrap();
-        let style_regex = Regex::new(r"<style[^>]*>.*?</style>").unwrap();
-        let html = script_regex.replace_all(html, "");
-        let html = style_regex.replace_all(&html, "");
-        
+        let html = SCRIPT_REGEX.replace_all(html, "");
+        let html = STYLE_REGEX.replace_all(&html, "");
+
         // 移除所有 HTML 标签
-        let tag_regex = Regex::new(r"<[^>]+>").unwrap();
-        let text = tag_regex.replace_all(&html, "");
-        
+        let text = TAG_REGEX.replace_all(&html, "");
+
         // 清理空白
-        let whitespace_regex = Regex::new(r"\s+").unwrap();
-        let clean_text = whitespace_regex.replace_all(&text, " ").trim().to_string();
+        let clean_text = WHITESPACE_REGEX.replace_all(&text, " ").trim().to_string();
         
         // 限制长度
         let max_len = 5000;
@@ -159,8 +191,7 @@ impl URLFetchTool {
         let html = &fetch_result.result;
         
         // 提取所有链接
-        let link_regex = Regex::new(r#"<a[^>]+href\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap();
-        let links: Vec<String> = link_regex
+        let links: Vec<String> = LINK_REGEX
             .captures_iter(html)
             .map(|cap| cap[1].to_string())
             .collect();
@@ -184,8 +215,7 @@ impl URLFetchTool {
         let html = &fetch_result.result;
         
         // 提取所有图片链接
-        let img_regex = Regex::new(r#"<img[^>]+src\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap();
-        let images: Vec<String> = img_regex
+        let images: Vec<String> = IMG_REGEX
             .captures_iter(html)
             .map(|cap| cap[1].to_string())
             .collect();
@@ -207,22 +237,19 @@ impl URLFetchTool {
         let html = &fetch_result.result;
         
         // 提取 title
-        let title_regex = Regex::new(r"<title[^>]*>(.*?)</title>").unwrap();
-        let title = title_regex
+        let title = TITLE_REGEX
             .captures(html)
             .map(|cap| cap[1].trim().to_string())
             .unwrap_or_default();
         
         // 提取 meta description
-        let desc_regex = Regex::new(r#"<meta[^>]+name\s*=\s*['"]description['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#).unwrap();
-        let description = desc_regex
+        let description = DESC_REGEX
             .captures(html)
             .map(|cap| cap[1].to_string())
             .unwrap_or_default();
         
         // 提取 meta keywords
-        let kw_regex = Regex::new(r#"<meta[^>]+name\s*=\s*['"]keywords['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#).unwrap();
-        let keywords = kw_regex
+        let keywords = KW_REGEX
             .captures(html)
             .map(|cap| cap[1].to_string())
             .unwrap_or_default();

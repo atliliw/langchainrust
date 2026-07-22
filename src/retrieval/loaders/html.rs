@@ -3,12 +3,26 @@
 //! 支持从 HTML 字符串或 URL 加载文档,去除 script/style,剥离标签,解码实体,提取纯文本。
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use regex::Regex;
 
 use crate::retrieval::loaders::{DocumentLoader, LoaderError};
 use crate::vector_stores::Document;
+
+static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<script.*?</script>").unwrap()
+});
+static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<style.*?</style>").unwrap()
+});
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<[^>]+>").unwrap()
+});
+static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+").unwrap()
+});
 
 /// HTML 加载器:去除 script/style,剥离标签,解码实体,提取纯文本
 pub struct HTMLLoader {
@@ -35,15 +49,10 @@ impl HTMLLoader {
 
     /// 从 HTML 提取纯文本(纯函数,便于测试)
     pub fn extract_text(html: &str) -> String {
-        let script_re = Regex::new(r"(?s)<script.*?</script>").unwrap();
-        let style_re = Regex::new(r"(?s)<style.*?</style>").unwrap();
-        let tag_re = Regex::new(r"<[^>]+>").unwrap();
-        let whitespace_re = Regex::new(r"\s+").unwrap();
-
         let mut text = html.to_string();
-        text = script_re.replace_all(&text, "").to_string();
-        text = style_re.replace_all(&text, "").to_string();
-        text = tag_re.replace_all(&text, " ").to_string();
+        text = SCRIPT_RE.replace_all(&text, "").to_string();
+        text = STYLE_RE.replace_all(&text, "").to_string();
+        text = TAG_RE.replace_all(&text, " ").to_string();
         // 解码常见实体
         text = text
             .replace("&amp;", "&")
@@ -53,7 +62,7 @@ impl HTMLLoader {
             .replace("&quot;", "\"")
             .replace("&#39;", "'");
         // 压缩空白
-        whitespace_re.replace_all(&text, " ").trim().to_string()
+        WHITESPACE_RE.replace_all(&text, " ").trim().to_string()
     }
 
     /// 从 URL 抓取 HTML 内容

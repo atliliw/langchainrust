@@ -335,7 +335,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        text.len() / 4
+        crate::core::token_counter::count_tokens(text)
     }
 
     fn temperature(&self) -> Option<f32> {

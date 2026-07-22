@@ -1,31 +1,34 @@
 // src/tools/calculator.rs
-//! 计算器工具
+//! Calculator tool
 //!
-//! 一个简单的数学表达式计算器
+//! A math expression calculator using the meval crate.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use crate::core::tools::{BaseTool, Tool, ToolError};
 
-/// 计算器输入
+/// Calculator input
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CalculatorInput {
-    /// 数学表达式（如 "2 + 2", "sqrt(16)", "3.14 * 10"）
+    /// Math expression (e.g., "2 + 3", "sqrt(16)", "3.14 * 10", "2 + 3 * 4")
     pub expression: String,
 }
 
-/// 计算器输出
+/// Calculator output
 #[derive(Debug, Serialize)]
 pub struct CalculatorOutput {
-    /// 计算结果
+    /// Calculation result
     pub result: f64,
-    
-    /// 原始表达式
+
+    /// Original expression
     pub expression: String,
 }
 
-/// 计算器工具
+/// Calculator tool
+///
+/// Evaluates math expressions using the meval crate.
+/// Supports: basic arithmetic (+, -, *, /), power (^), functions (sin, cos, tan, sqrt, log, exp, abs), constants (pi, e).
 pub struct Calculator;
 
 impl Calculator {
@@ -40,15 +43,15 @@ impl Default for Calculator {
     }
 }
 
-/// 实现 Tool trait（类型安全版本）
+/// Implement Tool trait (type-safe version)
 #[async_trait]
 impl Tool for Calculator {
     type Input = CalculatorInput;
     type Output = CalculatorOutput;
-    
+
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
-        let result = self.evaluate_expression(&input.expression)?;
-        
+        let result = Self::evaluate_expression(&input.expression)?;
+
         Ok(CalculatorOutput {
             result,
             expression: input.expression,
@@ -56,39 +59,41 @@ impl Tool for Calculator {
     }
 }
 
-/// 实现 BaseTool trait（字符串版本，用于 Agent）
+/// Implement BaseTool trait (string version, for Agent)
 #[async_trait]
 impl BaseTool for Calculator {
     fn name(&self) -> &str {
         "calculator"
     }
-    
-    fn description(&self) -> &str {
-        "计算数学表达式。支持基本运算（加减乘除）、幂运算、平方根、三角函数等。
-        
-示例:
-- '2 + 2' → 4
-- 'sqrt(16)' → 4
-- '3.14 * 10' → 31.4
-- 'sin(1.57)' → 接近 1
-- 'pow(2, 10)' → 1024
 
-输入格式: JSON 对象，包含 expression 字段
-例如: {\"expression\": \"2 + 3\"}"
+    fn description(&self) -> &str {
+        "Calculate math expressions. Supports basic arithmetic, power, trig functions, sqrt, log, exp, abs, and constants (pi, e).
+
+Examples:
+- '2 + 3' -> 5
+- '2 + 3 * 4' -> 14
+- 'sqrt(16)' -> 4
+- '3.14 * 10' -> 31.4
+- 'sin(pi/2)' -> 1
+- '2^10' -> 1024
+- 'log(e)' -> 1
+
+Input format: JSON object with 'expression' field
+Example: {\"expression\": \"2 + 3\"}"
     }
-    
+
     async fn run(&self, input: String) -> Result<String, ToolError> {
-        // 解析输入
+        // Parse input
         let parsed: CalculatorInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
-        
-        // 执行计算
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse error: {}", e)))?;
+
+        // Execute calculation
         let output = self.invoke(parsed).await?;
-        
-        // 返回结果字符串
+
+        // Return result string
         Ok(format!("{} = {}", output.expression, output.result))
     }
-    
+
     fn args_schema(&self) -> Option<serde_json::Value> {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(CalculatorInput)).ok()
@@ -96,68 +101,90 @@ impl BaseTool for Calculator {
 }
 
 impl Calculator {
-    /// 计算数学表达式
-    fn evaluate_expression(&self, expr: &str) -> Result<f64, ToolError> {
-        // 简化实现：只支持基本运算
-        // 实际应该使用 meval 或 evalexpr crate
-        
+    /// Evaluate a math expression using meval
+    fn evaluate_expression(expr: &str) -> Result<f64, ToolError> {
         let expr = expr.trim();
-        
-        // 尝试解析为简单表达式
+
+        // Try parsing as a plain number first
         if let Ok(num) = expr.parse::<f64>() {
             return Ok(num);
         }
-        
-        // 支持的基本运算
-        if expr.contains('+') {
-            let parts: Vec<&str> = expr.split('+').collect();
-            if parts.len() == 2 {
-                let a: f64 = parts[0].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                let b: f64 = parts[1].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                return Ok(a + b);
-            }
-        }
-        
-        if expr.contains('-') {
-            let parts: Vec<&str> = expr.split('-').collect();
-            if parts.len() == 2 {
-                let a: f64 = parts[0].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                let b: f64 = parts[1].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                return Ok(a - b);
-            }
-        }
-        
-        if expr.contains('*') {
-            let parts: Vec<&str> = expr.split('*').collect();
-            if parts.len() == 2 {
-                let a: f64 = parts[0].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                let b: f64 = parts[1].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                return Ok(a * b);
-            }
-        }
-        
-        if expr.contains('/') {
-            let parts: Vec<&str> = expr.split('/').collect();
-            if parts.len() == 2 {
-                let a: f64 = parts[0].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                let b: f64 = parts[1].trim().parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("解析失败: {}", e)))?;
-                if b == 0.0 {
-                    return Err(ToolError::ExecutionFailed("除数不能为0".to_string()));
-                }
-                return Ok(a / b);
-            }
-        }
-        
-        Err(ToolError::ExecutionFailed(
-            format!("无法解析表达式: {}", expr)
-        ))
+
+        // Use meval to parse and evaluate
+        meval::eval_str(expr)
+            .map_err(|e| ToolError::ExecutionFailed(format!(
+                "Failed to evaluate expression '{}': {}", expr, e
+            )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_addition() {
+        assert_eq!(Calculator::evaluate_expression("2 + 3").unwrap(), 5.0);
+    }
+
+    #[test]
+    fn test_operator_precedence() {
+        // 2 + 3 * 4 = 14 (not 20)
+        assert_eq!(Calculator::evaluate_expression("2 + 3 * 4").unwrap(), 14.0);
+    }
+
+    #[test]
+    fn test_chained_addition() {
+        assert_eq!(Calculator::evaluate_expression("1 + 2 + 3").unwrap(), 6.0);
+    }
+
+    #[test]
+    fn test_subtraction() {
+        assert_eq!(Calculator::evaluate_expression("10 - 3").unwrap(), 7.0);
+    }
+
+    #[test]
+    fn test_multiplication() {
+        let result = Calculator::evaluate_expression("3.14 * 10").unwrap();
+        assert!((result - 31.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_division() {
+        let result = Calculator::evaluate_expression("10 / 3").unwrap();
+        assert!((result - 3.3333333333333335).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_power() {
+        assert_eq!(Calculator::evaluate_expression("2^10").unwrap(), 1024.0);
+    }
+
+    #[test]
+    fn test_sqrt() {
+        assert_eq!(Calculator::evaluate_expression("sqrt(16)").unwrap(), 4.0);
+    }
+
+    #[test]
+    fn test_sin_pi() {
+        let result = Calculator::evaluate_expression("sin(pi/2)").unwrap();
+        assert!((result - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_plain_number() {
+        assert_eq!(Calculator::evaluate_expression("42").unwrap(), 42.0);
+    }
+
+    #[test]
+    fn test_invalid_expression() {
+        assert!(Calculator::evaluate_expression("hello").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_tool_run() {
+        let tool = Calculator::new();
+        let result = tool.run(r#"{"expression": "2 + 3"}"#.to_string()).await.unwrap();
+        assert!(result.contains("5"));
     }
 }

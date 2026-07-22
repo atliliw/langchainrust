@@ -1,13 +1,14 @@
-//! Pinecone 向量库(HTTP API)
+//! Pinecone vector store (HTTP API)
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::embeddings::Embeddings;
-use crate::vector_stores::Document;
+use crate::vector_stores::{Document, VectorStore, VectorStoreError, SearchResult};
 
-/// Pinecone 向量库客户端
+/// Pinecone vector store client
 pub struct PineconeStore {
     api_key: String,
     host: String,
@@ -15,9 +16,9 @@ pub struct PineconeStore {
 }
 
 impl PineconeStore {
-    /// 创建 Pinecone 客户端
+    /// Create a Pinecone client.
     ///
-    /// `host` 格式: `https://{index-name}.svc.{environment}.pinecone.io`
+    /// `host` format: `https://{index-name}.svc.{environment}.pinecone.io`
     pub fn new(api_key: impl Into<String>, host: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -26,7 +27,7 @@ impl PineconeStore {
         }
     }
 
-    /// 构造 upsert 请求体(纯函数,便于测试)
+    /// Build upsert request body (pure function, convenient for testing).
     pub fn build_upsert_body(docs: &[Document], vectors: &[Vec<f32>]) -> serde_json::Value {
         let vectors_json: Vec<serde_json::Value> = docs
             .iter()
@@ -42,7 +43,7 @@ impl PineconeStore {
         serde_json::json!({ "vectors": vectors_json })
     }
 
-    /// 构造 query 请求体(纯函数,便于测试)
+    /// Build query request body (pure function, convenient for testing).
     pub fn build_query_body(query_vec: &[f32], top_k: usize) -> serde_json::Value {
         serde_json::json!({
             "vector": query_vec,
@@ -51,7 +52,7 @@ impl PineconeStore {
         })
     }
 
-    /// upsert 文档(自动 embed)
+    /// Upsert documents (auto-embed).
     pub async fn upsert(
         &self,
         docs: &[Document],
@@ -73,12 +74,12 @@ impl PineconeStore {
             .await
             .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone upsert 错误: {}", resp.status()));
+            return Err(format!("Pinecone upsert error: {}", resp.status()));
         }
         Ok(())
     }
 
-    /// 查询相似文档
+    /// Query similar documents.
     pub async fn query(&self, query_vec: Vec<f32>, top_k: usize) -> Result<Vec<Document>, String> {
         let body = Self::build_query_body(&query_vec, top_k);
         let url = format!("{}/query", self.host);
@@ -91,7 +92,7 @@ impl PineconeStore {
             .await
             .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone query 错误: {}", resp.status()));
+            return Err(format!("Pinecone query error: {}", resp.status()));
         }
         let query_resp: QueryResponse = resp.json().await.map_err(|e| e.to_string())?;
         let result = query_resp
@@ -113,7 +114,7 @@ impl PineconeStore {
         Ok(result)
     }
 
-    /// 按 ID 删除
+    /// Delete by IDs.
     pub async fn delete(&self, ids: &[String]) -> Result<(), String> {
         let url = format!("{}/vectors/delete", self.host);
         let body = serde_json::json!({ "ids": ids });
@@ -126,9 +127,122 @@ impl PineconeStore {
             .await
             .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone delete 错误: {}", resp.status()));
+            return Err(format!("Pinecone delete error: {}", resp.status()));
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl VectorStore for PineconeStore {
+    async fn add_documents(
+        &self,
+        documents: Vec<Document>,
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<Vec<String>, VectorStoreError> {
+        let ids: Vec<String> = documents
+            .iter()
+            .map(|d| d.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+            .collect();
+
+        // Build upsert body with pre-computed embeddings
+        let body = Self::build_upsert_body(&documents, &embeddings);
+        let url = format!("{}/vectors/upsert", self.host);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Api-Key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone upsert failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(VectorStoreError::StorageError(format!("Pinecone upsert HTTP error: {}", resp.status())));
+        }
+
+        Ok(ids)
+    }
+
+    async fn similarity_search(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let body = Self::build_query_body(query_embedding, k);
+        let url = format!("{}/query", self.host);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Api-Key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(VectorStoreError::StorageError(format!("Pinecone query HTTP error: {}", resp.status())));
+        }
+
+        let query_resp: QueryResponse = resp
+            .json()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query parse error: {}", e)))?;
+
+        let results = query_resp
+            .matches
+            .into_iter()
+            .map(|m| {
+                let content = m
+                    .metadata
+                    .as_ref()
+                    .and_then(|md| md.get("content").cloned())
+                    .unwrap_or_default();
+                let doc = Document {
+                    content,
+                    metadata: m.metadata.unwrap_or_default(),
+                    id: Some(m.id.clone()),
+                };
+                SearchResult {
+                    document: doc,
+                    score: m.score as f32,
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    async fn get_document(&self, _id: &str) -> Result<Option<Document>, VectorStoreError> {
+        // Pinecone HTTP API doesn't support direct fetch by ID in the basic plan.
+        // Use similarity_search with the ID as metadata filter instead.
+        Err(VectorStoreError::StorageError(
+            "Pinecone does not support direct document fetch by ID via HTTP API".to_string()
+        ))
+    }
+
+    async fn get_embedding(&self, _id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
+        Err(VectorStoreError::StorageError(
+            "Pinecone does not support direct embedding fetch by ID via HTTP API".to_string()
+        ))
+    }
+
+    async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
+        self.delete(&[id.to_string()])
+            .await
+            .map_err(VectorStoreError::StorageError)
+    }
+
+    async fn count(&self) -> usize {
+        // Pinecone HTTP API doesn't expose a simple count endpoint in the basic API.
+        // Return 0 as a placeholder; use the Pinecone dashboard for accurate counts.
+        0
+    }
+
+    async fn clear(&self) -> Result<(), VectorStoreError> {
+        Err(VectorStoreError::StorageError(
+            "Pinecone does not support clearing all vectors via HTTP API. Delete by namespace or IDs instead.".to_string()
+        ))
     }
 }
 

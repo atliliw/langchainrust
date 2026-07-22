@@ -850,6 +850,7 @@ mod tests {
                        光反应在类囊体膜上发生,产生 ATP 和 NADPH;暗反应在基质中进行,利用这些产物固定二氧化碳。\
                        光合作用是地球上大多数生命的能量来源,也是大气中氧气的主要来源。";
 
+        #[allow(clippy::type_complexity)] // 测试 fixture: (场景, input, reference, &[(标签, 内容)])
         let scenarios: &[(&str, &str, &str, &[(&str, &str)])] = &[
             (
                 "RAG幻觉",

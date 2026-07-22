@@ -1,7 +1,15 @@
 // src/language_models/providers/moonshot.rs
 //! Moonshot (Kimi) API 实现 (OpenAI 兼容)
 
-use crate::language_models::openai::{OpenAIChat, OpenAIConfig};
+use crate::language_models::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
+use crate::schema::Message;
+use crate::RunnableConfig;
+use crate::core::language_models::{BaseChatModel, LLMResult};
+use crate::core::tools::ToolDefinition;
+use futures_util::Stream;
+use std::pin::Pin;
+use serde::de::DeserializeOwned;
+use schemars::JsonSchema;
 use std::env;
 
 /// Moonshot API 端点
@@ -46,21 +54,21 @@ impl MoonshotConfig {
     }
 
     /// Creates a MoonshotConfig from environment variables.
-    pub fn from_env() -> Self {
-        let api_key =
-            env::var("MOONSHOT_API_KEY").expect("MOONSHOT_API_KEY environment variable not set");
+    pub fn from_env() -> Result<Self, String> {
+        let api_key = env::var("MOONSHOT_API_KEY")
+            .map_err(|_| "MOONSHOT_API_KEY environment variable not set".to_string())?;
 
         let base_url =
             env::var("MOONSHOT_BASE_URL").unwrap_or_else(|_| MOONSHOT_BASE_URL.to_string());
 
         let model = env::var("MOONSHOT_MODEL").unwrap_or_else(|_| "moonshot-v1-8k".to_string());
 
-        Self {
+        Ok(Self {
             api_key,
             base_url,
             model,
             ..Default::default()
-        }
+        })
     }
 
     /// Sets the model name (e.g., moonshot-v1-128k for long context).
@@ -111,27 +119,37 @@ impl MoonshotChat {
         }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(MoonshotConfig::from_env())
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self::new(MoonshotConfig::from_env()?))
     }
 
     /// Creates a MoonshotChat with a specific model.
-    pub fn with_model(model: impl Into<String>) -> Self {
-        let config = MoonshotConfig::from_env().with_model(model);
-        Self::new(config)
+    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
+        let config = MoonshotConfig::from_env()?.with_model(model);
+        Ok(Self::new(config))
     }
 }
 
-impl std::ops::Deref for MoonshotChat {
-    type Target = OpenAIChat;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+impl MoonshotChat {
+    /// Delegate chat to inner OpenAIChat
+    pub async fn chat(&self, messages: Vec<Message>, config: Option<RunnableConfig>) -> Result<LLMResult, OpenAIError> {
+        self.inner.chat(messages, config).await
     }
-}
 
-impl std::ops::DerefMut for MoonshotChat {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+    /// Delegate stream_chat to inner OpenAIChat
+    pub async fn stream_chat(&self, messages: Vec<Message>, config: Option<RunnableConfig>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
+        self.inner.stream_chat(messages, config).await
+    }
+
+    /// Delegate bind_tools to inner OpenAIChat
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
+        Self {
+            inner: self.inner.bind_tools(tools),
+        }
+    }
+
+    /// Delegate with_structured_output to inner OpenAIChat
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> StructuredOutputMethod<T> {
+        self.inner.with_structured_output()
     }
 }

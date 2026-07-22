@@ -9,19 +9,19 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::base::{BaseMemory, MemoryError, ChatMessageHistory};
-use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::schema::Message;
 use crate::Runnable;
 
-const DEFAULT_SUMMARY_PROMPT: &str = "逐步总结对话内容，将新内容添加到之前的摘要中。
+const DEFAULT_SUMMARY_PROMPT: &str = "Progressively summarize the conversation, adding new content to the previous summary.
 
-当前摘要：
+Current summary:
 {summary}
 
-新增对话：
+New lines of conversation:
 {new_lines}
 
-新摘要：";
+New summary:";
 
 /// Conversation Summary Buffer Memory
 ///
@@ -40,8 +40,8 @@ const DEFAULT_SUMMARY_PROMPT: &str = "逐步总结对话内容，将新内容添
 /// // - 前 15 轮 → 摘要
 /// // - 最近 5 轮 → 完整对话
 /// ```
-pub struct ConversationSummaryBufferMemory {
-    llm: OpenAIChat,
+pub struct ConversationSummaryBufferMemory<M: BaseChatModel> {
+    llm: M,
     
     buffer: Mutex<String>,
     chat_memory: ChatMessageHistory,
@@ -56,8 +56,8 @@ pub struct ConversationSummaryBufferMemory {
     return_messages: bool,
 }
 
-impl ConversationSummaryBufferMemory {
-    pub fn new(llm: OpenAIChat, max_token_limit: usize) -> Self {
+impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
+    pub fn new(llm: M, max_token_limit: usize) -> Self {
         Self {
             llm,
             buffer: Mutex::new(String::new()),
@@ -152,14 +152,17 @@ impl ConversationSummaryBufferMemory {
         let messages = vec![Message::human(&prompt)];
         
         let result = self.llm.invoke(messages, None).await
-            .map_err(|e| MemoryError::SaveError(format!("LLM 摘要失败: {}", e)))?;
+            .map_err(|e| MemoryError::SaveError(format!("LLM summary generation failed: {}", e)))?;
         
         Ok(result.content)
     }
 }
 
 #[async_trait]
-impl BaseMemory for ConversationSummaryBufferMemory {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseMemory for ConversationSummaryBufferMemory<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn memory_variables(&self) -> Vec<&str> {
         vec![&self.memory_key]
     }
@@ -192,7 +195,7 @@ impl BaseMemory for ConversationSummaryBufferMemory {
             let mut history = String::new();
             
             if !buffer.is_empty() {
-                history.push_str(&format!("摘要: {}\n\n", buffer));
+                history.push_str(&format!("Summary: {}\n\n", buffer));
             }
             
             for msg in &pruned {
@@ -283,6 +286,7 @@ impl BaseMemory for ConversationSummaryBufferMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language_models::OpenAIChat;
     use crate::OpenAIConfig;
     
     fn create_test_config() -> OpenAIConfig {
@@ -292,16 +296,16 @@ mod tests {
     #[test]
     fn test_new() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryBufferMemory::new(llm, 1000);
-        
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 1000);
+
         assert_eq!(memory.memory_variables(), vec!["history"]);
         assert_eq!(memory.max_token_limit(), 1000);
     }
-    
+
     #[test]
     fn test_with_options() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryBufferMemory::new(llm, 500)
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 500)
             .with_input_key("question")
             .with_output_key("answer")
             .with_memory_key("context")
@@ -319,16 +323,16 @@ mod tests {
         let text2 = "Hello World";
         let text3 = "这是一段中文文本";
         
-        assert!(ConversationSummaryBufferMemory::estimate_tokens(text1) > 0);
-        assert!(ConversationSummaryBufferMemory::estimate_tokens(text2) > ConversationSummaryBufferMemory::estimate_tokens(text1));
-        assert!(ConversationSummaryBufferMemory::estimate_tokens(text3) > 0);
+        assert!(ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text1) > 0);
+        assert!(ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text2) > ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text1));
+        assert!(ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text3) > 0);
     }
     
     #[test]
     fn test_prune_messages_within_limit() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryBufferMemory::new(llm, 1000);
-        
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 1000);
+
         let messages = vec![
             Message::human("短消息1"),
             Message::ai("短回复1"),
@@ -342,16 +346,16 @@ mod tests {
     #[tokio::test]
     async fn test_buffer_initial_empty() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryBufferMemory::new(llm, 1000);
-        
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 1000);
+
         let buffer = memory.buffer().await;
         assert!(buffer.is_empty());
     }
-    
+
     #[tokio::test]
     async fn test_load_memory_variables_empty() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryBufferMemory::new(llm, 1000);
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 1000);
         
         let vars = memory.load_memory_variables(&HashMap::new()).await.unwrap();
         let history = vars.get("history").unwrap().as_str().unwrap();
@@ -362,8 +366,8 @@ mod tests {
     #[tokio::test]
     async fn test_clear() {
         let llm = OpenAIChat::new(create_test_config());
-        let mut memory = ConversationSummaryBufferMemory::new(llm, 1000);
-        
+        let mut memory: ConversationSummaryBufferMemory<OpenAIChat> = ConversationSummaryBufferMemory::new(llm, 1000);
+
         memory.chat_memory.add_user_message("测试");
         memory.chat_memory.add_ai_message("回复");
         

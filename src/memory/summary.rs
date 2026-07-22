@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::base::{BaseMemory, MemoryError, ChatMessageHistory};
-use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::schema::Message;
 use crate::Runnable;
 
@@ -57,9 +57,8 @@ New summary:";
 /// // 加载时返回摘要而非完整历史
 /// let vars = memory.load_memory_variables(&HashMap::new()).await?;
 /// ```
-pub struct ConversationSummaryMemory {
-    /// LLM 用于生成摘要
-    llm: OpenAIChat,
+pub struct ConversationSummaryMemory<M: BaseChatModel> {
+    llm: M,
     
     /// 当前摘要
     buffer: Mutex<String>,
@@ -83,9 +82,9 @@ pub struct ConversationSummaryMemory {
     return_messages: bool,
 }
 
-impl ConversationSummaryMemory {
-    /// 创建新的摘要记忆
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> ConversationSummaryMemory<M> {
+    /// Create a new summary memory
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             buffer: Mutex::new(String::new()),
@@ -98,8 +97,8 @@ impl ConversationSummaryMemory {
         }
     }
     
-    /// 从已有历史创建
-    pub fn from_messages(llm: OpenAIChat, messages: Vec<Message>) -> Self {
+    /// Create from existing messages
+    pub fn from_messages(llm: M, messages: Vec<Message>) -> Self {
         let chat_memory = ChatMessageHistory::from_messages(messages);
         Self {
             llm,
@@ -169,14 +168,17 @@ impl ConversationSummaryMemory {
         let messages = vec![Message::human(&prompt)];
         
         let result = self.llm.invoke(messages, None).await
-            .map_err(|e| MemoryError::SaveError(format!("LLM 摘要失败: {}", e)))?;
+            .map_err(|e| MemoryError::SaveError(format!("LLM summary generation failed: {}", e)))?;
         
         Ok(result.content)
     }
 }
 
 #[async_trait]
-impl BaseMemory for ConversationSummaryMemory {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseMemory for ConversationSummaryMemory<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn memory_variables(&self) -> Vec<&str> {
         vec![&self.memory_key]
     }
@@ -234,6 +236,7 @@ impl BaseMemory for ConversationSummaryMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language_models::OpenAIChat;
     use crate::OpenAIConfig;
     
     fn create_test_config() -> OpenAIConfig {
@@ -249,15 +252,15 @@ mod tests {
     #[test]
     fn test_new() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryMemory::new(llm);
-        
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm);
+
         assert_eq!(memory.memory_variables(), vec!["history"]);
     }
     
     #[test]
     fn test_with_options() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryMemory::new(llm)
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm)
             .with_input_key("question")
             .with_output_key("answer")
             .with_memory_key("context");
@@ -274,7 +277,7 @@ mod tests {
             Message::human("你好"),
             Message::ai("你好！"),
         ];
-        let memory = ConversationSummaryMemory::from_messages(llm, messages);
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::from_messages(llm, messages);
         
         assert_eq!(memory.chat_memory().len(), 2);
     }
@@ -282,8 +285,8 @@ mod tests {
     #[test]
     fn test_format_new_lines() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryMemory::new(llm);
-        
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm);
+
         let new_lines = memory.format_new_lines("你好", "你好！");
         assert_eq!(new_lines, "Human: 你好\nAI: 你好！");
     }
@@ -291,16 +294,16 @@ mod tests {
     #[tokio::test]
     async fn test_buffer_initial_empty() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryMemory::new(llm);
-        
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm);
+
         let buffer = memory.buffer().await;
         assert!(buffer.is_empty());
     }
-    
+
     #[tokio::test]
     async fn test_load_memory_variables_empty() {
         let llm = OpenAIChat::new(create_test_config());
-        let memory = ConversationSummaryMemory::new(llm);
+        let memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm);
         
         let vars = memory.load_memory_variables(&HashMap::new()).await.unwrap();
         let history = vars.get("history").unwrap().as_str().unwrap();
@@ -311,8 +314,8 @@ mod tests {
     #[tokio::test]
     async fn test_clear() {
         let llm = OpenAIChat::new(create_test_config());
-        let mut memory = ConversationSummaryMemory::new(llm);
-        
+        let mut memory: ConversationSummaryMemory<OpenAIChat> = ConversationSummaryMemory::new(llm);
+
         memory.chat_memory.add_user_message("测试");
         memory.chat_memory.add_ai_message("回复");
         

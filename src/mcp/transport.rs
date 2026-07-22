@@ -143,54 +143,151 @@ impl MCPTransport for StdioTransport {
     }
 }
 
-/// SSE 传输(简化版):通过 HTTP POST 发送请求,读取 JSON 响应
+/// SSE transport for MCP.
 ///
-/// 注:完整 MCP SSE 需建立长连接事件流;此处为兼容性简化实现,
-/// 适用于返回单次 JSON 响应的 HTTP 端点。
+/// Connects to an MCP server using the SSE protocol:
+/// - Connects to the SSE endpoint to receive server-push events
+/// - Sends requests via HTTP POST to the server's message endpoint
+///
+/// The SSE endpoint URL format: `http://host:port/sse`
+/// The server sends an `endpoint` event with the POST URL for sending messages.
 pub struct SseTransport {
-    url: String,
+    /// SSE endpoint URL (for receiving events).
+    sse_url: String,
+    /// POST endpoint URL (for sending messages). Discovered from SSE `endpoint` event.
+    post_url: Arc<Mutex<Option<String>>>,
+    /// HTTP client.
     client: reqwest::Client,
 }
 
 impl SseTransport {
     pub fn new(config: &MCPConfig) -> Result<Self, MCPError> {
-        let url = match config {
+        let sse_url = match config {
             MCPConfig::Sse { url } => url.clone(),
-            _ => return Err(MCPError::new(-1, "SseTransport 需要 Sse 配置")),
+            _ => return Err(MCPError::new(-1, "SseTransport requires SSE config")),
         };
         Ok(Self {
-            url,
+            sse_url,
+            post_url: Arc::new(Mutex::new(None)),
             client: reqwest::Client::new(),
         })
+    }
+
+    /// Discover the POST endpoint from the SSE stream.
+    ///
+    /// The MCP server sends an `endpoint` event with the URL to use for
+    /// posting messages. This method connects to the SSE stream and waits
+    /// for that event.
+    async fn discover_post_url(&self) -> Result<String, MCPError> {
+        // Check if already discovered
+        {
+            let post_url = self.post_url.lock().await;
+            if let Some(url) = &*post_url {
+                return Ok(url.clone());
+            }
+        }
+
+        // Connect to SSE endpoint and read the `endpoint` event
+        let response = self
+            .client
+            .get(&self.sse_url)
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .map_err(|e| MCPError::new(-1, format!("SSE connection failed: {}", e)))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(MCPError::new(-1, format!("SSE endpoint returned HTTP {}", status)));
+        }
+
+        // Parse SSE events to find the `endpoint` event
+        let text = response
+            .text()
+            .await
+            .map_err(|e| MCPError::new(-1, format!("Failed to read SSE response: {}", e)))?;
+
+        // Parse SSE format: "event: endpoint\ndata: <url>\n\n"
+        let mut found_url = None;
+        let mut current_event = String::new();
+        for line in text.lines() {
+            if let Some(stripped) = line.strip_prefix("event:") {
+                current_event = stripped.trim().to_string();
+            } else if line.starts_with("data:") && current_event == "endpoint" {
+                found_url = Some(line[5..].trim().to_string());
+                break;
+            }
+        }
+
+        let url = found_url
+            .ok_or_else(|| MCPError::new(-1, "SSE stream did not send 'endpoint' event"))?;
+
+        // Cache the discovered URL
+        {
+            let mut post_url = self.post_url.lock().await;
+            *post_url = Some(url.clone());
+        }
+
+        Ok(url)
     }
 }
 
 #[async_trait]
 impl MCPTransport for SseTransport {
     async fn request(&self, req: MCPRequest) -> Result<MCPResponse, MCPError> {
+        let post_url = self.discover_post_url().await?;
+
         let resp = self
             .client
-            .post(&self.url)
+            .post(&post_url)
             .json(&req)
             .send()
             .await
-            .map_err(|e| MCPError::new(-1, format!("HTTP 请求失败: {}", e)))?;
+            .map_err(|e| MCPError::new(-1, format!("HTTP POST failed: {}", e)))?;
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(MCPError::new(-1, format!("HTTP 错误: {}", status)));
+            return Err(MCPError::new(-1, format!("HTTP error: {}", status)));
         }
 
-        resp.json::<MCPResponse>()
+        // The server may respond directly or send the response via SSE.
+        // For compatibility, try parsing the direct response first.
+        let body = resp
+            .text()
             .await
-            .map_err(|e| MCPError::new(-1, format!("解析响应失败: {}", e)))
+            .map_err(|e| MCPError::new(-1, format!("Failed to read response: {}", e)))?;
+
+        // Try parsing as MCPResponse
+        if let Ok(mcp_resp) = serde_json::from_str::<MCPResponse>(&body) {
+            return Ok(mcp_resp);
+        }
+
+        // If not a direct response, try SSE event format
+        // Parse SSE "data:" lines and extract JSON
+        for line in body.lines() {
+            if let Some(data) = line.strip_prefix("data:") {
+                let trimmed = data.trim();
+                if !trimmed.is_empty() {
+                    if let Ok(mcp_resp) = serde_json::from_str::<MCPResponse>(trimmed) {
+                        return Ok(mcp_resp);
+                    }
+                }
+            }
+        }
+
+        Err(MCPError::new(-1, format!("Could not parse MCP response from: {}", body)))
     }
 
     async fn close(&self) -> Result<(), MCPError> {
+        // Clear cached endpoint
+        let mut post_url = self.post_url.lock().await;
+        *post_url = None;
         Ok(())
     }
 
     async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError> {
+        let post_url = self.discover_post_url().await?;
+
         let mut payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -199,11 +296,11 @@ impl MCPTransport for SseTransport {
             payload.as_object_mut().unwrap().insert("params".to_string(), p);
         }
         self.client
-            .post(&self.url)
+            .post(&post_url)
             .json(&payload)
             .send()
             .await
-            .map_err(|e| MCPError::new(-1, format!("发送通知失败: {}", e)))?;
+            .map_err(|e| MCPError::new(-1, format!("Failed to send notification: {}", e)))?;
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 // src/chains/router_chain.rs
 //! Router Chain
 //!
-//! 根据输入内容自动路由到不同的 Chain。
+//! Automatically routes to different Chains based on input content.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -9,19 +9,19 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::base::{BaseChain, ChainResult, ChainError};
-use crate::language_models::OpenAIChat;
+use crate::BaseChatModel;
 use crate::schema::Message;
 use crate::Runnable;
 
-/// 路由目标
+/// Route destination
 pub struct RouteDestination {
-    /// 目标名称
+    /// Destination name
     name: String,
-    /// 目标描述（用于路由判断）
+    /// Destination description (used for routing decisions)
     description: String,
-    /// 目标 Chain
+    /// Destination Chain
     chain: Arc<dyn BaseChain>,
-    /// 关键词列表（用于关键词匹配路由）
+    /// Keyword list (used for keyword-based routing)
     keywords: Vec<String>,
 }
 
@@ -63,40 +63,40 @@ impl RouteDestination {
 
 /// Router Chain
 ///
-/// 根据输入内容自动路由到不同的 Chain。
+/// Automatically routes to different Chains based on input content.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::{RouterChain, LLMChain, OpenAIChat};
 ///
 /// let llm = OpenAIChat::new(config);
 ///
-/// let math_chain = LLMChain::new(llm.clone(), "计算: {question}");
-/// let code_chain = LLMChain::new(llm.clone(), "编程问题: {question}");
-/// let general_chain = LLMChain::new(llm, "回答: {question}");
+/// let math_chain = LLMChain::new(llm.clone(), "Calculate: {question}");
+/// let code_chain = LLMChain::new(llm.clone(), "Programming question: {question}");
+/// let general_chain = LLMChain::new(llm, "Answer: {question}");
 ///
 /// let router = RouterChain::new()
-///     .add_route("数学", "处理数学计算问题", Arc::new(math_chain))
-///     .add_route("编程", "处理编程相关问题", Arc::new(code_chain))
+///     .add_route("math", "Handle math calculation problems", Arc::new(math_chain))
+///     .add_route("code", "Handle programming-related questions", Arc::new(code_chain))
 ///     .with_default(Arc::new(general_chain));
 ///
-/// // "1+1等于几？" → 自动路由到 math_chain
-/// // "如何写 Rust？" → 自动路由到 code_chain
+/// // "What is 1+1?" -> automatically routes to math_chain
+/// // "How to write Rust?" -> automatically routes to code_chain
 /// ```
 pub struct RouterChain {
-    /// 路由目标列表
+    /// Route destination list
     destinations: Vec<RouteDestination>,
-    
-    /// 默认 Chain（没有匹配时使用）
+
+    /// Default Chain (used when no match is found)
     default_chain: Option<Arc<dyn BaseChain>>,
-    
-    /// 输入键名
+
+    /// Input key name
     input_key: String,
-    
-    /// Chain 名称
+
+    /// Chain name
     name: String,
-    
-    /// 是否打印详细信息
+
+    /// Whether to print verbose information
     verbose: bool,
 }
 
@@ -162,9 +162,9 @@ impl RouterChain {
         self.default_chain.as_ref()
     }
     
-    /// 关键词匹配路由
+    /// Keyword-based routing
     ///
-    /// 检查输入是否包含目标的关键词，返回匹配的目标。
+    /// Checks if the input contains any destination keywords and returns the matching destination.
     fn route_by_keywords(&self, input: &str) -> Option<&RouteDestination> {
         for dest in &self.destinations {
             for keyword in &dest.keywords {
@@ -176,7 +176,7 @@ impl RouterChain {
         None
     }
     
-    /// 选择路由目标
+    /// Select a route destination
     fn select_route(&self, input: &str) -> Result<Option<&RouteDestination>, ChainError> {
         if let Some(dest) = self.route_by_keywords(input) {
             return Ok(Some(dest));
@@ -216,9 +216,9 @@ impl BaseChain for RouterChain {
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
         
         if self.verbose {
-            println!("\n=== RouterChain 执行 ===");
-            println!("输入: {}", input);
-            println!("路由目标数量: {}", self.destinations.len());
+            println!("\n=== RouterChain execution ===");
+            println!("Input: {}", input);
+            println!("Route destination count: {}", self.destinations.len());
         }
         
         let route_result = self.select_route(input)?;
@@ -226,19 +226,19 @@ impl BaseChain for RouterChain {
         let chain = match route_result {
             Some(dest) => {
                 if self.verbose {
-                    println!("路由到: {} ({})", dest.name(), dest.description());
+                    println!("Routed to: {} ({})", dest.name(), dest.description());
                 }
                 dest.chain()
             }
             None => {
                 if let Some(default) = &self.default_chain {
                     if self.verbose {
-                        println!("关键词未匹配，使用默认 Chain");
+                        println!("No keyword match, using default Chain");
                     }
                     default
                 } else {
                     return Err(ChainError::ExecutionError(
-                        "无法匹配路由目标，且没有配置默认 Chain".to_string()
+                        "No matching route destination and no default Chain configured".to_string()
                     ));
                 }
             }
@@ -247,7 +247,7 @@ impl BaseChain for RouterChain {
         let result = chain.invoke(inputs).await?;
         
         if self.verbose {
-            println!("=== RouterChain 完成 ===\n");
+            println!("=== RouterChain complete ===\n");
         }
         
         Ok(result)
@@ -260,29 +260,29 @@ impl BaseChain for RouterChain {
 
 /// LLM Router Chain
 ///
-/// 使用 LLM 智能判断路由目标。
-pub struct LLMRouterChain {
-    /// LLM 用于路由判断
-    llm: OpenAIChat,
-    
-    /// 路由目标列表
+/// Uses an LLM to intelligently determine the routing destination.
+pub struct LLMRouterChain<M: BaseChatModel> {
+    /// LLM used for routing decisions
+    llm: M,
+
+    /// Route destinations
     destinations: Vec<RouteDestination>,
-    
-    /// 默认 Chain
+
+    /// Default Chain
     default_chain: Option<Arc<dyn BaseChain>>,
-    
-    /// 输入键名
+
+    /// Input key name
     input_key: String,
-    
-    /// Chain 名称
+
+    /// Chain name
     name: String,
-    
-    /// 是否打印详细信息
+
+    /// Whether to print verbose information
     verbose: bool,
 }
 
-impl LLMRouterChain {
-    pub fn new(llm: OpenAIChat) -> Self {
+impl<M: BaseChatModel> LLMRouterChain<M> {
+    pub fn new(llm: M) -> Self {
         Self {
             llm,
             destinations: Vec::new(),
@@ -344,10 +344,10 @@ impl LLMRouterChain {
         self.default_chain.as_ref()
     }
     
-    /// 构建 LLM 路由提示词
+    /// Build the LLM routing prompt
     fn build_router_prompt(&self, input: &str) -> String {
-        let mut prompt = String::from("根据用户输入，选择最合适的处理方式。\n\n");
-        prompt.push_str("可选的处理方式：\n");
+        let mut prompt = String::from("Based on the user input, select the most appropriate handler.\n\n");
+        prompt.push_str("Available handlers:\n");
         
         for (i, dest) in self.destinations.iter().enumerate() {
             prompt.push_str(&format!(
@@ -358,26 +358,26 @@ impl LLMRouterChain {
             ));
         }
         
-        prompt.push_str("\n用户输入：");
+        prompt.push_str("\nUser input: ");
         prompt.push_str(input);
-        prompt.push_str("\n\n请只返回最合适的处理方式的名称（不要解释）。");
+        prompt.push_str("\n\nReturn only the name of the most appropriate handler (no explanation).");
         
         prompt
     }
     
-    /// 使用 LLM 判断路由
+    /// Use LLM to determine the route
     async fn route_with_llm(&self, input: &str) -> Result<String, ChainError> {
         let prompt = self.build_router_prompt(input);
         
         let messages = vec![Message::human(&prompt)];
         
         let result = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM 路由判断失败: {}", e)))?;
+            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
         
         Ok(result.content.trim().to_string())
     }
     
-    /// 根据名称查找路由目标
+    /// Find a route destination by name
     fn find_destination(&self, name: &str) -> Option<&RouteDestination> {
         self.destinations.iter().find(|d| {
             d.name().eq_ignore_ascii_case(name) || 
@@ -386,17 +386,17 @@ impl LLMRouterChain {
         })
     }
     
-    /// 先尝试关键词匹配，失败则使用 LLM
+    /// Try keyword matching first, fall back to LLM routing
     async fn select_route(&self, input: &str) -> Result<&RouteDestination, ChainError> {
         if self.destinations.is_empty() {
-            return Err(ChainError::ExecutionError("没有配置路由目标".to_string()));
+            return Err(ChainError::ExecutionError("No route destinations configured".to_string()));
         }
         
         if self.destinations.len() == 1 {
             return Ok(&self.destinations[0]);
         }
         
-        // 先尝试关键词匹配
+        // Try keyword matching first
         for dest in &self.destinations {
             for keyword in dest.keywords() {
                 if input.contains(keyword) {
@@ -405,18 +405,21 @@ impl LLMRouterChain {
             }
         }
         
-        // 使用 LLM 判断
+        // Fall back to LLM routing
         let llm_result = self.route_with_llm(input).await?;
         
         self.find_destination(&llm_result)
             .ok_or_else(|| ChainError::ExecutionError(
-                format!("LLM 返回的路由目标 '{}' 不存在", llm_result)
+                format!("LLM returned unknown route destination '{}'", llm_result)
             ))
     }
 }
 
 #[async_trait]
-impl BaseChain for LLMRouterChain {
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for LLMRouterChain<M>
+where
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+{
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -439,9 +442,9 @@ impl BaseChain for LLMRouterChain {
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
         
         if self.verbose {
-            println!("\n=== LLMRouterChain 执行 ===");
-            println!("输入: {}", input);
-            println!("路由目标数量: {}", self.destinations.len());
+            println!("\n=== LLMRouterChain execution ===");
+            println!("Input: {}", input);
+            println!("Route destination count: {}", self.destinations.len());
         }
         
         let route_result = self.select_route(input).await;
@@ -449,14 +452,14 @@ impl BaseChain for LLMRouterChain {
         let chain = match route_result {
             Ok(dest) => {
                 if self.verbose {
-                    println!("路由到: {} ({})", dest.name(), dest.description());
+                    println!("Routed to: {} ({})", dest.name(), dest.description());
                 }
                 dest.chain()
             }
             Err(e) => {
                 if let Some(default) = &self.default_chain {
                     if self.verbose {
-                        println!("路由失败: {}, 使用默认 Chain", e);
+                        println!("Routing failed: {}, using default Chain", e);
                     }
                     default
                 } else {
@@ -468,7 +471,7 @@ impl BaseChain for LLMRouterChain {
         let result = chain.invoke(inputs).await?;
         
         if self.verbose {
-            println!("=== LLMRouterChain 完成 ===\n");
+            println!("=== LLMRouterChain complete ===\n");
         }
         
         Ok(result)

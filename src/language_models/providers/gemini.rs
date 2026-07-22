@@ -70,10 +70,10 @@ impl GeminiConfig {
     /// 从环境变量创建配置
     ///
     /// 读取 GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, String> {
         let api_key = env::var("GEMINI_API_KEY")
             .or_else(|_| env::var("GOOGLE_API_KEY"))
-            .expect("GEMINI_API_KEY or GOOGLE_API_KEY environment variable not set");
+            .map_err(|_| "GEMINI_API_KEY or GOOGLE_API_KEY environment variable not set".to_string())?;
 
         let base_url = env::var("GEMINI_BASE_URL")
             .unwrap_or_else(|_| GEMINI_BASE_URL.to_string());
@@ -81,12 +81,12 @@ impl GeminiConfig {
         let model = env::var("GEMINI_MODEL")
             .unwrap_or_else(|_| "gemini-1.5-flash".to_string());
 
-        Self {
+        Ok(Self {
             api_key,
             base_url,
             model,
             ..Default::default()
-        }
+        })
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -204,13 +204,13 @@ impl GeminiChat {
         }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(GeminiConfig::from_env())
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self::new(GeminiConfig::from_env()?))
     }
 
-    pub fn with_model(model: impl Into<String>) -> Self {
-        let config = GeminiConfig::from_env().with_model(model);
-        Self::new(config)
+    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
+        let config = GeminiConfig::from_env()?.with_model(model);
+        Ok(Self::new(config))
     }
 
     /// 构建 Gemini API 的 contents 数组
@@ -480,7 +480,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for GeminiChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        text.len() / 4
+        crate::core::token_counter::count_tokens(text)
     }
 
     fn temperature(&self) -> Option<f32> {

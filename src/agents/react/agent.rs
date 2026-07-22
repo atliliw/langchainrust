@@ -115,7 +115,7 @@ impl BaseAgent for ReActAgent {
     ) -> Result<AgentOutput, AgentError> {
         // 获取用户输入
         let input = inputs.get("input")
-            .ok_or_else(|| AgentError::Other("缺少输入参数 'input'".to_string()))?;
+            .ok_or_else(|| AgentError::Other("Missing input parameter 'input'".to_string()))?;
         
         // 获取对话历史（如果有）
         let history = inputs.get("history").map(|s| s.as_str());
@@ -129,7 +129,7 @@ impl BaseAgent for ReActAgent {
         // 调用 LLM
         let result = self.llm.chat(messages, None)
             .await
-            .map_err(|e| AgentError::Other(format!("LLM 调用失败: {}", e)))?;
+            .map_err(|e| AgentError::Other(format!("LLM call failed: {}", e)))?;
         
         // 解析输出
         self.parser.parse(&result.content)
