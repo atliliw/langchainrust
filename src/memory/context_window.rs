@@ -96,7 +96,7 @@ impl<M: BaseChatModel> ContextWindow<M> {
     pub fn new(max_tokens: usize) -> Self {
         Self {
             max_tokens,
-            counter: Arc::new(TiktokenCounter::default()),
+            counter: Arc::new(TiktokenCounter::new().expect("tiktoken cl100k_base 加载失败")),
             strategy: Strategy::Truncate,
         }
     }
@@ -105,7 +105,7 @@ impl<M: BaseChatModel> ContextWindow<M> {
     pub fn with_strategy(max_tokens: usize, strategy: Strategy<M>) -> Self {
         Self {
             max_tokens,
-            counter: Arc::new(TiktokenCounter::default()),
+            counter: Arc::new(TiktokenCounter::new().expect("tiktoken cl100k_base 加载失败")),
             strategy,
         }
     }
@@ -156,6 +156,10 @@ impl<M: BaseChatModel> ContextWindow<M> {
     /// until the total fits within `max_tokens`.
     ///
     /// System messages are always preserved and placed at the beginning.
+    ///
+    /// M10: Optimized from O(n^2) to O(n) by computing token counts
+    /// incrementally instead of rebuilding and recounting the full candidate
+    /// list on every iteration.
     fn truncate(&self, messages: Vec<Message>) -> Result<Vec<Message>, MemoryError> {
         // Separate system messages from the rest.
         let mut system_messages: Vec<Message> = Vec::new();
@@ -169,17 +173,34 @@ impl<M: BaseChatModel> ContextWindow<M> {
             }
         }
 
-        // Keep dropping oldest non-system messages until we fit.
-        // We iterate from the end (newest) to determine what to keep.
+        // Compute the base cost: system messages + conversation boundary overhead.
+        // count_messages includes a +2 boundary; we account for it once.
+        let base_tokens = self.counter.count_messages(&system_messages) as usize;
+
+        // Pre-compute per-message incremental cost.
+        // For a single message, count_messages returns (4 + content_tokens + 2).
+        // The incremental cost of adding a message to an existing list is (4 + content_tokens).
+        // We subtract the boundary overhead (2) from single-message counts to get incremental cost.
+        let msg_incremental_costs: Vec<usize> = other_messages
+            .iter()
+            .map(|m| {
+                let single_count = self.counter.count_messages(std::slice::from_ref(m)) as usize;
+                // single_count = 4 + content_tokens + 2, incremental = 4 + content_tokens
+                single_count.saturating_sub(2)
+            })
+            .collect();
+
+        // Walk from the end (newest) and accumulate until we exceed the budget.
         let mut kept: Vec<Message> = Vec::new();
+        let mut running_tokens = base_tokens;
 
-        for msg in other_messages.into_iter().rev() {
-            let mut candidate = system_messages.clone();
-            candidate.push(msg.clone());
-            candidate.extend(kept.iter().cloned());
-
-            let tokens = self.counter.count_messages(&candidate) as usize;
-            if tokens <= self.max_tokens {
+        for (msg, cost) in other_messages
+            .into_iter()
+            .rev()
+            .zip(msg_incremental_costs.into_iter().rev())
+        {
+            if running_tokens + cost <= self.max_tokens {
+                running_tokens += cost;
                 kept.push(msg);
             } else {
                 // This message would push us over; stop adding more.
@@ -395,6 +416,7 @@ mod tests {
                 model: "mock-llm".to_string(),
                 token_usage: None,
                 tool_calls: None,
+                thinking_content: None,
             })
         }
     }
@@ -449,13 +471,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_fit_under_limit_returns_as_is() {
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(1000)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(1000).with_counter(char_counter());
 
-        let messages = make_messages(&[
-            ("human", "Hello"),
-            ("ai", "Hi there"),
-        ]);
+        let messages = make_messages(&[("human", "Hello"), ("ai", "Hi there")]);
 
         let result = cw.fit(messages).await.unwrap();
         assert_eq!(result.len(), 2);
@@ -463,8 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fit_empty_messages() {
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(100)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(100).with_counter(char_counter());
 
         let result = cw.fit(vec![]).await.unwrap();
         assert!(result.is_empty());
@@ -476,8 +493,7 @@ mod tests {
         // System: 4 + 7 = 11, Human1: 4 + 4 = 8, AI1: 4 + 4 = 8, Human2: 4 + 4 = 8, AI2: 4 + 4 = 8
         // Total = 11 + 8 + 8 + 8 + 8 + 2 = 45
         // Budget = 30: system(11) + AI2(8) + boundary(2) = 21, + Human2(8) = 29 <= 30
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(30)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(30).with_counter(char_counter());
 
         let messages = make_messages(&[
             ("system", "You are"),
@@ -490,7 +506,9 @@ mod tests {
         let result = cw.fit(messages).await.unwrap();
 
         // System message must be preserved.
-        assert!(result.iter().any(|m| matches!(m.message_type, MessageType::System)));
+        assert!(result
+            .iter()
+            .any(|m| matches!(m.message_type, MessageType::System)));
         // Most recent messages should be kept.
         assert!(result.iter().any(|m| m.content == "A2!"));
     }
@@ -498,8 +516,7 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_drops_oldest_first() {
         // Budget = 25: system(4+4=8) + AI(4+3=7) + boundary(2) = 17, + Human(4+3=7) = 24 <= 25
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(25)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(25).with_counter(char_counter());
 
         let messages = make_messages(&[
             ("system", "Sys"),
@@ -522,12 +539,9 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_only_system_messages() {
         // If only system messages exist and they fit, return them.
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(20)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(20).with_counter(char_counter());
 
-        let messages = make_messages(&[
-            ("system", "Hello"),
-        ]);
+        let messages = make_messages(&[("system", "Hello")]);
         // 4 + 5 + 2 = 11 <= 20
 
         let result = cw.fit(messages).await.unwrap();
@@ -539,12 +553,9 @@ mod tests {
     async fn test_truncate_system_only_over_budget() {
         // If system messages alone exceed the budget, truncate returns just system messages
         // (they are always preserved).
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(5)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(5).with_counter(char_counter());
 
-        let messages = make_messages(&[
-            ("system", "Very long system prompt that exceeds budget"),
-        ]);
+        let messages = make_messages(&[("system", "Very long system prompt that exceeds budget")]);
         // 4 + 42 + 2 = 48 > 5
 
         let result = cw.fit(messages).await.unwrap();
@@ -671,12 +682,11 @@ mod tests {
     async fn test_summarize_no_non_system_messages() {
         let mock_llm = MockLLM::new(vec!["Should not be called".to_string()]);
 
-        let cw: ContextWindow<MockLLM> = ContextWindow::with_strategy(50, Strategy::summarize(mock_llm))
-            .with_counter(char_counter());
+        let cw: ContextWindow<MockLLM> =
+            ContextWindow::with_strategy(50, Strategy::summarize(mock_llm))
+                .with_counter(char_counter());
 
-        let messages = make_messages(&[
-            ("system", "S"),
-        ]);
+        let messages = make_messages(&[("system", "S")]);
 
         let result = cw.fit(messages).await.unwrap();
         assert_eq!(result.len(), 1);
@@ -688,10 +698,7 @@ mod tests {
         let cw = ContextWindow::with_strategy(100, Strategy::<OpenAIChat>::Truncate)
             .with_counter(char_counter());
 
-        let messages = make_messages(&[
-            ("human", "Hello"),
-            ("ai", "World"),
-        ]);
+        let messages = make_messages(&[("human", "Hello"), ("ai", "World")]);
 
         let result = cw.fit(messages).await.unwrap();
         assert_eq!(result.len(), 2);
@@ -742,8 +749,7 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_preserves_order() {
         // Budget = 40: system(4+3=7) + human(4+3=7) + ai(4+3=7) + boundary(2) = 23 <= 40
-        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(40)
-            .with_counter(char_counter());
+        let cw: ContextWindow<OpenAIChat> = ContextWindow::new(40).with_counter(char_counter());
 
         let messages = make_messages(&[
             ("system", "Sys"),
@@ -771,11 +777,14 @@ mod tests {
     async fn test_summarize_fallback_to_truncate() {
         // When the summary + recent messages still exceed the budget,
         // the method falls back to truncation.
-        let mock_llm = MockLLM::new(vec!["A very long summary that will not fit in the small budget.".to_string()]);
+        let mock_llm = MockLLM::new(vec![
+            "A very long summary that will not fit in the small budget.".to_string(),
+        ]);
 
         // Very small budget that even the summary won't fit.
-        let cw: ContextWindow<MockLLM> = ContextWindow::with_strategy(20, Strategy::summarize(mock_llm))
-            .with_counter(char_counter());
+        let cw: ContextWindow<MockLLM> =
+            ContextWindow::with_strategy(20, Strategy::summarize(mock_llm))
+                .with_counter(char_counter());
 
         let messages = make_messages(&[
             ("system", "S"),

@@ -3,14 +3,14 @@
 //!
 //! 统一管理 BM25 + 向量索引，自动分割文档，一次添加双索引。
 
-use crate::retrieval::bm25::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedSearchResult};
+use crate::embeddings::Embeddings;
+use crate::retrieval::bm25::{AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult};
 use crate::retrieval::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
 use crate::vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait};
 use crate::vector_stores::{Document, VectorStoreError};
-use crate::embeddings::Embeddings;
-use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::RwLock;
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
 
 pub struct HybridIndexConfig {
     pub chunk_size: usize,
@@ -81,7 +81,7 @@ struct VectorEntry {
 
 pub struct UnifiedHybridIndex {
     document_store: Arc<ChunkedDocumentStore>,
-    bm25_retriever: Arc<std::sync::Mutex<ChunkedBM25Retriever>>,
+    bm25_retriever: Arc<Mutex<ChunkedBM25Retriever>>,
     embeddings: Arc<dyn Embeddings>,
     #[allow(dead_code)]
     vector_size: usize,
@@ -112,7 +112,7 @@ impl UnifiedHybridIndex {
 
         Self {
             document_store,
-            bm25_retriever: Arc::new(std::sync::Mutex::new(bm25_retriever)),
+            bm25_retriever: Arc::new(Mutex::new(bm25_retriever)),
             embeddings,
             vector_size,
             config,
@@ -121,23 +121,32 @@ impl UnifiedHybridIndex {
     }
 
     pub async fn add_document(&self, document: Document) -> Result<String, VectorStoreError> {
-        let parent_id = document.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let parent_id = document
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        self.document_store.add_parent_document(document.clone(), self.config.chunk_size).await?;
-        
-        let chunks = self.document_store.get_chunks_for_parent(&parent_id).await?;
+        self.document_store
+            .add_parent_document(document.clone(), self.config.chunk_size)
+            .await?;
+
+        let chunks = self
+            .document_store
+            .get_chunks_for_parent(&parent_id)
+            .await?;
 
         for chunk in &chunks {
             {
-                let mut bm25 = self.bm25_retriever.lock().unwrap();
+                let mut bm25 = self.bm25_retriever.lock().await;
                 bm25.add_chunk_index(
                     chunk.chunk_id.clone(),
                     chunk.parent_id.clone(),
-                    &chunk.content
+                    &chunk.content,
                 );
             }
 
-            let embedding = self.embeddings
+            let embedding = self
+                .embeddings
                 .embed_query(&chunk.content)
                 .await
                 .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
@@ -155,7 +164,10 @@ impl UnifiedHybridIndex {
         Ok(parent_id)
     }
 
-    pub async fn add_documents(&self, documents: Vec<Document>) -> Result<Vec<String>, VectorStoreError> {
+    pub async fn add_documents(
+        &self,
+        documents: Vec<Document>,
+    ) -> Result<Vec<String>, VectorStoreError> {
         let mut ids = Vec::new();
         for doc in documents {
             let id = self.add_document(doc).await?;
@@ -164,20 +176,23 @@ impl UnifiedHybridIndex {
         Ok(ids)
     }
 
-    pub async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<RetrievedDocument>, VectorStoreError> {
-        let bm25_docs = tokio::task::spawn_blocking({
-            let retriever = self.bm25_retriever.clone();
-            let query = query.to_string();
-            move || {
-                let mut bm25 = retriever.lock().unwrap();
-                bm25.search(&query, 10)
-            }
-        })
-        .await
-        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-        
-        let bm25_docs: Vec<Document> = bm25_docs.into_iter().map(|r: ChunkedSearchResult| Document::new(r.content()).with_id(r.parent_id)).collect();
-        
+    pub async fn retrieve(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<RetrievedDocument>, VectorStoreError> {
+        // H50: use config.bm25_k instead of hardcoded 10
+        let bm25_k = self.config.bm25_k;
+        let bm25_docs = {
+            let mut bm25 = self.bm25_retriever.lock().await;
+            bm25.search(query, bm25_k)
+        };
+
+        let bm25_docs: Vec<Document> = bm25_docs
+            .into_iter()
+            .map(|r: ChunkedSearchResult| Document::new(r.content()).with_id(r.parent_id))
+            .collect();
+
         let vector_docs = self.vector_search(query).await?;
 
         let fused = reciprocal_rank_fusion(bm25_docs, vector_docs, self.config.rrf_k);
@@ -185,54 +200,44 @@ impl UnifiedHybridIndex {
         Ok(fused.into_iter().take(k).collect())
     }
 
-    pub async fn retrieve_with_details(&self, query: &str, k: usize) -> Result<Vec<HybridSearchResult>, VectorStoreError> {
-        let bm25_results = tokio::task::spawn_blocking({
-            let retriever = self.bm25_retriever.clone();
-            let query = query.to_string();
-            let bm25_k = self.config.bm25_k;
-            move || {
-                let mut bm25 = retriever.lock().unwrap();
-                bm25.search(&query, bm25_k)
-            }
-        })
-        .await
-        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-        
+    pub async fn retrieve_with_details(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<HybridSearchResult>, VectorStoreError> {
+        let bm25_k = self.config.bm25_k;
+        let bm25_results = {
+            let mut bm25 = self.bm25_retriever.lock().await;
+            bm25.search(query, bm25_k)
+        };
+
         let bm25_results: Vec<(Document, f32)> = bm25_results
             .into_iter()
             .map(|r| (Document::new(r.content()).with_id(r.parent_id), r.score))
             .collect();
-        
+
         let vector_results = self.vector_search_with_scores(query).await?;
 
         let bm25_ranks: HashMap<String, usize> = bm25_results
             .iter()
             .enumerate()
-            .map(|(rank, (doc, _))| {
-                (doc.id.clone().unwrap_or_default(), rank + 1)
-            })
+            .map(|(rank, (doc, _))| (doc.id.clone().unwrap_or_default(), rank + 1))
             .collect();
 
         let vector_ranks: HashMap<String, usize> = vector_results
             .iter()
             .enumerate()
-            .map(|(rank, (doc, _))| {
-                (doc.id.clone().unwrap_or_default(), rank + 1)
-            })
+            .map(|(rank, (doc, _))| (doc.id.clone().unwrap_or_default(), rank + 1))
             .collect();
 
         let bm25_scores: HashMap<String, f32> = bm25_results
             .iter()
-            .map(|(doc, score)| {
-                (doc.id.clone().unwrap_or_default(), *score)
-            })
+            .map(|(doc, score)| (doc.id.clone().unwrap_or_default(), *score))
             .collect();
 
         let vector_scores: HashMap<String, f32> = vector_results
             .iter()
-            .map(|(doc, score)| {
-                (doc.id.clone().unwrap_or_default(), *score)
-            })
+            .map(|(doc, score)| (doc.id.clone().unwrap_or_default(), *score))
             .collect();
 
         let mut rrf_scores: HashMap<String, (f64, Document)> = HashMap::new();
@@ -278,7 +283,8 @@ impl UnifiedHybridIndex {
                     vector_score: vector_scores.get(&doc_id).copied(),
                     vector_rank: vector_ranks.get(&doc_id).copied(),
                     matched_chunks: vec![doc_id.clone()],
-                    parent_id: Some(doc_id.split('_').next().unwrap_or_default().to_string()),
+                    // H49: use "::" separator consistent with chunk_id format
+                    parent_id: Some(doc_id.split("::").next().unwrap_or_default().to_string()),
                 }
             })
             .collect();
@@ -287,8 +293,8 @@ impl UnifiedHybridIndex {
     }
 
     #[allow(dead_code)]
-    fn bm25_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
-        let mut retriever = self.bm25_retriever.lock().unwrap();
+    async fn bm25_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
+        let mut retriever = self.bm25_retriever.lock().await;
         let results = retriever.search(query, self.config.bm25_k);
 
         let docs = results
@@ -300,8 +306,11 @@ impl UnifiedHybridIndex {
     }
 
     #[allow(dead_code)]
-    fn bm25_search_with_scores(&self, query: &str) -> Result<Vec<(Document, f32)>, VectorStoreError> {
-        let mut retriever = self.bm25_retriever.lock().unwrap();
+    async fn bm25_search_with_scores(
+        &self,
+        query: &str,
+    ) -> Result<Vec<(Document, f32)>, VectorStoreError> {
+        let mut retriever = self.bm25_retriever.lock().await;
         let results = retriever.search(query, self.config.bm25_k);
 
         let docs = results
@@ -313,7 +322,8 @@ impl UnifiedHybridIndex {
     }
 
     async fn vector_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
-        let query_embedding = self.embeddings
+        let query_embedding = self
+            .embeddings
             .embed_query(query)
             .await
             .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
@@ -323,16 +333,22 @@ impl UnifiedHybridIndex {
         let mut scored: Vec<(usize, f32)> = vectors
             .iter()
             .enumerate()
-            .map(|(idx, entry)| {
-                let score = crate::core::math::cosine_similarity(&query_embedding, &entry.embedding);
-                (idx, score)
+            .filter_map(|(idx, entry)| {
+                let score =
+                    crate::core::math::cosine_similarity(&query_embedding, &entry.embedding)
+                        .unwrap_or(0.0);
+                if score > 0.0 {
+                    Some((idx, score))
+                } else {
+                    None
+                }
             })
-            .filter(|(_, score)| *score > 0.0)
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_k_indices: Vec<(usize, f32)> = scored.into_iter().take(self.config.vector_k).collect();
+        let top_k_indices: Vec<(usize, f32)> =
+            scored.into_iter().take(self.config.vector_k).collect();
 
         let mut docs = Vec::new();
         for (idx, _score) in top_k_indices {
@@ -345,8 +361,12 @@ impl UnifiedHybridIndex {
         Ok(docs)
     }
 
-    async fn vector_search_with_scores(&self, query: &str) -> Result<Vec<(Document, f32)>, VectorStoreError> {
-        let query_embedding = self.embeddings
+    async fn vector_search_with_scores(
+        &self,
+        query: &str,
+    ) -> Result<Vec<(Document, f32)>, VectorStoreError> {
+        let query_embedding = self
+            .embeddings
             .embed_query(query)
             .await
             .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
@@ -356,22 +376,31 @@ impl UnifiedHybridIndex {
         let mut scored: Vec<(usize, f32)> = vectors
             .iter()
             .enumerate()
-            .map(|(idx, entry)| {
-                let score = crate::core::math::cosine_similarity(&query_embedding, &entry.embedding);
-                (idx, score)
+            .filter_map(|(idx, entry)| {
+                let score =
+                    crate::core::math::cosine_similarity(&query_embedding, &entry.embedding)
+                        .unwrap_or(0.0);
+                if score > 0.0 {
+                    Some((idx, score))
+                } else {
+                    None
+                }
             })
-            .filter(|(_, score)| *score > 0.0)
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_k_indices: Vec<(usize, f32)> = scored.into_iter().take(self.config.vector_k).collect();
+        let top_k_indices: Vec<(usize, f32)> =
+            scored.into_iter().take(self.config.vector_k).collect();
 
         let mut docs = Vec::new();
         for (idx, score) in top_k_indices {
             let entry = &vectors[idx];
             if let Some(chunk) = self.document_store.get_chunk(&entry.chunk_id).await? {
-                docs.push((Document::new(chunk.content).with_id(entry.parent_id.clone()), score));
+                docs.push((
+                    Document::new(chunk.content).with_id(entry.parent_id.clone()),
+                    score,
+                ));
             }
         }
 
@@ -390,7 +419,7 @@ impl UnifiedHybridIndex {
         ChunkedDocumentStoreTrait::clear(&*self.document_store).await?;
 
         {
-            let mut bm25 = self.bm25_retriever.lock().unwrap();
+            let mut bm25 = self.bm25_retriever.lock().await;
             bm25.clear();
         }
 

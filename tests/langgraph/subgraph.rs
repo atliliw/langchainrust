@@ -22,10 +22,7 @@
 //! 3. 团队协作：不同团队构建不同子图，然后组合
 //! 4. 测试隔离：独立测试子图后再集成
 
-use langchainrust::{
-    GraphBuilder, START, END,
-    AgentState, StateUpdate,
-};
+use langchainrust::{AgentState, GraphBuilder, StateUpdate, END, START};
 use std::time::Duration;
 
 /// 测试：基本子图执行
@@ -180,13 +177,17 @@ async fn test_subgraph_with_multiple_nodes() {
     let parent = GraphBuilder::<AgentState>::new()
         .add_node_fn("before", |state| {
             let mut s = state.clone();
-            s.add_message(langchainrust::MessageEntry::ai("before_subgraph".to_string()));
+            s.add_message(langchainrust::MessageEntry::ai(
+                "before_subgraph".to_string(),
+            ));
             Ok(StateUpdate::full(s))
         })
         .add_subgraph_same_state("workflow", subgraph)
         .add_node_fn("after", |state| {
             let mut s = state.clone();
-            s.add_message(langchainrust::MessageEntry::ai("after_subgraph".to_string()));
+            s.add_message(langchainrust::MessageEntry::ai(
+                "after_subgraph".to_string(),
+            ));
             Ok(StateUpdate::full(s))
         })
         .add_edge(START, "before")

@@ -22,8 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_id("rust_intro"),
         Document::new("Rust 的核心特性包括所有权系统、借用检查和零成本抽象。")
             .with_id("rust_features"),
-        Document::new("机器学习是 AI 的核心技术,使计算机从数据中学习。")
-            .with_id("ml_def"),
+        Document::new("机器学习是 AI 的核心技术,使计算机从数据中学习。").with_id("ml_def"),
     ]);
 
     let results = retriever.search("Rust 语言特点", 3);

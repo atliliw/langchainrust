@@ -3,7 +3,7 @@
 //!
 //! 使用 OpenAI 的 text-embedding-ada-002 或其他嵌入模型。
 
-use super::{Embeddings, EmbeddingError};
+use super::{EmbeddingError, Embeddings};
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -12,13 +12,13 @@ use serde::Deserialize;
 pub struct OpenAIEmbeddingsConfig {
     /// API 密钥
     pub api_key: String,
-    
+
     /// API 基础 URL
     pub base_url: String,
-    
+
     /// 模型名称（默认: text-embedding-ada-002）
     pub model: String,
-    
+
     /// 批量大小（默认: 2048）
     pub batch_size: usize,
 }
@@ -42,13 +42,13 @@ impl OpenAIEmbeddingsConfig {
             ..Default::default()
         }
     }
-    
+
     /// 设置模型
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
-    
+
     /// 设置基础 URL
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
@@ -73,14 +73,14 @@ impl OpenAIEmbeddings {
             "text-embedding-3-large" => 3072,
             _ => 1536, // 默认维度
         };
-        
+
         Self {
             config,
             client: reqwest::Client::new(),
             dimension,
         }
     }
-    
+
     /// 从环境变量创建
     pub fn from_env() -> Self {
         Self::new(OpenAIEmbeddingsConfig::default())
@@ -93,15 +93,16 @@ impl Embeddings for OpenAIEmbeddings {
         if text.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
-        
+
         let url = format!("{}/embeddings", self.config.base_url);
-        
+
         let body = serde_json::json!({
             "model": self.config.model,
             "input": text,
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -109,39 +110,48 @@ impl Embeddings for OpenAIEmbeddings {
             .send()
             .await
             .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-        
+
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+            return Err(EmbeddingError::ApiError(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
         }
-        
+
         let embedding_response: OpenAIEmbeddingResponse = response
             .json()
             .await
             .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-        
-        Ok(embedding_response.data[0].embedding.clone())
+
+        Ok(embedding_response
+            .data
+            .first()
+            .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
+            .embedding
+            .clone())
     }
-    
+
     async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        
+
         let url = format!("{}/embeddings", self.config.base_url);
         let batch_size = self.config.batch_size.max(1);
         let mut all_results = vec![Vec::new(); texts.len()];
         let mut offset = 0;
-        
+
         // 按 batch_size 分批调用 API
         for chunk in texts.chunks(batch_size) {
             let body = serde_json::json!({
                 "model": self.config.model,
                 "input": chunk,
             });
-            
-            let response = self.client
+
+            let response = self
+                .client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", self.config.api_key))
                 .header("Content-Type", "application/json")
@@ -149,18 +159,21 @@ impl Embeddings for OpenAIEmbeddings {
                 .send()
                 .await
                 .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-            
+
             let status = response.status();
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
-                return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+                return Err(EmbeddingError::ApiError(format!(
+                    "HTTP {}: {}",
+                    status, error_text
+                )));
             }
-            
+
             let embedding_response: OpenAIEmbeddingResponse = response
                 .json()
                 .await
                 .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-            
+
             for item in embedding_response.data {
                 let global_index = offset + item.index as usize;
                 if global_index < all_results.len() {
@@ -169,14 +182,14 @@ impl Embeddings for OpenAIEmbeddings {
             }
             offset += chunk.len();
         }
-        
+
         Ok(all_results)
     }
-    
+
     fn dimension(&self) -> usize {
         self.dimension
     }
-    
+
     fn model_name(&self) -> &str {
         &self.config.model
     }
@@ -209,40 +222,42 @@ struct OpenAIEmbeddingUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_config_default() {
         let config = OpenAIEmbeddingsConfig::default();
         assert_eq!(config.model, "text-embedding-ada-002");
         assert_eq!(config.batch_size, 2048);
     }
-    
+
     #[test]
     fn test_config_builder() {
         let config = OpenAIEmbeddingsConfig::new("test-key")
             .with_model("text-embedding-3-large")
             .with_base_url("https://custom.api.com/v1");
-        
+
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "text-embedding-3-large");
         assert_eq!(config.base_url, "https://custom.api.com/v1");
     }
-    
+
     #[tokio::test]
     #[ignore = "需要真实 API 调用"]
     async fn test_real_embedding() {
         let config = OpenAIEmbeddingsConfig {
             api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
-            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            base_url:
+                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string(),
             model: "text-embedding-ada-002".to_string(),
             batch_size: 2048,
         };
-        
+
         let embeddings = OpenAIEmbeddings::new(config);
-        
+
         let result = embeddings.embed_query("Hello, world!").await;
         assert!(result.is_ok());
-        
+
         let embedding = result.unwrap();
         assert_eq!(embedding.len(), 1536);
     }

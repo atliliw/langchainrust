@@ -7,7 +7,7 @@
 //! cargo run --example langgraph_conditional_edge
 //! ```
 
-use langchainrust::{AgentState, END, FunctionRouter, START, StateGraph, StateUpdate};
+use langchainrust::{AgentState, FunctionRouter, StateGraph, StateUpdate, END, START};
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -36,7 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.add_edge("long", END);
 
     let router = FunctionRouter::new(|state: &AgentState| {
-        if state.input.len() < 10 { "short" } else { "long" }.to_string()
+        if state.input.len() < 10 {
+            "short"
+        } else {
+            "long"
+        }
+        .to_string()
     });
     graph.set_conditional_router("router", router);
 

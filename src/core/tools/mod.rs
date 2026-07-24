@@ -8,13 +8,15 @@
 //! - `ToolRegistry`: Tool collection and lookup
 
 mod base;
-mod structured;
 mod registry;
-mod tool_definition;
+mod structured;
 mod structured_output;
+mod tool_definition;
 
-pub use base::{BaseTool, Tool, ToolError, to_tool_definition};
-pub use structured::StructuredTool;
+pub use base::{to_tool_definition, BaseTool, Tool, ToolError};
 pub use registry::ToolRegistry;
-pub use tool_definition::{ToolDefinition, FunctionDefinition, ToolCall, FunctionCall, ToolCallResult};
+pub use structured::StructuredTool;
 pub use structured_output::StructuredOutput;
+pub use tool_definition::{
+    FunctionCall, FunctionDefinition, ToolCall, ToolCallResult, ToolDefinition,
+};

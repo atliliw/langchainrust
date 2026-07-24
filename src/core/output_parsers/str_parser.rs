@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
 
-use crate::core::runnables::{Runnable, RunnableConfig};
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::core::runnables::{Runnable, RunnableConfig};
 
 /// 字符串输出解析器
 ///
@@ -43,7 +43,11 @@ impl BaseOutputParser<String> for StrOutputParser {
 impl Runnable<String, String> for StrOutputParser {
     type Error = OutputParserError;
 
-    async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+    async fn invoke(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<String, Self::Error> {
         self.parse(&input).await
     }
 

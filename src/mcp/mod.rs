@@ -20,16 +20,16 @@
 //! # }
 //! ```
 
-pub mod protocol;
-pub mod types;
-pub mod transport;
 pub mod client;
-pub mod tool_adapter;
+pub mod protocol;
 pub mod server;
+pub mod tool_adapter;
+pub mod transport;
+pub mod types;
 
-pub use protocol::{MCPError, MCPRequest, MCPResponse, MCP_VERSION};
-pub use types::{MCPConfig, MCPContent, MCPToolDefinition, MCPToolResult};
-pub use transport::{MCPTransport, SseTransport, StdioTransport};
 pub use client::MCPClient;
-pub use tool_adapter::MCPToolAdapter;
+pub use protocol::{MCPError, MCPRequest, MCPResponse, MCP_VERSION};
 pub use server::MCPServer;
+pub use tool_adapter::MCPToolAdapter;
+pub use transport::{MCPTransport, SseTransport, StdioTransport};
+pub use types::{MCPConfig, MCPContent, MCPToolDefinition, MCPToolResult};

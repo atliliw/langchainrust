@@ -20,12 +20,12 @@ pub trait BaseTool: Send + Sync {
     ///
     /// Name should be unique and clearly express the tool's purpose.
     fn name(&self) -> &str;
-    
+
     /// Returns the tool description.
     ///
     /// Description should detail the tool's purpose, input format, and output format.
     fn description(&self) -> &str;
-    
+
     /// Execute the tool (string version).
     ///
     /// This is the primary interface called by Agents.
@@ -37,21 +37,21 @@ pub trait BaseTool: Send + Sync {
     /// # Returns
     /// String representation of execution result.
     async fn run(&self, input: String) -> Result<String, ToolError>;
-    
+
     /// Returns the input JSON Schema.
     ///
     /// Used to describe the tool's input format to the LLM.
     fn args_schema(&self) -> Option<Value> {
         None
     }
-    
+
     /// Whether to return result directly to user.
     ///
     /// If true, tool output is returned directly to user, not passed to Agent.
     fn return_direct(&self) -> bool {
         false
     }
-    
+
     /// Handle execution error.
     ///
     /// Returns a friendly error message when tool execution fails.
@@ -68,10 +68,10 @@ pub trait BaseTool: Send + Sync {
 pub trait Tool: Send + Sync {
     /// Input type (must support deserialization and JSON Schema).
     type Input: DeserializeOwned + JsonSchema + Send + Sync + 'static;
-    
+
     /// Output type (must support serialization).
     type Output: Serialize + Send + Sync;
-    
+
     /// Execute the tool.
     ///
     /// # Arguments
@@ -80,7 +80,7 @@ pub trait Tool: Send + Sync {
     /// # Returns
     /// Tool output.
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError>;
-    
+
     /// Returns the input JSON Schema.
     fn args_schema(&self) -> Option<Value> {
         use schemars::schema_for;
@@ -127,9 +127,8 @@ use super::ToolDefinition;
 /// let tool_def = to_tool_definition(&calculator);
 /// ```
 pub fn to_tool_definition(tool: &dyn BaseTool) -> ToolDefinition {
-    ToolDefinition::new(tool.name(), tool.description())
-        .with_parameters(
-            tool.args_schema()
-                .unwrap_or(serde_json::json!({"type": "object"}))
-        )
+    ToolDefinition::new(tool.name(), tool.description()).with_parameters(
+        tool.args_schema()
+            .unwrap_or(serde_json::json!({"type": "object"})),
+    )
 }

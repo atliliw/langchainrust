@@ -9,28 +9,29 @@
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
-use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
-use crate::schema::{Message, MessageType};
-use crate::RunnableConfig;
+use crate::callbacks::{RunTree, RunType};
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
-use crate::callbacks::{RunTree, RunType};
+use crate::schema::{Message, MessageType};
+use crate::RunnableConfig;
 
 /// Gemini API 基础端点
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// Gemini 模型列表
 pub const GEMINI_MODELS: [&str; 6] = [
-    "gemini-2.0-flash",       // Gemini 2.0 Flash（最新快速模型）
-    "gemini-2.0-flash-lite",  // Gemini 2.0 Flash Lite（轻量版）
-    "gemini-1.5-pro",         // Gemini 1.5 Pro（强大推理）
-    "gemini-1.5-flash",       // Gemini 1.5 Flash（快速平衡）
-    "gemini-1.5-flash-8b",    // Gemini 1.5 Flash 8B（更小更快）
-    "gemini-2.0-flash-exp",   // Gemini 2.0 Flash 实验版
+    "gemini-2.0-flash",      // Gemini 2.0 Flash（最新快速模型）
+    "gemini-2.0-flash-lite", // Gemini 2.0 Flash Lite（轻量版）
+    "gemini-1.5-pro",        // Gemini 1.5 Pro（强大推理）
+    "gemini-1.5-flash",      // Gemini 1.5 Flash（快速平衡）
+    "gemini-1.5-flash-8b",   // Gemini 1.5 Flash 8B（更小更快）
+    "gemini-2.0-flash-exp",  // Gemini 2.0 Flash 实验版
 ];
 
 /// Gemini 配置
@@ -73,13 +74,13 @@ impl GeminiConfig {
     pub fn from_env() -> Result<Self, String> {
         let api_key = env::var("GEMINI_API_KEY")
             .or_else(|_| env::var("GOOGLE_API_KEY"))
-            .map_err(|_| "GEMINI_API_KEY or GOOGLE_API_KEY environment variable not set".to_string())?;
+            .map_err(|_| {
+                "GEMINI_API_KEY or GOOGLE_API_KEY environment variable not set".to_string()
+            })?;
 
-        let base_url = env::var("GEMINI_BASE_URL")
-            .unwrap_or_else(|_| GEMINI_BASE_URL.to_string());
+        let base_url = env::var("GEMINI_BASE_URL").unwrap_or_else(|_| GEMINI_BASE_URL.to_string());
 
-        let model = env::var("GEMINI_MODEL")
-            .unwrap_or_else(|_| "gemini-1.5-flash".to_string());
+        let model = env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string());
 
         Ok(Self {
             api_key,
@@ -125,6 +126,14 @@ struct GeminiContent {
 struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_response: Option<GeminiFunctionResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionResponse {
+    name: String,
+    response: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -226,20 +235,33 @@ impl GeminiChat {
                 MessageType::Human => {
                     contents.push(GeminiContent {
                         role: Some("user".to_string()),
-                        parts: vec![GeminiPart { text: Some(msg.content) }],
+                        parts: vec![GeminiPart {
+                            text: Some(msg.content),
+                            function_response: None,
+                        }],
                     });
                 }
                 MessageType::AI => {
                     contents.push(GeminiContent {
                         role: Some("model".to_string()),
-                        parts: vec![GeminiPart { text: Some(msg.content) }],
+                        parts: vec![GeminiPart {
+                            text: Some(msg.content),
+                            function_response: None,
+                        }],
                     });
                 }
-                MessageType::Tool { .. } => {
-                    // Gemini 的 function response 格式略有不同
+                MessageType::Tool { ref tool_call_id } => {
+                    // Gemini uses functionResponse format for tool results
+                    let function_name = tool_call_id.split('_').next().unwrap_or(tool_call_id);
                     contents.push(GeminiContent {
-                        role: Some("user".to_string()),
-                        parts: vec![GeminiPart { text: Some(msg.content) }],
+                        role: Some("function".to_string()),
+                        parts: vec![GeminiPart {
+                            text: None,
+                            function_response: Some(GeminiFunctionResponse {
+                                name: function_name.to_string(),
+                                response: json!({"result": msg.content}),
+                            }),
+                        }],
                     });
                 }
             }
@@ -253,7 +275,10 @@ impl GeminiChat {
         let (contents, system_text) = self.build_contents(messages);
 
         let system_instruction = system_text.map(|text| GeminiSystemInstruction {
-            parts: vec![GeminiPart { text: Some(text) }],
+            parts: vec![GeminiPart {
+                text: Some(text),
+                function_response: None,
+            }],
         });
 
         let generation_config = {
@@ -282,7 +307,11 @@ impl GeminiChat {
     }
 
     /// 解析 Gemini API 响应为 LLMResult
-    fn parse_response(&self, response: GeminiResponse, model: &str) -> Result<LLMResult, GeminiError> {
+    fn parse_response(
+        &self,
+        response: GeminiResponse,
+        model: &str,
+    ) -> Result<LLMResult, GeminiError> {
         // 检查 safety feedback
         if let Some(feedback) = &response.prompt_feedback {
             if let Some(block_reason) = feedback.get("blockReason").and_then(|v| v.as_str()) {
@@ -291,11 +320,12 @@ impl GeminiChat {
         }
 
         let candidates = response.candidates.ok_or(GeminiError::NoResponse)?;
-        let candidate = candidates.into_iter().next().ok_or(GeminiError::NoResponse)?;
-
-        let content = candidate
-            .content
+        let candidate = candidates
+            .into_iter()
+            .next()
             .ok_or(GeminiError::NoResponse)?;
+
+        let content = candidate.content.ok_or(GeminiError::NoResponse)?;
 
         let text = content
             .parts
@@ -315,27 +345,33 @@ impl GeminiChat {
             model: model.to_string(),
             token_usage,
             tool_calls: None,
+            thinking_content: None,
         })
     }
 
     /// 内部调用：发送请求到 Gemini API
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, GeminiError> {
         let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.config.base_url, self.config.model, self.config.api_key
+            "{}/models/{}:generateContent",
+            self.config.base_url, self.config.model
         );
 
         let request_body = self.build_request(messages);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
+            .header("x-goog-api-key", &self.config.api_key)
+            .header("Content-Type", "application/json")
             .json(&request_body)
             .send()
             .await
             .map_err(|e| GeminiError::HttpError(e.to_string()))?;
 
         let status = response.status();
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| GeminiError::HttpError(e.to_string()))?;
 
         if !status.is_success() {
@@ -346,8 +382,13 @@ impl GeminiChat {
             )));
         }
 
-        let gemini_response: GeminiResponse = serde_json::from_str(&body)
-            .map_err(|e| GeminiError::ParseError(format!("{} - body: {}", e, &body[..std::cmp::min(200, body.len())])))?;
+        let gemini_response: GeminiResponse = serde_json::from_str(&body).map_err(|e| {
+            GeminiError::ParseError(format!(
+                "{} - body: {}",
+                e,
+                &body[..std::cmp::min(200, body.len())]
+            ))
+        })?;
 
         self.parse_response(gemini_response, &self.config.model)
     }
@@ -357,17 +398,18 @@ impl GeminiChat {
         &self,
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, GeminiError>> + Send>>, GeminiError> {
-        use futures_util::StreamExt;
-
         let url = format!(
-            "{}/models/{}:streamGenerateContent?alt=event-stream&key={}",
-            self.config.base_url, self.config.model, self.config.api_key
+            "{}/models/{}:streamGenerateContent?alt=event-stream",
+            self.config.base_url, self.config.model
         );
 
         let request_body = self.build_request(messages);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
+            .header("x-goog-api-key", &self.config.api_key)
+            .header("Content-Type", "application/json")
             .json(&request_body)
             .send()
             .await
@@ -376,24 +418,50 @@ impl GeminiChat {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(GeminiError::ApiError(format!("HTTP {}: {}", status.as_u16(), body)));
+            return Err(GeminiError::ApiError(format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                body
+            )));
         }
 
         let byte_stream = response.bytes_stream();
-        let stream = byte_stream
-            .then(|chunk_result| async move {
-                match chunk_result {
-                    Ok(bytes) => {
-                        let chunk_str = String::from_utf8_lossy(&bytes);
-                        let mut texts = Vec::new();
+        let sse_buffer = Arc::new(Mutex::new(String::new()));
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, GeminiError>>(64);
 
-                        for line in chunk_str.lines() {
+        let buffer_clone = sse_buffer.clone();
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+
+            let mut byte_stream = byte_stream;
+            while let Some(chunk_result) = byte_stream.next().await {
+                if let Ok(bytes) = chunk_result {
+                    let chunk_str = String::from_utf8_lossy(&bytes);
+
+                    // Extract complete events from buffer
+                    let events = {
+                        let mut buffer_guard =
+                            buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
+                        buffer_guard.push_str(&chunk_str);
+
+                        let mut events = Vec::new();
+                        while let Some(pos) = buffer_guard.find("\n\n") {
+                            let event_text = buffer_guard[..pos].to_string();
+                            buffer_guard.drain(..=pos + 1);
+                            events.push(event_text);
+                        }
+                        events
+                    };
+                    // buffer_guard is dropped here, before any await
+
+                    for event_text in events {
+                        for line in event_text.lines() {
                             let line = line.trim();
                             if !line.starts_with("data: ") {
                                 continue;
                             }
 
-                            let data = &line[6..]; // 去掉 "data: "
+                            let data = &line[6..];
                             if data == "[DONE]" {
                                 continue;
                             }
@@ -404,7 +472,9 @@ impl GeminiChat {
                                         if let Some(content) = candidate.content {
                                             for part in content.parts {
                                                 if let Some(text) = part.text {
-                                                    texts.push(text);
+                                                    if tx.send(Ok(text)).await.is_err() {
+                                                        return;
+                                                    }
                                                 }
                                             }
                                         }
@@ -412,18 +482,12 @@ impl GeminiChat {
                                 }
                             }
                         }
-
-                        if texts.is_empty() {
-                            None
-                        } else {
-                            Some(Ok(texts.concat()))
-                        }
                     }
-                    Err(e) => Some(Err(GeminiError::HttpError(e.to_string()))),
                 }
-            })
-            .filter_map(|x| async move { x });
+            }
+        });
 
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
     }
 }
@@ -444,7 +508,8 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
         &self,
         input: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
 
@@ -466,6 +531,7 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
                 model,
                 token_usage: None,
                 tool_calls: None,
+                thinking_content: None,
             })
         });
 
@@ -509,7 +575,8 @@ impl BaseChatModel for GeminiChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        let run_name = config.as_ref()
+        let run_name = config
+            .as_ref()
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
@@ -578,8 +645,48 @@ impl BaseChatModel for GeminiChat {
     async fn stream_chat(
         &self,
         messages: Vec<Message>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        self.stream_chat_internal(messages).await
+        let run_name = config
+            .as_ref()
+            .and_then(|c| c.run_name.clone())
+            .unwrap_or_else(|| format!("{}:stream", self.config.model));
+
+        let run = RunTree::new(
+            run_name,
+            RunType::Llm,
+            json!({
+                "messages": messages.len(),
+                "model": self.config.model,
+            }),
+        );
+
+        if let Some(ref cfg) = config {
+            if let Some(ref callbacks) = cfg.callbacks {
+                for handler in callbacks.handlers() {
+                    handler.on_llm_start(&run, &messages).await;
+                }
+            }
+        }
+
+        let stream = self.stream_chat_internal(messages).await?;
+
+        let callbacks = config.and_then(|c| c.callbacks);
+        let stream = stream.then(move |token_result| {
+            let cbs = callbacks.clone();
+            let run = run.clone();
+            async move {
+                if let Some(ref cbs) = cbs {
+                    if let Ok(ref token) = token_result {
+                        for handler in cbs.handlers() {
+                            handler.on_llm_new_token(&run, token).await;
+                        }
+                    }
+                }
+                token_result
+            }
+        });
+
+        Ok(Box::pin(stream))
     }
 }

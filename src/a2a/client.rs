@@ -19,7 +19,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::protocol::{A2ARequest, A2AResponse, A2ATask, A2AMessage, AgentCard, A2AErrorData};
+use super::protocol::{A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, AgentCard};
 
 /// Errors that can occur during A2A client operations.
 #[derive(Debug, thiserror::Error)]
@@ -34,10 +34,7 @@ pub enum A2AError {
 
     /// API-level error (returned by the remote agent).
     #[error("API error [{code}]: {message}")]
-    Api {
-        code: i32,
-        message: String,
-    },
+    Api { code: i32, message: String },
 
     /// Request timed out.
     #[error("Timeout: {0}")]

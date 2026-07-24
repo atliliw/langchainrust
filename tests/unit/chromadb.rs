@@ -8,11 +8,7 @@
 //! - 计数/清空
 //! - 错误处理
 
-use langchainrust::{
-    ChromaDBVectorStore, ChromaDBConfig,
-    VectorStoreError,
-    Document,
-};
+use langchainrust::{ChromaDBConfig, ChromaDBVectorStore, Document, VectorStoreError};
 
 /// 测试 ChromaDBConfig 默认值
 ///
@@ -49,7 +45,12 @@ fn test_chromadb_config_with_metadata() {
 
     assert!(config.metadata.is_some());
     assert_eq!(
-        config.metadata.as_ref().unwrap().get("description").unwrap(),
+        config
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("description")
+            .unwrap(),
         "test collection"
     );
 }

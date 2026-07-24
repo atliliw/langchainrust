@@ -1,7 +1,5 @@
 use langchainrust::{
-    GraphBuilder, StateGraph, START, END,
-    AgentState, StateUpdate,
-    FunctionRouter,
+    AgentState, FunctionRouter, GraphBuilder, StateGraph, StateUpdate, END, START,
 };
 use std::collections::HashMap;
 
@@ -45,7 +43,10 @@ async fn test_default_recursion_limit() {
         .compile()
         .unwrap();
 
-    let result = compiled.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let result = compiled
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
     // 应执行2个节点
     assert_eq!(result.recursion_count, 2);
 }
@@ -69,9 +70,12 @@ async fn test_custom_recursion_limit_allows_valid_depth() {
         .add_edge("n5", END)
         .compile()
         .unwrap()
-        .with_recursion_limit(10);  // 限制10次, 5节点足够
+        .with_recursion_limit(10); // 限制10次, 5节点足够
 
-    let result = compiled.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let result = compiled
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
     assert_eq!(result.recursion_count, 5);
 }
 
@@ -90,7 +94,7 @@ async fn test_low_recursion_limit_fails_valid_graph() {
         .add_edge("n3", END)
         .compile()
         .unwrap()
-        .with_recursion_limit(2);  // 限制2次, 3节点无法完成
+        .with_recursion_limit(2); // 限制2次, 3节点无法完成
 
     let result = compiled.invoke(AgentState::new("test".to_string())).await;
     assert!(result.is_err());
@@ -110,9 +114,12 @@ async fn test_graph_reaches_end_before_limit() {
         .add_edge("single", END)
         .compile()
         .unwrap()
-        .with_recursion_limit(100);  // 大限制
+        .with_recursion_limit(100); // 大限制
 
-    let result = compiled.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let result = compiled
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
     // 只执行1个节点就到达END
     assert_eq!(result.recursion_count, 1);
     assert_eq!(result.final_state.output, Some("done".to_string()));

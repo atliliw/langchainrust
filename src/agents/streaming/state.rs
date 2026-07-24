@@ -68,6 +68,8 @@ pub enum AgentStreamEvent {
     ToolCall { state: ToolCallState },
     /// 最终答案
     FinalAnswer { content: String },
+    /// 流式执行错误
+    Error { message: String },
 }
 
 #[cfg(test)]
@@ -109,5 +111,13 @@ mod tests {
             content: "done".to_string(),
         };
         assert!(matches!(e, AgentStreamEvent::FinalAnswer { .. }));
+    }
+
+    #[test]
+    fn test_agent_stream_event_error() {
+        let e = AgentStreamEvent::Error {
+            message: "stream failed".to_string(),
+        };
+        assert!(matches!(e, AgentStreamEvent::Error { .. }));
     }
 }

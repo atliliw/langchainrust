@@ -35,7 +35,10 @@ async fn test_pinecone_upsert_and_query() {
     ];
     store.upsert(&docs, &embeddings).await.expect("upsert 失败");
 
-    let qvec = embeddings.embed_query("什么是 Rust").await.expect("embed 失败");
+    let qvec = embeddings
+        .embed_query("什么是 Rust")
+        .await
+        .expect("embed 失败");
     let results = store.query(qvec, 2).await.expect("query 失败");
     println!("查询结果: {:?}", results);
     assert!(!results.is_empty());

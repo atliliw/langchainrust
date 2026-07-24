@@ -3,12 +3,12 @@
 //!
 //! Provides document vector storage and retrieval functionality.
 
-mod memory;
-mod file_store;
-mod provider;
-pub mod document_store;
-pub mod chunked_vector_store;
 pub mod chromadb;
+pub mod chunked_vector_store;
+pub mod document_store;
+mod file_store;
+mod memory;
+mod provider;
 
 #[cfg(feature = "mongodb-persistence")]
 mod mongo_document_store;
@@ -27,20 +27,23 @@ pub mod pgvector;
 
 pub mod pinecone;
 
-pub use memory::InMemoryVectorStore;
-pub use file_store::FileVectorStore;
-pub use pinecone::PineconeStore;
-pub use provider::{VectorStoreProvider, VectorStoreType, VectorStoreBuilder};
-pub use document_store::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore, ChunkDocument};
 pub use chunked_vector_store::ChunkedVectorStore;
+pub use document_store::{
+    ChunkDocument, ChunkedDocumentStore, ChunkedDocumentStoreTrait, DocumentStore,
+    InMemoryChunkedDocumentStore, InMemoryDocumentStore,
+};
+pub use file_store::FileVectorStore;
+pub use memory::InMemoryVectorStore;
+pub use pinecone::PineconeStore;
+pub use provider::{VectorStoreBuilder, VectorStoreProvider, VectorStoreType};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use mongo_document_store::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 #[cfg(feature = "qdrant-integration")]
-pub use qdrant::{QdrantVectorStore, QdrantConfig, QdrantDistance};
+pub use qdrant::{QdrantConfig, QdrantDistance, QdrantVectorStore};
 
-pub use chromadb::{ChromaDBVectorStore, ChromaDBConfig};
+pub use chromadb::{ChromaDBConfig, ChromaDBVectorStore};
 
 #[cfg(feature = "redis-storage")]
 pub use redis_store::{RedisDocumentStore, RedisStoreConfig};
@@ -58,13 +61,13 @@ use std::error::Error;
 pub enum VectorStoreError {
     /// Document not found.
     DocumentNotFound(String),
-    
+
     /// Embedding error.
     EmbeddingError(String),
-    
+
     /// Storage error.
     StorageError(String),
-    
+
     /// Connection error (for remote vector databases).
     ConnectionError(String),
 }
@@ -87,10 +90,10 @@ impl Error for VectorStoreError {}
 pub struct Document {
     /// Document content.
     pub content: String,
-    
+
     /// Document metadata.
     pub metadata: HashMap<String, String>,
-    
+
     /// Document ID (optional).
     pub id: Option<String>,
 }
@@ -104,19 +107,19 @@ impl Document {
             id: None,
         }
     }
-    
+
     /// Adds metadata.
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
-    
+
     /// Sets ID.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
     }
-    
+
     /// Returns page content (alias).
     pub fn page_content(&self) -> &str {
         &self.content
@@ -128,7 +131,7 @@ impl Document {
 pub struct VectorDocument {
     /// Document.
     pub document: Document,
-    
+
     /// Embedding vector.
     pub embedding: Vec<f32>,
 }
@@ -138,7 +141,7 @@ pub struct VectorDocument {
 pub struct SearchResult {
     /// Document.
     pub document: Document,
-    
+
     /// Similarity score.
     pub score: f32,
 }
@@ -159,7 +162,7 @@ pub trait VectorStore: Send + Sync {
         documents: Vec<Document>,
         embeddings: Vec<Vec<f32>>,
     ) -> Result<Vec<String>, VectorStoreError>;
-    
+
     /// Searches similar documents.
     ///
     /// # Arguments
@@ -173,19 +176,19 @@ pub trait VectorStore: Send + Sync {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError>;
-    
+
     /// Gets document by ID.
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError>;
-    
+
     /// Gets document embedding by ID.
     async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError>;
-    
+
     /// Deletes document.
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError>;
-    
+
     /// Returns document count.
     async fn count(&self) -> usize;
-    
+
     /// Clears store.
     async fn clear(&self) -> Result<(), VectorStoreError>;
 }
@@ -193,18 +196,18 @@ pub trait VectorStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_document_creation() {
         let doc = Document::new("Hello, world!")
             .with_metadata("source", "test")
             .with_id("doc-1");
-        
+
         assert_eq!(doc.content, "Hello, world!");
         assert_eq!(doc.metadata.get("source"), Some(&"test".to_string()));
         assert_eq!(doc.id, Some("doc-1".to_string()));
     }
-    
+
     #[test]
     fn test_document_page_content() {
         let doc = Document::new("Test content");

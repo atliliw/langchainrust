@@ -9,8 +9,7 @@
 //! - ExampleSelector trait
 
 use langchainrust::{
-    PromptTemplate,
-    FewShotPromptTemplate, ExampleSelector, LengthBasedExampleSelector,
+    ExampleSelector, FewShotPromptTemplate, LengthBasedExampleSelector, PromptTemplate,
 };
 use std::collections::HashMap;
 
@@ -27,10 +26,7 @@ fn make_example(input: &str, output: &str) -> HashMap<String, String> {
 /// 验证：前缀、示例、用户输入被正确组合。
 #[test]
 fn test_few_shot_basic_format() {
-    let examples = vec![
-        make_example("苹果", "水果"),
-        make_example("玫瑰", "花"),
-    ];
+    let examples = vec![make_example("苹果", "水果"), make_example("玫瑰", "花")];
 
     let example_prompt = PromptTemplate::new("输入: {input} -> 类别: {output}");
     let few_shot = FewShotPromptTemplate::new(
@@ -72,8 +68,10 @@ fn test_few_shot_missing_variable() {
 
     let result = few_shot.format(&vars);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("missing"),
-        "应提示缺少的变量名");
+    assert!(
+        result.unwrap_err().contains("missing"),
+        "应提示缺少的变量名"
+    );
 }
 
 /// 测试空示例列表
@@ -113,7 +111,8 @@ fn test_few_shot_custom_separator() {
         "",
         "",
         vec![],
-    ).with_example_separator(" | ");
+    )
+    .with_example_separator(" | ");
 
     let vars = HashMap::new();
     let result = few_shot.format(&vars).unwrap();
@@ -149,10 +148,7 @@ fn test_few_shot_add_example() {
 /// 验证：基于长度的选择器能正确初始化。
 #[test]
 fn test_length_based_selector_new() {
-    let examples = vec![
-        make_example("a", "1"),
-        make_example("b", "2"),
-    ];
+    let examples = vec![make_example("a", "1"), make_example("b", "2")];
 
     let selector = LengthBasedExampleSelector::new(examples);
     assert_eq!(selector.examples().len(), 2);
@@ -175,10 +171,7 @@ fn test_length_based_selector_add() {
 /// 验证：with_example_selector 可以设置自定义选择器。
 #[test]
 fn test_few_shot_with_selector() {
-    let examples = vec![
-        make_example("q1", "a1"),
-        make_example("q2", "a2"),
-    ];
+    let examples = vec![make_example("q1", "a1"), make_example("q2", "a2")];
 
     let selector = Box::new(LengthBasedExampleSelector::new(examples.clone()));
     let few_shot = FewShotPromptTemplate::new(
@@ -187,7 +180,8 @@ fn test_few_shot_with_selector() {
         "Examples:",
         "Q: {input}\nA:",
         vec!["input".to_string()],
-    ).with_example_selector(selector);
+    )
+    .with_example_selector(selector);
 
     let mut vars = HashMap::new();
     vars.insert("input", "my question");

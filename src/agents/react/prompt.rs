@@ -97,7 +97,9 @@ mod tests {
         let steps = vec![AgentStep::new(
             AgentAction {
                 tool: "calculator".to_string(),
-                tool_input: ToolInput::String("2 + 2".to_string()),
+                tool_input: ToolInput::String {
+                    value: "2 + 2".to_string(),
+                },
                 log: "我需要计算".to_string(),
             },
             "结果: 4".to_string(),

@@ -11,18 +11,11 @@ use regex::Regex;
 use crate::retrieval::loaders::{DocumentLoader, LoaderError};
 use crate::vector_stores::Document;
 
-static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)<script.*?</script>").unwrap()
-});
-static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)<style.*?</style>").unwrap()
-});
-static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"<[^>]+>").unwrap()
-});
-static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\s+").unwrap()
-});
+static SCRIPT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<script.*?</script>").unwrap());
+static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<style.*?</style>").unwrap());
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// HTML 加载器:去除 script/style,剥离标签,解码实体,提取纯文本
 pub struct HTMLLoader {
@@ -67,19 +60,17 @@ impl HTMLLoader {
 
     /// 从 URL 抓取 HTML 内容
     async fn fetch_html(url: &str) -> Result<String, LoaderError> {
-        let response = reqwest::get(url).await.map_err(|e| {
-            LoaderError::Other(format!("HTTP 请求失败: {}", e))
-        })?;
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败: {}", e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!(
-                "HTTP 错误: {}",
-                status
-            )));
+            return Err(LoaderError::Other(format!("HTTP 错误: {}", status)));
         }
-        response.text().await.map_err(|e| {
-            LoaderError::Other(format!("读取响应失败: {}", e))
-        })
+        response
+            .text()
+            .await
+            .map_err(|e| LoaderError::Other(format!("读取响应失败: {}", e)))
     }
 }
 
@@ -91,7 +82,9 @@ impl DocumentLoader for HTMLLoader {
         } else if let Some(ref url) = self.url {
             Self::fetch_html(url).await?
         } else {
-            return Err(LoaderError::Other("HTMLLoader 未设置 html 或 url".to_string()));
+            return Err(LoaderError::Other(
+                "HTMLLoader 未设置 html 或 url".to_string(),
+            ));
         };
 
         let text = Self::extract_text(&html);

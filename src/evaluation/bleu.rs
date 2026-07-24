@@ -166,7 +166,11 @@ mod tests {
     async fn test_bleu_no_match() {
         let ev = Bleu::new();
         let s = ev
-            .eval("", "completely different words here", "the cat sat on the mat")
+            .eval(
+                "",
+                "completely different words here",
+                "the cat sat on the mat",
+            )
             .await
             .unwrap();
         assert!((s.value - 0.0).abs() < 1e-9);
@@ -183,7 +187,10 @@ mod tests {
     async fn test_bleu_brevity_penalty() {
         // 预测比参考短,即使词都匹配,bleu 也被惩罚 < 1
         let ev = Bleu::new().with_max_n(1);
-        let s = ev.eval("", "the cat", "the cat sat on the mat").await.unwrap();
+        let s = ev
+            .eval("", "the cat", "the cat sat on the mat")
+            .await
+            .unwrap();
         assert!(s.value < 1.0);
     }
 

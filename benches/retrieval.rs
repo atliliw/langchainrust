@@ -146,7 +146,12 @@ fn bench_tokenizer(c: &mut Criterion) {
 
     // Benchmark tokenizing a large document
     let large_text: String = (0..100)
-        .map(|i| format!("Paragraph {} about Rust programming and systems design. ", i))
+        .map(|i| {
+            format!(
+                "Paragraph {} about Rust programming and systems design. ",
+                i
+            )
+        })
         .collect();
 
     group.bench_function("large_100_paragraphs", |b| {
@@ -212,7 +217,10 @@ fn bench_vector_store_similarity_search(c: &mut Criterion) {
 
         let query_embedding = rt.block_on(async {
             let embedding_model: Arc<dyn Embeddings> = Arc::new(MockEmbeddings::new(128));
-            embedding_model.embed_query("programming language").await.unwrap()
+            embedding_model
+                .embed_query("programming language")
+                .await
+                .unwrap()
         });
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &_size| {

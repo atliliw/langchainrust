@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-23
+
+### Added
+- **模型路由 + Fallback + 负载均衡 (`core::router_llm`)** (#2): `RouterLLM` 实现 `BaseChatModel`,在异构 provider 池上按策略选模型并在失败时 fallback
+  - `RoutingStrategy`: `Fallback`(primary-first) / `RoundRobin` / `LeastLatency`(EMA 延迟统计) / `LowestCost` / `InputDirected`(闭包按输入选模型)
+  - `RouterError` 统一错误,经内部 `ModelAdapter` 把各 provider 异构错误收敛为单一类型
+  - `with_fallbacks(primary, fallbacks)` / `with_model` / `with_named_model` / `with_cost` builder
+- **Agentic / Corrective RAG (`agents::crag`)** (#1): `CorrectiveRAGAgent` LangGraph 状态机: retrieve -> grade -> [rewrite+web|keep] -> generate,带幻觉检测
+- **MCP 全协议 (`mcp`)** (#3): 补 resources / prompts / completion / elicitation / roots / sampling 六大原语,Client/Server 对应 handler,39 个单元测试
+- **Code Interpreter 沙箱 (`tools::sandbox`)** (#4): `CodeSandbox` trait + `SandboxTool<BaseTool>` + `LocalSandbox`(子进程) + E2B/WASM 后端(feature gate)
+- **OpenAI Responses API (`language_models::openai::responses`)** (#5): `ResponsesModel` 实现 `BaseChatModel`,走 `/v1/responses`,内置 web_search/file_search/code_interpreter/computer_use,流式事件解析
+- **GraphRAG 知识图谱 RAG (`retrieval::graph_rag`)** (#6): LLM 抽实体+关系->建图->Label Propagation 社区检测+摘要->Global/Local/Hybrid 查询,无 petgraph 依赖
+- **Anthropic extended thinking (`language_models::providers::anthropic`)** (#7): `ThinkingConfig` + `with_thinking(budget_tokens)`,thinking block 解析,`on_llm_thinking` 回调,`LLMResult.thinking_content`,流式 thinking
+- **Deep Research Agent (`agents::deep_research`)** (#8): 多轮搜索(query 生成->并行检索->去重->子主题聚合->综合报告+引用),`ResearchReport` + `Citation`
+- **Streaming Structured Output (`core::structured_output`)** (#9): `PartialJsonParser` 增量 JSON 解析 + `stream_structured_output<T>` 流式部分结构 + `StreamingStructuredOutputExt` trait
+- **Adaptive RAG (`agents::adaptive_rag`)** (#10): LLM 路由判 `NoRetrieval`/`SingleSearch`/`MultiQuery`,复用现有 Retriever
+- **Batch API (`core::batch`)** (#11): `BatchClient` submit/poll/results/cancel,OpenAI + Anthropic batch 端点,`submit_and_wait` 便捷方法
+- **Agent Observability / 深度 Tracing (`callbacks::tracing`)** (#12): `Tracer` + `SpanGuard`(RAII) + `TracingBackend` trait + `InMemoryTracingBackend`/`ConsoleTracingBackend`/`OtelTracingBackend`,parent-child span tree
+
+### Changed
+- `LLMResult` 新增 `thinking_content: Option<String>` 字段(#[serde(default)] 向后兼容)
+- `CallbackHandler` trait 新增 `on_llm_thinking` 默认方法
+- `AnthropicChat` 新增 `with_thinking(budget_tokens)` builder
+- Cargo.toml 新增 feature gates: `sandbox-e2b`, `sandbox-wasm`
+
 ## [0.4.2] - 2026-07-22
 
 ### Added
@@ -472,6 +497,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.5.0]: https://github.com/atliliw/langchainrust/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/atliliw/langchainrust/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/atliliw/langchainrust/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/atliliw/langchainrust/compare/v0.3.0...v0.4.0
 [0.2.14]: https://github.com/atliliw/langchainrust/compare/v0.2.13...v0.2.14

@@ -7,7 +7,7 @@
 //! cargo run --example mcp_server
 //! ```
 
-use langchainrust::{Calculator, BaseTool};
+use langchainrust::{BaseTool, Calculator};
 use std::sync::Arc;
 
 #[tokio::main]

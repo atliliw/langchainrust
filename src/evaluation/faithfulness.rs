@@ -57,9 +57,8 @@ impl<M: BaseChatModel> Faithfulness<M> {
         let system =
             "你是事实核查员。判断给定的陈述能否从参考上下文中推导出来。只输出\"是\"或\"否\"。"
                 .to_string();
-        let user = format!(
-            "参考上下文:\n{context}\n\n陈述:\n{claim}\n\n这条陈述能从上下文推导出来吗?"
-        );
+        let user =
+            format!("参考上下文:\n{context}\n\n陈述:\n{claim}\n\n这条陈述能从上下文推导出来吗?");
         let result = self
             .judge
             .chat_with_system(system, vec![Message::human(user)])
@@ -70,7 +69,9 @@ impl<M: BaseChatModel> Faithfulness<M> {
 
     /// 用 LLM 把回答拆成原子陈述(每行一条),处理规则拆不动的复合句。
     async fn split_claims_llm(&self, prediction: &str) -> Result<Vec<String>, EvalError> {
-        let system = "你是文本分析助手。把回答拆成原子陈述,每条一行,只输出陈述本身,不要编号不要解释。".to_string();
+        let system =
+            "你是文本分析助手。把回答拆成原子陈述,每条一行,只输出陈述本身,不要编号不要解释。"
+                .to_string();
         let user = format!("回答:\n{prediction}\n\n把它拆成原子陈述,每行一条:");
         let result = self
             .judge
@@ -103,7 +104,9 @@ impl<M: BaseChatModel> Evaluator for Faithfulness<M> {
             return Ok(Score::new(self.empty_score).with_label("no_claims"));
         }
         // 并发验证各陈述:每条一次 LLM 调用,串行会变成 N 次顺序往返
-        let futs = claims.iter().map(|claim| self.verify_claim(reference, claim));
+        let futs = claims
+            .iter()
+            .map(|claim| self.verify_claim(reference, claim));
         let results = futures_util::future::join_all(futs).await;
         let mut supported = 0usize;
         for r in results {
@@ -206,6 +209,7 @@ mod tests {
                 model: "seq-mock".to_string(),
                 token_usage: None,
                 tool_calls: None,
+                thinking_content: None,
             })
         }
         async fn stream_chat(

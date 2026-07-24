@@ -42,7 +42,7 @@ impl DocumentLoader for PDFLoader {
         let mut document = Document::new(text);
         document = document.with_metadata("source".to_string(), self.path.display().to_string());
         document = document.with_metadata("format".to_string(), "pdf".to_string());
-        
+
         Ok(vec![document])
     }
 }
@@ -50,14 +50,12 @@ impl DocumentLoader for PDFLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
 
     #[tokio::test]
     async fn test_pdf_loader_nonexistent() {
         let loader = PDFLoader::new("./nonexistent.pdf");
         let result = loader.load().await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             LoaderError::Other(msg) => assert!(msg.contains("不存在")),
@@ -71,7 +69,7 @@ mod tests {
         // 注意：这需要一个实际存在的 PDF 文件进行测试
         let loader = PDFLoader::new("./sample.pdf");
         let result = loader.load().await;
-        
+
         // 应该成功返回至少一个文档
         if let Ok(docs) = result {
             assert!(!docs.is_empty());

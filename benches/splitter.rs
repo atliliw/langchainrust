@@ -92,15 +92,11 @@ fn bench_recursive_splitter_split_text(c: &mut Criterion) {
 
     for para_count in [5, 20, 100] {
         let text = generate_paragraph_text(para_count);
-        group.bench_with_input(
-            BenchmarkId::new("english", para_count),
-            &text,
-            |b, text| {
-                b.iter(|| {
-                    black_box(splitter.split_text(black_box(text)));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("english", para_count), &text, |b, text| {
+            b.iter(|| {
+                black_box(splitter.split_text(black_box(text)));
+            });
+        });
     }
 
     group.finish();
@@ -113,15 +109,11 @@ fn bench_recursive_splitter_chinese(c: &mut Criterion) {
 
     for para_count in [5, 20, 50] {
         let text = generate_chinese_text(para_count);
-        group.bench_with_input(
-            BenchmarkId::new("chinese", para_count),
-            &text,
-            |b, text| {
-                b.iter(|| {
-                    black_box(splitter.split_text(black_box(text)));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("chinese", para_count), &text, |b, text| {
+            b.iter(|| {
+                black_box(splitter.split_text(black_box(text)));
+            });
+        });
     }
 
     group.finish();
@@ -136,15 +128,11 @@ fn bench_recursive_splitter_split_document(c: &mut Criterion) {
         let text = generate_paragraph_text(para_count);
         let doc = Document::new(&text).with_metadata("source", "benchmark");
 
-        group.bench_with_input(
-            BenchmarkId::new("document", para_count),
-            &doc,
-            |b, doc| {
-                b.iter(|| {
-                    black_box(splitter.split_document(black_box(doc)));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("document", para_count), &doc, |b, doc| {
+            b.iter(|| {
+                black_box(splitter.split_document(black_box(doc)));
+            });
+        });
     }
 
     group.finish();

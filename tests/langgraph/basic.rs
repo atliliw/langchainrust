@@ -1,14 +1,13 @@
-mod llm_integration;
 mod async_node;
-mod visualize;
 mod human_loop;
-mod validation;
+mod llm_integration;
 mod parallel;
+mod validation;
+mod visualize;
 
 use langchainrust::{
-    StateGraph, GraphBuilder, START, END,
-    AgentState, StateUpdate,
-    ThreadSafeMemoryCheckpointer, Checkpointer,
+    AgentState, Checkpointer, GraphBuilder, StateGraph, StateUpdate, ThreadSafeMemoryCheckpointer,
+    END, START,
 };
 
 // 测试线性图执行: START -> node1 -> node2 -> END
@@ -18,7 +17,10 @@ async fn test_linear_graph_execution() {
     let compiled = GraphBuilder::<AgentState>::new()
         .add_node_fn("node1", |state: &AgentState| {
             // 第一个节点处理输入
-            Ok(StateUpdate::full(AgentState::new(format!("step1: {}", state.input))))
+            Ok(StateUpdate::full(AgentState::new(format!(
+                "step1: {}",
+                state.input
+            ))))
         })
         .add_node_fn("node2", |state: &AgentState| {
             // 第二个节点设置输出
@@ -32,8 +34,11 @@ async fn test_linear_graph_execution() {
         .compile()
         .unwrap();
 
-    let result = compiled.invoke(AgentState::new("test".to_string())).await.unwrap();
-    
+    let result = compiled
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
+
     // 打印输出结果
     println!("=== test_linear_graph_execution ===");
     println!("final_state.input: {}", result.final_state.input);
@@ -56,8 +61,11 @@ async fn test_single_node_graph() {
         .compile()
         .unwrap();
 
-    let result = compiled.invoke(AgentState::new("input".to_string())).await.unwrap();
-    
+    let result = compiled
+        .invoke(AgentState::new("input".to_string()))
+        .await
+        .unwrap();
+
     println!("=== test_single_node_graph ===");
     println!("final_state.input: {}", result.final_state.input);
     println!("final_state.output: {:?}", result.final_state.output);
@@ -71,11 +79,17 @@ async fn test_three_node_chain() {
     let compiled = GraphBuilder::<AgentState>::new()
         .add_node_fn("first", |state| {
             // 第一节点添加前缀 "1:"
-            Ok(StateUpdate::full(AgentState::new(format!("1:{}", state.input))))
+            Ok(StateUpdate::full(AgentState::new(format!(
+                "1:{}",
+                state.input
+            ))))
         })
         .add_node_fn("second", |state| {
             // 第二节点添加前缀 "2:"
-            Ok(StateUpdate::full(AgentState::new(format!("2:{}", state.input))))
+            Ok(StateUpdate::full(AgentState::new(format!(
+                "2:{}",
+                state.input
+            ))))
         })
         .add_node_fn("third", |state| {
             // 第三节点设置最终输出
@@ -90,8 +104,11 @@ async fn test_three_node_chain() {
         .compile()
         .unwrap();
 
-    let result = compiled.invoke(AgentState::new("input".to_string())).await.unwrap();
-    
+    let result = compiled
+        .invoke(AgentState::new("input".to_string()))
+        .await
+        .unwrap();
+
     println!("=== test_three_node_chain ===");
     println!("final_state.input: {}", result.final_state.input);
     println!("final_state.output: {:?}", result.final_state.output);
@@ -112,8 +129,11 @@ async fn test_stream_execution_returns_events() {
         .unwrap();
 
     // 流式执行获取所有事件
-    let events = compiled.stream(AgentState::new("test".to_string())).await.unwrap();
-    
+    let events = compiled
+        .stream(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
+
     println!("=== test_stream_execution_returns_events ===");
     println!("events count: {}", events.len());
     for (i, event) in events.iter().enumerate() {
@@ -126,7 +146,7 @@ async fn test_stream_execution_returns_events() {
 #[tokio::test]
 async fn test_checkpointer_integration() {
     let checkpointer = ThreadSafeMemoryCheckpointer::<AgentState>::new();
-    
+
     let compiled = GraphBuilder::<AgentState>::new()
         .add_node_fn("process", |state| {
             let mut s = state.clone();
@@ -139,8 +159,11 @@ async fn test_checkpointer_integration() {
         .unwrap()
         .with_checkpointer(checkpointer);
 
-    let result = compiled.invoke(AgentState::new("test".to_string())).await.unwrap();
-    
+    let result = compiled
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
+
     println!("=== test_checkpointer_integration ===");
     println!("final_state.input: {}", result.final_state.input);
     println!("final_state.output: {:?}", result.final_state.output);
@@ -151,26 +174,26 @@ async fn test_checkpointer_integration() {
 #[tokio::test]
 async fn test_checkpointer_save_and_load() {
     let checkpointer = ThreadSafeMemoryCheckpointer::<AgentState>::new();
-    
+
     // 保存两个状态
     let state1 = AgentState::new("first".to_string());
     let id1 = checkpointer.save(&state1).await.unwrap();
-    
+
     let state2 = AgentState::new("second".to_string());
     let id2 = checkpointer.save(&state2).await.unwrap();
-    
+
     // 验证列表包含两个checkpoint
     let list = checkpointer.list().await.unwrap();
-    
+
     println!("=== test_checkpointer_save_and_load ===");
     println!("checkpoint id1: {}", id1);
     println!("checkpoint id2: {}", id2);
     println!("list count: {}", list.len());
-    
+
     // 验证能正确加载第一个状态
     let loaded = checkpointer.load(&id1).await.unwrap();
     println!("loaded state input: {}", loaded.input);
-    
+
     // 验证删除功能
     checkpointer.delete(&id2).await.unwrap();
     let list_after_delete = checkpointer.list().await.unwrap();
@@ -186,7 +209,7 @@ fn test_graph_builder_creates_valid_graph() {
         .add_edge(START, "n1")
         .add_edge("n1", END)
         .build();
-    
+
     let result = graph.compile();
     println!("=== test_graph_builder_creates_valid_graph ===");
     println!("compile result: {:?}", result.is_ok());
@@ -209,8 +232,8 @@ fn test_empty_graph_fails_compile() {
 fn test_invalid_entry_point_fails() {
     let mut graph: StateGraph<AgentState> = StateGraph::new();
     graph.add_node_fn("node1", |state| Ok(StateUpdate::full(state.clone())));
-    graph.set_entry_point("nonexistent");  // 不存在的节点
-    
+    graph.set_entry_point("nonexistent"); // 不存在的节点
+
     // 应返回验证错误
     let result = graph.compile();
     println!("=== test_invalid_entry_point_fails ===");
@@ -226,7 +249,7 @@ fn test_missing_edge_fails_validation() {
     graph.add_node_fn("b", |state| Ok(StateUpdate::full(state.clone())));
     graph.add_edge(START, "a");
     // 注意: 没有 a -> b 的边
-    
+
     // 图仍可编译, 但节点b不会被执行
     let compiled = graph.compile();
     println!("=== test_missing_edge_fails_validation ===");

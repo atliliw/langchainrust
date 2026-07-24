@@ -19,11 +19,8 @@ impl TiktokenCounter {
     }
 }
 
-impl Default for TiktokenCounter {
-    fn default() -> Self {
-        Self::new().expect("tiktoken cl100k_base 加载失败")
-    }
-}
+// H35: Removed Default impl that could panic.
+// Use `TiktokenCounter::new()` instead of `TiktokenCounter::default()`.
 
 impl TokenCounter for TiktokenCounter {
     fn count_tokens(&self, text: &str) -> u32 {
@@ -68,10 +65,7 @@ mod tests {
     #[test]
     fn test_count_messages_includes_overhead() {
         let counter = TiktokenCounter::new().unwrap();
-        let msgs = vec![
-            Message::system("You are helpful."),
-            Message::human("Hi"),
-        ];
+        let msgs = vec![Message::system("You are helpful."), Message::human("Hi")];
         let n = counter.count_messages(&msgs);
         // 至少含 2*4 开销 + 2 边界 + 各消息 token
         assert!(n >= 10);

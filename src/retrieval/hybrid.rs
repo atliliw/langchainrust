@@ -8,6 +8,14 @@ use std::collections::HashMap;
 
 pub const RRF_K: usize = 60;
 
+/// Generate a stable document ID from content hash to avoid collisions (H46).
+fn doc_content_hash(doc: &Document) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    doc.content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// 检索结果（带分数）
 #[derive(Debug, Clone)]
 pub struct RetrievedDocument {
@@ -44,7 +52,7 @@ pub fn reciprocal_rank_fusion(
 
     // BM25 结果处理
     for (rank, doc) in bm25_results.iter().enumerate() {
-        let doc_id = doc.id.clone().unwrap_or_else(|| format!("bm25_{}", rank));
+        let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores
@@ -57,7 +65,7 @@ pub fn reciprocal_rank_fusion(
 
     // 向量结果处理
     for (rank, doc) in vector_results.iter().enumerate() {
-        let doc_id = doc.id.clone().unwrap_or_else(|| format!("vector_{}", rank));
+        let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores
@@ -99,7 +107,7 @@ pub fn reciprocal_rank_fusion_with_scores(
 
     // BM25 结果处理
     for (rank, (doc, bm25_score)) in bm25_results.iter().enumerate() {
-        let doc_id = doc.id.clone().unwrap_or_else(|| format!("bm25_{}", rank));
+        let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores
@@ -113,7 +121,7 @@ pub fn reciprocal_rank_fusion_with_scores(
 
     // 向量结果处理
     for (rank, (doc, vector_score)) in vector_results.iter().enumerate() {
-        let doc_id = doc.id.clone().unwrap_or_else(|| format!("vector_{}", rank));
+        let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores

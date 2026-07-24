@@ -20,15 +20,18 @@ use std::sync::Arc;
 #[ignore = "需要配置 API Key"]
 async fn test_llm_chain_basic() {
     let llm = TestConfig::get().openai_chat();
-    
+
     // LLMChain 默认使用 "question" 作为输入键
     let chain = LLMChain::new(llm, "Explain this topic in one sentence: {question}");
-    
+
     let mut inputs: HashMap<String, Value> = HashMap::new();
-    inputs.insert("question".to_string(), Value::String("Machine Learning".to_string()));
-    
+    inputs.insert(
+        "question".to_string(),
+        Value::String("Machine Learning".to_string()),
+    );
+
     let result = chain.invoke(inputs).await.unwrap();
-    
+
     println!("Result: {:?}", result);
     assert!(result.contains_key("text"));
 }
@@ -42,18 +45,21 @@ async fn test_llm_chain_basic() {
 #[ignore = "需要配置 API Key"]
 async fn test_llm_chain_with_variables() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let chain = LLMChain::new(
         llm,
         "Write a {style} description of {question} in one paragraph.",
     );
-    
+
     let mut inputs: HashMap<String, Value> = HashMap::new();
     inputs.insert("style".to_string(), Value::String("technical".to_string()));
-    inputs.insert("question".to_string(), Value::String("Rust programming language".to_string()));
-    
+    inputs.insert(
+        "question".to_string(),
+        Value::String("Rust programming language".to_string()),
+    );
+
     let result = chain.invoke(inputs).await.unwrap();
-    
+
     println!("Result: {:?}", result);
     assert!(result.contains_key("text"));
 }
@@ -67,16 +73,18 @@ async fn test_llm_chain_with_variables() {
 #[ignore = "需要配置 API Key"]
 async fn test_llm_chain_custom_input_key() {
     let llm = TestConfig::get().openai_chat();
-    
+
     // 使用 with_input_key 修改默认输入键
-    let chain = LLMChain::new(llm, "Explain this topic: {topic}")
-        .with_input_key("topic");
-    
+    let chain = LLMChain::new(llm, "Explain this topic: {topic}").with_input_key("topic");
+
     let mut inputs: HashMap<String, Value> = HashMap::new();
-    inputs.insert("topic".to_string(), Value::String("Machine Learning".to_string()));
-    
+    inputs.insert(
+        "topic".to_string(),
+        Value::String("Machine Learning".to_string()),
+    );
+
     let result = chain.invoke(inputs).await.unwrap();
-    
+
     println!("Result: {:?}", result);
     assert!(result.contains_key("text"));
 }
@@ -91,26 +99,25 @@ async fn test_llm_chain_custom_input_key() {
 #[ignore = "需要配置 API Key"]
 async fn test_sequential_chain() {
     let config = TestConfig::get();
-    
+
     let llm1 = config.openai_chat();
     let llm2 = config.openai_chat();
-    
+
     // Chain 1: 列出主题的关键特性
-    let chain1 = LLMChain::new(llm1, "List 3 key features of {topic}.")
-        .with_output_key("features");
-    
+    let chain1 = LLMChain::new(llm1, "List 3 key features of {topic}.").with_output_key("features");
+
     // Chain 2: 总结特性
     let chain2 = LLMChain::new(llm2, "Summarize these features briefly: {features}");
-    
+
     let pipeline = SequentialChain::new()
         .add_chain(Arc::new(chain1), vec!["topic"], vec!["features"])
         .add_chain(Arc::new(chain2), vec!["features"], vec!["summary"]);
-    
+
     let mut inputs: HashMap<String, Value> = HashMap::new();
     inputs.insert("topic".to_string(), Value::String("Rust".to_string()));
-    
+
     let results = pipeline.invoke(inputs).await.unwrap();
-    
+
     println!("Results: {:?}", results);
     assert!(results.contains_key("features"));
     assert!(results.contains_key("summary"));

@@ -33,23 +33,27 @@ impl<T: Tool> StructuredTool<T> {
         let schema = tool.args_schema();
         Self {
             inner: tool,
-            name: name.map(|s| s.to_string()).unwrap_or_else(|| "tool".to_string()),
-            description: description.map(|s| s.to_string()).unwrap_or_else(|| "A tool".to_string()),
+            name: name
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "tool".to_string()),
+            description: description
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "A tool".to_string()),
             schema,
         }
     }
-    
+
     /// Parses JSON string to tool input type.
     fn parse_input(&self, input: String) -> Result<T::Input, ToolError> {
         // Parse as JSON
         let json: Value = serde_json::from_str(&input)
             .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
-        
+
         // Convert to target type
         serde_json::from_value(json)
             .map_err(|e| ToolError::InvalidInput(format!("Input format mismatch: {}", e)))
     }
-    
+
     /// Serializes output to JSON string.
     fn serialize_output(output: T::Output) -> Result<String, ToolError> {
         serde_json::to_string(&output)
@@ -62,30 +66,30 @@ impl<T: Tool> BaseTool for StructuredTool<T> {
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn description(&self) -> &str {
         &self.description
     }
-    
+
     async fn run(&self, input: String) -> Result<String, ToolError> {
         // Parse input
         let parsed_input = self.parse_input(input)?;
-        
+
         // Execute tool
         let output = self.inner.invoke(parsed_input).await?;
-        
+
         // Serialize output
         Self::serialize_output(output)
     }
-    
+
     fn args_schema(&self) -> Option<Value> {
         self.schema.clone()
     }
-    
+
     fn return_direct(&self) -> bool {
         false
     }
-    
+
     async fn handle_error(&self, error: ToolError) -> String {
         format!("Tool '{}' execution failed: {}", self.name, error)
     }

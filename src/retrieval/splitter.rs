@@ -93,7 +93,7 @@ impl RecursiveCharacterSplitter {
         }
 
         // 如果文本已经够小，直接返回
-        if text.len() <= self.chunk_size {
+        if text.chars().count() <= self.chunk_size {
             chunks.push(text.to_string());
             return chunks;
         }
@@ -125,7 +125,7 @@ impl RecursiveCharacterSplitter {
             };
 
             // 如果单个分割已经超过块大小，需要递归处理
-            if split_with_sep.len() > self.chunk_size {
+            if split_with_sep.chars().count() > self.chunk_size {
                 // 先保存当前块
                 if !current_chunk.is_empty() {
                     chunks.push(current_chunk.clone());
@@ -141,7 +141,9 @@ impl RecursiveCharacterSplitter {
 
                 let sub_chunks = self.split_text_recursive(&split_with_sep, next_separators);
                 chunks.extend(sub_chunks);
-            } else if current_chunk.len() + split_with_sep.len() > self.chunk_size {
+            } else if current_chunk.chars().count() + split_with_sep.chars().count()
+                > self.chunk_size
+            {
                 // 当前块已满，保存并开始新块
                 chunks.push(current_chunk.clone());
                 current_chunk = split_with_sep;
@@ -219,15 +221,17 @@ impl TextSplitter for CharacterTextSplitter {
         let mut current = String::new();
 
         for split in splits {
-            if current.len() + split.len() + self.separator.len() > self.chunk_size
+            if current.chars().count() + split.chars().count() + self.separator.chars().count()
+                > self.chunk_size
                 && !current.is_empty()
             {
                 chunks.push(current.clone());
 
-                // 添加重叠
+                // 添加重叠 - 按字符边界切，避免 UTF-8 panic (H23)
                 if self.chunk_overlap > 0 {
-                    let overlap_start = current.len().saturating_sub(self.chunk_overlap);
-                    current = current[overlap_start..].to_string();
+                    let chars: Vec<char> = current.chars().collect();
+                    let overlap_start = chars.len().saturating_sub(self.chunk_overlap);
+                    current = chars[overlap_start..].iter().collect();
                 } else {
                     current.clear();
                 }

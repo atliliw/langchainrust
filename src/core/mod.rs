@@ -7,25 +7,28 @@
 //! - `BaseChatModel`: Chat model interface
 //! - `BaseTool`, `Tool`: Tool abstraction
 
-pub mod runnables;
-pub mod language_models;
-pub mod tools;
-pub mod output_parsers;
+pub mod batch;
 pub mod cache;
-pub mod token_counter;
-pub mod structured_output;
+pub mod language_models;
 pub mod math;
+pub mod output_parsers;
+pub mod router_llm;
+pub mod runnables;
+pub mod structured_output;
+pub mod token_counter;
+pub mod tools;
 
-pub use runnables::{Runnable, RunnableConfig};
-pub use language_models::{BaseLanguageModel, BaseChatModel};
-pub use tools::{
-    BaseTool, Tool, ToolError, ToolRegistry,
-    ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
-    StructuredOutput,
-};
+pub use language_models::{BaseChatModel, BaseLanguageModel};
 pub use output_parsers::{
-    BaseOutputParser, OutputParserError, OutputParserResult,
-    StrOutputParser, CommaSeparatedListOutputParser,
-    JsonOutputParser, StructuredOutputParser, TypedOutputParser,
+    BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
+    OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
-pub use structured_output::{StructuredOutputExt, StructuredOutputError, with_structured_output};
+pub use runnables::{Runnable, RunnableConfig};
+pub use structured_output::{
+    stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,
+    StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
+};
+pub use tools::{
+    BaseTool, FunctionCall, FunctionDefinition, StructuredOutput, Tool, ToolCall, ToolCallResult,
+    ToolDefinition, ToolError, ToolRegistry,
+};

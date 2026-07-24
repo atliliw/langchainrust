@@ -1,10 +1,7 @@
 // tests/bm25/unified_hybrid.rs
 //! UnifiedHybridIndex 集成测试
 
-use langchainrust::{
-    UnifiedHybridIndex, HybridIndexConfig, Document,
-    MockEmbeddings, Embeddings,
-};
+use langchainrust::{Document, Embeddings, HybridIndexConfig, MockEmbeddings, UnifiedHybridIndex};
 use std::sync::Arc;
 
 fn create_embeddings(dim: usize) -> Arc<dyn Embeddings> {
@@ -40,10 +37,13 @@ async fn test_retrieve() {
         .with_top_k(5, 5);
     let index = UnifiedHybridIndex::with_config(embeddings.clone(), 3, config);
 
-    index.add_documents(vec![
-        Document::new("Rust是一门系统编程语言").with_id("doc_001"),
-        Document::new("Python是一门脚本语言").with_id("doc_002"),
-    ]).await.expect("添加文档失败");
+    index
+        .add_documents(vec![
+            Document::new("Rust是一门系统编程语言").with_id("doc_001"),
+            Document::new("Python是一门脚本语言").with_id("doc_002"),
+        ])
+        .await
+        .expect("添加文档失败");
 
     let results = index.retrieve("编程语言", 3).await.expect("检索失败");
 
@@ -55,7 +55,10 @@ async fn test_clear() {
     let embeddings = create_embeddings(3);
     let index = UnifiedHybridIndex::new(embeddings.clone(), 3);
 
-    index.add_document(Document::new("测试文档")).await.expect("添加失败");
+    index
+        .add_document(Document::new("测试文档"))
+        .await
+        .expect("添加失败");
 
     index.clear().await.expect("清空失败");
 

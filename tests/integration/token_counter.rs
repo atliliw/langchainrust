@@ -27,14 +27,14 @@ async fn test_token_tracking_with_real_llm() {
     let response = tracked.chat(messages, None).await.expect("chat 失败");
     println!("回答: {}", response.content);
 
-    let usage = tracked.get_usage();
+    let usage = tracked.get_usage().await;
     println!(
         "prompt: {}, completion: {}, total: {}",
         usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
     );
     assert!(usage.total_tokens > 0, "总 token 应大于 0");
 
-    let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini());
+    let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await;
     println!("估算成本: ${:.6}", cost);
     assert!(cost > 0.0);
 }

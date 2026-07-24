@@ -7,9 +7,9 @@
 //!
 //! 测试策略：自定义 Runnable 实现，验证 trait 默认行为
 
-use langchainrust::{Runnable, RunnableConfig};
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use langchainrust::{Runnable, RunnableConfig};
 
 // ============================================================================
 // 测试用 Runnable 实现
@@ -29,7 +29,11 @@ struct StringProcessor;
 impl Runnable<String, String> for StringProcessor {
     type Error = std::convert::Infallible;
 
-    async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+    async fn invoke(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<String, Self::Error> {
         Ok(format!("processed: {}", input))
     }
 }
@@ -45,7 +49,11 @@ struct NumberDoubler;
 impl Runnable<i32, i32> for NumberDoubler {
     type Error = std::convert::Infallible;
 
-    async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<i32, Self::Error> {
+    async fn invoke(
+        &self,
+        input: i32,
+        _config: Option<RunnableConfig>,
+    ) -> Result<i32, Self::Error> {
         Ok(input * 2)
     }
 }
@@ -72,7 +80,11 @@ impl std::error::Error for FailingError {}
 impl Runnable<String, String> for FailingRunnable {
     type Error = FailingError;
 
-    async fn invoke(&self, _input: String, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+    async fn invoke(
+        &self,
+        _input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<String, Self::Error> {
         Err(FailingError("invoke failed".to_string()))
     }
 }
@@ -80,11 +92,11 @@ impl Runnable<String, String> for FailingRunnable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // -------------------------------------------------------------------------
     // 默认 stream() 行为测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 stream() 默认实现返回单元素流
     ///
     /// 默认行为：
@@ -98,18 +110,21 @@ mod tests {
     #[tokio::test]
     async fn test_default_stream_returns_single_element() {
         let runnable = StringProcessor;
-        let mut stream = runnable.stream("test_input".to_string(), None).await.unwrap();
-        
+        let mut stream = runnable
+            .stream("test_input".to_string(), None)
+            .await
+            .unwrap();
+
         // 第一个元素：invoke 的结果
         let first = stream.next().await;
         assert!(first.is_some(), "流应有第一个元素");
         assert_eq!(first.unwrap().unwrap(), "processed: test_input");
-        
+
         // 第二个元素：流结束
         let second = stream.next().await;
         assert!(second.is_none(), "流应只有一个元素");
     }
-    
+
     /// 验证 invoke() 和 stream() 结果完全一致
     ///
     /// 一致性保证：
@@ -123,22 +138,22 @@ mod tests {
     async fn test_invoke_equals_stream_result() {
         let runnable = StringProcessor;
         let input = "hello world".to_string();
-        
+
         // invoke 结果
         let invoke_result = runnable.invoke(input.clone(), None).await.unwrap();
-        
+
         // stream 结果
         let mut stream = runnable.stream(input.clone(), None).await.unwrap();
         let stream_result = stream.next().await.unwrap().unwrap();
-        
+
         // 应完全一致
         assert_eq!(invoke_result, stream_result);
     }
-    
+
     // -------------------------------------------------------------------------
     // 不同类型测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证非字符串类型的 Runnable 也获得 stream 能力
     ///
     /// Runnable 是泛型 trait：
@@ -150,22 +165,22 @@ mod tests {
     #[tokio::test]
     async fn test_stream_works_for_different_types() {
         let runnable = NumberDoubler;
-        
+
         // invoke
         let invoke_result = runnable.invoke(5, None).await.unwrap();
-        
+
         // stream
         let mut stream = runnable.stream(5, None).await.unwrap();
         let stream_result = stream.next().await.unwrap().unwrap();
-        
+
         assert_eq!(invoke_result, 10);
         assert_eq!(stream_result, 10);
     }
-    
+
     // -------------------------------------------------------------------------
     // 配置传递测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 stream() 正确传递 RunnableConfig
     ///
     /// RunnableConfig 包含：
@@ -178,21 +193,24 @@ mod tests {
     #[tokio::test]
     async fn test_stream_passes_config_to_invoke() {
         let runnable = StringProcessor;
-        
+
         let config = RunnableConfig::new()
             .with_tag("test_tag")
             .with_run_name("test_run");
-        
-        let mut stream = runnable.stream("input".to_string(), Some(config)).await.unwrap();
+
+        let mut stream = runnable
+            .stream("input".to_string(), Some(config))
+            .await
+            .unwrap();
         let result = stream.next().await.unwrap().unwrap();
-        
+
         assert_eq!(result, "processed: input");
     }
-    
+
     // -------------------------------------------------------------------------
     // 错误传播测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 stream() 正确传播 invoke() 的错误
     ///
     /// 如果 invoke() 返回 Err：
@@ -203,20 +221,20 @@ mod tests {
     #[tokio::test]
     async fn test_stream_propagates_invoke_error() {
         let runnable = FailingRunnable;
-        
+
         // invoke 返回错误
         let invoke_result = runnable.invoke("test".to_string(), None).await;
         assert!(invoke_result.is_err());
-        
+
         // stream 也应返回错误（而非包含错误的流）
         let stream_result = runnable.stream("test".to_string(), None).await;
         assert!(stream_result.is_err(), "stream 应返回 invoke 的错误");
     }
-    
+
     // -------------------------------------------------------------------------
     // batch 和 stream 一致性测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 batch() 和多次 stream() 调用结果一致
     ///
     /// batch() 默认实现：顺序调用 invoke()
@@ -227,10 +245,10 @@ mod tests {
     async fn test_batch_consistency_with_stream() {
         let runnable = StringProcessor;
         let inputs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        
+
         // batch 结果
         let batch_results = runnable.batch(inputs.clone(), None).await.unwrap();
-        
+
         // 多次 stream 结果
         for (i, input) in inputs.iter().enumerate() {
             let mut stream = runnable.stream(input.clone(), None).await.unwrap();
@@ -238,11 +256,11 @@ mod tests {
             assert_eq!(batch_results[i], stream_result);
         }
     }
-    
+
     // -------------------------------------------------------------------------
     // 流消费测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 stream 可以被完整消费
     ///
     /// StreamExt::collect() 可以收集所有元素：
@@ -251,18 +269,21 @@ mod tests {
     #[tokio::test]
     async fn test_stream_can_be_collected() {
         let runnable = StringProcessor;
-        let stream = runnable.stream("collected".to_string(), None).await.unwrap();
-        
+        let stream = runnable
+            .stream("collected".to_string(), None)
+            .await
+            .unwrap();
+
         let results: Vec<_> = stream.collect().await;
-        
+
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].as_ref().unwrap(), "processed: collected");
     }
-    
+
     // -------------------------------------------------------------------------
     // 多次调用测试
     // -------------------------------------------------------------------------
-    
+
     /// 验证 Runnable 可以多次调用 stream()
     ///
     /// Runnable 是 &self（不可变引用）：
@@ -272,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_stream_calls_on_same_instance() {
         let runnable = StringProcessor;
-        
+
         for i in 0..5 {
             let input = format!("call_{}", i);
             let mut stream = runnable.stream(input.clone(), None).await.unwrap();

@@ -9,7 +9,9 @@ pub enum StepStatus {
     Pending,
     Running,
     Completed,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 /// 执行计划步骤
@@ -66,9 +68,7 @@ impl Plan {
 
     /// 是否全部完成
     pub fn is_complete(&self) -> bool {
-        self.steps
-            .iter()
-            .all(|s| s.status == StepStatus::Completed)
+        self.steps.iter().all(|s| s.status == StepStatus::Completed)
     }
 
     pub fn mark_completed(&mut self, id: usize, result: String) {
@@ -123,7 +123,12 @@ mod tests {
     fn test_mark_failed() {
         let mut plan = Plan::from_descriptions("obj", vec!["a".to_string()]);
         plan.mark_failed(0, "出错".to_string());
-        assert_eq!(plan.steps[0].status, StepStatus::Failed { error: "出错".to_string() });
+        assert_eq!(
+            plan.steps[0].status,
+            StepStatus::Failed {
+                error: "出错".to_string()
+            }
+        );
         assert!(!plan.is_complete());
     }
 

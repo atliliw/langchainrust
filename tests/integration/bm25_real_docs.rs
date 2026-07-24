@@ -17,7 +17,8 @@ use std::fs;
 ///
 /// 每行作为一个独立文档
 fn load_documents_from_file(path: &str) -> Vec<Document> {
-    let content = fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to load file: {}", path));
+    let content =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("Failed to load file: {}", path));
 
     content
         .lines()

@@ -102,10 +102,7 @@ fn bench_embed_documents_batch(c: &mut Criterion) {
                 b.iter(|| {
                     rt.block_on(async {
                         let embeddings = MockEmbeddings::new(128);
-                        let _result = embeddings
-                            .embed_documents(black_box(texts))
-                            .await
-                            .unwrap();
+                        let _result = embeddings.embed_documents(black_box(texts)).await.unwrap();
                     });
                 });
             },
@@ -126,11 +123,15 @@ fn bench_cosine_similarity(c: &mut Criterion) {
         let a: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.01).sin()).collect();
         let b: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.01).cos()).collect();
 
-        group.bench_with_input(BenchmarkId::from_parameter(dim), &(&a, &b), |bencher, (va, vb)| {
-            bencher.iter(|| {
-                black_box(cosine_similarity(black_box(va), black_box(vb)));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(dim),
+            &(&a, &b),
+            |bencher, (va, vb)| {
+                bencher.iter(|| {
+                    black_box(cosine_similarity(black_box(va), black_box(vb)));
+                });
+            },
+        );
     }
 
     group.finish();

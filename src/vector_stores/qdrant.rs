@@ -5,21 +5,11 @@
 use super::{Document, SearchResult, VectorStore, VectorStoreError};
 use async_trait::async_trait;
 use qdrant_client::{
-    Qdrant,
-    Payload,
     qdrant::{
-        CreateCollectionBuilder,
-        Distance,
-        PointStruct,
-        VectorParamsBuilder,
-        QueryPointsBuilder,
-        UpsertPointsBuilder,
-        DeletePointsBuilder,
-        Filter,
-        Condition,
-        PointId,
-        DenseVector,
+        Condition, CreateCollectionBuilder, DeletePointsBuilder, DenseVector, Distance, Filter,
+        PointId, PointStruct, QueryPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
     },
+    Payload, Qdrant,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -97,40 +87,46 @@ impl QdrantVectorStore {
 
         let client = Arc::new(client);
 
-        let exists = client.collection_exists(&config.collection_name).await
+        let exists = client
+            .collection_exists(&config.collection_name)
+            .await
             .map_err(|e| VectorStoreError::StorageError(format!("检查集合失败: {}", e)))?;
-        
+
         if !exists {
-            client.create_collection(
-                CreateCollectionBuilder::new(&config.collection_name)
-                    .vectors_config(VectorParamsBuilder::new(
-                        config.vector_size as u64,
-                        Distance::from(config.distance),
-                    ))
-            ).await
-            .map_err(|e| VectorStoreError::StorageError(format!("创建集合失败: {}", e)))?;
+            client
+                .create_collection(
+                    CreateCollectionBuilder::new(&config.collection_name).vectors_config(
+                        VectorParamsBuilder::new(
+                            config.vector_size as u64,
+                            Distance::from(config.distance),
+                        ),
+                    ),
+                )
+                .await
+                .map_err(|e| VectorStoreError::StorageError(format!("创建集合失败: {}", e)))?;
         }
 
         Ok(Self { client, config })
     }
 
     pub async fn from_env() -> Result<Self, VectorStoreError> {
-        let url = std::env::var("QDRANT_URL")
-            .unwrap_or_else(|_| "http://localhost:6334".to_string());
-        let collection_name = std::env::var("QDRANT_COLLECTION")
-            .unwrap_or_else(|_| "langchainrust".to_string());
+        let url =
+            std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string());
+        let collection_name =
+            std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "langchainrust".to_string());
 
         Self::new(QdrantConfig::new(url, collection_name)).await
     }
 
-    pub async fn delete_by_metadata(&self, key: &str, value: &str) -> Result<usize, VectorStoreError> {
+    pub async fn delete_by_metadata(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<usize, VectorStoreError> {
         let filter = Filter::must([Condition::matches(key, value.to_string())]);
 
         self.client
-            .delete_points(
-                DeletePointsBuilder::new(&self.config.collection_name)
-                    .points(filter)
-            )
+            .delete_points(DeletePointsBuilder::new(&self.config.collection_name).points(filter))
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("按metadata删除失败: {}", e)))?;
 
@@ -147,7 +143,7 @@ impl VectorStore for QdrantVectorStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "文档数量和嵌入向量数量不匹配".to_string()
+                "文档数量和嵌入向量数量不匹配".to_string(),
             ));
         }
 
@@ -170,15 +166,15 @@ impl VectorStore for QdrantVectorStore {
 
         for (doc, embedding) in documents.into_iter().zip(embeddings) {
             let user_id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-            
+
             // Qdrant PointId 只接受 UUID 或数字，所以生成内部 UUID
             let internal_uuid = Uuid::new_v4();
             let point_id = PointId::from(internal_uuid.to_string());
 
             let mut payload = Payload::new();
             payload.insert("content", doc.content.clone());
-            payload.insert("doc_id", user_id.clone());  // 用户 ID 存在 payload 中
-            
+            payload.insert("doc_id", user_id.clone()); // 用户 ID 存在 payload 中
+
             for (key, value) in &doc.metadata {
                 payload.insert(key.clone(), value.clone());
             }
@@ -189,7 +185,10 @@ impl VectorStore for QdrantVectorStore {
         }
 
         self.client
-            .upsert_points(UpsertPointsBuilder::new(&self.config.collection_name, points))
+            .upsert_points(UpsertPointsBuilder::new(
+                &self.config.collection_name,
+                points,
+            ))
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("插入文档失败: {}", e)))?;
 
@@ -209,28 +208,33 @@ impl VectorStore for QdrantVectorStore {
             )));
         }
 
-        let search_result = self.client
+        let search_result = self
+            .client
             .query(
                 QueryPointsBuilder::new(&self.config.collection_name)
                     .query(query_embedding.to_vec())
                     .limit(k as u64)
-                    .with_payload(true)
+                    .with_payload(true),
             )
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("搜索失败: {}", e)))?;
 
-        let results: Vec<SearchResult> = search_result.result.into_iter()
+        let results: Vec<SearchResult> = search_result
+            .result
+            .into_iter()
             .map(|scored_point| {
-                let payload: HashMap<String, qdrant_client::qdrant::Value> = 
+                let payload: HashMap<String, qdrant_client::qdrant::Value> =
                     scored_point.payload.into();
-                
-                let content = payload.get("content")
+
+                let content = payload
+                    .get("content")
                     .and_then(|v| v.as_str())
                     .map(|s| s.as_str())
                     .unwrap_or("")
                     .to_string();
 
-                let id = payload.get("doc_id")
+                let id = payload
+                    .get("doc_id")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
@@ -244,7 +248,11 @@ impl VectorStore for QdrantVectorStore {
                 }
 
                 SearchResult {
-                    document: Document { content, metadata, id },
+                    document: Document {
+                        content,
+                        metadata,
+                        id,
+                    },
                     score: scored_point.score,
                 }
             })
@@ -254,33 +262,33 @@ impl VectorStore for QdrantVectorStore {
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
-        let filter = Filter::must([Condition::matches(
-            "doc_id",
-            id.to_string(),
-        )]);
+        let filter = Filter::must([Condition::matches("doc_id", id.to_string())]);
 
-        let results = self.client
+        let results = self
+            .client
             .query(
                 QueryPointsBuilder::new(&self.config.collection_name)
                     .query(vec![0.0; self.config.vector_size])
                     .filter(filter)
                     .limit(1)
-                    .with_payload(true)
+                    .with_payload(true),
             )
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("获取文档失败: {}", e)))?;
 
         if let Some(point) = results.result.first() {
-            let payload_map: HashMap<String, qdrant_client::qdrant::Value> = 
+            let payload_map: HashMap<String, qdrant_client::qdrant::Value> =
                 point.payload.clone().into();
-            
-            let content = payload_map.get("content")
+
+            let content = payload_map
+                .get("content")
                 .and_then(|v| v.as_str())
                 .map(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let doc_id = payload_map.get("doc_id")
+            let doc_id = payload_map
+                .get("doc_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.clone());
 
@@ -293,25 +301,27 @@ impl VectorStore for QdrantVectorStore {
                 }
             }
 
-            Ok(Some(Document { content, metadata, id: doc_id }))
+            Ok(Some(Document {
+                content,
+                metadata,
+                id: doc_id,
+            }))
         } else {
             Ok(None)
         }
     }
 
     async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
-        let filter = Filter::must([Condition::matches(
-            "doc_id",
-            id.to_string(),
-        )]);
+        let filter = Filter::must([Condition::matches("doc_id", id.to_string())]);
 
-        let results = self.client
+        let results = self
+            .client
             .query(
                 QueryPointsBuilder::new(&self.config.collection_name)
                     .query(vec![0.0; self.config.vector_size])
                     .filter(filter)
                     .limit(1)
-                    .with_payload(true)
+                    .with_payload(true),
             )
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("获取向量失败: {}", e)))?;
@@ -332,16 +342,10 @@ impl VectorStore for QdrantVectorStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let filter = Filter::must([Condition::matches(
-            "doc_id",
-            id.to_string(),
-        )]);
+        let filter = Filter::must([Condition::matches("doc_id", id.to_string())]);
 
         self.client
-            .delete_points(
-                DeletePointsBuilder::new(&self.config.collection_name)
-                    .points(filter)
-            )
+            .delete_points(DeletePointsBuilder::new(&self.config.collection_name).points(filter))
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("删除文档失败: {}", e)))?;
 
@@ -349,11 +353,13 @@ impl VectorStore for QdrantVectorStore {
     }
 
     async fn count(&self) -> usize {
-        let info = self.client
+        let info = self
+            .client
             .collection_info(&self.config.collection_name)
             .await;
 
-        info.map(|i| i.result.and_then(|r| r.points_count).unwrap_or(0) as usize).unwrap_or(0)
+        info.map(|i| i.result.and_then(|r| r.points_count).unwrap_or(0) as usize)
+            .unwrap_or(0)
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
@@ -366,11 +372,12 @@ impl VectorStore for QdrantVectorStore {
 
         self.client
             .create_collection(
-                CreateCollectionBuilder::new(&collection_name)
-                    .vectors_config(VectorParamsBuilder::new(
+                CreateCollectionBuilder::new(&collection_name).vectors_config(
+                    VectorParamsBuilder::new(
                         self.config.vector_size as u64,
                         Distance::from(self.config.distance),
-                    ))
+                    ),
+                ),
             )
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("重建集合失败: {}", e)))?;
@@ -406,19 +413,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要 Qdrant 服务运行"]
     async fn test_qdrant_integration() {
-        let config = QdrantConfig::new("http://localhost:6334", "test_collection")
-            .with_vector_size(3);
+        let config =
+            QdrantConfig::new("http://localhost:6334", "test_collection").with_vector_size(3);
 
         let store = QdrantVectorStore::new(config).await.unwrap();
 
-        let docs = vec![
-            Document::new("Document 1"),
-            Document::new("Document 2"),
-        ];
-        let embeddings = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-        ];
+        let docs = vec![Document::new("Document 1"), Document::new("Document 2")];
+        let embeddings = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
 
         let ids = store.add_documents(docs, embeddings).await.unwrap();
         assert_eq!(ids.len(), 2);

@@ -83,19 +83,28 @@ impl Default for WikipediaTool {
 
 impl WikipediaTool {
     /// 搜索 Wikipedia 条目
-    async fn search(&self, query: &str, top_k: usize, lang: &str) -> Result<WikipediaOutput, ToolError> {
+    async fn search(
+        &self,
+        query: &str,
+        top_k: usize,
+        lang: &str,
+    ) -> Result<WikipediaOutput, ToolError> {
         // 第一步：搜索条目
         let search_url = format!(
             "https://{}.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&format=json&srlimit={}",
             lang, urlencoding(query), top_k
         );
 
-        let response = self.client.get(&search_url)
+        let response = self
+            .client
+            .get(&search_url)
             .send()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Wikipedia 搜索失败: {}", e)))?;
 
-        let body: serde_json::Value = response.json().await
+        let body: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {}", e)))?;
 
         let search_results = body["query"]["search"]
@@ -110,7 +119,11 @@ impl WikipediaTool {
             let snippet_html = item["snippet"].as_str().unwrap_or("").to_string();
             // 清理 HTML 标签
             let snippet = strip_html(&snippet_html);
-            let page_url = format!("https://{}.wikipedia.org/wiki/{}", lang, urlencoding(&title));
+            let page_url = format!(
+                "https://{}.wikipedia.org/wiki/{}",
+                lang,
+                urlencoding(&title)
+            );
 
             results.push(WikipediaResult {
                 title,
@@ -133,20 +146,29 @@ impl WikipediaTool {
             lang, urlencoding(title)
         );
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .send()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("获取页面内容失败: {}", e)))?;
 
-        let body: serde_json::Value = response.json().await
+        let body: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("解析页面内容失败: {}", e)))?;
 
-        let pages = body["query"]["pages"].as_object().cloned().unwrap_or_default();
+        let pages = body["query"]["pages"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         for (_, page) in pages {
             if let Some(extract) = page["extract"].as_str() {
                 // 限制长度
                 if extract.len() > 5000 {
-                    return Ok(extract.chars().take(5000).collect::<String>() + "\n... [内容已截断]");
+                    return Ok(
+                        extract.chars().take(5000).collect::<String>() + "\n... [内容已截断]"
+                    );
                 }
                 return Ok(extract.to_string());
             }
@@ -158,19 +180,18 @@ impl WikipediaTool {
 
 /// 去除 HTML 标签
 fn strip_html(html: &str) -> String {
-    let re = regex::Regex::new(r"<[^>]+>").unwrap();
-    let result = re.replace_all(html, "");
-    let re2 = regex::Regex::new(r"\s+").unwrap();
-    re2.replace_all(&result, " ").trim().to_string()
+    static TAG_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]+>").unwrap());
+    static WHITESPACE_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+
+    let result = TAG_RE.replace_all(html, "");
+    WHITESPACE_RE.replace_all(&result, " ").trim().to_string()
 }
 
-/// URL 编码
+/// URL 编码 (using urlencoding crate for complete encoding)
 fn urlencoding(s: &str) -> String {
-    s.split(' ').collect::<Vec<_>>().join("%20")
-        .replace('?', "%3F")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('#', "%23")
+    urlencoding::encode(s).to_string()
 }
 
 #[async_trait]
@@ -273,18 +294,24 @@ mod tests {
     fn test_urlencoding() {
         let encoded = urlencoding("Rust programming");
         assert_eq!(encoded, "Rust%20programming");
+        // Verify special characters are encoded
+        assert!(urlencoding("a&b=c#d?e").contains("%26"));
+        assert!(urlencoding("a&b=c#d?e").contains("%3D"));
     }
 
     #[tokio::test]
     #[ignore = "需要网络连接"]
     async fn test_wikipedia_search_real() {
         let tool = WikipediaTool::new();
-        let result = tool.invoke(WikipediaInput {
-            query: "Rust".to_string(),
-            top_k: Some(2),
-            lang: Some("en".into()),
-            full_content: Some(false),
-        }).await.unwrap();
+        let result = tool
+            .invoke(WikipediaInput {
+                query: "Rust".to_string(),
+                top_k: Some(2),
+                lang: Some("en".into()),
+                full_content: Some(false),
+            })
+            .await
+            .unwrap();
 
         assert!(!result.results.is_empty());
         assert!(result.results[0].title.to_lowercase().contains("rust"));

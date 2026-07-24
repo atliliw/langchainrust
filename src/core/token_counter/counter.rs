@@ -10,15 +10,18 @@ pub trait TokenCounter: Send + Sync {
     fn count_messages(&self, messages: &[Message]) -> u32;
 }
 
-/// Token 用量统计
+/// Token 用量统计（计数器模块内部类型）
+///
+/// 注意：`language_models::TokenUsage` 是 LLM API 返回的用量（字段为 `usize`），
+/// 此 `TrackerTokenUsage` 是本地追踪累计用量（字段为 `u32`），两者职责不同。
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct TokenUsage {
+pub struct TrackerTokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
 
-impl TokenUsage {
+impl TrackerTokenUsage {
     pub fn new() -> Self {
         Self::default()
     }
@@ -35,13 +38,16 @@ impl TokenUsage {
     }
 }
 
+// Re-export as TokenUsage for backward compatibility within this module
+pub use TrackerTokenUsage as TokenUsage;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_usage_add() {
-        let mut u = TokenUsage::new();
+        let mut u = TrackerTokenUsage::new();
         u.add(10, 20);
         assert_eq!(u.prompt_tokens, 10);
         assert_eq!(u.completion_tokens, 20);
@@ -50,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_usage_accumulate() {
-        let mut u = TokenUsage::new();
+        let mut u = TrackerTokenUsage::new();
         u.add(10, 20);
         u.add(5, 5);
         assert_eq!(u.prompt_tokens, 15);
@@ -59,9 +65,9 @@ mod tests {
 
     #[test]
     fn test_usage_reset() {
-        let mut u = TokenUsage::new();
+        let mut u = TrackerTokenUsage::new();
         u.add(10, 20);
         u.reset();
-        assert_eq!(u, TokenUsage::new());
+        assert_eq!(u, TrackerTokenUsage::new());
     }
 }

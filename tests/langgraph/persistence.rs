@@ -2,18 +2,18 @@
 // 测试图的序列化、保存、加载和删除功能
 
 use langchainrust::{
-    AgentState, StateUpdate, GraphBuilder, START, END,
     langgraph::{
-        GraphPersistence, MemoryPersistence, FilePersistence,
-        GraphDefinition, NodeDefinition, EdgeDefinition, NodeType, EdgeType,
+        EdgeDefinition, EdgeType, FilePersistence, GraphDefinition, GraphPersistence,
+        MemoryPersistence, NodeDefinition, NodeType,
     },
+    AgentState, GraphBuilder, StateUpdate, END, START,
 };
 
 #[cfg(feature = "mongodb-persistence")]
-use langchainrust::langgraph::{MongoPersistence, MongoConfig};
+use langchainrust::langgraph::{MongoConfig, MongoPersistence};
 
-use tempfile::TempDir;
 use std::sync::Arc;
+use tempfile::TempDir;
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -67,7 +67,10 @@ async fn test_memory_persistence_list() {
     // 保存3个图定义
     for i in 1..=3 {
         let def = GraphDefinition::new("entry".to_string()).with_id(format!("graph-{}", i));
-        persistence.save(&format!("graph-{}", i), &def).await.unwrap();
+        persistence
+            .save(&format!("graph-{}", i), &def)
+            .await
+            .unwrap();
     }
 
     // 验证列表包含所有保存的图
@@ -97,7 +100,7 @@ async fn test_memory_persistence_not_found() {
 async fn test_file_persistence_save_load() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().to_str().unwrap();
-    let persistence = FilePersistence::new(path);
+    let persistence = FilePersistence::new(path).unwrap();
 
     let definition = GraphDefinition::new("process".to_string())
         .with_id("file-001".to_string())
@@ -118,7 +121,7 @@ async fn test_file_persistence_save_load() {
 async fn test_file_persistence_json_format() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().to_str().unwrap();
-    let persistence = FilePersistence::new(path);
+    let persistence = FilePersistence::new(path).unwrap();
 
     let definition = GraphDefinition::new("start".to_string())
         .with_id("json-test".to_string())
@@ -129,7 +132,7 @@ async fn test_file_persistence_json_format() {
     // 直接读取文件内容验证JSON格式
     let file_path = format!("{}/json-test.json", path);
     let content = std::fs::read_to_string(&file_path).unwrap();
-    
+
     assert!(content.contains("\"id\": \"json-test\""));
     assert!(content.contains("\"recursion_limit\": 100"));
     assert!(content.contains("\"entry_point\": \"start\""));
@@ -140,7 +143,7 @@ async fn test_file_persistence_json_format() {
 async fn test_file_persistence_delete() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().to_str().unwrap();
-    let persistence = FilePersistence::new(path);
+    let persistence = FilePersistence::new(path).unwrap();
 
     let definition = GraphDefinition::new("entry".to_string()).with_id("del-test".to_string());
     persistence.save("del-test", &definition).await.unwrap();
@@ -159,7 +162,7 @@ async fn test_file_persistence_delete() {
 async fn test_file_persistence_list() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().to_str().unwrap();
-    let persistence = FilePersistence::new(path);
+    let persistence = FilePersistence::new(path).unwrap();
 
     // 保存5个图定义
     for i in 1..=5 {
@@ -223,7 +226,12 @@ fn test_node_definition() {
 /// 测试NodeType的所有类型都能正确序列化
 #[test]
 fn test_node_type_serialization() {
-    let types = vec![NodeType::Sync, NodeType::Async, NodeType::Subgraph, NodeType::Custom];
+    let types = vec![
+        NodeType::Sync,
+        NodeType::Async,
+        NodeType::Subgraph,
+        NodeType::Custom,
+    ];
 
     for t in types {
         let json = serde_json::to_string(&t).unwrap();
@@ -276,16 +284,16 @@ fn test_edge_definition_fan_out() {
     );
 
     assert_eq!(edge.edge_type, EdgeType::FanOut);
-    assert_eq!(edge.targets, Some(vec!["a", "b", "c"].into_iter().map(String::from).collect()));
+    assert_eq!(
+        edge.targets,
+        Some(vec!["a", "b", "c"].into_iter().map(String::from).collect())
+    );
 }
 
 /// 测试扇入边（合并并行分支）的创建
 #[test]
 fn test_edge_definition_fan_in() {
-    let edge = EdgeDefinition::fan_in(
-        vec!["a".to_string(), "b".to_string()],
-        "merge".to_string(),
-    );
+    let edge = EdgeDefinition::fan_in(vec!["a".to_string(), "b".to_string()], "merge".to_string());
 
     assert_eq!(edge.edge_type, EdgeType::FanIn);
     assert_eq!(edge.target, Some("merge".to_string()));
@@ -294,7 +302,12 @@ fn test_edge_definition_fan_in() {
 /// 测试EdgeType的所有类型都能正确序列化
 #[test]
 fn test_edge_type_serialization() {
-    let types = vec![EdgeType::Fixed, EdgeType::Conditional, EdgeType::FanOut, EdgeType::FanIn];
+    let types = vec![
+        EdgeType::Fixed,
+        EdgeType::Conditional,
+        EdgeType::FanOut,
+        EdgeType::FanIn,
+    ];
 
     for t in types {
         let json = serde_json::to_string(&t).unwrap();
@@ -380,10 +393,12 @@ fn test_definition_timestamps() {
 #[test]
 fn test_definition_metadata() {
     let mut def = GraphDefinition::new("entry".to_string());
-    
+
     // 添加自定义元数据
-    def.metadata.insert("version".to_string(), serde_json::json!("1.0"));
-    def.metadata.insert("author".to_string(), serde_json::json!("test"));
+    def.metadata
+        .insert("version".to_string(), serde_json::json!("1.0"));
+    def.metadata
+        .insert("author".to_string(), serde_json::json!("test"));
 
     assert_eq!(def.metadata.get("version").unwrap(), "1.0");
 }
@@ -402,7 +417,8 @@ async fn test_concurrent_saves() {
     for i in 0..10 {
         let p = persistence.clone();
         handles.push(tokio::spawn(async move {
-            let def = GraphDefinition::new("entry".to_string()).with_id(format!("concurrent-{}", i));
+            let def =
+                GraphDefinition::new("entry".to_string()).with_id(format!("concurrent-{}", i));
             p.save(&format!("concurrent-{}", i), &def).await.unwrap();
         }));
     }
@@ -424,20 +440,23 @@ async fn test_concurrent_saves() {
 #[cfg(feature = "mongodb-persistence")]
 mod mongo_tests {
     use super::*;
-    use langchainrust::langgraph::{MongoPersistence, MongoConfig};
-    
+    use langchainrust::langgraph::{MongoConfig, MongoPersistence};
+
     /// 测试MongoDB持久化的保存和加载功能
     #[tokio::test]
     async fn test_mongo_persistence_save_load() {
         let config = MongoTestConfig::get().to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
-        
+
         let definition = GraphDefinition::new("entry".to_string())
             .with_id("mongo-test-001".to_string())
             .with_name("MongoDB Test Workflow".to_string());
 
         // 保存图定义到MongoDB
-        persistence.save("mongo-test-001", &definition).await.unwrap();
+        persistence
+            .save("mongo-test-001", &definition)
+            .await
+            .unwrap();
         assert!(persistence.exists("mongo-test-001").await.unwrap());
 
         // 从MongoDB加载并验证
@@ -445,7 +464,7 @@ mod mongo_tests {
         assert_eq!(loaded.id, "mongo-test-001");
         assert_eq!(loaded.name, Some("MongoDB Test Workflow".to_string()));
         assert_eq!(loaded.entry_point, "entry");
-        
+
         // 清理测试数据
         persistence.delete("mongo-test-001").await.unwrap();
     }
@@ -455,11 +474,14 @@ mod mongo_tests {
     async fn test_mongo_persistence_delete() {
         let config = MongoTestConfig::get().to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
-        let definition = GraphDefinition::new("entry".to_string())
-            .with_id("mongo-test-del".to_string());
+        let definition =
+            GraphDefinition::new("entry".to_string()).with_id("mongo-test-del".to_string());
 
         // 保存后确认存在
-        persistence.save("mongo-test-del", &definition).await.unwrap();
+        persistence
+            .save("mongo-test-del", &definition)
+            .await
+            .unwrap();
         assert!(persistence.exists("mongo-test-del").await.unwrap());
 
         // 删除后确认不存在
@@ -472,7 +494,7 @@ mod mongo_tests {
     async fn test_mongo_persistence_list() {
         let config = MongoTestConfig::get().to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
-        
+
         // 清理可能存在的旧测试数据
         for i in 1..=3 {
             let _ = persistence.delete(&format!("mongo-list-{}", i)).await;
@@ -480,18 +502,22 @@ mod mongo_tests {
 
         // 保存3个图定义
         for i in 1..=3 {
-            let def = GraphDefinition::new("entry".to_string())
-                .with_id(format!("mongo-list-{}", i));
-            persistence.save(&format!("mongo-list-{}", i), &def).await.unwrap();
+            let def =
+                GraphDefinition::new("entry".to_string()).with_id(format!("mongo-list-{}", i));
+            persistence
+                .save(&format!("mongo-list-{}", i), &def)
+                .await
+                .unwrap();
         }
 
         // 验证列表数量
         let list = persistence.list().await.unwrap();
-        let mongo_items: Vec<_> = list.iter()
+        let mongo_items: Vec<_> = list
+            .iter()
             .filter(|id| id.starts_with("mongo-list-"))
             .collect();
         assert_eq!(mongo_items.len(), 3);
-        
+
         // 清理测试数据
         for i in 1..=3 {
             let _ = persistence.delete(&format!("mongo-list-{}", i)).await;
@@ -514,7 +540,7 @@ mod mongo_tests {
     async fn test_mongo_persistence_upsert() {
         let config = MongoTestConfig::get().to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
-        
+
         // 第一次保存
         let def1 = GraphDefinition::new("entry".to_string())
             .with_id("mongo-upsert".to_string())
@@ -533,7 +559,7 @@ mod mongo_tests {
         let loaded = persistence.load("mongo-upsert").await.unwrap();
         assert_eq!(loaded.name, Some("Updated Name".to_string()));
         assert_eq!(loaded.recursion_limit, 50);
-        
+
         // 清理测试数据
         persistence.delete("mongo-upsert").await.unwrap();
     }
@@ -551,7 +577,9 @@ mod mongo_tests {
             handles.push(tokio::spawn(async move {
                 let def = GraphDefinition::new("entry".to_string())
                     .with_id(format!("mongo-concurrent-{}", i));
-                p.save(&format!("mongo-concurrent-{}", i), &def).await.unwrap();
+                p.save(&format!("mongo-concurrent-{}", i), &def)
+                    .await
+                    .unwrap();
             }));
         }
 
@@ -562,11 +590,12 @@ mod mongo_tests {
 
         // 验证所有图都已保存
         let list = persistence.list().await.unwrap();
-        let concurrent_items: Vec<_> = list.iter()
+        let concurrent_items: Vec<_> = list
+            .iter()
             .filter(|id| id.starts_with("mongo-concurrent-"))
             .collect();
         assert_eq!(concurrent_items.len(), 10);
-        
+
         // 清理测试数据
         for i in 0..10 {
             let _ = persistence.delete(&format!("mongo-concurrent-{}", i)).await;
@@ -578,14 +607,14 @@ mod mongo_tests {
     async fn test_mongo_custom_config() {
         let config = MongoTestConfig::get().to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
-        
+
         // 验证连接信息
         assert!(!persistence.database_name().is_empty());
         assert!(!persistence.collection_name().is_empty());
-        
+
         // 测试基本操作
-        let def = GraphDefinition::new("test".to_string())
-            .with_id("custom-config-test".to_string());
+        let def =
+            GraphDefinition::new("test".to_string()).with_id("custom-config-test".to_string());
         persistence.save("custom-config-test", &def).await.unwrap();
         assert!(persistence.exists("custom-config-test").await.unwrap());
         persistence.delete("custom-config-test").await.unwrap();
@@ -612,7 +641,10 @@ mod mongo_tests {
         let definition = graph.to_definition();
 
         // 保存到MongoDB
-        persistence.save("mongo-roundtrip", &definition).await.unwrap();
+        persistence
+            .save("mongo-roundtrip", &definition)
+            .await
+            .unwrap();
 
         // 加载并验证数据一致
         let loaded = persistence.load("mongo-roundtrip").await.unwrap();
@@ -620,7 +652,7 @@ mod mongo_tests {
         assert_eq!(loaded.nodes.len(), definition.nodes.len());
         assert_eq!(loaded.edges.len(), definition.edges.len());
         assert_eq!(loaded.entry_point, definition.entry_point);
-        
+
         // 清理测试数据
         persistence.delete("mongo-roundtrip").await.unwrap();
     }

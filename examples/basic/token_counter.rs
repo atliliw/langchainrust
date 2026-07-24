@@ -14,12 +14,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Token Counter 示例 ===\n");
 
     // TiktokenCounter 使用与 OpenAI 相同的分词算法
-    let counter = TiktokenCounter::default();
+    let counter = TiktokenCounter::new()?;
 
     // 计算 token 数量
     let text1 = "Hello, world!";
     let text2 = "这是一段中文文本，用于测试分词器。";
-    let text3 = "The quick brown fox jumps over the lazy dog. This is a longer sentence for testing.";
+    let text3 =
+        "The quick brown fox jumps over the lazy dog. This is a longer sentence for testing.";
 
     println!("文本: \"{}\"", text1);
     println!("Token 数: {}\n", counter.count_tokens(text1));

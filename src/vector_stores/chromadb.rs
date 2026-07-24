@@ -36,7 +36,11 @@ impl Default for ChromaDBConfig {
 }
 
 impl ChromaDBConfig {
-    pub fn new(host: impl Into<String>, collection_name: impl Into<String>, vector_size: usize) -> Self {
+    pub fn new(
+        host: impl Into<String>,
+        collection_name: impl Into<String>,
+        vector_size: usize,
+    ) -> Self {
         Self {
             host: host.into(),
             collection_name: collection_name.into(),
@@ -129,12 +133,21 @@ impl ChromaDBVectorStore {
     /// 初始化或获取集合
     async fn init_collection(&mut self) -> Result<(), VectorStoreError> {
         // 尝试获取已有集合
-        let url = format!("{}/api/v1/collections/{}", self.config.host, self.config.collection_name);
-        let response = self.client.get(&url).send().await
+        let url = format!(
+            "{}/api/v1/collections/{}",
+            self.config.host, self.config.collection_name
+        );
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
 
         if response.status().is_success() {
-            let collection: ChromaCollection = response.json().await
+            let collection: ChromaCollection = response
+                .json()
+                .await
                 .map_err(|e| VectorStoreError::StorageError(format!("解析集合信息失败: {}", e)))?;
             self.collection_id = Some(collection.id);
             return Ok(());
@@ -150,33 +163,43 @@ impl ChromaDBVectorStore {
             body["metadata"] = serde_json::to_value(meta).unwrap_or(json!({}));
         }
 
-        let response = self.client.post(&create_url)
+        let response = self
+            .client
+            .post(&create_url)
             .json(&body)
             .send()
             .await
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
 
         if response.status().is_success() {
-            let collection: ChromaCollection = response.json().await
-                .map_err(|e| VectorStoreError::StorageError(format!("解析新集合信息失败: {}", e)))?;
+            let collection: ChromaCollection = response.json().await.map_err(|e| {
+                VectorStoreError::StorageError(format!("解析新集合信息失败: {}", e))
+            })?;
             self.collection_id = Some(collection.id);
             Ok(())
         } else {
             let text = response.text().await.unwrap_or_default();
-            Err(VectorStoreError::StorageError(format!("创建集合失败: {}", text)))
+            Err(VectorStoreError::StorageError(format!(
+                "创建集合失败: {}",
+                text
+            )))
         }
     }
 
     /// 获取集合 ID
     fn get_collection_id(&self) -> Result<&str, VectorStoreError> {
-        self.collection_id.as_deref()
+        self.collection_id
+            .as_deref()
             .ok_or_else(|| VectorStoreError::StorageError("集合未初始化".to_string()))
     }
 
     /// 构建集合 API 基础 URL
     fn collection_url(&self, endpoint: &str) -> Result<String, VectorStoreError> {
         let cid = self.get_collection_id()?;
-        Ok(format!("{}/api/v1/collections/{}/{}", self.config.host, cid, endpoint))
+        Ok(format!(
+            "{}/api/v1/collections/{}/{}",
+            self.config.host, cid, endpoint
+        ))
     }
 }
 
@@ -193,11 +216,17 @@ impl VectorStore for ChromaDBVectorStore {
 
         let count = documents.len();
         let ids: Vec<String> = (0..count)
-            .map(|i| documents[i].id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+            .map(|i| {
+                documents[i]
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            })
             .collect();
 
         let contents: Vec<String> = documents.iter().map(|d| d.content.clone()).collect();
-        let metadatas: Vec<HashMap<String, String>> = documents.iter().map(|d| d.metadata.clone()).collect();
+        let metadatas: Vec<HashMap<String, String>> =
+            documents.iter().map(|d| d.metadata.clone()).collect();
         let has_metadata = metadatas.iter().any(|m| !m.is_empty());
 
         let request = ChromaAddRequest {
@@ -208,7 +237,9 @@ impl VectorStore for ChromaDBVectorStore {
         };
 
         let url = self.collection_url("add")?;
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -216,7 +247,10 @@ impl VectorStore for ChromaDBVectorStore {
 
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!("添加文档失败: {}", text)));
+            return Err(VectorStoreError::StorageError(format!(
+                "添加文档失败: {}",
+                text
+            )));
         }
 
         Ok(ids)
@@ -230,11 +264,17 @@ impl VectorStore for ChromaDBVectorStore {
         let request = ChromaQueryRequest {
             query_embeddings: vec![query_embedding.to_vec()],
             n_results: k,
-            include: Some(vec!["documents".to_string(), "distances".to_string(), "metadatas".to_string()]),
+            include: Some(vec![
+                "documents".to_string(),
+                "distances".to_string(),
+                "metadatas".to_string(),
+            ]),
         };
 
         let url = self.collection_url("query")?;
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -242,25 +282,42 @@ impl VectorStore for ChromaDBVectorStore {
 
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!("查询失败: {}", text)));
+            return Err(VectorStoreError::StorageError(format!(
+                "查询失败: {}",
+                text
+            )));
         }
 
-        let query_result: ChromaQueryResponse = response.json().await
+        let query_result: ChromaQueryResponse = response
+            .json()
+            .await
             .map_err(|e| VectorStoreError::StorageError(format!("解析查询结果失败: {}", e)))?;
 
         let mut results = Vec::new();
 
         // ChromaDB 返回嵌套数组（每个 query 一个结果集）
         if let Some(doc_list) = query_result.documents.into_iter().next() {
-            let dist_list = query_result.distances.into_iter().next().unwrap_or_default();
-            let meta_list = query_result.metadatas.into_iter().next().unwrap_or_default();
+            let dist_list = query_result
+                .distances
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let meta_list = query_result
+                .metadatas
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             let id_list = query_result.ids.into_iter().next().unwrap_or_default();
 
             for (i, content) in doc_list.into_iter().enumerate() {
                 let score = dist_list.get(i).copied().unwrap_or(0.0);
                 // ChromaDB 返回的是 L2 距离，转换为相似度分数（1 / (1 + dist)）
                 let similarity = 1.0 / (1.0 + score);
-                let metadata = meta_list.get(i).unwrap_or(&None).clone().unwrap_or_default();
+                let metadata = meta_list
+                    .get(i)
+                    .unwrap_or(&None)
+                    .clone()
+                    .unwrap_or_default();
                 let doc_id = id_list.get(i).cloned();
 
                 results.push(SearchResult {
@@ -275,7 +332,11 @@ impl VectorStore for ChromaDBVectorStore {
         }
 
         // 按相似度降序排序
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 
@@ -286,7 +347,9 @@ impl VectorStore for ChromaDBVectorStore {
             "include": ["documents", "metadatas"]
         });
 
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -296,15 +359,27 @@ impl VectorStore for ChromaDBVectorStore {
             return Ok(None);
         }
 
-        let get_result: ChromaGetResponse = response.json().await
+        let get_result: ChromaGetResponse = response
+            .json()
+            .await
             .map_err(|e| VectorStoreError::StorageError(format!("解析文档失败: {}", e)))?;
 
         if get_result.ids.is_empty() {
             return Ok(None);
         }
 
-        let content = get_result.documents.into_iter().next().flatten().unwrap_or_default();
-        let metadata = get_result.metadatas.into_iter().next().flatten().unwrap_or_default();
+        let content = get_result
+            .documents
+            .into_iter()
+            .next()
+            .flatten()
+            .unwrap_or_default();
+        let metadata = get_result
+            .metadatas
+            .into_iter()
+            .next()
+            .flatten()
+            .unwrap_or_default();
 
         Ok(Some(Document {
             content,
@@ -320,7 +395,9 @@ impl VectorStore for ChromaDBVectorStore {
             "include": ["embeddings"]
         });
 
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -330,7 +407,9 @@ impl VectorStore for ChromaDBVectorStore {
             return Ok(None);
         }
 
-        let get_result: ChromaGetResponse = response.json().await
+        let get_result: ChromaGetResponse = response
+            .json()
+            .await
             .map_err(|e| VectorStoreError::StorageError(format!("解析文档失败: {}", e)))?;
 
         if let Some(embeddings) = get_result.embeddings {
@@ -346,7 +425,9 @@ impl VectorStore for ChromaDBVectorStore {
             "ids": [id]
         });
 
-        let response = self.client.post(&url)
+        let response = self
+            .client
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -354,7 +435,10 @@ impl VectorStore for ChromaDBVectorStore {
 
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!("删除文档失败: {}", text)));
+            return Err(VectorStoreError::StorageError(format!(
+                "删除文档失败: {}",
+                text
+            )));
         }
 
         Ok(())
@@ -363,19 +447,32 @@ impl VectorStore for ChromaDBVectorStore {
     async fn count(&self) -> usize {
         let url = match self.collection_url("count") {
             Ok(u) => u,
-            Err(_) => return 0,
+            Err(e) => {
+                log::warn!("ChromaDB count() failed to build URL: {}", e);
+                return 0;
+            }
         };
 
         let response = self.client.post(&url).send().await;
         match response {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    resp.json::<usize>().await.unwrap_or(0)
+                    match resp.json::<usize>().await {
+                        Ok(count) => count,
+                        Err(e) => {
+                            log::warn!("ChromaDB count() failed to parse response: {}", e);
+                            0
+                        }
+                    }
                 } else {
+                    log::warn!("ChromaDB count() request failed with non-success status");
                     0
                 }
             }
-            Err(_) => 0,
+            Err(e) => {
+                log::warn!("ChromaDB count() request error: {}", e);
+                0
+            }
         }
     }
 
@@ -386,17 +483,25 @@ impl VectorStore for ChromaDBVectorStore {
             "include": []
         });
 
-        let response = self.client.post(&get_url)
+        let response = self
+            .client
+            .post(&get_url)
             .json(&body)
             .send()
             .await
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Ok(()); // 如果获取失败，就当已经清空了
+            let text = response.text().await.unwrap_or_default();
+            return Err(VectorStoreError::StorageError(format!(
+                "获取文档列表失败: {}",
+                text
+            )));
         }
 
-        let get_result: ChromaGetResponse = response.json().await
+        let get_result: ChromaGetResponse = response
+            .json()
+            .await
             .map_err(|e| VectorStoreError::StorageError(format!("解析文档列表失败: {}", e)))?;
 
         if get_result.ids.is_empty() {
@@ -409,7 +514,9 @@ impl VectorStore for ChromaDBVectorStore {
             "ids": get_result.ids
         });
 
-        let response = self.client.post(&del_url)
+        let response = self
+            .client
+            .post(&del_url)
             .json(&del_body)
             .send()
             .await
@@ -417,7 +524,10 @@ impl VectorStore for ChromaDBVectorStore {
 
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!("清空集合失败: {}", text)));
+            return Err(VectorStoreError::StorageError(format!(
+                "清空集合失败: {}",
+                text
+            )));
         }
 
         Ok(())

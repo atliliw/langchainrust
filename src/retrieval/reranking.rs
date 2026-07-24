@@ -185,12 +185,29 @@ impl RerankingExecutor {
         let documents: Vec<Document> = results.iter().map(|r| r.document.clone()).collect();
         let scores = self.reranker.score(query, &documents)?;
 
+        // Normalize scores to [0, 1] range before combining (H51)
+        let max_original = results
+            .iter()
+            .map(|r| r.score.abs())
+            .fold(0.0_f32, f32::max);
+        let max_rerank = scores.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+
         let mut reranked: Vec<SearchResult> = results
             .iter()
             .enumerate()
             .map(|(idx, r)| {
                 let new_score = if self.config.preserve_original_score {
-                    r.score + scores[idx]
+                    let norm_original = if max_original > 0.0 {
+                        r.score / max_original
+                    } else {
+                        0.0
+                    };
+                    let norm_rerank = if max_rerank > 0.0 {
+                        scores[idx] / max_rerank
+                    } else {
+                        0.0
+                    };
+                    norm_original + norm_rerank
                 } else {
                     scores[idx]
                 };
@@ -276,14 +293,6 @@ impl BM25Reranker {
             .map(|w| w.to_lowercase())
             .collect()
     }
-
-    fn compute_tf(&self, term: &str, document: &Document) -> f32 {
-        let doc_lower = document.content.to_lowercase();
-        let freq = doc_lower.matches(term).count() as f32;
-        let doc_len = doc_lower.split_whitespace().count() as f32;
-
-        freq / (freq + self.k1 * (1.0 - self.b + self.b * doc_len / 100.0))
-    }
 }
 
 impl Default for BM25Reranker {
@@ -314,10 +323,13 @@ impl Reranker for BM25Reranker {
             .iter()
             .map(|doc| {
                 let doc_len = doc.content.split_whitespace().count() as f32;
+                let doc_lower = doc.content.to_lowercase();
                 query_terms
                     .iter()
                     .map(|term| {
-                        let tf = self.compute_tf(term, doc);
+                        let freq = doc_lower.matches(term.as_str()).count() as f32;
+                        let tf =
+                            freq / (freq + self.k1 * (1.0 - self.b + self.b * doc_len / avgdl));
                         tf * (1.0 + self.k1)
                             / (tf + self.k1 * (1.0 - self.b + self.b * doc_len / avgdl))
                     })

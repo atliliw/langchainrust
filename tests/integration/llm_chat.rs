@@ -6,9 +6,9 @@
 mod common;
 
 use common::TestConfig;
+use futures_util::StreamExt;
 use langchainrust::schema::Message;
 use langchainrust::BaseChatModel;
-use futures_util::StreamExt;
 
 /// 测试基础聊天功能
 ///
@@ -19,14 +19,14 @@ use futures_util::StreamExt;
 #[ignore = "需要配置 API Key"]
 async fn test_chat_single_turn() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let messages = vec![
         Message::system("You are a helpful assistant."),
         Message::human("What is Rust? Answer in one sentence."),
     ];
-    
+
     let response = llm.chat(messages, None).await.unwrap();
-    
+
     println!("Response: {}", response.content);
     assert!(!response.content.is_empty());
 }
@@ -40,16 +40,16 @@ async fn test_chat_single_turn() {
 #[ignore = "需要配置 API Key"]
 async fn test_chat_multi_turn() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let messages = vec![
         Message::system("You are a helpful assistant."),
         Message::human("My name is Alice."),
         Message::ai("Nice to meet you, Alice!"),
         Message::human("What's my name?"),
     ];
-    
+
     let response = llm.chat(messages, None).await.unwrap();
-    
+
     println!("Response: {}", response.content);
     assert!(response.content.to_lowercase().contains("alice"));
 }
@@ -63,23 +63,23 @@ async fn test_chat_multi_turn() {
 #[ignore = "需要配置 API Key"]
 async fn test_chat_streaming() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let messages = vec![
         Message::system("You are a helpful assistant."),
         Message::human("Count from 1 to 5."),
     ];
-    
+
     let mut stream = llm.stream_chat(messages, None).await.unwrap();
-    
+
     let mut full_response = String::new();
-    
+
     while let Some(chunk) = stream.next().await {
         if let Ok(token) = chunk {
             print!("{}", token);
             full_response.push_str(&token);
         }
     }
-    
+
     println!("\nFull response: {}", full_response);
     assert!(!full_response.is_empty());
 }

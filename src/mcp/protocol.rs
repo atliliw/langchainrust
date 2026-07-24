@@ -33,7 +33,8 @@ impl MCPRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPResponse {
     pub jsonrpc: String,
-    pub id: u64,
+    /// Per JSON-RPC 2.0 spec, `id` is `null` when the request could not be parsed.
+    pub id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +119,7 @@ mod tests {
     fn test_response_deserialization_success() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
         let resp: MCPResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.id, 1);
+        assert_eq!(resp.id, Some(1));
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
         assert!(!resp.is_error());
@@ -126,7 +127,8 @@ mod tests {
 
     #[test]
     fn test_response_deserialization_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: MCPResponse = serde_json::from_str(json).unwrap();
         assert!(resp.is_error());
         let err = resp.error.unwrap();
@@ -134,10 +136,19 @@ mod tests {
     }
 
     #[test]
+    fn test_response_deserialization_null_id() {
+        // JSON-RPC 2.0: parse error responses should have id: null
+        let json = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#;
+        let resp: MCPResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.id.is_none());
+        assert!(resp.is_error());
+    }
+
+    #[test]
     fn test_into_result_ok() {
         let resp = MCPResponse {
             jsonrpc: "2.0".to_string(),
-            id: 1,
+            id: Some(1),
             result: Some(Value::Bool(true)),
             error: None,
         };
@@ -148,7 +159,7 @@ mod tests {
     fn test_into_result_err() {
         let resp = MCPResponse {
             jsonrpc: "2.0".to_string(),
-            id: 1,
+            id: Some(1),
             result: None,
             error: Some(MCPError::method_not_found()),
         };

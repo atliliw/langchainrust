@@ -71,9 +71,8 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
              只输出三者之一:\"第一个更好\" / \"第二个更好\" / \"平局\"",
             rubric = self.rubric
         );
-        let user = format!(
-            "题目:\n{input}\n\n第一个回答:\n{first}\n\n第二个回答:\n{second}\n\n哪个更好?"
-        );
+        let user =
+            format!("题目:\n{input}\n\n第一个回答:\n{first}\n\n第二个回答:\n{second}\n\n哪个更好?");
         let result = self
             .judge
             .chat_with_system(system, vec![Message::human(user)])
@@ -111,8 +110,8 @@ fn parse_pick(raw: &str) -> Pick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::{BaseLanguageModel, LLMResult, Runnable, RunnableConfig};
+    use async_trait::async_trait;
     use futures_util::Stream;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -183,6 +182,7 @@ mod tests {
                 model: "seq-mock".to_string(),
                 token_usage: None,
                 tool_calls: None,
+                thinking_content: None,
             })
         }
         async fn stream_chat(
@@ -198,24 +198,30 @@ mod tests {
     #[tokio::test]
     async fn test_pairwise_a_wins() {
         // 第一次(A在前)选第一个=A;第二次(B在前)选第二个=A => A赢
-        let judge =
-            PairwiseJudge::new(SeqMockJudge::new(vec!["第一个更好".into(), "第二个更好".into()]));
+        let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
+            "第一个更好".into(),
+            "第二个更好".into(),
+        ]));
         assert_eq!(judge.compare("q", "A", "B").await.unwrap(), Verdict::AWins);
     }
 
     #[tokio::test]
     async fn test_pairwise_b_wins() {
         // 第一次(A在前)选第二个=B;第二次(B在前)选第一个=B => B赢
-        let judge =
-            PairwiseJudge::new(SeqMockJudge::new(vec!["第二个更好".into(), "第一个更好".into()]));
+        let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
+            "第二个更好".into(),
+            "第一个更好".into(),
+        ]));
         assert_eq!(judge.compare("q", "A", "B").await.unwrap(), Verdict::BWins);
     }
 
     #[tokio::test]
     async fn test_pairwise_position_bias_tie() {
         // 裁判总选第一个(位置偏差):两次都选 first => 映射回不同答案 => 平局
-        let judge =
-            PairwiseJudge::new(SeqMockJudge::new(vec!["第一个更好".into(), "第一个更好".into()]));
+        let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
+            "第一个更好".into(),
+            "第一个更好".into(),
+        ]));
         assert_eq!(judge.compare("q", "A", "B").await.unwrap(), Verdict::Tie);
     }
 

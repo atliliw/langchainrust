@@ -9,14 +9,14 @@
 
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
-
-use super::base::{BaseChain, ChainResult, ChainError};
-use crate::BaseChatModel;
+use super::base::{BaseChain, ChainError, ChainResult};
 use crate::retrieval::Document;
 use crate::schema::Message;
+use crate::BaseChatModel;
 use crate::Runnable;
 
 // ============================================================
@@ -24,7 +24,8 @@ use crate::Runnable;
 // ============================================================
 
 /// Default Stuff prompt template
-const DEFAULT_STUFF_PROMPT: &str = "Answer the user's question based on the following reference information.
+const DEFAULT_STUFF_PROMPT: &str =
+    "Answer the user's question based on the following reference information.
 
 Reference information:
 {context}
@@ -125,7 +126,8 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
 
     /// Build prompt
     pub fn build_prompt(&self, context: &str, input: &str) -> String {
-        let template = self.prompt_template
+        let template = self
+            .prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
             .replace("{input}", input);
         template
@@ -138,7 +140,8 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
         input: &str,
     ) -> Result<String, ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         let context = self.format_documents(&documents);
 
@@ -155,7 +158,10 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
         }
 
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await
+        let response = self
+            .llm
+            .invoke(messages, None)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let output = response.content;
@@ -172,7 +178,8 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for StuffDocumentsChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
@@ -183,11 +190,13 @@ where
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        let input = inputs.get(&self.input_key)
+        let input = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs.get("documents")
+        let documents: Vec<Document> = inputs
+            .get("documents")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -213,7 +222,8 @@ where
 // ============================================================
 
 /// Default initial processing prompt template
-const DEFAULT_REFINE_INITIAL_PROMPT: &str = "Answer the question based on the following reference information.
+const DEFAULT_REFINE_INITIAL_PROMPT: &str =
+    "Answer the question based on the following reference information.
 
 Reference information:
 {context}
@@ -330,10 +340,13 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
         input: &str,
     ) -> Result<String, ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
         }
 
         if self.verbose {
@@ -351,8 +364,10 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
         }
 
         let messages = vec![Message::human(&initial_prompt)];
-        let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM initial call failed: {}", e)))?;
+        let response =
+            self.llm.invoke(messages, None).await.map_err(|e| {
+                ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
+            })?;
         let mut answer = response.content;
 
         if self.verbose {
@@ -368,8 +383,9 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
             let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
 
             let messages = vec![Message::human(&refine_prompt)];
-            let response = self.llm.invoke(messages, None).await
-                .map_err(|e| ChainError::ExecutionError(format!("LLM refinement call failed: {}", e)))?;
+            let response = self.llm.invoke(messages, None).await.map_err(|e| {
+                ChainError::ExecutionError(format!("LLM refinement call failed: {}", e))
+            })?;
             answer = response.content;
 
             if self.verbose {
@@ -388,7 +404,8 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for RefineDocumentsChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
@@ -399,11 +416,13 @@ where
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        let input = inputs.get(&self.input_key)
+        let input = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs.get("documents")
+        let documents: Vec<Document> = inputs
+            .get("documents")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -466,6 +485,67 @@ pub struct MapRerankDocumentsChain<M: BaseChatModel> {
     top_k: usize,
 }
 
+// Pre-compiled regex patterns for score extraction (C10: avoid recompiling on every call)
+static SCORE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)(?:relevance\s*score|相关性评分)\s*[:：]\s*(\d+)").unwrap()
+});
+static SCORE_RE2: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)score\s*[:：]\s*(\d+)").unwrap());
+
+/// Truncate a string to at most `max_len` characters, respecting char boundaries.
+/// (H67: avoids UTF-8 byte-slice panic on multi-byte text)
+fn truncate_str(s: &str, max_len: usize) -> &str {
+    if s.chars().count() <= max_len {
+        s
+    } else {
+        let end = s
+            .char_indices()
+            .nth(max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        &s[..end]
+    }
+}
+
+/// Extract score and answer from LLM output
+pub fn extract_score(text: &str) -> (u32, String) {
+    if let Some(caps) = SCORE_RE.captures(text) {
+        if let Ok(score) = caps[1].parse::<u32>() {
+            let cleaned = SCORE_RE.replace(text, "").trim().to_string();
+            let cleaned = cleaned
+                .trim_start_matches("Answer")
+                .trim_start_matches("答案")
+                .trim_start_matches(&[':', '：'][..])
+                .trim()
+                .to_string();
+            return (
+                std::cmp::min(score, 100),
+                if cleaned.is_empty() {
+                    text.to_string()
+                } else {
+                    cleaned
+                },
+            );
+        }
+    }
+
+    if let Some(caps) = SCORE_RE2.captures(text) {
+        if let Ok(score) = caps[1].parse::<u32>() {
+            let cleaned = SCORE_RE2.replace(text, "").trim().to_string();
+            return (
+                std::cmp::min(score, 100),
+                if cleaned.is_empty() {
+                    text.to_string()
+                } else {
+                    cleaned
+                },
+            );
+        }
+    }
+
+    (50, text.to_string())
+}
+
 impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
     pub fn new(llm: M) -> Self {
         Self {
@@ -523,32 +603,6 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
             .replace("{input}", input)
     }
 
-    /// Extract score and answer from LLM output
-    pub fn extract_score(text: &str) -> (u32, String) {
-        let score_re = regex::Regex::new(r"(?i)(?:relevance\s*score|相关性评分)\s*[:：]\s*(\d+)").unwrap();
-        if let Some(caps) = score_re.captures(text) {
-            if let Ok(score) = caps[1].parse::<u32>() {
-                let cleaned = score_re.replace(text, "").trim().to_string();
-                let cleaned = cleaned.trim_start_matches("Answer")
-                    .trim_start_matches("答案")
-                    .trim_start_matches(&[':', '：'][..])
-                    .trim()
-                    .to_string();
-                return (std::cmp::min(score, 100), if cleaned.is_empty() { text.to_string() } else { cleaned });
-            }
-        }
-
-        let score_re2 = regex::Regex::new(r"(?i)score\s*[:：]\s*(\d+)").unwrap();
-        if let Some(caps) = score_re2.captures(text) {
-            if let Ok(score) = caps[1].parse::<u32>() {
-                let cleaned = score_re2.replace(text, "").trim().to_string();
-                return (std::cmp::min(score, 100), if cleaned.is_empty() { text.to_string() } else { cleaned });
-            }
-        }
-
-        (50, text.to_string())
-    }
-
     async fn map_document(
         &self,
         doc: &Document,
@@ -556,19 +610,25 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         index: usize,
     ) -> Result<(u32, String), ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
             println!("\n--- Map document {} ---", index + 1);
         }
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e)))?;
-        let (score, answer) = Self::extract_score(&response.content);
+        let response = self.llm.invoke(messages, None).await.map_err(|e| {
+            ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e))
+        })?;
+        let (score, answer) = extract_score(&response.content);
         if self.verbose {
-            println!("Document {} score: {}, answer: {}", index + 1, score,
-                if answer.len() > 80 { &answer[..80] } else { &answer });
+            println!(
+                "Document {} score: {}, answer: {}",
+                index + 1,
+                score,
+                truncate_str(&answer, 80)
+            );
         }
         Ok((score, answer))
     }
@@ -580,10 +640,13 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         input: &str,
     ) -> Result<Vec<(u32, String)>, ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
         }
 
         if self.verbose {
@@ -603,8 +666,12 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         if self.verbose {
             println!("\n--- Rerank phase ---");
             for (i, (score, answer)) in results.iter().enumerate() {
-                println!("Rank {}: score={}, answer={}", i + 1, score,
-                    if answer.len() > 100 { &answer[..100] } else { &answer });
+                println!(
+                    "Rank {}: score={}, answer={}",
+                    i + 1,
+                    score,
+                    truncate_str(answer, 100)
+                );
             }
         }
 
@@ -620,23 +687,35 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapRerankDocumentsChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
-    fn input_keys(&self) -> Vec<&str> { vec![&self.input_key, "documents"] }
-    fn output_keys(&self) -> Vec<&str> { vec![&self.output_key] }
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key, "documents"]
+    }
+    fn output_keys(&self) -> Vec<&str> {
+        vec![&self.output_key]
+    }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        let input = inputs.get(&self.input_key)
+        let input = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs.get("documents")
+        let documents: Vec<Document> = inputs
+            .get("documents")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
             .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
 
         let results = self.invoke_with_documents(documents, input).await?;
-        let output_json: Vec<serde_json::Value> = results.iter()
+        let output_json: Vec<serde_json::Value> = results
+            .iter()
             .map(|(score, answer)| serde_json::json!({"score": score, "answer": answer}))
             .collect();
 
@@ -645,7 +724,9 @@ where
         Ok(result)
     }
 
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 // ============================================================
@@ -754,7 +835,8 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
     }
 
     pub fn build_reduce_prompt(&self, summaries: &[String], input: &str) -> String {
-        let summaries_text = summaries.iter()
+        let summaries_text = summaries
+            .iter()
             .enumerate()
             .map(|(i, s)| format!("Answer from document {}:\n{}", i + 1, s))
             .collect::<Vec<_>>()
@@ -773,7 +855,8 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         index: usize,
     ) -> Result<String, ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         let prompt = self.build_map_prompt(&doc.content, input);
 
@@ -782,8 +865,9 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         }
 
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await
-            .map_err(|e| ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e)))?;
+        let response = self.llm.invoke(messages, None).await.map_err(|e| {
+            ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e))
+        })?;
 
         if self.verbose {
             println!("Document {} answer: {}", index + 1, response.content);
@@ -799,10 +883,13 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         input: &str,
     ) -> Result<String, ChainError>
     where
-        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+        <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+            std::fmt::Display,
     {
         if documents.is_empty() {
-            return Err(ChainError::ExecutionError("Document list is empty".to_string()));
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
         }
 
         if self.verbose {
@@ -834,7 +921,10 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         }
 
         let messages = vec![Message::human(&reduce_prompt)];
-        let response = self.llm.invoke(messages, None).await
+        let response = self
+            .llm
+            .invoke(messages, None)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("Reduce call failed: {}", e)))?;
 
         let final_answer = response.content;
@@ -851,7 +941,8 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapReduceDocumentsChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
@@ -862,11 +953,13 @@ where
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        let input = inputs.get(&self.input_key)
+        let input = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs.get("documents")
+        let documents: Vec<Document> = inputs
+            .get("documents")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -896,7 +989,9 @@ mod tests {
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
             api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
-            base_url: "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+            base_url:
+                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string(),
             model: "glm-5.2".to_string(),
             streaming: false,
             organization: None,
@@ -916,8 +1011,16 @@ mod tests {
         let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm);
 
         let docs = vec![
-            Document { content: "Hello world".to_string(), metadata: HashMap::new(), id: None },
-            Document { content: "Rust programming".to_string(), metadata: HashMap::new(), id: None },
+            Document {
+                content: "Hello world".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
+            Document {
+                content: "Rust programming".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
         ];
 
         let formatted = chain.format_documents(&docs);
@@ -940,12 +1043,14 @@ mod tests {
     #[test]
     fn test_stuff_documents_truncation() {
         let llm = OpenAIChat::new(create_test_config());
-        let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm)
-            .with_max_doc_length(5);
+        let chain: StuffDocumentsChain<OpenAIChat> =
+            StuffDocumentsChain::new(llm).with_max_doc_length(5);
 
-        let docs = vec![
-            Document { content: "Hello world this is a long string".to_string(), metadata: HashMap::new(), id: None },
-        ];
+        let docs = vec![Document {
+            content: "Hello world this is a long string".to_string(),
+            metadata: HashMap::new(),
+            id: None,
+        }];
 
         let formatted = chain.format_documents(&docs);
         assert!(formatted.contains("[document truncated]"));
@@ -969,16 +1074,16 @@ mod tests {
     #[test]
     fn test_map_rerank_extract_score() {
         let text1 = "Relevance score: 85\nAnswer: The answer is 42";
-        let (score1, answer1) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text1);
+        let (score1, answer1) = extract_score(text1);
         assert_eq!(score1, 85);
         assert!(answer1.contains("42"));
 
         let text2 = "Score: 70\nSome answer text";
-        let (score2, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text2);
+        let (score2, _) = extract_score(text2);
         assert_eq!(score2, 70);
 
         let text3 = "No score here, just an answer";
-        let (score3, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score(text3);
+        let (score3, _) = extract_score(text3);
         assert_eq!(score3, 50);
     }
 
@@ -1017,12 +1122,23 @@ mod tests {
         let chain: StuffDocumentsChain<OpenAIChat> = StuffDocumentsChain::new(llm);
 
         let docs = vec![
-            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
-            Document { content: "Rust emphasizes safety and performance.".to_string(), metadata: HashMap::new(), id: None },
+            Document {
+                content: "Rust is a systems programming language.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
+            Document {
+                content: "Rust emphasizes safety and performance.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
         ];
 
         println!("\n=== Test StuffDocumentsChain ===");
-        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        let result = chain
+            .invoke_with_documents(docs, "What is Rust?")
+            .await
+            .unwrap();
         println!("Output: {}", result);
         assert!(!result.is_empty());
     }
@@ -1036,12 +1152,23 @@ mod tests {
         let chain: RefineDocumentsChain<OpenAIChat> = RefineDocumentsChain::new(llm);
 
         let docs = vec![
-            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
-            Document { content: "Rust was created by Mozilla.".to_string(), metadata: HashMap::new(), id: None },
+            Document {
+                content: "Rust is a systems programming language.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
+            Document {
+                content: "Rust was created by Mozilla.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
         ];
 
         println!("\n=== Test RefineDocumentsChain ===");
-        let result = chain.invoke_with_documents(docs, "What is Rust and who created it?").await.unwrap();
+        let result = chain
+            .invoke_with_documents(docs, "What is Rust and who created it?")
+            .await
+            .unwrap();
         println!("Output: {}", result);
         assert!(!result.is_empty());
     }
@@ -1055,12 +1182,23 @@ mod tests {
         let chain: MapRerankDocumentsChain<OpenAIChat> = MapRerankDocumentsChain::new(llm);
 
         let docs = vec![
-            Document { content: "Python is a high-level programming language.".to_string(), metadata: HashMap::new(), id: None },
-            Document { content: "Rust is a systems programming language focused on safety.".to_string(), metadata: HashMap::new(), id: None },
+            Document {
+                content: "Python is a high-level programming language.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
+            Document {
+                content: "Rust is a systems programming language focused on safety.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
         ];
 
         println!("\n=== Test MapRerankDocumentsChain ===");
-        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        let result = chain
+            .invoke_with_documents(docs, "What is Rust?")
+            .await
+            .unwrap();
         println!("Output: {:?}", result);
         assert!(!result.is_empty());
     }
@@ -1074,12 +1212,23 @@ mod tests {
         let chain: MapReduceDocumentsChain<OpenAIChat> = MapReduceDocumentsChain::new(llm);
 
         let docs = vec![
-            Document { content: "Rust is a systems programming language.".to_string(), metadata: HashMap::new(), id: None },
-            Document { content: "Rust emphasizes memory safety without garbage collection.".to_string(), metadata: HashMap::new(), id: None },
+            Document {
+                content: "Rust is a systems programming language.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
+            Document {
+                content: "Rust emphasizes memory safety without garbage collection.".to_string(),
+                metadata: HashMap::new(),
+                id: None,
+            },
         ];
 
         println!("\n=== Test MapReduceDocumentsChain ===");
-        let result = chain.invoke_with_documents(docs, "What is Rust?").await.unwrap();
+        let result = chain
+            .invoke_with_documents(docs, "What is Rust?")
+            .await
+            .unwrap();
         println!("Output: {}", result);
         assert!(!result.is_empty());
     }

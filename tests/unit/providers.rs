@@ -2,7 +2,8 @@
 //! Unit tests for LLM providers
 
 use langchainrust::{
-    AnthropicConfig, DeepSeekConfig, MoonshotConfig, QwenConfig, ZhipuConfig,
+    AnthropicConfig, DeepSeekConfig, MoonshotConfig, QwenConfig, ThinkingConfig, ThinkingType,
+    ZhipuConfig,
 };
 
 #[test]
@@ -112,4 +113,48 @@ fn test_anthropic_config_with_system_prompt() {
         config.system_prompt,
         Some("You are a helpful assistant.".to_string())
     );
+}
+
+// ============================================================================
+// Extended Thinking tests
+// ============================================================================
+
+#[test]
+fn test_thinking_type_default() {
+    assert_eq!(ThinkingType::default(), ThinkingType::Disabled);
+}
+
+#[test]
+fn test_thinking_config_enabled() {
+    let config = ThinkingConfig::enabled(10000);
+    assert!(config.is_enabled());
+    assert_eq!(config.budget_tokens, 10000);
+    assert_eq!(config.r#type, ThinkingType::Enabled);
+}
+
+#[test]
+fn test_thinking_config_disabled() {
+    let config = ThinkingConfig::disabled();
+    assert!(!config.is_enabled());
+    assert_eq!(config.budget_tokens, 0);
+    assert_eq!(config.r#type, ThinkingType::Disabled);
+}
+
+#[test]
+fn test_thinking_config_default() {
+    let config = ThinkingConfig::default();
+    assert!(!config.is_enabled());
+}
+
+#[test]
+fn test_anthropic_config_with_thinking() {
+    let config = AnthropicConfig::new("test-key").with_thinking(ThinkingConfig::enabled(5000));
+    assert!(config.thinking.is_enabled());
+    assert_eq!(config.thinking.budget_tokens, 5000);
+}
+
+#[test]
+fn test_anthropic_config_default_no_thinking() {
+    let config = AnthropicConfig::default();
+    assert!(!config.thinking.is_enabled());
 }

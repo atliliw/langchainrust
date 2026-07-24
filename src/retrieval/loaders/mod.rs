@@ -4,67 +4,51 @@
 //! 提供从不同格式文件加载文档的功能，包括 PDF、CSV、Text、JSON、Markdown、HTML 等。
 //! v0.4.1 新增: WebScraper、Sitemap、Docx 加载器。
 
-mod pdf;
 mod csv;
-mod text;
+mod docx;
+mod html;
 mod json;
 mod markdown;
-mod html;
-mod web_scraper;
+mod pdf;
 mod sitemap;
-mod docx;
+mod text;
+mod web_scraper;
 
-pub use pdf::PDFLoader;
 pub use csv::CSVLoader;
-pub use text::TextLoader;
+pub use docx::DocxLoader;
+pub use html::HTMLLoader;
 pub use json::JSONLoader;
 pub use markdown::MarkdownLoader;
-pub use html::HTMLLoader;
-pub use web_scraper::WebScraperLoader;
+pub use pdf::PDFLoader;
 pub use sitemap::SitemapLoader;
-pub use docx::DocxLoader;
+pub use text::TextLoader;
+pub use web_scraper::WebScraperLoader;
 
 use crate::vector_stores::Document;
 use async_trait::async_trait;
-use std::error::Error;
 
 /// 文档加载器错误类型
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LoaderError {
     /// IO 错误
-    IoError(std::io::Error),
-    
+    #[error("IO 错误: {0}")]
+    IoError(#[from] std::io::Error),
+
     /// CSV 解析错误
+    #[error("CSV 解析错误: {0}")]
     CsvError(String),
-    
+
     /// PDF 解析错误
+    #[error("PDF 解析错误: {0}")]
     PdfError(String),
-    
+
     /// JSON 解析错误
+    #[error("JSON 解析错误: {0}")]
     JsonError(String),
-    
+
     /// 未知错误
+    #[error("未知错误: {0}")]
     Other(String),
-}
-
-impl std::fmt::Display for LoaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LoaderError::IoError(e) => write!(f, "IO 错误: {}", e),
-            LoaderError::CsvError(msg) => write!(f, "CSV 解析错误: {}", msg),
-            LoaderError::PdfError(msg) => write!(f, "PDF 解析错误: {}", msg),
-            LoaderError::JsonError(msg) => write!(f, "JSON 解析错误: {}", msg),
-            LoaderError::Other(msg) => write!(f, "未知错误: {}", msg),
-        }
-    }
-}
-
-impl Error for LoaderError {}
-
-impl From<std::io::Error> for LoaderError {
-    fn from(e: std::io::Error) -> Self {
-        LoaderError::IoError(e)
-    }
 }
 
 impl From<pdf_extract::Error> for LoaderError {

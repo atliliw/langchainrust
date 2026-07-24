@@ -23,18 +23,24 @@
 //! Loop until AgentFinish returned
 //! ```
 
-pub mod types;
+pub mod adaptive_rag;
 pub mod base;
-pub mod react;
+pub mod crag;
+pub mod deep_research;
 pub mod function_calling;
-pub mod plan_execute;
 pub mod handoffs;
+pub mod plan_execute;
+pub mod react;
 pub mod streaming;
+pub mod types;
 
-pub use types::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput};
-pub use base::{BaseAgent, AgentExecutor, AgentError};
-pub use react::ReActAgent;
+pub use adaptive_rag::{AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, RagDecision};
+pub use base::{AgentError, AgentExecutor, BaseAgent};
+pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
+pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
 pub use function_calling::FunctionCallingAgent;
-pub use plan_execute::PlanExecuteAgent;
 pub use handoffs::HandoffManager;
+pub use plan_execute::{PlanExecuteAgent, PlanExecuteError};
+pub use react::ReActAgent;
 pub use streaming::StreamingFunctionCallingAgent;
+pub use types::{AgentAction, AgentFinish, AgentOutput, AgentStep, ToolInput};

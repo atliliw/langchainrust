@@ -1,7 +1,7 @@
 // src/embeddings/deepseek.rs
 //! DeepSeek embeddings implementation.
 
-use crate::embeddings::{Embeddings, EmbeddingError};
+use crate::embeddings::{EmbeddingError, Embeddings};
 use crate::language_models::providers::DEEPSEEK_BASE_URL;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -83,7 +83,8 @@ impl Embeddings for DeepSeekEmbeddings {
             "input": text,
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -95,7 +96,10 @@ impl Embeddings for DeepSeekEmbeddings {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+            return Err(EmbeddingError::ApiError(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
         }
 
         let embedding_response: EmbeddingResponse = response
@@ -103,7 +107,12 @@ impl Embeddings for DeepSeekEmbeddings {
             .await
             .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
 
-        Ok(embedding_response.data[0].embedding.clone())
+        Ok(embedding_response
+            .data
+            .first()
+            .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
+            .embedding
+            .clone())
     }
 
     async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -122,7 +131,8 @@ impl Embeddings for DeepSeekEmbeddings {
                 "input": chunk,
             });
 
-            let response = self.client
+            let response = self
+                .client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", self.config.api_key))
                 .header("Content-Type", "application/json")
@@ -134,7 +144,10 @@ impl Embeddings for DeepSeekEmbeddings {
             let status = response.status();
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
-                return Err(EmbeddingError::ApiError(format!("HTTP {}: {}", status, error_text)));
+                return Err(EmbeddingError::ApiError(format!(
+                    "HTTP {}: {}",
+                    status, error_text
+                )));
             }
 
             let embedding_response: EmbeddingResponse = response

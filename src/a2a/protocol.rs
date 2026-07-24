@@ -398,8 +398,8 @@ mod tests {
 
     #[test]
     fn agent_card_serialization() {
-        let card = AgentCard::new("agent", "desc", "http://localhost")
-            .with_capability("text-generation");
+        let card =
+            AgentCard::new("agent", "desc", "http://localhost").with_capability("text-generation");
         let json = serde_json::to_string(&card).unwrap();
         assert!(json.contains("\"name\":\"agent\""));
         assert!(json.contains("\"capabilities\""));
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn a2a_task_with_status() {
-        let task = A2ATask::new("task-1", A2AMessage::user("hello"))
-            .with_status(TaskStatus::Completed);
+        let task =
+            A2ATask::new("task-1", A2AMessage::user("hello")).with_status(TaskStatus::Completed);
         assert_eq!(task.status, TaskStatus::Completed);
     }
 

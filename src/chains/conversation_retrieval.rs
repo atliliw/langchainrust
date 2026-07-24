@@ -6,16 +6,16 @@
 //! both conversational context and external knowledge.
 
 use async_trait::async_trait;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::Value;
 
-use super::base::{BaseChain, ChainResult, ChainError};
+use super::base::{BaseChain, ChainError, ChainResult};
+use crate::memory::{BaseMemory, ConversationBufferMemory};
+use crate::retrieval::{Document, RetrieverTrait};
+use crate::schema::Message;
 use crate::BaseChatModel;
 use crate::Runnable;
-use crate::memory::{ConversationBufferMemory, BaseMemory};
-use crate::retrieval::{RetrieverTrait, Document};
-use crate::schema::Message;
 use tokio::sync::Mutex;
 
 /// Default retrieval-augmented conversation prompt template
@@ -139,33 +139,73 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
 
     pub async fn clear_memory(&self) -> Result<(), ChainError> {
         let mut memory = self.memory.lock().await;
-        memory.clear().await.map_err(|e|
-            ChainError::ExecutionError(format!("Failed to clear memory: {}", e))
-        )?;
+        memory
+            .clear()
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("Failed to clear memory: {}", e)))?;
         Ok(())
     }
 
     /// Simplified query interface
     pub async fn query(&self, question: impl Into<String>) -> Result<String, ChainError> {
-        let inputs = HashMap::from([
-            (self.input_key.clone(), Value::String(question.into()))
-        ]);
+        let inputs = HashMap::from([(self.input_key.clone(), Value::String(question.into()))]);
         let result = self.invoke(inputs).await?;
-        result.get(&self.output_key)
+        result
+            .get(&self.output_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))
     }
 
     fn format_context(&self, documents: &[Document]) -> String {
-        documents.iter()
+        documents
+            .iter()
             .map(|doc| doc.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n---\n\n")
     }
 
+    /// Build structured messages for a given history, context, and question.
+    /// Useful for testing the message construction logic.
+    pub fn build_messages(
+        &self,
+        history: &[Message],
+        context: &str,
+        question: &str,
+    ) -> Vec<Message> {
+        let mut messages = Vec::new();
+
+        // System instruction
+        if let Some(system) = &self.system_prompt {
+            messages.push(Message::system(system));
+        } else {
+            messages.push(Message::system(
+                "You are an AI assistant. Answer the user's question based on the conversation history and reference information."
+            ));
+        }
+
+        // Conversation history as individual messages
+        for msg in history {
+            messages.push(msg.clone());
+        }
+
+        // Context + question as the final human message
+        let human_content = if context.is_empty() {
+            question.to_string()
+        } else {
+            format!(
+                "Reference information:\n{}\n\nQuestion: {}",
+                context, question
+            )
+        };
+        messages.push(Message::human(&human_content));
+
+        messages
+    }
+
     fn format_history(&self, messages: &[Message]) -> String {
-        messages.iter()
+        messages
+            .iter()
             .map(|msg| {
                 let role = match msg.message_type {
                     crate::schema::MessageType::Human => "User",
@@ -178,22 +218,6 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
             .join("\n")
     }
 
-    fn build_prompt(&self, history: &str, context: &str, question: &str) -> String {
-        let mut prompt = String::new();
-
-        if let Some(system) = &self.system_prompt {
-            prompt.push_str(&format!("{}\n\n", system));
-        }
-
-        let template = self.qa_prompt_template
-            .replace("{history}", history)
-            .replace("{context}", context)
-            .replace("{question}", question);
-
-        prompt.push_str(&template);
-        prompt
-    }
-
     async fn load_history(&self) -> Result<Vec<Message>, ChainError> {
         let memory = self.memory.lock().await;
         Ok(memory.chat_memory().messages().to_vec())
@@ -203,7 +227,9 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
         let mut memory = self.memory.lock().await;
         let inputs = HashMap::from([(self.input_key.clone(), input.to_string())]);
         let outputs = HashMap::from([(self.output_key.clone(), output.to_string())]);
-        memory.save_context(&inputs, &outputs).await
+        memory
+            .save_context(&inputs, &outputs)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("Failed to save context: {}", e)))?;
         Ok(())
     }
@@ -212,7 +238,8 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for ConversationRetrievalChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
@@ -229,7 +256,8 @@ where
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
-        let question = inputs.get(&self.input_key)
+        let question = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
@@ -251,7 +279,10 @@ where
             println!("\n--- Step 2: Retrieve relevant documents ---");
         }
 
-        let documents = self.retriever.retrieve(question, self.k).await
+        let documents = self
+            .retriever
+            .retrieve(question, self.k)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
 
         if self.verbose {
@@ -272,7 +303,6 @@ where
         }
 
         let context = self.format_context(&documents);
-        let prompt = self.build_prompt(&history, &context, question);
 
         if self.verbose {
             println!("History length: {} characters", history.len());
@@ -284,8 +314,40 @@ where
             println!("\n--- Step 4: LLM generates answer ---");
         }
 
-        let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await
+        // H65: Split into structured messages (system + history + context + question)
+        // instead of sending the entire prompt as a single human message.
+        let mut messages = Vec::new();
+
+        // System instruction
+        if let Some(system) = &self.system_prompt {
+            messages.push(Message::system(system));
+        } else {
+            messages.push(Message::system(
+                "You are an AI assistant. Answer the user's question based on the conversation history and reference information."
+            ));
+        }
+
+        // Conversation history as individual messages
+        for msg in &history_messages {
+            messages.push(msg.clone());
+        }
+
+        // Context + question as the final human message
+        let context_str = self.format_context(&documents);
+        let human_content = if context_str.is_empty() {
+            question.to_string()
+        } else {
+            format!(
+                "Reference information:\n{}\n\nQuestion: {}",
+                context_str, question
+            )
+        };
+        messages.push(Message::human(&human_content));
+
+        let response = self
+            .llm
+            .invoke(messages, None)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let answer = response.content;
@@ -305,7 +367,8 @@ where
         result.insert(self.output_key.clone(), Value::String(answer));
 
         if self.return_source_documents {
-            let sources: Vec<Value> = documents.iter()
+            let sources: Vec<Value> = documents
+                .iter()
                 .map(|doc| serde_json::to_value(doc).unwrap_or(Value::Null))
                 .collect();
             result.insert(self.source_document_key.clone(), Value::Array(sources));
@@ -392,11 +455,11 @@ mod tests {
 
         let chain = ConversationRetrievalChain::new(llm, retriever, memory);
 
-        let prompt = chain.build_prompt("History text", "Context text", "What is Rust?");
+        let messages = chain.build_messages(&[], "Context text", "What is Rust?");
 
-        assert!(prompt.contains("History text"));
-        assert!(prompt.contains("Context text"));
-        assert!(prompt.contains("What is Rust?"));
+        // Should have system + context+question human message
+        assert!(messages.iter().any(|m| m.content.contains("Context text")));
+        assert!(messages.iter().any(|m| m.content.contains("What is Rust?")));
     }
 
     #[test]
@@ -410,13 +473,12 @@ mod tests {
 
         let custom_template = "History: {history}\nContext: {context}\nQuestion: {question}";
 
-        let chain = ConversationRetrievalChain::new(llm, retriever, memory)
-            .with_qa_prompt(custom_template);
+        let chain =
+            ConversationRetrievalChain::new(llm, retriever, memory).with_qa_prompt(custom_template);
 
-        let prompt = chain.build_prompt("Test history", "Test context", "Test question");
+        let messages = chain.build_messages(&[], "Test context", "Test question");
 
-        assert!(prompt.contains("Test history"));
-        assert!(prompt.contains("Test context"));
-        assert!(prompt.contains("Test question"));
+        assert!(messages.iter().any(|m| m.content.contains("Test context")));
+        assert!(messages.iter().any(|m| m.content.contains("Test question")));
     }
 }

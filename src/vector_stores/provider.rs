@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub enum VectorStoreType {
     /// 内存存储，适用于测试和小型应用
     InMemory,
-    
+
     /// 文件持久化存储，适用于个人知识库
     FileBacked {
         /// 存储文件路径
@@ -19,12 +19,9 @@ pub enum VectorStoreType {
         /// 向量维度
         dimension: usize,
     },
-    
+
     /// Qdrant 向量数据库，适用于生产环境
-    Qdrant {
-        url: String,
-        collection: String,
-    },
+    Qdrant { url: String, collection: String },
 }
 
 /// 向量存储提供者
@@ -32,7 +29,9 @@ pub struct VectorStoreProvider;
 
 impl VectorStoreProvider {
     /// 创建向量存储实例
-    pub async fn create(store_type: VectorStoreType) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
+    pub async fn create(
+        store_type: VectorStoreType,
+    ) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         match store_type {
             VectorStoreType::InMemory => {
                 use crate::vector_stores::InMemoryVectorStore;
@@ -41,6 +40,7 @@ impl VectorStoreProvider {
             VectorStoreType::FileBacked { path, dimension } => {
                 use crate::vector_stores::FileVectorStore;
                 let store = FileVectorStore::new(std::path::PathBuf::from(path), dimension)
+                    .await
                     .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
                 Ok(Arc::new(store))
             }
@@ -51,15 +51,18 @@ impl VectorStoreProvider {
     }
 
     /// 创建 Qdrant 向量存储
-    async fn create_qdrant_store(_url: String, _collection: String) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
+    async fn create_qdrant_store(
+        _url: String,
+        _collection: String,
+    ) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         #[cfg(feature = "qdrant-integration")]
         {
-            use crate::vector_stores::{QdrantVectorStore, QdrantConfig};
+            use crate::vector_stores::{QdrantConfig, QdrantVectorStore};
             let config = QdrantConfig::new(url, collection);
             let store = QdrantVectorStore::new(config).await?;
             Ok(Arc::new(store))
         }
-        
+
         #[cfg(not(feature = "qdrant-integration"))]
         {
             eprintln!("Warning: Qdrant requested but feature 'qdrant-integration' not enabled. Falling back to InMemory store.");
@@ -86,13 +89,13 @@ impl VectorStoreBuilder {
             store_type: VectorStoreType::InMemory,
         }
     }
-    
+
     pub fn in_memory() -> Self {
         Self {
             store_type: VectorStoreType::InMemory,
         }
     }
-    
+
     pub fn file_backed(path: impl Into<String>, dimension: usize) -> Self {
         Self {
             store_type: VectorStoreType::FileBacked {
@@ -101,7 +104,7 @@ impl VectorStoreBuilder {
             },
         }
     }
-    
+
     pub fn qdrant(url: impl Into<String>, collection: impl Into<String>) -> Self {
         Self {
             store_type: VectorStoreType::Qdrant {
@@ -110,7 +113,7 @@ impl VectorStoreBuilder {
             },
         }
     }
-    
+
     pub async fn build(self) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         VectorStoreProvider::create(self.store_type).await
     }
@@ -125,14 +128,14 @@ mod tests {
         let result = VectorStoreProvider::create(VectorStoreType::InMemory).await;
         assert!(result.is_ok());
     }
-    
+
     #[tokio::test]
     async fn test_builder_in_memory() {
         let builder = VectorStoreBuilder::in_memory();
         let store = builder.build().await;
         assert!(store.is_ok());
     }
-    
+
     #[tokio::test]
     async fn test_builder_qdrant_fallback() {
         // 没有 feature 时，应该回退到内存存储

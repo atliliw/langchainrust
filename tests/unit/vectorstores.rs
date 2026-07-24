@@ -2,14 +2,13 @@
 
 #[cfg(test)]
 mod tests {
+    use langchainrust::embeddings::{cosine_similarity, MockEmbeddings};
+    use langchainrust::retrieval::{RetrieverTrait, SimilarityRetriever};
     use langchainrust::vector_stores::{
-        Document, VectorStore, InMemoryVectorStore, 
-        VectorStoreProvider, VectorStoreType, VectorStoreBuilder,
+        Document, InMemoryVectorStore, VectorStore, VectorStoreBuilder, VectorStoreProvider,
+        VectorStoreType,
     };
-    use langchainrust::retrieval::{SimilarityRetriever, RetrieverTrait};
-    use langchainrust::embeddings::{MockEmbeddings, cosine_similarity};
     use std::sync::Arc;
-    
 
     // ============================================================
     // Document 测试
@@ -36,7 +35,7 @@ mod tests {
 
         let json = serde_json::to_string(&doc).unwrap();
         let decoded: Document = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(decoded.content, doc.content);
         assert_eq!(decoded.id, doc.id);
     }
@@ -46,7 +45,7 @@ mod tests {
     // ============================================================
 
     /// 测试添加文档和相似度搜索
-    /// 
+    ///
     /// 验证：
     /// 1. 文档能正确添加
     /// 2. 相似度搜索返回正确结果
@@ -59,10 +58,7 @@ mod tests {
             Document::new("Python scripting"),
         ];
 
-        let embeddings = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-        ];
+        let embeddings = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
 
         let ids = store.add_documents(docs, embeddings).await.unwrap();
         assert_eq!(ids.len(), 2);
@@ -81,7 +77,10 @@ mod tests {
         let store = InMemoryVectorStore::new();
 
         let doc = Document::new("Test doc").with_id("test-id");
-        store.add_documents(vec![doc], vec![vec![1.0, 0.0]]).await.unwrap();
+        store
+            .add_documents(vec![doc], vec![vec![1.0, 0.0]])
+            .await
+            .unwrap();
 
         // 获取存在的文档
         let retrieved = store.get_document("test-id").await.unwrap();
@@ -99,7 +98,7 @@ mod tests {
         let store = InMemoryVectorStore::new();
 
         let docs = vec![Document::new("A"), Document::new("B")];
-        let embeddings = vec![vec![1.0, 0.0]];  // 只有1个向量，但有2个文档
+        let embeddings = vec![vec![1.0, 0.0]]; // 只有1个向量，但有2个文档
         assert!(store.add_documents(docs, embeddings).await.is_err());
     }
 
@@ -111,7 +110,10 @@ mod tests {
         // 添加5个文档
         for i in 0..5 {
             let doc = Document::new(format!("Doc {}", i));
-            store.add_documents(vec![doc], vec![vec![i as f32, 0.0]]).await.unwrap();
+            store
+                .add_documents(vec![doc], vec![vec![i as f32, 0.0]])
+                .await
+                .unwrap();
         }
 
         assert_eq!(store.count().await, 5);
@@ -126,7 +128,7 @@ mod tests {
     // ============================================================
 
     /// 测试余弦相似度计算
-    /// 
+    ///
     /// 相同方向 = 1.0
     /// 正交 = 0.0
     /// 相反方向 = -1.0
@@ -135,16 +137,16 @@ mod tests {
     fn test_cosine_similarity() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.001);
+        assert!((cosine_similarity(&a, &b).unwrap_or(0.0) - 1.0).abs() < 0.001);
 
         let c = vec![0.0, 1.0, 0.0];
-        assert!((cosine_similarity(&a, &c) - 0.0).abs() < 0.001);
+        assert!((cosine_similarity(&a, &c).unwrap_or(0.0) - 0.0).abs() < 0.001);
 
         let d = vec![-1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &d) - (-1.0)).abs() < 0.001);
+        assert!((cosine_similarity(&a, &d).unwrap_or(0.0) - (-1.0)).abs() < 0.001);
 
         let zero = vec![0.0, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &zero), 0.0);
+        assert_eq!(cosine_similarity(&a, &zero).unwrap_or(0.0), 0.0);
     }
 
     // ============================================================
@@ -152,7 +154,7 @@ mod tests {
     // ============================================================
 
     /// 测试 SimilarityRetriever 的文档检索功能
-    /// 
+    ///
     /// Retriever 封装了向量生成，用户只需提供文本
     #[tokio::test]
     async fn test_retriever() {
@@ -160,10 +162,13 @@ mod tests {
         let embeddings = Arc::new(MockEmbeddings::new(64));
         let retriever = SimilarityRetriever::new(store.clone(), embeddings);
 
-        retriever.add_documents(vec![
-            Document::new("Rust tutorial").with_metadata("type", "lang"),
-            Document::new("Qdrant database").with_metadata("type", "db"),
-        ]).await.unwrap();
+        retriever
+            .add_documents(vec![
+                Document::new("Rust tutorial").with_metadata("type", "lang"),
+                Document::new("Qdrant database").with_metadata("type", "db"),
+            ])
+            .await
+            .unwrap();
 
         let results = retriever.retrieve("programming", 2).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -176,7 +181,9 @@ mod tests {
     /// 测试通过 Provider 创建内存存储
     #[tokio::test]
     async fn test_provider_in_memory() {
-        let store = VectorStoreProvider::create(VectorStoreType::InMemory).await.unwrap();
+        let store = VectorStoreProvider::create(VectorStoreType::InMemory)
+            .await
+            .unwrap();
         assert_eq!(store.count().await, 0);
     }
 
@@ -188,17 +195,17 @@ mod tests {
     }
 
     /// 测试存储实例可以作为 trait object 使用
-    /// 
+    ///
     /// 验证 Arc<dyn VectorStore> 可以正常工作
     #[tokio::test]
     async fn test_provider_trait_object() {
         let store: Arc<dyn VectorStore> = VectorStoreBuilder::in_memory().build().await.unwrap();
-        
-        store.add_documents(
-            vec![Document::new("Test")],
-            vec![vec![1.0, 0.0]]
-        ).await.unwrap();
-        
+
+        store
+            .add_documents(vec![Document::new("Test")], vec![vec![1.0, 0.0]])
+            .await
+            .unwrap();
+
         assert_eq!(store.count().await, 1);
     }
 }

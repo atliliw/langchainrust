@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::embeddings::Embeddings;
-use crate::vector_stores::{Document, VectorStore, VectorStoreError, SearchResult};
+use crate::vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
 
 /// Pinecone vector store client
 pub struct PineconeStore {
@@ -142,7 +142,10 @@ impl VectorStore for PineconeStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         let ids: Vec<String> = documents
             .iter()
-            .map(|d| d.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+            .map(|d| {
+                d.id.clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            })
             .collect();
 
         // Build upsert body with pre-computed embeddings
@@ -155,10 +158,15 @@ impl VectorStore for PineconeStore {
             .json(&body)
             .send()
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone upsert failed: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("Pinecone upsert failed: {}", e))
+            })?;
 
         if !resp.status().is_success() {
-            return Err(VectorStoreError::StorageError(format!("Pinecone upsert HTTP error: {}", resp.status())));
+            return Err(VectorStoreError::StorageError(format!(
+                "Pinecone upsert HTTP error: {}",
+                resp.status()
+            )));
         }
 
         Ok(ids)
@@ -181,13 +189,15 @@ impl VectorStore for PineconeStore {
             .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query failed: {}", e)))?;
 
         if !resp.status().is_success() {
-            return Err(VectorStoreError::StorageError(format!("Pinecone query HTTP error: {}", resp.status())));
+            return Err(VectorStoreError::StorageError(format!(
+                "Pinecone query HTTP error: {}",
+                resp.status()
+            )));
         }
 
-        let query_resp: QueryResponse = resp
-            .json()
-            .await
-            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query parse error: {}", e)))?;
+        let query_resp: QueryResponse = resp.json().await.map_err(|e| {
+            VectorStoreError::StorageError(format!("Pinecone query parse error: {}", e))
+        })?;
 
         let results = query_resp
             .matches
@@ -217,13 +227,13 @@ impl VectorStore for PineconeStore {
         // Pinecone HTTP API doesn't support direct fetch by ID in the basic plan.
         // Use similarity_search with the ID as metadata filter instead.
         Err(VectorStoreError::StorageError(
-            "Pinecone does not support direct document fetch by ID via HTTP API".to_string()
+            "Pinecone does not support direct document fetch by ID via HTTP API".to_string(),
         ))
     }
 
     async fn get_embedding(&self, _id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
         Err(VectorStoreError::StorageError(
-            "Pinecone does not support direct embedding fetch by ID via HTTP API".to_string()
+            "Pinecone does not support direct embedding fetch by ID via HTTP API".to_string(),
         ))
     }
 

@@ -3,17 +3,17 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use std::pin::Pin;
 use serde::Deserialize;
 use serde_json::json;
+use std::pin::Pin;
 
-use crate::schema::Message;
-use crate::RunnableConfig;
+use super::OpenAIConfig;
+use crate::callbacks::{RunTree, RunType};
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
-use crate::core::tools::{ToolDefinition, StructuredOutput};
-use crate::callbacks::{RunTree, RunType};
-use super::OpenAIConfig;
+use crate::core::tools::{StructuredOutput, ToolDefinition};
+use crate::schema::Message;
+use crate::RunnableConfig;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
@@ -33,12 +33,22 @@ impl OpenAIChat {
             client: reqwest::Client::new(),
         }
     }
-    
+
     /// Creates an OpenAIChat from environment variables.
+    #[deprecated(
+        since = "0.5.0",
+        note = "Use from_env_result() which returns Result<Self, OpenAIError>"
+    )]
     pub fn from_env() -> Self {
         Self::new(OpenAIConfig::from_env())
     }
-    
+
+    /// Creates an OpenAIChat from environment variables, returning a Result.
+    pub fn from_env_result() -> Result<Self, OpenAIError> {
+        let config = OpenAIConfig::from_env_result()?;
+        Ok(Self::new(config))
+    }
+
     /// Converts a Message to OpenAI API format.
     fn message_to_openai_format(message: &Message) -> serde_json::Value {
         match &message.message_type {
@@ -63,10 +73,11 @@ impl OpenAIChat {
                     "content": message.content,
                 });
                 if let Some(tool_calls) = &message.tool_calls {
-                    msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null);
+                    msg["tool_calls"] =
+                        serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null);
                 }
                 msg
-            },
+            }
             crate::schema::MessageType::Tool { tool_call_id } => json!({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
@@ -74,43 +85,43 @@ impl OpenAIChat {
             }),
         }
     }
-    
+
     /// Builds the API request body.
     fn build_request_body(&self, messages: Vec<Message>, stream: bool) -> serde_json::Value {
         let openai_messages: Vec<serde_json::Value> = messages
             .iter()
             .map(Self::message_to_openai_format)
             .collect();
-        
+
         let mut body = json!({
             "model": self.config.model,
             "messages": openai_messages,
             "stream": stream,
         });
-        
+
         if let Some(temp) = self.config.temperature {
             body["temperature"] = json!(temp);
         }
-        
+
         if let Some(max) = self.config.max_tokens {
             body["max_tokens"] = json!(max);
         }
-        
+
         if let Some(top_p) = self.config.top_p {
             body["top_p"] = json!(top_p);
         }
-        
+
         if let Some(tools) = &self.config.tools {
             body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
         }
-        
+
         if let Some(tool_choice) = &self.config.tool_choice {
             body["tool_choice"] = json!(tool_choice);
         }
-        
+
         body
     }
-    
+
     /// Binds tool definitions for function calling.
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         let config = OpenAIConfig {
@@ -122,29 +133,33 @@ impl OpenAIChat {
             client: self.client.clone(),
         }
     }
-    
+
     /// Sets the tool choice strategy.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.config.tool_choice = Some(choice.into());
         self
     }
-    
+
     /// Enables structured JSON output with schema validation.
-    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> StructuredOutputMethod<T> {
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(
+        &self,
+    ) -> StructuredOutputMethod<T> {
         use schemars::schema_for;
-        let schema = serde_json::to_value(schema_for!(T))
-            .unwrap_or(serde_json::Value::Null);
-        
+        let schema = serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| {
+            // H64: Schema generation should not silently produce null
+            serde_json::json!({"type": "object", "properties": {}})
+        });
+
         let tool = ToolDefinition::new("structured_output", "Return structured JSON output")
             .with_parameters(schema)
             .with_strict(true);
-        
+
         let config = OpenAIConfig {
             tools: Some(vec![tool]),
             tool_choice: Some("auto".to_string()),
             ..self.config.clone()
         };
-        
+
         StructuredOutputMethod {
             config,
             client: self.client.clone(),
@@ -166,17 +181,19 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutputMethod<T> {
             config: self.config.clone(),
             client: self.client.clone(),
         };
-        
+
         let result = chat.chat_internal(messages).await?;
         let structured = StructuredOutput::<T>::new(result);
-        structured.parse().map_err(|e| OpenAIError::Parse(e.to_string()))
+        structured
+            .parse()
+            .map_err(|e| OpenAIError::Parse(e.to_string()))
     }
 }
 
 #[async_trait]
 impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
     type Error = OpenAIError;
-    
+
     async fn invoke(
         &self,
         input: Vec<Message>,
@@ -184,38 +201,31 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
     ) -> Result<LLMResult, Self::Error> {
         self.chat(input, _config).await
     }
-    
+
     async fn stream(
         &self,
         input: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
-        
+
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
-        
-        let content_future = async move {
-            token_stream
-                .fold(String::new(), |mut acc, token_result| async move {
-                    if let Ok(token) = token_result {
-                        acc.push_str(&token);
-                    }
-                    acc
-                })
-                .await
-        };
-        
-        let stream = futures_util::stream::once(async move {
-            let content = content_future.await;
-            Ok(LLMResult {
-                content,
-                model,
+
+        // H4: True streaming — emit one LLMResult per token instead of
+        // collecting all tokens first and emitting a single result.
+        let stream = token_stream.map(move |token_result| match token_result {
+            Ok(token) => Ok(LLMResult {
+                content: token,
+                model: model.clone(),
                 token_usage: None,
                 tool_calls: None,
-            })
+                thinking_content: None,
+            }),
+            Err(e) => Err(e),
         });
-        
+
         Ok(Box::pin(stream))
     }
 }
@@ -225,24 +235,24 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OpenAIChat {
     fn model_name(&self) -> &str {
         &self.config.model
     }
-    
+
     fn get_num_tokens(&self, text: &str) -> usize {
         crate::core::token_counter::count_tokens(text)
     }
-    
+
     fn temperature(&self) -> Option<f32> {
         self.config.temperature
     }
-    
+
     fn max_tokens(&self) -> Option<usize> {
         self.config.max_tokens
     }
-    
+
     fn with_temperature(mut self, temp: f32) -> Self {
         self.config.temperature = Some(temp);
         self
     }
-    
+
     fn with_max_tokens(mut self, max: usize) -> Self {
         self.config.max_tokens = Some(max);
         self
@@ -256,10 +266,11 @@ impl BaseChatModel for OpenAIChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        let run_name = config.as_ref()
+        let run_name = config
+            .as_ref()
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
-        
+
         let mut run = RunTree::new(
             run_name,
             RunType::Llm,
@@ -268,7 +279,7 @@ impl BaseChatModel for OpenAIChat {
                 "model": self.config.model,
             }),
         );
-        
+
         if let Some(ref cfg) = config {
             for tag in &cfg.tags {
                 run = run.with_tag(tag.clone());
@@ -277,7 +288,7 @@ impl BaseChatModel for OpenAIChat {
                 run = run.with_metadata(key.clone(), value.clone());
             }
         }
-        
+
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
                 for handler in callbacks.handlers() {
@@ -285,9 +296,9 @@ impl BaseChatModel for OpenAIChat {
                 }
             }
         }
-        
+
         let result = self.chat_internal(messages.clone()).await;
-        
+
         match result {
             Ok(response) => {
                 run.end(json!({
@@ -295,7 +306,7 @@ impl BaseChatModel for OpenAIChat {
                     "model": &response.model,
                     "token_usage": &response.token_usage,
                 }));
-                
+
                 if let Some(ref cfg) = config {
                     if let Some(ref callbacks) = cfg.callbacks {
                         for handler in callbacks.handlers() {
@@ -303,12 +314,12 @@ impl BaseChatModel for OpenAIChat {
                         }
                     }
                 }
-                
+
                 Ok(response)
             }
             Err(e) => {
                 run.end_with_error(e.to_string());
-                
+
                 if let Some(ref cfg) = config {
                     if let Some(ref callbacks) = cfg.callbacks {
                         for handler in callbacks.handlers() {
@@ -316,21 +327,24 @@ impl BaseChatModel for OpenAIChat {
                         }
                     }
                 }
-                
+
                 Err(e)
             }
         }
     }
-    
+
     async fn stream_chat(
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        let run_name = config.as_ref()
+        use futures_util::StreamExt;
+
+        let run_name = config
+            .as_ref()
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
-        
+
         let run = RunTree::new(
             run_name,
             RunType::Llm,
@@ -339,7 +353,7 @@ impl BaseChatModel for OpenAIChat {
                 "model": self.config.model,
             }),
         );
-        
+
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
                 for handler in callbacks.handlers() {
@@ -347,22 +361,26 @@ impl BaseChatModel for OpenAIChat {
                 }
             }
         }
-        
+
         let stream = self.stream_chat_internal(messages).await?;
-        
+
         let callbacks = config.and_then(|c| c.callbacks);
-        let stream = Box::pin(futures_util::stream::StreamExt::map(stream, move |token_result| {
-            if let Some(ref cbs) = callbacks {
-                if let Ok(ref token) = token_result {
-                    for handler in cbs.handlers() {
-                        drop(handler.on_llm_new_token(&run, token));
+        let stream = stream.then(move |token_result| {
+            let cbs = callbacks.clone();
+            let run = run.clone();
+            async move {
+                if let Some(ref cbs) = cbs {
+                    if let Ok(ref token) = token_result {
+                        for handler in cbs.handlers() {
+                            handler.on_llm_new_token(&run, token).await;
+                        }
                     }
                 }
+                token_result
             }
-            token_result
-        }));
-        
-        Ok(stream)
+        });
+
+        Ok(Box::pin(stream))
     }
 }
 
@@ -370,8 +388,9 @@ impl OpenAIChat {
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, OpenAIError> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, false);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -379,26 +398,41 @@ impl OpenAIChat {
             .send()
             .await
             .map_err(|e| OpenAIError::Http(e.to_string()))?;
-        
+
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
         }
-        
+
         let chat_response: OpenAIChatResponse = response
             .json()
             .await
             .map_err(|e| OpenAIError::Parse(e.to_string()))?;
-        
-        let message = &chat_response.choices[0].message;
+
+        let choice = chat_response
+            .choices
+            .first()
+            .ok_or_else(|| OpenAIError::Api("No choices in response".to_string()))?;
+        let message = &choice.message;
 
         // 推理模型(如 glm-5.2, DeepSeek-R1)的 content 可能为空,
         // 实际回答在 reasoning_content 中;优先用 content,fallback 到 reasoning_content
-        let content = message.content.clone()
+        // reasoning_content 应存入 thinking_content 而非 content (H63)
+        let content = message
+            .content
+            .clone()
             .filter(|c| !c.is_empty())
-            .or_else(|| message.reasoning_content.clone())
             .unwrap_or_default();
+
+        let thinking_content = message.reasoning_content.clone().filter(|c| !c.is_empty());
+
+        // If content is empty but reasoning_content exists, use reasoning as content (backward compat)
+        let content = if content.is_empty() {
+            message.reasoning_content.clone().unwrap_or_default()
+        } else {
+            content
+        };
 
         Ok(LLMResult {
             content,
@@ -409,17 +443,22 @@ impl OpenAIChat {
                 total_tokens: u.total_tokens,
             }),
             tool_calls: message.tool_calls.clone(),
+            thinking_content,
         })
     }
-    
-    async fn stream_chat_internal(&self, messages: Vec<Message>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
+
+    async fn stream_chat_internal(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
         use super::sse::SSEParser;
         use std::sync::{Arc, Mutex};
-        
+
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, true);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -427,35 +466,47 @@ impl OpenAIChat {
             .send()
             .await
             .map_err(|e| OpenAIError::Http(e.to_string()))?;
-        
+
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
         }
-        
+
         let byte_stream = response.bytes_stream();
-        
+
         let parser = Arc::new(Mutex::new(SSEParser::new()));
-        
-        let token_tx = parser.clone();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, OpenAIError>>();
-        let byte_stream2 = byte_stream;
+
+        let parser_clone = parser.clone();
+        // M18: Use bounded channel to prevent OOM with slow consumers
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, OpenAIError>>(64);
+
         tokio::spawn(async move {
             use futures_util::StreamExt;
-            let parser2 = token_tx;
-            let mut byte_stream2 = byte_stream2;
-            while let Some(chunk_result) = byte_stream2.next().await {
-                let mut parser_guard = parser2.lock().unwrap();
-                if let Ok(bytes) = chunk_result {
-                    let chunk_str = String::from_utf8_lossy(&bytes);
-                    let events = parser_guard.parse(&chunk_str);
-                    for event in events {
-                        if event.is_done() { break; }
-                        if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                            if let Some(choice) = chunk.choices.first() {
-                                if let Some(content) = &choice.delta.content {
-                                    let _ = tx.send(Ok(content.clone()));
+            let mut byte_stream = byte_stream;
+            while let Some(chunk_result) = byte_stream.next().await {
+                // H41: Use unwrap_or_else to recover from poisoned mutex
+                let events = {
+                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Ok(bytes) = chunk_result {
+                        let chunk_str = String::from_utf8_lossy(&bytes);
+
+                        parser_guard.parse(&chunk_str)
+                    } else {
+                        Vec::new()
+                    }
+                };
+                // parser_guard is dropped here, before any await
+
+                for event in events {
+                    if event.is_done() {
+                        break;
+                    }
+                    if let Ok(Some(chunk)) = event.parse_openai_chunk() {
+                        if let Some(choice) = chunk.choices.first() {
+                            if let Some(content) = &choice.delta.content {
+                                if tx.send(Ok(content.clone())).await.is_err() {
+                                    return;
                                 }
                             }
                         }
@@ -463,8 +514,8 @@ impl OpenAIChat {
                 }
             }
         });
-        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-        
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+
         Ok(Box::pin(stream))
     }
 }
@@ -488,6 +539,12 @@ impl std::fmt::Display for OpenAIError {
 }
 
 impl std::error::Error for OpenAIError {}
+
+impl From<String> for OpenAIError {
+    fn from(s: String) -> Self {
+        OpenAIError::Api(s)
+    }
+}
 
 /// OpenAI 响应结构
 #[derive(Debug, Deserialize)]

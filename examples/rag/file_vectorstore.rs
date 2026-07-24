@@ -7,7 +7,7 @@
 //! cargo run --example file_vectorstore
 //! ```
 
-use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
+use langchainrust::{Document, FileVectorStore, MockEmbeddings, VectorStore};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dim = 4;
 
     // 创建文件向量存储
-    let store = FileVectorStore::new(path.clone(), dim)?;
+    let store = FileVectorStore::new(path.clone(), dim).await?;
     println!("创建 FileVectorStore: {:?}", path);
     println!("向量维度: {}", store.dimension());
 

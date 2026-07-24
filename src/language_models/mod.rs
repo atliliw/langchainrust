@@ -10,20 +10,20 @@
 //! - Zhipu (ChatGLM)
 //! - Anthropic (Claude)
 
-/// OpenAI API integration.
-pub mod openai;
 /// Ollama local LLM integration.
 pub mod ollama;
+/// OpenAI API integration.
+pub mod openai;
 /// Third-party provider integrations.
 pub mod providers;
 
-pub use openai::{OpenAIChat, OpenAIConfig, OpenAIAssistant, AssistantError};
 pub use ollama::{OllamaChat, OllamaConfig};
+pub use openai::{
+    AssistantError, BuiltinTool, OpenAIAssistant, OpenAIChat, OpenAIConfig, ResponsesConfig,
+    ResponsesError, ResponsesModel,
+};
 pub use providers::{
-    DeepSeekChat, DeepSeekConfig,
-    MoonshotChat, MoonshotConfig,
-    ZhipuChat, ZhipuConfig,
-    QwenChat, QwenConfig,
-    AnthropicChat, AnthropicConfig, AnthropicError,
-    GeminiChat, GeminiConfig, GeminiError,
+    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken, DeepSeekChat,
+    DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError, MoonshotChat, MoonshotConfig, QwenChat,
+    QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };

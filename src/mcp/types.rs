@@ -81,9 +81,7 @@ impl MCPConfig {
 
     /// 创建 SSE 配置
     pub fn sse(url: impl Into<String>) -> Self {
-        Self::Sse {
-            url: url.into(),
-        }
+        Self::Sse { url: url.into() }
     }
 
     /// 追加环境变量(仅 Stdio 生效)
@@ -149,7 +147,10 @@ mod tests {
     fn test_config_stdio() {
         let config = MCPConfig::stdio(
             "npx",
-            vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
+            vec![
+                "@anthropic/mcp-server-filesystem".to_string(),
+                "/tmp".to_string(),
+            ],
         );
         assert!(matches!(config, MCPConfig::Stdio { .. }));
     }

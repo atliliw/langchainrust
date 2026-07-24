@@ -24,7 +24,10 @@ impl<L: BaseChatModel> Planner<L> {
              只输出 JSON,不要任何其他内容。",
             objective
         );
-        let messages = vec![Message::system("你是规划助手,只输出 JSON。"), Message::human(prompt)];
+        let messages = vec![
+            Message::system("你是规划助手,只输出 JSON。"),
+            Message::human(prompt),
+        ];
         let response = self
             .llm
             .chat(messages, None)
@@ -44,7 +47,10 @@ impl<L: BaseChatModel> Planner<L> {
             "原目标: {}\n之前步骤 '{}' 失败: {}\n请重新制定完整计划。输出 JSON 字符串数组 [\"步骤\", ...],只输出 JSON。",
             objective, failed_step, reason
         );
-        let messages = vec![Message::system("你是规划助手,只输出 JSON。"), Message::human(prompt)];
+        let messages = vec![
+            Message::system("你是规划助手,只输出 JSON。"),
+            Message::human(prompt),
+        ];
         let response = self
             .llm
             .chat(messages, None)

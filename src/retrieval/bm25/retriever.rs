@@ -2,47 +2,51 @@ use super::algorithm::{bm25_score, BM25Params};
 use super::index::BM25Index;
 use super::tokenizer::Tokenizer;
 use crate::vector_stores::{Document, SearchResult};
+use std::sync::Mutex;
 
 pub struct BM25Retriever {
-    index: BM25Index,
+    index: Mutex<BM25Index>,
     tokenizer: Tokenizer,
 }
 
 impl BM25Retriever {
     pub fn new() -> Self {
         Self {
-            index: BM25Index::new(),
+            index: Mutex::new(BM25Index::new()),
             tokenizer: Tokenizer::new(),
         }
     }
 
     pub fn with_params(k1: f64, b: f64) -> Self {
         Self {
-            index: BM25Index::with_params(BM25Params::with_values(k1, b)),
+            index: Mutex::new(BM25Index::with_params(BM25Params::with_values(k1, b))),
             tokenizer: Tokenizer::new(),
         }
     }
 
     pub fn with_tokenizer(tokenizer: Tokenizer) -> Self {
         Self {
-            index: BM25Index::new(),
+            index: Mutex::new(BM25Index::new()),
             tokenizer,
         }
     }
 
-    pub fn add_document(&mut self, document: Document) {
+    pub fn add_document(&self, document: Document) {
         let terms = self.tokenizer.tokenize(&document.content);
-        self.index.add_document(document, terms);
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        index.add_document(document, terms);
     }
 
-    pub fn add_documents_sync(&mut self, documents: Vec<Document>) {
+    pub fn add_documents_sync(&self, documents: Vec<Document>) {
         for doc in documents {
             self.add_document(doc);
         }
     }
 
-    pub fn search(&mut self, query: &str, k: usize) -> Vec<SearchResult> {
-        if self.index.n_docs() == 0 {
+    pub fn search(&self, query: &str, k: usize) -> Vec<SearchResult> {
+        let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
+
+        if index.n_docs() == 0 {
             return Vec::new();
         }
 
@@ -52,15 +56,15 @@ impl BM25Retriever {
             return Vec::new();
         }
 
-        let idf_values = self.index.compute_idf_for_terms(&query_terms);
+        let idf_values = index.compute_idf_for_terms(&query_terms);
 
         let mut scored_docs: Vec<(usize, f64)> = Vec::new();
 
-        for doc_id in 0..self.index.n_docs() {
-            let doc_term_freqs = self.index.get_doc_term_freq(doc_id);
-            let doc_length = self.index.get_doc_length(doc_id);
-            let avgdl = self.index.avgdl();
-            let params = self.index.params();
+        for doc_id in 0..index.n_docs() {
+            let doc_term_freqs = index.get_doc_term_freq(doc_id);
+            let doc_length = index.get_doc_length(doc_id);
+            let avgdl = index.avgdl();
+            let params = index.params();
 
             if let Some(term_freqs) = doc_term_freqs {
                 let score = bm25_score(
@@ -80,37 +84,37 @@ impl BM25Retriever {
 
         scored_docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+        // M53: skip documents that are not found in the index instead of returning empty Document
         scored_docs
             .into_iter()
             .take(k)
-            .map(|(doc_id, score)| {
-                let doc = self
-                    .index
-                    .get_document(doc_id)
-                    .cloned()
-                    .unwrap_or(Document::new(""));
-                SearchResult {
+            .filter_map(|(doc_id, score)| {
+                let doc = index.get_document(doc_id).cloned()?;
+                Some(SearchResult {
                     document: doc,
                     score: score as f32,
-                }
+                })
             })
             .collect()
     }
 
     pub fn len(&self) -> usize {
-        self.index.n_docs()
+        self.index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .n_docs()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.index.n_docs() == 0
+        self.len() == 0
     }
 
-    pub fn clear(&mut self) {
-        self.index.clear();
+    pub fn clear(&self) {
+        self.index.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    pub fn index(&self) -> &BM25Index {
-        &self.index
+    pub fn index(&self) -> std::sync::MutexGuard<'_, BM25Index> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -126,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_bm25_retriever_basic() {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
 
         retriever.add_documents_sync(vec![
             Document::new("Rust is a systems programming language"),
@@ -144,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_bm25_retriever_chinese() {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
 
         retriever.add_documents_sync(vec![
             Document::new("Rust 是一门系统编程语言"),
@@ -160,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_bm25_retriever_empty() {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
 
         let results = retriever.search("test", 5);
         assert!(results.is_empty());
@@ -168,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_bm25_retriever_params() {
-        let mut retriever = BM25Retriever::with_params(2.0, 0.5);
+        let retriever = BM25Retriever::with_params(2.0, 0.5);
 
         retriever.add_documents_sync(vec![
             Document::new("Rust programming"),
@@ -181,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_bm25_retriever_no_match() {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
 
         retriever.add_documents_sync(vec![
             Document::new("Rust programming language"),

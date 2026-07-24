@@ -13,7 +13,7 @@ use async_trait::async_trait;
 #[cfg(feature = "local-embeddings")]
 use std::path::Path;
 
-use super::{Embeddings, EmbeddingError};
+use super::{EmbeddingError, Embeddings};
 
 // ---------------------------------------------------------------------------
 // BagOfWordsEmbeddings — 词频 hash + L2 归一化(始终可用)
@@ -32,9 +32,7 @@ pub struct BagOfWordsEmbeddings {
 impl BagOfWordsEmbeddings {
     /// 创建指定维度的本地嵌入
     pub fn new(dim: usize) -> Self {
-        Self {
-            dim: dim.max(1),
-        }
+        Self { dim: dim.max(1) }
     }
 
     /// 默认维度 256
@@ -104,6 +102,9 @@ impl Default for BagOfWordsEmbeddings {
 #[async_trait]
 impl Embeddings for BagOfWordsEmbeddings {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        if text.trim().is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
         Ok(self.embed(text))
     }
 
@@ -250,10 +251,8 @@ mod nn {
             let input_shape = vec![1i64, seq_len as i64];
             let input_data = input_ids.to_vec();
 
-            let input_tensor =
-                Tensor::from_array((input_shape, input_data)).map_err(|e| {
-                    EmbeddingError::ApiError(format!("构造输入张量失败: {}", e))
-                })?;
+            let input_tensor = Tensor::from_array((input_shape, input_data))
+                .map_err(|e| EmbeddingError::ApiError(format!("构造输入张量失败: {}", e)))?;
 
             // 获取输入名称
             let session = self.session.borrow();
@@ -443,8 +442,8 @@ mod tests {
         let similar = e.embed_query("rust programming tutorial").await.unwrap();
         let different = e.embed_query("cooking pasta recipe").await.unwrap();
 
-        let sim_similar = cosine_similarity(&base, &similar);
-        let sim_different = cosine_similarity(&base, &different);
+        let sim_similar = cosine_similarity(&base, &similar).unwrap_or(0.0);
+        let sim_different = cosine_similarity(&base, &different).unwrap_or(0.0);
         assert!(
             sim_similar > sim_different,
             "共享词应更相似: {} vs {}",
@@ -462,10 +461,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bow_empty_text_zero_vector() {
+    async fn test_bow_empty_text_returns_error() {
         let e = BagOfWordsEmbeddings::new(64);
-        let v = e.embed_query("").await.unwrap();
-        assert!(v.iter().all(|x| *x == 0.0));
+        let result = e.embed_query("").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), EmbeddingError::EmptyInput));
     }
 
     #[tokio::test]
@@ -475,7 +475,7 @@ mod tests {
         let b = e.embed_query("机器学习").await.unwrap();
         assert_eq!(a, b);
         let c = e.embed_query("深度学习").await.unwrap();
-        let sim = cosine_similarity(&a, &c);
+        let sim = cosine_similarity(&a, &c).unwrap_or(0.0);
         assert!(sim > 0.0, "共享\"学习\"应有正相似度: {}", sim);
     }
 

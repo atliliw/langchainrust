@@ -5,9 +5,13 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 use super::protocol::{MCPError, MCPRequest, MCPResponse};
 use super::types::MCPConfig;
+
+/// Default timeout for SSE endpoint discovery (30 seconds).
+const SSE_DISCOVER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// MCP 传输层抽象
 #[async_trait]
@@ -15,16 +19,22 @@ pub trait MCPTransport: Send + Sync {
     /// 发送请求并等待响应
     async fn request(&self, req: MCPRequest) -> Result<MCPResponse, MCPError>;
     /// 发送通知(不等响应)
-    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError>;
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>)
+        -> Result<(), MCPError>;
     /// 关闭连接
     async fn close(&self) -> Result<(), MCPError>;
 }
 
 /// Stdio 传输:启动子进程,通过 stdin/stdout 以换行分隔的 JSON 通信
+///
+/// Uses a per-request lock to ensure that a write-then-read cycle is atomic,
+/// preventing interleaved reads/writes from concurrent callers.
 pub struct StdioTransport {
     stdin: Arc<Mutex<ChildStdin>>,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
     child: Arc<Mutex<Child>>,
+    /// Per-request lock: ensures write + read is atomic for each request.
+    request_lock: Arc<Mutex<()>>,
 }
 
 impl StdioTransport {
@@ -41,7 +51,7 @@ impl StdioTransport {
         }
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::piped());
 
         let mut child = cmd
             .spawn()
@@ -55,10 +65,22 @@ impl StdioTransport {
             .take()
             .ok_or_else(|| MCPError::new(-1, "子进程无 stdout"))?;
 
+        // Capture stderr in a background task so it doesn't block the process
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("[mcp-stdio-stderr] {}", line);
+                }
+            });
+        }
+
         Ok(Self {
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
             child: Arc::new(Mutex::new(child)),
+            request_lock: Arc::new(Mutex::new(())),
         })
     }
 }
@@ -66,6 +88,9 @@ impl StdioTransport {
 #[async_trait]
 impl MCPTransport for StdioTransport {
     async fn request(&self, req: MCPRequest) -> Result<MCPResponse, MCPError> {
+        // Acquire per-request lock so write+read is atomic
+        let _guard = self.request_lock.lock().await;
+
         let json = serde_json::to_string(&req)
             .map_err(|e| MCPError::new(-1, format!("序列化请求失败: {}", e)))?;
 
@@ -114,7 +139,11 @@ impl MCPTransport for StdioTransport {
         Ok(())
     }
 
-    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError> {
+    async fn notify(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), MCPError> {
         // JSON-RPC 2.0 notification: 无 id 字段
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
@@ -122,7 +151,10 @@ impl MCPTransport for StdioTransport {
         });
         let mut payload = notif;
         if let Some(p) = params {
-            payload.as_object_mut().unwrap().insert("params".to_string(), p);
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("params".to_string(), p);
         }
         let json = serde_json::to_string(&payload)
             .map_err(|e| MCPError::new(-1, format!("序列化通知失败: {}", e)))?;
@@ -177,7 +209,7 @@ impl SseTransport {
     ///
     /// The MCP server sends an `endpoint` event with the URL to use for
     /// posting messages. This method connects to the SSE stream and waits
-    /// for that event.
+    /// for that event, with a timeout to prevent hanging indefinitely.
     async fn discover_post_url(&self) -> Result<String, MCPError> {
         // Check if already discovered
         {
@@ -187,25 +219,45 @@ impl SseTransport {
             }
         }
 
-        // Connect to SSE endpoint and read the `endpoint` event
-        let response = self
-            .client
-            .get(&self.sse_url)
-            .header("Accept", "text/event-stream")
-            .send()
-            .await
-            .map_err(|e| MCPError::new(-1, format!("SSE connection failed: {}", e)))?;
+        // Connect to SSE endpoint and read the `endpoint` event, with timeout
+        let response = timeout(SSE_DISCOVER_TIMEOUT, async {
+            self.client
+                .get(&self.sse_url)
+                .header("Accept", "text/event-stream")
+                .send()
+                .await
+                .map_err(|e| MCPError::new(-1, format!("SSE connection failed: {}", e)))
+        })
+        .await
+        .map_err(|_| {
+            MCPError::new(
+                -1,
+                "SSE discover timed out: server did not respond within 30s",
+            )
+        })??;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(MCPError::new(-1, format!("SSE endpoint returned HTTP {}", status)));
+            return Err(MCPError::new(
+                -1,
+                format!("SSE endpoint returned HTTP {}", status),
+            ));
         }
 
-        // Parse SSE events to find the `endpoint` event
-        let text = response
-            .text()
-            .await
-            .map_err(|e| MCPError::new(-1, format!("Failed to read SSE response: {}", e)))?;
+        // Parse SSE events to find the `endpoint` event, with timeout
+        let text = timeout(SSE_DISCOVER_TIMEOUT, async {
+            response
+                .text()
+                .await
+                .map_err(|e| MCPError::new(-1, format!("Failed to read SSE response: {}", e)))
+        })
+        .await
+        .map_err(|_| {
+            MCPError::new(
+                -1,
+                "SSE discover timed out: reading response body took longer than 30s",
+            )
+        })??;
 
         // Parse SSE format: "event: endpoint\ndata: <url>\n\n"
         let mut found_url = None;
@@ -275,7 +327,10 @@ impl MCPTransport for SseTransport {
             }
         }
 
-        Err(MCPError::new(-1, format!("Could not parse MCP response from: {}", body)))
+        Err(MCPError::new(
+            -1,
+            format!("Could not parse MCP response from: {}", body),
+        ))
     }
 
     async fn close(&self) -> Result<(), MCPError> {
@@ -285,7 +340,11 @@ impl MCPTransport for SseTransport {
         Ok(())
     }
 
-    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), MCPError> {
+    async fn notify(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), MCPError> {
         let post_url = self.discover_post_url().await?;
 
         let mut payload = serde_json::json!({
@@ -293,7 +352,10 @@ impl MCPTransport for SseTransport {
             "method": method,
         });
         if let Some(p) = params {
-            payload.as_object_mut().unwrap().insert("params".to_string(), p);
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("params".to_string(), p);
         }
         self.client
             .post(&post_url)

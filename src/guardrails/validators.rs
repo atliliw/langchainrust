@@ -2,8 +2,16 @@
 
 use async_trait::async_trait;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::guardrail::{GuardrailResult, InputGuardrail, OutputGuardrail};
+
+static OPENAI_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[sS][kK]-[a-zA-Z0-9]{20,}").unwrap());
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap());
+static CREDIT_CARD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(\d[\s-]*){15,18}\d\b").unwrap());
 
 /// 输入长度限制
 pub struct MaxLengthGuardrail {
@@ -65,19 +73,12 @@ impl InputGuardrail for ForbiddenWordsGuardrail {
 
 /// 敏感信息检测(API key / email / 信用卡 / 关键词)
 pub struct SensitiveInfoGuardrail {
-    patterns: Vec<Regex>,
     keywords: Vec<String>,
 }
 
 impl SensitiveInfoGuardrail {
     pub fn new() -> Self {
         Self {
-            patterns: vec![
-                Regex::new(r"[sS][kK]-[a-zA-Z0-9]{20,}").unwrap(), // OpenAI key
-                Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-                    .unwrap(), // email
-                Regex::new(r"\b\d{16,19}\b").unwrap(), // 信用卡号
-            ],
             keywords: vec![
                 "password".to_string(),
                 "密码".to_string(),
@@ -92,6 +93,29 @@ impl SensitiveInfoGuardrail {
     pub fn with_keywords(mut self, k: Vec<String>) -> Self {
         self.keywords.extend(k);
         self
+    }
+
+    /// Luhn checksum validation for credit card numbers.
+    /// Returns true if the digit sequence passes the Luhn check.
+    fn luhn_check(digits: &str) -> bool {
+        let digits: Vec<u32> = digits.chars().filter_map(|c| c.to_digit(10)).collect();
+        if digits.len() < 13 || digits.len() > 19 {
+            return false;
+        }
+        let sum: u32 = digits
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(i, &d)| {
+                if i % 2 == 1 {
+                    let doubled = d * 2;
+                    doubled / 10 + doubled % 10
+                } else {
+                    d
+                }
+            })
+            .sum();
+        sum % 10 == 0
     }
 }
 
@@ -116,10 +140,22 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
                 };
             }
         }
-        for p in &self.patterns {
-            if p.is_match(output) {
+        if OPENAI_KEY_RE.is_match(output) {
+            return GuardrailResult::Block {
+                reason: format!("输出匹配敏感模式: {}", OPENAI_KEY_RE.as_str()),
+            };
+        }
+        if EMAIL_RE.is_match(output) {
+            return GuardrailResult::Block {
+                reason: format!("输出匹配敏感模式: {}", EMAIL_RE.as_str()),
+            };
+        }
+        // Credit card: match pattern then validate with Luhn
+        for cap in CREDIT_CARD_RE.captures_iter(output) {
+            let digits: String = cap[0].chars().filter(|c| c.is_ascii_digit()).collect();
+            if Self::luhn_check(&digits) {
                 return GuardrailResult::Block {
-                    reason: format!("输出匹配敏感模式: {}", p.as_str()),
+                    reason: "输出包含信用卡号".to_string(),
                 };
             }
         }
@@ -166,7 +202,10 @@ mod tests {
     #[tokio::test]
     async fn test_sensitive_info_api_key() {
         let g = SensitiveInfoGuardrail::new();
-        assert!(g.validate("key: sk-abcdefghijklmnopqrstuvwxyz123456").await.is_block());
+        assert!(g
+            .validate("key: sk-abcdefghijklmnopqrstuvwxyz123456")
+            .await
+            .is_block());
     }
 
     #[tokio::test]

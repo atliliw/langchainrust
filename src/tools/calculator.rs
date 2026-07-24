@@ -3,10 +3,10 @@
 //!
 //! A math expression calculator using the meval crate.
 
+use crate::core::tools::{BaseTool, Tool, ToolError};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use crate::core::tools::{BaseTool, Tool, ToolError};
 
 /// Calculator input
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -111,10 +111,9 @@ impl Calculator {
         }
 
         // Use meval to parse and evaluate
-        meval::eval_str(expr)
-            .map_err(|e| ToolError::ExecutionFailed(format!(
-                "Failed to evaluate expression '{}': {}", expr, e
-            )))
+        meval::eval_str(expr).map_err(|e| {
+            ToolError::ExecutionFailed(format!("Failed to evaluate expression '{}': {}", expr, e))
+        })
     }
 }
 
@@ -184,7 +183,10 @@ mod tests {
     #[tokio::test]
     async fn test_tool_run() {
         let tool = Calculator::new();
-        let result = tool.run(r#"{"expression": "2 + 3"}"#.to_string()).await.unwrap();
+        let result = tool
+            .run(r#"{"expression": "2 + 3"}"#.to_string())
+            .await
+            .unwrap();
         assert!(result.contains("5"));
     }
 }

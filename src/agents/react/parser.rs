@@ -123,14 +123,16 @@ impl ReActOutputParser {
         // 尝试解析为 JSON
         if input.starts_with('{') || input.starts_with('[') {
             if let Ok(value) = serde_json::from_str(input) {
-                return ToolInput::Object(value);
+                return ToolInput::Object { value };
             }
         }
 
         // 移除引号
         let cleaned = input.trim_matches('"').trim_matches('\'');
 
-        ToolInput::String(cleaned.to_string())
+        ToolInput::String {
+            value: cleaned.to_string(),
+        }
     }
 }
 
@@ -193,7 +195,7 @@ Action Input: 北京"#;
             AgentOutput::Action(action) => {
                 assert_eq!(action.tool, "weather");
                 match action.tool_input {
-                    ToolInput::String(s) => assert_eq!(s, "北京"),
+                    ToolInput::String { value: s } => assert_eq!(s, "北京"),
                     _ => panic!("期望 String 输入"),
                 }
             }

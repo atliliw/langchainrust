@@ -7,8 +7,8 @@
 //! cargo run --example semantic_splitter
 //! ```
 
-use langchainrust::{SemanticSplitter, MockEmbeddings, RecursiveCharacterSplitter};
 use langchainrust::retrieval::TextSplitter;
+use langchainrust::{MockEmbeddings, RecursiveCharacterSplitter, SemanticSplitter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +23,7 @@ LangChain 是一个框架。它帮助开发者构建基于大语言模型的应�
     let embeddings = MockEmbeddings::new(4);
     let splitter = SemanticSplitter::new(embeddings, 0.5, 200);
 
-    let chunks = splitter.split_text(text).await;
+    let chunks = splitter.split_text(text).await?;
     println!("原文分为 {} 个语义块:\n", chunks.len());
     for (i, chunk) in chunks.iter().enumerate() {
         println!("--- 块 {} ---", i + 1);
@@ -33,7 +33,10 @@ LangChain 是一个框架。它帮助开发者构建基于大语言模型的应�
     // 对比:传统递归分块器
     let recursive = RecursiveCharacterSplitter::new(100, 20);
     let rec_chunks = recursive.split_text(text);
-    println!("\n对比:递归分块器分为 {} 个块(按固定长度切分,可能切断语义)", rec_chunks.len());
+    println!(
+        "\n对比:递归分块器分为 {} 个块(按固定长度切分,可能切断语义)",
+        rec_chunks.len()
+    );
 
     Ok(())
 }

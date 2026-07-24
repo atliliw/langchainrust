@@ -16,11 +16,11 @@ use std::path::PathBuf;
 pub struct JSONLoader {
     /// JSON 文件路径
     pub path: PathBuf,
-    
+
     /// 作为文档内容的字段名（可选）
     /// 如果指定，则提取该字段值作为 content
     pub content_key: Option<String>,
-    
+
     /// 是否保留原始 JSON 作为元数据
     pub preserve_raw: bool,
 }
@@ -37,7 +37,7 @@ impl JSONLoader {
             preserve_raw: false,
         }
     }
-    
+
     /// 创建带内容字段的 JSON 加载器
     ///
     /// # 参数
@@ -50,7 +50,7 @@ impl JSONLoader {
             preserve_raw: false,
         }
     }
-    
+
     /// 设置是否保留原始 JSON
     pub fn with_preserve_raw(mut self, preserve: bool) -> Self {
         self.preserve_raw = preserve;
@@ -69,21 +69,18 @@ impl DocumentLoader for JSONLoader {
         }
 
         let content = std::fs::read_to_string(&self.path)?;
-        let json: Value = serde_json::from_str(&content)
-            .map_err(|e| LoaderError::JsonError(e.to_string()))?;
+        let json: Value =
+            serde_json::from_str(&content).map_err(|e| LoaderError::JsonError(e.to_string()))?;
 
         let documents = match json {
-            Value::Array(arr) => {
-                arr.iter()
-                    .filter_map(|item| self.json_value_to_document(item))
-                    .collect()
-            }
-            Value::Object(_) => {
-                match self.json_value_to_document(&json) {
-                    Some(doc) => vec![doc],
-                    None => vec![],
-                }
-            }
+            Value::Array(arr) => arr
+                .iter()
+                .filter_map(|item| self.json_value_to_document(item))
+                .collect(),
+            Value::Object(_) => match self.json_value_to_document(&json) {
+                Some(doc) => vec![doc],
+                None => vec![],
+            },
             _ => {
                 vec![Document::new(json.to_string())
                     .with_metadata("source", self.path.display().to_string())
@@ -135,24 +132,26 @@ impl JSONLoader {
                 if s.is_empty() {
                     return None;
                 }
-                Some(Document::new(s.clone())
-                    .with_metadata("source", self.path.display().to_string())
-                    .with_metadata("format", "json"))
+                Some(
+                    Document::new(s.clone())
+                        .with_metadata("source", self.path.display().to_string())
+                        .with_metadata("format", "json"),
+                )
             }
-            Value::Number(_) | Value::Bool(_) => {
-                Some(Document::new(value.to_string())
+            Value::Number(_) | Value::Bool(_) => Some(
+                Document::new(value.to_string())
                     .with_metadata("source", self.path.display().to_string())
-                    .with_metadata("format", "json"))
-            }
+                    .with_metadata("format", "json"),
+            ),
             Value::Null => None,
-            Value::Array(_) => {
-                Some(Document::new(value.to_string())
+            Value::Array(_) => Some(
+                Document::new(value.to_string())
                     .with_metadata("source", self.path.display().to_string())
-                    .with_metadata("format", "json"))
-            }
+                    .with_metadata("format", "json"),
+            ),
         }
     }
-    
+
     fn extract_string_value(&self, value: &Value) -> String {
         match value {
             Value::String(s) => s.clone(),
@@ -171,7 +170,7 @@ mod tests {
     async fn test_json_loader_nonexistent() {
         let loader = JSONLoader::new("./nonexistent.json");
         let result = loader.load().await;
-        
+
         assert!(result.is_err());
     }
 
@@ -179,13 +178,13 @@ mod tests {
     async fn test_json_loader_invalid_json() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "{{ invalid json }}").unwrap();
-        
+
         let loader = JSONLoader::new(temp_file.path());
         let result = loader.load().await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
-            LoaderError::JsonError(_) => {},
+            LoaderError::JsonError(_) => {}
             _ => panic!("Expected JsonError"),
         }
     }
@@ -194,10 +193,10 @@ mod tests {
     async fn test_json_loader_single_object() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "{{\"title\": \"Test\", \"content\": \"Hello\"}}").unwrap();
-        
+
         let loader = JSONLoader::new_with_content_key(temp_file.path(), "content");
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 1);
@@ -208,10 +207,10 @@ mod tests {
     async fn test_json_loader_array() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "[{{\"title\": \"A\", \"content\": \"Content A\"}}, {{\"title\": \"B\", \"content\": \"Content B\"}}]").unwrap();
-        
+
         let loader = JSONLoader::new_with_content_key(temp_file.path(), "content");
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 2);
@@ -223,10 +222,10 @@ mod tests {
     async fn test_json_loader_with_preserve_raw() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "{{\"name\": \"test\", \"value\": 123}}").unwrap();
-        
+
         let loader = JSONLoader::new(temp_file.path()).with_preserve_raw(true);
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert!(docs[0].metadata.contains_key("raw_json"));

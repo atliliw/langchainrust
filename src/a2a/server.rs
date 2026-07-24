@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::protocol::{
-    A2AErrorData, A2ARequest, A2AResponse, A2ATask, A2ATaskResult, A2AMessage, AgentCard,
+    A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, A2ATaskResult, AgentCard,
     TaskStatus,
 };
 use crate::chains::base::BaseChain;
@@ -186,7 +186,10 @@ impl A2AServer {
             // Use the first input key expected by the chain.
             let input_keys = self.chain.input_keys();
             if let Some(first_key) = input_keys.first() {
-                map.insert(first_key.to_string(), Value::String(message.content.clone()));
+                map.insert(
+                    first_key.to_string(),
+                    Value::String(message.content.clone()),
+                );
             } else {
                 map.insert("input".to_string(), Value::String(message.content.clone()));
             }
@@ -252,13 +255,7 @@ impl A2AServer {
                 }
                 self.evict_if_needed().await;
 
-                A2AResponse::ok(
-                    req.id,
-                    json!({
-                        "task": task,
-                        "error": e.to_string(),
-                    }),
-                )
+                A2AResponse::error(req.id, -32000, format!("Chain execution failed: {}", e))
             }
         }
     }
@@ -317,15 +314,10 @@ impl A2AServer {
                 stored.task.status = TaskStatus::Cancelled;
                 A2AResponse::ok(req.id, json!({ "task": stored.task }))
             }
-            None => {
-                // Task not found: return a synthetic cancelled stub for protocol compliance.
-                let task = A2ATask {
-                    id: task_id.to_string(),
-                    message: A2AMessage::new("system", "cancelled"),
-                    status: TaskStatus::Cancelled,
-                };
-                A2AResponse::ok(req.id, json!({ "task": task }))
-            }
+            None => A2AResponse::from_error_data(
+                req.id,
+                A2AErrorData::new(-32001, format!("Task not found: {}", task_id)),
+            ),
         }
     }
 }
@@ -348,14 +340,8 @@ mod tests {
             vec!["output"]
         }
 
-        async fn invoke(
-            &self,
-            inputs: HashMap<String, Value>,
-        ) -> Result<ChainResult, ChainError> {
-            let input = inputs
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+        async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            let input = inputs.get("input").and_then(|v| v.as_str()).unwrap_or("");
             let mut result = HashMap::new();
             result.insert("output".to_string(), Value::String(input.to_string()));
             Ok(result)
@@ -379,11 +365,10 @@ mod tests {
             vec!["output"]
         }
 
-        async fn invoke(
-            &self,
-            _inputs: HashMap<String, Value>,
-        ) -> Result<ChainResult, ChainError> {
-            Err(ChainError::ExecutionError("intentional failure".to_string()))
+        async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            Err(ChainError::ExecutionError(
+                "intentional failure".to_string(),
+            ))
         }
 
         fn name(&self) -> &str {
@@ -440,14 +425,11 @@ mod tests {
         let msg = A2AMessage::user("hello");
         let req = A2ARequest::send_task(2, &msg);
         let resp = server.handle_a2a_request(req).await;
-        // The response itself is not an error at the protocol level;
-        // the task status is "failed" inside the result.
-        assert!(!resp.is_error());
+        // Chain failure now returns an error response
+        assert!(resp.is_error());
 
-        let result = resp.result.unwrap();
-        let task = result.get("task").unwrap();
-        assert_eq!(task["status"], "failed");
-        assert!(result.get("error").is_some());
+        let err = resp.error.unwrap();
+        assert!(err.message.contains("Chain execution failed"));
     }
 
     #[tokio::test]
@@ -500,16 +482,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_tasks_cancel() {
+    async fn handle_tasks_cancel_nonexistent() {
         let server = echo_server();
         let req = A2ARequest::cancel_task(6, "task-123");
+        // Cancelling a non-existent task now returns an error
         let resp = server.handle_a2a_request(req).await;
-        assert!(!resp.is_error());
-
-        let result = resp.result.unwrap();
-        let task = result.get("task").unwrap();
-        assert_eq!(task["status"], "cancelled");
-        assert_eq!(task["id"], "task-123");
+        assert!(resp.is_error());
+        let err = resp.error.unwrap();
+        assert!(err.message.contains("Task not found"));
     }
 
     #[tokio::test]
@@ -582,7 +562,7 @@ mod tests {
             async fn invoke(
                 &self,
                 inputs: HashMap<String, Value>,
-        ) -> Result<ChainResult, ChainError> {
+            ) -> Result<ChainResult, ChainError> {
                 let input = inputs
                     .get("input")
                     .and_then(|v| v.as_str())

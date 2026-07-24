@@ -10,7 +10,7 @@
 use super::algorithm::{bm25_score, compute_idf, BM25Params};
 use super::tokenizer::Tokenizer;
 use crate::vector_stores::document_store::{ChunkDocument, ChunkedDocumentStoreTrait};
-use crate::vector_stores::Document;
+use crate::vector_stores::{Document, VectorStoreError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -131,7 +131,9 @@ pub struct ChunkedIndexData {
 // ChunkedBM25Index 索引结构
 // ============================================================================
 
-pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore> {
+pub struct ChunkedBM25Index<
+    S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore,
+> {
     store: Arc<S>,
     chunk_id_list: Vec<String>,
     chunk_term_freqs: Vec<HashMap<String, usize>>,
@@ -291,7 +293,9 @@ impl Default for ChunkedBM25Index<crate::vector_stores::ChunkedDocumentStore> {
 // ChunkedBM25Retriever 检索器
 // ============================================================================
 
-pub struct ChunkedBM25Retriever<S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore> {
+pub struct ChunkedBM25Retriever<
+    S: ChunkedDocumentStoreTrait = crate::vector_stores::ChunkedDocumentStore,
+> {
     index: ChunkedBM25Index<S>,
 }
 
@@ -326,7 +330,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.index.add_chunk_indexes(chunks);
     }
 
-    pub fn add_document(&mut self, document: Document) {
+    pub fn add_document(&mut self, document: Document) -> Result<(), VectorStoreError> {
         let parent_id = document
             .id
             .clone()
@@ -334,15 +338,12 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
 
         self.index
             .store
-            .add_parent_document_blocking(document, self.index.config.leaf_chunk_size)
-            .ok();
+            .add_parent_document_blocking(document, self.index.config.leaf_chunk_size)?;
 
         let chunks = self
             .index
             .store
-            .blocking_get_chunks_for_parent(&parent_id)
-            .ok()
-            .unwrap_or_default();
+            .blocking_get_chunks_for_parent(&parent_id)?;
 
         for chunk in chunks {
             self.add_chunk_index(
@@ -351,9 +352,11 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 &chunk.content,
             );
         }
+
+        Ok(())
     }
 
-    pub async fn add_document_async(&mut self, document: Document) {
+    pub async fn add_document_async(&mut self, document: Document) -> Result<(), VectorStoreError> {
         let parent_id = document
             .id
             .clone()
@@ -362,16 +365,9 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.index
             .store
             .add_parent_document(document, self.index.config.leaf_chunk_size)
-            .await
-            .ok();
+            .await?;
 
-        let chunks = self
-            .index
-            .store
-            .get_chunks_for_parent(&parent_id)
-            .await
-            .ok()
-            .unwrap_or_default();
+        let chunks = self.index.store.get_chunks_for_parent(&parent_id).await?;
 
         for chunk in chunks {
             self.add_chunk_index(
@@ -380,18 +376,25 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 &chunk.content,
             );
         }
+
+        Ok(())
     }
 
-    pub fn add_documents(&mut self, documents: Vec<Document>) {
+    pub fn add_documents(&mut self, documents: Vec<Document>) -> Result<(), VectorStoreError> {
         for doc in documents {
-            self.add_document(doc);
+            self.add_document(doc)?;
         }
+        Ok(())
     }
 
-    pub async fn add_documents_async(&mut self, documents: Vec<Document>) {
+    pub async fn add_documents_async(
+        &mut self,
+        documents: Vec<Document>,
+    ) -> Result<(), VectorStoreError> {
         for doc in documents {
-            self.add_document_async(doc).await;
+            self.add_document_async(doc).await?;
         }
+        Ok(())
     }
 
     pub fn search(&mut self, query: &str, k: usize) -> Vec<ChunkedSearchResult> {
@@ -446,7 +449,11 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.auto_merge_async(top_chunks, k).await
     }
 
-    fn auto_merge_sync(&self, scored_chunks: Vec<(usize, f64)>, k: usize) -> Vec<ChunkedSearchResult> {
+    fn auto_merge_sync(
+        &self,
+        scored_chunks: Vec<(usize, f64)>,
+        k: usize,
+    ) -> Vec<ChunkedSearchResult> {
         let threshold = self.index.config.merge_threshold;
         let leaves_per_parent = self.index.config.leaves_per_parent;
 
@@ -514,7 +521,11 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         results.into_iter().take(k).collect()
     }
 
-    async fn auto_merge_async(&self, scored_chunks: Vec<(usize, f64)>, k: usize) -> Vec<ChunkedSearchResult> {
+    async fn auto_merge_async(
+        &self,
+        scored_chunks: Vec<(usize, f64)>,
+        k: usize,
+    ) -> Vec<ChunkedSearchResult> {
         let threshold = self.index.config.merge_threshold;
         let leaves_per_parent = self.index.config.leaves_per_parent;
 
@@ -554,7 +565,9 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 let mut leaf_chunks = Vec::new();
                 for (idx, _) in matched_leaves {
                     if let Some(chunk_id) = self.index.get_chunk_id(idx) {
-                        if let Some(chunk) = self.index.store().get_chunk(chunk_id).await.ok().flatten() {
+                        if let Some(chunk) =
+                            self.index.store().get_chunk(chunk_id).await.ok().flatten()
+                        {
                             leaf_chunks.push(chunk);
                         }
                     }
@@ -616,7 +629,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
 
         for (chunk_idx, score) in scored_chunks {
             if let Some(chunk_id) = self.index.chunk_id_list.get(*chunk_idx) {
-                let parent_id = chunk_id.split('_').next().unwrap_or_default().to_string();
+                let parent_id = chunk_id.split("::").next().unwrap_or_default().to_string();
                 stats
                     .entry(parent_id)
                     .or_default()

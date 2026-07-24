@@ -4,11 +4,20 @@
 //! 基于 HTMLLoader 的文本提取逻辑,增加链接发现与批量爬取能力。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 
 use crate::retrieval::loaders::{DocumentLoader, LoaderError};
 use crate::vector_stores::Document;
+
+// M9: Pre-compile regexes once instead of on every call.
+static HREF_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"href\s*=\s*["']([^"']+)["']"#).unwrap());
+static DOMAIN_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"https?://([^/]+)").unwrap());
+static DOMAIN_PREFIX_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"https?://[^/]+").unwrap());
 
 /// 网页爬取加载器
 ///
@@ -20,6 +29,8 @@ pub struct WebScraperLoader {
     max_depth: usize,
     /// 最大爬取页面数
     max_pages: usize,
+    /// 是否在爬取失败时返回错误(默认 false,跳过失败页面)
+    fail_on_error: bool,
 }
 
 impl WebScraperLoader {
@@ -29,6 +40,7 @@ impl WebScraperLoader {
             url: url.into(),
             max_depth: 0,
             max_pages: 1,
+            fail_on_error: false,
         }
     }
 
@@ -44,6 +56,12 @@ impl WebScraperLoader {
         self
     }
 
+    /// 设置爬取失败时是否返回错误(默认跳过失败页面)
+    pub fn with_fail_on_error(mut self, fail: bool) -> Self {
+        self.fail_on_error = fail;
+        self
+    }
+
     /// 从 HTML 提取纯文本(复用 HTMLLoader 的逻辑)
     fn extract_text(html: &str) -> String {
         crate::retrieval::loaders::HTMLLoader::extract_text(html)
@@ -51,9 +69,9 @@ impl WebScraperLoader {
 
     /// 从 HTML 提取链接
     fn extract_links(html: &str, base_url: &str) -> Vec<String> {
-        let re = regex::Regex::new(r#"href\s*=\s*["']([^"']+)["']"#).unwrap();
         let base_domain = Self::extract_domain(base_url);
-        re.captures_iter(html)
+        HREF_RE
+            .captures_iter(html)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .filter(|link| !link.starts_with('#') && !link.starts_with("javascript:"))
             .filter_map(|link| Self::resolve_url(base_url, &link))
@@ -63,9 +81,9 @@ impl WebScraperLoader {
 
     /// 提取域名
     fn extract_domain(url: &str) -> String {
-        regex::Regex::new(r"https?://([^/]+)")
-            .ok()
-            .and_then(|re| re.captures(url).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
+        DOMAIN_RE
+            .captures(url)
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
             .unwrap_or_default()
     }
 
@@ -75,8 +93,7 @@ impl WebScraperLoader {
             Some(href.to_string())
         } else if href.starts_with('/') {
             // 找到 scheme://domain 部分
-            let re = regex::Regex::new(r"https?://[^/]+").ok()?;
-            let domain = re.find(base)?.as_str();
+            let domain = DOMAIN_PREFIX_RE.find(base)?.as_str();
             Some(format!("{}{}", domain, href))
         } else {
             // 相对路径
@@ -87,19 +104,17 @@ impl WebScraperLoader {
 
     /// 爬取单个页面
     async fn fetch_page(url: &str) -> Result<(String, String), LoaderError> {
-        let response = reqwest::get(url).await.map_err(|e| {
-            LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e))
-        })?;
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!(
-                "HTTP 错误 {}: {}",
-                url, status
-            )));
+            return Err(LoaderError::Other(format!("HTTP 错误 {}: {}", url, status)));
         }
-        let html = response.text().await.map_err(|e| {
-            LoaderError::Other(format!("读取响应失败 {}: {}", url, e))
-        })?;
+        let html = response
+            .text()
+            .await
+            .map_err(|e| LoaderError::Other(format!("读取响应失败 {}: {}", url, e)))?;
         Ok((url.to_string(), html))
     }
 }
@@ -110,6 +125,7 @@ impl DocumentLoader for WebScraperLoader {
         let mut documents = Vec::new();
         let mut visited = HashSet::new();
         let mut queue = vec![(self.url.clone(), 0usize)];
+        let mut failed_count: usize = 0;
 
         while let Some((url, depth)) = queue.pop() {
             if visited.contains(&url) || documents.len() >= self.max_pages {
@@ -120,8 +136,15 @@ impl DocumentLoader for WebScraperLoader {
             let (fetched_url, html) = match Self::fetch_page(&url).await {
                 Ok(r) => r,
                 Err(e) => {
+                    failed_count += 1;
+                    if self.fail_on_error {
+                        return Err(e);
+                    }
                     // 跳过失败页面,继续爬取其他
-                    eprintln!("警告: 爬取 {} 失败: {}", url, e);
+                    eprintln!(
+                        "警告: 爬取 {} 失败 (第 {} 个失败): {}",
+                        url, failed_count, e
+                    );
                     continue;
                 }
             };
@@ -147,6 +170,14 @@ impl DocumentLoader for WebScraperLoader {
                     }
                 }
             }
+        }
+
+        if failed_count > 0 {
+            eprintln!(
+                "警告: 爬取完成,共 {} 个页面失败,{} 个页面成功",
+                failed_count,
+                documents.len()
+            );
         }
 
         Ok(documents)
@@ -181,7 +212,8 @@ mod tests {
 
     #[test]
     fn test_resolve_url_absolute() {
-        let result = WebScraperLoader::resolve_url("https://example.com/", "https://other.com/page");
+        let result =
+            WebScraperLoader::resolve_url("https://example.com/", "https://other.com/page");
         assert_eq!(result, Some("https://other.com/page".to_string()));
     }
 

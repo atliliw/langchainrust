@@ -7,13 +7,16 @@
 //! cargo run --example langgraph_basic_graph
 //! ```
 
-use langchainrust::{AgentState, END, GraphBuilder, START, StateUpdate};
+use langchainrust::{AgentState, GraphBuilder, StateUpdate, END, START};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = GraphBuilder::<AgentState>::new()
         .add_node_fn("greet", |state: &AgentState| {
-            Ok(StateUpdate::full(AgentState::new(format!("你好:{}", state.input))))
+            Ok(StateUpdate::full(AgentState::new(format!(
+                "你好:{}",
+                state.input
+            ))))
         })
         .add_node_fn("reply", |state: &AgentState| {
             let mut s = state.clone();

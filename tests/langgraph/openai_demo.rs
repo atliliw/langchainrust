@@ -20,12 +20,9 @@
 //! 运行方式：
 //! cargo test --test langgraph_openai_demo -- --ignored --nocapture
 
-use langchainrust::{
-    AgentState, StateUpdate, MessageEntry,
-    GraphBuilder, START, END, Runnable,
-};
 use langchainrust::language_models::openai::OpenAIChat;
 use langchainrust::schema::Message;
+use langchainrust::{AgentState, GraphBuilder, MessageEntry, Runnable, StateUpdate, END, START};
 
 /// OpenAI API 调用辅助函数
 ///
@@ -72,7 +69,7 @@ async fn test_subgraph_with_openai() {
     println!("│         【第 1 部分】创建子图            │");
     println!("└─────────────────────────────────────────┘");
     println!("子图是一个独立的工作流，可以嵌入到其他图中：");
-    
+
     println!("\n  子图内部结构：");
     println!("  ┌─────────────────────────────────────┐");
     println!("  │      【子图: translator】           │");
@@ -82,13 +79,13 @@ async fn test_subgraph_with_openai() {
     println!("  │   • detect: 检测语言（调用OpenAI）  │");
     println!("  │   • translate: 翻译文本（调用OpenAI)│");
     println!("  └─────────────────────────────────────┘");
-    
+
     let subgraph = GraphBuilder::<AgentState>::new()
         .add_async_node("detect", |_state: &AgentState| async move {
             println!("\n    >>> [子图内部] detect 节点执行 <<<");
             let lang = call_openai("'Hello' 是什么语言？", "只回答语言名").await;
             println!("    >>> [子图内部] detect 完成: {} <<<", lang);
-            
+
             let mut s = AgentState::new(lang.clone());
             s.add_message(MessageEntry::ai(lang));
             Ok(StateUpdate::full(s))
@@ -97,7 +94,7 @@ async fn test_subgraph_with_openai() {
             println!("\n    >>> [子图内部] translate 节点执行 <<<");
             let result = call_openai("把 'Hello' 翻译成中文", "只返回翻译结果").await;
             println!("    >>> [子图内部] translate 完成: {} <<<", result);
-            
+
             let mut s = AgentState::new("Hello".to_string());
             s.set_output(result);
             Ok(StateUpdate::full(s))
@@ -115,7 +112,7 @@ async fn test_subgraph_with_openai() {
     println!("│         【第 2 部分】创建父图            │");
     println!("└─────────────────────────────────────────┘");
     println!("父图将子图作为一个节点嵌入：");
-    
+
     println!("\n  父图结构：");
     println!("  ┌─────────────────────────────────────┐");
     println!("  │      【父图: main_workflow】        │");
@@ -125,7 +122,7 @@ async fn test_subgraph_with_openai() {
     println!("  │   • translator = 整个子图作为节点   │");
     println!("  │     (包含 detect + translate)       │");
     println!("  └─────────────────────────────────────┘");
-    
+
     let parent = GraphBuilder::<AgentState>::new()
         .add_subgraph_same_state("translator", subgraph)
         .add_edge(START, "translator")
@@ -139,7 +136,7 @@ async fn test_subgraph_with_openai() {
     println!("\n┌─────────────────────────────────────────┐");
     println!("│     【第 3 部分】执行时的层级关系        │");
     println!("└─────────────────────────────────────────┘");
-    
+
     println!("\n  执行流程图解：");
     println!("  ");
     println!("  ┌──────────┐                         ");
@@ -163,13 +160,19 @@ async fn test_subgraph_with_openai() {
     println!("  └──────────┘                         ");
 
     println!("\n【开始执行】...");
-    let result = parent.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let result = parent
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
 
     println!("\n");
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                     【最终结果】                             ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
-    println!("\n  父图最终输出: {}", result.final_state.output.clone().unwrap_or_default());
+    println!(
+        "\n  父图最终输出: {}",
+        result.final_state.output.clone().unwrap_or_default()
+    );
     println!("  子图执行步骤: {}", result.steps.len());
     println!("\n  层级总结:");
     println!("    - 父图只有 1 个节点: translator（子图）");
@@ -199,13 +202,13 @@ async fn test_persistence_with_openai() {
     println!("========================================\n");
 
     println!("【步骤 1】创建分析工作流...");
-    
+
     let graph = GraphBuilder::<AgentState>::new()
         .add_async_node("analyze", |_state: &AgentState| async move {
             println!("  → analyze 节点开始执行");
             let result = call_openai("用一句话解释 Rust 编程语言", "简洁专业").await;
             println!("  → analyze 节点完成");
-            
+
             let mut s = AgentState::new("Rust".to_string());
             s.set_output(result);
             Ok(StateUpdate::full(s))
@@ -219,7 +222,7 @@ async fn test_persistence_with_openai() {
     println!("{}", graph.visualize_ascii());
 
     println!("\n【步骤 2】保存图定义到文件...");
-    
+
     let definition = graph.to_definition();
     let temp = std::env::temp_dir().join("langgraph_persistence_test.json");
     let json = serde_json::to_string_pretty(&definition).unwrap();
@@ -239,12 +242,18 @@ async fn test_persistence_with_openai() {
     println!("  递归限制: {}", loaded.recursion_limit);
 
     println!("\n【步骤 5】执行工作流（真实调用 OpenAI）...");
-    let result = graph.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let result = graph
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
 
     println!("\n========================================");
     println!("【最终结果】");
     println!("========================================");
-    println!("OpenAI 分析结果: {}", result.final_state.output.clone().unwrap_or_default());
+    println!(
+        "OpenAI 分析结果: {}",
+        result.final_state.output.clone().unwrap_or_default()
+    );
 
     std::fs::remove_file(&temp).ok();
     println!("\n已清理临时文件: {}", temp.display());
@@ -274,24 +283,28 @@ async fn test_multi_node_with_openai() {
     println!("========================================\n");
 
     println!("【创建图】三步顺序执行...");
-    
+
     let graph = GraphBuilder::<AgentState>::new()
         .add_async_node("step1", |_state: &AgentState| async move {
             println!("\n  ▶ 步骤 1 开始: 用一个词描述 Rust");
             let r = call_openai("用一个词描述 Rust 语言", "只回答一个词").await;
             println!("  ✓ 步骤 1 完成: {}", r);
-            
+
             let mut s = AgentState::new(r.clone());
             s.add_message(MessageEntry::ai(r));
             Ok(StateUpdate::full(s))
         })
         .add_async_node("step2", |state: &AgentState| {
-            let prev = state.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+            let prev = state
+                .messages
+                .last()
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
             async move {
                 println!("\n  ▶ 步骤 2 开始: 分析 {} 的特点", prev);
                 let r = call_openai(&format!("{} 语言的主要特点是什么？", prev), "简洁回答").await;
                 println!("  ✓ 步骤 2 完成: {}", r);
-                
+
                 let mut s = AgentState::new(prev);
                 s.add_message(MessageEntry::ai(r));
                 Ok(StateUpdate::full(s))
@@ -300,17 +313,22 @@ async fn test_multi_node_with_openai() {
         .add_async_node("step3", |state: &AgentState| {
             let msgs = state.messages.clone();
             async move {
-                let all = msgs.iter()
+                let all = msgs
+                    .iter()
                     .filter(|m| m.role == langchainrust::MessageRole::AI)
                     .map(|m| m.content.clone())
                     .collect::<Vec<_>>()
                     .join(" → ");
-                
+
                 println!("\n  ▶ 步骤 3 开始: 综合总结");
                 println!("    输入链: {}", all);
-                let r = call_openai(&format!("综合以下信息给出一句话总结: {}", all), "一句话总结").await;
+                let r = call_openai(
+                    &format!("综合以下信息给出一句话总结: {}", all),
+                    "一句话总结",
+                )
+                .await;
                 println!("  ✓ 步骤 3 完成: {}", r);
-                
+
                 let mut s = AgentState::new("done".to_string());
                 s.set_output(r);
                 Ok(StateUpdate::full(s))
@@ -327,12 +345,18 @@ async fn test_multi_node_with_openai() {
     println!("{}", graph.visualize_ascii());
 
     println!("\n【执行】开始顺序执行三步...");
-    let result = graph.invoke(AgentState::new("start".to_string())).await.unwrap();
+    let result = graph
+        .invoke(AgentState::new("start".to_string()))
+        .await
+        .unwrap();
 
     println!("\n========================================");
     println!("【最终结果】");
     println!("========================================");
-    println!("综合总结: {}", result.final_state.output.clone().unwrap_or_default());
+    println!(
+        "综合总结: {}",
+        result.final_state.output.clone().unwrap_or_default()
+    );
     println!("执行路径: start → step1 → step2 → step3 → end");
     println!("总步骤数: {}", result.steps.len());
 }
@@ -364,7 +388,7 @@ async fn test_nested_subgraph_with_openai() {
     println!("\n┌─────────────────────────────────────────┐");
     println!("│        【层级结构预览】                 │");
     println!("└─────────────────────────────────────────┘");
-    
+
     println!("\n  三层嵌套结构图解：");
     println!("  ");
     println!("  ╔═════════════════════════════════════════════════════╗");
@@ -398,13 +422,13 @@ async fn test_nested_subgraph_with_openai() {
     println!("└─────────────────────────────────────────┘");
     println!("  层级: 第 3 层（最内层）");
     println!("  功能: 获取一个编程语言名");
-    
+
     let inner = GraphBuilder::<AgentState>::new()
         .add_async_node("inner_task", |_state: &AgentState| async move {
             println!("\n      >>> [第3层-内层] inner_task 执行 <<<");
             let r = call_openai("说出一个编程语言的名字", "只回答一个词").await;
             println!("      >>> [第3层-内层] 完成: {} <<<", r);
-            
+
             let mut s = AgentState::new(r.clone());
             s.set_output(r);
             Ok(StateUpdate::full(s))
@@ -422,7 +446,7 @@ async fn test_nested_subgraph_with_openai() {
     println!("└─────────────────────────────────────────┘");
     println!("  层级: 第 2 层");
     println!("  功能: 嵌入内层子图 + 分析语言特点");
-    
+
     let middle = GraphBuilder::<AgentState>::new()
         .add_subgraph_same_state("inner", inner)
         .add_async_node("middle_task", |state: &AgentState| {
@@ -430,9 +454,10 @@ async fn test_nested_subgraph_with_openai() {
             async move {
                 println!("\n    >>> [第2层-中层] middle_task 执行 <<<");
                 println!("    >>> [第2层-中层] 输入来自内层: {} <<<", inner_result);
-                let r = call_openai(&format!("{} 编程语言的主要特点", inner_result), "简洁回答").await;
+                let r =
+                    call_openai(&format!("{} 编程语言的主要特点", inner_result), "简洁回答").await;
                 println!("    >>> [第2层-中层] 完成 <<<");
-                
+
                 let mut s = AgentState::new(inner_result);
                 s.set_output(r);
                 Ok(StateUpdate::full(s))
@@ -453,7 +478,7 @@ async fn test_nested_subgraph_with_openai() {
     println!("└─────────────────────────────────────────┘");
     println!("  层级: 第 1 层（最外层）");
     println!("  功能: 嵌入中层子图 + 最终总结");
-    
+
     let outer = GraphBuilder::<AgentState>::new()
         .add_subgraph_same_state("middle", middle)
         .add_async_node("outer_task", |state: &AgentState| {
@@ -463,7 +488,7 @@ async fn test_nested_subgraph_with_openai() {
                 println!("  >>> [第1层-外层] 输入来自中层 <<<");
                 let r = call_openai(&format!("用一句话总结: {}", mid), "一句话").await;
                 println!("  >>> [第1层-外层] 完成 <<<");
-                
+
                 let mut s = AgentState::new("done".to_string());
                 s.set_output(r);
                 Ok(StateUpdate::full(s))
@@ -482,7 +507,7 @@ async fn test_nested_subgraph_with_openai() {
     println!("\n┌─────────────────────────────────────────┐");
     println!("│        【执行时的层级穿透】             │");
     println!("└─────────────────────────────────────────┘");
-    
+
     println!("\n  执行顺序（从外到内，再从内到外）：");
     println!("  ");
     println!("  ① 外层 START → 进入 middle 子图");
@@ -496,13 +521,19 @@ async fn test_nested_subgraph_with_openai() {
     println!("  ⑤ 外层继续 → outer_task → END");
 
     println!("\n【开始执行】...");
-    let result = outer.invoke(AgentState::new("start".to_string())).await.unwrap();
+    let result = outer
+        .invoke(AgentState::new("start".to_string()))
+        .await
+        .unwrap();
 
     println!("\n");
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                     【最终结果】                             ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
-    println!("\n  三层嵌套最终输出: {}", result.final_state.output.clone().unwrap_or_default());
+    println!(
+        "\n  三层嵌套最终输出: {}",
+        result.final_state.output.clone().unwrap_or_default()
+    );
     println!("\n  层级关系总结:");
     println!("    ┌─────────────────────────────────────┐");
     println!("    │ 外层图 (outer)                      │");

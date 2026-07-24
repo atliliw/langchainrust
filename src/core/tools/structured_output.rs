@@ -26,8 +26,31 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
     }
 
     /// Parses the LLM response into the target type.
+    ///
+    /// Handles markdown code blocks (```json ... ```) wrapping the JSON,
+    /// which LLMs commonly produce.
     pub fn parse(&self) -> Result<T, serde_json::Error> {
-        serde_json::from_str(&self.result.content)
+        let content = self.result.content.trim();
+
+        // Strip markdown code block wrapping (L5)
+        let json_str = if content.starts_with("```") {
+            // Find the end of the opening fence (may include language tag like ```json)
+            let after_fence = if let Some(newline_pos) = content.find('\n') {
+                &content[newline_pos + 1..]
+            } else {
+                content
+            };
+            // Find the closing fence
+            if let Some(end_pos) = after_fence.find("```") {
+                after_fence[..end_pos].trim()
+            } else {
+                after_fence.trim()
+            }
+        } else {
+            content
+        };
+
+        serde_json::from_str(json_str)
     }
 
     /// Returns the raw response content.

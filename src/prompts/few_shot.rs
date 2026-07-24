@@ -42,7 +42,12 @@ impl LengthBasedExampleSelector {
 
     /// 计算格式化后的示例长度
     #[allow(dead_code)]
-    fn format_example_length(&self, example: &HashMap<String, String>, prefix: &str, suffix: &str) -> usize {
+    fn format_example_length(
+        &self,
+        example: &HashMap<String, String>,
+        prefix: &str,
+        suffix: &str,
+    ) -> usize {
         let mut formatted = prefix.to_string();
         for val in example.values() {
             formatted.push_str(val);
@@ -69,7 +74,8 @@ impl LengthBasedExampleSelector {
 
         for example in &self.examples {
             // 估算这个示例会占用的长度
-            let example_vars: HashMap<&str, &str> = example.iter()
+            let example_vars: HashMap<&str, &str> = example
+                .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect();
 
@@ -89,10 +95,28 @@ impl LengthBasedExampleSelector {
 }
 
 impl ExampleSelector for LengthBasedExampleSelector {
-    fn select_examples(&self, _input: &HashMap<String, String>) -> Vec<&HashMap<String, String>> {
-        // 在 FewShot 中，select_examples 需要 prompt 信息，这里简单返回所有
-        // 真正的选择逻辑在 FewShotPromptTemplate 中调用 select_examples_by_length
-        self.examples.iter().collect()
+    fn select_examples(&self, input: &HashMap<String, String>) -> Vec<&HashMap<String, String>> {
+        // Calculate input length to determine how many examples fit
+        let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
+        let input_len = input_text.len();
+        // Use a simple heuristic: longer inputs leave less room for examples
+        let available = self.max_length.saturating_sub(input_len);
+
+        let mut selected = Vec::new();
+        let mut used = 0usize;
+
+        for example in &self.examples {
+            // Estimate example length from its values
+            let ex_len: usize = example.values().map(|v| v.len()).sum();
+            if used + ex_len <= available || selected.is_empty() {
+                selected.push(example);
+                used += ex_len;
+            } else {
+                break;
+            }
+        }
+
+        selected
     }
 
     fn examples(&self) -> &[HashMap<String, String>] {
@@ -199,23 +223,24 @@ impl FewShotPromptTemplate {
             }
         }
 
-        // 构建完整输入变量 HashMap
-        let input_map: HashMap<String, String> = variables.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-
         // 选择示例
-        let selected_examples: Vec<&HashMap<String, String>> = if let Some(ref selector) = self.example_selector {
-            let input_ref_map: HashMap<String, String> = input_map.clone();
-            selector.select_examples(&input_ref_map)
-        } else {
-            self.examples.iter().collect()
-        };
+        let selected_examples: Vec<&HashMap<String, String>> =
+            if let Some(ref selector) = self.example_selector {
+                let input_map: HashMap<String, String> = variables
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+                selector.select_examples(&input_map)
+            } else {
+                self.examples.iter().collect()
+            };
 
         // 格式化每个示例
-        let example_texts: Result<Vec<String>, String> = selected_examples.iter()
+        let example_texts: Result<Vec<String>, String> = selected_examples
+            .iter()
             .map(|example| {
-                let example_vars: HashMap<&str, &str> = example.iter()
+                let example_vars: HashMap<&str, &str> = example
+                    .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect();
                 self.example_prompt.format(&example_vars)
@@ -283,10 +308,7 @@ mod tests {
 
     #[test]
     fn test_few_shot_basic() {
-        let examples = vec![
-            make_example("苹果", "水果"),
-            make_example("玫瑰", "花"),
-        ];
+        let examples = vec![make_example("苹果", "水果"), make_example("玫瑰", "花")];
 
         let example_prompt = PromptTemplate::new("输入: {input} -> 输出: {output}");
         let few_shot = FewShotPromptTemplate::new(
@@ -346,10 +368,7 @@ mod tests {
 
     #[test]
     fn test_few_shot_custom_separator() {
-        let examples = vec![
-            make_example("a", "1"),
-            make_example("b", "2"),
-        ];
+        let examples = vec![make_example("a", "1"), make_example("b", "2")];
 
         let few_shot = FewShotPromptTemplate::new(
             examples,
@@ -357,7 +376,8 @@ mod tests {
             "",
             "",
             vec![],
-        ).with_example_separator(" | ");
+        )
+        .with_example_separator(" | ");
 
         let vars = HashMap::new();
         let result = few_shot.format(&vars).unwrap();
@@ -381,12 +401,9 @@ mod tests {
 
     #[test]
     fn test_length_based_selector() {
-        let examples = vec![
-            make_example("long text here", "short"),
-        ];
+        let examples = vec![make_example("long text here", "short")];
 
-        let selector = LengthBasedExampleSelector::new(examples)
-            .with_max_length(100);
+        let selector = LengthBasedExampleSelector::new(examples).with_max_length(100);
 
         let input_vars = HashMap::new();
         let selected = selector.select_examples(&input_vars);
@@ -395,10 +412,7 @@ mod tests {
 
     #[test]
     fn test_few_shot_with_selector() {
-        let examples = vec![
-            make_example("a", "1"),
-            make_example("b", "2"),
-        ];
+        let examples = vec![make_example("a", "1"), make_example("b", "2")];
 
         let selector = Box::new(LengthBasedExampleSelector::new(examples.clone()));
         let few_shot = FewShotPromptTemplate::new(
@@ -407,7 +421,8 @@ mod tests {
             "Prefix",
             "{input}",
             vec!["input".to_string()],
-        ).with_example_selector(selector);
+        )
+        .with_example_selector(selector);
 
         let mut vars = HashMap::new();
         vars.insert("input", "test");

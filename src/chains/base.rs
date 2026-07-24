@@ -77,10 +77,7 @@ pub trait BaseChain: Send + Sync {
     ///
     /// # 返回
     /// token 流
-    async fn stream(
-        &self,
-        inputs: HashMap<String, Value>,
-    ) -> Result<ChainStream, ChainError> {
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
         // 默认:将 invoke 结果包装为单元素流
         let result = self.invoke(inputs).await?;
         let output_text = result
@@ -117,7 +114,7 @@ pub trait BaseChain: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_chain_error_display() {
         let error = ChainError::MissingInput("test".to_string());

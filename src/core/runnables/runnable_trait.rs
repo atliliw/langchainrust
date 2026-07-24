@@ -4,10 +4,10 @@
 //! Every LangChain component implements Runnable, enabling
 //! chaining, composition, and interoperability.
 
+use super::RunnableConfig;
 use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
-use super::RunnableConfig;
 
 /// Base trait for all LangChain components.
 ///
@@ -35,7 +35,9 @@ use super::RunnableConfig;
 /// }
 /// ```
 #[async_trait]
-pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>: Send + Sync {
+pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
+    Send + Sync
+{
     /// Error type.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -49,7 +51,11 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     ///
     /// # Returns
     /// Execution result.
-    async fn invoke(&self, input: Input, config: Option<RunnableConfig>) -> Result<Output, Self::Error>;
+    async fn invoke(
+        &self,
+        input: Input,
+        config: Option<RunnableConfig>,
+    ) -> Result<Output, Self::Error>;
 
     /// Batch processing - transforms multiple inputs to outputs.
     ///
@@ -118,7 +124,11 @@ mod tests {
     impl Runnable<String, String> for TestRunnable {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+        async fn invoke(
+            &self,
+            input: String,
+            _config: Option<RunnableConfig>,
+        ) -> Result<String, Self::Error> {
             Ok(format!("processed: {}", input))
         }
     }
@@ -127,11 +137,11 @@ mod tests {
     async fn test_default_stream_returns_single_element() {
         let runnable = TestRunnable;
         let mut stream = runnable.stream("test".to_string(), None).await.unwrap();
-        
+
         let first = stream.next().await;
         assert!(first.is_some());
         assert_eq!(first.unwrap().unwrap(), "processed: test");
-        
+
         let second = stream.next().await;
         assert!(second.is_none());
     }
@@ -139,11 +149,11 @@ mod tests {
     #[tokio::test]
     async fn test_invoke_matches_stream_result() {
         let runnable = TestRunnable;
-        
+
         let invoke_result = runnable.invoke("hello".to_string(), None).await.unwrap();
         let mut stream = runnable.stream("hello".to_string(), None).await.unwrap();
         let stream_result = stream.next().await.unwrap().unwrap();
-        
+
         assert_eq!(invoke_result, stream_result);
     }
 }

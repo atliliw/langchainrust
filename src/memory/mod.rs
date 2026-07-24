@@ -50,24 +50,24 @@
 
 pub mod base;
 pub mod buffer;
-pub mod window;
+pub mod context_window;
+pub mod persistent;
 pub mod summary;
 pub mod summary_buffer;
-pub mod persistent;
 pub mod vectorstore_memory;
-pub mod context_window;
+pub mod window;
 
 #[cfg(feature = "mongodb-persistence")]
 pub mod mongo_memory;
 
-pub use base::{BaseMemory, MemoryError, ChatMessageHistory};
+pub use base::{BaseMemory, ChatMessageHistory, MemoryError};
 pub use buffer::ConversationBufferMemory;
-pub use window::ConversationBufferWindowMemory;
+pub use context_window::{ContextWindow, Strategy};
+pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;
-pub use persistent::{PersistentMemory, PersistenceConfig, MemoryData};
 pub use vectorstore_memory::VectorStoreRetrieverMemory;
-pub use context_window::{ContextWindow, Strategy};
+pub use window::ConversationBufferWindowMemory;
 
 #[cfg(feature = "mongodb-persistence")]
 pub use mongo_memory::MongoPersistentMemory;

@@ -1,31 +1,21 @@
 use async_trait::async_trait;
-use std::fmt;
 
 /// 输出解析器的统一错误类型
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum OutputParserError {
     /// 解析失败：输入格式不符合预期
+    #[error("Parse error: {0}")]
     ParseError(String),
     /// JSON 格式错误
+    #[error("JSON error: {0}")]
     JsonError(String),
     /// 类型转换错误
+    #[error("Type error: {0}")]
     TypeError(String),
     /// 自定义错误
+    #[error("{0}")]
     Custom(String),
 }
-
-impl fmt::Display for OutputParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OutputParserError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            OutputParserError::JsonError(msg) => write!(f, "JSON error: {}", msg),
-            OutputParserError::TypeError(msg) => write!(f, "Type error: {}", msg),
-            OutputParserError::Custom(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl std::error::Error for OutputParserError {}
 
 impl From<serde_json::Error> for OutputParserError {
     fn from(e: serde_json::Error) -> Self {
@@ -60,5 +50,3 @@ pub trait BaseOutputParser<Output: Send + Sync + 'static>: Send + Sync {
         String::new()
     }
 }
-
-

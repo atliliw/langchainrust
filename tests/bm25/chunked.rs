@@ -1,16 +1,16 @@
 // tests/bm25/chunked.rs
 //! BM25 Chunked Retriever 核心功能测试
 
-mod unified_hybrid;
 mod full_flow;
+mod unified_hybrid;
 
 use langchainrust::retrieval::bm25::{
     AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult,
 };
 use langchainrust::vector_stores::document_store::ChunkedDocumentStore;
 use langchainrust::Document;
-use tempfile::NamedTempFile;
 use std::sync::Arc;
+use tempfile::NamedTempFile;
 
 /// 测试：基础文档添加功能
 /// 验证：添加文档后索引不为空，文档数符合预期

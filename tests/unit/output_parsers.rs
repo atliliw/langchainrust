@@ -10,12 +10,11 @@
 //! - TypedOutputParser: 类型化 JSON 解析
 //! - Runnable 接口兼容性
 
-use langchainrust::{
-    BaseOutputParser, OutputParserError,
-    StrOutputParser, CommaSeparatedListOutputParser,
-    JsonOutputParser, StructuredOutputParser, TypedOutputParser,
-};
 use langchainrust::core::runnables::Runnable;
+use langchainrust::{
+    BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
+    StrOutputParser, StructuredOutputParser, TypedOutputParser,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -145,7 +144,10 @@ async fn test_list_parser_format_instructions() {
 #[tokio::test]
 async fn test_json_parser_basic_object() {
     let parser = JsonOutputParser::new();
-    let result = parser.parse(r#"{"name": "Rust", "year": 2015}"#).await.unwrap();
+    let result = parser
+        .parse(r#"{"name": "Rust", "year": 2015}"#)
+        .await
+        .unwrap();
     assert_eq!(result["name"], "Rust");
     assert_eq!(result["year"], 2015);
 }
@@ -199,7 +201,10 @@ async fn test_json_parser_plain_text() {
 #[tokio::test]
 async fn test_json_parser_as_runnable() {
     let parser = JsonOutputParser::new();
-    let result = parser.invoke(r#"{"key": "value"}"#.to_string(), None).await.unwrap();
+    let result = parser
+        .invoke(r#"{"key": "value"}"#.to_string(), None)
+        .await
+        .unwrap();
     assert_eq!(result["key"], "value");
 }
 
@@ -318,7 +323,10 @@ async fn test_typed_parser_basic() {
     }
 
     let parser = TypedOutputParser::<Person>::new();
-    let person = parser.parse(r#"{"name": "Alice", "age": 30}"#).await.unwrap();
+    let person = parser
+        .parse(r#"{"name": "Alice", "age": 30}"#)
+        .await
+        .unwrap();
     assert_eq!(person.name, "Alice");
     assert_eq!(person.age, 30);
 }
@@ -389,7 +397,10 @@ async fn test_typed_parser_as_runnable() {
     }
 
     let parser = TypedOutputParser::<Config>::new();
-    let config = parser.invoke(r#"{"host": "localhost", "port": 8080}"#.to_string(), None).await.unwrap();
+    let config = parser
+        .invoke(r#"{"host": "localhost", "port": 8080}"#.to_string(), None)
+        .await
+        .unwrap();
     assert_eq!(config.host, "localhost");
     assert_eq!(config.port, 8080);
 }

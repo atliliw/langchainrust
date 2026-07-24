@@ -6,4 +6,4 @@
 
 pub mod llm_cache;
 
-pub use llm_cache::{LLMCache, CachedLLMResult, CacheConfig};
+pub use llm_cache::{CacheConfig, CachedLLMResult, LLMCache};

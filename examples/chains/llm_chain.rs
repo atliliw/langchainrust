@@ -16,8 +16,7 @@ use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
@@ -28,8 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let chain =
-        LLMChain::new(llm, "Explain this topic in one sentence: {topic}")
-            .with_input_key("topic");
+        LLMChain::new(llm, "Explain this topic in one sentence: {topic}").with_input_key("topic");
 
     let mut inputs: HashMap<String, Value> = HashMap::new();
     inputs.insert(

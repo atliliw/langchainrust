@@ -72,10 +72,7 @@ impl Message {
     }
 
     /// Creates a human message with an image (vision).
-    pub fn human_with_image(
-        content: impl Into<String>,
-        image_url: impl Into<String>,
-    ) -> Self {
+    pub fn human_with_image(content: impl Into<String>, image_url: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             images: vec![ImageContent::from_url(image_url)],
@@ -88,10 +85,7 @@ impl Message {
     }
 
     /// Creates a human message with multiple images.
-    pub fn human_with_images(
-        content: impl Into<String>,
-        images: Vec<ImageContent>,
-    ) -> Self {
+    pub fn human_with_images(content: impl Into<String>, images: Vec<ImageContent>) -> Self {
         Self {
             content: content.into(),
             images,

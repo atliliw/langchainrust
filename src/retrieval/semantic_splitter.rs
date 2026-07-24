@@ -64,30 +64,27 @@ impl<E: Embeddings> SemanticSplitter<E> {
     }
 
     /// 异步分块
-    pub async fn split_text(&self, text: &str) -> Vec<String> {
+    pub async fn split_text(
+        &self,
+        text: &str,
+    ) -> Result<Vec<String>, crate::embeddings::EmbeddingError> {
         let sentences = Self::split_sentences(text);
         if sentences.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         if sentences.len() == 1 {
-            return vec![sentences.into_iter().next().expect("已校验非空")];
+            return Ok(vec![sentences.into_iter().next().expect("已校验非空")]);
         }
 
         // 批量嵌入
         let refs: Vec<&str> = sentences.iter().map(|s| s.as_str()).collect();
-        let embeddings = match self.embeddings.embed_documents(&refs).await {
-            Ok(e) => e,
-            Err(_) => {
-                // 嵌入失败,回退为单块返回原文,不 panic
-                return vec![text.to_string()];
-            }
-        };
+        let embeddings = self.embeddings.embed_documents(&refs).await?;
 
         let mut chunks = Vec::new();
         let mut current = sentences[0].clone();
 
         for i in 1..sentences.len() {
-            let sim = cosine_similarity(&embeddings[i - 1], &embeddings[i]);
+            let sim = cosine_similarity(&embeddings[i - 1], &embeddings[i]).unwrap_or(0.0);
             let would_exceed = current.len() + sentences[i].len() + 1 > self.max_chunk_size;
 
             if sim < self.breakpoint_threshold || would_exceed {
@@ -101,13 +98,16 @@ impl<E: Embeddings> SemanticSplitter<E> {
         if !current.is_empty() {
             chunks.push(current);
         }
-        chunks
+        Ok(chunks)
     }
 
     /// 异步分块文档,保留 metadata(写入 chunk 序号)
-    pub async fn split_document(&self, document: &Document) -> Vec<Document> {
-        let chunks = self.split_text(&document.content).await;
-        chunks
+    pub async fn split_document(
+        &self,
+        document: &Document,
+    ) -> Result<Vec<Document>, crate::embeddings::EmbeddingError> {
+        let chunks = self.split_text(&document.content).await?;
+        Ok(chunks
             .into_iter()
             .enumerate()
             .map(|(i, chunk)| {
@@ -119,7 +119,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
                     id: None,
                 }
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -151,13 +151,13 @@ mod tests {
     #[tokio::test]
     async fn test_empty_text() {
         let s = splitter(0.5, 1000);
-        assert!(s.split_text("").await.is_empty());
+        assert!(s.split_text("").await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn test_single_sentence() {
         let s = splitter(0.5, 1000);
-        let chunks = s.split_text("只有一句没有标点").await;
+        let chunks = s.split_text("只有一句没有标点").await.unwrap();
         assert_eq!(chunks, vec!["只有一句没有标点".to_string()]);
     }
 
@@ -165,7 +165,7 @@ mod tests {
     async fn test_chunks_contain_all_sentences() {
         let s = splitter(0.5, 1000);
         let text = "苹果是一种水果。香蕉是黄色的。樱桃很小。";
-        let chunks = s.split_text(text).await;
+        let chunks = s.split_text(text).await.unwrap();
         assert!(!chunks.is_empty());
         // 无论怎么断,每句都应出现在某个 chunk 中
         let joined = chunks.join("");
@@ -179,7 +179,7 @@ mod tests {
         // max_chunk 设很小,多句必然被强制断成多块
         let s = splitter(0.0, 5);
         let text = "AAAA。BBBB。CCCC。";
-        let chunks = s.split_text(text).await;
+        let chunks = s.split_text(text).await.unwrap();
         assert!(
             chunks.len() >= 2,
             "max_chunk=5 应强制断块, 实际 {} 块",
@@ -191,7 +191,7 @@ mod tests {
     async fn test_split_document_metadata() {
         let s = splitter(0.0, 5);
         let doc = Document::new("AAAA。BBBB。CCCC。").with_metadata("source", "test");
-        let chunks = s.split_document(&doc).await;
+        let chunks = s.split_document(&doc).await.unwrap();
         assert!(chunks.len() >= 2);
         for (i, c) in chunks.iter().enumerate() {
             assert_eq!(c.metadata.get("chunk"), Some(&i.to_string()));
@@ -201,11 +201,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_embedding_failure_fallback() {
-        // 嵌入总是失败,验证回退为单块返回原文,不 panic
+    async fn test_embedding_failure_returns_error() {
+        // M54: embedding failure now returns an error instead of fallback
         let s = SemanticSplitter::new(FailingEmbeddings, 0.5, 1000);
         let text = "句子一。句子二。句子三。";
-        let chunks = s.split_text(text).await;
-        assert_eq!(chunks, vec![text.to_string()]);
+        let result = s.split_text(text).await;
+        assert!(result.is_err());
     }
 }

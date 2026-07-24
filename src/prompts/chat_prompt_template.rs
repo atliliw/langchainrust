@@ -6,9 +6,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{(\w+)\}").unwrap()
-});
+static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(\w+)\}").unwrap());
 
 /// 聊天提示词模板
 ///

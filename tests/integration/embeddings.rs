@@ -17,9 +17,12 @@ use langchainrust::Embeddings;
 #[ignore = "需要配置 API Key"]
 async fn test_embed_single_text() {
     let embeddings = TestConfig::get().embeddings();
-    
-    let vector = embeddings.embed_query("Rust is a systems programming language.").await.unwrap();
-    
+
+    let vector = embeddings
+        .embed_query("Rust is a systems programming language.")
+        .await
+        .unwrap();
+
     println!("Embedding dimension: {}", vector.len());
     assert!(!vector.is_empty());
 }
@@ -33,15 +36,15 @@ async fn test_embed_single_text() {
 #[ignore = "需要配置 API Key"]
 async fn test_embed_multiple_texts() {
     let embeddings = TestConfig::get().embeddings();
-    
+
     let texts: Vec<&str> = vec![
         "Rust is fast.",
         "Python is easy.",
         "JavaScript is versatile.",
     ];
-    
+
     let vectors = embeddings.embed_documents(&texts).await.unwrap();
-    
+
     println!("Vectors count: {}", vectors.len());
     assert_eq!(vectors.len(), 3);
     assert!(!vectors[0].is_empty());
@@ -56,7 +59,7 @@ async fn test_embed_multiple_texts() {
 #[ignore = "需要配置 API Key"]
 async fn test_embedding_dimension() {
     let embeddings = TestConfig::get().embeddings();
-    
+
     let dim = embeddings.dimension();
     println!("Model dimension: {}", dim);
     assert!(dim > 0);

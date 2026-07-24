@@ -1,6 +1,6 @@
 //! HTTP tool with SSRF protection
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -51,9 +51,13 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 }
 
 /// Resolve a URL hostname and check if it points to a private IP.
-fn url_points_to_private_ip(url: &str) -> Result<bool, ToolError> {
-    let parsed = url::Url::parse(url)
-        .map_err(|e| ToolError::InvalidInput(format!("Invalid URL: {}", e)))?;
+///
+/// Uses async DNS resolution via `tokio::net::lookup_host` to avoid blocking
+/// the async runtime. This also mitigates DNS rebinding by checking the
+/// resolved IPs at request time.
+async fn url_points_to_private_ip(url: &str) -> Result<bool, ToolError> {
+    let parsed =
+        url::Url::parse(url).map_err(|e| ToolError::InvalidInput(format!("Invalid URL: {}", e)))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| ToolError::InvalidInput("URL has no host".to_string()))?;
@@ -63,12 +67,23 @@ fn url_points_to_private_ip(url: &str) -> Result<bool, ToolError> {
         return Ok(is_private_ip(&ip));
     }
 
-    // DNS resolution for hostnames
-    // Use std::net for synchronous resolution (acceptable in this security check context)
-    let addrs: Vec<IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(80)))
-        .map_err(|e| ToolError::ExecutionFailed(format!("DNS resolution failed for {}: {}", host, e)))?
-        .map(|a| a.ip())
+    // Async DNS resolution for hostnames (avoids blocking the async runtime)
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addr_str = format!("{}:{}", host, port);
+    let addrs: Vec<IpAddr> = tokio::net::lookup_host(&addr_str)
+        .await
+        .map_err(|e| {
+            ToolError::ExecutionFailed(format!("DNS resolution failed for {}: {}", host, e))
+        })?
+        .map(|sa: SocketAddr| sa.ip())
         .collect();
+
+    if addrs.is_empty() {
+        return Err(ToolError::ExecutionFailed(format!(
+            "DNS resolution returned no addresses for {}",
+            host
+        )));
+    }
 
     Ok(addrs.iter().any(is_private_ip))
 }
@@ -114,11 +129,11 @@ impl HTTPTool {
     }
 
     /// Check SSRF protection before making a request.
-    fn check_ssrf(&self, url: &str) -> Result<(), ToolError> {
+    async fn check_ssrf(&self, url: &str) -> Result<(), ToolError> {
         if self.allow_private_ips {
             return Ok(());
         }
-        if url_points_to_private_ip(url)? {
+        if url_points_to_private_ip(url).await? {
             return Err(ToolError::ExecutionFailed(
                 "Request to private/internal IP address is blocked by SSRF protection. \
                  Call .with_allow_private_ips(true) to allow."
@@ -129,7 +144,7 @@ impl HTTPTool {
     }
 
     pub async fn get(&self, url: &str) -> Result<String, ToolError> {
-        self.check_ssrf(url)?;
+        self.check_ssrf(url).await?;
         self.client
             .get(url)
             .send()
@@ -141,7 +156,7 @@ impl HTTPTool {
     }
 
     pub async fn post(&self, url: &str, body: Value) -> Result<String, ToolError> {
-        self.check_ssrf(url)?;
+        self.check_ssrf(url).await?;
         self.client
             .post(url)
             .json(&body)
@@ -221,25 +236,27 @@ mod tests {
         assert!(!is_private_ip(&IpAddr::from([172, 32, 0, 1])));
     }
 
-    #[test]
-    fn test_ssrf_blocks_localhost() {
+    #[tokio::test]
+    async fn test_ssrf_blocks_localhost() {
         let tool = HTTPTool::new();
-        let result = tool.check_ssrf("http://127.0.0.1:6379/");
+        let result = tool.check_ssrf("http://127.0.0.1:6379/").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("SSRF"));
     }
 
-    #[test]
-    fn test_ssrf_blocks_cloud_metadata() {
+    #[tokio::test]
+    async fn test_ssrf_blocks_cloud_metadata() {
         let tool = HTTPTool::new();
-        let result = tool.check_ssrf("http://169.254.169.254/latest/meta-data/");
+        let result = tool
+            .check_ssrf("http://169.254.169.254/latest/meta-data/")
+            .await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_ssrf_allows_when_opt_in() {
+    #[tokio::test]
+    async fn test_ssrf_allows_when_opt_in() {
         let tool = HTTPTool::new().with_allow_private_ips(true);
-        let result = tool.check_ssrf("http://127.0.0.1:6379/");
+        let result = tool.check_ssrf("http://127.0.0.1:6379/").await;
         assert!(result.is_ok());
     }
 
@@ -258,7 +275,9 @@ mod tests {
     #[tokio::test]
     async fn test_run_unknown_method() {
         let t = HTTPTool::new();
-        let r = t.run(r#"{"url":"http://x","method":"put"}"#.to_string()).await;
+        let r = t
+            .run(r#"{"url":"http://x","method":"put"}"#.to_string())
+            .await;
         assert!(r.is_err());
     }
 }

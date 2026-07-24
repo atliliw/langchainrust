@@ -1,18 +1,10 @@
 use langchainrust::{
-    Document,
-    MockEmbeddings,
-    PDFLoader,
-    CSVLoader,
-    DocumentLoader,
-    VectorStoreProvider,
+    CSVLoader, Document, DocumentLoader, Embeddings, MockEmbeddings, PDFLoader,
+    RecursiveCharacterSplitter, TextSplitter, VectorStoreBuilder, VectorStoreProvider,
     VectorStoreType,
-    VectorStoreBuilder,
-    RecursiveCharacterSplitter,
-    TextSplitter,
-    Embeddings,
 };
-use std::sync::Arc;
 use std::io::Write;
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 
 #[tokio::test]
@@ -22,17 +14,17 @@ async fn test_csv_loader_basic_functionality() {
     writeln!(temp_file, "name,age,city").unwrap();
     writeln!(temp_file, "Alice,25,New York").unwrap();
     writeln!(temp_file, "Bob,30,San Francisco").unwrap();
-  
+
     let csv_loader = CSVLoader::new(temp_file.path(), "age");
     let documents = csv_loader.load().await.unwrap();
-    
+
     assert_eq!(documents.len(), 2);
-    
+
     // 检查第一个文档
     let first_doc = &documents[0];
     assert_eq!(first_doc.content, "25");
     assert_eq!(first_doc.metadata.get("name"), Some(&"Alice".to_string()));
-  
+
     println!("✅ CSV Loader test passed");
 }
 
@@ -40,7 +32,7 @@ async fn test_csv_loader_basic_functionality() {
 async fn test_pdf_loader_interface_is_accessible() {
     let pdf_loader = PDFLoader::new("dummy.pdf");
     let result = pdf_loader.load().await;
-    
+
     // 期望因为文件不存在而失败
     assert!(result.is_err());
     println!("✅ PDF Loader interface is accessible");
@@ -48,8 +40,10 @@ async fn test_pdf_loader_interface_is_accessible() {
 
 #[tokio::test]
 async fn test_vector_store_provider_creates_in_memory_store() {
-    let store = VectorStoreProvider::create(VectorStoreType::InMemory).await.unwrap();
-    
+    let store = VectorStoreProvider::create(VectorStoreType::InMemory)
+        .await
+        .unwrap();
+
     let test_docs = vec![
         Document::new("Test document for vector storage."),
         Document::new("Another test document."),
@@ -68,38 +62,43 @@ async fn test_vector_store_provider_creates_in_memory_store() {
     let query = embedding_model.embed_query("test").await.unwrap();
     let results = store.similarity_search(&query, 1).await.unwrap();
     assert_eq!(results.len(), 1);
-    
+
     println!("✅ Vector Store Provider test passed");
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_vector_store_builder_pattern_works() {
-    let store = VectorStoreBuilder::in_memory()
-        .build()
-        .await
-        .unwrap();
-    
+    let store = VectorStoreBuilder::in_memory().build().await.unwrap();
+
     let doc = vec![Document::new("Test document for builder pattern")];
     let embeddings: Vec<Vec<f32>> = vec![vec![0.1; 128]];
 
     let result = store.add_documents(doc, embeddings).await;
-    
-    let _ = result;  // 类型正确就不会编译错误
-    
+
+    let _ = result; // 类型正确就不会编译错误
+
     println!("✅ Vector Store Builder pattern test passed");
 }
 
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_end_to_end_rag_with_csv_loader() {
         // 1. 创建测试 CSV 数据
         let mut csv_file = NamedTempFile::new().unwrap();
         writeln!(csv_file, "title,content").unwrap();
-        writeln!(csv_file, "AI Introduction,Machine learning is a subset of artificial intelligence.").unwrap();
-        writeln!(csv_file, "Rust Programming,Rust is a systems programming language.").unwrap();
+        writeln!(
+            csv_file,
+            "AI Introduction,Machine learning is a subset of artificial intelligence."
+        )
+        .unwrap();
+        writeln!(
+            csv_file,
+            "Rust Programming,Rust is a systems programming language."
+        )
+        .unwrap();
 
         // 2. 使用 CSV 加载器
         let csv_loader = CSVLoader::new(csv_file.path(), "content");
@@ -120,10 +119,13 @@ mod integration_tests {
         vector_store.add_documents(docs, embeddings).await.unwrap();
 
         // 5. 测试检索 - 使用直接的相似性搜索方法
-        let mut query_embedding = vec![0.0; 128];  // 创建零向量作为查询  
+        let mut query_embedding = vec![0.0; 128]; // 创建零向量作为查询
         query_embedding[0] = 0.5; // 设置第一个元素，使查询向量非零
 
-        let results = vector_store.similarity_search(&query_embedding, 2).await.unwrap();
+        let results = vector_store
+            .similarity_search(&query_embedding, 2)
+            .await
+            .unwrap();
 
         assert!(!results.is_empty());
         println!("✅ End-to-end RAG with CSV test passed");
@@ -140,11 +142,11 @@ async fn test_text_splitter_works_with_long_text() {
     let splitter = RecursiveCharacterSplitter::new(40, 10);
     let doc = Document::new(long_text);
     let chunks = splitter.split_document(&doc);
-    
-    assert!(chunks.len() > 1);  // 文字应该被分割
+
+    assert!(chunks.len() > 1); // 文字应该被分割
     for chunk in &chunks {
-        assert!(chunk.page_content().len() <= 60);  // 长度限制加上重叠
+        assert!(chunk.page_content().len() <= 60); // 长度限制加上重叠
     }
-    
+
     println!("✅ Text splitter integration test passed");
 }

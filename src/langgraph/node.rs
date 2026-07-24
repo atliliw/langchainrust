@@ -4,12 +4,12 @@
 //! Nodes are the execution units in a graph. Each node receives the current
 //! state and returns a state update.
 
-use async_trait::async_trait;
-use super::state::{StateSchema, StateUpdate};
 use super::errors::GraphError;
+use super::state::{StateSchema, StateUpdate};
+use async_trait::async_trait;
 use std::future::Future;
-use std::pin::Pin;
 use std::marker::PhantomData;
+use std::pin::Pin;
 
 /// Graph Node trait
 ///
@@ -30,7 +30,7 @@ pub trait GraphNode<S: StateSchema>: Send + Sync + 'static {
         state: &S,
         config: Option<NodeConfig>,
     ) -> Result<StateUpdate<S>, GraphError>;
-    
+
     /// Get node name
     fn name(&self) -> &str;
 }
@@ -40,10 +40,10 @@ pub trait GraphNode<S: StateSchema>: Send + Sync + 'static {
 pub struct NodeConfig {
     /// Maximum recursion depth
     pub recursion_limit: usize,
-    
+
     /// Custom metadata
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
-    
+
     /// Enable debug tracing
     pub debug: bool,
 }
@@ -52,7 +52,8 @@ pub struct NodeConfig {
 pub type NodeResult<S> = Result<StateUpdate<S>, GraphError>;
 
 /// Async node function type (boxed future)
-pub type AsyncNodeFn<S> = Box<dyn Fn(&S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>> + Send + Sync>;
+pub type AsyncNodeFn<S> =
+    Box<dyn Fn(&S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>> + Send + Sync>;
 
 /// AsyncFn trait for simpler async node creation
 pub trait AsyncFn<S: StateSchema>: Send + Sync {
@@ -91,7 +92,7 @@ impl<S: StateSchema, F: AsyncFn<S> + 'static> GraphNode<S> for AsyncNode<S, F> {
     async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
         self.func.call(state).await
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -108,7 +109,9 @@ pub struct FunctionNode<S: StateSchema, F> {
 
 impl<S: StateSchema, F> FunctionNode<S, F>
 where
-    F: Fn(&S) -> Pin<Box<dyn Future<Output = Result<StateUpdate<S>, GraphError>> + Send>> + Send + Sync,
+    F: Fn(&S) -> Pin<Box<dyn Future<Output = Result<StateUpdate<S>, GraphError>> + Send>>
+        + Send
+        + Sync,
 {
     /// Create a new function node
     pub fn new(name: impl Into<String>, func: F) -> Self {
@@ -123,7 +126,9 @@ where
 #[async_trait]
 impl<S: StateSchema, F: 'static> GraphNode<S> for FunctionNode<S, F>
 where
-    F: Fn(&S) -> Pin<Box<dyn Future<Output = Result<StateUpdate<S>, GraphError>> + Send>> + Send + Sync,
+    F: Fn(&S) -> Pin<Box<dyn Future<Output = Result<StateUpdate<S>, GraphError>> + Send>>
+        + Send
+        + Sync,
 {
     async fn execute(
         &self,
@@ -132,7 +137,7 @@ where
     ) -> Result<StateUpdate<S>, GraphError> {
         (self.func)(state).await
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -173,7 +178,7 @@ where
     ) -> Result<StateUpdate<S>, GraphError> {
         (self.func)(state)
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -186,13 +191,17 @@ pub struct SentinelNode {
 
 impl SentinelNode {
     pub fn start() -> Self {
-        Self { name: super::START.to_string() }
+        Self {
+            name: super::START.to_string(),
+        }
     }
-    
+
     pub fn end() -> Self {
-        Self { name: super::END.to_string() }
+        Self {
+            name: super::END.to_string(),
+        }
     }
-    
+
     pub fn custom(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
@@ -208,7 +217,7 @@ impl<S: StateSchema> GraphNode<S> for SentinelNode {
         // Sentinel nodes don't modify state
         Ok(StateUpdate::unchanged())
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -216,25 +225,25 @@ impl<S: StateSchema> GraphNode<S> for SentinelNode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::state::AgentState;
-    
+    use super::*;
+
     #[tokio::test]
     async fn test_sync_node() {
         let node = SyncNode::new("test", |state: &AgentState| {
             Ok(StateUpdate::full(AgentState::new(state.input.clone())))
         });
-        
+
         let state = AgentState::new("Hello".to_string());
         let result = node.execute(&state, None).await;
         assert!(result.is_ok());
     }
-    
+
     #[test]
     fn test_sentinel_nodes() {
         let start: SentinelNode = SentinelNode::start();
         assert_eq!(GraphNode::<AgentState>::name(&start), super::super::START);
-        
+
         let end: SentinelNode = SentinelNode::end();
         assert_eq!(GraphNode::<AgentState>::name(&end), super::super::END);
     }

@@ -1,13 +1,15 @@
 // src/language_models/openai/mod.rs
 
-mod config;
-mod chat;
-pub mod sse;
 pub mod assistants;
+mod chat;
+mod config;
+pub mod responses;
+pub mod sse;
 
-pub use config::OpenAIConfig;
+pub use assistants::{AssistantError, OpenAIAssistant};
 pub use chat::OpenAIChat;
 pub use chat::OpenAIError;
 pub use chat::StructuredOutputMethod;
-pub use sse::{SSEParser, SSEEvent};
-pub use assistants::{OpenAIAssistant, AssistantError};
+pub use config::OpenAIConfig;
+pub use responses::{BuiltinTool, ResponsesConfig, ResponsesError, ResponsesModel};
+pub use sse::{SSEEvent, SSEParser};

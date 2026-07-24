@@ -7,11 +7,8 @@
 //! cargo run --example vectorstore_memory
 //! ```
 
-use langchainrust::{
-    Embeddings, InMemoryVectorStore, MockEmbeddings,
-    VectorStore,
-};
 use langchainrust::vector_stores::Document;
+use langchainrust::{Embeddings, InMemoryVectorStore, MockEmbeddings, VectorStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -6,9 +6,14 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::retrieval::loaders::{DocumentLoader, LoaderError};
 use crate::vector_stores::Document;
+
+/// M59: compile regex once using LazyLock instead of on every call
+static LOC_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap());
 
 /// Sitemap 加载器
 ///
@@ -53,27 +58,25 @@ impl SitemapLoader {
 
     /// 解析 sitemap XML,提取 URL 列表
     fn parse_urls(xml: &str) -> Vec<String> {
-        let re = Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
-        re.captures_iter(xml)
+        LOC_REGEX
+            .captures_iter(xml)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .collect()
     }
 
     /// 爬取单个页面
     async fn fetch_page(url: &str) -> Result<String, LoaderError> {
-        let response = reqwest::get(url).await.map_err(|e| {
-            LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e))
-        })?;
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!(
-                "HTTP 错误 {}: {}",
-                url, status
-            )));
+            return Err(LoaderError::Other(format!("HTTP 错误 {}: {}", url, status)));
         }
-        response.text().await.map_err(|e| {
-            LoaderError::Other(format!("读取响应失败 {}: {}", url, e))
-        })
+        response
+            .text()
+            .await
+            .map_err(|e| LoaderError::Other(format!("读取响应失败 {}: {}", url, e)))
     }
 }
 

@@ -13,19 +13,26 @@ use crate::BaseTool;
 
 use super::handoff::{Handoff, HandoffError, HandoffRecord, HandoffResult};
 
+/// Handoff 管理器内部状态(单 Mutex 避免多锁获取顺序不一致导致死锁)
+struct HandoffState {
+    agents: HashMap<String, Arc<AgentExecutor>>,
+    primary: Option<String>,
+    history: Vec<HandoffRecord>,
+}
+
 /// Handoff 管理器:注册多个 Agent,支持任务交接
 pub struct HandoffManager {
-    agents: Mutex<HashMap<String, Arc<AgentExecutor>>>,
-    primary: Mutex<Option<String>>,
-    history: Mutex<Vec<HandoffRecord>>,
+    state: Mutex<HandoffState>,
 }
 
 impl HandoffManager {
     pub fn new() -> Self {
         Self {
-            agents: Mutex::new(HashMap::new()),
-            primary: Mutex::new(None),
-            history: Mutex::new(Vec::new()),
+            state: Mutex::new(HandoffState {
+                agents: HashMap::new(),
+                primary: None,
+                history: Vec::new(),
+            }),
         }
     }
 
@@ -35,25 +42,30 @@ impl HandoffManager {
         name: impl Into<String>,
         executor: Arc<AgentExecutor>,
     ) -> Result<(), HandoffError> {
-        self.agents.lock().unwrap().insert(name.into(), executor);
+        self.state
+            .lock()
+            .unwrap()
+            .agents
+            .insert(name.into(), executor);
         Ok(())
     }
 
     /// 设置主 Agent
     pub fn set_primary(&self, name: &str) -> Result<(), HandoffError> {
-        let agents = self.agents.lock().unwrap();
-        if !agents.contains_key(name) {
+        let mut state = self.state.lock().unwrap();
+        if !state.agents.contains_key(name) {
             return Err(HandoffError::AgentNotFound(name.to_string()));
         }
-        *self.primary.lock().unwrap() = Some(name.to_string());
+        state.primary = Some(name.to_string());
         Ok(())
     }
 
     /// 执行交接:把任务交给目标 Agent
     pub async fn execute_handoff(&self, handoff: Handoff) -> Result<HandoffResult, HandoffError> {
         let executor = {
-            let agents = self.agents.lock().unwrap();
-            agents
+            let state = self.state.lock().unwrap();
+            state
+                .agents
                 .get(&handoff.target_agent)
                 .ok_or_else(|| HandoffError::AgentNotFound(handoff.target_agent.clone()))?
                 .clone()
@@ -64,19 +76,17 @@ impl HandoffManager {
             .await
             .map_err(|e| HandoffError::ExecutionError(e.to_string()))?;
 
-        let from = self
-            .primary
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_default();
-        self.history.lock().unwrap().push(HandoffRecord {
-            from_agent: from,
-            to_agent: handoff.target_agent.clone(),
-            task: handoff.task.clone(),
-            result: result.clone(),
-            timestamp: Utc::now().to_rfc3339(),
-        });
+        {
+            let mut state = self.state.lock().unwrap();
+            let from = state.primary.clone().unwrap_or_default();
+            state.history.push(HandoffRecord {
+                from_agent: from,
+                to_agent: handoff.target_agent.clone(),
+                task: handoff.task.clone(),
+                result: result.clone(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
 
         Ok(HandoffResult {
             agent_name: handoff.target_agent,
@@ -87,16 +97,15 @@ impl HandoffManager {
 
     /// 运行主 Agent
     pub async fn run(&self, input: String) -> Result<String, HandoffError> {
-        let primary = self
-            .primary
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| HandoffError::AgentNotFound("未设置 primary".to_string()))?;
         let executor = {
-            let agents = self.agents.lock().unwrap();
-            agents
-                .get(&primary)
+            let state = self.state.lock().unwrap();
+            let primary = state
+                .primary
+                .as_ref()
+                .ok_or_else(|| HandoffError::AgentNotFound("未设置 primary".to_string()))?;
+            state
+                .agents
+                .get(primary)
                 .ok_or_else(|| HandoffError::AgentNotFound(primary.clone()))?
                 .clone()
         };
@@ -108,17 +117,16 @@ impl HandoffManager {
 
     /// 获取交接历史
     pub fn history(&self) -> Vec<HandoffRecord> {
-        self.history.lock().unwrap().clone()
+        self.state.lock().unwrap().history.clone()
     }
 
     /// 为每个注册的 Agent 生成 HandoffTool(供主 Agent 调用)
     pub fn handoff_tools(self: &Arc<Self>) -> Vec<Arc<dyn BaseTool>> {
-        let agents = self.agents.lock().unwrap();
-        agents
+        let state = self.state.lock().unwrap();
+        state
+            .agents
             .keys()
-            .map(|name| {
-                Arc::new(HandoffTool::new(self.clone(), name.clone())) as Arc<dyn BaseTool>
-            })
+            .map(|name| Arc::new(HandoffTool::new(self.clone(), name.clone())) as Arc<dyn BaseTool>)
             .collect()
     }
 }
@@ -164,7 +172,11 @@ impl BaseTool for HandoffTool {
         // 输入可能是 JSON {"task": "..."} 或纯文本
         let task = serde_json::from_str::<Value>(&input)
             .ok()
-            .and_then(|v| v.get("task").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.get("task")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or(input);
 
         let handoff = Handoff {

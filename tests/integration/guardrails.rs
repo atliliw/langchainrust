@@ -50,8 +50,7 @@ async fn test_guarded_agent_blocks_sensitive_output() {
     ));
 
     // 让 Agent 输出包含 password,验证被 SensitiveInfo 拦截
-    let config = GuardrailsConfig::new()
-        .with_output(Arc::new(SensitiveInfoGuardrail::new()));
+    let config = GuardrailsConfig::new().with_output(Arc::new(SensitiveInfoGuardrail::new()));
     let mut guarded = GuardedAgent::new(executor, config);
 
     let result = guarded

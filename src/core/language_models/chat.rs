@@ -1,23 +1,29 @@
 // src/core/language_models/chat.rs
 //! Chat model base trait.
 
+use super::BaseLanguageModel;
+use crate::core::tools::ToolCall;
+use crate::core::tools::ToolDefinition;
+use crate::schema::Message;
+use crate::RunnableConfig;
 use async_trait::async_trait;
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use crate::schema::Message;
-use crate::RunnableConfig;
-use crate::core::tools::ToolCall;
-use crate::core::tools::ToolDefinition;
-use super::BaseLanguageModel;
 
 /// LLM result containing response content and metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LLMResult {
+    #[serde(default)]
     pub content: String,
+    #[serde(default)]
     pub model: String,
+    #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_content: Option<String>,
 }
 
 /// Token usage statistics.
@@ -50,7 +56,7 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
     async fn chat(
         &self,
         messages: Vec<Message>,
-        config: Option<RunnableConfig>
+        config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error>;
 
     /// Stream chat with the model.
@@ -64,7 +70,7 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
     async fn stream_chat(
         &self,
         messages: Vec<Message>,
-        config: Option<RunnableConfig>
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>;
 
     /// Chat with system prompt.
@@ -78,7 +84,7 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
     async fn chat_with_system(
         &self,
         system: String,
-        messages: Vec<Message>
+        messages: Vec<Message>,
     ) -> Result<LLMResult, Self::Error> {
         let full_messages = vec![Message::system(system)]
             .into_iter()
@@ -93,7 +99,10 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
     /// Returns `None` by default if the provider does not support tool binding.
     /// Providers that support function calling (OpenAI, Ollama) override this
     /// to return a boxed chat model with the tools attached.
-    fn bind_tools(&self, _tools: Vec<ToolDefinition>) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+    fn bind_tools(
+        &self,
+        _tools: Vec<ToolDefinition>,
+    ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
         None
     }
 }

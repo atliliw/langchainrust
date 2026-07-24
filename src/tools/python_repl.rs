@@ -37,6 +37,60 @@ pub struct PythonREPLOutput {
     pub exit_code: i32,
 }
 
+/// Dangerous Python modules that are blocked for security.
+const BLOCKED_IMPORTS: &[&str] = &[
+    "os",
+    "subprocess",
+    "sys",
+    "shutil",
+    "signal",
+    "ctypes",
+    "multiprocessing",
+    "socket",
+    "http.server",
+    "xmlrpc",
+    "pickle",
+    "shelve",
+    "importlib",
+    "code",
+    "codeop",
+    "compileall",
+    "pty",
+    "commands",
+    "pdb",
+    "webbrowser",
+    "antigravity",
+];
+
+/// Check if Python code contains dangerous imports.
+fn contains_dangerous_import(code: &str) -> Option<String> {
+    // Normalize: remove comments and multi-line strings for a basic scan.
+    // This is a best-effort heuristic, not a full Python parser.
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // Skip comment-only lines
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        // Strip inline comments
+        let code_part = trimmed.split('#').next().unwrap_or(trimmed);
+        // Check for "import X" or "from X import ..."
+        if code_part.contains("import") {
+            for blocked in BLOCKED_IMPORTS {
+                // Match "import blocked" or "from blocked import"
+                if code_part.contains(&format!("import {}", blocked))
+                    || code_part.contains(&format!("from {} ", blocked))
+                    || code_part.contains(&format!("from {}.", blocked))
+                    || code_part.contains(&format!("from {}import", blocked))
+                {
+                    return Some(blocked.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Python 代码执行工具
 ///
 /// 在本地 Python 环境中执行代码并返回结果。
@@ -61,6 +115,8 @@ pub struct PythonREPLTool {
     python_path: String,
     /// 是否允许执行代码（默认 false，必须显式 opt-in）
     dangerously_allow: bool,
+    /// 是否启用危险 import 检查（默认 true）
+    check_dangerous_imports: bool,
 }
 
 impl PythonREPLTool {
@@ -68,6 +124,7 @@ impl PythonREPLTool {
         Self {
             python_path: Self::find_python(),
             dangerously_allow: false,
+            check_dangerous_imports: true,
         }
     }
 
@@ -76,6 +133,7 @@ impl PythonREPLTool {
         Self {
             python_path: path.into(),
             dangerously_allow: false,
+            check_dangerous_imports: true,
         }
     }
 
@@ -85,6 +143,16 @@ impl PythonREPLTool {
     /// 启用后可执行任意 Python 代码，请确保在受控环境中使用。
     pub fn with_dangerously_allow(mut self, allow: bool) -> Self {
         self.dangerously_allow = allow;
+        self
+    }
+
+    /// Disable dangerous import checking (default: enabled).
+    ///
+    /// # Security Warning
+    /// Disabling this allows code to import dangerous modules like `os`,
+    /// `subprocess`, `sys`, etc. Only disable in fully trusted environments.
+    pub fn with_skip_dangerous_imports_check(mut self, skip: bool) -> Self {
+        self.check_dangerous_imports = !skip;
         self
     }
 
@@ -117,7 +185,9 @@ impl Tool for PythonREPLTool {
 
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
         if input.code.trim().is_empty() {
-            return Err(ToolError::InvalidInput("Python code must not be empty".to_string()));
+            return Err(ToolError::InvalidInput(
+                "Python code must not be empty".to_string(),
+            ));
         }
 
         if !self.dangerously_allow {
@@ -126,6 +196,18 @@ impl Tool for PythonREPLTool {
                  Call .with_dangerously_allow(true) to enable execution."
                     .to_string(),
             ));
+        }
+
+        // Check for dangerous imports
+        if self.check_dangerous_imports {
+            if let Some(blocked) = contains_dangerous_import(&input.code) {
+                return Err(ToolError::ExecutionFailed(format!(
+                    "Code contains dangerous import: '{}'. \
+                     This module is blocked for security. \
+                     Call .with_skip_dangerous_imports_check(true) to bypass (not recommended).",
+                    blocked
+                )));
+            }
         }
 
         let timeout_secs = input.timeout_seconds.unwrap_or(30);
@@ -259,11 +341,73 @@ mod tests {
                 if output.exit_code == 0 || !output.stdout.is_empty() {
                     // Python available, verify functionality
                 } else {
-                    eprintln!("Python may not be installed (exit_code={})", output.exit_code);
+                    eprintln!(
+                        "Python may not be installed (exit_code={})",
+                        output.exit_code
+                    );
                 }
             }
             Err(e) => {
                 eprintln!("Python not available (may be expected): {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_dangerous_import_detection() {
+        assert!(contains_dangerous_import("import os").is_some());
+        assert!(contains_dangerous_import("import subprocess").is_some());
+        assert!(contains_dangerous_import("from sys import path").is_some());
+        assert!(contains_dangerous_import("from os.path import join").is_some());
+        // Safe imports should pass
+        assert!(contains_dangerous_import("import math").is_none());
+        assert!(contains_dangerous_import("import json").is_none());
+        assert!(contains_dangerous_import("from datetime import datetime").is_none());
+        // Comments should be ignored
+        assert!(contains_dangerous_import("# import os").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_python_repl_blocks_dangerous_import() {
+        let tool = PythonREPLTool::new().with_dangerously_allow(true);
+        let result = tool
+            .invoke(PythonREPLInput {
+                code: "import os; print(os.getcwd())".to_string(),
+                timeout_seconds: Some(10),
+            })
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("dangerous import"),
+            "Expected dangerous import error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_python_repl_allows_safe_import() {
+        let tool = PythonREPLTool::new().with_dangerously_allow(true);
+        let result = tool
+            .invoke(PythonREPLInput {
+                code: "import math; print(math.pi)".to_string(),
+                timeout_seconds: Some(10),
+            })
+            .await;
+        // Should not fail due to import check (may fail if Python not installed)
+        match result {
+            Ok(output) => {
+                if output.exit_code == 0 {
+                    assert!(output.stdout.contains("3.14"));
+                }
+            }
+            Err(e) => {
+                // Should NOT be a dangerous import error
+                assert!(
+                    !e.to_string().contains("dangerous import"),
+                    "math should not be blocked: {}",
+                    e
+                );
             }
         }
     }

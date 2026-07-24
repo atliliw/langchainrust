@@ -64,65 +64,84 @@ pub use mcp::MCPServer;
 /// Sessions: conversation lifecycle management.
 pub mod sessions;
 
+pub mod evaluation;
 /// Guardrails: input/output safety validation.
 pub mod guardrails;
-pub mod evaluation;
 
 /// A2A: Agent-to-Agent protocol for inter-agent communication.
 pub mod a2a;
 
 // 重新导出常用类型
-pub use core::{
-    Runnable, RunnableConfig, BaseLanguageModel, BaseChatModel, 
-    BaseTool, Tool, ToolError, ToolRegistry,
-    ToolDefinition, ToolCall, ToolCallResult, FunctionDefinition, FunctionCall,
+pub use agents::{
+    AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentError, AgentExecutor,
+    AgentFinish, AgentOutput, AgentStep, BaseAgent, CRAGError, CRAGResult, Citation,
+    CorrectiveRAGAgent, DeepResearchAgent, FunctionCallingAgent, HandoffManager, PlanExecuteAgent,
+    PlanExecuteError, RagDecision, ReActAgent, ResearchError, ResearchReport,
+    StreamingFunctionCallingAgent, ToolInput,
+};
+pub use core::batch::{
+    BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
 };
 pub use core::language_models::LLMResult;
+pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
+pub use core::tools::to_tool_definition;
+pub use core::tools::StructuredOutput;
+pub use core::{
+    BaseChatModel, BaseLanguageModel, BaseTool, FunctionCall, FunctionDefinition, Runnable,
+    RunnableConfig, Tool, ToolCall, ToolCallResult, ToolDefinition, ToolError, ToolRegistry,
+};
+pub use evaluation::{
+    Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator,
+    ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, PairwiseJudge, Predictor,
+    RegexMatch, Report, Score, StringDistance, Verdict,
+};
 pub use guardrails::{
     ForbiddenWordsGuardrail, GuardedAgent, GuardrailError, GuardrailRunner, GuardrailsConfig,
     InputGuardrail, MaxLengthGuardrail, OutputGuardrail, SensitiveInfoGuardrail,
 };
-pub use evaluation::{
-    EvalError, Score, Example, Dataset, Evaluator, Predictor, EvalRunner, Report,
-    ExactMatch, StringDistance, EmbeddingSimilarity, LLMAsJudge,
-    Bleu, ContainsKeyword, LengthCheck, RegexMatch,
-    Faithfulness, PairwiseJudge, Verdict,
-};
-pub use core::tools::StructuredOutput;
-pub use schema::{ImageContent, Message, MessageType};
 pub use language_models::{
-    OpenAIChat, OpenAIConfig, OpenAIAssistant, AssistantError,
-    OllamaChat, OllamaConfig,
-    DeepSeekChat, DeepSeekConfig,
-    MoonshotChat, MoonshotConfig,
-    ZhipuChat, ZhipuConfig,
-    QwenChat, QwenConfig,
-    AnthropicChat, AnthropicConfig, AnthropicError,
-    GeminiChat, GeminiConfig, GeminiError,
+    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken, AssistantError,
+    DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError, MoonshotChat,
+    MoonshotConfig, OllamaChat, OllamaConfig, OpenAIAssistant, OpenAIChat, OpenAIConfig, QwenChat,
+    QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };
-pub use tools::{Calculator, CalculatorInput, DateTimeTool, DateTimeInput, SimpleMathTool, MathInput, URLFetchTool, URLFetchInput, WikipediaTool, WikipediaInput, PythonREPLTool, PythonREPLInput, DuckDuckGoSearchTool, SearchInput, HTTPTool, FileTool, ComputerUseTool, ComputerMode, ComputerUseInput, ComputerUseOutput};
-pub use agents::{AgentAction, AgentFinish, AgentStep, AgentOutput, ToolInput, BaseAgent, AgentExecutor, AgentError, ReActAgent, FunctionCallingAgent, PlanExecuteAgent, HandoffManager, StreamingFunctionCallingAgent};
-pub use core::tools::to_tool_definition;
-pub use memory::{BaseMemory, MemoryError, ChatMessageHistory, ConversationBufferMemory, ConversationBufferWindowMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory, PersistentMemory, PersistenceConfig, MemoryData, VectorStoreRetrieverMemory, ContextWindow, Strategy};
+pub use memory::{
+    BaseMemory, ChatMessageHistory, ContextWindow, ConversationBufferMemory,
+    ConversationBufferWindowMemory, ConversationSummaryBufferMemory, ConversationSummaryMemory,
+    MemoryData, MemoryError, PersistenceConfig, PersistentMemory, Strategy,
+    VectorStoreRetrieverMemory,
+};
+pub use schema::{ImageContent, Message, MessageType};
+pub use tools::{
+    Calculator, CalculatorInput, ComputerMode, ComputerUseInput, ComputerUseOutput,
+    ComputerUseTool, DateTimeInput, DateTimeTool, DuckDuckGoSearchTool, FileTool, HTTPTool,
+    MathInput, PythonREPLInput, PythonREPLTool, SearchInput, SimpleMathTool, URLFetchInput,
+    URLFetchTool, WikipediaInput, WikipediaTool,
+};
 
+pub use chains::{
+    BaseChain, ChainError, ChainResult, ChainStream, ConversationChain, ConversationChainBuilder,
+    ConversationRetrievalChain, LLMChain, LLMChainBuilder, LLMRouterChain, MapReduceDocumentsChain,
+    MapRerankDocumentsChain, RefineDocumentsChain, RetrievalQA, RouteDestination, RouterChain,
+    SequentialChain, StreamToken, StuffDocumentsChain,
+};
 #[cfg(feature = "mongodb-persistence")]
 pub use memory::MongoPersistentMemory;
-pub use chains::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken, LLMChain, LLMChainBuilder, SequentialChain, ConversationChain, ConversationChainBuilder, RouterChain, LLMRouterChain, RouteDestination, RetrievalQA, ConversationRetrievalChain, StuffDocumentsChain, RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain};
 
 // Embeddings
 pub use embeddings::{
-    Embeddings, EmbeddingError,
-    OpenAIEmbeddings, OpenAIEmbeddingsConfig,
-    MockEmbeddings,
-    BagOfWordsEmbeddings, LocalEmbeddings,
-    DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
-    QwenEmbeddings, QwenEmbeddingsConfig,
-    cosine_similarity,
+    cosine_similarity, BagOfWordsEmbeddings, DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
+    EmbeddingError, Embeddings, LocalEmbeddings, MockEmbeddings, OpenAIEmbeddings,
+    OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
 };
 
 // Vector Stores
-pub use vector_stores::{Document, SearchResult, VectorStore, VectorStoreError, InMemoryVectorStore, FileVectorStore, VectorStoreProvider, VectorStoreType, VectorStoreBuilder, ChromaDBVectorStore, ChromaDBConfig};
+pub use vector_stores::{
+    ChromaDBConfig, ChromaDBVectorStore, Document, FileVectorStore, InMemoryVectorStore,
+    SearchResult, VectorStore, VectorStoreBuilder, VectorStoreError, VectorStoreProvider,
+    VectorStoreType,
+};
 
 #[cfg(feature = "redis-storage")]
 pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
@@ -134,59 +153,91 @@ pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
 pub use vector_stores::PGVectorStore;
 
 pub use vector_stores::PineconeStore;
-pub use vector_stores::{ChunkDocument, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore, ChunkedDocumentStore};
+pub use vector_stores::{
+    ChunkDocument, ChunkedDocumentStore, ChunkedDocumentStoreTrait, InMemoryChunkedDocumentStore,
+};
 
 #[cfg(feature = "qdrant-integration")]
-pub use vector_stores::{QdrantVectorStore, QdrantConfig};
+pub use vector_stores::{QdrantConfig, QdrantVectorStore};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
-pub use retrieval::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError, TextSplitter, RecursiveCharacterSplitter, SemanticSplitter, PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, WebScraperLoader, SitemapLoader, DocxLoader, DocumentLoader, LoaderError};
-pub use retrieval::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
-pub use retrieval::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion, ChunkedHybridRetriever};
-pub use retrieval::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
-pub use retrieval::{MultiQueryRetriever, MultiQueryConfig, MultiQueryError, StaticQueryGenerator};
-pub use retrieval::{HyDERetriever, HyDEConfig, HyDEError};
-pub use retrieval::{Reranker, KeywordReranker, BM25Reranker, RerankingExecutor, RerankingConfig, RerankingError};
+pub use retrieval::{
+    reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RetrievalSource,
+    RetrievedDocument,
+};
+pub use retrieval::{
+    AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,
+    ChunkedSearchResult, Tokenizer,
+};
+pub use retrieval::{
+    BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,
+};
+pub use retrieval::{
+    CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
+    PDFLoader, RecursiveCharacterSplitter, Retriever, RetrieverError, RetrieverTrait,
+    SemanticSplitter, SimilarityRetriever, SitemapLoader, TextLoader, TextSplitter,
+    WebScraperLoader,
+};
+pub use retrieval::{
+    GraphCommunity, GraphEntity, GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult,
+    GraphRelation, GraphStore, QueryMode as GraphQueryMode,
+};
+pub use retrieval::{HyDEConfig, HyDEError, HyDERetriever};
+pub use retrieval::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
+pub use retrieval::{MultiQueryConfig, MultiQueryError, MultiQueryRetriever, StaticQueryGenerator};
 
 // Prompts
-pub use prompts::{PromptTemplate, ChatPromptTemplate, FewShotPromptTemplate, ExampleSelector, LengthBasedExampleSelector};
+pub use prompts::{
+    ChatPromptTemplate, ExampleSelector, FewShotPromptTemplate, LengthBasedExampleSelector,
+    PromptTemplate,
+};
 
 // Callbacks
-pub use callbacks::{CallbackHandler, CallbackManager, RunTree, RunType, LangSmithClient, LangSmithConfig, LangSmithError, StdOutHandler, LangSmithHandler, FileCallbackHandler, LogFormat};
 #[cfg(feature = "opentelemetry")]
 pub use callbacks::OtelHandler;
+pub use callbacks::{
+    CallbackHandler, CallbackManager, FileCallbackHandler, LangSmithClient, LangSmithConfig,
+    LangSmithError, LangSmithHandler, LogFormat, RunTree, RunType, StdOutHandler,
+};
+
+// Tracing
+#[cfg(feature = "opentelemetry")]
+pub use callbacks::OtelTracingBackend;
+pub use callbacks::{
+    clear_span_stack, ConsoleTracingBackend, InMemoryTracingBackend, SpanGuard, SpanId, SpanKind,
+    SpanStatus, SpanTokenUsage, TraceNode, TraceSpan, Tracer, TracingBackend,
+};
 
 // Output Parsers
 pub use core::output_parsers::{
-    BaseOutputParser, OutputParserError, OutputParserResult,
-    StrOutputParser, CommaSeparatedListOutputParser,
-    JsonOutputParser, StructuredOutputParser, TypedOutputParser,
+    BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
+    OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
 
 // Structured Output
-pub use core::structured_output::{StructuredOutputExt, StructuredOutputError, with_structured_output};
+pub use core::structured_output::{
+    stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,
+    StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
+};
 
 // A2A
 pub use a2a::{
-    A2AServer, A2AClient, A2AError,
-    AgentCard, A2ATask, A2AMessage, TaskStatus,
-    A2ARequest, A2AResponse, A2ATaskResult, A2AErrorData,
+    A2AClient, A2AError, A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2AServer, A2ATask,
+    A2ATaskResult, AgentCard, TaskStatus,
 };
 
 // LangGraph
 pub use langgraph::{
-    StateSchema, StateUpdate, Reducer, ReplaceReducer, AppendReducer, AppendMessagesReducer, AppendStepsReducer,
-    GraphNode, NodeResult, NodeConfig, AsyncNode, AsyncFn,
-    GraphEdge, ConditionalEdge, EdgeTarget, FunctionRouter, AsyncFunctionRouter,
-    StateGraph, GraphBuilder, START, END,
-    CompiledGraph, GraphInvocation, StreamEvent, ExecutionStep, GraphExecution, ParallelInvocation, ParallelBranch,
-    GraphError, GraphResult,
-    Checkpointer, MemoryCheckpointer, ThreadSafeMemoryCheckpointer, FileCheckpointer, CheckpointData,
-    AgentState, MessageEntry, MessageRole, StepEntry,
-    SubgraphNode, SubgraphBuilder,
-    GraphPersistence, GraphDefinition, NodeDefinition, EdgeDefinition, NodeType, EdgeType, RouterDefinition,
-    MemoryPersistence, FilePersistence,
+    AgentState, AppendMessagesReducer, AppendReducer, AppendStepsReducer, AsyncFn,
+    AsyncFunctionRouter, AsyncNode, CheckpointData, Checkpointer, CompiledGraph, ConditionalEdge,
+    EdgeDefinition, EdgeTarget, EdgeType, ExecutionStep, FileCheckpointer, FilePersistence,
+    FunctionRouter, GraphBuilder, GraphDefinition, GraphEdge, GraphError, GraphExecution,
+    GraphInvocation, GraphNode, GraphPersistence, GraphResult, MemoryCheckpointer,
+    MemoryPersistence, MessageEntry, MessageRole, NodeConfig, NodeDefinition, NodeResult, NodeType,
+    ParallelBranch, ParallelInvocation, Reducer, ReplaceReducer, RouterDefinition, StateGraph,
+    StateSchema, StateUpdate, StepEntry, StreamEvent, SubgraphBuilder, SubgraphNode,
+    ThreadSafeMemoryCheckpointer, END, START,
 };

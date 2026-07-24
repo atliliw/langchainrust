@@ -13,13 +13,12 @@
 //! - `OPENAI_BASE_URL`:API 基址(可选)
 
 use futures_util::StreamExt;
-use langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
 use langchainrust::schema::Message;
+use langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 

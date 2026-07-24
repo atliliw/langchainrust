@@ -300,9 +300,10 @@ impl Tokenizer {
                 .to_lowercase();
 
             if !word_lower.is_empty()
-                && (self.keep_stopwords || !self.stopwords_en.contains(&word_lower)) {
-                    terms.push(word_lower);
-                }
+                && (self.keep_stopwords || !self.stopwords_en.contains(&word_lower))
+            {
+                terms.push(word_lower);
+            }
         }
 
         terms

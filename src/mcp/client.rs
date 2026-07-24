@@ -4,12 +4,16 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 use super::protocol::{MCPError, MCPRequest};
 use super::tool_adapter::MCPToolAdapter;
 use super::transport::{MCPTransport, SseTransport, StdioTransport};
 use super::types::{MCPConfig, MCPToolDefinition, MCPToolResult};
 use crate::BaseTool;
+
+/// Default timeout for MCP client connection and initialization (30 seconds).
+const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct MCPClientInner {
     transport: Box<dyn MCPTransport + Send + Sync>,
@@ -36,6 +40,13 @@ impl MCPClient {
     /// 建立传输层连接后,发送 MCP `initialize` 握手请求,
     /// 再发送 `notifications/initialized` 通知,完成协议握手。
     pub async fn connect(config: MCPConfig) -> Result<Self, MCPError> {
+        // Wrap the entire connect + initialize flow in a timeout
+        timeout(MCP_CONNECT_TIMEOUT, Self::connect_inner(config))
+            .await
+            .map_err(|_| MCPError::new(-1, "MCP 连接超时: 30 秒内未完成握手"))?
+    }
+
+    async fn connect_inner(config: MCPConfig) -> Result<Self, MCPError> {
         let transport: Box<dyn MCPTransport + Send + Sync> = match &config {
             MCPConfig::Stdio { .. } => Box::new(StdioTransport::new(&config).await?),
             MCPConfig::Sse { .. } => Box::new(SseTransport::new(&config)?),
@@ -61,7 +72,11 @@ impl MCPClient {
         client.send_request("initialize", Some(init_params)).await?;
 
         // 发送 initialized 通知(无 id,不等响应)
-        client.inner.transport.notify("notifications/initialized", None).await?;
+        client
+            .inner
+            .transport
+            .notify("notifications/initialized", None)
+            .await?;
 
         Ok(client)
     }
@@ -70,11 +85,7 @@ impl MCPClient {
         self.inner.request_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    async fn send_request(
-        &self,
-        method: &str,
-        params: Option<Value>,
-    ) -> Result<Value, MCPError> {
+    async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value, MCPError> {
         let req = MCPRequest::new(self.next_id(), method, params);
         let resp = self.inner.transport.request(req).await?;
         resp.into_result()
@@ -83,20 +94,17 @@ impl MCPClient {
     /// 获取可用工具列表(`tools/list`)
     pub async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError> {
         let result = self.send_request("tools/list", None).await?;
-        let tools: Vec<MCPToolDefinition> = result
+        let tools_value = result
             .get("tools")
-            .and_then(|t| serde_json::from_value(t.clone()).ok())
-            .unwrap_or_default();
+            .ok_or_else(|| MCPError::new(-1, "tools/list 响应缺少 'tools' 字段"))?;
+        let tools: Vec<MCPToolDefinition> = serde_json::from_value(tools_value.clone())
+            .map_err(|e| MCPError::new(-1, format!("解析工具列表失败: {}", e)))?;
         *self.inner.tools.lock().await = tools.clone();
         Ok(tools)
     }
 
     /// 调用工具(`tools/call`)
-    pub async fn call_tool(
-        &self,
-        name: &str,
-        arguments: Value,
-    ) -> Result<MCPToolResult, MCPError> {
+    pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
         let params = json!({"name": name, "arguments": arguments});
         let result = self.send_request("tools/call", Some(params)).await?;
         serde_json::from_value(result)

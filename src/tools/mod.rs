@@ -1,18 +1,20 @@
 // src/tools/mod.rs
 mod calculator;
 mod datetime;
+pub mod extended;
 mod math;
-mod url_fetch;
-mod wikipedia;
 mod python_repl;
 mod search;
-pub mod extended;
+mod url_fetch;
+mod wikipedia;
 
 pub use calculator::{Calculator, CalculatorInput, CalculatorOutput};
-pub use datetime::{DateTimeTool, DateTimeInput, DateTimeOutput};
-pub use math::{SimpleMathTool, MathInput, MathOutput};
-pub use url_fetch::{URLFetchTool, URLFetchInput, URLFetchOutput};
-pub use wikipedia::{WikipediaTool, WikipediaInput, WikipediaOutput};
-pub use python_repl::{PythonREPLTool, PythonREPLInput, PythonREPLOutput};
+pub use datetime::{DateTimeInput, DateTimeOutput, DateTimeTool};
+pub use extended::{
+    ComputerMode, ComputerUseInput, ComputerUseOutput, ComputerUseTool, FileTool, HTTPTool,
+};
+pub use math::{MathInput, MathOutput, SimpleMathTool};
+pub use python_repl::{PythonREPLInput, PythonREPLOutput, PythonREPLTool};
 pub use search::{DuckDuckGoSearchTool, SearchInput, SearchOutput};
-pub use extended::{ComputerUseTool, ComputerMode, ComputerUseInput, ComputerUseOutput, FileTool, HTTPTool};
+pub use url_fetch::{URLFetchInput, URLFetchOutput, URLFetchTool};
+pub use wikipedia::{WikipediaInput, WikipediaOutput, WikipediaTool};

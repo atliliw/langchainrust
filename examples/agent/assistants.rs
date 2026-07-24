@@ -10,15 +10,14 @@
 //! # 环境变量
 //! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
 
-use langchainrust::{OpenAIAssistant, OpenAIConfig, Calculator, BaseTool};
+use langchainrust::{BaseTool, Calculator, OpenAIAssistant, OpenAIConfig};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== OpenAI Assistants API 示例 ===\n");
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .unwrap_or_else(|_| "sk-test".to_string());
+    let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "sk-test".to_string());
 
     let config = OpenAIConfig {
         api_key,

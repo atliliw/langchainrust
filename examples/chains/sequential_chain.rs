@@ -16,8 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn make_llm() -> OpenAIChat {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     OpenAIChat::new(OpenAIConfig {

@@ -1,6 +1,7 @@
 //! PGVector vector store (PostgreSQL + pgvector extension)
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use pgvector::Vector;
 use regex::Regex;
@@ -10,13 +11,15 @@ use sqlx::PgPool;
 use crate::embeddings::Embeddings;
 use crate::vector_stores::Document;
 
+static TABLE_NAME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
+
 /// Validate that a table name is safe for SQL interpolation.
 ///
 /// Only allows: `^[a-zA-Z_][a-zA-Z0-9_]*$`
 /// This prevents SQL injection via table names.
 fn validate_table_name(table: &str) -> Result<(), String> {
-    let re = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap();
-    if re.is_match(table) {
+    if TABLE_NAME_RE.is_match(table) {
         Ok(())
     } else {
         Err(format!(

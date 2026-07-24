@@ -5,8 +5,21 @@
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
-use regex::Regex;
 use std::path::PathBuf;
+
+/// L11: pre-compile heading regexes for all 6 levels using LazyLock
+fn heading_regex(level: usize) -> &'static regex::Regex {
+    use std::sync::LazyLock;
+    static HEADING_RE: [LazyLock<regex::Regex>; 6] = [
+        LazyLock::new(|| regex::Regex::new(r"^#[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| regex::Regex::new(r"^##[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| regex::Regex::new(r"^###[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| regex::Regex::new(r"^####[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| regex::Regex::new(r"^#####[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| regex::Regex::new(r"^######[ \t]+(.+)").unwrap()),
+    ];
+    &HEADING_RE[level.saturating_sub(1).min(5)]
+}
 
 /// Markdown 文档加载器
 ///
@@ -14,11 +27,11 @@ use std::path::PathBuf;
 pub struct MarkdownLoader {
     /// Markdown 文件路径
     pub path: PathBuf,
-    
+
     /// 是否按标题分割
     /// 如果为 true，按 `#` 标题分割为多个文档
     pub split_by_heading: bool,
-    
+
     /// 分割的标题级别（1-6）
     /// 例如 heading_level=2 表示按 `##` 分割
     pub heading_level: usize,
@@ -36,7 +49,7 @@ impl MarkdownLoader {
             heading_level: 1,
         }
     }
-    
+
     /// 创建按标题分割的 Markdown 加载器
     ///
     /// # 参数
@@ -49,13 +62,13 @@ impl MarkdownLoader {
             heading_level: heading_level.clamp(1, 6),
         }
     }
-    
+
     /// 设置是否按标题分割
     pub fn with_split_by_heading(mut self, split: bool) -> Self {
         self.split_by_heading = split;
         self
     }
-    
+
     /// 设置标题级别
     pub fn with_heading_level(mut self, level: usize) -> Self {
         self.heading_level = level.clamp(1, 6);
@@ -88,10 +101,7 @@ impl DocumentLoader for MarkdownLoader {
 
 impl MarkdownLoader {
     fn split_by_headings(&self, content: &str) -> Result<Vec<Document>, LoaderError> {
-        let heading_prefix = "#".repeat(self.heading_level);
-        let pattern = format!(r"^{}[ \t]+(.+)", heading_prefix);
-        let heading_regex = Regex::new(&pattern)
-            .map_err(|e| LoaderError::Other(format!("正则错误: {}", e)))?;
+        let heading_regex = heading_regex(self.heading_level);
 
         let mut documents = Vec::new();
         let mut sections: Vec<(String, String)> = Vec::new();
@@ -103,7 +113,8 @@ impl MarkdownLoader {
                 if !current_content.trim().is_empty() {
                     sections.push((current_title.clone(), current_content.trim().to_string()));
                 }
-                current_title = caps.get(1)
+                current_title = caps
+                    .get(1)
                     .map(|m| m.as_str().trim().to_string())
                     .unwrap_or_else(|| "Untitled".to_string());
                 current_content = String::new();
@@ -145,7 +156,7 @@ mod tests {
     async fn test_markdown_loader_nonexistent() {
         let loader = MarkdownLoader::new("./nonexistent.md");
         let result = loader.load().await;
-        
+
         assert!(result.is_err());
     }
 
@@ -153,15 +164,18 @@ mod tests {
     async fn test_markdown_loader_single_document() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "# Title\n\nContent here.").unwrap();
-        
+
         let loader = MarkdownLoader::new(temp_file.path());
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("Title"));
-        assert_eq!(docs[0].metadata.get("format"), Some(&"markdown".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("format"),
+            Some(&"markdown".to_string())
+        );
     }
 
     #[tokio::test]
@@ -172,15 +186,21 @@ mod tests {
         writeln!(temp_file).unwrap();
         writeln!(temp_file, "# Section 2").unwrap();
         writeln!(temp_file, "Content for section 2.").unwrap();
-        
+
         let loader = MarkdownLoader::new_with_heading_split(temp_file.path(), 1);
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 2);
-        assert_eq!(docs[0].metadata.get("heading"), Some(&"Section 1".to_string()));
-        assert_eq!(docs[1].metadata.get("heading"), Some(&"Section 2".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("heading"),
+            Some(&"Section 1".to_string())
+        );
+        assert_eq!(
+            docs[1].metadata.get("heading"),
+            Some(&"Section 2".to_string())
+        );
     }
 
     #[tokio::test]
@@ -194,10 +214,10 @@ mod tests {
         writeln!(temp_file).unwrap();
         writeln!(temp_file, "## Subsection 2").unwrap();
         writeln!(temp_file, "Sub content 2.").unwrap();
-        
+
         let loader = MarkdownLoader::new_with_heading_split(temp_file.path(), 2);
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 3);

@@ -183,11 +183,11 @@ impl Default for ComputerUseTool {
 
 impl ComputerUseTool {
     /// Build the Anthropic messages API request body for a computer-use action.
-    fn build_anthropic_request(&self, action_input: &ComputerUseInput) -> Value {
-        let tool_input = self.build_tool_input(action_input);
+    fn build_anthropic_request(&self, action_input: &ComputerUseInput) -> Result<Value, ToolError> {
+        let tool_input = self.build_tool_input(action_input)?;
         let tool_input_str = serde_json::to_string(&tool_input).unwrap_or_default();
 
-        serde_json::json!({
+        Ok(serde_json::json!({
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 4096,
             "tools": [
@@ -211,16 +211,16 @@ impl ComputerUseTool {
                 "type": "tool",
                 "name": "computer"
             }
-        })
+        }))
     }
 
     /// Build the tool-specific input dict that Anthropic's computer-use API
     /// expects for each action type.
-    fn build_tool_input(&self, input: &ComputerUseInput) -> Value {
+    fn build_tool_input(&self, input: &ComputerUseInput) -> Result<Value, ToolError> {
         match input.action.as_str() {
-            "screenshot" => serde_json::json!({
+            "screenshot" => Ok(serde_json::json!({
                 "action": "screenshot"
-            }),
+            })),
             "click" => {
                 let coord = input.coordinate.as_deref().unwrap_or(&[0, 0]);
                 let button = if input
@@ -233,16 +233,16 @@ impl ComputerUseTool {
                 } else {
                     "left"
                 };
-                serde_json::json!({
+                Ok(serde_json::json!({
                     "action": "mouse_click",
                     "coordinate": coord,
                     "text": button
-                })
+                }))
             }
-            "type" => serde_json::json!({
+            "type" => Ok(serde_json::json!({
                 "action": "type",
                 "text": input.text.as_deref().unwrap_or("")
-            }),
+            })),
             "scroll" => {
                 let coord = input.coordinate.as_deref().unwrap_or(&[0, 0]);
                 let direction = input.direction.as_deref().unwrap_or("down");
@@ -255,24 +255,25 @@ impl ComputerUseTool {
                 } else {
                     "down"
                 };
-                serde_json::json!({
+                Ok(serde_json::json!({
                     "action": "scroll",
                     "coordinate": coord,
                     "direction": scroll_direction,
                     "amount": input.amount.unwrap_or(3)
-                })
+                }))
             }
-            "key_press" => serde_json::json!({
+            "key_press" => Ok(serde_json::json!({
                 "action": "key",
                 "text": input.keys.as_deref().unwrap_or(&[]).join("+")
-            }),
-            "wait" => serde_json::json!({
+            })),
+            "wait" => Ok(serde_json::json!({
                 "action": "wait",
                 "duration_ms": input.duration_ms.unwrap_or(1000)
-            }),
-            _ => serde_json::json!({
-                "action": &input.action
-            }),
+            })),
+            _ => Err(ToolError::InvalidInput(format!(
+                "Unknown action: '{}'. Valid actions: screenshot, click, type, scroll, key_press, wait",
+                input.action
+            ))),
         }
     }
 
@@ -285,21 +286,19 @@ impl ComputerUseTool {
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header(
-                "anthropic-beta",
-                "computer-use-2025-01-24",
-            )
+            .header("anthropic-beta", "computer-use-2025-01-24")
             .header("content-type", "application/json")
             .json(body)
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Anthropic API request failed: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("Anthropic API request failed: {}", e))
+            })?;
 
         let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read response body: {}", e)))?;
+        let text = resp.text().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("Failed to read response body: {}", e))
+        })?;
 
         if !status.is_success() {
             return Err(ToolError::ExecutionFailed(format!(
@@ -312,7 +311,10 @@ impl ComputerUseTool {
     }
 
     /// Execute an action in AnthropicApi mode.
-    async fn execute_anthropic(&self, input: &ComputerUseInput) -> Result<ComputerUseOutput, ToolError> {
+    async fn execute_anthropic(
+        &self,
+        input: &ComputerUseInput,
+    ) -> Result<ComputerUseOutput, ToolError> {
         if self.api_key.is_empty() {
             return Err(ToolError::InvalidInput(
                 "API key is required for AnthropicApi mode".to_string(),
@@ -321,7 +323,7 @@ impl ComputerUseTool {
 
         self.validate_input(input)?;
 
-        let body = self.build_anthropic_request(input);
+        let body = self.build_anthropic_request(input)?;
         let response_text = self.call_anthropic_api(&body).await?;
 
         // Try to extract screenshot base64 from the response if this was a
@@ -351,7 +353,10 @@ impl ComputerUseTool {
 
     /// Execute an action in Native mode (placeholder).
     #[cfg(feature = "native-computer")]
-    async fn execute_native(&self, input: &ComputerUseInput) -> Result<ComputerUseOutput, ToolError> {
+    async fn execute_native(
+        &self,
+        input: &ComputerUseInput,
+    ) -> Result<ComputerUseOutput, ToolError> {
         self.validate_input(input)?;
 
         match input.action.as_str() {
@@ -416,14 +421,7 @@ impl ComputerUseTool {
 
     /// Validate the input for the given action.
     fn validate_input(&self, input: &ComputerUseInput) -> Result<(), ToolError> {
-        let valid_actions = [
-            "screenshot",
-            "click",
-            "type",
-            "scroll",
-            "key_press",
-            "wait",
-        ];
+        let valid_actions = ["screenshot", "click", "type", "scroll", "key_press", "wait"];
 
         if !valid_actions.contains(&input.action.as_str()) {
             return Err(ToolError::InvalidInput(format!(
@@ -733,7 +731,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "screenshot");
     }
 
@@ -749,7 +747,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "mouse_click");
         assert_eq!(result["coordinate"], serde_json::json!([100, 200]));
         assert_eq!(result["text"], "left");
@@ -767,7 +765,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["text"], "right");
     }
 
@@ -783,7 +781,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "type");
         assert_eq!(result["text"], "hello world");
     }
@@ -800,7 +798,7 @@ mod tests {
             amount: Some(5),
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "scroll");
         assert_eq!(result["coordinate"], serde_json::json!([500, 300]));
         assert_eq!(result["direction"], "up");
@@ -819,7 +817,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "key");
         assert_eq!(result["text"], "ctrl+c");
     }
@@ -836,9 +834,26 @@ mod tests {
             amount: None,
             duration_ms: Some(2000),
         };
-        let result = t.build_tool_input(&input);
+        let result = t.build_tool_input(&input).unwrap();
         assert_eq!(result["action"], "wait");
         assert_eq!(result["duration_ms"], 2000);
+    }
+
+    #[test]
+    fn test_build_tool_input_unknown_action() {
+        let t = tool();
+        let input = ComputerUseInput {
+            action: "fly".to_string(),
+            coordinate: None,
+            text: None,
+            keys: None,
+            direction: None,
+            amount: None,
+            duration_ms: None,
+        };
+        let result = t.build_tool_input(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown action"));
     }
 
     // -- constructor tests --
@@ -878,7 +893,7 @@ mod tests {
             amount: None,
             duration_ms: None,
         };
-        let body = t.build_anthropic_request(&input);
+        let body = t.build_anthropic_request(&input).unwrap();
         assert_eq!(body["model"], "claude-sonnet-4-20250514");
         assert!(body["tools"].is_array());
         assert_eq!(body["tools"][0]["type"], "computer_20250124");

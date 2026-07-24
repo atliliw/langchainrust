@@ -31,19 +31,21 @@
 //! ```
 
 pub mod base;
-pub mod llm_chain;
-pub mod sequential_chain;
 pub mod conversation_chain;
-pub mod router_chain;
-pub mod retrieval_qa;
 pub mod conversation_retrieval;
 pub mod document_chains;
+pub mod llm_chain;
+pub mod retrieval_qa;
+pub mod router_chain;
+pub mod sequential_chain;
 
 pub use base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
-pub use llm_chain::{LLMChain, LLMChainBuilder};
-pub use sequential_chain::SequentialChain;
 pub use conversation_chain::{ConversationChain, ConversationChainBuilder};
-pub use router_chain::{RouterChain, LLMRouterChain, RouteDestination};
-pub use retrieval_qa::RetrievalQA;
 pub use conversation_retrieval::ConversationRetrievalChain;
-pub use document_chains::{StuffDocumentsChain, RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain};
+pub use document_chains::{
+    MapReduceDocumentsChain, MapRerankDocumentsChain, RefineDocumentsChain, StuffDocumentsChain,
+};
+pub use llm_chain::{LLMChain, LLMChainBuilder};
+pub use retrieval_qa::RetrievalQA;
+pub use router_chain::{LLMRouterChain, RouteDestination, RouterChain};
+pub use sequential_chain::SequentialChain;

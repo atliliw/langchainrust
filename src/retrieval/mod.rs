@@ -1,33 +1,51 @@
 // src/retrieval/mod.rs
-mod retriever;
-mod splitter;
-mod semantic_splitter;
-mod loaders;
 pub mod bm25;
-pub mod hybrid;
 pub mod chunked_hybrid;
-pub mod unified_hybrid;
-pub mod multi_query;
+pub mod graph_rag;
+pub mod hybrid;
 pub mod hyde;
+mod loaders;
+pub mod multi_query;
 pub mod reranking;
+mod retriever;
+mod semantic_splitter;
+mod splitter;
+pub mod unified_hybrid;
 
-pub use retriever::{Retriever, SimilarityRetriever, RetrieverTrait, RetrieverError};
-pub use splitter::{TextSplitter, RecursiveCharacterSplitter};
+pub use loaders::{
+    CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
+    PDFLoader, SitemapLoader, TextLoader, WebScraperLoader,
+};
+pub use retriever::{Retriever, RetrieverError, RetrieverTrait, SimilarityRetriever};
 pub use semantic_splitter::SemanticSplitter;
-pub use loaders::{PDFLoader, CSVLoader, TextLoader, JSONLoader, MarkdownLoader, HTMLLoader, WebScraperLoader, SitemapLoader, DocxLoader, DocumentLoader, LoaderError};
+pub use splitter::{RecursiveCharacterSplitter, TextSplitter};
 
-pub use bm25::{BM25Retriever, BM25Index, BM25Params, Tokenizer, ChunkedBM25Retriever, ChunkedSearchResult, AutoMergingConfig};
+pub use bm25::{
+    AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,
+    ChunkedSearchResult, Tokenizer,
+};
 
-pub use hybrid::{HybridRetriever, RetrievedDocument, RetrievalSource, reciprocal_rank_fusion};
 pub use chunked_hybrid::ChunkedHybridRetriever;
-pub use unified_hybrid::{UnifiedHybridIndex, HybridIndexConfig, HybridSearchResult};
+pub use hybrid::{reciprocal_rank_fusion, HybridRetriever, RetrievalSource, RetrievedDocument};
+pub use unified_hybrid::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 
-pub use multi_query::{MultiQueryRetriever, MultiQueryConfig, MultiQueryError, StaticQueryGenerator};
+pub use multi_query::{
+    MultiQueryConfig, MultiQueryError, MultiQueryRetriever, StaticQueryGenerator,
+};
 
-pub use hyde::{HyDERetriever, HyDEConfig, HyDEError};
+pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
 
-pub use reranking::{Reranker, KeywordReranker, BM25Reranker, RerankingExecutor, RerankingConfig, RerankingError};
+pub use reranking::{
+    BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,
+};
 
-pub use crate::vector_stores::{Document, SearchResult, VectorStore, InMemoryVectorStore};
-pub use crate::vector_stores::{DocumentStore, InMemoryDocumentStore, ChunkedDocumentStore, ChunkDocument, ChunkedVectorStore};
-pub use crate::embeddings::{Embeddings, MockEmbeddings, OpenAIEmbeddings, cosine_similarity};
+pub use graph_rag::{
+    Community as GraphCommunity, Entity as GraphEntity, GraphStore, Relation as GraphRelation,
+};
+pub use graph_rag::{GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult, QueryMode};
+
+pub use crate::embeddings::{cosine_similarity, Embeddings, MockEmbeddings, OpenAIEmbeddings};
+pub use crate::vector_stores::{
+    ChunkDocument, ChunkedDocumentStore, ChunkedVectorStore, DocumentStore, InMemoryDocumentStore,
+};
+pub use crate::vector_stores::{Document, InMemoryVectorStore, SearchResult, VectorStore};

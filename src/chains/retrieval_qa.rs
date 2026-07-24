@@ -4,15 +4,15 @@
 //! One-stop retrieval QA chain that encapsulates the complete RAG workflow.
 
 use async_trait::async_trait;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::Value;
 
-use super::base::{BaseChain, ChainResult, ChainError};
+use super::base::{BaseChain, ChainError, ChainResult};
+use crate::retrieval::{Document, RetrieverTrait};
+use crate::schema::Message;
 use crate::BaseChatModel;
 use crate::Runnable;
-use crate::retrieval::{RetrieverTrait, Document};
-use crate::schema::Message;
 
 /// Default QA prompt template
 const DEFAULT_QA_PROMPT: &str = "Answer the question based on the following context. If the context does not contain relevant information, say 'I don't know'.
@@ -138,38 +138,45 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
     }
 
     pub async fn query(&self, question: impl Into<String>) -> Result<String, ChainError> {
-        let inputs = HashMap::from([
-            (self.input_key.clone(), Value::String(question.into()))
-        ]);
+        let inputs = HashMap::from([(self.input_key.clone(), Value::String(question.into()))]);
 
         let result = self.invoke(inputs).await?;
 
-        result.get(&self.output_key)
+        result
+            .get(&self.output_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))
     }
 
-    pub async fn query_with_sources(&self, question: impl Into<String>) -> Result<(String, Vec<Document>), ChainError> {
-        let inputs = HashMap::from([
-            (self.input_key.clone(), Value::String(question.into()))
-        ]);
+    pub async fn query_with_sources(
+        &self,
+        question: impl Into<String>,
+    ) -> Result<(String, Vec<Document>), ChainError> {
+        let inputs = HashMap::from([(self.input_key.clone(), Value::String(question.into()))]);
 
         let was_returning_sources = self.return_source_documents;
         if !was_returning_sources {
             // We need to invoke with source documents enabled, but we can't mutate self.
             // Instead, we directly perform the retrieval and LLM call here.
-            let question_str = inputs.get(&self.input_key)
+            let question_str = inputs
+                .get(&self.input_key)
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-            let documents = self.retriever.retrieve(question_str, self.k).await
+            let documents = self
+                .retriever
+                .retrieve(question_str, self.k)
+                .await
                 .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
 
             let context = self.format_context(&documents);
             let prompt = self.build_prompt(&context, question_str);
             let messages = vec![Message::human(&prompt)];
-            let response = self.llm.invoke(messages, None).await
+            let response = self
+                .llm
+                .invoke(messages, None)
+                .await
                 .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
             return Ok((response.content, documents));
@@ -177,16 +184,20 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
 
         let result = self.invoke(inputs).await?;
 
-        let answer = result.get(&self.output_key)
+        let answer = result
+            .get(&self.output_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))?;
 
-        let sources: Vec<Document> = result.get(&self.source_document_key)
+        let sources: Vec<Document> = result
+            .get(&self.source_document_key)
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter()
-                .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                .collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok((answer, sources))
@@ -196,7 +207,8 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for RetrievalQA<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
@@ -213,7 +225,8 @@ where
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
-        let question = inputs.get(&self.input_key)
+        let question = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
@@ -227,26 +240,24 @@ where
             println!("\n--- Step 1: Retrieve relevant documents ---");
         }
 
-        let documents = self.retriever.retrieve(question, self.k).await
+        let documents = self
+            .retriever
+            .retrieve(question, self.k)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
             for (i, doc) in documents.iter().enumerate() {
-                println!("Document {}: {}", i + 1,
-                    if doc.content.len() > 100 {
-                        &doc.content[..100]
-                    } else {
-                        &doc.content
-                    }
-                );
+                // H66: Use char-boundary-safe truncation instead of byte slicing
+                let preview: String = doc.content.chars().take(100).collect();
+                println!("Document {}: {}", i + 1, preview);
             }
         }
 
-        if documents.is_empty()
-            && self.verbose {
-                println!("Warning: No relevant documents retrieved");
-            }
+        if documents.is_empty() && self.verbose {
+            println!("Warning: No relevant documents retrieved");
+        }
 
         if self.verbose {
             println!("\n--- Step 2: Assemble Prompt ---");
@@ -265,7 +276,10 @@ where
         }
 
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await
+        let response = self
+            .llm
+            .invoke(messages, None)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let answer = response.content;
@@ -279,7 +293,8 @@ where
         result.insert(self.output_key.clone(), Value::String(answer));
 
         if self.return_source_documents {
-            let sources: Vec<Value> = documents.iter()
+            let sources: Vec<Value> = documents
+                .iter()
                 .map(|doc| serde_json::to_value(doc).unwrap_or(Value::Null))
                 .collect();
             result.insert(self.source_document_key.clone(), Value::Array(sources));
@@ -381,8 +396,7 @@ mod tests {
 
         let custom_template = "Background: {context}\nPlease answer: {question}";
 
-        let qa = RetrievalQA::new(llm, retriever)
-            .with_prompt_template(custom_template);
+        let qa = RetrievalQA::new(llm, retriever).with_prompt_template(custom_template);
 
         let prompt = qa.build_prompt("Test context", "Test question");
 

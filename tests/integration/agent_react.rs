@@ -7,7 +7,7 @@ mod common;
 
 use common::TestConfig;
 use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool};
-use langchainrust::{BaseAgent, BaseTool, AgentExecutor, ReActAgent};
+use langchainrust::{AgentExecutor, BaseAgent, BaseTool, ReActAgent};
 use std::sync::Arc;
 
 /// 测试 Agent 使用计算器工具
@@ -20,18 +20,19 @@ use std::sync::Arc;
 #[ignore = "需要配置 API Key"]
 async fn test_agent_with_calculator() {
     let llm = TestConfig::get().openai_chat();
-    
-    let tools: Vec<Arc<dyn BaseTool>> = vec![
-        Arc::new(Calculator::new()),
-    ];
-    
+
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
+
     let agent = ReActAgent::new(llm, tools.clone(), None);
     let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
         .with_max_iterations(3)
         .with_verbose(true);
-    
-    let result = executor.invoke("What is 25 + 17?".to_string()).await.unwrap();
-    
+
+    let result = executor
+        .invoke("What is 25 + 17?".to_string())
+        .await
+        .unwrap();
+
     println!("Result: {}", result);
     assert!(result.contains("42"));
 }
@@ -46,22 +47,23 @@ async fn test_agent_with_calculator() {
 #[ignore = "需要配置 API Key"]
 async fn test_agent_multi_tool_selection() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let tools: Vec<Arc<dyn BaseTool>> = vec![
         Arc::new(Calculator::new()),
         Arc::new(DateTimeTool::new()),
         Arc::new(SimpleMathTool::new()),
     ];
-    
+
     let agent = ReActAgent::new(llm, tools.clone(), None);
     let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
         .with_max_iterations(5)
         .with_verbose(true);
-    
-    let result = executor.invoke("Calculate 15 * 4 and tell me the current time".to_string())
+
+    let result = executor
+        .invoke("Calculate 15 * 4 and tell me the current time".to_string())
         .await
         .unwrap();
-    
+
     println!("Result: {}", result);
     assert!(!result.is_empty());
 }
@@ -75,17 +77,18 @@ async fn test_agent_multi_tool_selection() {
 #[ignore = "需要配置 API Key"]
 async fn test_agent_math_operation() {
     let llm = TestConfig::get().openai_chat();
-    
-    let tools: Vec<Arc<dyn BaseTool>> = vec![
-        Arc::new(SimpleMathTool::new()),
-    ];
-    
+
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(SimpleMathTool::new())];
+
     let agent = ReActAgent::new(llm, tools.clone(), None);
-    let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
-        .with_max_iterations(3);
-    
-    let result = executor.invoke("What is the square root of 144?".to_string()).await.unwrap();
-    
+    let executor =
+        AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools).with_max_iterations(3);
+
+    let result = executor
+        .invoke("What is the square root of 144?".to_string())
+        .await
+        .unwrap();
+
     println!("Result: {}", result);
     assert!(result.contains("12"));
 }

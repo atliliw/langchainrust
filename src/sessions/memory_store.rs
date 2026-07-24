@@ -1,7 +1,7 @@
 //! 内存 Session 存储
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 
@@ -31,27 +31,24 @@ impl Default for MemorySessionStore {
 impl SessionStore for MemorySessionStore {
     async fn create(&self, session: Session) -> Result<String, SessionError> {
         let id = session.id.clone();
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(id.clone(), session);
+        self.sessions.lock().await.insert(id.clone(), session);
         Ok(id)
     }
 
     async fn get(&self, id: &str) -> Result<Option<Session>, SessionError> {
-        Ok(self.sessions.lock().unwrap().get(id).cloned())
+        Ok(self.sessions.lock().await.get(id).cloned())
     }
 
     async fn update(&self, session: &Session) -> Result<(), SessionError> {
         self.sessions
             .lock()
-            .unwrap()
+            .await
             .insert(session.id.clone(), session.clone());
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), SessionError> {
-        self.sessions.lock().unwrap().remove(id);
+        self.sessions.lock().await.remove(id);
         Ok(())
     }
 
@@ -59,7 +56,7 @@ impl SessionStore for MemorySessionStore {
         Ok(self
             .sessions
             .lock()
-            .unwrap()
+            .await
             .values()
             .filter(|s| s.user_id.as_deref() == Some(user_id))
             .cloned()

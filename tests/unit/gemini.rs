@@ -7,12 +7,10 @@
 //! - 响应解析
 //! - Runnable / BaseChatModel 接口
 
-use langchainrust::{
-    GeminiChat, GeminiConfig, GeminiError,
-    BaseChatModel, BaseLanguageModel, LLMResult,
-    Message,
-};
 use langchainrust::core::runnables::Runnable;
+use langchainrust::{
+    BaseChatModel, BaseLanguageModel, GeminiChat, GeminiConfig, GeminiError, LLMResult, Message,
+};
 
 /// 测试 GeminiConfig 默认值
 ///
@@ -21,7 +19,10 @@ use langchainrust::core::runnables::Runnable;
 fn test_gemini_config_default() {
     let config = GeminiConfig::default();
     assert_eq!(config.model, "gemini-1.5-flash");
-    assert_eq!(config.base_url, "https://generativelanguage.googleapis.com/v1beta");
+    assert_eq!(
+        config.base_url,
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
     assert!(config.api_key.is_empty());
     assert!(config.temperature.is_none());
     assert!(config.max_output_tokens.is_none());
@@ -42,8 +43,7 @@ fn test_gemini_config_new() {
 /// 验证：with_model 方法正确改变模型名称。
 #[test]
 fn test_gemini_config_with_model() {
-    let config = GeminiConfig::new("test-key")
-        .with_model("gemini-2.0-flash");
+    let config = GeminiConfig::new("test-key").with_model("gemini-2.0-flash");
     assert_eq!(config.model, "gemini-2.0-flash");
 }
 
@@ -52,8 +52,7 @@ fn test_gemini_config_with_model() {
 /// 验证：with_temperature 方法正确设置温度参数。
 #[test]
 fn test_gemini_config_with_temperature() {
-    let config = GeminiConfig::new("test-key")
-        .with_temperature(0.7);
+    let config = GeminiConfig::new("test-key").with_temperature(0.7);
     assert_eq!(config.temperature, Some(0.7));
 }
 
@@ -62,8 +61,7 @@ fn test_gemini_config_with_temperature() {
 /// 验证：with_max_output_tokens 方法正确设置最大输出 token 数。
 #[test]
 fn test_gemini_config_with_max_tokens() {
-    let config = GeminiConfig::new("test-key")
-        .with_max_output_tokens(4096);
+    let config = GeminiConfig::new("test-key").with_max_output_tokens(4096);
     assert_eq!(config.max_output_tokens, Some(4096));
 }
 
@@ -84,9 +82,7 @@ fn test_gemini_chat_new() {
 /// 验证：可以创建指定模型的客户端。
 #[test]
 fn test_gemini_chat_with_model() {
-    let chat = GeminiChat::new(
-        GeminiConfig::new("test-key").with_model("gemini-2.0-flash")
-    );
+    let chat = GeminiChat::new(GeminiConfig::new("test-key").with_model("gemini-2.0-flash"));
     assert_eq!(chat.model_name(), "gemini-2.0-flash");
 }
 
@@ -97,7 +93,10 @@ fn test_gemini_chat_with_model() {
 fn test_gemini_constants() {
     use langchainrust::language_models::providers::gemini::{GEMINI_BASE_URL, GEMINI_MODELS};
 
-    assert_eq!(GEMINI_BASE_URL, "https://generativelanguage.googleapis.com/v1beta");
+    assert_eq!(
+        GEMINI_BASE_URL,
+        "https://generativelanguage.googleapis.com/v1beta"
+    );
     assert!(GEMINI_MODELS.contains(&"gemini-1.5-flash"));
     assert!(GEMINI_MODELS.contains(&"gemini-2.0-flash"));
     assert!(GEMINI_MODELS.contains(&"gemini-1.5-pro"));
@@ -147,7 +146,7 @@ fn test_gemini_base_language_model() {
     let chat = GeminiChat::new(
         GeminiConfig::new("test-key")
             .with_temperature(0.5)
-            .with_max_output_tokens(1024)
+            .with_max_output_tokens(1024),
     );
 
     assert_eq!(chat.model_name(), "gemini-1.5-flash");
@@ -163,8 +162,7 @@ fn test_gemini_base_language_model() {
 /// 验证：with_temperature 正确修改配置。
 #[test]
 fn test_gemini_with_temperature() {
-    let chat = GeminiChat::new(GeminiConfig::new("test-key"))
-        .with_temperature(0.8);
+    let chat = GeminiChat::new(GeminiConfig::new("test-key")).with_temperature(0.8);
     assert_eq!(chat.temperature(), Some(0.8));
 }
 
@@ -173,8 +171,7 @@ fn test_gemini_with_temperature() {
 /// 验证：with_max_tokens 正确修改配置。
 #[test]
 fn test_gemini_with_max_tokens() {
-    let chat = GeminiChat::new(GeminiConfig::new("test-key"))
-        .with_max_tokens(8192);
+    let chat = GeminiChat::new(GeminiConfig::new("test-key")).with_max_tokens(8192);
     assert_eq!(chat.max_tokens(), Some(8192));
 }
 
@@ -200,8 +197,10 @@ fn test_gemini_build_contents_basic() {
 /// 验证：System 消息被提取为 system_instruction。
 #[test]
 fn test_gemini_build_contents_with_system() {
-    let messages = [Message::system("You are a helpful assistant"),
-        Message::human("Tell me about Rust")];
+    let messages = [
+        Message::system("You are a helpful assistant"),
+        Message::human("Tell me about Rust"),
+    ];
 
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].content, "You are a helpful assistant");
@@ -212,9 +211,11 @@ fn test_gemini_build_contents_with_system() {
 /// 验证：Human/AI 交替消息被正确保留顺序。
 #[test]
 fn test_gemini_build_multi_turn() {
-    let messages = [Message::human("Hi"),
+    let messages = [
+        Message::human("Hi"),
         Message::ai("Hello! How can I help?"),
-        Message::human("What is Rust?")];
+        Message::human("What is Rust?"),
+    ];
 
     assert_eq!(messages.len(), 3);
 }

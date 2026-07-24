@@ -3,8 +3,7 @@
 //! Unit tests for tool calling functionality
 
 use langchainrust::{
-    FunctionDefinition, Message, MessageType, ToolCall, ToolCallResult,
-    ToolDefinition,
+    FunctionDefinition, Message, MessageType, ToolCall, ToolCallResult, ToolDefinition,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;

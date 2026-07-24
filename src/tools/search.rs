@@ -94,16 +94,21 @@ impl Tool for DuckDuckGoSearchTool {
             urlencoding(&input.query)
         );
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .send()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("搜索请求失败: {}", e)))?;
 
-        let body: serde_json::Value = response.json().await
+        let body: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {}", e)))?;
 
         // 提取摘要
-        let abstract_text = body["AbstractText"].as_str()
+        let abstract_text = body["AbstractText"]
+            .as_str()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
@@ -115,7 +120,8 @@ impl Tool for DuckDuckGoSearchTool {
                     break;
                 }
                 if let Some(text) = topic["Text"].as_str() {
-                    let title = topic["FirstURL"].as_str()
+                    let title = topic["FirstURL"]
+                        .as_str()
                         .map(|u| u.rsplit('/').next().unwrap_or(u).replace('_', " "))
                         .unwrap_or_default();
                     let url = topic["FirstURL"].as_str().unwrap_or("");
@@ -132,7 +138,8 @@ impl Tool for DuckDuckGoSearchTool {
                             break;
                         }
                         if let Some(text) = nt["Text"].as_str() {
-                            let title = nt["FirstURL"].as_str()
+                            let title = nt["FirstURL"]
+                                .as_str()
                                 .map(|u| u.rsplit('/').next().unwrap_or(u).replace('_', " "))
                                 .unwrap_or_default();
                             let url = nt["FirstURL"].as_str().unwrap_or("");
@@ -168,17 +175,9 @@ impl Tool for DuckDuckGoSearchTool {
     }
 }
 
-/// URL 编码
+/// URL 编码 (using urlencoding crate for complete encoding)
 fn urlencoding(s: &str) -> String {
-    url_encode(s)
-}
-
-fn url_encode(s: &str) -> String {
-    s.split(' ').collect::<Vec<_>>().join("%20")
-        .replace('?', "%3F")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('#', "%23")
+    urlencoding::encode(s).to_string()
 }
 
 #[async_trait]
@@ -254,10 +253,12 @@ mod tests {
     #[ignore = "需要网络连接"]
     async fn test_search_real() {
         let tool = DuckDuckGoSearchTool::new();
-        let result = tool.invoke(SearchInput {
-            query: "Rust programming".to_string(),
-            top_k: Some(3),
-        }).await;
+        let result = tool
+            .invoke(SearchInput {
+                query: "Rust programming".to_string(),
+                top_k: Some(3),
+            })
+            .await;
 
         match &result {
             Ok(output) => {

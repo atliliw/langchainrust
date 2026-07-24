@@ -10,16 +10,15 @@
 //! # 环境变量
 //! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
 
+use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool};
 use langchainrust::{
     AgentExecutor, BaseAgent, BaseTool, FunctionCallingAgent, OpenAIChat, OpenAIConfig,
 };
-use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {

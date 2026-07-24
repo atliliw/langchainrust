@@ -1,16 +1,20 @@
 // src/language_models/providers/moonshot.rs
 //! Moonshot (Kimi) API 实现 (OpenAI 兼容)
 
-use crate::language_models::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
+use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use crate::core::runnables::Runnable;
+use crate::core::tools::ToolDefinition;
+use crate::language_models::openai::{
+    OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod,
+};
 use crate::schema::Message;
 use crate::RunnableConfig;
-use crate::core::language_models::{BaseChatModel, LLMResult};
-use crate::core::tools::ToolDefinition;
+use async_trait::async_trait;
 use futures_util::Stream;
-use std::pin::Pin;
-use serde::de::DeserializeOwned;
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use std::env;
+use std::pin::Pin;
 
 /// Moonshot API 端点
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
@@ -132,12 +136,20 @@ impl MoonshotChat {
 
 impl MoonshotChat {
     /// Delegate chat to inner OpenAIChat
-    pub async fn chat(&self, messages: Vec<Message>, config: Option<RunnableConfig>) -> Result<LLMResult, OpenAIError> {
+    pub async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, OpenAIError> {
         self.inner.chat(messages, config).await
     }
 
     /// Delegate stream_chat to inner OpenAIChat
-    pub async fn stream_chat(&self, messages: Vec<Message>, config: Option<RunnableConfig>) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
+    pub async fn stream_chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
         self.inner.stream_chat(messages, config).await
     }
 
@@ -149,7 +161,73 @@ impl MoonshotChat {
     }
 
     /// Delegate with_structured_output to inner OpenAIChat
-    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> StructuredOutputMethod<T> {
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(
+        &self,
+    ) -> StructuredOutputMethod<T> {
         self.inner.with_structured_output()
+    }
+}
+
+// H8: Implement BaseChatModel for MoonshotChat
+#[async_trait]
+impl BaseLanguageModel<Vec<Message>, LLMResult> for MoonshotChat {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn get_num_tokens(&self, text: &str) -> usize {
+        self.inner.get_num_tokens(text)
+    }
+
+    fn temperature(&self) -> Option<f32> {
+        self.inner.temperature()
+    }
+
+    fn max_tokens(&self) -> Option<usize> {
+        self.inner.max_tokens()
+    }
+
+    fn with_temperature(self, temp: f32) -> Self {
+        Self {
+            inner: self.inner.with_temperature(temp),
+        }
+    }
+
+    fn with_max_tokens(self, max: usize) -> Self {
+        Self {
+            inner: self.inner.with_max_tokens(max),
+        }
+    }
+}
+
+#[async_trait]
+impl Runnable<Vec<Message>, LLMResult> for MoonshotChat {
+    type Error = OpenAIError;
+
+    async fn invoke(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, Self::Error> {
+        self.chat(input, config).await
+    }
+}
+
+#[async_trait]
+impl BaseChatModel for MoonshotChat {
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, Self::Error> {
+        self.inner.chat(messages, config).await
+    }
+
+    async fn stream_chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+        self.inner.stream_chat(messages, config).await
     }
 }

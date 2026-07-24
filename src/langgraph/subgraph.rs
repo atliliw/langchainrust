@@ -24,7 +24,7 @@
 //!
 //! // Add as subgraph node in parent graph
 //! let parent = GraphBuilder::<AgentState>::new()
-//!     .add_subgraph("subworkflow", subgraph, 
+//!     .add_subgraph("subworkflow", subgraph,
 //!         |parent_state| parent_state.clone(),  // input mapper
 //!         |sub_state, parent_state| *parent_state = sub_state.clone()  // output mapper
 //!     )
@@ -33,13 +33,13 @@
 //!     .compile()?;
 //! ```
 
-use async_trait::async_trait;
-use std::sync::Arc;
-use std::marker::PhantomData;
-use super::state::{StateSchema, StateUpdate};
-use super::node::{GraphNode, NodeConfig, NodeResult};
 use super::compiled::CompiledGraph;
 use super::errors::{GraphError, GraphResult};
+use super::node::{GraphNode, NodeConfig, NodeResult};
+use super::state::{StateSchema, StateUpdate};
+use async_trait::async_trait;
+use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Subgraph Node - A node that executes a nested compiled graph
 ///
@@ -74,10 +74,7 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphNode<S, SubS> {
 }
 
 impl<S: StateSchema + Clone> SubgraphNode<S, S> {
-    pub fn same_state(
-        name: impl Into<String>,
-        subgraph: CompiledGraph<S>,
-    ) -> Self {
+    pub fn same_state(name: impl Into<String>, subgraph: CompiledGraph<S>) -> Self {
         Self::new(
             name,
             subgraph,
@@ -92,17 +89,16 @@ impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for Sub
     async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
         // Map parent state to subgraph input
         let sub_input = (self.input_mapper)(state);
-        
+
         // Execute subgraph
-        let sub_result = self.subgraph.invoke(sub_input).await
-            .map_err(|e| GraphError::ExecutionError(
-                format!("Subgraph '{}' execution failed: {}", self.name, e)
-            ))?;
-        
+        let sub_result = self.subgraph.invoke(sub_input).await.map_err(|e| {
+            GraphError::ExecutionError(format!("Subgraph '{}' execution failed: {}", self.name, e))
+        })?;
+
         // Map subgraph output back to parent state
         let mut parent_output = state.clone();
         (self.output_mapper)(&sub_result.final_state, &mut parent_output);
-        
+
         // Include subgraph steps in metadata
         let mut metadata = std::collections::HashMap::new();
         metadata.insert(
@@ -113,10 +109,10 @@ impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for Sub
             "subgraph_recursion".to_string(),
             serde_json::json!(sub_result.recursion_count),
         );
-        
+
         Ok(StateUpdate::with_metadata(parent_output, metadata))
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -144,33 +140,33 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphBuilder<S, SubS> {
             _sub_marker: PhantomData,
         }
     }
-    
+
     pub fn subgraph(mut self, graph: CompiledGraph<SubS>) -> Self {
         self.subgraph = Some(graph);
         self
     }
-    
+
     pub fn input_mapper(mut self, mapper: impl Fn(&S) -> SubS + Send + Sync + 'static) -> Self {
         self.input_mapper = Some(Arc::new(mapper));
         self
     }
-    
+
     pub fn output_mapper(mut self, mapper: impl Fn(&SubS, &mut S) + Send + Sync + 'static) -> Self {
         self.output_mapper = Some(Arc::new(mapper));
         self
     }
-    
+
     pub fn build(self) -> GraphResult<SubgraphNode<S, SubS>> {
-        let subgraph = self.subgraph.ok_or_else(|| 
-            GraphError::ValidationError("Subgraph not set".to_string())
-        )?;
-        let input_mapper = self.input_mapper.ok_or_else(|| 
-            GraphError::ValidationError("Input mapper not set".to_string())
-        )?;
-        let output_mapper = self.output_mapper.ok_or_else(|| 
-            GraphError::ValidationError("Output mapper not set".to_string())
-        )?;
-        
+        let subgraph = self
+            .subgraph
+            .ok_or_else(|| GraphError::ValidationError("Subgraph not set".to_string()))?;
+        let input_mapper = self
+            .input_mapper
+            .ok_or_else(|| GraphError::ValidationError("Input mapper not set".to_string()))?;
+        let output_mapper = self
+            .output_mapper
+            .ok_or_else(|| GraphError::ValidationError("Output mapper not set".to_string()))?;
+
         Ok(SubgraphNode {
             name: self.name,
             subgraph,
@@ -184,11 +180,11 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphBuilder<S, SubS> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::state::AgentState;
     use super::super::graph::GraphBuilder;
-    use super::super::{START, END};
-    
+    use super::super::state::AgentState;
+    use super::super::{END, START};
+    use super::*;
+
     #[tokio::test]
     async fn test_subgraph_same_state() {
         // Create simple subgraph
@@ -202,7 +198,7 @@ mod tests {
             .add_edge("sub_process", END)
             .compile()
             .unwrap();
-        
+
         // Create parent graph with subgraph
         let parent = GraphBuilder::<AgentState>::new()
             .add_subgraph_same_state("subworkflow", subgraph)
@@ -210,14 +206,14 @@ mod tests {
             .add_edge("subworkflow", END)
             .compile()
             .unwrap();
-        
+
         let input = AgentState::new("test".to_string());
         let result = parent.invoke(input).await.unwrap();
-        
+
         assert!(result.final_state.output.is_some());
         assert_eq!(result.final_state.output.unwrap(), "subgraph_output");
     }
-    
+
     #[tokio::test]
     async fn test_nested_subgraphs() {
         // Create innermost subgraph
@@ -231,7 +227,7 @@ mod tests {
             .add_edge("inner_node", END)
             .compile()
             .unwrap();
-        
+
         // Create middle subgraph containing inner
         let middle = GraphBuilder::<AgentState>::new()
             .add_subgraph_same_state("inner_workflow", inner)
@@ -245,7 +241,7 @@ mod tests {
             .add_edge("middle_node", END)
             .compile()
             .unwrap();
-        
+
         // Create outer graph with middle subgraph
         let outer = GraphBuilder::<AgentState>::new()
             .add_node_fn("outer_node", |state| {
@@ -259,10 +255,10 @@ mod tests {
             .add_edge("middle_workflow", END)
             .compile()
             .unwrap();
-        
+
         let input = AgentState::new("test".to_string());
         let result = outer.invoke(input).await.unwrap();
-        
+
         // Verify nested execution: outer:middle:inner:test
         assert!(result.final_state.input.contains("outer"));
         assert!(result.final_state.input.contains("middle"));

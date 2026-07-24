@@ -5,8 +5,8 @@
 //! 解析 tool_calls,经 ToolRegistry 执行,submit_tool_outputs 回传,继续轮询至完成。
 //! 注:需使用支持 Assistants API 的端点(OpenAI 官方);部分 compatible-mode 端点可能不支持。
 
-use crate::OpenAIConfig;
 use crate::core::tools::ToolRegistry;
+use crate::OpenAIConfig;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -126,7 +126,9 @@ impl OpenAIAssistant {
             .tools()
             .iter()
             .map(|t: &&Arc<dyn crate::core::tools::BaseTool>| {
-                let schema = t.args_schema().unwrap_or(serde_json::json!({"type": "object"}));
+                let schema = t
+                    .args_schema()
+                    .unwrap_or(serde_json::json!({"type": "object"}));
                 serde_json::json!({
                     "type": "function",
                     "function": {
@@ -275,9 +277,7 @@ impl OpenAIAssistant {
                     self.handle_requires_action(base, thread_id, run_id, &run_state)
                         .await?;
                 }
-                s if is_terminal_status(s) => {
-                    return Err(AssistantError::RunFailed(s.to_string()))
-                }
+                s if is_terminal_status(s) => return Err(AssistantError::RunFailed(s.to_string())),
                 _ => tokio::time::sleep(self.poll_config.interval).await,
             }
         }
@@ -323,8 +323,7 @@ impl OpenAIAssistant {
             .and_then(|tc| tc.as_array())
             .ok_or_else(|| {
                 AssistantError::Parse(
-                    "requires_action 但缺少 required_action.submit_tool_outputs.tool_calls"
-                        .into(),
+                    "requires_action 但缺少 required_action.submit_tool_outputs.tool_calls".into(),
                 )
             })?;
 

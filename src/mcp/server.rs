@@ -36,11 +36,7 @@ impl MCPServer {
     }
 
     /// 设置 serverInfo(名称/版本)
-    pub fn with_server_info(
-        mut self,
-        name: impl Into<String>,
-        version: impl Into<String>,
-    ) -> Self {
+    pub fn with_server_info(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
         self.server_name = name.into();
         self.server_version = version.into();
         self
@@ -51,7 +47,9 @@ impl MCPServer {
         MCPToolDefinition {
             name: tool.name().to_string(),
             description: tool.description().to_string(),
-            input_schema: tool.args_schema().unwrap_or_else(|| json!({"type":"object"})),
+            input_schema: tool
+                .args_schema()
+                .unwrap_or_else(|| json!({"type":"object"})),
         }
     }
 
@@ -62,7 +60,7 @@ impl MCPServer {
         match req.method.as_str() {
             "initialize" => MCPResponse {
                 jsonrpc: "2.0".to_string(),
-                id: req.id,
+                id: Some(req.id),
                 result: Some(json!({
                     "protocolVersion": MCP_VERSION,
                     "capabilities": { "tools": {} },
@@ -76,10 +74,11 @@ impl MCPServer {
                     .iter()
                     .map(|t| Self::tool_definition(t.as_ref()))
                     .collect();
-                let tools_val = serde_json::to_value(&tools).unwrap_or_else(|_| Value::Array(vec![]));
+                let tools_val =
+                    serde_json::to_value(&tools).unwrap_or_else(|_| Value::Array(vec![]));
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: req.id,
+                    id: Some(req.id),
                     result: Some(json!({ "tools": tools_val })),
                     error: None,
                 }
@@ -87,7 +86,7 @@ impl MCPServer {
             "tools/call" => self.handle_tools_call(req).await,
             _ => MCPResponse {
                 jsonrpc: "2.0".to_string(),
-                id: req.id,
+                id: Some(req.id),
                 result: None,
                 error: Some(MCPError::method_not_found()),
             },
@@ -104,7 +103,7 @@ impl MCPServer {
             None => {
                 return MCPResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: req.id,
+                    id: Some(req.id),
                     result: None,
                     error: Some(MCPError::invalid_params("缺少 name 参数")),
                 }
@@ -122,22 +121,23 @@ impl MCPServer {
                         is_error: false,
                     },
                     Err(e) => MCPToolResult {
-                        content: vec![MCPContent::Text { text: e.to_string() }],
+                        content: vec![MCPContent::Text {
+                            text: e.to_string(),
+                        }],
                         is_error: true,
                     },
                 };
-                let result_val =
-                    serde_json::to_value(&mcp_result).unwrap_or(Value::Null);
+                let result_val = serde_json::to_value(&mcp_result).unwrap_or(Value::Null);
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: req.id,
+                    id: Some(req.id),
                     result: Some(result_val),
                     error: None,
                 }
             }
             None => MCPResponse {
                 jsonrpc: "2.0".to_string(),
-                id: req.id,
+                id: Some(req.id),
                 result: None,
                 error: Some(MCPError::invalid_params(format!("未知工具: {}", name))),
             },
@@ -170,9 +170,11 @@ impl MCPServer {
             let msg: ServerMessage = match serde_json::from_str(trimmed) {
                 Ok(m) => m,
                 Err(e) => {
+                    // Per JSON-RPC 2.0 spec: if the request could not be parsed,
+                    // the response id MUST be null.
                     let resp = MCPResponse {
                         jsonrpc: "2.0".to_string(),
-                        id: 0,
+                        id: None,
                         result: None,
                         error: Some(MCPError::invalid_params(format!("解析请求失败: {}", e))),
                     };
@@ -259,7 +261,9 @@ mod tests {
     #[tokio::test]
     async fn test_initialize() {
         let server = server_with_echo();
-        let resp = server.handle_request(MCPRequest::new(1, "initialize", None)).await;
+        let resp = server
+            .handle_request(MCPRequest::new(1, "initialize", None))
+            .await;
         assert!(!resp.is_error());
         let result = resp.result.unwrap();
         assert!(result.get("protocolVersion").is_some());
@@ -270,7 +274,9 @@ mod tests {
     #[tokio::test]
     async fn test_tools_list() {
         let server = server_with_echo();
-        let resp = server.handle_request(MCPRequest::new(2, "tools/list", None)).await;
+        let resp = server
+            .handle_request(MCPRequest::new(2, "tools/list", None))
+            .await;
         assert!(!resp.is_error());
         let result = resp.result.unwrap();
         let tools = result.get("tools").unwrap().as_array().unwrap();
@@ -317,7 +323,9 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_method() {
         let server = MCPServer::new();
-        let resp = server.handle_request(MCPRequest::new(6, "foo/bar", None)).await;
+        let resp = server
+            .handle_request(MCPRequest::new(6, "foo/bar", None))
+            .await;
         assert!(resp.is_error());
         assert_eq!(resp.error.unwrap().code, -32601); // method_not_found
     }

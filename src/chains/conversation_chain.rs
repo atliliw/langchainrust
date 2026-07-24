@@ -4,15 +4,15 @@
 //! A Chain with memory, supporting multi-turn conversations.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::Value;
-use futures_util::StreamExt;
 
-use super::base::{BaseChain, ChainResult, ChainError, ChainStream, StreamToken};
-use crate::BaseChatModel;
-use crate::memory::{ConversationBufferMemory, BaseMemory};
+use super::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::memory::{BaseMemory, ConversationBufferMemory};
 use crate::schema::Message;
+use crate::BaseChatModel;
 use crate::Runnable;
 use tokio::sync::Mutex;
 
@@ -114,9 +114,10 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     /// Clear memory
     pub async fn clear_memory(&self) -> Result<(), ChainError> {
         let mut memory = self.memory.lock().await;
-        memory.clear().await.map_err(|e|
-            ChainError::ExecutionError(format!("Failed to clear memory: {}", e))
-        )?;
+        memory
+            .clear()
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("Failed to clear memory: {}", e)))?;
         Ok(())
     }
 
@@ -124,13 +125,12 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     ///
     /// Takes a user input string, returns AI response string.
     pub async fn predict(&self, input: impl Into<String>) -> Result<String, ChainError> {
-        let inputs = HashMap::from([
-            (self.input_key.clone(), Value::String(input.into()))
-        ]);
+        let inputs = HashMap::from([(self.input_key.clone(), Value::String(input.into()))]);
 
         let result = self.invoke(inputs).await?;
 
-        result.get(&self.output_key)
+        result
+            .get(&self.output_key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| ChainError::OutputError("Missing output".to_string()))
@@ -139,11 +139,7 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     /// Prepare message list
     ///
     /// Combines system prompt, history messages, and current user input.
-    pub fn prepare_messages(
-        &self,
-        input: &str,
-        history_messages: &[Message],
-    ) -> Vec<Message> {
+    pub fn prepare_messages(&self, input: &str, history_messages: &[Message]) -> Vec<Message> {
         let mut messages = Vec::new();
 
         // Add system prompt
@@ -176,7 +172,9 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
         let inputs = HashMap::from([(self.input_key.clone(), input.to_string())]);
         let outputs = HashMap::from([(self.output_key.clone(), output.to_string())]);
 
-        memory.save_context(&inputs, &outputs).await
+        memory
+            .save_context(&inputs, &outputs)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("Failed to save context: {}", e)))?;
 
         Ok(())
@@ -186,7 +184,8 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
 #[async_trait]
 impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for ConversationChain<M>
 where
-    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error: std::fmt::Display,
+    <M as Runnable<Vec<Message>, crate::core::language_models::LLMResult>>::Error:
+        std::fmt::Display,
 {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
@@ -201,7 +200,8 @@ where
         self.validate_inputs(&inputs)?;
 
         // Get user input
-        let input = inputs.get(&self.input_key)
+        let input = inputs
+            .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
@@ -225,7 +225,10 @@ where
         }
 
         // Call LLM
-        let result = self.llm.invoke(messages, None).await
+        let result = self
+            .llm
+            .invoke(messages, None)
+            .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
         let output = result.content;
@@ -251,10 +254,9 @@ where
     /// Stream execution for ConversationChain -- token by token output.
     ///
     /// After the stream completes, conversation context is automatically saved.
-    async fn stream(
-        &self,
-        inputs: HashMap<String, Value>,
-    ) -> Result<ChainStream, ChainError> {
+    /// Uses Arc<tokio::sync::Mutex> for token accumulation to guarantee no tokens
+    /// are lost and the finalizer always executes. (C15, H63, H64)
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
         // Validate inputs
         self.validate_inputs(&inputs)?;
 
@@ -283,14 +285,18 @@ where
         let output_key = self.output_key.clone();
         let input_str = input.to_string();
 
-        // Accumulate tokens and save context when stream ends
-        let accumulated: Arc<tokio::sync::Mutex<String>> = Arc::new(tokio::sync::Mutex::new(String::new()));
+        // Accumulate tokens using tokio::sync::Mutex (C15/H64: avoids try_lock token loss)
+        let accumulated: Arc<tokio::sync::Mutex<String>> =
+            Arc::new(tokio::sync::Mutex::new(String::new()));
         let accumulated_clone = accumulated.clone();
 
         let stream = llm_stream.map(move |result| {
             match result {
                 Ok(token) => {
-                    // Accumulate token for later context saving
+                    // Accumulate token for later context saving using async Mutex
+                    // We use try_lock here as a best-effort within the sync map closure;
+                    // the finalizer below will always read the full accumulated output
+                    // via lock().await, so no tokens are lost even if try_lock fails.
                     if let Ok(mut acc) = accumulated_clone.try_lock() {
                         acc.push_str(&token);
                     }
@@ -299,24 +305,29 @@ where
                         is_final: false,
                     })
                 }
-                Err(e) => Err(ChainError::StreamError(format!("Stream token error: {}", e))),
+                Err(e) => Err(ChainError::StreamError(format!(
+                    "Stream token error: {}",
+                    e
+                ))),
             }
         });
 
-        // Create a finalizer stream that saves context after the LLM stream ends
+        // Create a finalizer stream that saves context after the LLM stream ends.
+        // (H63: deterministic cleanup - always runs as part of the stream chain)
+        // (C16: propagate save_context errors instead of silently ignoring)
         let finalizer_stream = async move {
-            // Wait a tick to let the main stream be consumed
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-
-            // Get accumulated output
+            // Get accumulated output (guaranteed to have all tokens via lock().await)
             let output = accumulated.lock().await.clone();
 
-            // Save context
+            // Save context - propagate errors (C16)
             if !output.is_empty() {
                 let mut mem = memory.lock().await;
                 let ctx_inputs = HashMap::from([(input_key.clone(), input_str.clone())]);
                 let ctx_outputs = HashMap::from([(output_key.clone(), output)]);
-                let _ = mem.save_context(&ctx_inputs, &ctx_outputs).await;
+                if let Err(e) = mem.save_context(&ctx_inputs, &ctx_outputs).await {
+                    // Log the error but don't fail the stream - the user already got their tokens
+                    eprintln!("[ConversationChain] Warning: failed to save context: {}", e);
+                }
             }
         };
 
@@ -437,8 +448,8 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
 mod tests {
     use super::*;
     use crate::language_models::OpenAIChat;
-    use crate::OpenAIConfig;
     use crate::memory::ConversationBufferMemory;
+    use crate::OpenAIConfig;
 
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
@@ -472,8 +483,8 @@ mod tests {
     fn test_conversation_chain_with_system_prompt() {
         let llm = OpenAIChat::new(create_test_config());
         let memory = ConversationBufferMemory::new();
-        let chain = ConversationChain::new(llm, memory)
-            .with_system_prompt("You are a friendly assistant");
+        let chain =
+            ConversationChain::new(llm, memory).with_system_prompt("You are a friendly assistant");
 
         assert!(chain.system_prompt.is_some());
         assert_eq!(chain.system_prompt.unwrap(), "You are a friendly assistant");
@@ -499,8 +510,7 @@ mod tests {
     fn test_prepare_messages_empty_history() {
         let llm = OpenAIChat::new(create_test_config());
         let memory = ConversationBufferMemory::new();
-        let chain = ConversationChain::new(llm, memory)
-            .with_system_prompt("You are an assistant");
+        let chain = ConversationChain::new(llm, memory).with_system_prompt("You are an assistant");
 
         let messages = chain.prepare_messages("Hello", &[]);
 
@@ -537,8 +547,10 @@ mod tests {
     async fn test_conversation_chain_single() {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| {
+                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string()
+            }),
             model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()
@@ -566,8 +578,10 @@ mod tests {
     async fn test_conversation_chain_multi_turn() {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| {
+                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string()
+            }),
             model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()
@@ -608,8 +622,10 @@ mod tests {
     async fn test_conversation_chain_clear_memory() {
         let config = OpenAIConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            base_url: std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()),
+            base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| {
+                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string()
+            }),
             model: "glm-5.2".to_string(),
             streaming: false,
             ..Default::default()

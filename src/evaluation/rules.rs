@@ -68,8 +68,11 @@ impl Evaluator for ContainsKeyword {
         } else {
             matches.iter().any(|&m| m)
         };
-        Ok(Score::new(if ok { 1.0 } else { 0.0 })
-            .with_label(if ok { "contains" } else { "missing" }))
+        Ok(Score::new(if ok { 1.0 } else { 0.0 }).with_label(if ok {
+            "contains"
+        } else {
+            "missing"
+        }))
     }
 
     fn name(&self) -> &str {
@@ -99,8 +102,13 @@ impl Evaluator for RegexMatch {
         _reference: &str,
     ) -> Result<Score, EvalError> {
         let ok = self.pattern.is_match(prediction);
-        Ok(Score::new(if ok { 1.0 } else { 0.0 })
-            .with_label(if ok { "match" } else { "no_match" }))
+        Ok(
+            Score::new(if ok { 1.0 } else { 0.0 }).with_label(if ok {
+                "match"
+            } else {
+                "no_match"
+            }),
+        )
     }
 
     fn name(&self) -> &str {
@@ -151,8 +159,11 @@ impl Evaluator for LengthCheck {
     ) -> Result<Score, EvalError> {
         let len = prediction.chars().count();
         let ok = self.min.map_or(true, |m| len >= m) && self.max.map_or(true, |m| len <= m);
-        Ok(Score::new(if ok { 1.0 } else { 0.0 })
-            .with_label(if ok { "in_range" } else { "out_of_range" }))
+        Ok(Score::new(if ok { 1.0 } else { 0.0 }).with_label(if ok {
+            "in_range"
+        } else {
+            "out_of_range"
+        }))
     }
 
     fn name(&self) -> &str {
@@ -187,8 +198,14 @@ mod tests {
     #[tokio::test]
     async fn test_regex_match() {
         let ev = RegexMatch::new(r"\d{4}-\d{2}-\d{2}").unwrap();
-        assert_eq!(ev.eval("", "日期是 2024-01-15", "").await.unwrap().value, 1.0);
-        assert_eq!(ev.eval("", "日期是 2024/01/15", "").await.unwrap().value, 0.0);
+        assert_eq!(
+            ev.eval("", "日期是 2024-01-15", "").await.unwrap().value,
+            1.0
+        );
+        assert_eq!(
+            ev.eval("", "日期是 2024/01/15", "").await.unwrap().value,
+            0.0
+        );
     }
 
     #[tokio::test]

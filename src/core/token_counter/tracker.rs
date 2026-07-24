@@ -1,10 +1,11 @@
 //! Token 追踪 LLM 包装器与成本估算
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::core::language_models::LLMResult;
 use crate::schema::Message;
 use crate::{BaseChatModel, RunnableConfig};
+use tokio::sync::Mutex;
 
 use super::counter::{TokenCounter, TokenUsage};
 use super::tiktoken::TiktokenCounter;
@@ -48,28 +49,25 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
             .token_usage
             .as_ref()
             .map(|u| (u.prompt_tokens as u32, u.completion_tokens as u32))
-            .unwrap_or((
-                estimated_prompt,
-                self.counter.count_tokens(&result.content),
-            ));
+            .unwrap_or((estimated_prompt, self.counter.count_tokens(&result.content)));
 
-        self.usage.lock().unwrap().add(prompt, completion);
+        self.usage.lock().await.add(prompt, completion);
         Ok(result)
     }
 
     /// 获取累计用量
-    pub fn get_usage(&self) -> TokenUsage {
-        self.usage.lock().unwrap().clone()
+    pub async fn get_usage(&self) -> TokenUsage {
+        self.usage.lock().await.clone()
     }
 
     /// 重置统计
-    pub fn reset(&self) {
-        self.usage.lock().unwrap().reset();
+    pub async fn reset(&self) {
+        self.usage.lock().await.reset();
     }
 
     /// 估算成本(美元)
-    pub fn estimate_cost(&self, pricing: &ModelPricing) -> f64 {
-        let usage = self.get_usage();
+    pub async fn estimate_cost(&self, pricing: &ModelPricing) -> f64 {
+        let usage = self.get_usage().await;
         pricing.calculate(usage.prompt_tokens, usage.completion_tokens)
     }
 }
@@ -131,28 +129,28 @@ mod tests {
         assert!((cost - 1.0).abs() < 0.001);
     }
 
-    #[test]
-    fn test_tracking_llm_initial_usage_zero() {
+    #[tokio::test]
+    async fn test_tracking_llm_initial_usage_zero() {
         let llm = crate::OpenAIChat::new(crate::OpenAIConfig::default());
         let tracked = TokenTrackingLLM::for_openai(llm).unwrap();
-        assert_eq!(tracked.get_usage(), TokenUsage::new());
+        assert_eq!(tracked.get_usage().await, TokenUsage::new());
     }
 
-    #[test]
-    fn test_tracking_llm_reset() {
+    #[tokio::test]
+    async fn test_tracking_llm_reset() {
         let llm = crate::OpenAIChat::new(crate::OpenAIConfig::default());
         let tracked = TokenTrackingLLM::for_openai(llm).unwrap();
-        tracked.usage.lock().unwrap().add(100, 200);
-        tracked.reset();
-        assert_eq!(tracked.get_usage(), TokenUsage::new());
+        tracked.usage.lock().await.add(100, 200);
+        tracked.reset().await;
+        assert_eq!(tracked.get_usage().await, TokenUsage::new());
     }
 
-    #[test]
-    fn test_estimate_cost_after_manual_usage() {
+    #[tokio::test]
+    async fn test_estimate_cost_after_manual_usage() {
         let llm = crate::OpenAIChat::new(crate::OpenAIConfig::default());
         let tracked = TokenTrackingLLM::for_openai(llm).unwrap();
-        tracked.usage.lock().unwrap().add(1000, 1000);
-        let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini());
+        tracked.usage.lock().await.add(1000, 1000);
+        let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await;
         assert!((cost - 0.75).abs() < 0.001);
     }
 }

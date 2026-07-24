@@ -29,26 +29,17 @@ pub use pairwise::{PairwiseJudge, Verdict};
 pub use rules::{ContainsKeyword, LengthCheck, RegexMatch};
 
 /// 评测错误
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum EvalError {
+    #[error("IO 错误: {0}")]
     IoError(String),
+    #[error("解析错误: {0}")]
     ParseError(String),
+    #[error("嵌入错误: {0}")]
     EmbeddingError(String),
+    #[error("预测错误: {0}")]
     PredictorError(String),
 }
-
-impl std::fmt::Display for EvalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EvalError::IoError(m) => write!(f, "IO 错误: {}", m),
-            EvalError::ParseError(m) => write!(f, "解析错误: {}", m),
-            EvalError::EmbeddingError(m) => write!(f, "嵌入错误: {}", m),
-            EvalError::PredictorError(m) => write!(f, "预测错误: {}", m),
-        }
-    }
-}
-
-impl std::error::Error for EvalError {}
 
 /// 评测分数(0.0–1.0,1.0 为最佳)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +52,7 @@ pub struct Score {
 impl Score {
     pub fn new(value: f64) -> Self {
         Self {
-            value,
+            value: value.clamp(0.0, 1.0),
             label: None,
         }
     }
@@ -266,11 +257,12 @@ impl Evaluator for StringDistance {
         reference: &str,
     ) -> Result<Score, EvalError> {
         let dist = Self::levenshtein(prediction, reference) as f64;
-        let max_len = prediction
-            .chars()
-            .count()
-            .max(reference.chars().count()) as f64;
-        let score = if max_len == 0.0 { 1.0 } else { 1.0 - dist / max_len };
+        let max_len = prediction.chars().count().max(reference.chars().count()) as f64;
+        let score = if max_len == 0.0 {
+            1.0
+        } else {
+            1.0 - dist / max_len
+        };
         Ok(Score::new(score))
     }
 
@@ -308,7 +300,7 @@ impl<E: Embeddings> Evaluator for EmbeddingSimilarity<E> {
             .embed_query(reference)
             .await
             .map_err(|e| EvalError::EmbeddingError(e.to_string()))?;
-        let sim = cosine_similarity(&p, &r);
+        let sim = cosine_similarity(&p, &r).unwrap_or(0.0);
         // 余弦 -1..1 归一到 0..1
         let v = ((sim + 1.0) / 2.0).clamp(0.0, 1.0);
         Ok(Score::new(v as f64))
@@ -487,8 +479,8 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::embeddings::{LocalEmbeddings, MockEmbeddings};
-    use crate::{BaseChatModel, BaseLanguageModel, Runnable, RunnableConfig, LLMResult};
     use crate::language_models::openai::{OpenAIChat, OpenAIConfig};
+    use crate::{BaseChatModel, BaseLanguageModel, LLMResult, Runnable, RunnableConfig};
     use futures_util::Stream;
     use std::pin::Pin;
 
@@ -531,10 +523,7 @@ mod tests {
     #[tokio::test]
     async fn test_runner_summary() {
         let runner = EvalRunner::new(vec![Box::new(ExactMatch)]);
-        let dataset = Dataset::new(vec![
-            Example::new("q1", "yes"),
-            Example::new("q2", "no"),
-        ]);
+        let dataset = Dataset::new(vec![Example::new("q1", "yes"), Example::new("q2", "no")]);
         // predictor 总返回 "yes":第1例匹配(1.0),第2例不匹配(0.0),均值 0.5
         let report = runner.run(&dataset, &StaticPredictor("yes")).await.unwrap();
         assert_eq!(report.per_example.len(), 2);
@@ -550,7 +539,10 @@ mod tests {
             Box::new(EmbeddingSimilarity::new(MockEmbeddings::new(16))),
         ]);
         let dataset = Dataset::new(vec![Example::new("q", "hello")]);
-        let report = runner.run(&dataset, &StaticPredictor("hello")).await.unwrap();
+        let report = runner
+            .run(&dataset, &StaticPredictor("hello"))
+            .await
+            .unwrap();
         assert_eq!(report.summary.len(), 3);
         // 全部匹配,各评测器均应为 1.0
         for v in report.summary.values() {
@@ -630,6 +622,7 @@ mod tests {
                 model: "mock-judge".to_string(),
                 token_usage: None,
                 tool_calls: None,
+                thinking_content: None,
             })
         }
         async fn stream_chat(
@@ -919,7 +912,7 @@ mod tests {
             .compare(
                 "公司年假多少天?",
                 "员工年假为 15 天",        // A 忠实
-                "员工年假为 20 天,可累积",  // B 幻觉
+                "员工年假为 20 天,可累积", // B 幻觉
             )
             .await
             .unwrap();
@@ -929,13 +922,21 @@ mod tests {
         // === Faithfulness:检测幻觉(上下文说 15 天) ===
         let faith = Faithfulness::new(model);
         let s_hallucinated = faith
-            .eval("公司年假多少天?", "员工年假为 20 天,可累积。", "员工年假为 15 天。")
+            .eval(
+                "公司年假多少天?",
+                "员工年假为 20 天,可累积。",
+                "员工年假为 15 天。",
+            )
             .await
             .unwrap();
         println!("Faithfulness(幻觉回答): {}", s_hallucinated.value);
 
         let s_faithful = faith
-            .eval("公司年假多少天?", "员工年假为 15 天。", "员工年假为 15 天。")
+            .eval(
+                "公司年假多少天?",
+                "员工年假为 15 天。",
+                "员工年假为 15 天。",
+            )
             .await
             .unwrap();
         println!("Faithfulness(忠实回答): {}", s_faithful.value);

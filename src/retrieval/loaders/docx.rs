@@ -8,9 +8,14 @@ use std::io::Read;
 
 use async_trait::async_trait;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use crate::retrieval::loaders::{DocumentLoader, LoaderError};
 use crate::vector_stores::Document;
+
+/// M60: compile regexes once using LazyLock instead of on every call
+static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<w:t[^>]*>(.*?)</w:t>").unwrap());
+static PARA_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"</w:p>").unwrap());
 
 /// DOCX 文档加载器
 ///
@@ -33,21 +38,19 @@ impl DocxLoader {
     /// 文本在 `<w:t>` 标签内。
     fn extract_text_from_bytes(data: &[u8]) -> Result<String, LoaderError> {
         let reader = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(reader).map_err(|e| {
-            LoaderError::Other(format!("DOCX 不是有效 ZIP: {}", e))
-        })?;
+        let mut archive = zip::ZipArchive::new(reader)
+            .map_err(|e| LoaderError::Other(format!("DOCX 不是有效 ZIP: {}", e)))?;
 
         // 读取 word/document.xml
         let mut xml_content = String::new();
         let mut found = false;
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i).map_err(|e| {
-                LoaderError::Other(format!("读取 ZIP 条目失败: {}", e))
-            })?;
+            let mut file = archive
+                .by_index(i)
+                .map_err(|e| LoaderError::Other(format!("读取 ZIP 条目失败: {}", e)))?;
             if file.name() == "word/document.xml" {
-                file.read_to_string(&mut xml_content).map_err(|e| {
-                    LoaderError::Other(format!("读取 document.xml 失败: {}", e))
-                })?;
+                file.read_to_string(&mut xml_content)
+                    .map_err(|e| LoaderError::Other(format!("读取 document.xml 失败: {}", e)))?;
                 found = true;
                 break;
             }
@@ -65,18 +68,15 @@ impl DocxLoader {
 
     /// 从 document.xml 提取文本
     fn extract_text_from_xml(xml: &str) -> Result<String, LoaderError> {
-        let re = Regex::new(r"<w:t[^>]*>(.*?)</w:t>").unwrap();
-
-        // 在段落之间加换行(检测 </w:p> 标签)
-        let para_re = Regex::new(r"</w:p>").unwrap();
+        // M60: use pre-compiled regexes from LazyLock
         let mut result = String::new();
         let mut last_end = 0;
 
-        for cap in re.captures_iter(xml) {
+        for cap in WT_REGEX.captures_iter(xml) {
             let m = cap.get(1).unwrap();
             // 检查这个 <w:t> 之前是否有 </w:p>(新段落)
             let before = &xml[last_end..m.start()];
-            if para_re.is_match(before) && !result.is_empty() {
+            if PARA_REGEX.is_match(before) && !result.is_empty() {
                 result.push('\n');
             } else if !result.is_empty() {
                 // 同一段落内的连续文本

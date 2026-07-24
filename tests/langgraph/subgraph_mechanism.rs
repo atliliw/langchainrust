@@ -2,10 +2,7 @@
 //!
 //! 本测试文件专门演示 Subgraph 的内部执行机制和层级穿透
 
-use langchainrust::{
-    AgentState, StateUpdate,
-    GraphBuilder, START, END,
-};
+use langchainrust::{AgentState, GraphBuilder, StateUpdate, END, START};
 use std::time::{Duration, Instant};
 
 /// 模拟一个耗时操作（用于演示阻塞等待）
@@ -42,9 +39,9 @@ async fn test_subgraph_blocking_execution() {
             let t0 = Instant::now();
             let result = simulate_work("内层", 100).await;
             let elapsed = t0.elapsed();
-            
+
             println!("    📊 [内层] 耗时: {}ms", elapsed.as_millis());
-            
+
             let mut s = AgentState::new(result.clone());
             s.set_output(result);
             Ok(StateUpdate::full(s))
@@ -62,12 +59,12 @@ async fn test_subgraph_blocking_execution() {
             async move {
                 let t0 = Instant::now();
                 println!("\n  ⏸️ [中层] 等待内层完成，输入: {}", inner_result);
-                
+
                 let result = simulate_work("中层", 150).await;
                 let elapsed = t0.elapsed();
-                
+
                 println!("  📊 [中层] 耗时: {}ms (含等待内层)", elapsed.as_millis());
-                
+
                 let mut s = AgentState::new(result.clone());
                 s.set_output(result);
                 Ok(StateUpdate::full(s))
@@ -85,9 +82,9 @@ async fn test_subgraph_blocking_execution() {
             println!("\n══════════════════════════════════════════════════════════════");
             println!("【外层】outer_pre 开始执行（在子图之前）");
             println!("══════════════════════════════════════════════════════════════");
-            
+
             let result = simulate_work("外层前", 50).await;
-            
+
             let mut s = AgentState::new(result.clone());
             s.set_output(result);
             Ok(StateUpdate::full(s))
@@ -100,9 +97,9 @@ async fn test_subgraph_blocking_execution() {
                 println!("【外层】outer_post 开始执行（在子图之后）");
                 println!("  子图返回: {}", mid_result);
                 println!("══════════════════════════════════════════════════════════════");
-                
+
                 let result = simulate_work("外层后", 50).await;
-                
+
                 let mut s = AgentState::new("complete".to_string());
                 s.set_output(result);
                 Ok(StateUpdate::full(s))
@@ -124,9 +121,12 @@ async fn test_subgraph_blocking_execution() {
 
     println!("\n【开始执行】");
     let total_start = Instant::now();
-    
-    let result = outer.invoke(AgentState::new("start".to_string())).await.unwrap();
-    
+
+    let result = outer
+        .invoke(AgentState::new("start".to_string()))
+        .await
+        .unwrap();
+
     let total_elapsed = total_start.elapsed();
 
     println!("\n");
@@ -206,7 +206,9 @@ async fn test_all_layers_same_structure() {
 
     // 创建三层，每层都是 CompiledGraph<AgentState>
     let inner: langchainrust::CompiledGraph<AgentState> = GraphBuilder::<AgentState>::new()
-        .add_node_fn("inner_node", |state: &AgentState| Ok(StateUpdate::full(state.clone())))
+        .add_node_fn("inner_node", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        })
         .add_edge(START, "inner_node")
         .add_edge("inner_node", END)
         .compile()
@@ -217,7 +219,9 @@ async fn test_all_layers_same_structure() {
 
     let middle: langchainrust::CompiledGraph<AgentState> = GraphBuilder::<AgentState>::new()
         .add_subgraph_same_state("inner", inner)
-        .add_node_fn("middle_node", |state: &AgentState| Ok(StateUpdate::full(state.clone())))
+        .add_node_fn("middle_node", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        })
         .add_edge(START, "inner")
         .add_edge("inner", "middle_node")
         .add_edge("middle_node", END)
@@ -230,7 +234,9 @@ async fn test_all_layers_same_structure() {
 
     let outer: langchainrust::CompiledGraph<AgentState> = GraphBuilder::<AgentState>::new()
         .add_subgraph_same_state("middle", middle)
-        .add_node_fn("outer_node", |state: &AgentState| Ok(StateUpdate::full(state.clone())))
+        .add_node_fn("outer_node", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        })
         .add_edge(START, "middle")
         .add_edge("middle", "outer_node")
         .add_edge("outer_node", END)
@@ -272,5 +278,8 @@ async fn test_all_layers_same_structure() {
     println!("  SubgraphNode 实现了 GraphNode trait");
     println!("  所以它可以像普通节点一样加入父图");
 
-    let _ = outer.invoke(AgentState::new("test".to_string())).await.unwrap();
+    let _ = outer
+        .invoke(AgentState::new("test".to_string()))
+        .await
+        .unwrap();
 }

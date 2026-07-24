@@ -48,7 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n自定义摘要 prompt:");
     println!("  let cw = ContextWindow::with_strategy(");
     println!("      4096,");
-    println!("      Strategy::summarize_with_prompt(llm, \"请用中文总结: {{conversation}}\\n摘要:\"),");
+    println!(
+        "      Strategy::summarize_with_prompt(llm, \"请用中文总结: {{conversation}}\\n摘要:\"),"
+    );
     println!("  );");
 
     Ok(())

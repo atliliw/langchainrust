@@ -48,6 +48,13 @@ impl FileTool {
             .map_err(|e| ToolError::InvalidInput(format!("base_path 无效: {}", e)))?;
         let target = base.join(relative);
 
+        // Reject files without an extension (bypasses whitelist)
+        if target.extension().is_none() {
+            return Err(ToolError::InvalidInput(
+                "文件必须包含扩展名（无扩展名文件不在白名单中）".to_string(),
+            ));
+        }
+
         // 扩展名检查(用未 canonicalize 的 target,因为文件可能不存在)
         if let Some(ext) = target.extension().and_then(|e| e.to_str()) {
             if !self.allowed_extensions.iter().any(|a| a == ext) {
@@ -63,16 +70,21 @@ impl FileTool {
             .canonicalize()
             .or_else(|_| {
                 // 文件不存在(write 场景):canonicalize parent + file_name
+                let file_name = target.file_name().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty file name")
+                })?;
                 target
                     .parent()
                     .and_then(|p| p.canonicalize().ok())
-                    .map(|p| p.join(target.file_name().unwrap_or_default()))
+                    .map(|p| p.join(file_name))
                     .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "parent"))
             })
             .map_err(|e| ToolError::InvalidInput(format!("路径无效: {}", e)))?;
 
         if !canon.starts_with(&base) {
-            return Err(ToolError::InvalidInput("路径越界(base_path 沙箱)".to_string()));
+            return Err(ToolError::InvalidInput(
+                "路径越界(base_path 沙箱)".to_string(),
+            ));
         }
         Ok(canon)
     }

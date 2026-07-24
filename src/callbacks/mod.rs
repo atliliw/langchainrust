@@ -27,16 +27,26 @@
 //! - `LANGSMITH_ENDPOINT`: API endpoint (default: LangSmith official)
 //! - `LANGSMITH_WORKSPACE_ID`: Workspace ID (required for org accounts)
 
-mod run_type;
-mod run_tree;
 mod base;
-mod langsmith_client;
 pub mod handlers;
+mod langsmith_client;
+mod run_tree;
+mod run_type;
+pub mod tracing;
 
-pub use run_type::RunType;
-pub use run_tree::{RunCreate, RunTree, RunUpdate};
 pub use base::{CallbackHandler, CallbackManager};
-pub use langsmith_client::{LangSmithClient, LangSmithConfig, LangSmithError};
-pub use handlers::{LangSmithHandler, StdOutHandler, FileCallbackHandler, LogFormat};
 #[cfg(feature = "opentelemetry")]
 pub use handlers::OtelHandler;
+pub use handlers::{FileCallbackHandler, LangSmithHandler, LogFormat, StdOutHandler};
+pub use langsmith_client::{LangSmithClient, LangSmithConfig, LangSmithError};
+pub use run_tree::{RunCreate, RunTree, RunUpdate};
+pub use run_type::RunType;
+
+// Tracing exports
+#[cfg(feature = "opentelemetry")]
+pub use tracing::OtelTracingBackend;
+pub use tracing::{
+    clear_span_stack, init_task_span_stack, ConsoleTracingBackend, InMemoryTracingBackend,
+    SpanGuard, SpanId, SpanKind, SpanStatus, SpanTokenUsage, TraceNode, TraceSpan, Tracer,
+    TracingBackend,
+};

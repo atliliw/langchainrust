@@ -14,14 +14,14 @@
 //!     .with_output(Arc::new(SensitiveInfoGuardrail::new()));
 //! ```
 
-pub mod guardrail;
 pub mod guarded_agent;
+pub mod guardrail;
 pub mod runner;
 pub mod validators;
 
+pub use guarded_agent::GuardedAgent;
 pub use guardrail::{
     GuardrailError, GuardrailResult, GuardrailsConfig, InputGuardrail, OutputGuardrail,
 };
-pub use guarded_agent::GuardedAgent;
 pub use runner::{GuardrailRunner, GuardrailViolation};
 pub use validators::{ForbiddenWordsGuardrail, MaxLengthGuardrail, SensitiveInfoGuardrail};

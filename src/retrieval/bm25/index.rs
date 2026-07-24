@@ -90,14 +90,24 @@ impl BM25Index {
     }
 
     /// 批量添加文档
-    pub fn add_documents(&mut self, documents: Vec<Document>, terms_list: Vec<Vec<String>>) {
+    pub fn add_documents(
+        &mut self,
+        documents: Vec<Document>,
+        terms_list: Vec<Vec<String>>,
+    ) -> Result<(), String> {
         if documents.len() != terms_list.len() {
-            return;
+            return Err(format!(
+                "documents count ({}) does not match terms_list count ({})",
+                documents.len(),
+                terms_list.len()
+            ));
         }
 
         for (doc, terms) in documents.into_iter().zip(terms_list) {
             self.add_document(doc, terms);
         }
+
+        Ok(())
     }
 
     /// 更新平均文档长度

@@ -5,9 +5,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{(\w+)\}").unwrap()
-});
+static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(\w+)\}").unwrap());
 
 /// 提示词模板
 ///
@@ -47,17 +45,27 @@ impl PromptTemplate {
     /// # 错误
     /// 如果模板中有变量但 `variables` 中没有提供对应的值，返回错误
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<String, String> {
-        let mut result = self.template.clone();
+        let mut result = String::with_capacity(self.template.len());
+        let mut last_end = 0;
 
-        // 找到所有 {variable} 格式的变量
         for cap in VARIABLE_RE.captures_iter(&self.template) {
+            let var_match = cap.get(0).unwrap();
             let var_name = cap.get(1).unwrap().as_str();
+
+            // Push text before this variable
+            result.push_str(&self.template[last_end..var_match.start()]);
+
             if let Some(value) = variables.get(var_name) {
-                result = result.replace(&format!("{{{}}}", var_name), value);
+                result.push_str(value);
             } else {
                 return Err(format!("Missing variable: {}", var_name));
             }
+
+            last_end = var_match.end();
         }
+
+        // Push remaining text after the last variable
+        result.push_str(&self.template[last_end..]);
 
         Ok(result)
     }
@@ -67,7 +75,8 @@ impl PromptTemplate {
     /// # 返回
     /// 变量名列表
     pub fn variables(&self) -> Vec<String> {
-        VARIABLE_RE.captures_iter(&self.template)
+        VARIABLE_RE
+            .captures_iter(&self.template)
             .map(|cap| cap.get(1).unwrap().as_str().to_string())
             .collect()
     }

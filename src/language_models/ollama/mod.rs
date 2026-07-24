@@ -25,8 +25,8 @@
 //! let response = llm.chat(messages, None).await?;
 //! ```
 
-pub mod config;
 pub mod chat;
+pub mod config;
 
-pub use config::OllamaConfig;
 pub use chat::OllamaChat;
+pub use config::OllamaConfig;

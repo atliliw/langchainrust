@@ -1,6 +1,6 @@
 [package]
 name = "langchainrust"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, RAG, BM25, Hybrid Retrieval, LangGraph, HyDE, Reranking, MultiQuery, and native Function Calling."
@@ -48,6 +48,8 @@ ort = { version = "2.0.0-rc.12", optional = true }
 ndarray = { version = "0.17", optional = true }
 zip = "2"
 url = "2"
+log = "0.4"
+urlencoding = "2"
 meval = "0.2"
 
 [dev-dependencies]
@@ -80,8 +82,20 @@ name = "unit_schema"
 path = "tests/unit/schema.rs"
 
 [[test]]
+name = "unit_router_llm"
+path = "tests/unit/router_llm.rs"
+
+[[test]]
+name = "unit_batch"
+path = "tests/unit/batch.rs"
+
+[[test]]
 name = "unit_mock_chat"
 path = "tests/unit/mock_chat.rs"
+
+[[test]]
+name = "unit_graph_rag"
+path = "tests/unit/graph_rag.rs"
 
 [[test]]
 name = "unit_prompts"
@@ -110,6 +124,10 @@ path = "tests/unit/vectorstores.rs"
 [[test]]
 name = "unit_callbacks"
 path = "tests/unit/callbacks.rs"
+
+[[test]]
+name = "unit_tracing"
+path = "tests/unit/tracing.rs"
 
 [[test]]
 name = "unit_tool_calling"
@@ -155,6 +173,10 @@ path = "tests/unit/summary_buffer_memory.rs"
 [[test]]
 name = "unit_providers"
 path = "tests/unit/providers.rs"
+
+[[test]]
+name = "unit_anthropic_thinking"
+path = "tests/unit/anthropic_thinking.rs"
 
 [[test]]
 name = "qdrant_tutorial"

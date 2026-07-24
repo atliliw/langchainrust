@@ -35,7 +35,8 @@ impl BaseTool for MCPToolAdapter {
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
-        let args: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+        let args: Value = serde_json::from_str(&input)
+            .map_err(|e| ToolError::ExecutionFailed(format!("Invalid JSON input: {}", e)))?;
         let result = self
             .client
             .call_tool(&self.definition.name, args)

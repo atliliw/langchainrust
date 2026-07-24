@@ -26,10 +26,7 @@
 //! });
 //! ```
 
-use langchainrust::{
-    GraphBuilder, START, END,
-    AgentState, StateUpdate,
-};
+use langchainrust::{AgentState, GraphBuilder, StateUpdate, END, START};
 
 /// 测试异步节点基本功能
 ///
@@ -49,7 +46,9 @@ async fn test_async_node_basic() {
             let state = state.clone();
             async move {
                 let mut new_state = state;
-                new_state.add_message(langchainrust::MessageEntry::ai("Async processed".to_string()));
+                new_state.add_message(langchainrust::MessageEntry::ai(
+                    "Async processed".to_string(),
+                ));
                 Ok(StateUpdate::full(new_state))
             }
         })
@@ -57,10 +56,10 @@ async fn test_async_node_basic() {
         .add_edge("async_process", END)
         .compile()
         .unwrap();
-    
+
     let input = AgentState::new("Hello async".to_string());
     let result = compiled.invoke(input).await.unwrap();
-    
+
     assert_eq!(result.recursion_count, 1);
     assert!(result.final_state.messages.len() > 1);
 }
@@ -109,10 +108,10 @@ async fn test_multiple_async_nodes() {
         .add_edge("step3", END)
         .compile()
         .unwrap();
-    
+
     let input = AgentState::new("Test".to_string());
     let result = compiled.invoke(input).await.unwrap();
-    
+
     assert_eq!(result.recursion_count, 3);
     assert_eq!(result.final_state.output, Some("Done".to_string()));
     // step3 只调用了 set_output，没有 add_message，所以只有 3 条消息
@@ -141,10 +140,10 @@ async fn test_mixed_sync_async_nodes() {
         .add_edge("async_step", END)
         .compile()
         .unwrap();
-    
+
     let input = AgentState::new("Mixed".to_string());
     let result = compiled.invoke(input).await.unwrap();
-    
+
     assert_eq!(result.recursion_count, 2);
     assert_eq!(result.final_state.messages.len(), 3);
 }
@@ -165,9 +164,12 @@ async fn test_async_node_with_delay() {
         .add_edge("delayed", END)
         .compile()
         .unwrap();
-    
+
     let input = AgentState::new("Test delay".to_string());
     let result = compiled.invoke(input).await.unwrap();
-    
-    assert_eq!(result.final_state.output, Some("Delayed result".to_string()));
+
+    assert_eq!(
+        result.final_state.output,
+        Some("Delayed result".to_string())
+    );
 }

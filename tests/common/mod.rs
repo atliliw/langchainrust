@@ -12,8 +12,8 @@
 
 use langchainrust::{OpenAIChat, OpenAIConfig, OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 use std::sync::OnceLock;
-use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ============================================================================
 // 🔑 在这里配置你的 API Key
@@ -23,7 +23,8 @@ use wiremock::matchers::{method, path};
 const API_KEY: &str = "sk-6eb65fcf5d17491ca10b984efe1f43e7";
 
 /// Base URL - 可选修改
-const BASE_URL: &str = "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+const BASE_URL: &str =
+    "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 
 /// 默认模型
 const DEFAULT_MODEL: &str = "glm-5.2";
@@ -164,20 +165,18 @@ pub async fn mock_openai_chat_server(reply: &str) -> (MockServer, String) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "chatcmpl-mock",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "mock",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": reply},
-                    "finish_reason": "stop"
-                }],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "chatcmpl-mock",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "mock",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": reply},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
         .mount(&server)
         .await;
     let base_url = format!("{}/v1", server.uri());

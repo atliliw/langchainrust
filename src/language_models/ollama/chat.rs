@@ -6,21 +6,22 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use std::pin::Pin;
-use serde::Deserialize;
-use serde_json::json;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use serde_json::json;
 use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
-use crate::schema::Message;
-use crate::RunnableConfig;
+use super::OllamaConfig;
+use crate::callbacks::{RunTree, RunType};
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
-use crate::core::tools::{ToolDefinition, StructuredOutput, ToolCall};
-use crate::callbacks::{RunTree, RunType};
+use crate::core::tools::{StructuredOutput, ToolCall, ToolDefinition};
 use crate::language_models::openai::sse::SSEParser;
-use super::OllamaConfig;
+use crate::schema::Message;
+use crate::RunnableConfig;
 
 /// Ollama chat model client for local LLM deployment.
 ///
@@ -90,10 +91,17 @@ impl OllamaChat {
                     json!({"role": "user", "content": &message.content})
                 }
             }
-            crate::schema::MessageType::AI => json!({
-                "role": "assistant",
-                "content": message.content,
-            }),
+            crate::schema::MessageType::AI => {
+                let mut msg = json!({
+                    "role": "assistant",
+                    "content": message.content,
+                });
+                if let Some(tool_calls) = &message.tool_calls {
+                    msg["tool_calls"] =
+                        serde_json::to_value(tool_calls).unwrap_or_else(|_| serde_json::json!([]));
+                }
+                msg
+            }
             crate::schema::MessageType::Tool { tool_call_id } => json!({
                 "role": "tool",
                 "tool_call_id": tool_call_id,
@@ -165,20 +173,24 @@ impl OllamaChat {
     ///
     /// # Type Parameters
     /// * `T` - The output type implementing Deserialize and JsonSchema.
-    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(&self) -> OllamaStructuredOutput<T> {
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(
+        &self,
+    ) -> OllamaStructuredOutput<T> {
         use schemars::schema_for;
-        let schema = serde_json::to_value(schema_for!(T))
-            .unwrap_or(serde_json::Value::Null);
-        
+        let schema = serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| {
+            // H64: Schema generation should not silently produce null
+            serde_json::json!({"type": "object", "properties": {}})
+        });
+
         let tool = ToolDefinition::new("structured_output", "Return structured JSON output")
             .with_parameters(schema);
-        
+
         let config = OllamaConfig {
             tools: Some(vec![tool]),
             tool_choice: Some("auto".to_string()),
             ..self.config.clone()
         };
-        
+
         OllamaStructuredOutput {
             config,
             client: self.client.clone(),
@@ -190,7 +202,8 @@ impl OllamaChat {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -209,7 +222,11 @@ impl OllamaChat {
             .await
             .map_err(|e| OllamaError::Parse(e.to_string()))?;
 
-        let message = &chat_response.choices[0].message;
+        let choice = chat_response
+            .choices
+            .first()
+            .ok_or_else(|| OllamaError::Api("No choices in response".to_string()))?;
+        let message = &choice.message;
 
         Ok(LLMResult {
             content: message.content.clone(),
@@ -220,6 +237,7 @@ impl OllamaChat {
                 total_tokens: u.total_tokens,
             }),
             tool_calls: message.tool_calls.clone(),
+            thinking_content: None,
         })
     }
 
@@ -227,12 +245,11 @@ impl OllamaChat {
         &self,
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaError>> + Send>>, OllamaError> {
-        use futures_util::StreamExt;
-
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, true);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -247,36 +264,45 @@ impl OllamaChat {
         }
 
         let byte_stream = response.bytes_stream();
+        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, OllamaError>>(64);
 
-        let stream = byte_stream
-            .then(|chunk_result| async move {
-                let mut parser = SSEParser::new();
-                match chunk_result {
-                    Ok(bytes) => {
+        let parser_clone = parser.clone();
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+
+            let mut byte_stream = byte_stream;
+            while let Some(chunk_result) = byte_stream.next().await {
+                let events = {
+                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Ok(bytes) = chunk_result {
                         let chunk_str = String::from_utf8_lossy(&bytes);
-                        let events = parser.parse(&chunk_str);
 
-                        for event in events {
-                            if event.is_done() {
-                                return None;
-                            }
+                        parser_guard.parse(&chunk_str)
+                    } else {
+                        Vec::new()
+                    }
+                };
+                // parser_guard is dropped here, before any await
 
-                            if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                                if let Some(choice) = chunk.choices.first() {
-                                    if let Some(content) = &choice.delta.content {
-                                        return Some(Ok(content.clone()));
-                                    }
+                for event in events {
+                    if event.is_done() {
+                        return;
+                    }
+                    if let Ok(Some(chunk)) = event.parse_openai_chunk() {
+                        if let Some(choice) = chunk.choices.first() {
+                            if let Some(content) = &choice.delta.content {
+                                if tx.send(Ok(content.clone())).await.is_err() {
+                                    return;
                                 }
                             }
                         }
-
-                        None
-                    },
-                    Err(e) => Some(Err(OllamaError::Http(e.to_string()))),
+                    }
                 }
-            })
-            .filter_map(|x| async move { x });
+            }
+        });
 
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
     }
 }
@@ -297,33 +323,25 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
         &self,
         input: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
-        
+
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
-        
-        let content_future = async move {
-            token_stream
-                .fold(String::new(), |mut acc, token_result| async move {
-                    if let Ok(token) = token_result {
-                        acc.push_str(&token);
-                    }
-                    acc
-                })
-                .await
-        };
-        
-        let stream = futures_util::stream::once(async move {
-            let content = content_future.await;
-            Ok(LLMResult {
-                content,
-                model,
+
+        // H4: True streaming — emit one LLMResult per token
+        let stream = token_stream.map(move |token_result| match token_result {
+            Ok(token) => Ok(LLMResult {
+                content: token,
+                model: model.clone(),
                 token_usage: None,
                 tool_calls: None,
-            })
+                thinking_content: None,
+            }),
+            Err(e) => Err(e),
         });
-        
+
         Ok(Box::pin(stream))
     }
 }
@@ -364,7 +382,8 @@ impl BaseChatModel for OllamaChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        let run_name = config.as_ref()
+        let run_name = config
+            .as_ref()
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
@@ -435,7 +454,10 @@ impl BaseChatModel for OllamaChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        let run_name = config.as_ref()
+        use futures_util::StreamExt;
+
+        let run_name = config
+            .as_ref()
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
 
@@ -459,18 +481,22 @@ impl BaseChatModel for OllamaChat {
         let stream = self.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
-        let stream = Box::pin(futures_util::stream::StreamExt::map(stream, move |token_result| {
-            if let Some(ref cbs) = callbacks {
-                if let Ok(ref token) = token_result {
-                    for handler in cbs.handlers() {
-                        drop(handler.on_llm_new_token(&run, token));
+        let stream = stream.then(move |token_result| {
+            let cbs = callbacks.clone();
+            let run = run.clone();
+            async move {
+                if let Some(ref cbs) = cbs {
+                    if let Ok(ref token) = token_result {
+                        for handler in cbs.handlers() {
+                            handler.on_llm_new_token(&run, token).await;
+                        }
                     }
                 }
+                token_result
             }
-            token_result
-        }));
+        });
 
-        Ok(stream)
+        Ok(Box::pin(stream))
     }
 }
 
@@ -539,9 +565,11 @@ impl<T: DeserializeOwned + JsonSchema> OllamaStructuredOutput<T> {
             config: self.config.clone(),
             client: self.client.clone(),
         };
-        
+
         let result = chat.chat_internal(messages).await?;
         let structured = StructuredOutput::<T>::new(result);
-        structured.parse().map_err(|e| OllamaError::Parse(e.to_string()))
+        structured
+            .parse()
+            .map_err(|e| OllamaError::Parse(e.to_string()))
     }
 }

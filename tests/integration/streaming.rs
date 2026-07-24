@@ -17,9 +17,7 @@ use langchainrust::agents::streaming::{AgentStreamEvent, StreamingFunctionCallin
 async fn test_invoke_stream() {
     let llm = TestConfig::get().openai_chat();
     let agent = StreamingFunctionCallingAgent::new(llm);
-    let mut stream = agent
-        .invoke_stream("一句话介绍 Rust".to_string())
-        .await;
+    let mut stream = agent.invoke_stream("一句话介绍 Rust".to_string()).await;
 
     let mut full = String::new();
     let mut had_text = false;

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub struct TextLoader {
     /// 文本文件路径
     pub path: PathBuf,
-    
+
     /// 是否按行分割（可选）
     /// 如果为 true，每行作为一个独立文档
     pub split_by_line: bool,
@@ -30,7 +30,7 @@ impl TextLoader {
             split_by_line: false,
         }
     }
-    
+
     /// 创建按行分割的 Text 加载器
     ///
     /// 每行文本将作为独立文档返回。
@@ -43,7 +43,7 @@ impl TextLoader {
             split_by_line: true,
         }
     }
-    
+
     /// 设置是否按行分割
     pub fn with_split_by_line(mut self, split: bool) -> Self {
         self.split_by_line = split;
@@ -64,7 +64,7 @@ impl DocumentLoader for TextLoader {
 
         // 读取文件内容
         let content = std::fs::read_to_string(&self.path)?;
-        
+
         if self.split_by_line {
             // 按行分割
             let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -79,14 +79,15 @@ impl DocumentLoader for TextLoader {
                     doc
                 })
                 .collect();
-            
+
             Ok(documents)
         } else {
             // 整个文件作为一个文档
             let mut document = Document::new(content);
-            document = document.with_metadata("source".to_string(), self.path.display().to_string());
+            document =
+                document.with_metadata("source".to_string(), self.path.display().to_string());
             document = document.with_metadata("format".to_string(), "text".to_string());
-            
+
             Ok(vec![document])
         }
     }
@@ -102,7 +103,7 @@ mod tests {
     async fn test_text_loader_nonexistent() {
         let loader = TextLoader::new("./nonexistent.txt");
         let result = loader.load().await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             LoaderError::Other(msg) => assert!(msg.contains("不存在")),
@@ -114,10 +115,10 @@ mod tests {
     async fn test_text_loader_single_document() {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "Hello, World!\nThis is a test.").unwrap();
-        
+
         let loader = TextLoader::new(temp_file.path());
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 1);
@@ -131,10 +132,10 @@ mod tests {
         writeln!(temp_file, "Line 1").unwrap();
         writeln!(temp_file, "Line 2").unwrap();
         writeln!(temp_file, "Line 3").unwrap();
-        
+
         let loader = TextLoader::new_with_line_split(temp_file.path());
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 3);
@@ -149,10 +150,10 @@ mod tests {
         writeln!(temp_file).unwrap();
         writeln!(temp_file, "   ").unwrap();
         writeln!(temp_file, "Line 2").unwrap();
-        
+
         let loader = TextLoader::new_with_line_split(temp_file.path());
         let result = loader.load().await;
-        
+
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert_eq!(docs.len(), 2); // 空行被跳过

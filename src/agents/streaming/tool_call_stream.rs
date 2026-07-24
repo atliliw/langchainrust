@@ -37,10 +37,10 @@ impl StreamingFunctionCallingAgent {
         tokio::spawn(async move {
             let mut stream = match llm.stream_chat(messages, None).await {
                 Ok(s) => s,
-                Err(_) => {
+                Err(e) => {
                     let _ = tx
-                        .send(AgentStreamEvent::FinalAnswer {
-                            content: String::new(),
+                        .send(AgentStreamEvent::Error {
+                            message: format!("Stream initialization failed: {}", e),
                         })
                         .await;
                     return;
@@ -60,7 +60,14 @@ impl StreamingFunctionCallingAgent {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        let _ = tx
+                            .send(AgentStreamEvent::Error {
+                                message: format!("Stream error: {}", e),
+                            })
+                            .await;
+                        break;
+                    }
                 }
             }
 

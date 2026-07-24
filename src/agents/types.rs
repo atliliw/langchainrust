@@ -20,27 +20,60 @@ pub struct AgentAction {
 }
 
 /// 工具输入类型
+///
+/// Uses internally tagged serialization to avoid `untagged` ambiguity:
+/// - String inputs are tagged with `"type": "string"`
+/// - Object inputs are tagged with `"type": "object"`
+///
+/// A `TryFrom<serde_json::Value>` implementation validates incoming untagged
+/// JSON and dispatches to the correct variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolInput {
     /// 字符串输入
-    String(String),
+    String { value: String },
 
     /// JSON 对象输入
-    Object(serde_json::Value),
+    Object { value: serde_json::Value },
 }
 
 impl Default for ToolInput {
     fn default() -> Self {
-        ToolInput::String(String::new())
+        ToolInput::String {
+            value: String::new(),
+        }
     }
 }
 
 impl std::fmt::Display for ToolInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ToolInput::String(s) => write!(f, "{}", s),
-            ToolInput::Object(v) => write!(f, "{}", serde_json::to_string(v).unwrap_or_default()),
+            ToolInput::String { value } => write!(f, "{}", value),
+            ToolInput::Object { value } => write!(
+                f,
+                "{}",
+                serde_json::to_string(value).unwrap_or_else(|_| "unknown".to_string())
+            ),
+        }
+    }
+}
+
+/// Validates untagged JSON into a `ToolInput`.
+///
+/// This handles the case where external systems send JSON without the
+/// `type` tag. A JSON string becomes `ToolInput::String`, a JSON object
+/// becomes `ToolInput::Object`, and anything else is an error.
+impl TryFrom<serde_json::Value> for ToolInput {
+    type Error = String;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+        match value {
+            serde_json::Value::String(s) => Ok(ToolInput::String { value: s }),
+            serde_json::Value::Object(_) => Ok(ToolInput::Object { value }),
+            other => Err(format!(
+                "ToolInput must be a string or object, got: {}",
+                other
+            )),
         }
     }
 }
@@ -152,7 +185,9 @@ mod tests {
     fn create_action(tool: &str, input: &str) -> AgentAction {
         AgentAction {
             tool: tool.to_string(),
-            tool_input: ToolInput::String(input.to_string()),
+            tool_input: ToolInput::String {
+                value: input.to_string(),
+            },
             log: "test".to_string(),
         }
     }

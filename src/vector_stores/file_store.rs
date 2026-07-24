@@ -51,19 +51,18 @@ impl FileVectorStore {
     /// # Arguments
     /// * `path` - 存储文件路径(建议 `.json` 后缀)
     /// * `dimension` - 向量维度(用于校验,已有文件时以文件为准)
-    pub fn new(path: PathBuf, dimension: usize) -> Result<Self, VectorStoreError> {
+    pub async fn new(path: PathBuf, dimension: usize) -> Result<Self, VectorStoreError> {
         let data = if path.exists() {
-            let content = std::fs::read_to_string(&path).map_err(|e| {
-                VectorStoreError::StorageError(format!("读取文件失败: {}", e))
-            })?;
-            serde_json::from_str::<FileStoreData>(&content).map_err(|e| {
-                VectorStoreError::StorageError(format!("解析文件失败: {}", e))
-            })?
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|e| VectorStoreError::StorageError(format!("读取文件失败: {}", e)))?;
+            serde_json::from_str::<FileStoreData>(&content)
+                .map_err(|e| VectorStoreError::StorageError(format!("解析文件失败: {}", e)))?
         } else {
             // 确保父目录存在
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
                         VectorStoreError::StorageError(format!("创建目录失败: {}", e))
                     })?;
                 }
@@ -73,7 +72,7 @@ impl FileVectorStore {
                 documents: HashMap::new(),
             };
             // 首次创建时也持久化空文件,确保 path.exists() 为 true
-            Self::persist(&data, &path)?;
+            Self::persist(&data, &path).await?;
             data
         };
 
@@ -85,18 +84,17 @@ impl FileVectorStore {
     }
 
     /// 持久化当前数据到磁盘
-    fn persist(data: &FileStoreData, path: &PathBuf) -> Result<(), VectorStoreError> {
-        let json = serde_json::to_string(data).map_err(|e| {
-            VectorStoreError::StorageError(format!("序列化失败: {}", e))
-        })?;
+    async fn persist(data: &FileStoreData, path: &PathBuf) -> Result<(), VectorStoreError> {
+        let json = serde_json::to_string(data)
+            .map_err(|e| VectorStoreError::StorageError(format!("序列化失败: {}", e)))?;
         // 先写临时文件,再 rename,避免写一半断电损坏
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json).map_err(|e| {
-            VectorStoreError::StorageError(format!("写入临时文件失败: {}", e))
-        })?;
-        std::fs::rename(&tmp_path, path).map_err(|e| {
-            VectorStoreError::StorageError(format!("重命名文件失败: {}", e))
-        })?;
+        tokio::fs::write(&tmp_path, &json)
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("写入临时文件失败: {}", e)))?;
+        tokio::fs::rename(&tmp_path, path)
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("重命名文件失败: {}", e)))?;
         Ok(())
     }
 
@@ -150,7 +148,7 @@ impl VectorStore for FileVectorStore {
             ids.push(id);
         }
 
-        Self::persist(&data, &self.path)?;
+        Self::persist(&data, &self.path).await?;
         Ok(ids)
     }
 
@@ -165,7 +163,8 @@ impl VectorStore for FileVectorStore {
             .documents
             .values()
             .map(|vd| {
-                let score = crate::core::math::cosine_similarity(query_embedding, &vd.embedding);
+                let score = crate::core::math::cosine_similarity(query_embedding, &vd.embedding)
+                    .unwrap_or(0.0);
                 SearchResult {
                     document: vd.document.clone(),
                     score,
@@ -197,7 +196,7 @@ impl VectorStore for FileVectorStore {
         data.documents
             .remove(id)
             .ok_or_else(|| VectorStoreError::DocumentNotFound(id.to_string()))?;
-        Self::persist(&data, &self.path)?;
+        Self::persist(&data, &self.path).await?;
         Ok(())
     }
 
@@ -209,7 +208,7 @@ impl VectorStore for FileVectorStore {
     async fn clear(&self) -> Result<(), VectorStoreError> {
         let mut data = self.data.write().await;
         data.documents.clear();
-        Self::persist(&data, &self.path)?;
+        Self::persist(&data, &self.path).await?;
         Ok(())
     }
 }
@@ -227,7 +226,7 @@ mod tests {
     async fn test_new_creates_empty_store() {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
-        let store = FileVectorStore::new(path.clone(), 3).unwrap();
+        let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
         assert_eq!(store.count().await, 0);
         assert_eq!(store.dimension(), 3);
         assert!(path.exists());
@@ -237,7 +236,7 @@ mod tests {
     async fn test_add_and_search() {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
-        let store = FileVectorStore::new(path, 3).unwrap();
+        let store = FileVectorStore::new(path, 3).await.unwrap();
 
         let docs = vec![
             Document::new("Rust is a systems programming language"),
@@ -268,7 +267,7 @@ mod tests {
 
         // 第一个实例:写入
         {
-            let store = FileVectorStore::new(path.clone(), 3).unwrap();
+            let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             let doc = Document::new("persistent doc").with_id("p1");
             store
                 .add_documents(vec![doc], vec![vec![1.0, 0.0, 0.0]])
@@ -278,7 +277,7 @@ mod tests {
 
         // 第二个实例:加载并验证
         {
-            let store = FileVectorStore::new(path.clone(), 3).unwrap();
+            let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             assert_eq!(store.count().await, 1);
             let doc = store.get_document("p1").await.unwrap().unwrap();
             assert_eq!(doc.content, "persistent doc");
@@ -291,7 +290,7 @@ mod tests {
         let path = test_store_path(&dir);
 
         {
-            let store = FileVectorStore::new(path.clone(), 3).unwrap();
+            let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             let doc = Document::new("to delete").with_id("d1");
             store
                 .add_documents(vec![doc], vec![vec![1.0, 0.0, 0.0]])
@@ -300,7 +299,7 @@ mod tests {
             store.delete_document("d1").await.unwrap();
         }
 
-        let store = FileVectorStore::new(path.clone(), 3).unwrap();
+        let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
         assert_eq!(store.count().await, 0);
     }
 
@@ -310,14 +309,14 @@ mod tests {
         let path = test_store_path(&dir);
 
         {
-            let store = FileVectorStore::new(path.clone(), 3).unwrap();
+            let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             let docs = vec![Document::new("a"), Document::new("b")];
             let embeddings = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
             store.add_documents(docs, embeddings).await.unwrap();
             store.clear().await.unwrap();
         }
 
-        let store = FileVectorStore::new(path.clone(), 3).unwrap();
+        let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
         assert_eq!(store.count().await, 0);
     }
 
@@ -325,13 +324,11 @@ mod tests {
     async fn test_dimension_mismatch() {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
-        let store = FileVectorStore::new(path, 3).unwrap();
+        let store = FileVectorStore::new(path, 3).await.unwrap();
 
         let doc = Document::new("wrong dim");
         let wrong_embedding = vec![1.0, 0.0]; // 维度 2,存储维度 3
-        let result = store
-            .add_documents(vec![doc], vec![wrong_embedding])
-            .await;
+        let result = store.add_documents(vec![doc], vec![wrong_embedding]).await;
         assert!(result.is_err());
     }
 
@@ -339,7 +336,7 @@ mod tests {
     async fn test_get_embedding() {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
-        let store = FileVectorStore::new(path, 3).unwrap();
+        let store = FileVectorStore::new(path, 3).await.unwrap();
 
         let doc = Document::new("embed test").with_id("e1");
         store
@@ -355,7 +352,7 @@ mod tests {
     async fn test_delete_nonexistent() {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
-        let store = FileVectorStore::new(path, 3).unwrap();
+        let store = FileVectorStore::new(path, 3).await.unwrap();
 
         let result = store.delete_document("no-such-id").await;
         assert!(result.is_err());
@@ -365,10 +362,10 @@ mod tests {
     async fn test_cosine_similarity() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert!((crate::core::math::cosine_similarity(&a, &b) - 1.0).abs() < 0.0001);
+        assert!((crate::core::math::cosine_similarity(&a, &b).unwrap() - 1.0).abs() < 0.0001);
 
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        assert!((crate::core::math::cosine_similarity(&a, &b) - 0.0).abs() < 0.0001);
+        assert!((crate::core::math::cosine_similarity(&a, &b).unwrap() - 0.0).abs() < 0.0001);
     }
 }

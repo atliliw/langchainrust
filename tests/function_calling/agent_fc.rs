@@ -7,7 +7,7 @@ mod common;
 
 use common::TestConfig;
 use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool};
-use langchainrust::{BaseAgent, BaseTool, AgentExecutor, FunctionCallingAgent};
+use langchainrust::{AgentExecutor, BaseAgent, BaseTool, FunctionCallingAgent};
 use std::sync::Arc;
 
 /// 测试 FunctionCallingAgent 使用计算器工具
@@ -20,18 +20,19 @@ use std::sync::Arc;
 #[ignore = "需要配置 API Key"]
 async fn test_fc_agent_with_calculator() {
     let llm = TestConfig::get().openai_chat();
-    
-    let tools: Vec<Arc<dyn BaseTool>> = vec![
-        Arc::new(Calculator::new()),
-    ];
-    
+
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
+
     let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
     let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
         .with_max_iterations(3)
         .with_verbose(true);
-    
-    let result = executor.invoke("What is 25 + 17?".to_string()).await.unwrap();
-    
+
+    let result = executor
+        .invoke("What is 25 + 17?".to_string())
+        .await
+        .unwrap();
+
     println!("Result: {}", result);
     assert!(result.contains("42"));
 }
@@ -46,22 +47,23 @@ async fn test_fc_agent_with_calculator() {
 #[ignore = "需要配置 API Key"]
 async fn test_fc_agent_multi_tool_selection() {
     let llm = TestConfig::get().openai_chat();
-    
+
     let tools: Vec<Arc<dyn BaseTool>> = vec![
         Arc::new(Calculator::new()),
         Arc::new(DateTimeTool::new()),
         Arc::new(SimpleMathTool::new()),
     ];
-    
+
     let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
     let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
         .with_max_iterations(5)
         .with_verbose(true);
-    
-    let result = executor.invoke("Calculate 15 * 4 and tell me the current time".to_string())
+
+    let result = executor
+        .invoke("Calculate 15 * 4 and tell me the current time".to_string())
         .await
         .unwrap();
-    
+
     println!("Result: {}", result);
     assert!(!result.is_empty());
 }
@@ -75,17 +77,18 @@ async fn test_fc_agent_multi_tool_selection() {
 #[ignore = "需要配置 API Key"]
 async fn test_fc_agent_math_operation() {
     let llm = TestConfig::get().openai_chat();
-    
-    let tools: Vec<Arc<dyn BaseTool>> = vec![
-        Arc::new(SimpleMathTool::new()),
-    ];
-    
+
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(SimpleMathTool::new())];
+
     let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
-    let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
-        .with_max_iterations(3);
-    
-    let result = executor.invoke("What is the square root of 144?".to_string()).await.unwrap();
-    
+    let executor =
+        AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools).with_max_iterations(3);
+
+    let result = executor
+        .invoke("What is the square root of 144?".to_string())
+        .await
+        .unwrap();
+
     println!("Result: {}", result);
     assert!(result.contains("12"));
 }
@@ -99,11 +102,9 @@ async fn test_fc_agent_math_operation() {
 #[ignore = "需要配置 API Key"]
 async fn test_fc_agent_with_system_prompt() {
     let llm = TestConfig::get().openai_chat();
-    
-    let tools: Vec<Arc<dyn BaseTool>> = vec![
-        Arc::new(Calculator::new()),
-    ];
-    
+
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
+
     let agent = FunctionCallingAgent::new(
         llm,
         tools.clone(),
@@ -112,9 +113,12 @@ async fn test_fc_agent_with_system_prompt() {
     let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, tools)
         .with_max_iterations(3)
         .with_verbose(true);
-    
-    let result = executor.invoke("帮我计算 100 除以 4".to_string()).await.unwrap();
-    
+
+    let result = executor
+        .invoke("帮我计算 100 除以 4".to_string())
+        .await
+        .unwrap();
+
     println!("Result: {}", result);
     assert!(result.contains("25"));
 }
@@ -128,37 +132,31 @@ async fn test_fc_agent_with_system_prompt() {
 #[ignore = "需要配置 API Key"]
 async fn test_compare_react_vs_fc_agent() {
     use langchainrust::ReActAgent;
-    
+
     let llm1 = TestConfig::get().openai_chat();
     let llm2 = TestConfig::get().openai_chat();
     let tools1: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
     let tools2: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
     let question = "计算 37 + 48".to_string();
-    
+
     // ReActAgent 测试
     let react_agent = ReActAgent::new(llm1, tools1.clone(), None);
-    let react_executor = AgentExecutor::new(
-        Arc::new(react_agent) as Arc<dyn BaseAgent>,
-        tools1,
-    )
-    .with_max_iterations(3)
-    .with_verbose(true);
-    
+    let react_executor = AgentExecutor::new(Arc::new(react_agent) as Arc<dyn BaseAgent>, tools1)
+        .with_max_iterations(3)
+        .with_verbose(true);
+
     let react_result = react_executor.invoke(question.clone()).await.unwrap();
     println!("ReActAgent Result: {}", react_result);
-    
+
     // FunctionCallingAgent 测试
     let fc_agent = FunctionCallingAgent::new(llm2, tools2.clone(), None);
-    let fc_executor = AgentExecutor::new(
-        Arc::new(fc_agent) as Arc<dyn BaseAgent>,
-        tools2,
-    )
-    .with_max_iterations(3)
-    .with_verbose(true);
-    
+    let fc_executor = AgentExecutor::new(Arc::new(fc_agent) as Arc<dyn BaseAgent>, tools2)
+        .with_max_iterations(3)
+        .with_verbose(true);
+
     let fc_result = fc_executor.invoke(question).await.unwrap();
     println!("FunctionCallingAgent Result: {}", fc_result);
-    
+
     // 两者应该都得到正确结果
     assert!(react_result.contains("85") || react_result.contains("85.0"));
     assert!(fc_result.contains("85") || fc_result.contains("85.0"));

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use std::pin::Pin;
 
-use crate::core::runnables::{Runnable, RunnableConfig};
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::core::runnables::{Runnable, RunnableConfig};
 
 /// JSON 输出解析器
 ///
@@ -141,42 +141,87 @@ impl JsonOutputParser {
             repaired = stripped;
         }
 
+        // Scan tracking string state to correctly count braces/brackets
+        let mut in_string = false;
+        let mut escape_next = false;
+        let mut open_braces = 0usize;
+        let mut close_braces = 0usize;
+        let mut open_brackets = 0usize;
+        let mut close_brackets = 0usize;
+
+        for ch in repaired.chars() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            if ch == '\\' && in_string {
+                escape_next = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = !in_string;
+                continue;
+            }
+            if !in_string {
+                match ch {
+                    '{' => open_braces += 1,
+                    '}' => close_braces += 1,
+                    '[' => open_brackets += 1,
+                    ']' => close_brackets += 1,
+                    _ => {}
+                }
+            }
+        }
+
         // 补全括号
-        let open_braces = repaired.matches('{').count();
-        let close_braces = repaired.matches('}').count();
         for _ in close_braces..open_braces {
             repaired.push('}');
         }
 
-        let open_brackets = repaired.matches('[').count();
-        let close_brackets = repaired.matches(']').count();
         for _ in close_brackets..open_brackets {
             repaired.push(']');
         }
 
         // 确保字符串以引号结束（如果开始了一个字符串）
-        // 去掉最后一个不完整的字符串片段
-        let mut chars = repaired.chars().rev().peekable();
+        // Scan forward (not backward) to find unclosed strings (M31)
         let mut in_string = false;
-        let mut truncate_at = repaired.len();
+        let mut escape_next = false;
+        let mut last_open_quote_pos: Option<usize> = None;
 
-        while let Some(c) = chars.next() {
-            if c == '"' {
-                // 前面是转义字符？
-                if chars.peek() == Some(&'\\') {
-                    continue;
-                }
-                in_string = !in_string;
+        for (i, ch) in repaired.char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
             }
-            if in_string && c == '\n' {
-                truncate_at = repaired.len() - chars.count() - 1;
-                break;
+            if ch == '\\' && in_string {
+                escape_next = true;
+                continue;
+            }
+            if ch == '"' {
+                if in_string {
+                    in_string = false;
+                    last_open_quote_pos = None;
+                } else {
+                    in_string = true;
+                    last_open_quote_pos = Some(i);
+                }
+                continue;
             }
         }
 
-        if in_string && truncate_at < repaired.len() {
-            repaired.truncate(truncate_at);
-            repaired.push('"');
+        // If we're still in a string at the end, truncate at the opening quote
+        // and close it, or just close it if the string value is partially complete
+        if in_string {
+            // Check if the unclosed string contains a newline (invalid in JSON strings)
+            if let Some(open_pos) = last_open_quote_pos {
+                let after_quote = &repaired[open_pos + 1..];
+                if after_quote.contains('\n') {
+                    // Truncate at the newline and close the string
+                    let newline_pos = repaired[open_pos + 1..].find('\n').unwrap() + open_pos + 1;
+                    repaired.truncate(newline_pos);
+                    repaired.push('"');
+                }
+            }
         }
 
         repaired
@@ -184,16 +229,43 @@ impl JsonOutputParser {
 
     /// 去掉末尾的不完整 token
     fn strip_incomplete_token(s: &str) -> Option<String> {
-        // 如果以字母/数字结尾，尝试找到最后一个完整的 token 边界
         let trimmed = s.trim_end();
-        if trimmed.len() < s.len() {
-            // 末尾有空白，可能是完整的
+
+        // If the string ends with an incomplete key or value token,
+        // try to find the last complete token boundary.
+        // Look for the last structural character (: , { [ }) and truncate after it.
+        let chars: Vec<char> = trimmed.chars().collect();
+        if chars.is_empty() {
             return None;
         }
 
-        // 检查是否以引号开始但不完整
-        if trimmed.ends_with('"') {
-            return None; // 以引号结束，可能是完整的
+        // Scan backwards to find the last structural boundary
+        let mut i = chars.len();
+        while i > 0 {
+            i -= 1;
+            match chars[i] {
+                ',' | ':' | '{' | '[' | '}' | ']' => {
+                    // Found a structural character; truncate after it
+                    let truncate_at: usize = trimmed
+                        .char_indices()
+                        .nth(i + 1)
+                        .map(|(pos, _)| pos)
+                        .unwrap_or(trimmed.len());
+                    if truncate_at < s.len() {
+                        let result = trimmed[..truncate_at].to_string();
+                        if result != s.trim_end() {
+                            return Some(result);
+                        }
+                    }
+                    return None;
+                }
+                '"' => {
+                    // Check if this is a closing quote (even number of quotes before it)
+                    // If so, the JSON might be complete at this point
+                    return None;
+                }
+                _ => {}
+            }
         }
 
         None
@@ -204,7 +276,11 @@ impl JsonOutputParser {
 impl Runnable<String, serde_json::Value> for JsonOutputParser {
     type Error = OutputParserError;
 
-    async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<serde_json::Value, Self::Error> {
+    async fn invoke(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<serde_json::Value, Self::Error> {
         self.parse(&input).await
     }
 
@@ -212,7 +288,10 @@ impl Runnable<String, serde_json::Value> for JsonOutputParser {
         &self,
         input: String,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<serde_json::Value, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<serde_json::Value, Self::Error>> + Send>>,
+        Self::Error,
+    > {
         let result = self.parse(&input).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
@@ -226,7 +305,10 @@ mod tests {
     #[tokio::test]
     async fn test_json_parser_standard_obj() {
         let parser = JsonOutputParser::new();
-        let result = parser.parse(r#"{"name": "Rust", "year": 2015}"#).await.unwrap();
+        let result = parser
+            .parse(r#"{"name": "Rust", "year": 2015}"#)
+            .await
+            .unwrap();
         assert_eq!(result["name"], "Rust");
         assert_eq!(result["year"], 2015);
     }
@@ -264,7 +346,10 @@ mod tests {
     #[tokio::test]
     async fn test_json_parser_invoke_runnable() {
         let parser = JsonOutputParser::new();
-        let result = parser.invoke(r#"{"key": "value"}"#.to_string(), None).await.unwrap();
+        let result = parser
+            .invoke(r#"{"key": "value"}"#.to_string(), None)
+            .await
+            .unwrap();
         assert_eq!(result["key"], "value");
     }
 

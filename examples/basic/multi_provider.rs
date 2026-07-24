@@ -17,10 +17,10 @@
 //! - `PROVIDER`:openai(默认)/ ollama / deepseek
 //! - `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`:对应 provider 的密钥
 
+use langchainrust::schema::Message;
 use langchainrust::{
     BaseChatModel, DeepSeekChat, DeepSeekConfig, OllamaChat, OllamaConfig, OpenAIChat, OpenAIConfig,
 };
-use langchainrust::schema::Message;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,8 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let answer = match provider.as_str() {
         "openai" => {
-            let api_key =
-                std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY");
+            let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY");
             let base_url = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
             let llm = OpenAIChat::new(OpenAIConfig {
@@ -55,8 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             llm.chat(messages, None).await?.content
         }
         "deepseek" => {
-            let api_key =
-                std::env::var("DEEPSEEK_API_KEY").expect("请设置 DEEPSEEK_API_KEY");
+            let api_key = std::env::var("DEEPSEEK_API_KEY").expect("请设置 DEEPSEEK_API_KEY");
             let llm = DeepSeekChat::new(DeepSeekConfig {
                 api_key,
                 model: "deepseek-chat".to_string(),
@@ -64,12 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             llm.chat(messages, None).await?.content
         }
-        other => {
-            return Err(format!(
-                "未知 provider: {other}(可选:openai/ollama/deepseek)"
-            )
-            .into())
-        }
+        other => return Err(format!("未知 provider: {other}(可选:openai/ollama/deepseek)").into()),
     };
 
     println!("[{provider}] 回答:\n{answer}");

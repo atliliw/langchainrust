@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::pin::Pin;
 
-use crate::core::runnables::{Runnable, RunnableConfig};
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::core::runnables::{Runnable, RunnableConfig};
 
 /// 结构化输出解析器
 ///
@@ -99,7 +99,10 @@ impl Runnable<String, HashMap<String, String>> for StructuredOutputParser {
         &self,
         input: String,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<HashMap<String, String>, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<HashMap<String, String>, Self::Error>> + Send>>,
+        Self::Error,
+    > {
         let result = self.parse(&input).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
@@ -155,9 +158,8 @@ impl<T: DeserializeOwned + Send + Sync + 'static> BaseOutputParser<T> for TypedO
         let json_str = Self::extract_from_markdown(text).unwrap_or(text);
 
         // 先尝试解析为 Value 验证合法性
-        serde_json::from_str::<serde_json::Value>(json_str).map_err(|e| {
-            OutputParserError::JsonError(format!("输入不是合法 JSON：{}", e))
-        })?;
+        serde_json::from_str::<serde_json::Value>(json_str)
+            .map_err(|e| OutputParserError::JsonError(format!("输入不是合法 JSON：{}", e)))?;
 
         // 反序列化为目标类型
         serde_json::from_str::<T>(json_str).map_err(|e| {
@@ -194,7 +196,8 @@ impl<T: DeserializeOwned> TypedOutputParser<T> {
 
     #[allow(dead_code)]
     fn get_format_instructions(&self) -> String {
-        "请输出符合以下 JSON Schema 的合法 JSON：\n```json\n{\n  // 目标类型的字段定义\n}\n```".to_string()
+        "请输出符合以下 JSON Schema 的合法 JSON：\n```json\n{\n  // 目标类型的字段定义\n}\n```"
+            .to_string()
     }
 }
 
@@ -202,7 +205,11 @@ impl<T: DeserializeOwned> TypedOutputParser<T> {
 impl<T: DeserializeOwned + Send + Sync + 'static> Runnable<String, T> for TypedOutputParser<T> {
     type Error = OutputParserError;
 
-    async fn invoke(&self, input: String, _config: Option<RunnableConfig>) -> Result<T, Self::Error> {
+    async fn invoke(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<T, Self::Error> {
         self.parse(&input).await
     }
 

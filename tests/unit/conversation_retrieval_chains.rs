@@ -7,13 +7,11 @@
 //! - MapReduceDocumentsChain: 并行映射 + 合并处理
 //! - MapRerankDocumentsChain: 并行映射 + 评分排序
 
-use langchainrust::{
-    BaseChain, ChainError,
-    ConversationRetrievalChain, StuffDocumentsChain,
-    RefineDocumentsChain, MapReduceDocumentsChain, MapRerankDocumentsChain,
-    ConversationBufferMemory, Document,
-};
 use langchainrust::language_models::{OpenAIChat, OpenAIConfig};
+use langchainrust::{
+    BaseChain, ChainError, ConversationBufferMemory, ConversationRetrievalChain, Document,
+    MapReduceDocumentsChain, MapRerankDocumentsChain, RefineDocumentsChain, StuffDocumentsChain,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -147,10 +145,7 @@ fn test_stuff_documents_format_documents() {
     let llm = create_test_llm();
     let chain = StuffDocumentsChain::new(llm);
 
-    let docs = vec![
-        Document::new("文档一的内容"),
-        Document::new("文档二的内容"),
-    ];
+    let docs = vec![Document::new("文档一的内容"), Document::new("文档二的内容")];
     let formatted = chain.format_documents(&docs);
 
     assert!(formatted.contains("Document 1:"));
@@ -165,12 +160,9 @@ fn test_stuff_documents_format_documents() {
 #[test]
 fn test_stuff_documents_truncation() {
     let llm = create_test_llm();
-    let chain = StuffDocumentsChain::new(llm)
-        .with_max_doc_length(10);
+    let chain = StuffDocumentsChain::new(llm).with_max_doc_length(10);
 
-    let docs = vec![
-        Document::new("这是一段超过十个字符的文档内容"),
-    ];
+    let docs = vec![Document::new("这是一段超过十个字符的文档内容")];
     let formatted = chain.format_documents(&docs);
 
     assert!(formatted.contains("[document truncated]"));
@@ -424,20 +416,21 @@ fn test_map_rerank_build_prompt() {
 /// 验证：能从 LLM 输出中正确提取评分和答案。
 #[test]
 fn test_map_rerank_extract_score() {
+    use langchainrust::chains::document_chains::extract_score;
     // 中文格式
-    let (score, answer) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言");
+    let (score, answer) = extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言");
     assert_eq!(score, 85);
     assert!(answer.contains("Rust"));
 
     // 英文格式
-    let (score2, _answer2) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("Score: 92\nAnswer: It's a programming language");
+    let (score2, _answer2) = extract_score("Score: 92\nAnswer: It's a programming language");
     assert_eq!(score2, 92);
 
     // 无评分格式（默认 50）
-    let (score3, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("这是一段普通文本");
+    let (score3, _) = extract_score("这是一段普通文本");
     assert_eq!(score3, 50);
 
     // 评分超过 100 时取 100
-    let (score4, _) = MapRerankDocumentsChain::<OpenAIChat>::extract_score("相关性评分：150");
+    let (score4, _) = extract_score("相关性评分：150");
     assert_eq!(score4, 100);
 }

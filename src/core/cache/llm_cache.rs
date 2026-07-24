@@ -106,11 +106,16 @@ impl LLMCache {
     ///
     /// 将消息列表序列化为 JSON 字符串作为键。
     /// 包含 model 名称以确保不同模型的调用不互相影响。
-    pub fn build_key(messages: &[Message], model: &str) -> String {
-        format!("{}:{}", model, serde_json::to_string(messages).unwrap_or_default())
+    /// 如果序列化失败，返回错误而非回退到空字符串（M34）。
+    pub fn build_key(messages: &[Message], model: &str) -> Result<String, String> {
+        let serialized = serde_json::to_string(messages)
+            .map_err(|e| format!("cache key serialization failed: {}", e))?;
+        Ok(format!("{}:{}", model, serialized))
     }
 
     /// 获取缓存结果
+    ///
+    /// 如果发现过期条目，会立即删除（H36）。
     pub async fn get(&self, key: &str) -> Option<CachedLLMResult> {
         if !self.config.enabled {
             return None;
@@ -121,7 +126,16 @@ impl LLMCache {
             // 检查 TTL
             if let Some(ttl) = self.config.ttl {
                 if entry.cached_at.elapsed() > ttl {
-                    return None; // 已过期
+                    // H36: 过期条目需要删除，先释放读锁再获取写锁
+                    drop(store);
+                    let mut store = self.store.write().await;
+                    // Double-check after acquiring write lock
+                    if let Some(entry) = store.get(key) {
+                        if entry.cached_at.elapsed() > ttl {
+                            store.remove(key);
+                        }
+                    }
+                    return None;
                 }
             }
             Some(entry.clone())
@@ -141,7 +155,8 @@ impl LLMCache {
         // 检查是否需要淘汰
         if self.config.max_entries > 0 && store.len() >= self.config.max_entries {
             // 移除最早的一条
-            if let Some(oldest_key) = store.iter()
+            if let Some(oldest_key) = store
+                .iter()
                 .min_by_key(|(_, v)| v.cached_at)
                 .map(|(k, _)| k.clone())
             {
@@ -149,10 +164,13 @@ impl LLMCache {
             }
         }
 
-        store.insert(key, CachedLLMResult {
-            result,
-            cached_at: Instant::now(),
-        });
+        store.insert(
+            key,
+            CachedLLMResult {
+                result,
+                cached_at: Instant::now(),
+            },
+        );
     }
 
     /// 清除缓存
@@ -206,6 +224,7 @@ mod tests {
                 total_tokens: 15,
             }),
             tool_calls: None,
+            thinking_content: None,
         }
     }
 
@@ -252,8 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_ttl_expiry() {
-        let config = CacheConfig::new()
-            .with_ttl(Duration::from_millis(10));
+        let config = CacheConfig::new().with_ttl(Duration::from_millis(10));
         let cache = LLMCache::with_config(config);
 
         cache.put("key".to_string(), make_result("test")).await;
@@ -266,9 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_max_entries() {
-        let config = CacheConfig::new()
-            .with_max_entries(3)
-            .no_ttl();
+        let config = CacheConfig::new().with_max_entries(3).no_ttl();
         let cache = LLMCache::with_config(config);
 
         cache.put("a".to_string(), make_result("1")).await;
@@ -298,8 +314,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_evict_expired() {
         // 用 0 TTL 确保立即过期
-        let config = CacheConfig::new()
-            .with_ttl(Duration::from_millis(0));
+        let config = CacheConfig::new().with_ttl(Duration::from_millis(0));
         let cache = LLMCache::with_config(config);
 
         cache.put("key".to_string(), make_result("test")).await;
@@ -312,11 +327,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_build_key() {
-        let messages = vec![
-            Message::human("Hello"),
-            Message::ai("Hi!"),
-        ];
-        let key = LLMCache::build_key(&messages, "gpt-4");
+        let messages = vec![Message::human("Hello"), Message::ai("Hi!")];
+        let key = LLMCache::build_key(&messages, "gpt-4").unwrap();
         assert!(key.contains("gpt-4"));
         assert!(key.contains("Hello"));
     }
