@@ -106,6 +106,33 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 
 ---
 
+## What's New in 0.5.0
+
+- **RouterLLM 模型路由 + Fallback**: `RouterLLM` 实现 `BaseChatModel`,5 种策略(Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected),主模型失败自动切备模型
+- **CorrectiveRAG**: RAG 不再盲信检索结果 — 检索后评分,不相关则重写查询或补 Web 搜索,生成后做幻觉检测
+- **AdaptiveRAG**: LLM 判断要不要检索、单查还是多查(NoRetrieval/SingleSearch/MultiQuery),多查询并行检索
+- **GraphRAG**: 知识图谱 RAG — 抽实体+关系→建图→Label Propagation 社区检测+摘要→Global/Local/Hybrid 查询
+- **Deep Research Agent**: 多轮深度研究 — 拆子课题→并行搜索→去重→综合→发现缺口→再搜→带引用报告
+- **MCP 全协议**: 补齐 resources / prompts / completion / elicitation / roots / sampling 六大原语,Client/Server 双端
+- **Code Interpreter 沙箱**: `LocalSandbox`(子进程+超时) + E2B 云沙箱 + WASM 沙箱(feature gate)
+- **OpenAI Responses API**: 走 `/v1/responses`,内置 WebSearch / FileSearch / CodeInterpreter / ComputerUse
+- **Anthropic Extended Thinking**: `with_thinking(budget_tokens)`,拿到思考链 `thinking_content`,流式 thinking 回调
+- **Streaming Structured Output**: `PartialJsonParser` 增量解析,不用等全部 token 到齐就能拿到部分结构体
+- **Batch API**: `BatchClient` 统一 OpenAI/Anthropic 批量推理,成本降 50%
+- **Agent Observability / Tracing**: `Tracer` + `SpanGuard`(RAII),InMemory / Console / OTel 三后端,parent-child span tree
+
+### 0.5.0 质量加固（全库代码审查修复）
+
+本轮对全库 223 个文件做了两轮逐文件审查,修复 176 个问题:
+
+- **安全**: PythonREPL 危险 import 检查、HTTPTool/URLFetchTool SSRF 防护(内网 IP + DNS rebinding)、SQLTool 注入防护(阻止分号/注释/子查询)、Gemini API key 移至 header
+- **多轮 Function Calling 修复**: Anthropic/Gemini/Ollama 三个 provider 的 tool 消息映射错误导致多轮 function calling 不工作 — 现已全部修正
+- **流式修复**: Ollama/Anthropic/Gemini SSE 跨 chunk 不再丢 token;`Runnable::stream()` 改为真流式(逐 token 发射)
+- **并发安全**: langgraph/sessions/mongo_memory 等多处 `std::sync::Mutex` 在 async 中改 `tokio::sync::Mutex`;MCP Transport 加请求级互斥;HandoffManager 合并多锁
+- **Panic 修复**: choices[0] 越界改 `.first().ok_or()`;from_env() 返回 Result;Regex 改 LazyLock;Mutex poison 改 `into_inner()` 恢复
+- **数据正确性**: parent_id 分隔符改 `::`;错误传播替代静默吞掉;UTF-8 按字符边界切分;RRF 文档 ID 用内容 hash 防碰撞
+- **测试**: 826 个单元测试全过,clippy 零 warning,cargo fmt 通过
+
 ## What's New in 0.4.1
 
 - **Assistants requires_action 工具调度**: `OpenAIAssistant` 遇 `requires_action` 自动解析 tool_calls → ToolRegistry 执行 → submit_tool_outputs → 继续轮询至 completed

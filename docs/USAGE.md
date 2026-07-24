@@ -131,6 +131,20 @@
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
 - [ComputerUseTool](#computerusetool) ✨ v0.4.1
+- [v0.5.0 新功能](#v050-新功能) ✨ v0.5.0
+  - RouterLLM 模型路由 + Fallback
+  - CorrectiveRAG（自纠错 RAG）
+  - AdaptiveRAG（自适应检索）
+  - GraphRAG（知识图谱 RAG）
+  - Deep Research Agent（深度研究）
+  - MCP 全协议（六大原语）
+  - Code Interpreter 沙箱
+  - OpenAI Responses API
+  - Anthropic Extended Thinking
+  - Streaming Structured Output（流式结构化输出）
+  - Batch API（批量推理）
+  - Tracing（分布式追踪）
+  - 0.5.0 质量加固（全库 176 项修复）
 - [测试](#测试)
 - [模块结构](#模块结构)
 - [最佳实践](#最佳实践)
@@ -3352,7 +3366,7 @@ let doc = store.get_document("doc_id").await?;
 
 ```toml
 [dependencies]
-langchainrust = { features = ["redis-storage"] }
+langchainrust = { version = "0.5", features = ["redis-storage"] }
 ```
 
 ### SQLiteDocumentStore
@@ -3373,7 +3387,7 @@ let doc = store.get_document("doc_id").await?;
 
 ```toml
 [dependencies]
-langchainrust = { features = ["sqlite-storage"] }
+langchainrust = { version = "0.5", features = ["sqlite-storage"] }
 ```
 
 ---
@@ -3665,7 +3679,335 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 
 ---
 
+## v0.5.0 新功能 ✨ v0.5.0
+
+### RouterLLM 模型路由 + Fallback
+
+`RouterLLM` 实现 `BaseChatModel` trait，对外跟普通 LLM 一样用，内部按策略选模型，失败自动 fallback。
+
+**五种路由策略：**
+
+| 策略 | 行为 | 场景 |
+|------|------|------|
+| `Fallback` | 主模型失败自动切备模型 | 生产容错 |
+| `RoundRobin` | 轮询分发 | 均衡负载 / 避免单 provider 限流 |
+| `LeastLatency` | 选历史响应最快的模型 | 对延迟敏感 |
+| `LowestCost` | 选最便宜的模型 | 成本优先 |
+| `InputDirected` | 按输入内容选模型（闭包自定义） | 简单问题用小模型，复杂用大模型 |
+
+```rust
+use langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
+
+// 1. Fallback：主挂切备
+let router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
+let result = router.chat(messages, None).await?;
+
+// 2. 按成本路由：注册模型 + 相对成本
+let router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_cost(cheap_model, 0.01)   // 便宜模型
+    .with_cost(powerful_model, 0.03); // 贵模型
+
+// 3. 按输入路由：含"code"用代码模型，否则用通用模型
+let router = RouterLLM::new(RoutingStrategy::InputDirected(Arc::new(|input| {
+    if input.contains("code") { 1 } else { 0 }
+})))
+.with_model(general_model)
+.with_model(code_model);
+
+// 4. 最小延迟路由
+let router = RouterLLM::new(RoutingStrategy::LeastLatency)
+    .with_model(fast_model)
+    .with_model(slow_but_smart_model);
+
+// RouterLLM 实现了 BaseChatModel，直接当普通 LLM 用
+let result = router.chat(messages, None).await?;
+
+// 流式也支持
+let stream = router.stream_chat(messages, None).await?;
+```
+
+**什么时候用：** 多个 provider 需要容错；按场景选模型（成本/延迟/能力权衡）；对外只暴露一个 LLM，内部自动路由。
+
+---
+
+### CorrectiveRAG（自纠错 RAG）
+
+普通 RAG 检索到的文档可能不相关，LLM 照样编出"看起来合理"的回答。CorrectiveRAG 加了三道关卡：文档评分 → 不相关时重写查询或补 Web 搜索 → 生成后幻觉检测。
+
+```rust
+use langchainrust::agents::crag::CorrectiveRAGAgent;
+use langchainrust::retrieval::BM25Retriever;
+
+let agent = CorrectiveRAGAgent::new(llm, retriever)
+    .with_web_search(web_tool)    // 可选：Web 搜索 fallback
+    .with_hallucination_check();  // 可选：幻觉检测
+
+let answer = agent.invoke("什么是 Rust 的所有权？", None).await?;
+```
+
+**流程：** 用户提问 → 检索 → 评分 → [不相关? → 重写/Web搜索 → 重新检索] → 生成 → 幻觉检测 → 输出
+
+**什么时候用：** 检索质量不稳定；回答准确性要求高（医疗/法律/金融）；已有 RAG 但幻觉率太高。
+
+---
+
+### AdaptiveRAG（自适应检索）
+
+LLM 先判断问题类型，再决定检索策略：NoRetrieval（不检索，直接回答）、SingleSearch（单次检索）、MultiQuery（多角度检索）。
+
+```rust
+use langchainrust::agents::adaptive_rag::AdaptiveRAG;
+
+let agent = AdaptiveRAG::new(llm, retriever);
+let answer = agent.invoke("对比 tokio 和 async-std 的调度模型", None).await?;
+// LLM 判断这是 MultiQuery，自动生成多个查询检索
+
+let answer = agent.invoke("你好", None).await?;
+// LLM 判断这是 NoRetrieval，直接回答，省检索开销
+```
+
+**什么时候用：** 问题类型混合（有闲聊有专业问题）；想省检索成本；想提高复杂问题覆盖度。
+
+---
+
+### GraphRAG（知识图谱 RAG）
+
+向量检索只看"语义相似"，不看"关系"。GraphRAG 用知识图谱补上关系理解：抽实体+关系→建图→社区检测→社区摘要→按社区检索。
+
+```rust
+use langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
+
+let mut graph_rag = GraphRAG::new(llm);
+
+// 索引文档（抽实体 + 关系 + 建图 + 社区检测 + 摘要）
+graph_rag.add_documents(&documents).await?;
+
+// 全局查询：搜社区摘要，适合宏观问题
+let result = graph_rag.query("技术栈的整体架构", GraphQueryMode::Global).await?;
+
+// 局部查询：搜实体邻居，适合具体问题
+let result = graph_rag.query("张三的导师的学生", GraphQueryMode::Local).await?;
+
+// 混合查询：两者结合
+let result = graph_rag.query("...", GraphQueryMode::Hybrid).await?;
+```
+
+**什么时候用：** 数据有<丰富实体关系（人物/组织/知识体系）；向量检索回答不了"关系链"类问题；需要宏观+微观两种视角。
+
+---
+
+### Deep Research Agent（深度研究）
+
+单次检索只能回答简单问题。DeepResearchAgent 自动完成：拆子课题 → 并行搜索 → 去重 → 综合 → 发现缺口再搜 → 带引用报告。
+
+```rust
+use langchainrust::agents::deep_research::DeepResearchAgent;
+
+let agent = DeepResearchAgent::new(llm)
+    .with_retriever(retriever)
+    .with_max_rounds(3);   // 最多 3 轮搜索
+
+let report = agent.research("Rust 异步运行时对比：tokio vs async-std vs smol").await?;
+println!("报告: {}", report.summary);
+for citation in &report.citations {
+    println!("[{}] {}", citation.source, citation.content);
+}
+```
+
+**什么时候用：** 需要深度研究报告（技术选型/市场分析/文献综述）；单次检索回答不了的多维度问题；需要带引用的可追溯回答。
+
+---
+
+### MCP 全协议（六大原语）
+
+v0.5.0 补齐 MCP spec 六大原语，Client/Server 双端支持：
+
+| 原语 | 作用 | 典型场景 |
+|------|------|----------|
+| **Resources** | 浏览/读取服务端资源 | Claude Desktop 读取本地文件 |
+| **Prompts** | 获取预定义提示模板 | 标准化 prompt 管理 |
+| **Completion** | 补全建议 | 自动补全参数 |
+| **Elicitation** | 交互式询问 | 需要用户确认/补充时 |
+| **Roots** | 发现客户端根目录 | 服务端需要知道能访问哪些目录 |
+| **Sampling** | 服务端代理客户端发 LLM 请求 | 服务端需要 LLM 能力 |
+
+```rust
+use langchainrust::mcp::{MCPClient, ResourceProvider, PromptProvider};
+
+// 客户端：浏览资源
+let resources = client.list_resources().await?;
+let content = client.read_resource("file:///data/report.pdf").await?;
+
+// 获取提示模板
+let prompts = client.list_prompts().await?;
+let prompt = client.get_prompt("code_review", arguments).await?;
+
+// 补全建议
+let completions = client.complete("file:///src/", "main").await?;
+```
+
+**什么时候用：** 构建 MCP Server 供 Claude Desktop / Cursor 调用；需要 MCP 完整交互；对齐 MCP spec 最新版。
+
+---
+
+### Code Interpreter 沙箱
+
+安全执行用户代码，`LocalSandbox` 用子进程+超时实现基本隔离。
+
+```rust
+use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox};
+use std::time::Duration;
+
+let sandbox = LocalSandbox::new("python")
+    .with_timeout(Duration::from_secs(30))
+    .with_memory_limit(256); // MB
+
+let result = sandbox.run("print(2 + 2)").await?;
+assert_eq!(result.stdout.trim(), "4");
+```
+
+- **LocalSandbox**：子进程执行，超时自动杀，捕获 stdout/stderr
+- **E2B 云沙箱**（feature gate `sandbox-e2b`）：远程微虚拟机，完全隔离
+- **WASM 沙箱**（feature gate `sandbox-wasm`）：浏览器级沙箱，零网络访问
+
+**什么时候用：** Agent 需要执行用户/LLM 生成的代码；Code Interpreter 场景；任何需要隔离代码执行的环境。
+
+---
+
+### OpenAI Responses API
+
+对接 OpenAI `/v1/responses` 端点，内置 WebSearch / FileSearch / CodeInterpreter / ComputerUse，一条请求就能让模型自动调工具。
+
+```rust
+use langchainrust::language_models::openai::responses::{ResponsesModel, BuiltinTool};
+
+let model = ResponsesModel::new("gpt-4o", api_key)
+    .with_tools(vec![BuiltinTool::WebSearch, BuiltinTool::CodeInterpreter]);
+
+let result = model.chat(messages, None).await?;
+// result.content 已包含工具执行后的最终回答
+```
+
+**什么时候用：** 需要 OpenAI 内置工具；想减少多轮工具调用编排；迁移到 OpenAI 最新 API。
+
+---
+
+### Anthropic Extended Thinking
+
+配置 `budget_tokens`，让 Claude 先输出思考过程（thinking block），再输出最终回答（text block）。流式场景下 `on_llm_thinking` 回调实时拿到思考 token。
+
+```rust
+use langchainrust::AnthropicChat;
+
+let model = AnthropicChat::new("claude-sonnet-5", api_key)
+    .with_thinking(10000); // 最多思考 10000 token
+
+let result = model.chat(messages, None).await?;
+println!("思考过程: {:?}", result.thinking_content);
+println!("最终回答: {}", result.content);
+```
+
+**什么时候用：** 复杂推理任务（数学/逻辑/代码）；想看到模型的推理过程（调试/审计）；需要更高质量的回答。
+
+---
+
+### Streaming Structured Output（流式结构化输出）
+
+`PartialJsonParser` 增量解析 JSON：每收到一个 token，尝试把当前不完整 JSON 补全并反序列化成部分结构体。不用等全部 token 到齐。
+
+```rust
+use langchainrust::core::structured_output::StreamingStructuredOutputExt;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct UserInfo {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+let stream = model.stream_structured_output::<UserInfo>(messages, None).await?;
+pin_mut!(stream);
+while let Some(partial) = stream.next().await {
+    // partial.name 可能已有值，partial.age 可能还是 None
+    if let Some(name) = &partial.name {
+        println!("已拿到名字: {}", name);
+    }
+}
+```
+
+**什么时候用：** 流式场景需要实时展示部分结果；结构体字段多，不想等全部到齐；提升用户感知响应速度。
+
+---
+
+### Batch API（批量推理）
+
+`BatchClient` 统一 OpenAI 和 Anthropic 的 Batch 流程：打包提交 → 轮询状态 → 取结果，成本降 50%。
+
+```rust
+use langchainrust::batch::{BatchClient, BatchProvider, BatchRequest};
+
+let client = BatchClient::new(BatchProvider::OpenAI, api_key);
+
+// 1. 准备批量请求
+let requests = vec![
+    BatchRequest::new("req-1", "gpt-4o", vec![Message::human("翻译：Hello")]),
+    BatchRequest::new("req-2", "gpt-4o", vec![Message::human("翻译：World")]),
+];
+
+// 2. 提交并等待结果（自动轮询直到完成）
+let results = client.submit_and_wait(&requests, Duration::from_secs(30)).await?;
+for result in results {
+    println!("{}: {:?}", result.custom_id, result.result?.content);
+}
+```
+
+**什么时候用：** 离线评估（跑评测集）；批量翻译/摘要/分类；不赶时间但想省钱。
+
+---
+
+### Tracing（分布式追踪）
+
+`Tracer` + `SpanGuard`（RAII）自动管理父子 span，支持 InMemory / Console / OTel 三种后端。
+
+```rust
+use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend};
+
+let tracer = Tracer::new(ConsoleTracingBackend);
+let span = tracer.start_span("agent_run");
+{
+    let _retrieve = tracer.start_child("retrieve");
+    let docs = retriever.retrieve(&query).await?;
+} // _retrieve drop → 子 span 自动记录结束时间
+{
+    let _generate = tracer.start_child("generate");
+    let answer = llm.chat(messages, None).await?;
+}
+drop(span); // span 自动记录耗时、token 数等
+```
+
+**什么时候用：** Agent 链路长，需要定位瓶颈；生产环境需要可观测性；需要统计 token 用量和成本。
+
+---
+
+### 0.5.0 质量加固（全库 176 项修复）
+
+12 项新功能实现后，对全库 223 个文件做了两轮逐文件审查，修复 176 个问题（23 CRITICAL / 63 HIGH / 75 MEDIUM / 15 LOW）。
+
+**关键修复：**
+
+- **安全**：PythonREPL 危险 import 检查、HTTPTool/URLFetchTool SSRF 防护（内网 IP + DNS rebinding）、SQLTool 注入防护、Gemini API key 移至 header
+- **多轮 Function Calling**：Anthropic/Gemini/Ollama 三个 provider 的 tool 消息映射错误导致多轮 function calling 不工作 — 现已全部修正
+- **流式修复**：Ollama/Anthropic/Gemini SSE 跨 chunk 不再丢 token；`Runnable::stream()` 改为真流式（逐 token 发射）
+- **并发安全**：langgraph/sessions/mongo_memory 等多处 `std::sync::Mutex` 在 async 中改 `tokio::sync::Mutex`；MCP Transport 加请求级互斥
+- **Panic 修复**：choices[0] 越界改 `.first().ok_or()`；from_env() 返回 Result；Regex 改 LazyLock；Mutex poison 改 `into_inner()` 恢复
+- **数据正确性**：UTF-8 按字符边界切分；RRF 文档 ID 用内容 hash 防碰撞；错误传播替代静默吞掉
+
+**验证：** 826 个单元测试全过 · clippy 零 warning · cargo fmt 通过
+
+---
+
 ## 版本信息
 
-LangChainRust v0.4.1 | MIT License
+LangChainRust v0.5.0 | MIT License
 

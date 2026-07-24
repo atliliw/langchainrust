@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AnthropicChat` 新增 `with_thinking(budget_tokens)` builder
 - Cargo.toml 新增 feature gates: `sandbox-e2b`, `sandbox-wasm`
 
+### Fixed
+- **安全**: PythonREPLTool 加危险 import 检查(os/subprocess/socket 等 17 模块);HTTPTool SSRF 改 async DNS 防止 rebinding;URLFetchTool 加内网 IP 过滤;SQLTool 阻止分号/注释/子查询绕过;Gemini API key 从 URL 移至 header(C1-C5)
+- **Panic 修复**: choices[0] 改 `.first().ok_or()`(OpenAI+Ollama);from_env() 返回 Result 不再 expect panic(ResponsesConfig);Regex 改 LazyLock 编译一次;Mutex poison 改 `into_inner()` 恢复(C7-C11)
+- **SSE 流式**: Ollama/Anthropic/Gemini 三个 provider 加跨 chunk buffer,不再丢 token;回调从 `drop()` 改 `.then()` async 执行;Gemini stream_chat 加回调;激活 responses.rs 死模块(H1-H7)
+- **多轮 Function Calling**: Anthropic system 消息填入 top-level `system` 字段;Ollama AI 消息包含 tool_calls;Gemini tool_result 走 functionResponse;Anthropic tool_result 走 content block 格式(H42-H45)
+- **并发安全**: langgraph/compiled 改 tokio::sync::RwLock;sessions/memory_store 改 tokio::sync::Mutex;mongo_memory 避免 blocking_write 死锁;HandoffManager 合并为单 Mutex;MCP Transport 加请求级互斥(C17-C19,C23,H9-H13)
+- **数据正确性**: parent_id 分隔符从 `_` 改 `::`;错误传播替代 `.ok()` 静默吞掉;stream finalizer 重写为可靠机制;UTF-8 按字符边界切分(非字节);负分文档过滤;RRF 文档 ID 用内容 hash(C12-C16,H23-H27,H46)
+- **Runnable::stream() 假流式**: OpenAI/Anthropic/Ollama 改为逐 token 发射 LLMResult(H4)
+- **Batch API**: Anthropic 消息映射修正 — system 消息提取到 top-level `system` 字段,tool 消息走 tool_result 格式(H40)
+- **RouterLLM**: Mutex poison 改 into_inner;RoundRobin 加除零检查;stream_chat 更新延迟统计;Arc 共享 messages 减少 clone(H33-H38)
+- **JSON 修复**: repair_partial_json 正确跟踪字符串内花括号;处理转义引号;UTF-8 字符边界检查(C20-C21,M37)
+- **其他**: cosine_similarity 用 epsilon 浮点零判断;不同长度向量返回错误;缓存过期条目清理;structured_output parse 支持 markdown 包裹;score 范围校验 0-1;A2A 错误响应修正;thiserror 替代手动 Error 实现;多处 Regex 改 LazyLock;vector store 操作优化(C22,M21-M23,M30-M34,M7-M8)
+
 ## [0.4.2] - 2026-07-22
 
 ### Added

@@ -70,6 +70,21 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
 - [ComputerUseTool](#computerusetool) ✨ v0.4.1
+- [v0.5.0 New Features](#v050-new-features) ✨ v0.5.0
+  - RouterLLM (Model Routing + Fallback)
+  - CorrectiveRAG
+  - AdaptiveRAG
+  - GraphRAG (Knowledge Graph RAG)
+  - Deep Research Agent
+  - MCP Full Protocol (6 Primitives)
+  - Code Interpreter Sandbox
+  - OpenAI Responses API
+  - Anthropic Extended Thinking
+  - Streaming Structured Output
+  - Batch API
+  - Tracing (Distributed Tracing)
+  - v0.5.0 Quality Hardening (176 Fixes)
+- [Testing](#testing)
 - [MongoDB Storage](#mongodb-storage)
 - [Redis / SQLite Storage](#redis--sqlite-storage)
 
@@ -1287,7 +1302,7 @@ Persistent vector store using Chroma:
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.2.6", features = ["chromadb"] }
+langchainrust = { version = "0.5", features = ["chromadb"] }
 ```
 
 ```rust
@@ -1943,7 +1958,7 @@ assert_eq!(halluc.value, 0.0); // fabricated, caught
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.2.6", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.5", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -1972,14 +1987,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.2.6", features = ["redis-storage"] }
+langchainrust = { version = "0.5", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.2.6", features = ["sqlite-storage"] }
+langchainrust = { version = "0.5", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -2138,6 +2153,303 @@ let tool = ComputerUseTool::new();
 // Use as BaseTool
 let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 ```
+
+---
+
+## v0.5.0 New Features ✨ v0.5.0
+
+### RouterLLM (Model Routing + Fallback)
+
+`RouterLLM` implements `BaseChatModel`, routing calls across a pool of heterogeneous models and falling back on failure.
+
+**Five routing strategies:**
+
+| Strategy | Behavior | Use Case |
+|----------|----------|----------|
+| `Fallback` | Primary fails → try next | Production fault tolerance |
+| `RoundRobin` | Rotate across models | Load balancing, rate-limit avoidance |
+| `LeastLatency` | Pick fastest recent model | Latency-sensitive |
+| `LowestCost` | Pick cheapest model | Cost optimization |
+| `InputDirected` | Custom closure over input text | Route by query complexity |
+
+```rust
+use langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
+
+// 1. Fallback: primary + backups
+let router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
+let result = router.chat(messages, None).await?;
+
+// 2. Lowest cost routing
+let router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_cost(cheap_model, 0.01)
+    .with_cost(powerful_model, 0.03);
+
+// 3. Input-directed routing
+let router = RouterLLM::new(RoutingStrategy::InputDirected(Arc::new(|input| {
+    if input.contains("code") { 1 } else { 0 }
+})))
+.with_model(general_model)
+.with_model(code_model);
+
+// 4. Least latency routing
+let router = RouterLLM::new(RoutingStrategy::LeastLatency)
+    .with_model(fast_model)
+    .with_model(slow_but_smart_model);
+
+// Works as a normal BaseChatModel — drop-in replacement
+let result = router.chat(messages, None).await?;
+let stream = router.stream_chat(messages, None).await?;
+```
+
+---
+
+### CorrectiveRAG
+
+Standard RAG retrieves documents that may be irrelevant, yet the LLM still hallucinates a plausible answer. CorrectiveRAG adds three gates: grade documents → rewrite query or supplement with web search → hallucination check.
+
+```rust
+use langchainrust::agents::crag::CorrectiveRAGAgent;
+
+let agent = CorrectiveRAGAgent::new(llm, retriever)
+    .with_web_search(web_tool)    // optional: web search fallback
+    .with_hallucination_check();  // optional: hallucination detection
+
+let answer = agent.invoke("What is Rust ownership?", None).await?;
+```
+
+**Flow:** query → retrieve → grade → [irrelevant? → rewrite/web search → re-retrieve] → generate → hallucination check → output
+
+---
+
+### AdaptiveRAG
+
+LLM decides retrieval strategy per query: NoRetrieval (skip retrieval), SingleSearch (one query), MultiQuery (multiple angles).
+
+```rust
+use langchainrust::agents::adaptive_rag::AdaptiveRAG;
+
+let agent = AdaptiveRAG::new(llm, retriever);
+
+// Complex question → LLM picks MultiQuery, generates multiple queries
+let answer = agent.invoke("Compare tokio vs async-std scheduling", None).await?;
+
+// Simple greeting → LLM picks NoRetrieval, skips retrieval entirely
+let answer = agent.invoke("Hello", None).await?;
+```
+
+---
+
+### GraphRAG (Knowledge Graph RAG)
+
+Vector search misses relationships. GraphRAG extracts entities + relations → builds graph → community detection → community summaries → query by community.
+
+```rust
+use langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
+
+let mut graph_rag = GraphRAG::new(llm);
+graph_rag.add_documents(&documents).await?;
+
+// Global query: search community summaries (macro questions)
+let result = graph_rag.query("overall tech stack architecture", GraphQueryMode::Global).await?;
+
+// Local query: search entity neighbors (specific questions)
+let result = graph_rag.query("Alice's advisor's students", GraphQueryMode::Local).await?;
+
+// Hybrid: combine both
+let result = graph_rag.query("...", GraphQueryMode::Hybrid).await?;
+```
+
+---
+
+### Deep Research Agent
+
+Multi-round deep research: decompose topic → parallel search → deduplicate → synthesize → discover gaps → re-search → cited report.
+
+```rust
+use langchainrust::agents::deep_research::DeepResearchAgent;
+
+let agent = DeepResearchAgent::new(llm)
+    .with_retriever(retriever)
+    .with_max_rounds(3);
+
+let report = agent.research("Compare Rust async runtimes: tokio vs async-std vs smol").await?;
+println!("Summary: {}", report.summary);
+for citation in &report.citations {
+    println!("[{}] {}", citation.source, citation.content);
+}
+```
+
+---
+
+### MCP Full Protocol (6 Primitives)
+
+v0.5.0 completes the MCP spec with all 6 primitives, both Client and Server:
+
+| Primitive | Purpose | Typical Use |
+|-----------|---------|-------------|
+| **Resources** | Browse/read server resources | Claude Desktop reading local files |
+| **Prompts** | Get predefined prompt templates | Standardized prompt management |
+| **Completion** | Auto-complete suggestions | Parameter auto-completion |
+| **Elicitation** | Interactive prompts to user | User confirmation needed |
+| **Roots** | Discover client root directories | Server needs to know accessible paths |
+| **Sampling** | Server proxies LLM request via client | Server needs LLM capability |
+
+```rust
+use langchainrust::mcp::MCPClient;
+
+// Client: browse resources
+let resources = client.list_resources().await?;
+let content = client.read_resource("file:///data/report.pdf").await?;
+
+// Get prompt templates
+let prompts = client.list_prompts().await?;
+let prompt = client.get_prompt("code_review", arguments).await?;
+
+// Completion suggestions
+let completions = client.complete("file:///src/", "main").await?;
+```
+
+---
+
+### Code Interpreter Sandbox
+
+Safe code execution with `LocalSandbox` (subprocess + timeout).
+
+```rust
+use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox};
+use std::time::Duration;
+
+let sandbox = LocalSandbox::new("python")
+    .with_timeout(Duration::from_secs(30))
+    .with_memory_limit(256); // MB
+
+let result = sandbox.run("print(2 + 2)").await?;
+assert_eq!(result.stdout.trim(), "4");
+```
+
+- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr
+- **E2B cloud sandbox** (feature gate `sandbox-e2b`): remote micro-VM, full isolation
+- **WASM sandbox** (feature gate `sandbox-wasm`): browser-grade sandbox, zero network
+
+---
+
+### OpenAI Responses API
+
+Connect to `/v1/responses` with built-in tools: WebSearch, FileSearch, CodeInterpreter, ComputerUse — one request, model handles tool calls automatically.
+
+```rust
+use langchainrust::language_models::openai::responses::{ResponsesModel, BuiltinTool};
+
+let model = ResponsesModel::new("gpt-4o", api_key)
+    .with_tools(vec![BuiltinTool::WebSearch, BuiltinTool::CodeInterpreter]);
+
+let result = model.chat(messages, None).await?;
+// result.content includes the final answer after tool execution
+```
+
+---
+
+### Anthropic Extended Thinking
+
+Configure `budget_tokens` to let Claude think before answering. Thinking block exposed via `thinking_content` in `LLMResult`; streaming via `on_llm_thinking` callback.
+
+```rust
+use langchainrust::AnthropicChat;
+
+let model = AnthropicChat::new("claude-sonnet-5", api_key)
+    .with_thinking(10000); // up to 10000 thinking tokens
+
+let result = model.chat(messages, None).await?;
+println!("Thinking: {:?}", result.thinking_content);
+println!("Answer: {}", result.content);
+```
+
+---
+
+### Streaming Structured Output
+
+`PartialJsonParser` incrementally parses streaming JSON into partial structs — no need to wait for all tokens.
+
+```rust
+use langchainrust::core::structured_output::StreamingStructuredOutputExt;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct UserInfo {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+let stream = model.stream_structured_output::<UserInfo>(messages, None).await?;
+pin_mut!(stream);
+while let Some(partial) = stream.next().await {
+    if let Some(name) = &partial.name {
+        println!("Got name: {}", name); // available before all fields arrive
+    }
+}
+```
+
+---
+
+### Batch API
+
+`BatchClient` unifies OpenAI and Anthropic batch workflows: submit → poll → results, at 50% cost.
+
+```rust
+use langchainrust::batch::{BatchClient, BatchProvider, BatchRequest};
+
+let client = BatchClient::new(BatchProvider::OpenAI, api_key);
+
+let requests = vec![
+    BatchRequest::new("req-1", "gpt-4o", vec![Message::human("Translate: Hello")]),
+    BatchRequest::new("req-2", "gpt-4o", vec![Message::human("Translate: World")]),
+];
+
+let results = client.submit_and_wait(&requests, Duration::from_secs(30)).await?;
+for result in results {
+    println!("{}: {:?}", result.custom_id, result.result?.content);
+}
+```
+
+---
+
+### Tracing (Distributed Tracing)
+
+`Tracer` + `SpanGuard` (RAII) auto-manages parent-child spans. Backends: InMemory / Console / OTel.
+
+```rust
+use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend};
+
+let tracer = Tracer::new(ConsoleTracingBackend);
+let span = tracer.start_span("agent_run");
+{
+    let _retrieve = tracer.start_child("retrieve");
+    let docs = retriever.retrieve(&query).await?;
+} // _retrieve drop → child span auto-records end time
+{
+    let _generate = tracer.start_child("generate");
+    let answer = llm.chat(messages, None).await?;
+}
+drop(span); // span auto-records duration, token count, etc.
+```
+
+---
+
+### v0.5.0 Quality Hardening (176 Fixes)
+
+After implementing 12 new features, a two-pass full-codebase review of 223 files found and fixed 176 issues (23 CRITICAL / 63 HIGH / 75 MEDIUM / 15 LOW).
+
+**Key fixes:**
+
+- **Security**: PythonREPL dangerous import check, HTTPTool/URLFetchTool SSRF protection (private IP + DNS rebinding), SQLTool injection prevention, Gemini API key moved to header
+- **Multi-turn Function Calling**: Anthropic/Gemini/Ollama tool message mapping errors causing multi-turn FC to break — all corrected
+- **Streaming**: Ollama/Anthropic/Gemini SSE cross-chunk token loss fixed; `Runnable::stream()` changed from fake streaming to real streaming (per-token emission)
+- **Concurrency**: `std::sync::Mutex` in async contexts replaced with `tokio::sync::Mutex`; MCP Transport request-level mutex; HandoffManager lock merging
+- **Panic fixes**: `choices[0]` out-of-bounds → `.first().ok_or()`; `from_env()` returns `Result`; Regex → LazyLock; Mutex poison → `into_inner()` recovery
+- **Data correctness**: UTF-8 char-boundary slicing; RRF document ID uses content hash; error propagation replaces silent swallowing
+
+**Verification:** 826 unit tests passing · clippy zero warnings · cargo fmt clean
 
 ---
 
