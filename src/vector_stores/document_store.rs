@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 // ============================================================================
@@ -221,14 +220,14 @@ pub trait ChunkedDocumentStoreTrait: Send + Sync {
 /// 内存文档存储
 pub struct InMemoryDocumentStore {
     /// 文档集合
-    documents: Arc<RwLock<HashMap<String, Document>>>,
+    documents: Arc<std::sync::RwLock<HashMap<String, Document>>>,
 }
 
 impl InMemoryDocumentStore {
     /// 创建新的内存文档存储
     pub fn new() -> Self {
         Self {
-            documents: Arc::new(RwLock::new(HashMap::new())),
+            documents: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 }
@@ -247,7 +246,7 @@ impl DocumentStore for InMemoryDocumentStore {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut store = self.documents.write().await;
+        let mut store = self.documents.write().unwrap();
         store.insert(id.clone(), document);
 
         Ok(id)
@@ -257,7 +256,7 @@ impl DocumentStore for InMemoryDocumentStore {
         &self,
         documents: Vec<Document>,
     ) -> Result<Vec<String>, VectorStoreError> {
-        let mut store = self.documents.write().await;
+        let mut store = self.documents.write().unwrap();
         let mut ids = Vec::new();
 
         for doc in documents {
@@ -270,23 +269,23 @@ impl DocumentStore for InMemoryDocumentStore {
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
-        let store = self.documents.read().await;
+        let store = self.documents.read().unwrap();
         Ok(store.get(id).cloned())
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let mut store = self.documents.write().await;
+        let mut store = self.documents.write().unwrap();
         store.remove(id);
         Ok(())
     }
 
     async fn count(&self) -> usize {
-        let store = self.documents.read().await;
+        let store = self.documents.read().unwrap();
         store.len()
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let mut store = self.documents.write().await;
+        let mut store = self.documents.write().unwrap();
         store.clear();
         Ok(())
     }
@@ -298,17 +297,17 @@ impl DocumentStore for InMemoryDocumentStore {
 
 /// 内存存储实现（开发/测试用）
 pub struct InMemoryChunkedDocumentStore {
-    parent_docs: Arc<RwLock<HashMap<String, Document>>>,
-    chunks: Arc<RwLock<HashMap<String, ChunkDocument>>>,
-    parent_to_chunks: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    parent_docs: Arc<std::sync::RwLock<HashMap<String, Document>>>,
+    chunks: Arc<std::sync::RwLock<HashMap<String, ChunkDocument>>>,
+    parent_to_chunks: Arc<std::sync::RwLock<HashMap<String, Vec<String>>>>,
 }
 
 impl InMemoryChunkedDocumentStore {
     pub fn new() -> Self {
         Self {
-            parent_docs: Arc::new(RwLock::new(HashMap::new())),
-            chunks: Arc::new(RwLock::new(HashMap::new())),
-            parent_to_chunks: Arc::new(RwLock::new(HashMap::new())),
+            parent_docs: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            chunks: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            parent_to_chunks: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -316,7 +315,7 @@ impl InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let chunks = self.chunks.blocking_read();
+        let chunks = self.chunks.read().unwrap();
         Ok(chunks.get(chunk_id).map(|c| c.to_document()))
     }
 
@@ -342,12 +341,12 @@ impl InMemoryChunkedDocumentStore {
             );
 
             {
-                let mut chunks_store = self.chunks.blocking_write();
+                let mut chunks_store = self.chunks.write().unwrap();
                 chunks_store.insert(chunk_id.clone(), chunk);
             }
 
             {
-                let mut mapping = self.parent_to_chunks.blocking_write();
+                let mut mapping = self.parent_to_chunks.write().unwrap();
                 mapping
                     .entry(parent_id.to_string())
                     .or_default()
@@ -372,8 +371,8 @@ impl InMemoryChunkedDocumentStore {
         let mut chunk_ids = Vec::new();
 
         // Acquire locks once for all chunks
-        let mut chunks_store = self.chunks.write().await;
-        let mut mapping = self.parent_to_chunks.write().await;
+        let mut chunks_store = self.chunks.write().unwrap();
+        let mut mapping = self.parent_to_chunks.write().unwrap();
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}::{}", parent_id, segment);
@@ -389,7 +388,7 @@ impl InMemoryChunkedDocumentStore {
 
             mapping
                 .entry(parent_id.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(chunk_id.clone());
 
             chunk_ids.push(chunk_id);
@@ -418,7 +417,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         {
-            let mut parents = self.parent_docs.write().await;
+            let mut parents = self.parent_docs.write().unwrap();
             parents.insert(parent_id.clone(), document.clone());
         }
 
@@ -446,12 +445,12 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let parents = self.parent_docs.read().await;
+        let parents = self.parent_docs.read().unwrap();
         Ok(parents.get(parent_id).cloned())
     }
 
     async fn get_chunk(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.read().await;
+        let chunks = self.chunks.read().unwrap();
         Ok(chunks.get(chunk_id).cloned())
     }
 
@@ -459,7 +458,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let chunks = self.chunks.read().await;
+        let chunks = self.chunks.read().unwrap();
         Ok(chunks.get(chunk_id).map(|c| c.to_document()))
     }
 
@@ -467,8 +466,8 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let mapping = self.parent_to_chunks.read().await;
-        let chunks = self.chunks.read().await;
+        let mapping = self.parent_to_chunks.read().unwrap();
+        let chunks = self.chunks.read().unwrap();
 
         let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
 
@@ -490,24 +489,24 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
 
     async fn delete_parent_document(&self, parent_id: &str) -> Result<(), VectorStoreError> {
         let chunk_ids = {
-            let mapping = self.parent_to_chunks.read().await;
+            let mapping = self.parent_to_chunks.read().unwrap();
             mapping.get(parent_id).cloned().unwrap_or_default()
         };
 
         {
-            let mut chunks = self.chunks.write().await;
+            let mut chunks = self.chunks.write().unwrap();
             for chunk_id in &chunk_ids {
                 chunks.remove(chunk_id);
             }
         }
 
         {
-            let mut mapping = self.parent_to_chunks.write().await;
+            let mut mapping = self.parent_to_chunks.write().unwrap();
             mapping.remove(parent_id);
         }
 
         {
-            let mut parents = self.parent_docs.write().await;
+            let mut parents = self.parent_docs.write().unwrap();
             parents.remove(parent_id);
         }
 
@@ -515,24 +514,24 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 
     async fn parent_count(&self) -> usize {
-        let parents = self.parent_docs.read().await;
+        let parents = self.parent_docs.read().unwrap();
         parents.len()
     }
 
     async fn chunk_count(&self) -> usize {
-        let chunks = self.chunks.read().await;
+        let chunks = self.chunks.read().unwrap();
         chunks.len()
     }
 
     async fn get_all_chunks(&self) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.read().await;
+        let chunks = self.chunks.read().unwrap();
         Ok(chunks.values().cloned().collect())
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let mut parents = self.parent_docs.write().await;
-        let mut chunks = self.chunks.write().await;
-        let mut mapping = self.parent_to_chunks.write().await;
+        let mut parents = self.parent_docs.write().unwrap();
+        let mut chunks = self.chunks.write().unwrap();
+        let mut mapping = self.parent_to_chunks.write().unwrap();
 
         parents.clear();
         chunks.clear();
@@ -542,9 +541,9 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 
     async fn save(&self, path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        let parents = self.parent_docs.read().await;
-        let chunks = self.chunks.read().await;
-        let mapping = self.parent_to_chunks.read().await;
+        let parents = self.parent_docs.read().unwrap();
+        let chunks = self.chunks.read().unwrap();
+        let mapping = self.parent_to_chunks.read().unwrap();
 
         let data = ChunkedStoreData {
             parent_docs: parents.clone(),
@@ -569,9 +568,9 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
         Ok(Self {
-            parent_docs: Arc::new(RwLock::new(data.parent_docs)),
-            chunks: Arc::new(RwLock::new(data.chunks)),
-            parent_to_chunks: Arc::new(RwLock::new(data.parent_to_chunks)),
+            parent_docs: Arc::new(std::sync::RwLock::new(data.parent_docs)),
+            chunks: Arc::new(std::sync::RwLock::new(data.chunks)),
+            parent_to_chunks: Arc::new(std::sync::RwLock::new(data.parent_to_chunks)),
         })
     }
 
@@ -586,7 +585,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         {
-            let mut parents = self.parent_docs.blocking_write();
+            let mut parents = self.parent_docs.write().unwrap();
             parents.insert(parent_id.clone(), document.clone());
         }
 
@@ -600,7 +599,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let parents = self.parent_docs.blocking_read();
+        let parents = self.parent_docs.read().unwrap();
         Ok(parents.get(parent_id).cloned())
     }
 
@@ -608,7 +607,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.blocking_read();
+        let chunks = self.chunks.read().unwrap();
         Ok(chunks.get(chunk_id).cloned())
     }
 
@@ -616,8 +615,8 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let mapping = self.parent_to_chunks.blocking_read();
-        let chunks = self.chunks.blocking_read();
+        let mapping = self.parent_to_chunks.read().unwrap();
+        let chunks = self.chunks.read().unwrap();
 
         let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
 
@@ -640,11 +639,11 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         // Write to parent_docs so the document is retrievable as a parent
         {
-            let mut parents = self.parent_docs.write().await;
+            let mut parents = self.parent_docs.write().unwrap();
             parents.insert(id.clone(), document.clone());
         }
 
-        let mut chunks = self.chunks.write().await;
+        let mut chunks = self.chunks.write().unwrap();
 
         let chunk = ChunkDocument::new(id.clone(), id.clone(), document.content.clone(), 0);
 
@@ -652,7 +651,7 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         // Also update parent_to_chunks mapping
         {
-            let mut mapping = self.parent_to_chunks.write().await;
+            let mut mapping = self.parent_to_chunks.write().unwrap();
             mapping.entry(id.clone()).or_default().push(id.clone());
         }
 
@@ -676,7 +675,7 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let mut chunks = self.chunks.write().await;
+        let mut chunks = self.chunks.write().unwrap();
         chunks.remove(id);
         Ok(())
     }

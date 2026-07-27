@@ -140,11 +140,20 @@ pub async fn summarize_community<M: BaseChatModel>(
             entity_set.contains(&r.source) && entity_set.contains(&r.target)
         })
         .map(|r| {
+            // Use entity names instead of IDs for LLM readability.
+            let source_name = store
+                .get_entity(&r.source)
+                .map(|e| e.name.as_str())
+                .unwrap_or(&r.source);
+            let target_name = store
+                .get_entity(&r.target)
+                .map(|e| e.name.as_str())
+                .unwrap_or(&r.target);
             format!(
                 "- {} --[{}]--> {}{}",
-                r.source,
+                source_name,
                 r.relation_type,
-                r.target,
+                target_name,
                 if r.description.is_empty() {
                     String::new()
                 } else {

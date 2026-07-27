@@ -55,7 +55,12 @@ impl Default for WasmSandbox {
 
 #[async_trait]
 impl CodeSandbox for WasmSandbox {
-    async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError> {
+    async fn run(
+        &self,
+        code: &str,
+        language: Language,
+        timeout_ms: u64,
+    ) -> Result<RunResult, SandboxError> {
         // TODO: Implement actual WASM sandbox execution.
         //
         // Steps:

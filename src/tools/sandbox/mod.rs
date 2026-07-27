@@ -47,7 +47,7 @@ use crate::core::tools::{BaseTool, ToolError};
 
 /// Supported programming languages for sandbox execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
     Python,
     JavaScript,
@@ -109,7 +109,12 @@ pub trait CodeSandbox: Send + Sync {
     ///
     /// # Returns
     /// A [`RunResult`] on success or a [`SandboxError`] on failure.
-    async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError>;
+    async fn run(
+        &self,
+        code: &str,
+        language: Language,
+        timeout_ms: u64,
+    ) -> Result<RunResult, SandboxError>;
 }
 
 /// Input JSON schema for [`SandboxTool`].
@@ -171,7 +176,9 @@ impl<S: CodeSandbox + 'static> BaseTool for SandboxTool<S> {
             .map_err(|e| ToolError::InvalidInput(format!("JSON parse error: {}", e)))?;
 
         if parsed.code.trim().is_empty() {
-            return Err(ToolError::InvalidInput("code must not be empty".to_string()));
+            return Err(ToolError::InvalidInput(
+                "code must not be empty".to_string(),
+            ));
         }
 
         let result = self
@@ -248,7 +255,12 @@ mod tests {
 
     #[async_trait]
     impl CodeSandbox for MockSandbox {
-        async fn run(&self, code: &str, _language: Language, _timeout_ms: u64) -> Result<RunResult, SandboxError> {
+        async fn run(
+            &self,
+            code: &str,
+            _language: Language,
+            _timeout_ms: u64,
+        ) -> Result<RunResult, SandboxError> {
             Ok(RunResult {
                 stdout: format!("executed: {}", code),
                 stderr: String::new(),
@@ -305,7 +317,12 @@ mod tests {
 
     #[async_trait]
     impl CodeSandbox for TimeoutSandbox {
-        async fn run(&self, _code: &str, _language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError> {
+        async fn run(
+            &self,
+            _code: &str,
+            _language: Language,
+            timeout_ms: u64,
+        ) -> Result<RunResult, SandboxError> {
             Err(SandboxError::Timeout(timeout_ms))
         }
     }
@@ -313,7 +330,9 @@ mod tests {
     #[tokio::test]
     async fn test_sandbox_tool_timeout_maps_to_tool_error() {
         let tool = SandboxTool::new(TimeoutSandbox, Language::Python).with_timeout(5000);
-        let result = tool.run(r#"{"code": "while True: pass"}"#.to_string()).await;
+        let result = tool
+            .run(r#"{"code": "while True: pass"}"#.to_string())
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
@@ -327,7 +346,12 @@ mod tests {
 
     #[async_trait]
     impl CodeSandbox for UnsupportedSandbox {
-        async fn run(&self, _code: &str, language: Language, _timeout_ms: u64) -> Result<RunResult, SandboxError> {
+        async fn run(
+            &self,
+            _code: &str,
+            language: Language,
+            _timeout_ms: u64,
+        ) -> Result<RunResult, SandboxError> {
             Err(SandboxError::UnsupportedLanguage(language.to_string()))
         }
     }

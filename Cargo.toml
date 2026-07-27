@@ -1,6 +1,6 @@
 [package]
 name = "langchainrust"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A LangChain-inspired framework for building LLM applications in Rust. Supports OpenAI, Agents, Tools, Memory, Chains, RAG, BM25, Hybrid Retrieval, LangGraph, HyDE, Reranking, MultiQuery, and native Function Calling."
@@ -69,6 +69,8 @@ pgvector-storage = []  # 需用户自行配置 sqlx/pgvector 依赖(见 src/vect
 opentelemetry = ["dep:opentelemetry"]
 local-embeddings = ["ort", "ndarray"]
 native-computer = []
+sandbox-e2b = []
+sandbox-wasm = []
 
 [package.metadata.docs.rs]
 all-features = true
@@ -430,6 +432,13 @@ name = "unit_reranking"
 path = "tests/hyde_reranking/reranking_test.rs"
 
 # ============================================================================
+# v0.5.1 集成测试
+# ============================================================================
+[[test]]
+name = "integration_router_llm"
+path = "tests/integration/router_llm.rs"
+
+# ============================================================================
 # 示例 - examples
 # ============================================================================
 [[example]]
@@ -534,6 +543,40 @@ path = "examples/guardrails/guardrails.rs"
 [[example]]
 name = "basic_token_counter"
 path = "examples/basic/token_counter.rs"
+
+# v0.5.0 新增 examples
+
+[[example]]
+name = "rag_corrective_rag"
+path = "examples/rag/corrective_rag.rs"
+
+[[example]]
+name = "rag_graph_rag"
+path = "examples/rag/graph_rag.rs"
+
+[[example]]
+name = "rag_adaptive_rag"
+path = "examples/rag/adaptive_rag.rs"
+
+[[example]]
+name = "agent_deep_research"
+path = "examples/agent/deep_research.rs"
+
+[[example]]
+name = "agent_extended_thinking"
+path = "examples/agent/extended_thinking.rs"
+
+[[example]]
+name = "basic_responses_api"
+path = "examples/basic/responses_api.rs"
+
+[[example]]
+name = "basic_batch_api"
+path = "examples/basic/batch_api.rs"
+
+[[example]]
+name = "basic_sandbox"
+path = "examples/basic/sandbox.rs"
 
 # ============================================================================
 # Criterion Benchmarks

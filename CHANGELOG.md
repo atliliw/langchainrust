@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **GraphRAG 社区摘要用实体 ID 而非 name** (`retrieval::graph_rag::community`): `summarize_community` 直接拼接 `r.source`/`r.target`(值为 `e_xxx` 形式的实体 ID),LLM 收到无意义 ID 导致社区摘要质量极差,直接拖垮 Global/Hybrid 查询。改为通过 `store.get_entity()` 查实体 name,与 `query.rs` 的 `format_relation` 逻辑一致
+- **Deep Research 综合报告嵌入 JSON 字符串导致转义失败** (`agents::deep_research::synthesizer`): 要求 LLM 把完整 markdown 报告作为 JSON 字符串字段 `"report"` 输出,markdown 含 `\n`、`"`、`\` 需 JSON 转义,LLM 转义出错率高导致 `serde_json` 解析失败,整个综合步骤报错。改用分隔符格式 `<<<REPORT>>>...<<<END_REPORT>>><<<GAPS>>>[...]<<<END_GAPS>>>`,report 部分直接取原始文本无需转义;保留旧 JSON 格式作为 fallback 兼容
+- **document_store 在 tokio runtime 内 panic** (`vector_stores::document_store`): `InMemoryDocumentStore` 和 `InMemoryChunkedDocumentStore` 内部用 `tokio::sync::RwLock`,但 `_blocking` 方法调 `blocking_read()`/`blocking_write()`,在 `#[tokio::test]` async 上下文里触发 `Cannot block the current thread from within a runtime` panic。改为 `std::sync::RwLock`,所有锁操作 `.read().unwrap()`/`.write().unwrap()`,同步异步上下文通用;锁持有时间短(无跨 await 持锁),不会死锁
+
 ## [0.5.0] - 2026-07-23
 
 ### Added

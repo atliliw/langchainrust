@@ -39,6 +39,7 @@ impl OpenAIChat {
         since = "0.5.0",
         note = "Use from_env_result() which returns Result<Self, OpenAIError>"
     )]
+    #[allow(deprecated)]
     pub fn from_env() -> Self {
         Self::new(OpenAIConfig::from_env())
     }

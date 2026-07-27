@@ -197,3 +197,147 @@ impl Default for GraphStore {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entity(id: &str, name: &str) -> Entity {
+        Entity {
+            id: id.to_string(),
+            name: name.to_string(),
+            entity_type: "concept".to_string(),
+            description: format!("Entity {}", name),
+        }
+    }
+
+    fn make_relation(source: &str, target: &str, rel_type: &str) -> Relation {
+        Relation {
+            source: source.to_string(),
+            target: target.to_string(),
+            relation_type: rel_type.to_string(),
+            description: format!("{} {}", rel_type, target),
+            doc_id: None,
+        }
+    }
+
+    #[test]
+    fn test_add_and_get_entity() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Rust"));
+        assert_eq!(store.entity_count(), 1);
+        assert!(store.get_entity("e1").is_some());
+        assert!(store.get_entity("e2").is_none());
+    }
+
+    #[test]
+    fn test_add_entity_replaces_existing() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Rust"));
+        store.add_entity(Entity {
+            id: "e1".to_string(),
+            name: "Rust Lang".to_string(),
+            entity_type: "language".to_string(),
+            description: "Updated".to_string(),
+        });
+        assert_eq!(store.entity_count(), 1);
+        assert_eq!(store.get_entity("e1").unwrap().name, "Rust Lang");
+    }
+
+    #[test]
+    fn test_add_relation_and_count() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Alice"));
+        store.add_entity(make_entity("e2", "Bob"));
+        store.add_relation(make_relation("e1", "e2", "mentors"));
+        assert_eq!(store.relation_count(), 1);
+    }
+
+    #[test]
+    fn test_neighbors_bidirectional() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Alice"));
+        store.add_entity(make_entity("e2", "Bob"));
+        store.add_relation(make_relation("e1", "e2", "mentors"));
+
+        let alice_neighbors = store.neighbors("e1");
+        assert_eq!(alice_neighbors, vec!["e2"]);
+
+        let bob_neighbors = store.neighbors("e2");
+        assert_eq!(bob_neighbors, vec!["e1"]);
+    }
+
+    #[test]
+    fn test_neighbors_dedup() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Alice"));
+        store.add_entity(make_entity("e2", "Bob"));
+        store.add_relation(make_relation("e1", "e2", "mentor"));
+        store.add_relation(make_relation("e1", "e2", "collaborator"));
+
+        let neighbors = store.neighbors("e1");
+        assert_eq!(neighbors, vec!["e2"]); // deduped
+    }
+
+    #[test]
+    fn test_subgraph_depth_1() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Alice"));
+        store.add_entity(make_entity("e2", "Bob"));
+        store.add_entity(make_entity("e3", "Charlie"));
+        store.add_relation(make_relation("e1", "e2", "mentor"));
+        store.add_relation(make_relation("e2", "e3", "colleague"));
+
+        let (entities, relations) = store.subgraph("e1", 1);
+        // Depth 1 from Alice: Alice + Bob
+        assert_eq!(entities.len(), 2);
+        assert_eq!(relations.len(), 1); // only Alice->Bob
+    }
+
+    #[test]
+    fn test_community_management() {
+        let mut store = GraphStore::new();
+        store.set_communities(vec![Community {
+            id: 0,
+            entities: vec!["e1".to_string(), "e2".to_string()],
+            level: 0,
+        }]);
+        assert_eq!(store.communities().len(), 1);
+
+        store.set_community_summaries(vec!["Community of Alice and Bob".to_string()]);
+        assert_eq!(store.community_summaries().len(), 1);
+        assert_eq!(store.community_summaries()[0], "Community of Alice and Bob");
+    }
+
+    #[test]
+    fn test_entity_ids() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "A"));
+        store.add_entity(make_entity("e2", "B"));
+        let mut ids = store.entity_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["e1", "e2"]);
+    }
+
+    #[test]
+    fn test_relations_for_entity() {
+        let mut store = GraphStore::new();
+        store.add_entity(make_entity("e1", "Alice"));
+        store.add_entity(make_entity("e2", "Bob"));
+        store.add_entity(make_entity("e3", "Charlie"));
+        store.add_relation(make_relation("e1", "e2", "mentor"));
+        store.add_relation(make_relation("e1", "e3", "advisor"));
+
+        let rels = store.relations_for("e1");
+        assert_eq!(rels.len(), 2);
+    }
+
+    #[test]
+    fn test_default_is_empty() {
+        let store = GraphStore::default();
+        assert_eq!(store.entity_count(), 0);
+        assert_eq!(store.relation_count(), 0);
+        assert!(store.communities().is_empty());
+        assert!(store.community_summaries().is_empty());
+    }
+}

@@ -70,7 +70,12 @@ impl E2BSandbox {
 
 #[async_trait]
 impl CodeSandbox for E2BSandbox {
-    async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError> {
+    async fn run(
+        &self,
+        code: &str,
+        language: Language,
+        timeout_ms: u64,
+    ) -> Result<RunResult, SandboxError> {
         // TODO: Implement actual E2B API integration.
         //
         // Steps:

@@ -138,7 +138,8 @@ impl LocalSandbox {
                 Ok(cmd)
             }
             Language::Rust => Err(SandboxError::UnsupportedLanguage(
-                "Rust compilation is not supported by LocalSandbox (use E2BSandbox or WasmSandbox)".to_string(),
+                "Rust compilation is not supported by LocalSandbox (use E2BSandbox or WasmSandbox)"
+                    .to_string(),
             )),
         }
     }
@@ -152,18 +153,23 @@ impl Default for LocalSandbox {
 
 #[async_trait]
 impl CodeSandbox for LocalSandbox {
-    async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError> {
+    async fn run(
+        &self,
+        code: &str,
+        language: Language,
+        timeout_ms: u64,
+    ) -> Result<RunResult, SandboxError> {
         let mut cmd = self.build_command(code, language)?;
 
         let start = Instant::now();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| SandboxError::Timeout(timeout_ms))?
-        .map_err(|e| SandboxError::Runtime(format!("failed to execute subprocess: {}", e)))?;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+                .await
+                .map_err(|_| SandboxError::Timeout(timeout_ms))?
+                .map_err(|e| {
+                    SandboxError::Runtime(format!("failed to execute subprocess: {}", e))
+                })?;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -229,7 +235,9 @@ mod tests {
     #[tokio::test]
     async fn test_python_dangerous_import_blocked() {
         let sandbox = LocalSandbox::new();
-        let result = sandbox.run("import os; print(os.getcwd())", Language::Python, 10_000).await;
+        let result = sandbox
+            .run("import os; print(os.getcwd())", Language::Python, 10_000)
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -248,7 +256,11 @@ mod tests {
             Ok(run_result) => {
                 // Python is available; verify basic execution
                 if run_result.exit_code == 0 {
-                    assert!(run_result.stdout.trim() == "3", "expected '3', got '{}'", run_result.stdout.trim());
+                    assert!(
+                        run_result.stdout.trim() == "3",
+                        "expected '3', got '{}'",
+                        run_result.stdout.trim()
+                    );
                 }
                 // If exit_code != 0, Python might not be installed; that's okay.
             }
@@ -263,12 +275,18 @@ mod tests {
     #[tokio::test]
     async fn test_javascript_execution_if_available() {
         let sandbox = LocalSandbox::new();
-        let result = sandbox.run("console.log(1 + 2)", Language::JavaScript, 10_000).await;
+        let result = sandbox
+            .run("console.log(1 + 2)", Language::JavaScript, 10_000)
+            .await;
 
         match result {
             Ok(run_result) => {
                 if run_result.exit_code == 0 {
-                    assert!(run_result.stdout.trim() == "3", "expected '3', got '{}'", run_result.stdout.trim());
+                    assert!(
+                        run_result.stdout.trim() == "3",
+                        "expected '3', got '{}'",
+                        run_result.stdout.trim()
+                    );
                 }
             }
             Err(SandboxError::Runtime(msg)) => {
@@ -293,12 +311,13 @@ mod tests {
     async fn test_execution_timeout() {
         let sandbox = LocalSandbox::new();
         // Use a very short timeout with Python code that sleeps longer
-        let result = sandbox.run(
-            "import time; time.sleep(10)",
-            Language::Python,
-            100, // 100ms timeout
-        )
-        .await;
+        let result = sandbox
+            .run(
+                "import time; time.sleep(10)",
+                Language::Python,
+                100, // 100ms timeout
+            )
+            .await;
 
         match result {
             Err(SandboxError::Timeout(ms)) => {
@@ -330,17 +349,22 @@ mod tests {
     #[tokio::test]
     async fn test_stderr_captured() {
         let sandbox = LocalSandbox::new();
-        let result = sandbox.run(
-            "import sys; print('error', file=sys.stderr)",
-            Language::Python,
-            10_000,
-        )
-        .await;
+        let result = sandbox
+            .run(
+                "import sys; print('error', file=sys.stderr)",
+                Language::Python,
+                10_000,
+            )
+            .await;
 
         match result {
             Ok(run_result) => {
                 if run_result.exit_code == 0 {
-                    assert!(run_result.stderr.contains("error"), "stderr should contain 'error', got: '{}'", run_result.stderr);
+                    assert!(
+                        run_result.stderr.contains("error"),
+                        "stderr should contain 'error', got: '{}'",
+                        run_result.stderr
+                    );
                 }
             }
             Err(_) => {

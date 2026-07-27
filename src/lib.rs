@@ -114,10 +114,11 @@ pub use memory::{
 };
 pub use schema::{ImageContent, Message, MessageType};
 pub use tools::{
-    Calculator, CalculatorInput, ComputerMode, ComputerUseInput, ComputerUseOutput,
+    Calculator, CalculatorInput, CodeSandbox, ComputerMode, ComputerUseInput, ComputerUseOutput,
     ComputerUseTool, DateTimeInput, DateTimeTool, DuckDuckGoSearchTool, FileTool, HTTPTool,
-    MathInput, PythonREPLInput, PythonREPLTool, SearchInput, SimpleMathTool, URLFetchInput,
-    URLFetchTool, WikipediaInput, WikipediaTool,
+    Language, LocalSandbox, MathInput, PythonREPLInput, PythonREPLTool, RunResult, SandboxError,
+    SandboxTool, SearchInput, SimpleMathTool, URLFetchInput, URLFetchTool, WikipediaInput,
+    WikipediaTool,
 };
 
 pub use chains::{
