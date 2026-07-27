@@ -97,20 +97,22 @@ pub struct CorrectiveRAGAgent<M: BaseChatModel, R: RetrieverTrait> {
     grade_threshold: f64,
     retrieve_k: usize,
     enable_hallucination_check: bool,
+    grader_llm: Option<M>,
 }
 
 impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
     /// Creates a new CRAG agent with the given LLM and retriever.
     ///
-    /// Default grade threshold is 0.5 and default retrieve count is 4.
+    /// Default grade threshold is 0.6 and default retrieve count is 4.
     pub fn new(llm: M, retriever: R) -> Self {
         Self {
             llm,
             retriever,
             web_fallback: None,
-            grade_threshold: 0.5,
+            grade_threshold: 0.6,
             retrieve_k: 4,
             enable_hallucination_check: true,
+            grader_llm: None,
         }
     }
 
@@ -148,6 +150,17 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
         self
     }
 
+    /// Sets a separate LLM for hallucination checking.
+    ///
+    /// When set, hallucination checks use this LLM instead of the main LLM,
+    /// avoiding the self-verification bias where a model tends to endorse
+    /// its own output. The grader LLM must be the same concrete type as the
+    /// main LLM. When not set, falls back to the main LLM.
+    pub fn with_grader_llm(mut self, llm: M) -> Self {
+        self.grader_llm = Some(llm);
+        self
+    }
+
     /// Invokes the CRAG agent on the given query.
     ///
     /// Executes the full CRAG pipeline:
@@ -159,9 +172,13 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
     pub async fn invoke(&self, query: &str) -> Result<CRAGResult, CRAGError> {
         let web_ref: Option<&dyn BaseTool> = self.web_fallback.as_ref().map(|b| b.as_ref());
 
-        let graph = CRAGGraph::new(&self.llm, &self.retriever, web_ref, self.grade_threshold)
+        let mut graph = CRAGGraph::new(&self.llm, &self.retriever, web_ref, self.grade_threshold)
             .with_retrieve_k(self.retrieve_k)
             .with_hallucination_check(self.enable_hallucination_check);
+
+        if let Some(ref grader) = self.grader_llm {
+            graph = graph.with_grader_llm(grader);
+        }
 
         graph.run(query).await
     }
@@ -496,5 +513,45 @@ mod tests {
 
         let agent = agent.with_grade_threshold(-0.5);
         assert!((agent.grade_threshold - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_default_grade_threshold_is_0_6() {
+        let llm = MockChatModel::new(vec![]);
+        let retriever = MockRetriever::new(vec![Document::new("test")]);
+
+        let agent = CorrectiveRAGAgent::new(llm, retriever);
+        assert!((agent.grade_threshold - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_grader_llm_is_stored_when_set() {
+        let llm = MockChatModel::new(vec![]);
+        let retriever = MockRetriever::new(vec![Document::new("test")]);
+
+        let grader = MockChatModel::new(vec!["grounded"]);
+        let agent = CorrectiveRAGAgent::new(llm, retriever).with_grader_llm(grader);
+        assert!(agent.grader_llm.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_crag_agent_with_grader_llm() {
+        // Grader LLM returns "not grounded" -> answer marked as ungrounded
+        let llm = MockChatModel::new(vec![
+            "Relevance: relevant\nScore: 0.9\nReasoning: Direct match.",
+            "Rust was invented by aliens.",
+            "not grounded",
+        ]);
+        let grader = MockChatModel::new(vec!["not grounded"]);
+
+        let retriever =
+            MockRetriever::new(vec![Document::new("Rust was created by Graydon Hoare.")]);
+
+        let agent = CorrectiveRAGAgent::new(llm, retriever)
+            .with_grader_llm(grader)
+            .with_hallucination_check(true);
+
+        let result = agent.invoke("Who created Rust?").await.unwrap();
+        assert!(!result.grounded);
     }
 }

@@ -63,6 +63,8 @@ pub struct CRAGGraph<'a, M: BaseChatModel, R: RetrieverTrait> {
     grade_threshold: f64,
     retrieve_k: usize,
     enable_hallucination_check: bool,
+    /// Optional separate LLM used for hallucination checking to avoid self-verification bias.
+    grader_llm: Option<&'a M>,
 }
 
 impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
@@ -80,6 +82,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
             grade_threshold,
             retrieve_k: 4,
             enable_hallucination_check: true,
+            grader_llm: None,
         }
     }
 
@@ -92,6 +95,15 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     /// Enables or disables the hallucination check step.
     pub fn with_hallucination_check(mut self, enable: bool) -> Self {
         self.enable_hallucination_check = enable;
+        self
+    }
+
+    /// Sets a separate LLM for hallucination checking.
+    ///
+    /// When set, hallucination checks use this LLM instead of `self.llm`, avoiding
+    /// the self-verification bias where a model tends to endorse its own output.
+    pub fn with_grader_llm(mut self, llm: &'a M) -> Self {
+        self.grader_llm = Some(llm);
         self
     }
 
@@ -232,6 +244,10 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     }
 
     /// Step 6: Check if the generated answer is grounded in the source documents.
+    ///
+    /// Uses `grader_llm` if configured (to avoid self-verification bias), otherwise
+    /// falls back to the main LLM. If the check call itself fails, degrades
+    /// gracefully by marking the answer as not grounded instead of aborting.
     async fn hallucination_check(
         &self,
         state: &mut CRAGState,
@@ -246,11 +262,19 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
         let user_message = build_hallucination_check_prompt(&context, &answer);
 
         let messages = vec![Message::human(&user_message)];
-        let result = self
-            .llm
+        let result = match self
+            .grader_llm
+            .unwrap_or(self.llm)
             .chat_with_system(HALLUCINATION_SYSTEM_PROMPT.to_string(), messages)
             .await
-            .map_err(|e| CRAGError::HallucinationCheckError(e.to_string()))?;
+        {
+            Ok(r) => r,
+            // Degrade gracefully: keep the generated answer but mark it unverified.
+            Err(_) => {
+                state.grounded = false;
+                return Ok(());
+            }
+        };
 
         let response_lower = result.content.to_lowercase();
         // Use word-boundary-aware matching to avoid false positives:
@@ -327,7 +351,7 @@ Answer:"#;
 
 /// System prompt for hallucination checking.
 const HALLUCINATION_SYSTEM_PROMPT: &str =
-    "You are a fact-checking assistant. Your job is to verify whether an answer is grounded in the provided context.";
+    "You are a skeptical fact-checking assistant. Your job is to verify whether an answer is grounded in the provided context. Be skeptical. Look for any claim not directly supported by the context. When in doubt, say 'not grounded'.";
 
 /// Prompt template for hallucination checking.
 const HALLUCINATION_CHECK_PROMPT: &str = r#"Context:
@@ -336,9 +360,9 @@ const HALLUCINATION_CHECK_PROMPT: &str = r#"Context:
 Answer to verify:
 {answer}
 
-Is the above answer fully grounded in and supported by the provided context? Respond with either:
-- "grounded" if the answer is fully supported by the context
-- "not grounded" if the answer contains information not found in or contradicted by the context
+Is the above answer fully grounded in and supported by the provided context? Be skeptical — assume any claim without explicit support in the context is a hallucination. Respond with either:
+- "grounded" if every claim in the answer is directly supported by the context
+- "not grounded" if the answer contains any information not found in or contradicted by the context
 
 Your assessment:"#;
 

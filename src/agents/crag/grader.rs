@@ -14,6 +14,8 @@ pub struct GradeResult {
     pub score: f64,
     /// Optional reasoning from the LLM.
     pub reasoning: Option<String>,
+    /// Whether the score came from ambiguous parsing (no clear relevant/irrelevant signal).
+    pub is_ambiguous: bool,
 }
 
 /// Grades documents for relevance to a query using an LLM.
@@ -86,18 +88,23 @@ fn parse_grade_response(response: &str) -> Result<GradeResult, GraderError> {
     // Try to extract an explicit numeric score first.
     let explicit_score = extract_numeric_score(&lower);
 
-    let (score, reasoning) = if let Some(s) = explicit_score {
-        (s.clamp(0.0, 1.0), Some(response.to_string()))
+    let (score, reasoning, is_ambiguous) = if let Some(s) = explicit_score {
+        (s.clamp(0.0, 1.0), Some(response.to_string()), false)
     } else if lower.contains("relevant") && !lower.contains("irrelevant") {
-        (0.8, Some(response.to_string()))
+        (0.8, Some(response.to_string()), false)
     } else if lower.contains("irrelevant") {
-        (0.2, Some(response.to_string()))
+        (0.2, Some(response.to_string()), false)
     } else {
-        // Ambiguous response: default to moderate score
-        (0.5, Some(response.to_string()))
+        // Ambiguous response: default to 0.4 (below typical thresholds)
+        // to avoid triggering corrective path on uncertain grading.
+        (0.4, Some(response.to_string()), true)
     };
 
-    Ok(GradeResult { score, reasoning })
+    Ok(GradeResult {
+        score,
+        reasoning,
+        is_ambiguous,
+    })
 }
 
 /// Extracts a numeric score from the response text.
@@ -229,7 +236,8 @@ mod tests {
     #[test]
     fn test_parse_ambiguous_response() {
         let result = parse_grade_response("The document mentions the topic briefly.").unwrap();
-        assert!((result.score - 0.5).abs() < 0.01);
+        assert!((result.score - 0.4).abs() < 0.01);
+        assert!(result.is_ambiguous);
     }
 
     #[test]
