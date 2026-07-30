@@ -18,7 +18,7 @@
 //!
 //! Each provider declares its own error type (`OpenAIError`, `AnthropicError`,
 //! ...), so `RouterLLM` cannot hold them behind a single `dyn BaseChatModel`.
-//! Instead it wraps every model in a [`ModelAdapter`] that converts the
+//! Instead it wraps every model in a `ModelAdapter` that converts the
 //! model's native error into the unified [`RouterError`].
 
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
@@ -211,10 +211,16 @@ impl RouterLLM {
             RoutingStrategy::LeastLatency => {
                 let mut idx: Vec<usize> = (0..n).collect();
                 idx.sort_by(|a, b| {
-                    self.slots[*a]
-                        .latency()
-                        .partial_cmp(&self.slots[*b].latency())
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                    // H4 fix: untried models (latency 0.0) sort last by using f64::MAX
+                    let la = {
+                        let v = self.slots[*a].latency();
+                        if v == 0.0 { f64::MAX } else { v }
+                    };
+                    let lb = {
+                        let v = self.slots[*b].latency();
+                        if v == 0.0 { f64::MAX } else { v }
+                    };
+                    la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 idx
             }
@@ -254,13 +260,12 @@ impl RouterLLM {
             return Err(RouterError::Empty);
         }
         let order = self.candidate_order(Self::first_text(&messages));
-        // Use Arc to share messages across fallback attempts (M36)
-        let messages = Arc::new(messages);
+        // H3 fix: remove ineffective Arc — just clone messages directly for each attempt
         let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
         for &idx in &order {
             let slot = &self.slots[idx];
             let start = Instant::now();
-            let res = slot.model.chat((*messages).clone(), config.clone()).await;
+            let res = slot.model.chat(messages.clone(), config.clone()).await;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
             slot.update_latency(elapsed_ms);
             match res {
@@ -283,15 +288,14 @@ impl RouterLLM {
             return Err(RouterError::Empty);
         }
         let order = self.candidate_order(Self::first_text(&messages));
-        // Use Arc to share messages across fallback attempts (M36)
-        let messages = Arc::new(messages);
+        // H3 fix: remove ineffective Arc — just clone messages directly for each attempt
         let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
         for &idx in &order {
             let slot = &self.slots[idx];
             let start = Instant::now();
             match slot
                 .model
-                .stream_chat((*messages).clone(), config.clone())
+                .stream_chat(messages.clone(), config.clone())
                 .await
             {
                 Ok(s) => {

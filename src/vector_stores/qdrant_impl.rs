@@ -136,11 +136,15 @@ impl VectorStore for QdrantVectorStore {
             .map(|((doc, embedding), id)| {
                 let payload = serde_json::to_value(&doc.metadata)
                     .unwrap_or(serde_json::Value::Null);
-                
+
+                // C2 fix: use unwrap_or_default instead of unwrap to avoid panic
+                // when metadata serialization fails (produces Value::Null)
+                let payload_obj = payload.as_object().cloned().unwrap_or_default();
+
                 PointStruct {
                     id: Some(qdrant_client::qdrant::PointId::Uuid(id.clone())),
                     vectors: Some(qdrant_client::qdrant::Vectors::Single(embedding.clone())),
-                    payload: Some(payload.as_object().unwrap().clone()),
+                    payload: Some(payload_obj),
                 }
             })
             .collect();

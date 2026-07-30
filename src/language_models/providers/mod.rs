@@ -16,11 +16,15 @@ pub mod qwen;
 pub mod zhipu;
 
 pub use anthropic::{
-    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken, ThinkingConfig,
-    ThinkingType, ANTHROPIC_BASE_URL, CLAUDE_MODELS,
+    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
+    AnthropicStructuredOutputMethod, ThinkingConfig, ThinkingType, ANTHROPIC_BASE_URL,
+    CLAUDE_MODELS,
 };
 pub use deepseek::{DeepSeekChat, DeepSeekConfig, DEEPSEEK_BASE_URL, DEEPSEEK_MODELS};
-pub use gemini::{GeminiChat, GeminiConfig, GeminiError, GEMINI_BASE_URL, GEMINI_MODELS};
+pub use gemini::{
+    GeminiChat, GeminiConfig, GeminiError, GeminiStructuredOutputMethod, GEMINI_BASE_URL,
+    GEMINI_MODELS,
+};
 pub use moonshot::{MoonshotChat, MoonshotConfig, MOONSHOT_BASE_URL, MOONSHOT_MODELS};
 pub use qwen::{QwenChat, QwenConfig, QWEN_BASE_URL, QWEN_MODELS};
 pub use zhipu::{ZhipuChat, ZhipuConfig, ZHIPU_BASE_URL, ZHIPU_MODELS};

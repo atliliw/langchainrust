@@ -9,6 +9,7 @@
 
 pub mod batch;
 pub mod cache;
+pub mod json_parse;
 pub mod language_models;
 pub mod math;
 pub mod output_parsers;
@@ -17,6 +18,8 @@ pub mod runnables;
 pub mod structured_output;
 pub mod token_counter;
 pub mod tools;
+
+pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseError};
 
 pub use language_models::{BaseChatModel, BaseLanguageModel};
 pub use output_parsers::{

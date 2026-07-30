@@ -486,16 +486,20 @@ impl OpenAIChat {
             use futures_util::StreamExt;
             let mut byte_stream = byte_stream;
             while let Some(chunk_result) = byte_stream.next().await {
-                // H41: Use unwrap_or_else to recover from poisoned mutex
+                // H2 fix: propagate network errors to the consumer
+                // Must be done OUTSIDE the mutex scope to avoid Send issue
+                let chunk_bytes = match chunk_result {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = tx.send(Err(OpenAIError::Http(e.to_string()))).await;
+                        return;
+                    }
+                };
+
                 let events = {
                     let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Ok(bytes) = chunk_result {
-                        let chunk_str = String::from_utf8_lossy(&bytes);
-
-                        parser_guard.parse(&chunk_str)
-                    } else {
-                        Vec::new()
-                    }
+                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
+                    parser_guard.parse(&chunk_str)
                 };
                 // parser_guard is dropped here, before any await
 
@@ -544,6 +548,43 @@ impl std::error::Error for OpenAIError {}
 impl From<String> for OpenAIError {
     fn from(s: String) -> Self {
         OpenAIError::Api(s)
+    }
+}
+
+#[cfg(test)]
+mod tests_env {
+    use super::*;
+    use crate::ENV_TEST_LOCK;
+    use std::env;
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = env::var(key).ok();
+        env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_from_env_result_ok_when_key_set() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = save_and_set("OPENAI_API_KEY", "test-key-123");
+        assert!(OpenAIChat::from_env_result().is_ok());
+        restore("OPENAI_API_KEY", old);
+    }
+
+    #[test]
+    fn test_from_env_result_err_when_key_missing() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = env::var("OPENAI_API_KEY").ok();
+        env::remove_var("OPENAI_API_KEY");
+        assert!(OpenAIChat::from_env_result().is_err());
+        restore("OPENAI_API_KEY", old);
     }
 }
 

@@ -22,9 +22,11 @@
 pub mod community;
 pub mod extractor;
 pub mod graph_store;
+pub mod matcher;
 pub mod query;
 
 pub use graph_store::{Community, Entity, GraphStore, Relation};
+pub use matcher::{EmbeddingMatcher, EntityMatcher, KeywordMatcher};
 pub use query::{GraphRAGResult, QueryMode};
 
 use crate::core::language_models::BaseChatModel;
@@ -52,6 +54,12 @@ pub struct GraphRAGConfig {
     pub max_entities_per_doc: usize,
     pub max_relations_per_doc: usize,
     pub community_max_levels: usize,
+    /// Maximum number of tokens for context in query prompts.
+    /// When set, community summaries or subgraph context is truncated to fit.
+    pub max_context_tokens: Option<usize>,
+    /// Custom entity matcher for local/hybrid queries.
+    /// When None, uses the default KeywordMatcher.
+    pub entity_matcher: Option<Box<dyn EntityMatcher>>,
 }
 
 impl Default for GraphRAGConfig {
@@ -60,6 +68,8 @@ impl Default for GraphRAGConfig {
             max_entities_per_doc: 10,
             max_relations_per_doc: 10,
             community_max_levels: 3,
+            max_context_tokens: None,
+            entity_matcher: None,
         }
     }
 }
@@ -81,6 +91,25 @@ impl GraphRAGConfig {
 
     pub fn with_community_max_levels(mut self, n: usize) -> Self {
         self.community_max_levels = n;
+        self
+    }
+
+    /// Sets the maximum number of tokens for context in query prompts.
+    ///
+    /// When set, community summaries (Global/Hybrid) or subgraph context
+    /// (Local/Hybrid) are truncated from lowest-priority items to fit
+    /// within this budget.
+    pub fn with_max_context_tokens(mut self, tokens: usize) -> Self {
+        self.max_context_tokens = Some(tokens);
+        self
+    }
+
+    /// Sets a custom entity matcher for local/hybrid queries.
+    ///
+    /// When set, the matcher is used instead of the default keyword-based
+    /// matching to find relevant entities.
+    pub fn with_entity_matcher(mut self, matcher: Box<dyn EntityMatcher>) -> Self {
+        self.entity_matcher = Some(matcher);
         self
     }
 }
@@ -225,10 +254,18 @@ impl<M: BaseChatModel> GraphRAG<M> {
             guard.clone()
         };
 
+        let max_tokens = self.config.max_context_tokens;
+
         match mode {
-            QueryMode::Global => query::global_query(&self.llm, &store, q).await,
-            QueryMode::Local => query::local_query(&self.llm, &store, q).await,
-            QueryMode::Hybrid => query::hybrid_query(&self.llm, &store, q).await,
+            QueryMode::Global => query::global_query(&self.llm, &store, q, max_tokens).await,
+            QueryMode::Local => {
+                let matcher = self.config.entity_matcher.as_deref();
+                query::local_query(&self.llm, &store, q, max_tokens, matcher).await
+            }
+            QueryMode::Hybrid => {
+                let matcher = self.config.entity_matcher.as_deref();
+                query::hybrid_query(&self.llm, &store, q, max_tokens, matcher).await
+            }
         }
     }
 
@@ -261,6 +298,7 @@ mod tests {
         assert_eq!(config.max_entities_per_doc, 10);
         assert_eq!(config.max_relations_per_doc, 10);
         assert_eq!(config.community_max_levels, 3);
+        assert!(config.max_context_tokens.is_none());
     }
 
     #[test]

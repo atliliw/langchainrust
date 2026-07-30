@@ -37,6 +37,7 @@ use crate::RunnableConfig;
 ///     Message::human("What is Rust?"),
 /// ], None).await?;
 /// ```
+#[derive(Clone, Debug)]
 pub struct OllamaChat {
     config: OllamaConfig,
     client: reqwest::Client,
@@ -68,10 +69,19 @@ impl OllamaChat {
     }
 
     /// Creates an OllamaChat from environment variables.
-    ///
-    /// Reads `OLLAMA_BASE_URL` and `OLLAMA_MODEL` from environment.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Self {
-        Self::with_config(OllamaConfig::from_env())
+        Self::from_env_result().unwrap_or_else(|_| Self::with_config(OllamaConfig::default()))
+    }
+
+    /// Creates an OllamaChat from environment variables, returning a Result.
+    pub fn from_env_result() -> Result<Self, String> {
+        let config = OllamaConfig::from_env_result()?;
+        Ok(Self::with_config(config))
     }
 
     fn message_to_openai_format(message: &Message) -> serde_json::Value {
@@ -273,15 +283,19 @@ impl OllamaChat {
 
             let mut byte_stream = byte_stream;
             while let Some(chunk_result) = byte_stream.next().await {
+                // H2 fix: propagate network errors outside the mutex scope
+                let chunk_bytes = match chunk_result {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = tx.send(Err(OllamaError::Http(e.to_string()))).await;
+                        return;
+                    }
+                };
+
                 let events = {
                     let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Ok(bytes) = chunk_result {
-                        let chunk_str = String::from_utf8_lossy(&bytes);
-
-                        parser_guard.parse(&chunk_str)
-                    } else {
-                        Vec::new()
-                    }
+                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
+                    parser_guard.parse(&chunk_str)
                 };
                 // parser_guard is dropped here, before any await
 
@@ -519,6 +533,13 @@ impl std::fmt::Display for OllamaError {
 
 impl std::error::Error for OllamaError {}
 
+// L2 fix: add From<String> for OllamaError, matching OpenAIError pattern
+impl From<String> for OllamaError {
+    fn from(s: String) -> Self {
+        OllamaError::Api(s)
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponse {
@@ -571,5 +592,49 @@ impl<T: DeserializeOwned + JsonSchema> OllamaStructuredOutput<T> {
         structured
             .parse()
             .map_err(|e| OllamaError::Parse(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests_env {
+    use super::*;
+    use crate::ENV_TEST_LOCK;
+    use std::env;
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = env::var(key).ok();
+        env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_from_env_result_ok_when_vars_set() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_url = save_and_set("OLLAMA_BASE_URL", "http://custom:11434/v1");
+        let old_model = save_and_set("OLLAMA_MODEL", "llama3.2");
+        let result = OllamaChat::from_env_result();
+        assert!(result.is_ok());
+        restore("OLLAMA_BASE_URL", old_url);
+        restore("OLLAMA_MODEL", old_model);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_defaults_when_vars_missing() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_url = env::var("OLLAMA_BASE_URL").ok();
+        let old_model = env::var("OLLAMA_MODEL").ok();
+        env::remove_var("OLLAMA_BASE_URL");
+        env::remove_var("OLLAMA_MODEL");
+        let chat = OllamaChat::from_env_result().unwrap();
+        assert_eq!(chat.model_name(), "");
+        restore("OLLAMA_BASE_URL", old_url);
+        restore("OLLAMA_MODEL", old_model);
     }
 }

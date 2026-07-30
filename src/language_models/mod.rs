@@ -23,7 +23,8 @@ pub use openai::{
     ResponsesError, ResponsesModel,
 };
 pub use providers::{
-    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken, DeepSeekChat,
-    DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError, MoonshotChat, MoonshotConfig, QwenChat,
-    QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
+    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
+    AnthropicStructuredOutputMethod, DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig,
+    GeminiError, GeminiStructuredOutputMethod, MoonshotChat, MoonshotConfig, QwenChat, QwenConfig,
+    ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };

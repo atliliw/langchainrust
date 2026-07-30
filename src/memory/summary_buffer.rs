@@ -43,7 +43,7 @@ New summary:";
 pub struct ConversationSummaryBufferMemory<M: BaseChatModel> {
     llm: M,
 
-    /// M67: Removed Mutex<String> - &mut self already guarantees exclusive access
+    /// M67: Removed `Mutex<String>` - &mut self already guarantees exclusive access
     buffer: String,
     chat_memory: ChatMessageHistory,
 
@@ -147,10 +147,14 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
     async fn predict_new_summary(&self, new_lines: &str) -> Result<String, MemoryError> {
         let buffer = self.buffer.clone();
 
-        let prompt = self
-            .summary_prompt
-            .replace("{summary}", &buffer)
-            .replace("{new_lines}", new_lines);
+        let prompt = {
+            use crate::PromptTemplate;
+            let template = PromptTemplate::new(&self.summary_prompt);
+            let mut vars: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+            vars.insert("summary", buffer.as_str());
+            vars.insert("new_lines", new_lines);
+            template.format(&vars).unwrap_or_else(|_| self.summary_prompt.clone())
+        };
 
         let messages = vec![Message::human(&prompt)];
 

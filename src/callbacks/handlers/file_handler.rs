@@ -51,8 +51,13 @@ impl FileCallbackHandler {
                     "run_type": run.run_type.as_str(),
                     "data": data
                 });
-                let _ = file.write_all(format!("{}\n", entry).as_bytes()).await;
-                let _ = file.flush().await;
+                // M10 fix: log write errors instead of silently discarding
+                if let Err(e) = file.write_all(format!("{}\n", entry).as_bytes()).await {
+                    log::warn!("FileCallbackHandler write failed: {}", e);
+                }
+                if let Err(e) = file.flush().await {
+                    log::warn!("FileCallbackHandler flush failed: {}", e);
+                }
             }
             LogFormat::Json => {
                 let entry = serde_json::json!({
@@ -63,7 +68,7 @@ impl FileCallbackHandler {
                     "run_type": run.run_type.as_str(),
                     "data": data
                 });
-                let _ = file
+                if let Err(e) = file
                     .write_all(
                         format!(
                             "{}\n",
@@ -71,8 +76,13 @@ impl FileCallbackHandler {
                         )
                         .as_bytes(),
                     )
-                    .await;
-                let _ = file.flush().await;
+                    .await
+                {
+                    log::warn!("FileCallbackHandler write failed: {}", e);
+                }
+                if let Err(e) = file.flush().await {
+                    log::warn!("FileCallbackHandler flush failed: {}", e);
+                }
             }
             LogFormat::Plain => {
                 let line = format!(
@@ -82,8 +92,12 @@ impl FileCallbackHandler {
                     run.name,
                     run.run_type.as_str()
                 );
-                let _ = file.write_all(line.as_bytes()).await;
-                let _ = file.flush().await;
+                if let Err(e) = file.write_all(line.as_bytes()).await {
+                    log::warn!("FileCallbackHandler write failed: {}", e);
+                }
+                if let Err(e) = file.flush().await {
+                    log::warn!("FileCallbackHandler flush failed: {}", e);
+                }
             }
         }
     }

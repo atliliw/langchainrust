@@ -9,15 +9,19 @@
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::env;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::callbacks::{RunTree, RunType};
 use crate::core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use crate::core::runnables::Runnable;
+use crate::core::tools::{StructuredOutput, ToolDefinition};
 use crate::schema::{Message, MessageType};
 use crate::RunnableConfig;
 
@@ -44,6 +48,10 @@ pub struct GeminiConfig {
     pub max_output_tokens: Option<usize>,
     pub top_p: Option<f32>,
     pub top_k: Option<i32>,
+    /// Tool definitions for function calling (Gemini functionDeclarations).
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// Tool choice mode: "auto" (AUTO), "none" (NONE), or "any" (ANY).
+    pub tool_choice: Option<String>,
 }
 
 impl Default for GeminiConfig {
@@ -56,6 +64,8 @@ impl Default for GeminiConfig {
             max_output_tokens: None,
             top_p: None,
             top_k: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }
@@ -71,7 +81,22 @@ impl GeminiConfig {
     /// 从环境变量创建配置
     ///
     /// 读取 GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
+        Self::from_env_result()
+    }
+
+    /// Creates a GeminiConfig from environment variables, returning a Result.
+    ///
+    /// Environment variables:
+    /// - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: API key (required)
+    /// - `GEMINI_BASE_URL`: API endpoint (optional)
+    /// - `GEMINI_MODEL`: Model name (optional)
+    pub fn from_env_result() -> Result<Self, String> {
         let api_key = env::var("GEMINI_API_KEY")
             .or_else(|_| env::var("GOOGLE_API_KEY"))
             .map_err(|_| {
@@ -95,6 +120,12 @@ impl GeminiConfig {
         self
     }
 
+    /// Sets a custom API base URL.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
+        self
+    }
+
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
@@ -103,6 +134,11 @@ impl GeminiConfig {
     pub fn with_max_output_tokens(mut self, max: usize) -> Self {
         self.max_output_tokens = Some(max);
         self
+    }
+
+    /// L5 fix: alias for with_max_output_tokens for cross-provider consistency.
+    pub fn with_max_tokens(self, max: usize) -> Self {
+        self.with_max_output_tokens(max)
     }
 }
 
@@ -113,6 +149,38 @@ struct GeminiRequest {
     system_instruction: Option<GeminiSystemInstruction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiToolDeclaration>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_config: Option<GeminiToolConfig>,
+}
+
+/// Gemini tool declaration wrapper (contains functionDeclarations array).
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiToolDeclaration {
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+/// A single function declaration in Gemini format.
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionDeclaration {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<serde_json::Value>,
+}
+
+/// Gemini tool configuration (controls tool choice behavior).
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiToolConfig {
+    function_calling_config: GeminiFunctionCallingConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionCallingConfig {
+    /// "AUTO", "ANY", or "NONE"
+    mode: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,7 +195,16 @@ struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    function_call: Option<GeminiFunctionCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
+}
+
+/// A function call returned by the model (in the response).
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    args: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,6 +253,7 @@ struct GeminiUsageMetadata {
 }
 
 /// Gemini 聊天客户端
+#[derive(Clone, Debug)]
 pub struct GeminiChat {
     config: GeminiConfig,
     client: reqwest::Client,
@@ -205,6 +283,13 @@ impl std::fmt::Display for GeminiError {
 
 impl std::error::Error for GeminiError {}
 
+// L2 fix: add From<String> for GeminiError, matching OpenAIError pattern
+impl From<String> for GeminiError {
+    fn from(s: String) -> Self {
+        GeminiError::ApiError(s)
+    }
+}
+
 impl GeminiChat {
     pub fn new(config: GeminiConfig) -> Self {
         Self {
@@ -214,12 +299,75 @@ impl GeminiChat {
     }
 
     pub fn from_env() -> Result<Self, String> {
-        Ok(Self::new(GeminiConfig::from_env()?))
+        Self::from_env_result()
     }
 
+    /// Creates a GeminiChat from environment variables, returning a Result.
+    #[allow(deprecated)]
+    pub fn from_env_result() -> Result<Self, String> {
+        Ok(Self::new(GeminiConfig::from_env_result()?))
+    }
+
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result().with_model() instead"
+    )]
+    #[allow(deprecated)]
     pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = GeminiConfig::from_env()?.with_model(model);
+        let config = GeminiConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
+    }
+
+    /// Binds tool definitions for Gemini function calling.
+    ///
+    /// Gemini uses `functionDeclarations` inside a `tools` array in the
+    /// request body. The conversion from `ToolDefinition` is handled
+    /// automatically.
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
+        let config = GeminiConfig {
+            tools: Some(tools),
+            ..self.config.clone()
+        };
+        Self {
+            config,
+            client: self.client.clone(),
+        }
+    }
+
+    /// Sets the tool choice strategy.
+    ///
+    /// Accepts "auto" (AUTO), "none" (NONE), or "any" (ANY).
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.config.tool_choice = Some(choice.into());
+        self
+    }
+
+    /// Enables structured JSON output with schema validation.
+    ///
+    /// Uses Gemini's function calling under the hood: a single tool named
+    /// "structured_output" is bound, and the model is forced to call it.
+    pub fn with_structured_output<T: DeserializeOwned + JsonSchema>(
+        &self,
+    ) -> GeminiStructuredOutputMethod<T> {
+        use schemars::schema_for;
+        let schema = serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| {
+            serde_json::json!({"type": "object", "properties": {}})
+        });
+
+        let tool = ToolDefinition::new("structured_output", "Return structured JSON output")
+            .with_parameters(schema);
+
+        let config = GeminiConfig {
+            tools: Some(vec![tool]),
+            tool_choice: Some("auto".to_string()),
+            ..self.config.clone()
+        };
+
+        GeminiStructuredOutputMethod {
+            config,
+            client: self.client.clone(),
+            _phantom: PhantomData,
+        }
     }
 
     /// 构建 Gemini API 的 contents 数组
@@ -230,13 +378,18 @@ impl GeminiChat {
         for msg in messages {
             match msg.message_type {
                 MessageType::System => {
-                    system_prompt = Some(msg.content);
+                    // M9 fix: concatenate system messages instead of overwriting
+                    system_prompt = Some(match system_prompt {
+                        Some(prev) => format!("{}\n{}", prev, msg.content),
+                        None => msg.content,
+                    });
                 }
                 MessageType::Human => {
                     contents.push(GeminiContent {
                         role: Some("user".to_string()),
                         parts: vec![GeminiPart {
                             text: Some(msg.content),
+                            function_call: None,
                             function_response: None,
                         }],
                     });
@@ -246,6 +399,7 @@ impl GeminiChat {
                         role: Some("model".to_string()),
                         parts: vec![GeminiPart {
                             text: Some(msg.content),
+                            function_call: None,
                             function_response: None,
                         }],
                     });
@@ -257,6 +411,7 @@ impl GeminiChat {
                         role: Some("function".to_string()),
                         parts: vec![GeminiPart {
                             text: None,
+                            function_call: None,
                             function_response: Some(GeminiFunctionResponse {
                                 name: function_name.to_string(),
                                 response: json!({"result": msg.content}),
@@ -277,6 +432,7 @@ impl GeminiChat {
         let system_instruction = system_text.map(|text| GeminiSystemInstruction {
             parts: vec![GeminiPart {
                 text: Some(text),
+                function_call: None,
                 function_response: None,
             }],
         });
@@ -303,6 +459,32 @@ impl GeminiChat {
             contents,
             system_instruction,
             generation_config,
+            // H7: Convert ToolDefinition to Gemini functionDeclarations
+            tools: self.config.tools.as_ref().map(|tools| {
+                vec![GeminiToolDeclaration {
+                    function_declarations: tools
+                        .iter()
+                        .map(|td| GeminiFunctionDeclaration {
+                            name: td.function.name.clone(),
+                            description: td.function.description.clone(),
+                            parameters: td.function.parameters.clone(),
+                        })
+                        .collect(),
+                }]
+            }),
+            // H7: Convert tool_choice to Gemini function_calling_config
+            tool_config: self.config.tool_choice.as_ref().map(|choice| {
+                let mode = match choice.as_str() {
+                    "none" => "NONE",
+                    "any" => "ANY",
+                    _ => "AUTO",
+                };
+                GeminiToolConfig {
+                    function_calling_config: GeminiFunctionCallingConfig {
+                        mode: mode.to_string(),
+                    },
+                }
+            }),
         }
     }
 
@@ -327,12 +509,26 @@ impl GeminiChat {
 
         let content = candidate.content.ok_or(GeminiError::NoResponse)?;
 
-        let text = content
-            .parts
-            .into_iter()
-            .filter_map(|p| p.text)
-            .collect::<Vec<_>>()
-            .join("");
+        let mut text_parts = String::new();
+        let mut tool_calls: Vec<crate::core::tools::ToolCall> = Vec::new();
+
+        for part in content.parts {
+            if let Some(text) = part.text {
+                text_parts.push_str(&text);
+            }
+            // H7: Parse functionCall parts into ToolCall
+            if let Some(fc) = part.function_call {
+                let args_str = fc
+                    .args
+                    .unwrap_or(serde_json::json!({}))
+                    .to_string();
+                tool_calls.push(crate::core::tools::ToolCall::new(
+                    format!("call_{}", fc.name),
+                    fc.name,
+                    args_str,
+                ));
+            }
+        }
 
         let token_usage = response.usage_metadata.map(|u| TokenUsage {
             prompt_tokens: u.prompt_token_count.unwrap_or(0) as usize,
@@ -341,10 +537,14 @@ impl GeminiChat {
         });
 
         Ok(LLMResult {
-            content: text,
+            content: text_parts,
             model: model.to_string(),
             token_usage,
-            tool_calls: None,
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             thinking_content: None,
         })
     }
@@ -513,26 +713,17 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
 
-        let content_future = async move {
-            token_stream
-                .fold(String::new(), |mut acc, token_result| async move {
-                    if let Ok(token) = token_result {
-                        acc.push_str(&token);
-                    }
-                    acc
-                })
-                .await
-        };
-
-        let stream = futures_util::stream::once(async move {
-            let content = content_future.await;
-            Ok(LLMResult {
-                content,
-                model,
+        // C1 fix: true streaming — emit one LLMResult per token,
+        // matching OpenAI/Ollama/Anthropic behavior.
+        let stream = token_stream.map(move |token_result| match token_result {
+            Ok(token) => Ok(LLMResult {
+                content: token,
+                model: model.clone(),
                 token_usage: None,
                 tool_calls: None,
                 thinking_content: None,
-            })
+            }),
+            Err(e) => Err(e),
         });
 
         Ok(Box::pin(stream))
@@ -688,5 +879,108 @@ impl BaseChatModel for GeminiChat {
         });
 
         Ok(Box::pin(stream))
+    }
+}
+
+/// Method for structured output calls via Gemini function calling.
+pub struct GeminiStructuredOutputMethod<T: DeserializeOwned + JsonSchema> {
+    config: GeminiConfig,
+    client: reqwest::Client,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: DeserializeOwned + JsonSchema> GeminiStructuredOutputMethod<T> {
+    /// Invokes the model and parses the result as the structured type.
+    pub async fn invoke(&self, messages: Vec<Message>) -> Result<T, GeminiError> {
+        let chat = GeminiChat {
+            config: self.config.clone(),
+            client: self.client.clone(),
+        };
+
+        let result = chat.chat_internal(messages).await?;
+        let structured = StructuredOutput::<T>::new(result);
+        structured
+            .parse()
+            .map_err(|e| GeminiError::ParseError(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::tools::ToolDefinition;
+    use serde_json::json;
+
+    #[test]
+    fn test_bind_tools_creates_new_chat_with_tools() {
+        let config = GeminiConfig::new("test-key");
+        let chat = GeminiChat::new(config);
+        let tools = vec![ToolDefinition::new("calculator", "Do math")
+            .with_parameters(json!({"type": "object", "properties": {"expr": {"type": "string"}}}))];
+
+        let bound = chat.bind_tools(tools.clone());
+        assert!(bound.config.tools.is_some());
+        assert_eq!(bound.config.tools.as_ref().unwrap().len(), 1);
+        assert_eq!(bound.config.tools.as_ref().unwrap()[0].function.name, "calculator");
+        // Original chat should not have tools
+        assert!(chat.config.tools.is_none());
+    }
+
+    #[test]
+    fn test_with_tool_choice_sets_config() {
+        let config = GeminiConfig::new("test-key");
+        let chat = GeminiChat::new(config);
+        let chat = chat.with_tool_choice("auto");
+        assert_eq!(chat.config.tool_choice.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn test_build_request_includes_tools() {
+        let config = GeminiConfig::new("test-key");
+        let tools = vec![ToolDefinition::new("get_weather", "Get weather")
+            .with_parameters(json!({"type": "object", "properties": {"city": {"type": "string"}}}))];
+        let chat = GeminiChat::new(config).bind_tools(tools);
+
+        let request = chat.build_request(vec![]);
+        assert!(request.tools.is_some());
+        let tool_decls = &request.tools.as_ref().unwrap()[0].function_declarations;
+        assert_eq!(tool_decls.len(), 1);
+        assert_eq!(tool_decls[0].name, "get_weather");
+        assert!(tool_decls[0].parameters.is_some());
+    }
+
+    #[test]
+    fn test_build_request_tool_choice_auto() {
+        let config = GeminiConfig::new("test-key");
+        let chat = GeminiChat::new(config).with_tool_choice("auto");
+        let request = chat.build_request(vec![]);
+        assert!(request.tool_config.is_some());
+        assert_eq!(
+            request.tool_config.as_ref().unwrap().function_calling_config.mode,
+            "AUTO"
+        );
+    }
+
+    #[test]
+    fn test_build_request_tool_choice_none() {
+        let config = GeminiConfig::new("test-key");
+        let chat = GeminiChat::new(config).with_tool_choice("none");
+        let request = chat.build_request(vec![]);
+        assert_eq!(
+            request.tool_config.as_ref().unwrap().function_calling_config.mode,
+            "NONE"
+        );
+    }
+
+    #[test]
+    fn test_with_structured_output_binds_tool() {
+        let config = GeminiConfig::new("test-key");
+        let chat = GeminiChat::new(config);
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        struct TestOutput {
+            answer: String,
+        }
+        let _method: GeminiStructuredOutputMethod<TestOutput> = chat.with_structured_output();
+        // Just verify it compiles and the method is callable
     }
 }

@@ -125,7 +125,12 @@ impl HyDERetriever {
     }
 
     async fn generate_hypothetical_document(&self, query: &str) -> Result<String, HyDEError> {
-        let prompt = self.config.prompt_template.replace("{question}", query);
+        use crate::PromptTemplate;
+
+        let template = PromptTemplate::new(&self.config.prompt_template);
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("question", query);
+        let prompt = template.format(&vars).unwrap_or_else(|_| self.config.prompt_template.clone());
 
         let messages = vec![Message::human(prompt)];
 

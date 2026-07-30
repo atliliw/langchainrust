@@ -82,6 +82,8 @@ pub struct CRAGResult {
     pub sources: Vec<Document>,
     /// Relevance grade scores for each source document.
     pub grade_scores: Vec<f64>,
+    /// Relevance reasoning from the grader for each source document.
+    pub grade_reasoning: Vec<Option<String>>,
 }
 
 /// Corrective RAG Agent.
@@ -98,6 +100,8 @@ pub struct CorrectiveRAGAgent<M: BaseChatModel, R: RetrieverTrait> {
     retrieve_k: usize,
     enable_hallucination_check: bool,
     grader_llm: Option<M>,
+    /// Maximum number of tokens for the context in prompts.
+    max_context_tokens: Option<usize>,
 }
 
 impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
@@ -113,6 +117,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
             retrieve_k: 4,
             enable_hallucination_check: true,
             grader_llm: None,
+            max_context_tokens: None,
         }
     }
 
@@ -161,6 +166,15 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
         self
     }
 
+    /// Sets the maximum number of tokens for the context in prompts.
+    ///
+    /// When set, source documents are truncated from the lowest-scoring
+    /// documents to fit within this budget before being passed to the LLM.
+    pub fn with_max_context_tokens(mut self, tokens: usize) -> Self {
+        self.max_context_tokens = Some(tokens);
+        self
+    }
+
     /// Invokes the CRAG agent on the given query.
     ///
     /// Executes the full CRAG pipeline:
@@ -178,6 +192,10 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
 
         if let Some(ref grader) = self.grader_llm {
             graph = graph.with_grader_llm(grader);
+        }
+
+        if let Some(tokens) = self.max_context_tokens {
+            graph = graph.with_max_context_tokens(tokens);
         }
 
         graph.run(query).await
@@ -384,10 +402,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_crag_agent_low_score_triggers_correction() {
+        // generate_alternatives returns 3 alternative queries
         let llm = MockChatModel::new(vec![
             "Relevance: irrelevant\nScore: 0.1\nReasoning: Not related.",
             "Relevance: irrelevant\nScore: 0.2\nReasoning: Barely related.",
-            "What are the features of the Rust programming language?",
+            "1. What are the key features of Rust?\n2. Rust programming language overview\n3. Rust memory safety and performance",
             "Relevance: relevant\nScore: 0.9\nReasoning: Directly addresses.",
             "Relevance: relevant\nScore: 0.8\nReasoning: Closely related.",
             "Rust provides memory safety without garbage collection.",
@@ -412,7 +431,7 @@ mod tests {
     async fn test_crag_agent_with_web_fallback() {
         let llm = MockChatModel::new(vec![
             "Relevance: irrelevant\nScore: 0.1\nReasoning: Not related.",
-            "What is CRAG in AI?",
+            "1. What is CRAG in AI?\n2. Corrective RAG technique\n3. CRAG methodology overview",
             "Relevance: relevant\nScore: 0.9\nReasoning: Direct match.",
             "CRAG stands for Corrective RAG.",
             "grounded",
@@ -487,11 +506,13 @@ mod tests {
             grounded: true,
             sources: vec![Document::new("Source 1")],
             grade_scores: vec![0.9],
+            grade_reasoning: vec![Some("Directly relevant".to_string())],
         };
         assert_eq!(result.answer, "Test answer");
         assert!(result.grounded);
         assert_eq!(result.sources.len(), 1);
         assert_eq!(result.grade_scores.len(), 1);
+        assert_eq!(result.grade_reasoning.len(), 1);
     }
 
     #[test]

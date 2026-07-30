@@ -1634,7 +1634,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tiktoken-rs",
  "tokio",
  "tokio-stream",

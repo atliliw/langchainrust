@@ -59,7 +59,22 @@ impl ZhipuConfig {
     }
 
     /// Creates a ZhipuConfig from environment variables.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
+        Self::from_env_result()
+    }
+
+    /// Creates a ZhipuConfig from environment variables, returning a Result.
+    ///
+    /// Environment variables:
+    /// - `ZHIPU_API_KEY`: API key (required)
+    /// - `ZHIPU_BASE_URL`: API endpoint (optional)
+    /// - `ZHIPU_MODEL`: Model name (optional)
+    pub fn from_env_result() -> Result<Self, String> {
         let api_key = env::var("ZHIPU_API_KEY")
             .map_err(|_| "ZHIPU_API_KEY environment variable not set".to_string())?;
 
@@ -78,6 +93,12 @@ impl ZhipuConfig {
     /// Sets the model name (e.g., glm-4, glm-4-flash).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// Sets a custom API base URL.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
         self
     }
 
@@ -111,8 +132,15 @@ impl ZhipuConfig {
 }
 
 /// Zhipu 聊天客户端
+#[derive(Clone)]
 pub struct ZhipuChat {
     inner: OpenAIChat,
+}
+
+impl std::fmt::Debug for ZhipuChat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZhipuChat").finish_non_exhaustive()
+    }
 }
 
 impl ZhipuChat {
@@ -124,13 +152,23 @@ impl ZhipuChat {
     }
 
     /// Creates a ZhipuChat from environment variables.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
-        Ok(Self::new(ZhipuConfig::from_env()?))
+        Self::from_env_result()
+    }
+
+    /// Creates a ZhipuChat from environment variables, returning a Result.
+    pub fn from_env_result() -> Result<Self, String> {
+        Ok(Self::new(ZhipuConfig::from_env_result()?))
     }
 
     /// Creates a ZhipuChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = ZhipuConfig::from_env()?.with_model(model);
+        let config = ZhipuConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
     }
 }
@@ -158,6 +196,13 @@ impl ZhipuChat {
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         Self {
             inner: self.inner.bind_tools(tools),
+        }
+    }
+
+    /// L3 fix: delegate with_tool_choice to inner OpenAIChat
+    pub fn with_tool_choice(self, choice: impl Into<String>) -> Self {
+        Self {
+            inner: self.inner.with_tool_choice(choice),
         }
     }
 
@@ -211,6 +256,17 @@ impl Runnable<Vec<Message>, LLMResult> for ZhipuChat {
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
         self.chat(input, config).await
+    }
+
+    // H6 fix: override stream() to delegate to inner OpenAIChat,
+    // enabling true per-token streaming instead of default single-shot.
+    async fn stream(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
+        self.inner.stream(input, config).await
     }
 }
 

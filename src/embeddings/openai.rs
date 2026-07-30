@@ -81,9 +81,35 @@ impl OpenAIEmbeddings {
         }
     }
 
-    /// 从环境变量创建
+    /// Creates OpenAIEmbeddings from environment variables.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Self {
-        Self::new(OpenAIEmbeddingsConfig::default())
+        Self::from_env_result().unwrap_or_else(|_| Self::new(OpenAIEmbeddingsConfig::default()))
+    }
+
+    /// Creates OpenAIEmbeddings from environment variables, returning a Result.
+    ///
+    /// Environment variables:
+    /// - `OPENAI_API_KEY`: API key (required)
+    /// - `OPENAI_BASE_URL`: API endpoint (optional)
+    /// - `OPENAI_EMBED_MODEL`: Model name (optional)
+    pub fn from_env_result() -> Result<Self, String> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| "OPENAI_API_KEY environment variable not set".to_string())?;
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let model = std::env::var("OPENAI_EMBED_MODEL")
+            .unwrap_or_else(|_| "text-embedding-ada-002".to_string());
+        Ok(Self::new(OpenAIEmbeddingsConfig {
+            api_key,
+            base_url,
+            model,
+            batch_size: 2048,
+        }))
     }
 }
 
@@ -217,6 +243,76 @@ struct OpenAIEmbeddingData {
 struct OpenAIEmbeddingUsage {
     prompt_tokens: usize,
     total_tokens: usize,
+}
+
+#[cfg(test)]
+mod tests_env {
+    use super::*;
+    use crate::ENV_TEST_LOCK;
+    use std::env;
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = env::var(key).ok();
+        env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_from_env_result_ok_when_key_set() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = save_and_set("OPENAI_API_KEY", "test-key-123");
+        let result = OpenAIEmbeddings::from_env_result();
+        assert!(result.is_ok());
+        restore("OPENAI_API_KEY", old);
+    }
+
+    #[test]
+    fn test_from_env_result_err_when_key_missing() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = env::var("OPENAI_API_KEY").ok();
+        env::remove_var("OPENAI_API_KEY");
+        let result = OpenAIEmbeddings::from_env_result();
+        match result {
+            Err(msg) => assert!(msg.contains("OPENAI_API_KEY")),
+            Ok(_) => panic!("expected error when OPENAI_API_KEY is missing"),
+        }
+        restore("OPENAI_API_KEY", old);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_optional_vars() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_key = save_and_set("OPENAI_API_KEY", "key");
+        let old_url = save_and_set("OPENAI_BASE_URL", "https://custom.api.com/v1");
+        let old_model = save_and_set("OPENAI_EMBED_MODEL", "text-embedding-3-small");
+        let embeddings = OpenAIEmbeddings::from_env_result().unwrap();
+        assert_eq!(embeddings.model_name(), "text-embedding-3-small");
+        restore("OPENAI_API_KEY", old_key);
+        restore("OPENAI_BASE_URL", old_url);
+        restore("OPENAI_EMBED_MODEL", old_model);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_defaults_for_optional_vars() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_key = save_and_set("OPENAI_API_KEY", "key");
+        let old_url = env::var("OPENAI_BASE_URL").ok();
+        env::remove_var("OPENAI_BASE_URL");
+        let old_model = env::var("OPENAI_EMBED_MODEL").ok();
+        env::remove_var("OPENAI_EMBED_MODEL");
+        let embeddings = OpenAIEmbeddings::from_env_result().unwrap();
+        assert_eq!(embeddings.model_name(), "text-embedding-ada-002");
+        restore("OPENAI_API_KEY", old_key);
+        restore("OPENAI_BASE_URL", old_url);
+        restore("OPENAI_EMBED_MODEL", old_model);
+    }
 }
 
 #[cfg(test)]

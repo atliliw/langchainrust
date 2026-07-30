@@ -315,8 +315,14 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         for result in all_results {
             let docs = result?;
             for doc in docs {
-                // Deduplicate by content prefix (first 80 chars).
-                let key = doc.content.chars().take(80).collect::<String>();
+                // M6 fix: deduplicate by full content hash instead of first 80 chars
+                // to avoid false collisions on documents with common prefixes.
+                let key = {
+                    use std::hash::Hasher;
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    hasher.write(doc.content.as_bytes());
+                    format!("{:016x}", hasher.finish())
+                };
                 if seen_content.insert(key) {
                     merged.push(doc);
                 }

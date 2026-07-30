@@ -60,7 +60,7 @@ pub enum ResearchError {
 /// A citation referencing a source used in the research report.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Citation {
-    /// 1-based citation index used in the report body (e.g. [1]).
+    /// 1-based citation index used in the report body (e.g. \[1\]).
     pub index: usize,
     /// Human-readable source title or description.
     pub source: String,
@@ -92,6 +92,8 @@ pub struct DeepResearchAgent<M: BaseChatModel> {
     searchers: Vec<Box<dyn BaseTool>>,
     max_rounds: usize,
     max_subtopics: usize,
+    /// Maximum number of tokens for source text in synthesis prompts.
+    max_source_tokens: Option<usize>,
 }
 
 impl<M: BaseChatModel> DeepResearchAgent<M> {
@@ -105,6 +107,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             searchers: Vec::new(),
             max_rounds: 2,
             max_subtopics: 5,
+            max_source_tokens: None,
         }
     }
 
@@ -125,6 +128,14 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
     /// Sets the maximum number of sub-topics to decompose (default: 5).
     pub fn with_max_subtopics(mut self, n: usize) -> Self {
         self.max_subtopics = n.max(1);
+        self
+    }
+
+    /// Sets the maximum number of tokens for source text in synthesis prompts.
+    ///
+    /// When set, source snippets are truncated to fit within this budget.
+    pub fn with_max_source_tokens(mut self, tokens: usize) -> Self {
+        self.max_source_tokens = Some(tokens);
         self
     }
 
@@ -164,7 +175,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             rounds_completed = round + 1;
 
             // Synthesize report from accumulated results
-            let (markdown, gaps) = self.synthesize(topic, &current_plan, &all_results).await?;
+            let (markdown, gaps) = self.synthesize(topic, &current_plan, &all_results, self.max_source_tokens).await?;
 
             if gaps.is_empty() || round + 1 >= self.max_rounds {
                 let citations = self.build_citations(&all_results);
@@ -185,7 +196,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         }
 
         // Final synthesis if we exhausted rounds
-        let (markdown, _) = self.synthesize(topic, &current_plan, &all_results).await?;
+        let (markdown, _) = self.synthesize(topic, &current_plan, &all_results, self.max_source_tokens).await?;
         let citations = self.build_citations(&all_results);
         Ok(ResearchReport {
             markdown,
@@ -214,8 +225,9 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         topic: &str,
         plan: &ResearchPlan,
         results: &[SearchResult],
+        max_source_tokens: Option<usize>,
     ) -> Result<(String, Vec<String>), ResearchError> {
-        synthesizer::synthesize(&self.llm, topic, plan, results).await
+        synthesizer::synthesize(&self.llm, topic, plan, results, max_source_tokens).await
     }
 
     async fn generate_follow_ups(
@@ -227,8 +239,10 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             "Research topic: {}\n\n\
              The following information gaps remain after initial research:\n\
              {}\n\n\
-             Generate specific search queries to fill these gaps. \
-             Output a JSON array of query strings, e.g. [\"query1\", \"query2\"]. \
+             For each gap, generate 1-3 specific search queries to fill it. \
+             Output a JSON array of objects, each with \"gap\" and \"queries\" fields. \
+             Every gap listed above must appear as a \"gap\" key in the output.\n\
+             Example: [{{\"gap\": \"gap description\", \"queries\": [\"query1\", \"query2\"]}}]\n\
              Only output the JSON array, nothing else.",
             topic,
             gaps.iter()
@@ -247,8 +261,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             .await
             .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
 
-        planner::parse_json_array(&response.content)
-            .map_err(|e| ResearchError::Llm(format!("failed to parse follow-up queries: {}", e)))
+        parse_gap_queries(&response.content, gaps)
     }
 
     fn build_citations(&self, results: &[SearchResult]) -> Vec<Citation> {
@@ -267,6 +280,58 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             })
             .collect()
     }
+}
+
+/// Parses the LLM output for gap→query mapping into a flat list of queries.
+///
+/// Expected format: `[{"gap": "...", "queries": ["q1", "q2"]}, ...]`
+///
+/// Validates that every gap in the input list has at least one corresponding query.
+/// If a gap has no queries in the parsed output, a warning is logged and a
+/// fallback query is generated from the gap text itself.
+fn parse_gap_queries(content: &str, original_gaps: &[String]) -> Result<Vec<String>, ResearchError> {
+    #[derive(serde::Deserialize)]
+    struct GapMapping {
+        #[allow(dead_code)]
+        gap: String,
+        queries: Vec<String>,
+    }
+
+    let json_str = planner::extract_json(content);
+    let mappings: Vec<GapMapping> = serde_json::from_str(&json_str).map_err(|e| {
+        let preview: String = content.chars().take(200).collect();
+        ResearchError::Llm(format!(
+            "failed to parse gap→query mapping: {} | raw: {}",
+            e, preview
+        ))
+    })?;
+
+    // Collect all queries, ensuring each original gap is covered.
+    let mut all_queries: Vec<String> = Vec::new();
+    let mut covered_gaps: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for mapping in &mappings {
+        // Check if this mapping corresponds to any original gap (fuzzy match by substring)
+        for (i, gap) in original_gaps.iter().enumerate() {
+            if !covered_gaps.contains(&i)
+                && (mapping.gap.contains(gap.as_str())
+                    || gap.contains(mapping.gap.as_str()))
+            {
+                covered_gaps.insert(i);
+            }
+        }
+        all_queries.extend(mapping.queries.iter().filter(|q| !q.is_empty()).cloned());
+    }
+
+    // For any uncovered gap, generate a fallback query from the gap text itself.
+    for (i, gap) in original_gaps.iter().enumerate() {
+        if !covered_gaps.contains(&i) {
+            log::warn!("Deep Research: gap '{}' has no follow-up queries, using gap as query", gap);
+            all_queries.push(gap.clone());
+        }
+    }
+
+    Ok(all_queries)
 }
 
 impl<M: BaseChatModel> std::fmt::Debug for DeepResearchAgent<M> {
@@ -496,8 +561,8 @@ mod tests {
         // Round 1: synthesis with gaps
         let synthesis1_json = "{\"report\": \"# AI Ethics in Healthcare\\n\\nSome info [1].\", \"gaps\": [\"Regulatory frameworks for AI in healthcare\"]}".to_string();
 
-        // Follow-up queries
-        let follow_up_json = r#"["AI healthcare regulation 2024"]"#.to_string();
+        // Follow-up queries (gap→query mapping format)
+        let follow_up_json = r#"[{"gap": "Regulatory frameworks for AI in healthcare", "queries": ["AI healthcare regulation 2024"]}]"#.to_string();
 
         // Round 2: synthesis with no gaps
         let synthesis2_json = "{\"report\": \"# AI Ethics in Healthcare\\n\\nSome info [1]. Regulatory frameworks are evolving [2].\", \"gaps\": []}".to_string();
@@ -594,5 +659,97 @@ mod tests {
         let deserialized: ResearchReport = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.rounds_completed, 1);
         assert_eq!(deserialized.subtopics.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_gap_queries_valid() {
+        let content = r#"[{"gap": "Regulatory frameworks", "queries": ["AI regulation 2024", "FDA AI policy"]}, {"gap": "Cost analysis", "queries": ["AI healthcare cost savings"]}]"#;
+        let gaps = vec![
+            "Regulatory frameworks".to_string(),
+            "Cost analysis".to_string(),
+        ];
+        let queries = parse_gap_queries(content, &gaps).unwrap();
+        assert_eq!(queries.len(), 3);
+        assert!(queries.contains(&"AI regulation 2024".to_string()));
+        assert!(queries.contains(&"AI healthcare cost savings".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gap_queries_uncovered_gap_fallback() {
+        let content = r#"[{"gap": "Regulatory frameworks", "queries": ["AI regulation"]}]"#;
+        let gaps = vec![
+            "Regulatory frameworks".to_string(),
+            "Cost analysis".to_string(),
+        ];
+        let queries = parse_gap_queries(content, &gaps).unwrap();
+        // "Cost analysis" has no mapping, so the gap text itself is used as a query
+        assert!(queries.contains(&"Cost analysis".to_string()));
+        assert!(queries.contains(&"AI regulation".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gap_queries_invalid_json() {
+        let content = "not json";
+        let gaps = vec!["Some gap".to_string()];
+        let result = parse_gap_queries(content, &gaps);
+        assert!(result.is_err());
+    }
+
+    /// Verify that cross-round citation numbering is consistent:
+    /// citation[1] from round 1 should still map to the same source after round 2.
+    #[tokio::test]
+    async fn test_cross_round_citation_numbering() {
+        // Plan response
+        let plan_json = r#"[
+            {"name": "AI Ethics", "queries": ["AI ethics healthcare"]}
+        ]"#
+        .to_string();
+
+        // Round 1 synthesis with 2 sources
+        let synthesis1_json = "{\"report\": \"# AI Ethics\\n\\nEthics matter [1]. Privacy concerns [2].\", \"gaps\": [\"Regulatory frameworks\"]}".to_string();
+
+        // Follow-up queries
+        let follow_up_json = r#"[{"gap": "Regulatory frameworks", "queries": ["AI regulation 2024"]}]"#.to_string();
+
+        // Round 2 synthesis — should still reference [1] and [2] from round 1
+        let synthesis2_json = "{\"report\": \"# AI Ethics\\n\\nEthics matter [1]. Privacy concerns [2]. Regulatory frameworks are evolving [3].\", \"gaps\": []}".to_string();
+
+        let llm = SequentialMockLLM::new(vec![
+            plan_json,
+            synthesis1_json,
+            follow_up_json,
+            synthesis2_json,
+        ]);
+
+        let search_results = sample_search_results();
+        let mock_search = MockSearchTool::new(search_results);
+
+        let agent = DeepResearchAgent::new(llm)
+            .with_searcher(Box::new(mock_search))
+            .with_max_rounds(2)
+            .with_max_subtopics(3);
+
+        let report = agent.research("AI ethics in healthcare").await.unwrap();
+
+        // Verify citations are built from accumulated results across rounds
+        assert!(
+            !report.citations.is_empty(),
+            "should have citations from accumulated results"
+        );
+
+        // Verify citation numbering is 1-based and sequential
+        for (i, citation) in report.citations.iter().enumerate() {
+            assert_eq!(
+                citation.index,
+                i + 1,
+                "citation index should be sequential starting at 1"
+            );
+        }
+
+        // Verify that the first citation still maps to the original source
+        assert_eq!(
+            report.citations[0].source, "AI in Medicine",
+            "citation [1] should still map to the first source from round 1"
+        );
     }
 }

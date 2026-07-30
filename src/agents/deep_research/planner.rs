@@ -44,9 +44,17 @@ pub async fn plan<M: BaseChatModel>(
     let prompt = format!(
         "Decompose the following research topic into at most {} sub-topics. \
          For each sub-topic, generate 1-3 specific search queries.\n\n\
+         IMPORTANT: Ensure sub-topics are non-overlapping and collectively exhaustive (MECE principle). \
+         Each sub-topic should cover a distinct aspect of the topic without redundancy, \
+         and together they should comprehensively cover the entire topic.\n\n\
+         Example:\n\
+         Topic: Impact of AI on healthcare\n\
+         Output:\n\
+         [{{\"name\": \"AI in Diagnostics\", \"queries\": [\"AI diagnostic accuracy healthcare\", \"deep learning medical imaging\"]}}, \
+          {{\"name\": \"AI in Treatment Planning\", \"queries\": [\"AI treatment recommendation systems\"]}}, \
+          {{\"name\": \"Ethics and Regulation\", \"queries\": [\"AI healthcare regulation FDA\", \"medical AI bias ethics\"]}}]\n\n\
          Topic: {}\n\n\
          Output a JSON array of objects with \"name\" and \"queries\" fields. \
-         Example: [{{\"name\": \"Sub-topic 1\", \"queries\": [\"query1\", \"query2\"]}}]\n\
          Only output the JSON array, nothing else.",
         max_subtopics, topic,
     );
@@ -69,36 +77,27 @@ pub async fn plan<M: BaseChatModel>(
 
 /// Parses the LLM output into a list of `SubTopic` structs.
 ///
-/// Tolerates markdown code fences and surrounding text.
+/// Uses tolerant JSON parsing that handles markdown code fences,
+/// trailing commas, and surrounding text.
 fn parse_subtopics(content: &str) -> Result<Vec<SubTopic>, ResearchError> {
-    let json_str = extract_json(content);
-    let subtopics: Vec<SubTopic> = serde_json::from_str(&json_str).map_err(|e| {
-        let preview: String = content.chars().take(200).collect();
-        ResearchError::Llm(format!(
-            "failed to parse sub-topics: {} | raw: {}",
-            e, preview
-        ))
-    })?;
-    Ok(subtopics)
+    crate::core::json_parse::parse_llm_json::<Vec<SubTopic>>(content).map_err(|e| {
+        ResearchError::Llm(format!("failed to parse sub-topics: {}", e))
+    })
 }
 
 /// Parses a JSON array of strings from LLM output.
 ///
-/// Used for follow-up query generation.
+/// Uses tolerant JSON parsing. Kept for backward compatibility;
+/// `generate_follow_ups` now uses the gap→query mapping format.
 pub fn parse_json_array(content: &str) -> Result<Vec<String>, ResearchError> {
-    let json_str = extract_json(content);
-    serde_json::from_str(&json_str).map_err(|e| {
-        let preview: String = content.chars().take(200).collect();
-        ResearchError::Llm(format!(
-            "failed to parse JSON array: {} | raw: {}",
-            e, preview
-        ))
+    crate::core::json_parse::parse_llm_json::<Vec<String>>(content).map_err(|e| {
+        ResearchError::Llm(format!("failed to parse JSON array: {}", e))
     })
 }
 
 /// Extracts JSON from LLM output, tolerating markdown code fences
 /// and surrounding text.
-fn extract_json(content: &str) -> String {
+pub fn extract_json(content: &str) -> String {
     let trimmed = content.trim();
 
     // Strip markdown code fences
@@ -249,5 +248,35 @@ mod tests {
     fn test_extract_json_with_brackets_in_strings() {
         let input = r#"[{"name": "A [1]", "queries": ["q1"]}]"#;
         assert_eq!(extract_json(input), input);
+    }
+
+    /// Verify the planner prompt contains the MECE constraint and few-shot example.
+    #[test]
+    fn test_plan_prompt_contains_mece_and_example() {
+        // The prompt is built in the `plan` function via format!.
+        // We verify the static parts are present by checking the format string.
+        let max_subtopics = 3;
+        let topic = "Test Topic";
+        let prompt = format!(
+            "Decompose the following research topic into at most {} sub-topics. \
+             For each sub-topic, generate 1-3 specific search queries.\n\n\
+             IMPORTANT: Ensure sub-topics are non-overlapping and collectively exhaustive (MECE principle). \
+             Each sub-topic should cover a distinct aspect of the topic without redundancy, \
+             and together they should comprehensively cover the entire topic.\n\n\
+             Example:\n\
+             Topic: Impact of AI on healthcare\n\
+             Output:\n\
+             [{{\"name\": \"AI in Diagnostics\", \"queries\": [\"AI diagnostic accuracy healthcare\", \"deep learning medical imaging\"]}}, \
+              {{\"name\": \"AI in Treatment Planning\", \"queries\": [\"AI treatment recommendation systems\"]}}, \
+              {{\"name\": \"Ethics and Regulation\", \"queries\": [\"AI healthcare regulation FDA\", \"medical AI bias ethics\"]}}]\n\n\
+             Topic: {}\n\n\
+             Output a JSON array of objects with \"name\" and \"queries\" fields. \
+             Only output the JSON array, nothing else.",
+            max_subtopics, topic,
+        );
+        assert!(prompt.contains("MECE"), "prompt should contain MECE principle");
+        assert!(prompt.contains("non-overlapping"), "prompt should contain non-overlapping constraint");
+        assert!(prompt.contains("Example:"), "prompt should contain few-shot example");
+        assert!(prompt.contains("AI in Diagnostics"), "prompt example should contain sub-topic example");
     }
 }

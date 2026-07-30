@@ -58,7 +58,22 @@ impl MoonshotConfig {
     }
 
     /// Creates a MoonshotConfig from environment variables.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
+        Self::from_env_result()
+    }
+
+    /// Creates a MoonshotConfig from environment variables, returning a Result.
+    ///
+    /// Environment variables:
+    /// - `MOONSHOT_API_KEY`: API key (required)
+    /// - `MOONSHOT_BASE_URL`: API endpoint (optional)
+    /// - `MOONSHOT_MODEL`: Model name (optional)
+    pub fn from_env_result() -> Result<Self, String> {
         let api_key = env::var("MOONSHOT_API_KEY")
             .map_err(|_| "MOONSHOT_API_KEY environment variable not set".to_string())?;
 
@@ -78,6 +93,12 @@ impl MoonshotConfig {
     /// Sets the model name (e.g., moonshot-v1-128k for long context).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// Sets a custom API base URL.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
         self
     }
 
@@ -111,8 +132,15 @@ impl MoonshotConfig {
 }
 
 /// Moonshot 聊天客户端
+#[derive(Clone)]
 pub struct MoonshotChat {
     inner: OpenAIChat,
+}
+
+impl std::fmt::Debug for MoonshotChat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MoonshotChat").finish_non_exhaustive()
+    }
 }
 
 impl MoonshotChat {
@@ -123,13 +151,23 @@ impl MoonshotChat {
         }
     }
 
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
-        Ok(Self::new(MoonshotConfig::from_env()?))
+        Self::from_env_result()
+    }
+
+    /// Creates a MoonshotChat from environment variables, returning a Result.
+    pub fn from_env_result() -> Result<Self, String> {
+        Ok(Self::new(MoonshotConfig::from_env_result()?))
     }
 
     /// Creates a MoonshotChat with a specific model.
     pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = MoonshotConfig::from_env()?.with_model(model);
+        let config = MoonshotConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
     }
 }
@@ -157,6 +195,13 @@ impl MoonshotChat {
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         Self {
             inner: self.inner.bind_tools(tools),
+        }
+    }
+
+    /// L3 fix: delegate with_tool_choice to inner OpenAIChat
+    pub fn with_tool_choice(self, choice: impl Into<String>) -> Self {
+        Self {
+            inner: self.inner.with_tool_choice(choice),
         }
     }
 
@@ -210,6 +255,17 @@ impl Runnable<Vec<Message>, LLMResult> for MoonshotChat {
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
         self.chat(input, config).await
+    }
+
+    // H6 fix: override stream() to delegate to inner OpenAIChat,
+    // enabling true per-token streaming instead of default single-shot.
+    async fn stream(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
+        self.inner.stream(input, config).await
     }
 }
 

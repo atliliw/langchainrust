@@ -53,7 +53,7 @@ impl OpenAIConfig {
     ///
     /// 环境变量:
     /// - `OPENAI_API_KEY`: API 密钥 (必需)
-    /// - `OPENAI_BASE_URL`: API 端点 (可选，默认: https://api.openai.com/v1)
+    /// - `OPENAI_BASE_URL`: API 端点 (可选，默认: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL`: 模型名称 (可选，默认: gpt-3.5-turbo)
     #[deprecated(
         since = "0.5.0",
@@ -67,7 +67,7 @@ impl OpenAIConfig {
     ///
     /// 环境变量:
     /// - `OPENAI_API_KEY`: API 密钥 (必需)
-    /// - `OPENAI_BASE_URL`: API 端点 (可选，默认: https://api.openai.com/v1)
+    /// - `OPENAI_BASE_URL`: API 端点 (可选，默认: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL`: 模型名称 (可选，默认: gpt-3.5-turbo)
     pub fn from_env_result() -> Result<Self, String> {
         let api_key = env::var("OPENAI_API_KEY")
@@ -130,5 +130,76 @@ impl OpenAIConfig {
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ENV_TEST_LOCK;
+    use std::env;
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = env::var(key).ok();
+        env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_from_env_result_ok_when_key_set() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = save_and_set("OPENAI_API_KEY", "test-key-123");
+        let result = OpenAIConfig::from_env_result();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().api_key, "test-key-123");
+        restore("OPENAI_API_KEY", old);
+    }
+
+    #[test]
+    fn test_from_env_result_err_when_key_missing() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = env::var("OPENAI_API_KEY").ok();
+        env::remove_var("OPENAI_API_KEY");
+        let result = OpenAIConfig::from_env_result();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("OPENAI_API_KEY"));
+        restore("OPENAI_API_KEY", old);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_optional_vars() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_key = save_and_set("OPENAI_API_KEY", "key");
+        let old_url = save_and_set("OPENAI_BASE_URL", "https://custom.api.com/v1");
+        let old_model = save_and_set("OPENAI_MODEL", "gpt-4");
+        let config = OpenAIConfig::from_env_result().unwrap();
+        assert_eq!(config.base_url, "https://custom.api.com/v1");
+        assert_eq!(config.model, "gpt-4");
+        restore("OPENAI_API_KEY", old_key);
+        restore("OPENAI_BASE_URL", old_url);
+        restore("OPENAI_MODEL", old_model);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_defaults_for_optional_vars() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_key = save_and_set("OPENAI_API_KEY", "key");
+        let old_url = env::var("OPENAI_BASE_URL").ok();
+        env::remove_var("OPENAI_BASE_URL");
+        let old_model = env::var("OPENAI_MODEL").ok();
+        env::remove_var("OPENAI_MODEL");
+        let config = OpenAIConfig::from_env_result().unwrap();
+        assert_eq!(config.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.model, "gpt-3.5-turbo");
+        restore("OPENAI_API_KEY", old_key);
+        restore("OPENAI_BASE_URL", old_url);
+        restore("OPENAI_MODEL", old_model);
     }
 }

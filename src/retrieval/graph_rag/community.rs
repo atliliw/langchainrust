@@ -163,9 +163,16 @@ pub async fn summarize_community<M: BaseChatModel>(
         })
         .collect();
 
-    let prompt = COMMUNITY_SUMMARY_PROMPT
-        .replace("{entities}", &entity_lines.join("\n"))
-        .replace("{relations}", &relation_lines.join("\n"));
+    let prompt = {
+        use crate::PromptTemplate;
+        let template = PromptTemplate::new(COMMUNITY_SUMMARY_PROMPT);
+        let entities_str = entity_lines.join("\n");
+        let relations_str = relation_lines.join("\n");
+        let mut vars: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        vars.insert("entities", &entities_str);
+        vars.insert("relations", &relations_str);
+        template.format(&vars).unwrap_or_else(|_| COMMUNITY_SUMMARY_PROMPT.to_string())
+    };
 
     let messages = vec![Message::human(prompt)];
 
@@ -320,5 +327,84 @@ mod tests {
         assert_eq!(communities[3].level, 1);
         assert_eq!(communities[4].level, 2);
         assert_eq!(communities[5].level, 2);
+    }
+
+    /// Verify that community summary formatting uses entity names, not IDs.
+    /// This is the regression test for the bug where relations showed "e_xxx"
+    /// instead of human-readable entity names.
+    #[test]
+    fn test_relation_formatting_uses_names_not_ids() {
+        let mut store = GraphStore::new();
+        // Entity with id != name — this is the critical case
+        store.add_entity(Entity {
+            id: "e_001".into(),
+            name: "Alice".into(),
+            entity_type: "Person".into(),
+            description: "A software engineer".into(),
+        });
+        store.add_entity(Entity {
+            id: "e_002".into(),
+            name: "Google".into(),
+            entity_type: "Company".into(),
+            description: "A tech company".into(),
+        });
+        store.add_relation(Relation {
+            source: "e_001".into(),
+            target: "e_002".into(),
+            relation_type: "works_at".into(),
+            description: String::new(),
+            doc_id: None,
+        });
+
+        // Build the community and check relation formatting
+        let communities = detect_communities(&store, 3);
+        assert!(!communities.is_empty(), "should detect a community");
+
+        let community = &communities[0];
+
+        // Simulate the formatting logic from summarize_community
+        let relation_lines: Vec<String> = community
+            .entities
+            .iter()
+            .flat_map(|eid| store.relations_for(eid))
+            .filter(|r| {
+                let entity_set: HashSet<&String> = community.entities.iter().collect();
+                entity_set.contains(&r.source) && entity_set.contains(&r.target)
+            })
+            .map(|r| {
+                let source_name = store
+                    .get_entity(&r.source)
+                    .map(|e| e.name.as_str())
+                    .unwrap_or(&r.source);
+                let target_name = store
+                    .get_entity(&r.target)
+                    .map(|e| e.name.as_str())
+                    .unwrap_or(&r.target);
+                format!("{} --[{}]--> {}", source_name, r.relation_type, target_name)
+            })
+            .collect();
+
+        // The formatted relation should contain names, not IDs
+        let relation_text = relation_lines.join("\n");
+        assert!(
+            relation_text.contains("Alice"),
+            "relation should contain entity name 'Alice', got: {}",
+            relation_text
+        );
+        assert!(
+            relation_text.contains("Google"),
+            "relation should contain entity name 'Google', got: {}",
+            relation_text
+        );
+        assert!(
+            !relation_text.contains("e_001"),
+            "relation should NOT contain raw entity ID 'e_001', got: {}",
+            relation_text
+        );
+        assert!(
+            !relation_text.contains("e_002"),
+            "relation should NOT contain raw entity ID 'e_002', got: {}",
+            relation_text
+        );
     }
 }

@@ -59,8 +59,22 @@ impl DeepSeekConfig {
     }
 
     /// Creates a DeepSeekConfig from environment variables.
-    /// Reads DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
+        Self::from_env_result()
+    }
+
+    /// Creates a DeepSeekConfig from environment variables, returning a Result.
+    ///
+    /// Environment variables:
+    /// - `DEEPSEEK_API_KEY`: API key (required)
+    /// - `DEEPSEEK_BASE_URL`: API endpoint (optional)
+    /// - `DEEPSEEK_MODEL`: Model name (optional)
+    pub fn from_env_result() -> Result<Self, String> {
         let api_key = env::var("DEEPSEEK_API_KEY")
             .map_err(|_| "DEEPSEEK_API_KEY environment variable not set".to_string())?;
 
@@ -80,6 +94,12 @@ impl DeepSeekConfig {
     /// Sets the model name.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// Sets a custom API base URL.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = url.into();
         self
     }
 
@@ -115,8 +135,15 @@ impl DeepSeekConfig {
 }
 
 /// DeepSeek 聊天客户端
+#[derive(Clone)]
 pub struct DeepSeekChat {
     inner: OpenAIChat,
+}
+
+impl std::fmt::Debug for DeepSeekChat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeepSeekChat").finish_non_exhaustive()
+    }
 }
 
 impl DeepSeekChat {
@@ -128,13 +155,28 @@ impl DeepSeekChat {
     }
 
     /// Creates a DeepSeekChat from environment variables.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Result<Self, String> {
-        Ok(Self::new(DeepSeekConfig::from_env()?))
+        Self::from_env_result()
+    }
+
+    /// Creates a DeepSeekChat from environment variables, returning a Result.
+    pub fn from_env_result() -> Result<Self, String> {
+        Ok(Self::new(DeepSeekConfig::from_env_result()?))
     }
 
     /// Creates a DeepSeekChat with a specific model.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result().with_model() instead"
+    )]
+    #[allow(deprecated)]
     pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = DeepSeekConfig::from_env()?.with_model(model);
+        let config = DeepSeekConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
     }
 }
@@ -162,6 +204,13 @@ impl DeepSeekChat {
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         Self {
             inner: self.inner.bind_tools(tools),
+        }
+    }
+
+    /// L3 fix: delegate with_tool_choice to inner OpenAIChat
+    pub fn with_tool_choice(self, choice: impl Into<String>) -> Self {
+        Self {
+            inner: self.inner.with_tool_choice(choice),
         }
     }
 
@@ -215,6 +264,17 @@ impl Runnable<Vec<Message>, LLMResult> for DeepSeekChat {
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
         self.chat(input, config).await
+    }
+
+    // H6 fix: override stream() to delegate to inner OpenAIChat,
+    // enabling true per-token streaming instead of default single-shot.
+    async fn stream(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
+    {
+        self.inner.stream(input, config).await
     }
 }
 

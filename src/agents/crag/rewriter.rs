@@ -81,14 +81,26 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
 
 /// Builds the single query rewrite prompt.
 fn build_rewrite_prompt(query: &str) -> String {
-    REWRITE_PROMPT.replace("{query}", query)
+    use crate::PromptTemplate;
+    use std::collections::HashMap;
+
+    let template = PromptTemplate::new(REWRITE_PROMPT);
+    let mut vars = HashMap::new();
+    vars.insert("query", query);
+    template.format(&vars).unwrap_or_else(|_| REWRITE_PROMPT.to_string())
 }
 
 /// Builds the alternatives generation prompt.
 fn build_alternatives_prompt(query: &str, count: usize) -> String {
-    ALTERNATIVES_PROMPT
-        .replace("{query}", query)
-        .replace("{count}", &count.to_string())
+    use crate::PromptTemplate;
+    use std::collections::HashMap;
+
+    let template = PromptTemplate::new(ALTERNATIVES_PROMPT);
+    let mut vars = HashMap::new();
+    vars.insert("query", query);
+    let count_str = count.to_string();
+    vars.insert("count", &count_str);
+    template.format(&vars).unwrap_or_else(|_| ALTERNATIVES_PROMPT.to_string())
 }
 
 /// Extracts the rewritten query from the LLM response.

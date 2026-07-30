@@ -74,7 +74,7 @@ pub use graph::{GraphBuilder, StateGraph, END, START};
 pub use node::{AsyncFn, AsyncNode, GraphNode, NodeConfig, NodeResult};
 pub use persistence::{
     EdgeDefinition, EdgeType, FilePersistence, GraphDefinition, GraphPersistence,
-    MemoryPersistence, NodeDefinition, NodeType, RouterDefinition,
+    MemoryPersistence, NodeDefinition, NodeType, PersistenceError, RouterDefinition,
 };
 pub use state::{
     AgentState, AppendMessagesReducer, AppendReducer, AppendStepsReducer, MessageEntry,

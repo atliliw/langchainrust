@@ -68,6 +68,17 @@ pub mod evaluation;
 /// Guardrails: input/output safety validation.
 pub mod guardrails;
 
+/// Unified error type aggregating all sub-module errors.
+pub mod error;
+pub use error::Error;
+
+/// Global mutex for serializing env-var tests across the entire crate.
+/// Env vars are process-global, so parallel tests that set/remove them
+/// can race. All env-var tests should `lock()` this before touching
+/// `std::env::set_var` / `std::env::remove_var`.
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A2A: Agent-to-Agent protocol for inter-agent communication.
 pub mod a2a;
 
@@ -101,8 +112,10 @@ pub use guardrails::{
     InputGuardrail, MaxLengthGuardrail, OutputGuardrail, SensitiveInfoGuardrail,
 };
 pub use language_models::{
-    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken, AssistantError,
-    DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError, MoonshotChat,
+    AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
+    AnthropicStructuredOutputMethod, AssistantError,
+    DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError,
+    GeminiStructuredOutputMethod, MoonshotChat,
     MoonshotConfig, OllamaChat, OllamaConfig, OpenAIAssistant, OpenAIChat, OpenAIConfig, QwenChat,
     QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };

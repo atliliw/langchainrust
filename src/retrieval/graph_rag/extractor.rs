@@ -51,6 +51,23 @@ Rules:
 - Extract at most {max_entities} entities and {max_relations} relations.
 - Return ONLY the JSON object, no other text.
 
+Example:
+Text: "Alice works at Google as a software engineer. She uses Python and TensorFlow."
+Output:
+{
+  "entities": [
+    {"name": "Alice", "type": "Person", "description": "A software engineer at Google"},
+    {"name": "Google", "type": "Organization", "description": "A technology company"},
+    {"name": "Python", "type": "Technology", "description": "A programming language"},
+    {"name": "TensorFlow", "type": "Technology", "description": "A machine learning framework"}
+  ],
+  "relations": [
+    {"source": "Alice", "target": "Google", "type": "works_at", "description": "Alice is employed at Google"},
+    {"source": "Alice", "target": "Python", "type": "uses", "description": "Alice uses Python"},
+    {"source": "Alice", "target": "TensorFlow", "type": "uses", "description": "Alice uses TensorFlow"}
+  ]
+}
+
 Text:
 {text}"#;
 
@@ -61,10 +78,17 @@ pub async fn extract<M: BaseChatModel>(
     max_entities: usize,
     max_relations: usize,
 ) -> Result<ExtractionResult, super::GraphRAGError> {
-    let prompt = EXTRACTION_PROMPT
-        .replace("{max_entities}", &max_entities.to_string())
-        .replace("{max_relations}", &max_relations.to_string())
-        .replace("{text}", text);
+    let prompt = {
+        use crate::PromptTemplate;
+        let template = PromptTemplate::new(EXTRACTION_PROMPT);
+        let max_entities_str = max_entities.to_string();
+        let max_relations_str = max_relations.to_string();
+        let mut vars: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        vars.insert("max_entities", &max_entities_str);
+        vars.insert("max_relations", &max_relations_str);
+        vars.insert("text", text);
+        template.format(&vars).unwrap_or_else(|_| EXTRACTION_PROMPT.to_string())
+    };
 
     let messages = vec![Message::human(prompt)];
 
@@ -78,19 +102,16 @@ pub async fn extract<M: BaseChatModel>(
 
 /// Parses the LLM JSON response into an `ExtractionResult`.
 pub fn parse_extraction(raw: &str) -> Result<ExtractionResult, super::GraphRAGError> {
-    // Try to extract JSON from the response (may be wrapped in markdown code block)
-    let json_str = extract_json(raw);
-
-    serde_json::from_str::<ExtractionResult>(&json_str).map_err(|e| {
+    crate::core::json_parse::parse_llm_json::<ExtractionResult>(raw).map_err(|e| {
         super::GraphRAGError::ExtractionError(format!(
-            "Failed to parse extraction JSON: {}. Raw: {}",
-            e,
-            &raw[..raw.len().min(200)]
+            "Failed to parse extraction JSON: {}",
+            e
         ))
     })
 }
 
 /// Attempts to extract a JSON object from text that may contain markdown fences.
+#[cfg(test)]
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
 
@@ -174,5 +195,22 @@ mod tests {
     fn test_extract_json_with_surrounding_text() {
         let input = "Here is the result:\n{\"key\": \"value\"}\nDone.";
         assert_eq!(extract_json(input), "{\"key\": \"value\"}");
+    }
+
+    /// Verify the extraction prompt contains a few-shot example.
+    #[test]
+    fn test_extraction_prompt_contains_few_shot_example() {
+        assert!(
+            EXTRACTION_PROMPT.contains("Example:"),
+            "extraction prompt should contain few-shot example"
+        );
+        assert!(
+            EXTRACTION_PROMPT.contains("Alice"),
+            "extraction prompt example should contain entity 'Alice'"
+        );
+        assert!(
+            EXTRACTION_PROMPT.contains("works_at"),
+            "extraction prompt example should contain relation type 'works_at'"
+        );
     }
 }

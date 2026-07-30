@@ -151,10 +151,10 @@ impl MCPTransport for StdioTransport {
         });
         let mut payload = notif;
         if let Some(p) = params {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("params".to_string(), p);
+            // M11 fix: use defensive check instead of unwrap
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("params".to_string(), p);
+            }
         }
         let json = serde_json::to_string(&payload)
             .map_err(|e| MCPError::new(-1, format!("序列化通知失败: {}", e)))?;
@@ -352,10 +352,10 @@ impl MCPTransport for SseTransport {
             "method": method,
         });
         if let Some(p) = params {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("params".to_string(), p);
+            // M11 fix: use defensive check instead of unwrap
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("params".to_string(), p);
+            }
         }
         self.client
             .post(&post_url)

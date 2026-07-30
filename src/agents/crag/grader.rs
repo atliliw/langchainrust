@@ -68,11 +68,16 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
     }
 }
 
-/// Builds the grading prompt by replacing placeholders.
+/// Builds the grading prompt by replacing placeholders using PromptTemplate.
 fn build_grade_prompt(query: &str, document_content: &str) -> String {
-    GRADE_PROMPT
-        .replace("{query}", query)
-        .replace("{document_content}", document_content)
+    use crate::PromptTemplate;
+    use std::collections::HashMap;
+
+    let template = PromptTemplate::new(GRADE_PROMPT);
+    let mut vars = HashMap::new();
+    vars.insert("query", query);
+    vars.insert("document_content", document_content);
+    template.format(&vars).unwrap_or_else(|_| GRADE_PROMPT.to_string())
 }
 
 /// Parses the LLM grading response into a structured result.
@@ -202,7 +207,14 @@ Reasoning: [brief explanation]
 
 A score of 1.0 means the document is perfectly relevant, 0.0 means completely irrelevant.
 A document is "relevant" if it contains information that directly addresses the query.
-A document is "irrelevant" if it does not contain useful information for answering the query."#;
+A document is "irrelevant" if it does not contain useful information for answering the query.
+
+Example:
+Query: What is Rust programming language?
+Document: Rust is a systems programming language focused on safety and performance.
+Relevance: relevant
+Score: 0.95
+Reasoning: The document directly describes what Rust is."#;
 
 #[cfg(test)]
 mod tests {
@@ -241,6 +253,37 @@ mod tests {
     }
 
     #[test]
+    fn test_reasoning_field_populated_on_relevant() {
+        let result = parse_grade_response(
+            "Relevance: relevant\nScore: 0.9\nReasoning: Document directly addresses the query.",
+        )
+        .unwrap();
+        assert!(result.reasoning.is_some());
+        let reasoning = result.reasoning.unwrap();
+        assert!(
+            reasoning.contains("Reasoning"),
+            "reasoning should contain the original response text"
+        );
+    }
+
+    #[test]
+    fn test_reasoning_field_populated_on_irrelevant() {
+        let result = parse_grade_response(
+            "Relevance: irrelevant\nScore: 0.1\nReasoning: Off-topic.",
+        )
+        .unwrap();
+        assert!(result.reasoning.is_some());
+        assert!(result.reasoning.unwrap().contains("Off-topic"));
+    }
+
+    #[test]
+    fn test_reasoning_field_populated_on_ambiguous() {
+        let result = parse_grade_response("The document mentions the topic briefly.").unwrap();
+        assert!(result.reasoning.is_some());
+        assert!(result.reasoning.unwrap().contains("briefly"));
+    }
+
+    #[test]
     fn test_extract_numeric_score_decimal() {
         assert_eq!(extract_numeric_score("score: 0.85"), Some(0.85));
     }
@@ -261,5 +304,22 @@ mod tests {
         assert!(prompt.contains("What is Rust?"));
         assert!(prompt.contains("Rust is a systems language."));
         assert!(prompt.contains("Relevance:"));
+    }
+
+    /// Verify the grade prompt contains a few-shot example.
+    #[test]
+    fn test_grade_prompt_contains_few_shot_example() {
+        assert!(
+            GRADE_PROMPT.contains("Example:"),
+            "grade prompt should contain few-shot example"
+        );
+        assert!(
+            GRADE_PROMPT.contains("Rust"),
+            "grade prompt example should contain the Rust example"
+        );
+        assert!(
+            GRADE_PROMPT.contains("0.95"),
+            "grade prompt example should contain an example score"
+        );
     }
 }

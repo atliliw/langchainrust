@@ -76,20 +76,29 @@ impl OllamaConfig {
     /// Reads the following environment variables:
     /// - `OLLAMA_BASE_URL`: The Ollama server URL (default: "http://localhost:11434/v1")
     /// - `OLLAMA_MODEL`: The model name (default: empty)
-    ///
-    /// # Returns
-    /// A new OllamaConfig instance configured from environment.
+    #[deprecated(
+        since = "0.7.0",
+        note = "Use from_env_result() which returns Result<Self, String>"
+    )]
+    #[allow(deprecated)]
     pub fn from_env() -> Self {
-        let base_url =
-            env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+        Self::from_env_result().unwrap_or_else(|_| Self::default())
+    }
 
+    /// Creates an OllamaConfig from environment variables, returning a Result.
+    ///
+    /// Reads the following environment variables:
+    /// - `OLLAMA_BASE_URL`: The Ollama server URL (default: "http://localhost:11434/v1")
+    /// - `OLLAMA_MODEL`: The model name (default: empty)
+    pub fn from_env_result() -> Result<Self, String> {
+        let base_url = env::var("OLLAMA_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
         let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| String::new());
-
-        Self {
+        Ok(Self {
             base_url,
             model,
             ..Default::default()
-        }
+        })
     }
 
     /// Sets a custom base URL for the Ollama server.
@@ -153,5 +162,51 @@ impl OllamaConfig {
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ENV_TEST_LOCK;
+    use std::env;
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = env::var(key).ok();
+        env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => env::set_var(key, v),
+            None => env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_from_env_result_ok_when_vars_set() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_url = save_and_set("OLLAMA_BASE_URL", "http://custom:11434/v1");
+        let old_model = save_and_set("OLLAMA_MODEL", "llama3.2");
+        let config = OllamaConfig::from_env_result().unwrap();
+        assert_eq!(config.base_url, "http://custom:11434/v1");
+        assert_eq!(config.model, "llama3.2");
+        restore("OLLAMA_BASE_URL", old_url);
+        restore("OLLAMA_MODEL", old_model);
+    }
+
+    #[test]
+    fn test_from_env_result_uses_defaults_when_vars_missing() {
+        let _lock = crate::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old_url = env::var("OLLAMA_BASE_URL").ok();
+        let old_model = env::var("OLLAMA_MODEL").ok();
+        env::remove_var("OLLAMA_BASE_URL");
+        env::remove_var("OLLAMA_MODEL");
+        let config = OllamaConfig::from_env_result().unwrap();
+        assert_eq!(config.base_url, "http://localhost:11434/v1");
+        assert_eq!(config.model, "");
+        restore("OLLAMA_BASE_URL", old_url);
+        restore("OLLAMA_MODEL", old_model);
     }
 }
