@@ -84,6 +84,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Batch API
   - Tracing (Distributed Tracing)
   - v0.5.0 Quality Hardening (176 Fixes)
+- [v0.5.2 Fixes](#v052-fixes) ✨ v0.5.2
 - [Testing](#testing)
 - [MongoDB Storage](#mongodb-storage)
 - [Redis / SQLite Storage](#redis--sqlite-storage)
@@ -1871,7 +1872,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.4", features = ["opentelemetry"] }
+langchainrust = { version = "0.5", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -2205,19 +2206,34 @@ let stream = router.stream_chat(messages, None).await?;
 
 ### CorrectiveRAG
 
-Standard RAG retrieves documents that may be irrelevant, yet the LLM still hallucinates a plausible answer. CorrectiveRAG adds three gates: grade documents → rewrite query or supplement with web search → hallucination check.
+Standard RAG retrieves documents that may be irrelevant, yet the LLM still hallucinates a plausible answer. CorrectiveRAG adds three gates: grade documents -> rewrite query or supplement with web search -> hallucination check.
 
 ```rust
 use langchainrust::agents::crag::CorrectiveRAGAgent;
 
 let agent = CorrectiveRAGAgent::new(llm, retriever)
-    .with_web_search(web_tool)    // optional: web search fallback
-    .with_hallucination_check();  // optional: hallucination detection
+    .with_web_fallback(Box::new(web_tool))  // optional: web search fallback
+    .with_hallucination_check(true)       // optional: hallucination detection (default: true)
+    .with_grade_threshold(0.6)            // optional: relevance threshold (default: 0.6)
+    .with_retrieve_k(4)                   // optional: number of docs to retrieve (default: 4)
+    .with_grader_llm(grader_llm)          // optional: separate LLM for grading (avoids self-verification bias)
+    .with_max_context_tokens(4000);       // optional: truncate low-scoring docs to fit token budget
 
-let answer = agent.invoke("What is Rust ownership?", None).await?;
+let answer = agent.invoke("What is Rust ownership?").await?;
 ```
 
-**Flow:** query → retrieve → grade → [irrelevant? → rewrite/web search → re-retrieve] → generate → hallucination check → output
+**Flow:** query -> retrieve -> grade -> [irrelevant? -> rewrite/web search -> re-retrieve] -> generate -> hallucination check -> output
+
+**Builder methods:**
+
+| Method | Default | Description |
+|-------|---------|-------------|
+| `with_web_fallback(tool)` | None | Web search tool (`Box<dyn BaseTool>`) for supplementing poor retrieval |
+| `with_hallucination_check(bool)` | `true` | Enable/disable hallucination detection |
+| `with_grade_threshold(f64)` | `0.6` | Average relevance score below this triggers corrective path (clamped to 0.0-1.0) |
+| `with_retrieve_k(usize)` | `4` | Number of documents to retrieve |
+| `with_grader_llm(llm)` | None | Separate LLM for hallucination checking; avoids self-verification bias where a model tends to endorse its own output |
+| `with_max_context_tokens(usize)` | None | Truncate lowest-scoring documents to fit within this token budget |
 
 ---
 
@@ -2230,18 +2246,18 @@ use langchainrust::agents::adaptive_rag::AdaptiveRAG;
 
 let agent = AdaptiveRAG::new(llm, retriever);
 
-// Complex question → LLM picks MultiQuery, generates multiple queries
-let answer = agent.invoke("Compare tokio vs async-std scheduling", None).await?;
+// Complex question -> LLM picks MultiQuery, generates multiple queries
+let answer = agent.invoke("Compare tokio vs async-std scheduling").await?;
 
-// Simple greeting → LLM picks NoRetrieval, skips retrieval entirely
-let answer = agent.invoke("Hello", None).await?;
+// Simple greeting -> LLM picks NoRetrieval, skips retrieval entirely
+let answer = agent.invoke("Hello").await?;
 ```
 
 ---
 
 ### GraphRAG (Knowledge Graph RAG)
 
-Vector search misses relationships. GraphRAG extracts entities + relations → builds graph → community detection → community summaries → query by community.
+Vector search misses relationships. GraphRAG extracts entities + relations -> builds graph -> Label Propagation community detection -> community summaries -> query by community.
 
 ```rust
 use langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
@@ -2259,25 +2275,41 @@ let result = graph_rag.query("Alice's advisor's students", GraphQueryMode::Local
 let result = graph_rag.query("...", GraphQueryMode::Hybrid).await?;
 ```
 
+**Pipeline:** documents -> LLM entity+relation extraction -> graph building -> Label Propagation community detection -> LLM community summaries -> query (Global/Local/Hybrid). No external graph library dependency.
+
 ---
 
 ### Deep Research Agent
 
-Multi-round deep research: decompose topic → parallel search → deduplicate → synthesize → discover gaps → re-search → cited report.
+Multi-round deep research: decompose topic into sub-topics -> parallel search across multiple tools -> deduplicate -> synthesize -> discover gaps -> re-search -> cited report.
 
 ```rust
 use langchainrust::agents::deep_research::DeepResearchAgent;
 
 let agent = DeepResearchAgent::new(llm)
-    .with_retriever(retriever)
-    .with_max_rounds(3);
+    .with_searcher(Box::new(DuckDuckGoSearchTool::new()))  // add search tools (at least one required)
+    .with_max_rounds(3)           // max research rounds (default: 2)
+    .with_max_subtopics(5)        // max sub-topics to decompose (default: 5)
+    .with_max_source_tokens(8000);// optional: truncate source snippets to fit token budget
 
 let report = agent.research("Compare Rust async runtimes: tokio vs async-std vs smol").await?;
-println!("Summary: {}", report.summary);
+println!("{}", report.markdown);           // full markdown report with inline citations
+println!("Rounds: {}", report.rounds_completed);
 for citation in &report.citations {
-    println!("[{}] {}", citation.source, citation.content);
+    println!("[{}] {} - {}", citation.index, citation.source, citation.snippet);
 }
 ```
+
+**Builder methods:**
+
+| Method | Default | Description |
+|-------|---------|-------------|
+| `with_searcher(tool)` | None (required) | Add a search tool; multiple tools are queried in parallel |
+| `with_max_rounds(n)` | `2` | Maximum search-synthesize iterations |
+| `with_max_subtopics(n)` | `5` | Maximum sub-topics for decomposition |
+| `with_max_source_tokens(n)` | None | Truncate source snippets to fit within this token budget |
+
+**ResearchReport fields:** `markdown` (full report with inline `[1]` citations), `citations` (ordered list with `index`/`source`/`url`/`snippet`), `subtopics` (investigated sub-topics), `rounds_completed`.
 
 ---
 
@@ -2316,18 +2348,21 @@ let completions = client.complete("file:///src/", "main").await?;
 Safe code execution with `LocalSandbox` (subprocess + timeout).
 
 ```rust
-use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox};
-use std::time::Duration;
+use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox, SandboxTool, Language};
 
-let sandbox = LocalSandbox::new("python")
-    .with_timeout(Duration::from_secs(30))
-    .with_memory_limit(256); // MB
+// Direct sandbox usage
+let sandbox = LocalSandbox::new()
+    .with_python_path("python3");  // optional: custom interpreter path
 
-let result = sandbox.run("print(2 + 2)").await?;
+let result = sandbox.run("print(2 + 2)", Language::Python, 30_000).await?;
 assert_eq!(result.stdout.trim(), "4");
+
+// Or wrap as a BaseTool for agent use
+let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
+    .with_timeout(30_000);  // 30 second timeout
 ```
 
-- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr
+- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr, dangerous import check for Python
 - **E2B cloud sandbox** (feature gate `sandbox-e2b`): remote micro-VM, full isolation
 - **WASM sandbox** (feature gate `sandbox-wasm`): browser-grade sandbox, zero network
 
@@ -2335,13 +2370,17 @@ assert_eq!(result.stdout.trim(), "4");
 
 ### OpenAI Responses API
 
-Connect to `/v1/responses` with built-in tools: WebSearch, FileSearch, CodeInterpreter, ComputerUse — one request, model handles tool calls automatically.
+Connect to `/v1/responses` with built-in tools: WebSearch, FileSearch, CodeInterpreter, ComputerUse -- one request, model handles tool calls automatically.
 
 ```rust
-use langchainrust::language_models::openai::responses::{ResponsesModel, BuiltinTool};
+use langchainrust::language_models::openai::responses::{ResponsesModel, ResponsesConfig, BuiltinTool};
 
-let model = ResponsesModel::new("gpt-4o", api_key)
-    .with_tools(vec![BuiltinTool::WebSearch, BuiltinTool::CodeInterpreter]);
+let config = ResponsesConfig::new("your-api-key")
+    .with_model("gpt-4o")
+    .with_builtin_tool(BuiltinTool::WebSearch)
+    .with_builtin_tool(BuiltinTool::CodeInterpreter);
+
+let model = ResponsesModel::new(config);
 
 let result = model.chat(messages, None).await?;
 // result.content includes the final answer after tool execution
@@ -2354,9 +2393,11 @@ let result = model.chat(messages, None).await?;
 Configure `budget_tokens` to let Claude think before answering. Thinking block exposed via `thinking_content` in `LLMResult`; streaming via `on_llm_thinking` callback.
 
 ```rust
-use langchainrust::AnthropicChat;
+use langchainrust::{AnthropicChat, AnthropicConfig};
 
-let model = AnthropicChat::new("claude-sonnet-5", api_key)
+let config = AnthropicConfig::new("your-api-key")
+    .with_model("claude-sonnet-5");
+let model = AnthropicChat::new(config)
     .with_thinking(10000); // up to 10000 thinking tokens
 
 let result = model.chat(messages, None).await?;
@@ -2368,22 +2409,28 @@ println!("Answer: {}", result.content);
 
 ### Streaming Structured Output
 
-`PartialJsonParser` incrementally parses streaming JSON into partial structs — no need to wait for all tokens.
+`PartialJsonParser` incrementally parses streaming JSON into partial structs -- no need to wait for all tokens.
 
 ```rust
 use langchainrust::core::structured_output::StreamingStructuredOutputExt;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(JsonSchema, Deserialize, Clone, PartialEq, Default)]
 struct UserInfo {
-    name: String,
-    age: u32,
-    email: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    age: Option<u32>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
-let stream = model.stream_structured_output::<UserInfo>(messages, None).await?;
+let schema = serde_json::to_value(schemars::schema_for!(UserInfo)).unwrap();
+let stream = model.stream_structured_output::<UserInfo>(schema, "Tell me about Alice, age 30").await?;
 pin_mut!(stream);
-while let Some(partial) = stream.next().await {
+while let Some(result) = stream.next().await {
+    let partial = result?;
     if let Some(name) = &partial.name {
         println!("Got name: {}", name); // available before all fields arrive
     }
@@ -2399,14 +2446,26 @@ while let Some(partial) = stream.next().await {
 ```rust
 use langchainrust::batch::{BatchClient, BatchProvider, BatchRequest};
 
-let client = BatchClient::new(BatchProvider::OpenAI, api_key);
+let client = BatchClient::new(BatchProvider::OpenAI, "your-api-key");
 
 let requests = vec![
-    BatchRequest::new("req-1", "gpt-4o", vec![Message::human("Translate: Hello")]),
-    BatchRequest::new("req-2", "gpt-4o", vec![Message::human("Translate: World")]),
+    BatchRequest {
+        custom_id: "req-1".to_string(),
+        model: "gpt-4o".to_string(),
+        messages: vec![Message::human("Translate: Hello")],
+        temperature: None,
+        max_tokens: None,
+    },
+    BatchRequest {
+        custom_id: "req-2".to_string(),
+        model: "gpt-4o".to_string(),
+        messages: vec![Message::human("Translate: World")],
+        temperature: None,
+        max_tokens: None,
+    },
 ];
 
-let results = client.submit_and_wait(&requests, Duration::from_secs(30)).await?;
+let results = client.submit_and_wait(requests, 5000, 300_000).await?;
 for result in results {
     println!("{}: {:?}", result.custom_id, result.result?.content);
 }
@@ -2419,19 +2478,20 @@ for result in results {
 `Tracer` + `SpanGuard` (RAII) auto-manages parent-child spans. Backends: InMemory / Console / OTel.
 
 ```rust
-use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend};
+use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend, SpanKind};
+use std::sync::Arc;
 
-let tracer = Tracer::new(ConsoleTracingBackend);
-let span = tracer.start_span("agent_run");
+let tracer = Tracer::new(Arc::new(ConsoleTracingBackend));
+let span = tracer.start("agent_run", SpanKind::Internal);
 {
-    let _retrieve = tracer.start_child("retrieve");
+    let _retrieve = tracer.start_child("retrieve", SpanKind::Internal);
     let docs = retriever.retrieve(&query).await?;
-} // _retrieve drop → child span auto-records end time
+} // _retrieve drop -> child span auto-records end time
 {
-    let _generate = tracer.start_child("generate");
+    let _generate = tracer.start_child("generate", SpanKind::Internal);
     let answer = llm.chat(messages, None).await?;
 }
-drop(span); // span auto-records duration, token count, etc.
+span.end(); // span auto-records duration, token count, etc.
 ```
 
 ---
@@ -2450,6 +2510,59 @@ After implementing 12 new features, a two-pass full-codebase review of 223 files
 - **Data correctness**: UTF-8 char-boundary slicing; RRF document ID uses content hash; error propagation replaces silent swallowing
 
 **Verification:** 826 unit tests passing · clippy zero warnings · cargo fmt clean
+
+---
+
+## v0.5.2 Fixes ✨ v0.5.2
+
+v0.5.2 is a stability and correctness release with critical bug fixes for several v0.5.0 features.
+
+### GraphRAG Community Summary Fix
+
+Community summaries were concatenating raw entity IDs (`e_xxx`) instead of entity names, producing meaningless summaries that degraded Global/Hybrid query quality. Fixed by looking up entity names via `store.get_entity()`.
+
+### Deep Research Report Format Fix
+
+The synthesizer asked the LLM to output a full markdown report as a JSON string field, causing frequent `serde_json` parse failures due to unescaped `\n`, `"`, `\` in markdown. Replaced with a delimiter-based format:
+
+```
+<<<REPORT>>>
+...markdown report...
+<<<END_REPORT>>>
+<<<GAPS>>>
+[...gap descriptions...]
+<<<END_GAPS>>>
+```
+
+The report portion is now raw text with no escaping needed. The old JSON format is kept as a fallback for backward compatibility.
+
+### DocumentStore Async Panic Fix
+
+`InMemoryDocumentStore` and `InMemoryChunkedDocumentStore` used `tokio::sync::RwLock` with `blocking_read()`/`blocking_write()`, which panics inside async contexts with "Cannot block the current thread from within a runtime". Switched to `std::sync::RwLock` which works in both sync and async contexts.
+
+### CRAG Grading Improvements
+
+**Threshold fix**: Default `grade_threshold` changed from `0.5` to `0.6`. The old threshold sat in the zone where LLM grading is least stable, and the ambiguous parse default (`0.5`) was exactly equal to the threshold — making correction triggering nearly random. Now the ambiguous default is `0.4`, well below the `0.6` threshold.
+
+**Hallucination detection bias fix**: Added `with_grader_llm()` builder to inject a separate LLM for hallucination detection, preventing the model from endorsing its own output:
+
+```rust
+use langchainrust::agents::crag::CorrectiveRAGAgent;
+
+let agent = CorrectiveRAGAgent::new(llm.clone(), retriever)
+    .with_grader_llm(claude_llm)  // Use a different LLM for grading
+    .with_grade_threshold(0.6);    // New default: 0.6 (was 0.5)
+```
+
+Additional improvements:
+- `GradeResult` now has an `is_ambiguous` field indicating whether the score came from fuzzy parsing
+- Hallucination detection prompt now includes adversarial framing ("Be skeptical")
+- Hallucination check LLM failure degrades gracefully (returns `grounded: false`) instead of aborting
+
+### Other v0.5.2 Changes
+
+- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — now properly declared
+- **Clippy zero warnings**: All clippy warnings resolved
 
 ---
 

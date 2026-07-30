@@ -7,7 +7,7 @@
 
 A LangChain-inspired Rust framework for building LLM applications.
 
-**What it solves**: Build Agents, RAG, BM25 keyword search, Hybrid retrieval, LangGraph workflows, MCP tools, Guardrails, multi-agent Handoffs - all in pure Rust.
+**What it solves**: Build Agents, RAG, BM25 keyword search, Hybrid retrieval, LangGraph workflows, MCP tools, Guardrails, multi-agent Handoffs — all in pure Rust.
 
 ---
 
@@ -15,31 +15,37 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Component | Description |
 |-----------|-------------|
-| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + 多模态 Vision + Assistants API（含 requires_action 工具调度） |
-| **Embeddings** | OpenAI / DeepSeek / Qwen / Local(ort ONNX Runtime,feature gate) / Mock |
-| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs 多 Agent 交接 / Streaming Function Calling |
-| **A2A** | Agent-to-Agent 协议,AgentCard/Task/Message + Server(含 task persistence) + Client |
-| **MCP** | Model Context Protocol Client + Server(Stdio + SSE),MCP 工具适配为 BaseTool |
-| **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore(语义检索) / **ContextWindow(v0.4.1,Truncate+Summarize)** |
-| **Sessions** | 多轮会话生命周期管理,可插拔存储(SessionManager + SessionStore) |
-| **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + **Chain 流式(v0.4.1)** |
-| **RAG** | Document splitting(含 SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, **query_with_sources 引用溯源** |
-| **Structured Output** | **with_structured_output(v0.4.1)**,StructuredOutputExt trait + JsonOutputParser 降级 |
+| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
+| **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
+| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling |
+| **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client |
+| **MCP** | Model Context Protocol Client + Server (Stdio + SSE), full 6 primitives, MCP tool adapter to BaseTool |
+| **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
+| **Sessions** | Multi-turn conversation lifecycle management, pluggable storage (SessionManager + SessionStore) |
+| **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
+| **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing) |
+| **Structured Output** | with_structured_output, StructuredOutputExt trait + JsonOutputParser fallback, Streaming Structured Output |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
 | **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion, Unified index |
 | **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph, Parallel, Checkpointer |
-| **Guardrails** | 输入/输出安全护栏,SensitiveInfo / ForbiddenWords / MaxLength,GuardedAgent |
-| **Token Counter** | Tiktoken 计数 + TokenTrackingLLM 用量统计 + ModelPricing 成本估算 |
+| **Guardrails** | Input/output safety guardrails, SensitiveInfo / ForbiddenWords / MaxLength, GuardedAgent |
+| **Token Counter** | Tiktoken counting + TokenTrackingLLM usage statistics + ModelPricing cost estimation |
 | **Output Parsers** | StrOutputParser, JsonOutputParser, CommaSeparatedList, Structured, Typed |
-| **Tools** | Calculator / DateTime / Math / URLFetch / Wikipedia / WebSearch / PythonREPL / HTTPTool / FileTool(沙箱) / SQLTool(只读) / **ComputerUseTool(v0.4.1)** |
-| **Vector DB** | InMemory / Qdrant / MongoDB / ChromaDB / Redis / SQLite / PGVector / Pinecone / **FileVectorStore(v0.4.1)** |
-| **Document Loaders** | Text / JSON / Markdown / PDF / CSV / HTML + **WebScraper / Sitemap / Docx(v0.4.1)** |
+| **Tools** | Calculator / DateTime / Math / URLFetch / Wikipedia / WebSearch / PythonREPL / HTTPTool / FileTool (sandbox) / SQLTool (read-only) / ComputerUseTool |
+| **Vector DB** | InMemory / Qdrant / MongoDB / ChromaDB / Redis / SQLite / PGVector / Pinecone / FileVectorStore |
+| **Document Loaders** | Text / JSON / Markdown / PDF / CSV / HTML + WebScraper / Sitemap / Docx |
 | **Cache** | LLMCache with TTL support |
 | **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
 | **Callbacks** | StdOut / LangSmith / FileHandler / OpenTelemetry |
 | **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness |
+| **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval) / GraphRAG (knowledge graph) |
+| **Model Routing** | RouterLLM with 5 strategies (Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected) |
+| **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
+| **Code Interpreter** | LocalSandbox (subprocess + timeout) + E2B cloud sandbox + WASM sandbox (feature gate) |
+| **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
+| **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree |
 
-Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [English](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)
+Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | [API Docs](https://docs.rs/langchainrust)
 
 ---
 
@@ -54,8 +60,12 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── DeepSeek / Moonshot / Zhipu / Qwen (OpenAI compatible) │
 │  ├── AnthropicChat (Claude API) / GeminiChat                 │
 │  ├── Function Calling (bind_tools) / Streaming (stream_chat)│
-│  ├── 多模态 Vision (ImageContent + human_with_image)        │
-│  ├── OpenAI Assistants API (含 requires_action 工具调度)    │
+│  ├── Multimodal Vision (ImageContent + human_with_image)    │
+│  ├── OpenAI Assistants API (with requires_action dispatch)   │
+│  ├── OpenAI Responses API (web_search/file_search/code/...)  │
+│  ├── Anthropic Extended Thinking (with_thinking)             │
+│  ├── RouterLLM (5 strategies + Fallback)                     │
+│  ├── BatchClient (OpenAI/Anthropic batch inference)          │
 │  └── with_structured_output (StructuredOutputExt trait)      │
 ├─────────────────────────────────────────────────────────────┤
 │  Embeddings Layer                                            │
@@ -65,22 +75,27 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 ├─────────────────────────────────────────────────────────────┤
 │  Agent Layer                                                 │
 │  ├── ReActAgent / FunctionCallingAgent                      │
-│  ├── Plan-Execute Agent (规划-执行-重规划)                   │
-│  ├── Handoffs (多 Agent 交接) / Streaming Function Calling  │
-│  ├── GuardedAgent (Guardrails 安全护栏)                     │
+│  ├── Plan-Execute Agent (plan -> execute -> replan)         │
+│  ├── Handoffs (multi-agent handoff) / Streaming FC          │
+│  ├── GuardedAgent (Guardrails safety)                       │
+│  ├── DeepResearchAgent (multi-round research + citations)   │
 │  ├── AgentExecutor                                          │
-│  ├── A2A Server/Client (Agent-to-Agent 协议)                │
+│  ├── A2A Server/Client (Agent-to-Agent protocol)            │
 │  └── LangGraph (StateGraph, Subgraph, Parallel)             │
 ├─────────────────────────────────────────────────────────────┤
 │  MCP Layer                                                   │
 │  ├── MCPClient (Stdio + SSE) -> MCPToolAdapter -> BaseTool   │
-│  └── MCPServer (暴露 BaseTool 给 host 调用)                  │
+│  ├── MCPServer (expose BaseTool to host)                     │
+│  └── Full 6 primitives (resources/prompts/completion/...)    │
 ├─────────────────────────────────────────────────────────────┤
 │  Retrieval Layer                                             │
 │  ├── RAG (TextSplitter, SemanticSplitter, VectorStore)      │
 │  ├── BM25 (Keyword Search, AutoMerging)                     │
 │  ├── Hybrid (BM25 + Vector, RRF Fusion)                     │
 │  ├── HyDE / MultiQuery / Reranking                          │
+│  ├── CorrectiveRAG (grade + rewrite + hallucination detect) │
+│  ├── AdaptiveRAG (LLM-routed retrieval strategy)            │
+│  ├── GraphRAG (knowledge graph + community detection)       │
 │  └── Loaders (Text/JSON/MD/PDF/CSV/HTML/Docx/Web/Sitemap)  │
 ├─────────────────────────────────────────────────────────────┤
 │  Storage Layer                                               │
@@ -92,90 +107,18 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 │  ├── Memory (Buffer, Window, Summary, SummaryBuffer, Vector,│
 │  │           ContextWindow[Truncate+Summarize])             │
 │  ├── Chains (LLMChain, SequentialChain, RetrievalQA, ...)   │
-│  │         + Chain streaming (逐 token 输出)                │
+│  │         + Chain streaming (per-token output)              │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate, FewShot)  │
 │  ├── Tools (Calculator, DateTime, URLFetch, HTTP/File/SQL,  │
-│  │          ComputerUseTool)                                 │
+│  │          ComputerUseTool, CodeSandbox)                    │
 │  ├── Output Parsers                                         │
 │  ├── Token Counter (Tiktoken + Cost Tracking)               │
 │  ├── LLM Cache                                              │
-│  ├── Evaluation (10 种评测器, 含 Faithfulness)             │
+│  ├── Evaluation (10 evaluators, including Faithfulness)     │
+│  ├── Tracing (Tracer + SpanGuard, InMemory/Console/OTel)   │
 │  └── Callbacks (LangSmith, StdOut, FileHandler, Otel)       │
 └─────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## What's New in 0.5.0
-
-- **RouterLLM 模型路由 + Fallback**: `RouterLLM` 实现 `BaseChatModel`,5 种策略(Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected),主模型失败自动切备模型
-- **CorrectiveRAG**: RAG 不再盲信检索结果 — 检索后评分,不相关则重写查询或补 Web 搜索,生成后做幻觉检测
-- **AdaptiveRAG**: LLM 判断要不要检索、单查还是多查(NoRetrieval/SingleSearch/MultiQuery),多查询并行检索
-- **GraphRAG**: 知识图谱 RAG — 抽实体+关系→建图→Label Propagation 社区检测+摘要→Global/Local/Hybrid 查询
-- **Deep Research Agent**: 多轮深度研究 — 拆子课题→并行搜索→去重→综合→发现缺口→再搜→带引用报告
-- **MCP 全协议**: 补齐 resources / prompts / completion / elicitation / roots / sampling 六大原语,Client/Server 双端
-- **Code Interpreter 沙箱**: `LocalSandbox`(子进程+超时) + E2B 云沙箱 + WASM 沙箱(feature gate)
-- **OpenAI Responses API**: 走 `/v1/responses`,内置 WebSearch / FileSearch / CodeInterpreter / ComputerUse
-- **Anthropic Extended Thinking**: `with_thinking(budget_tokens)`,拿到思考链 `thinking_content`,流式 thinking 回调
-- **Streaming Structured Output**: `PartialJsonParser` 增量解析,不用等全部 token 到齐就能拿到部分结构体
-- **Batch API**: `BatchClient` 统一 OpenAI/Anthropic 批量推理,成本降 50%
-- **Agent Observability / Tracing**: `Tracer` + `SpanGuard`(RAII),InMemory / Console / OTel 三后端,parent-child span tree
-
-### 0.5.0 质量加固（全库代码审查修复）
-
-本轮对全库 223 个文件做了两轮逐文件审查,修复 176 个问题:
-
-- **安全**: PythonREPL 危险 import 检查、HTTPTool/URLFetchTool SSRF 防护(内网 IP + DNS rebinding)、SQLTool 注入防护(阻止分号/注释/子查询)、Gemini API key 移至 header
-- **多轮 Function Calling 修复**: Anthropic/Gemini/Ollama 三个 provider 的 tool 消息映射错误导致多轮 function calling 不工作 — 现已全部修正
-- **流式修复**: Ollama/Anthropic/Gemini SSE 跨 chunk 不再丢 token;`Runnable::stream()` 改为真流式(逐 token 发射)
-- **并发安全**: langgraph/sessions/mongo_memory 等多处 `std::sync::Mutex` 在 async 中改 `tokio::sync::Mutex`;MCP Transport 加请求级互斥;HandoffManager 合并多锁
-- **Panic 修复**: choices[0] 越界改 `.first().ok_or()`;from_env() 返回 Result;Regex 改 LazyLock;Mutex poison 改 `into_inner()` 恢复
-- **数据正确性**: parent_id 分隔符改 `::`;错误传播替代静默吞掉;UTF-8 按字符边界切分;RRF 文档 ID 用内容 hash 防碰撞
-- **测试**: 826 个单元测试全过,clippy 零 warning,cargo fmt 通过
-
-## What's New in 0.4.1
-
-- **Assistants requires_action 工具调度**: `OpenAIAssistant` 遇 `requires_action` 自动解析 tool_calls → ToolRegistry 执行 → submit_tool_outputs → 继续轮询至 completed
-- **A2A Agent 协议**: `A2AServer` 暴露 agent + `A2AClient` 调远程 agent,JSON-RPC 风格(tasks/send/get/cancel),内存 task persistence
-- **with_structured_output**: `StructuredOutputExt` trait,一行拿强类型结构,按 provider 走 function calling 或 JsonOutputParser 降级
-- **Chain 流式**: `BaseChain::stream()` + LLMChain/ConversationChain 覆写,逐 token 回调 `on_llm_new_token`
-- **ContextWindow 长上下文管理**: Truncate(按 token 数截断) + Summarize(LLM 摘要压缩) 策略,TokenCounter 集成
-- **FileVectorStore**: JSON 持久化向量存储,原子写入(tmp+rename),跨实例持久化,维度校验
-- **ComputerUseTool**: Anthropic computer use API 接入 + Native 截图/输入(feature gate `computer-use-native`)
-- **更多 Document Loader**: DocxLoader(ZIP+XML)、WebScraperLoader(递归爬取+同域过滤)、SitemapLoader(sitemap.xml 解析)
-- **LocalEmbeddings ort**: ONNX Runtime 神经网络嵌入(feature gate `local-embeddings`),替代 bag-of-words 占位
-- **wiremock 测试基础设施**: dev-dependency + mock 辅助函数,默认测试不打真实网络
-- **MSRV 声明**: `rust-version = "1.82"`,CI 含 1.82 矩阵
-- **criterion benchmark**: benches/ 下 retrieval(6)/splitter(4)/embedding(4) 组基准
-- **12+ 新 examples**: 覆盖 evaluation/mcp_server/guardrails/sessions/context_window/vectorstore_memory/semantic_splitter/file_vectorstore/otel/assistants/handoffs/plan_execute/token_counter
-
-## What's New in 0.4.0
-
-- **Evaluation 评估模块**: 10 种评测器(字面 / 语义 / 规则 / 经典 NLP / RAG),`EvalRunner` 跑评测集出报告,`Faithfulness` 检测 RAG 幻觉
-- **MCP Server**: `MCPServer` 把本地工具暴露为 MCP Server,供 Claude Desktop / Cursor 调用
-- **向量检索记忆**: `VectorStoreRetrieverMemory` 按当前输入语义召回历史
-- **OpenAI Assistants API**: `OpenAIAssistant` 服务端会话状态(Assistants / Threads / Run)
-- **语义分块**: `SemanticSplitter` 相邻句相似度骤降处断块
-- **本地嵌入**: `LocalEmbeddings` 离线,纯 Rust 无外部依赖
-- **OpenTelemetry 追踪**: `OtelHandler` 执行事件转 OTel span(feature `opentelemetry`)
-
----
-
-## What's New in 0.3.0
-
-- **MCP 协议**: 连接任意 MCP Server(stdio/SSE),工具自动适配为 `BaseTool` 供 Agent 调用
-- **多模态 Vision**: `ImageContent` + `Message::human_with_image`,OpenAI / Ollama 均支持
-- **Sessions 会话管理**: `SessionManager` + 可插拔 `SessionStore`,多轮对话生命周期
-- **Token 计数器**: `TiktokenCounter` + `TokenTrackingLLM` 用量统计 + `ModelPricing` 成本估算
-- **Guardrails 安全护栏**: 输入/输出验证,SensitiveInfo / ForbiddenWords / MaxLength,`GuardedAgent`
-- **Plan-Execute Agent**: 规划 → 执行 → 失败重规划(`PlanExecuteAgent`)
-- **Handoffs 多 Agent 交接**: `HandoffManager` + `HandoffTool`,主 Agent 委托专业 Agent
-- **Streaming Tool Calls**: `StreamingFunctionCallingAgent` 流式输出 + 工具调用事件
-- **扩展工具**: `HTTPTool` / `FileTool`(沙箱)/ `SQLTool`(只读)
-- **PGVector / Pinecone**: 新增两个向量库后端
-- **HTML Loader**: 去标签/脚本/样式,提取纯文本
-
-详见 [Usage Guide(中文)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md)。
 
 ---
 
@@ -183,17 +126,20 @@ Full documentation: [中文文档](https://github.com/atliliw/langchainrust/blob
 
 ```toml
 [dependencies]
-langchainrust = "0.4.1"
+langchainrust = "0.6.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.4.1", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.4.1", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.4.1", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.4.1", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.4.1", features = ["pgvector-storage"] }      # PGVector (需自配 sqlx/pgvector 依赖)
-langchainrust = { version = "0.4.1", features = ["local-embeddings"] }      # Local ONNX embeddings (需 ort)
-# PineconeStore / FileVectorStore 无需 feature,默认可用
+langchainrust = { version = "0.6.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.6.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.6.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.6.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.6.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.6.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.6.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.6.0", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.6.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+# PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
 ---
@@ -212,14 +158,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model: "gpt-3.5-turbo".to_string(),
         ..Default::default()
     };
-    
+
     let llm = OpenAIChat::new(config);
-    
+
     let response = llm.chat(vec![
         Message::system("You are a helpful assistant."),
         Message::human("What is Rust?"),
     ], None).await?;
-    
+
     println!("{}", response.content);
     Ok(())
 }
@@ -259,35 +205,35 @@ for result in results {
 }
 ```
 
-More examples in [Usage Guide (中文)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md).
+More examples in [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md).
 
 ---
 
 ## Examples
 
-`examples/` 目录提供 25 个可运行示例,覆盖核心功能:
+The `examples/` directory provides 25+ runnable examples covering core functionality:
 
-| 分类 | 示例 | 需 API Key |
-|------|------|-----------|
-| basic | chat / streaming / multi_provider / token_counter | 是 |
-| agent | function_calling / multi_tool / assistants / handoffs / plan_execute | 是 |
-| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter | 否 |
-| langgraph | basic_graph / conditional_edge | 否 |
-| memory | buffer_memory / context_window / sessions / vectorstore_memory | 否 |
-| chains | llm_chain / sequential_chain | 是 |
-| evaluation | evaluation | 否 |
-| guardrails | guardrails | 否 |
-| mcp_server | mcp_server | 否 |
-| otel | otel_tracing | 否 |
+| Category | Examples | Requires API Key |
+|----------|----------|-----------------|
+| basic | chat / streaming / multi_provider / token_counter | Yes |
+| agent | function_calling / multi_tool / assistants / handoffs / plan_execute | Yes |
+| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter | No |
+| langgraph | basic_graph / conditional_edge | No |
+| memory | buffer_memory / context_window / sessions / vectorstore_memory | No |
+| chains | llm_chain / sequential_chain | Yes |
+| evaluation | evaluation | No |
+| guardrails | guardrails | No |
+| mcp_server | mcp_server | No |
+| otel | otel_tracing | No |
 
-需要 API Key 的示例从环境变量读取:
+Examples requiring API keys read from environment variables:
 
 ```bash
 export OPENAI_API_KEY="your-key"
 cargo run --example basic_chat
 ```
 
-无需 API Key 的示例(BM25 / LangGraph / Memory / Loader)可直接运行,适合快速体验。
+Examples without API keys (BM25 / LangGraph / Memory / Loader) can run directly — great for quick exploration.
 
 ---
 
@@ -295,9 +241,9 @@ cargo run --example basic_chat
 
 | Docs | Content |
 |------|---------|
-| [Usage Guide (中文)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | LLM、Agent、Memory、RAG、BM25、Hybrid、LangGraph、MCP、Sessions、Guardrails、Token Counter、Plan-Execute、Handoffs、Streaming 详细用法 |
-| [Usage Guide (English)](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
+| [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
 | [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
+| [Changelog](https://github.com/atliliw/langchainrust/blob/main/CHANGELOG.md) | Release history and breaking changes |
 
 ---
 

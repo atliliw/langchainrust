@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.3.0 • Features</div>
+            <div class="sidebar-subtitle">v0.6.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -547,18 +547,33 @@
             </div>
 
             <div class="nav-section">
+                <div class="nav-section-title">Advanced RAG</div>
+                <a href="#corrective-rag" class="nav-item new">🛡️ Corrective RAG</a>
+                <a href="#adaptive-rag" class="nav-item new">🎯 Adaptive RAG</a>
+                <a href="#graph-rag" class="nav-item new">🌐 GraphRAG</a>
+            </div>
+
+            <div class="nav-section">
                 <div class="nav-section-title">Advanced</div>
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
-                <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan-Execute</a>
-                <a href="#whats-new-030" class="nav-item new">✨ v0.3.0 New</a>
+                <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan & Execute</a>
                 <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
+                <a href="#deep-research" class="nav-item new">🔬 Deep Research</a>
+                <a href="#router-llm" class="nav-item new">🔀 RouterLLM</a>
+                <a href="#mcp-full" class="nav-item new">🔌 MCP Full Protocol</a>
+                <a href="#sandbox" class="nav-item new">🖥️ Code Sandbox</a>
+                <a href="#responses-api" class="nav-item new">📨 Responses API</a>
+                <a href="#extended-thinking" class="nav-item new">💭 Extended Thinking</a>
+                <a href="#streaming-structured" class="nav-item new">📊 Streaming Structured</a>
+                <a href="#batch-api" class="nav-item new">📦 Batch API</a>
+                <a href="#tracing" class="nav-item new">🔍 Tracing</a>
             </div>
 
             <div class="nav-section">
                 <div class="nav-section-title">Basic Components</div>
-                <a href="#prompts" class="nav-item">📝 Prompts</a>
+                <a href="#prompts" class="nav-item">📝 Prompt Templates</a>
                 <a href="#output-parsers" class="nav-item new">🔤 Output Parsers</a>
-                <a href="#llm" class="nav-item">💬 LLM</a>
+                <a href="#llm" class="nav-item">💬 LLMs</a>
             </div>
 
             <div class="nav-section">
@@ -1398,7 +1413,7 @@ store.add_documents(vec![
             <section class="module" id="prompts" style="animation-delay: 0.65s;">
                 <div class="module-header">
                     <span class="module-icon">📝</span>
-                    <h2>Prompts</h2>
+                    <h2>Prompt Templates</h2>
                 </div>
 
                 <div class="card">
@@ -1582,7 +1597,7 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
             <section class="module" id="llm" style="animation-delay: 0.7s;">
                 <div class="module-header">
                     <span class="module-icon">💬</span>
-                    <h2>LLM</h2>
+                    <h2>LLMs</h2>
                 </div>
 
                 <div class="card">
@@ -1904,7 +1919,7 @@ graph.validate()?;
             <section class="module" id="plan-execute" style="animation-delay: 0.82s;">
                 <div class="module-header">
                     <span class="module-icon">📋</span>
-                    <h2>Plan-Execute Agent</h2>
+                    <h2>Plan & Execute</h2>
                 </div>
 
                 <div class="card">
@@ -1936,6 +1951,239 @@ graph.validate()?;
     .run(<span class="str">"Research Rust async runtimes, write code, explain"</span>)
     .await?;</code></pre>
                 </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.5.0+ New Features -->
+            <section class="module" id="whats-new-050" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">✨</span>
+                    <h2>v0.5.0+ New Features</h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.5.0 adds 12 major features: advanced RAG (CorrectiveRAG, AdaptiveRAG, GraphRAG), Deep Research Agent, RouterLLM, MCP full protocol, Code Interpreter Sandbox, OpenAI Responses API, Anthropic Extended Thinking, Streaming Structured Output, Batch API, and distributed Tracing. v0.5.2 adds critical bug fixes for GraphRAG, Deep Research, CRAG, and DocumentStore.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Production-grade agentic RAG, model routing, deep research, and observability.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>CorrectiveRAG</h3><p>Grade → rewrite/web → generate → hallucination check</p></div>
+                    <div class="feature-card"><h3>AdaptiveRAG</h3><p>LLM-routed: NoRetrieval / SingleSearch / MultiQuery</p></div>
+                    <div class="feature-card"><h3>GraphRAG</h3><p>Knowledge graph + community detection + summaries</p></div>
+                    <div class="feature-card"><h3>Deep Research</h3><p>Multi-round research with citations</p></div>
+                    <div class="feature-card"><h3>RouterLLM</h3><p>5 strategies: Fallback/RoundRobin/Latency/Cost/Input</p></div>
+                    <div class="feature-card"><h3>MCP Full</h3><p>6 primitives: resources/prompts/completion/elicitation/roots/sampling</p></div>
+                    <div class="feature-card"><h3>Code Sandbox</h3><p>LocalSandbox + E2B + WASM backends</p></div>
+                    <div class="feature-card"><h3>Responses API</h3><p>/v1/responses with web_search/file_search/code/computer</p></div>
+                    <div class="feature-card"><h3>Extended Thinking</h3><p>with_thinking(budget_tokens) + thinking_content</p></div>
+                    <div class="feature-card"><h3>Streaming Structured</h3><p>PartialJsonParser + stream_structured_output&lt;T&gt;</p></div>
+                    <div class="feature-card"><h3>Batch API</h3><p>BatchClient for OpenAI/Anthropic, 50% cost reduction</p></div>
+                    <div class="feature-card"><h3>Tracing</h3><p>Tracer + SpanGuard (RAII), InMemory/Console/OTel</p></div>
+                </div>
+
+                <h3>CorrectiveRAG Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::agents::crag::CorrectiveRAGAgent;
+
+<span class="kw">let</span> agent = CorrectiveRAGAgent::new(llm, retriever)
+    .with_web_fallback(web_tool)
+    .with_hallucination_check(<span class="kw">true</span>)
+    .with_grade_threshold(<span class="num">0.6</span>)
+    .with_grader_llm(claude_llm);  <span class="comment">// Separate LLM for grading</span>
+
+<span class="kw">let</span> answer = agent.invoke(<span class="str">"What is Rust ownership?"</span>).await?;</code></pre>
+                </div>
+
+                <h3>RouterLLM Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
+
+<span class="comment">// Fallback: primary → fallbacks</span>
+<span class="kw">let</span> router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
+
+<span class="comment">// Cost-optimized routing</span>
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_model(<span class="str">"gpt-4"</span>, gpt4)
+    .with_model(<span class="str">"deepseek"</span>, deepseek);
+
+<span class="kw">let</span> result = router.chat(messages, <span class="kw">None</span>).await?;</code></pre>
+                </div>
+
+                <h3>GraphRAG Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
+
+<span class="kw">let</span> <span class="kw">mut</span> graph_rag = GraphRAG::new(llm);
+graph_rag.add_documents(docs).await?;
+
+<span class="comment">// Global query (community-based)</span>
+<span class="kw">let</span> result = graph_rag.query(<span class="str">"What are the main themes?"</span>, GraphQueryMode::Global).await?;
+
+<span class="comment">// Local query (entity-based)</span>
+<span class="kw">let</span> result = graph_rag.query(<span class="str">"Tell me about X"</span>, GraphQueryMode::Local).await?;</code></pre>
+                </div>
+
+                <h3>Deep Research Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::agents::deep_research::DeepResearchAgent;
+
+<span class="kw">let</span> agent = DeepResearchAgent::new(llm, search_tool)
+    .with_max_rounds(<span class="num">3</span>)
+    .with_max_subtopics(<span class="num">5</span>);
+
+<span class="kw">let</span> report = agent.research(<span class="str">"Compare Rust vs Go async runtimes"</span>).await?;
+println!(<span class="str">"{}"</span>, report.summary);
+<span class="kw">for</span> citation <span class="kw">in</span> &report.citations {
+    println!(<span class="str">"[{}] {}"</span>, citation.id, citation.source);
+}</code></pre>
+                </div>
+
+                <h3>v0.5.2 Key Fixes</h3>
+
+                <div class="callout warning">
+                    <div class="callout-title">⚠️ Critical Fixes in v0.5.2</div>
+                    <ul>
+                        <li><strong>GraphRAG</strong>: Community summaries now use entity names instead of IDs</li>
+                        <li><strong>Deep Research</strong>: Delimiter-based report format replaces error-prone JSON embedding</li>
+                        <li><strong>DocumentStore</strong>: std::sync::RwLock replaces tokio::sync::RwLock to prevent async panics</li>
+                        <li><strong>CRAG</strong>: Grade threshold 0.5→0.6, ambiguous score 0.5→0.4, new with_grader_llm() builder</li>
+                    </ul>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- CorrectiveRAG -->
+            <section class="module" id="corrective-rag" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🛡️</span>
+                    <h2>Corrective RAG</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>CorrectiveRAG</strong> adds three gates to standard RAG: grade retrieved documents → rewrite query or supplement with web search if irrelevant → hallucination check after generation.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Self-correcting retrieval, hallucination detection, web search fallback.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Document Grading</h3><p>LLM scores relevance of each retrieved doc</p></div>
+                    <div class="feature-card"><h3>Query Rewriting</h3><p>Irrelevant results → rewrite query + re-retrieve</p></div>
+                    <div class="feature-card"><h3>Web Fallback</h3><p>Supplement poor retrieval with web search</p></div>
+                    <div class="feature-card"><h3>Hallucination Check</h3><p>Verify answer is grounded in sources</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- AdaptiveRAG -->
+            <section class="module" id="adaptive-rag" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🎯</span>
+                    <h2>Adaptive RAG</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>AdaptiveRAG</strong> uses an LLM to decide the retrieval strategy: no retrieval needed, single search, or multi-query parallel retrieval.</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">Core value: Adaptive strategy selection reduces unnecessary retrieval and improves efficiency.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>NoRetrieval</h3><p>LLM can answer directly without retrieval</p></div>
+                    <div class="feature-card"><h3>SingleSearch</h3><p>One retrieval query suffices</p></div>
+                    <div class="feature-card"><h3>MultiQuery</h3><p>Multiple parallel queries for complex questions</p></div>
+                    <div class="feature-card"><h3>LLM-Routed</h3><p>Strategy selected by LLM classification</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- GraphRAG -->
+            <section class="module" id="graph-rag" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🌐</span>
+                    <h2>GraphRAG</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>GraphRAG</strong> builds a knowledge graph from documents: extract entities + relations → build graph → Label Propagation community detection → community summaries → query by community (Global) or by entity (Local) or both (Hybrid).</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Captures relationships between entities that vector search misses.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Entity Extraction</h3><p>LLM extracts entities and relations from text</p></div>
+                    <div class="feature-card"><h3>Graph Building</h3><p>Construct knowledge graph from extracted data</p></div>
+                    <div class="feature-card"><h3>Community Detection</h3><p>Label Propagation for community grouping</p></div>
+                    <div class="feature-card"><h3>Global/Local/Hybrid</h3><p>Three query modes for different use cases</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- Deep Research -->
+            <section class="module" id="deep-research" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🔬</span>
+                    <h2>Deep Research</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>DeepResearchAgent</strong> performs multi-round deep research: decompose into sub-topics → parallel search → deduplication → synthesis → gap detection → re-search → citation report.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Sub-topic Decomposition</h3><p>Break complex question into sub-topics</p></div>
+                    <div class="feature-card"><h3>Parallel Search</h3><p>Search all sub-topics concurrently</p></div>
+                    <div class="feature-card"><h3>Gap Detection</h3><p>Identify missing information and re-search</p></div>
+                    <div class="feature-card"><h3>Citation Report</h3><p>Generate report with source citations</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- RouterLLM -->
+            <section class="module" id="router-llm" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🔀</span>
+                    <h2>RouterLLM</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>RouterLLM</strong> implements BaseChatModel, routing calls across a pool of heterogeneous models with 5 strategies and automatic fallback on failure.</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Strategy</th><th>Description</th><th>Use Case</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Fallback</strong></td><td>Primary first, then fallbacks</td><td>Reliability</td></tr>
+                        <tr><td><strong>RoundRobin</strong></td><td>Cycle through models</td><td>Load balancing</td></tr>
+                        <tr><td><strong>LeastLatency</strong></td><td>Pick lowest EMA latency</td><td>Speed optimization</td></tr>
+                        <tr class="highlight-row"><td><strong>LowestCost</strong></td><td>Pick cheapest model</td><td>Cost optimization</td></tr>
+                        <tr><td><strong>InputDirected</strong></td><td>Closure-based selection</td><td>Custom routing</td></tr>
+                    </tbody>
+                </table>
 
                 <hr class="divider">
             </section>
@@ -1972,7 +2220,7 @@ graph.validate()?;
             <section class="module" id="retrieval-agent" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🔄</span>
-                    <h2>Retrieval + Agent (RAG)</h2>
+                    <h2>RAG Agent</h2>
                 </div>
 
                 <div class="card">
@@ -2056,24 +2304,42 @@ src/
 ├── core/                # Core abstractions
 │   ├── language_models/ # Base LLM traits
 │   ├── runnables/       # Runnable trait
+│   ├── router_llm/      # RouterLLM (5 strategies + fallback)
+│   ├── batch/           # BatchClient (OpenAI/Anthropic)
+│   ├── structured_output/ # with_structured_output + streaming
 │   └── tools/           # Tool trait + ToolDefinition
 ├── language_models/     # LLM implementations
-│   ├── openai/          # OpenAI client (bind_tools)
+│   ├── openai/          # OpenAI client + Responses API
+│   ├── anthropic/       # Claude (extended thinking)
 │   ├── gemini/          # Google Gemini client
-│   └── ...              # DeepSeek, Moonshot, Qwen, etc.
+│   └── ...              # DeepSeek, Moonshot, Qwen, Ollama, Zhipu
 ├── agents/              # Agent framework
 │   ├── react/           # ReActAgent (text parsing)
-│   └── function_calling/ # FunctionCallingAgent
+│   ├── function_calling/ # FunctionCallingAgent
+│   ├── plan_execute/    # PlanExecuteAgent
+│   ├── crag/            # CorrectiveRAG (grade+rewrite+hallucination)
+│   ├── adaptive_rag/    # AdaptiveRAG (LLM-routed retrieval)
+│   └── deep_research/   # DeepResearchAgent (multi-round + citations)
 ├── prompts/             # Prompt templates (incl. FewShot)
 ├── output_parsers/      # Output parsers
-├── memory/              # Memory management
+├── memory/              # Memory management (Buffer, Window, Summary, ContextWindow)
 ├── chains/              # Chain operations (incl. Document Chains)
 ├── retrieval/           # RAG components
-├── embeddings/          # Text embeddings
-├── vector_stores/       # Vector storage (incl. ChromaDB)
+│   ├── graph_rag/       # GraphRAG (knowledge graph + communities)
+│   ├── bm25/            # BM25 keyword search
+│   └── hybrid/          # Hybrid retrieval (BM25 + Vector, RRF)
+├── embeddings/          # Text embeddings (OpenAI, DeepSeek, Qwen, Local, Mock)
+├── vector_stores/       # Vector storage (InMemory, Qdrant, MongoDB, ChromaDB, Redis, SQLite, PGVector, Pinecone, File)
 ├── storage/             # Storage backends (Redis, SQLite)
 ├── cache/               # LLM Cache (InMemory, Redis)
-├── tools/               # Built-in tools (incl. Wikipedia, DuckDuckGo, PythonREPL)
+├── tools/               # Built-in tools + sandbox (Calculator, DateTime, HTTPTool, PythonREPL, CodeSandbox, ComputerUseTool)
+├── mcp/                 # MCP Client/Server + 6 primitives
+├── a2a/                 # Agent-to-Agent protocol
+├── langgraph/           # LangGraph (StateGraph, Subgraph, Parallel, Checkpointer)
+├── sessions/            # Session management
+├── guardrails/          # Input/output safety guardrails
+├── evaluation/          # 10 evaluators across 5 categories
+├── callbacks/           # Callbacks + Tracing (InMemory, Console, OTel)
 └── schema/              # Data structures</code></pre>
                 </div>
 
@@ -2096,6 +2362,11 @@ src/
                     <tbody>
                         <tr><td>FunctionCallingAgent</td><td><code>new(llm, tools, prompt)</code></td><td>Recommended, native FC</td></tr>
                         <tr><td>ReActAgent</td><td><code>new(llm, tools, memory)</code></td><td>Legacy models</td></tr>
+                        <tr><td>PlanExecuteAgent</td><td><code>new(llm, tools)</code></td><td>Plan → execute → replan</td></tr>
+                        <tr><td>CorrectiveRAGAgent</td><td><code>new(llm, retriever)</code></td><td>Grade + rewrite + hallucination check</td></tr>
+                        <tr><td>AdaptiveRAGAgent</td><td><code>new(llm, retriever)</code></td><td>LLM-routed retrieval strategy</td></tr>
+                        <tr><td>DeepResearchAgent</td><td><code>new(llm, search_tool)</code></td><td>Multi-round research + citations</td></tr>
+                        <tr><td>RouterLLM</td><td><code>new(strategy)</code></td><td>5 strategies + fallback</td></tr>
                     </tbody>
                 </table>
 
@@ -2174,27 +2445,35 @@ src/
                     </div>
                     <div class="card">
                         <div class="card-title">03 Memory Selection</div>
-                        <p>Long conversations: SummaryBufferMemory. Short: BufferMemory.</p>
+                        <p>Long conversations: SummaryBufferMemory. Short: BufferMemory. Very long: ContextWindow.</p>
                     </div>
                     <div class="card">
-                        <div class="card-title">04 RAG Config</div>
-                        <p>chunk_size=200-500, overlap=50-100, top_k=3-10</p>
+                        <div class="card-title">04 RAG Strategy</div>
+                        <p>Simple: RetrievalQA. Quality-critical: CorrectiveRAG. Relationship-heavy: GraphRAG. Adaptive: AdaptiveRAG.</p>
                     </div>
                     <div class="card">
-                        <div class="card-title">05 Streaming</div>
-                        <p>Use stream_chat() for interactive scenarios to reduce perceived latency.</p>
+                        <div class="card-title">05 Model Routing</div>
+                        <p>Use RouterLLM with Fallback for reliability, LowestCost for budget, LeastLatency for speed.</p>
                     </div>
                     <div class="card">
                         <div class="card-title">06 Caching</div>
-                        <p>Enable LLM cache for repetitive queries to reduce costs and latency.</p>
+                        <p>Enable LLM cache for repetitive queries. Use Batch API for offline bulk processing (50% cost reduction).</p>
                     </div>
                     <div class="card">
                         <div class="card-title">07 Document Strategy</div>
-                        <p>Few small docs → Stuff. Many docs → MapReduce. Accuracy critical → MapRerank.</p>
+                        <p>Few small docs → Stuff. Many docs → MapReduce. Accuracy critical → MapRerank. Relationships → GraphRAG.</p>
                     </div>
                     <div class="card">
-                        <div class="card-title">08 Security</div>
-                        <p>Use environment variables for API keys. Never hardcode.</p>
+                        <div class="card-title">08 Observability</div>
+                        <p>Use Tracing (Tracer + SpanGuard) for production monitoring. OTel backend for distributed tracing.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">09 Security</div>
+                        <p>Use Guardrails for input/output validation. Use environment variables for API keys. Never hardcode.</p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">10 CRAG Grading</div>
+                        <p>Use with_grader_llm() to inject a different LLM for hallucination detection, avoiding self-verification bias.</p>
                     </div>
                 </div>
             </section>
@@ -2204,7 +2483,7 @@ src/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.3.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.6.0 | MIT License</p>
             </footer>
         </div>
     </main>
