@@ -155,6 +155,8 @@ async fn test_anthropic_chat_with_thinking_response() {
         temperature: None,
         system_prompt: None,
         thinking: ThinkingConfig::enabled(10000),
+        tools: None,
+        tool_choice: None,
     };
     let llm = AnthropicChat::new(config);
 
@@ -187,6 +189,8 @@ async fn test_anthropic_chat_without_thinking_response() {
         temperature: None,
         system_prompt: None,
         thinking: ThinkingConfig::disabled(),
+        tools: None,
+        tool_choice: None,
     };
     let llm = AnthropicChat::new(config);
 
@@ -216,6 +220,8 @@ async fn test_anthropic_streaming_with_thinking() {
         temperature: None,
         system_prompt: None,
         thinking: ThinkingConfig::enabled(10000),
+        tools: None,
+        tool_choice: None,
     };
     let llm = AnthropicChat::new(config);
 
