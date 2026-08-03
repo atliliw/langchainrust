@@ -163,8 +163,10 @@ pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
 #[cfg(feature = "sqlite-storage")]
 pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
 
+// PGVectorStore requires user-configured sqlx + pgvector dependencies.
+// See src/vector_stores/pgvector.rs and docs/USAGE_EN.md for setup.
 #[cfg(feature = "pgvector-storage")]
-pub use vector_stores::PGVectorStore;
+pub use vector_stores::pgvector;
 
 pub use vector_stores::PineconeStore;
 pub use vector_stores::{

@@ -125,7 +125,7 @@ impl Embeddings for BagOfWordsEmbeddings {
 mod nn {
     use super::*;
     use ort::value::Tensor;
-    use std::cell::RefCell;
+    use std::sync::RwLock;
 
     /// 基于 ONNX Runtime 的本地神经网络嵌入
     ///
@@ -142,8 +142,8 @@ mod nn {
     /// ```
     pub struct LocalEmbeddings {
         // ort 2.0.0-rc.12 的 Session::run() 需要 &mut self,
-        // 使用 RefCell 以便在 &self 方法中获取可变引用
-        session: RefCell<ort::session::Session>,
+        // 使用 RwLock 以便在 &self 方法中获取可变引用, 同时满足 Send + Sync
+        session: RwLock<ort::session::Session>,
         dim: usize,
         model_name: String,
     }
@@ -181,7 +181,7 @@ mod nn {
             let dim = Self::infer_dimension(&session)?;
 
             Ok(Self {
-                session: RefCell::new(session),
+                session: RwLock::new(session),
                 dim,
                 model_name,
             })
@@ -255,16 +255,20 @@ mod nn {
                 .map_err(|e| EmbeddingError::ApiError(format!("构造输入张量失败: {}", e)))?;
 
             // 获取输入名称
-            let session = self.session.borrow();
+            let session = self.session.read().map_err(|e| {
+                EmbeddingError::ApiError(format!("获取 session 读锁失败: {}", e))
+            })?;
             let input_name = session
                 .inputs()
                 .first()
                 .map(|o| o.name().to_string())
                 .unwrap_or_else(|| "input_ids".to_string());
 
-            // run() 需要 &mut self, 通过 RefCell 获取可变引用
+            // run() 需要 &mut self, 通过 RwLock 获取写锁
             drop(session);
-            let mut session = self.session.borrow_mut();
+            let mut session = self.session.write().map_err(|e| {
+                EmbeddingError::ApiError(format!("获取 session 写锁失败: {}", e))
+            })?;
             let outputs = session
                 .run(ort::inputs![input_name.as_str() => input_tensor]?)
                 .map_err(|e| EmbeddingError::ApiError(format!("ONNX 推理失败: {}", e)))?;

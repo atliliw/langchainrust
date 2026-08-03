@@ -52,8 +52,8 @@ impl VectorStoreProvider {
 
     /// 创建 Qdrant 向量存储
     async fn create_qdrant_store(
-        _url: String,
-        _collection: String,
+        url: String,
+        collection: String,
     ) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         #[cfg(feature = "qdrant-integration")]
         {
@@ -65,6 +65,7 @@ impl VectorStoreProvider {
 
         #[cfg(not(feature = "qdrant-integration"))]
         {
+            let _ = (url, collection);
             eprintln!("Warning: Qdrant requested but feature 'qdrant-integration' not enabled. Falling back to InMemory store.");
             use crate::vector_stores::InMemoryVectorStore;
             Ok(Arc::new(InMemoryVectorStore::new()))

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-08-03
+
+### Fixed
+- **docs.rs build failure**: pgvector.rs `use pgvector`/`use sqlx` imports caused compilation errors when building with `--all-features` without actual pgvector/sqlx crates. Refactored pgvector.rs to only expose pure helper functions (`validate_table_name`, `build_table_sql`); the full `PGVectorStore` implementation requires user-configured dependencies
+- **LocalEmbeddings thread safety**: Replaced `RefCell<Session>` with `RwLock<Session>` in `LocalEmbeddings` to satisfy `Send + Sync` trait bounds required by the `Embeddings` trait
+- **Qdrant provider feature gate**: Fixed `provider.rs` parameter naming (`_url`/`_collection` → `url`/`collection`) that caused E0423/E0425 errors when `qdrant-integration` feature was enabled
+
 ## [0.7.0] - 2026-08-01
 
 ### Changed

@@ -128,19 +128,19 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.7.0"
+langchainrust = "0.7.1"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.7.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.7.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.7.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.7.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.7.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.7.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.7.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.7.0", features = ["sandbox-wasm"] }          # WASM sandbox
-langchainrust = { version = "0.7.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.7.1", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.7.1", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.7.1", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.7.1", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.7.1", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.7.1", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.7.1", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.7.1", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.7.1", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
