@@ -1,125 +1,94 @@
-# 贡献指南
+# Contributing to langchainrust
 
-感谢您有兴趣为 LangChain Rust 做贡献！
+Thank you for your interest in contributing to langchainrust! We welcome contributions of all kinds — bug reports, feature requests, documentation improvements, and code.
 
-## 如何贡献
+## Table of Contents
 
-### 报告 Bug
+- [Reporting Bugs](#reporting-bugs)
+- [Requesting Features](#requesting-features)
+- [Development Setup](#development-setup)
+- [Code Standards](#code-standards)
+- [Commit Messages](#commit-messages)
+- [Pull Request Process](#pull-request-process)
+- [Project Structure](#project-structure)
+- [Running Tests](#running-tests)
+- [Good First Issues](#good-first-issues)
+- [License](#license)
 
-如果您发现了 bug，请在 [Issues](https://github.com/atliliw/langchainrust/issues) 中创建一个新 issue，包含：
+## Reporting Bugs
 
-1. 清晰的标题和描述
-2. 重现步骤
-3. 预期行为和实际行为
-4. 环境信息（Rust 版本、操作系统等）
+If you find a bug, please [open an issue](https://github.com/atliliw/langchainrust/issues/new?template=bug_report.md) and include:
 
-### 提交功能请求
+1. A clear title and description
+2. Steps to reproduce
+3. Expected vs. actual behavior
+4. Environment info (Rust version, OS, enabled features)
+5. A minimal reproducible example if possible
 
-欢迎提交功能请求！请在 issue 中描述：
+## Requesting Features
 
-1. 您想要的功能
-2. 为什么这个功能有用
-3. 可能的实现方式（如果有想法）
+Feature requests are welcome! Please [open an issue](https://github.com/atliliw/langchainrust/issues/new?template=feature_request.md) and describe:
 
-### 提交代码
+1. What you want
+2. Why it's useful
+3. A proposed API or implementation idea (optional)
 
-#### 开发环境设置
+## Development Setup
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/atliliw/langchainrust.git
 cd langchainrust
 
-# 安装依赖并构建
+# Build
 cargo build
 
-# 运行测试
+# Run tests
 cargo test
 
-# 运行 clippy
+# Run clippy
 cargo clippy
 
-# 检查格式
+# Check formatting
 cargo fmt --check
 ```
 
-#### 代码规范
+### Prerequisites
 
-1. **格式化**: 使用 `cargo fmt` 自动格式化代码
-2. **Lint**: 确保通过 `cargo clippy` 检查（无警告）
-3. **测试**: 所有新功能必须包含测试
-4. **文档**: 公共 API 必须有文档注释
+- Rust 1.82+ (see `rust-toolchain.toml`)
+- For integration tests: set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` environment variables
 
-#### 提交规范
+## Code Standards
 
-使用清晰的提交信息：
+### Formatting
 
-```
-<type>: <description>
+Use `cargo fmt` to auto-format your code. CI will reject PRs that are not formatted.
 
-[optional body]
+### Linting
 
-[optional footer]
-```
+Ensure `cargo clippy` passes with no warnings:
 
-类型：
-- `feat`: 新功能
-- `fix`: Bug 修复
-- `docs`: 文档更新
-- `style`: 代码格式调整
-- `refactor`: 代码重构
-- `test`: 测试相关
-- `chore`: 构建/工具相关
-
-示例：
-```
-feat: add Qwen LLM support
-
-- Implement QwenChat client
-- Add QwenConfig for configuration
-- Include streaming support
-
-Closes #123
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-#### Pull Request 流程
+### Testing
 
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'feat: add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+All new features and bug fixes must include tests. See [Running Tests](#running-tests) for details.
 
-#### PR 检查清单
+### Documentation
 
-- [ ] 代码通过 `cargo fmt --check`
-- [ ] 代码通过 `cargo clippy`（无警告）
-- [ ] 所有测试通过 `cargo test`
-- [ ] 添加了必要的文档
-- [ ] 添加了必要的测试
-
-### 代码风格
-
-#### 命名规范
-
-- **Struct/Enum**: PascalCase (如 `OpenAIChat`, `AgentError`)
-- **函数/方法**: snake_case (如 `embed_query`, `add_documents`)
-- **变量**: snake_case (如 `api_key`, `max_tokens`)
-- **常量**: SCREAMING_SNAKE_CASE (如 `MAX_ITERATIONS`)
-
-#### 文档注释
-
-使用 `///` 进行文档注释：
+Public API items must have doc comments (`///`):
 
 ```rust
-/// 创建新的 ReActAgent
+/// Creates a new ReActAgent.
 ///
-/// # 参数
-/// * `llm` - LLM 客户端
-/// * `tools` - 可用工具列表
-/// * `system_prompt` - 自定义系统提示词
+/// # Arguments
+/// * `llm` - The LLM client
+/// * `tools` - Available tools
+/// * `system_prompt` - Optional custom system prompt
 ///
-/// # 示例
+/// # Example
 /// ```
 /// use langchainrust::{ReActAgent, OpenAIChat, OpenAIConfig};
 ///
@@ -131,70 +100,142 @@ pub fn new(llm: OpenAIChat, tools: Vec<Arc<dyn BaseTool>>, system_prompt: Option
 }
 ```
 
-#### 错误处理
+### Error Handling
 
-使用 `Result<T, Box<dyn Error>>` 或自定义错误类型：
+Use `Result<T, E>` with custom error types. Avoid `unwrap()` in library code:
 
 ```rust
-// 推荐：自定义错误类型
-#[derive(Debug)]
-pub enum MyError {
-    InvalidInput(String),
-    ExecutionFailed(String),
-}
+// Good: explicit error handling
+let value = some_option.ok_or(MyError::InvalidInput("missing value".into()))?;
 
-// 不推荐：过度使用 unwrap()
-let value = some_option.unwrap(); // ❌
-
-// 推荐：使用 ? 操作符
-let value = some_option.ok_or(MyError::InvalidInput("missing value".into()))?; // ✅
+// Bad: panics in production
+let value = some_option.unwrap();
 ```
 
-### 项目结构
+### Naming Conventions
+
+- **Struct/Enum**: PascalCase (`OpenAIChat`, `AgentError`)
+- **Functions/methods**: snake_case (`embed_query`, `add_documents`)
+- **Variables**: snake_case (`api_key`, `max_tokens`)
+- **Constants**: SCREAMING_SNAKE_CASE (`MAX_ITERATIONS`)
+
+## Commit Messages
+
+Use the [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+Types:
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation update
+- `style`: Code formatting (no logic changes)
+- `refactor`: Code refactoring
+- `test`: Test additions or updates
+- `chore`: Build/tooling changes
+- `perf`: Performance improvement
+
+Example:
+```
+feat: add Qwen LLM support
+
+- Implement QwenChat client
+- Add QwenConfig for configuration
+- Include streaming support
+
+Closes #123
+```
+
+## Pull Request Process
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Commit with a descriptive message (`git commit -m 'feat: add amazing feature'`)
+5. Push to your branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
+
+### PR Checklist
+
+Before submitting, ensure:
+
+- [ ] Code passes `cargo fmt --check`
+- [ ] Code passes `cargo clippy` (no warnings)
+- [ ] All tests pass with `cargo test`
+- [ ] New code includes tests
+- [ ] Public API has documentation comments
+- [ ] No hardcoded secrets or API keys
+
+## Project Structure
 
 ```
 src/
-├── core/           # 核心抽象（Runnable, Tool 等）
-├── schema/         # 数据结构（Message 等）
-├── language_models/ # LLM 实现（OpenAI 等）
-├── tools/          # 内置工具
-├── agents/         # Agent 实现
-├── memory/         # Memory 实现
-├── chains/         # Chain 实现
-├── embeddings/     # Embedding 模型
-├── vector_stores/  # 向量存储
-└── retrieval/      # 检索组件
+├── core/            # Core abstractions (Runnable, Tool, RouterLLM, Batch, StructuredOutput)
+├── schema/          # Data structures (Message, Document)
+├── language_models/ # LLM implementations (OpenAI, Anthropic, Ollama, Gemini, etc.)
+├── tools/           # Built-in tools (Calculator, HTTP, SQL, Sandbox, etc.)
+├── agents/          # Agent implementations (ReAct, FunctionCalling, CRAG, DeepResearch, etc.)
+├── memory/          # Memory implementations (Buffer, Window, Summary, ContextWindow)
+├── chains/          # Chain implementations (LLMChain, Sequential, RetrievalQA, DocumentChains)
+├── embeddings/      # Embedding models (OpenAI, DeepSeek, Qwen, Local ONNX)
+├── vector_stores/   # Vector stores (InMemory, Qdrant, MongoDB, ChromaDB, Redis, etc.)
+├── retrieval/       # Retrieval components (BM25, Hybrid, HyDE, MultiQuery, GraphRAG)
+├── langgraph/       # LangGraph workflow engine (StateGraph, Subgraph, Parallel, Checkpointer)
+├── mcp/             # MCP protocol (Client + Server, 6 primitives)
+├── a2a/             # A2A protocol (Agent-to-Agent)
+├── callbacks/       # Callback system (StdOut, LangSmith, OTel, Tracing)
+├── evaluation/      # Evaluation framework (10 evaluators)
+├── guardrails/      # Safety guardrails (Input/Output)
+├── sessions/        # Session management
+├── prompts/         # Prompt templates
+├── output_parsers/  # Output parsers
+└── error.rs         # Unified error types
 
-examples/           # 示例代码
-tests/              # 集成测试
-docs/               # 文档
+examples/            # Runnable examples
+tests/               # Integration and unit tests
+docs/                # Documentation
 ```
 
-### 运行测试
+## Running Tests
 
 ```bash
-# 运行所有测试
-cargo test
+# Run all unit tests (no API key needed)
+cargo test --lib
 
-# 运行特定测试
+# Run specific test
 cargo test test_name
 
-# 运行带输出的测试
+# Run tests with output
 cargo test -- --nocapture
 
-# 运行 ignored 测试（需要 API Key）
+# Run integration tests (requires API key)
+export OPENAI_API_KEY="your-key"
+cargo test --test integration_llm_chat
+
+# Run tests with all features
+cargo test --all-features
+
+# Run ignored tests (requires real API keys)
 cargo test -- --ignored
 ```
 
-### 获取帮助
+## Good First Issues
 
-如果您有任何问题，可以：
+Look for issues labeled [`good first issue`](https://github.com/atliliw/langchainrust/labels/good%20first%20issue) — these are specifically chosen to be approachable for new contributors. Typical examples include:
 
-1. 查看 [文档](./docs/USAGE.md)
-2. 查看 [示例](./examples/)
-3. 在 [Discussions](https://github.com/atliliw/langchainrust/discussions) 中提问
-4. 创建 [Issue](https://github.com/atliliw/langchainrust/issues)
+- Adding a new document loader
+- Implementing a new output parser
+- Writing additional tests
+- Fixing documentation typos
 
-## 许可证
+If you're unsure where to start, feel free to ask in the issue comments or open a discussion.
 
-通过贡献代码，您同意您的代码将在 MIT 或 Apache-2.0 双许可证下发布。
+## License
+
+By contributing to langchainrust, you agree that your contributions will be licensed under the MIT or Apache-2.0 license, at the option of the project users.

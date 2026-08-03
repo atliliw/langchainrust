@@ -5,440 +5,502 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-01
+
+### Changed
+- **Version upgrade**: 0.6.0 → 0.7.0
+- **Test fixes**: Updated MultiQuery, Anthropic Thinking, and VectorStore tests to support the new version and fix assertion logic
+
+### Added
+- **Documentation navigation**: Added page navigation menu to features.html / features_en.html
+
+## [0.6.0] - 2026-07-30
+
+### Added
+- **CorrectiveRAG (Self-Correcting RAG)**: `CorrectiveRAGAgent` LangGraph state machine — retrieve → grade → [rewrite+web | keep] → generate, with hallucination detection
+- **AdaptiveRAG (Adaptive Retrieval)**: LLM routing to `NoRetrieval` / `SingleSearch` / `MultiQuery`, reusing existing Retrievers
+- **GraphRAG (Knowledge Graph RAG)**: LLM extracts entities + relationships → build graph → Label Propagation community detection + summarization → Global/Local/Hybrid queries
+- **Deep Research Agent**: Multi-round search (query generation → parallel retrieval → deduplication → sub-topic aggregation → comprehensive report + citations)
+- **RouterLLM**: 5 routing strategies (Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected) + failover
+- **MCP Full Protocol**: Added resources / prompts / completion / elicitation / roots / sampling primitives, with corresponding Client/Server handlers
+- **Code Interpreter Sandbox**: `CodeSandbox` trait + `LocalSandbox` (subprocess) + E2B/WASM backends (feature gate)
+- **OpenAI Responses API**: `ResponsesModel` implementing `BaseChatModel`, using `/v1/responses`, with built-in web_search/file_search/code_interpreter/computer_use
+- **Anthropic Extended Thinking**: `ThinkingConfig` + `with_thinking(budget_tokens)`, thinking block parsing, streaming thinking
+- **Streaming Structured Output**: `PartialJsonParser` incremental JSON parsing + `stream_structured_output<T>` streaming partial structures
+- **Batch API**: `BatchClient` submit/poll/results/cancel, OpenAI + Anthropic batch endpoints
+- **Agent Observability / Tracing**: `Tracer` + `SpanGuard` (RAII) + `TracingBackend` trait + InMemory/Console/OTel backends
+
+### Changed
+- **Large-scale code refactoring**: Split multiple large files into modular subdirectories
+  - `tracing.rs` → `tracing/` (backend, span, tracer, tests)
+  - `document_chains.rs` → `document_chains/` (stuff, refine, map_reduce, map_rerank, tests)
+  - `batch.rs` → `batch/` (client, types, tests)
+  - `structured_output.rs` → `structured_output/` (extract, parser, streaming, tests)
+  - `compiled.rs` → `compiled/` (graph, invoke, parallel, stream, types, validate, visualize, tests)
+  - `anthropic.rs` → `anthropic/` (chat, config, error, impls, types, tests)
+  - `responses.rs` → `responses/` (model, types, tests)
+  - `context_window.rs` → `context_window/` (manager, trimmer, tests)
+  - `document_store.rs` → `document_store/` (store, chunked, types, tests)
+  - `computer.rs` → `computer/` (actions, screen)
+- **thiserror 1.0 → 2.0** (breaking): Full migration of error types
+- **Unified error module**: Added `src/error.rs`, centralizing all error type definitions
+- **Document deduplication optimization**: AdaptiveRAG document deduplication changed from first-80-characters to full-content hash
+- **Community summarization refactoring**: GraphRAG community summaries now use a unified prompt template system
+- **Provider environment variable error handling**: Added error handling to `from_env()` for Ollama and OpenAI
+- **Streaming error propagation**: Fixed network error propagation mechanism in streaming
+- **Gemini enhancements**: Extended Gemini provider functionality
+- **LLMResult**: Added `thinking_content: Option<String>` field (`#[serde(default)]` for backward compatibility)
+- **CallbackHandler**: Added `on_llm_thinking` default method
+- **AnthropicChat**: Added `with_thinking(budget_tokens)` builder
+- **Cargo.toml**: Added feature gates `sandbox-e2b`, `sandbox-wasm`
+
+### Fixed
+- **Security**: PythonREPLTool added dangerous import checks; HTTPTool SSRF switched to async DNS; URLFetchTool added private IP filtering; SQLTool blocks semicolon/comment/subquery bypasses; Gemini API key moved from URL to header
+- **Panic fixes**: `choices[0]` changed to `.first().ok_or()`; `from_env()` returns Result instead of expect panic; Regex changed to LazyLock; Mutex poison changed to `into_inner()`
+- **SSE streaming**: Ollama/Anthropic/Gemini added cross-chunk buffer, no longer losing tokens
+- **Multi-round Function Calling**: Anthropic system messages placed in top-level `system` field; Ollama AI messages include tool_calls; Gemini tool_result uses functionResponse
+- **Concurrency safety**: langgraph/compiled switched to tokio::sync::RwLock; sessions/memory_store switched to tokio::sync::Mutex; HandoffManager merged into single Mutex; MCP Transport added request-level mutex
+- **Data correctness**: parent_id separator changed from `_` to `::`; error propagation replaces `.ok()` silent swallowing; UTF-8 splitting at character boundaries; negative-score document filtering; RRF document IDs use content hash
+- **Runnable::stream() pseudo-streaming**: OpenAI/Anthropic/Ollama changed to emit LLMResult per token
+- **Batch API**: Anthropic message mapping corrected — system messages extracted to top-level `system` field
+- **RouterLLM**: Mutex poison changed to into_inner; RoundRobin index zero-check; stream_chat updates latency statistics
+- **JSON fixes**: repair_partial_json correctly tracks braces inside strings; handles escaped quotes; UTF-8 character boundary checks
+- **Other**: cosine_similarity uses epsilon floating-point zero check; different-length vectors return error; cache expired entry cleanup; structured_output parse supports markdown wrapping; score range validation 0-1
+
 ## [0.5.2] - 2026-07-28
 
 ### Fixed
-- **GraphRAG 社区摘要用实体 ID 而非 name** (`retrieval::graph_rag::community`): `summarize_community` 直接拼接 `r.source`/`r.target`(值为 `e_xxx` 形式的实体 ID),LLM 收到无意义 ID 导致社区摘要质量极差,直接拖垮 Global/Hybrid 查询。改为通过 `store.get_entity()` 查实体 name,与 `query.rs` 的 `format_relation` 逻辑一致
-- **Deep Research 综合报告嵌入 JSON 字符串导致转义失败** (`agents::deep_research::synthesizer`): 要求 LLM 把完整 markdown 报告作为 JSON 字符串字段 `"report"` 输出,markdown 含 `\n`、`"`、`\` 需 JSON 转义,LLM 转义出错率高导致 `serde_json` 解析失败,整个综合步骤报错。改用分隔符格式 `<<<REPORT>>>...<<<END_REPORT>>><<<GAPS>>>[...]<<<END_GAPS>>>`,report 部分直接取原始文本无需转义;保留旧 JSON 格式作为 fallback 兼容
-- **document_store 在 tokio runtime 内 panic** (`vector_stores::document_store`): `InMemoryDocumentStore` 和 `InMemoryChunkedDocumentStore` 内部用 `tokio::sync::RwLock`,但 `_blocking` 方法调 `blocking_read()`/`blocking_write()`,在 `#[tokio::test]` async 上下文里触发 `Cannot block the current thread from within a runtime` panic。改为 `std::sync::RwLock`,所有锁操作 `.read().unwrap()`/`.write().unwrap()`,同步异步上下文通用;锁持有时间短(无跨 await 持锁),不会死锁
-- **CRAG 评分阈值卡在主观区间** (`agents::crag`): 默认 `grade_threshold = 0.5` 正好在 LLM 评分最不稳定的区间,而 `parse_grade_response` 模糊响应默认也给 0.5,恰好等于阈值,导致是否触发纠错近乎随机。默认阈值改为 0.6,模糊响应分数改为 0.4,二者不再重合;`GradeResult` 新增 `is_ambiguous` 字段标记分数来源是否为模糊解析
-- **CRAG 幻觉检测自检偏差** (`agents::crag`): 生成回答和幻觉检测用同一个 LLM,模型倾向认同自己的输出。新增 `with_grader_llm()` builder,可注入独立 LLM 做幻觉检测(不设置时回退主 LLM,向后兼容);幻觉检测 prompt 加对抗视角("Be skeptical");幻觉检测 LLM 调用失败时降级返回 `grounded: false` 而非中断整个流程
+- **GraphRAG community summaries using entity IDs instead of names** (`retrieval::graph_rag::community`): `summarize_community` directly concatenated `r.source`/`r.target` (entity IDs in `e_xxx` format), causing LLM to receive meaningless IDs and severely degrading community summary quality, which dragged down Global/Hybrid queries. Changed to look up entity names via `store.get_entity()`, consistent with `format_relation` logic in `query.rs`
+- **Deep Research comprehensive report embedded as JSON string causing escape failures** (`agents::deep_research::synthesizer`): Requiring LLM to output the full markdown report as a JSON string field `"report"` meant markdown containing `\n`, `"`, `\` needed JSON escaping, and LLM escape error rates were high, causing `serde_json` parse failures that broke the entire synthesis step. Changed to delimiter format `<<<REPORT>>>...<<<END_REPORT>>><<<GAPS>>>[...]<<<END_GAPS>>>`, where the report portion takes raw text without escaping; old JSON format retained as fallback for compatibility
+- **document_store panic inside tokio runtime** (`vector_stores::document_store`): `InMemoryDocumentStore` and `InMemoryChunkedDocumentStore` internally used `tokio::sync::RwLock`, but `_blocking` methods called `blocking_read()`/`blocking_write()`, which triggered `Cannot block the current thread from within a runtime` panic in `#[tokio::test]` async contexts. Changed to `std::sync::RwLock`, with all lock operations using `.read().unwrap()`/`.write().unwrap()`, working in both sync and async contexts; lock hold times are short (no cross-await locking), so no deadlock risk
+- **CRAG scoring threshold stuck in subjective range** (`agents::crag`): Default `grade_threshold = 0.5` was exactly in the range where LLM scoring is most unstable, and `parse_grade_response` ambiguous responses also defaulted to 0.5, which exactly equaled the threshold, making corrective action nearly random. Default threshold changed to 0.6, ambiguous response score changed to 0.4, so they no longer overlap; `GradeResult` gained `is_ambiguous` field to mark whether the score came from ambiguous parsing
+- **CRAG hallucination detection self-check bias** (`agents::crag`): Generation and hallucination detection used the same LLM, and the model tends to agree with its own output. Added `with_grader_llm()` builder to inject an independent LLM for hallucination detection (falls back to main LLM when not set, backward compatible); hallucination detection prompt adds adversarial perspective ("Be skeptical"); hallucination detection LLM call failure degrades to returning `grounded: false` instead of aborting the entire flow
 
 ### Changed
-- **Sandbox feature 补声明** (`Cargo.toml`): 代码中 `#[cfg(feature = "sandbox-e2b")]` / `#[cfg(feature = "sandbox-wasm")]` 引用的 feature 此前未在 `[features]` 声明,clippy 报 `unexpected cfg condition value`。新增 `sandbox-e2b` / `sandbox-wasm` feature 声明
-- **clippy 零 warning**: 修复 `or_insert_with(Vec::new)` -> `or_default()`、`from_env()` 内部调 deprecated `OpenAIConfig::from_env()` 加 `#[allow(deprecated)]` 等告警
+- **Sandbox feature declarations added** (`Cargo.toml`): Code referencing `#[cfg(feature = "sandbox-e2b")]` / `#[cfg(feature = "sandbox-wasm")]` had features not previously declared in `[features]`, causing clippy `unexpected cfg condition value` warnings. Added `sandbox-e2b` / `sandbox-wasm` feature declarations
+- **clippy zero warnings**: Fixed `or_insert_with(Vec::new)` -> `or_default()`, `#[allow(deprecated)]` on internal `OpenAIConfig::from_env()` calls, and other warnings
 
 ## [0.5.0] - 2026-07-23
 
 ### Added
-- **模型路由 + Fallback + 负载均衡 (`core::router_llm`)** (#2): `RouterLLM` 实现 `BaseChatModel`,在异构 provider 池上按策略选模型并在失败时 fallback
-  - `RoutingStrategy`: `Fallback`(primary-first) / `RoundRobin` / `LeastLatency`(EMA 延迟统计) / `LowestCost` / `InputDirected`(闭包按输入选模型)
-  - `RouterError` 统一错误,经内部 `ModelAdapter` 把各 provider 异构错误收敛为单一类型
+- **Model Routing + Fallback + Load Balancing (`core::router_llm`)** (#2): `RouterLLM` implements `BaseChatModel`, selecting models by strategy across a heterogeneous provider pool and falling back on failure
+  - `RoutingStrategy`: `Fallback` (primary-first) / `RoundRobin` / `LeastLatency` (EMA latency statistics) / `LowestCost` / `InputDirected` (closure selects model by input)
+  - `RouterError` unified error, via internal `ModelAdapter` converging heterogeneous provider errors into a single type
   - `with_fallbacks(primary, fallbacks)` / `with_model` / `with_named_model` / `with_cost` builder
-- **Agentic / Corrective RAG (`agents::crag`)** (#1): `CorrectiveRAGAgent` LangGraph 状态机: retrieve -> grade -> [rewrite+web|keep] -> generate,带幻觉检测
-- **MCP 全协议 (`mcp`)** (#3): 补 resources / prompts / completion / elicitation / roots / sampling 六大原语,Client/Server 对应 handler,39 个单元测试
-- **Code Interpreter 沙箱 (`tools::sandbox`)** (#4): `CodeSandbox` trait + `SandboxTool<BaseTool>` + `LocalSandbox`(子进程) + E2B/WASM 后端(feature gate)
-- **OpenAI Responses API (`language_models::openai::responses`)** (#5): `ResponsesModel` 实现 `BaseChatModel`,走 `/v1/responses`,内置 web_search/file_search/code_interpreter/computer_use,流式事件解析
-- **GraphRAG 知识图谱 RAG (`retrieval::graph_rag`)** (#6): LLM 抽实体+关系->建图->Label Propagation 社区检测+摘要->Global/Local/Hybrid 查询,无 petgraph 依赖
-- **Anthropic extended thinking (`language_models::providers::anthropic`)** (#7): `ThinkingConfig` + `with_thinking(budget_tokens)`,thinking block 解析,`on_llm_thinking` 回调,`LLMResult.thinking_content`,流式 thinking
-- **Deep Research Agent (`agents::deep_research`)** (#8): 多轮搜索(query 生成->并行检索->去重->子主题聚合->综合报告+引用),`ResearchReport` + `Citation`
-- **Streaming Structured Output (`core::structured_output`)** (#9): `PartialJsonParser` 增量 JSON 解析 + `stream_structured_output<T>` 流式部分结构 + `StreamingStructuredOutputExt` trait
-- **Adaptive RAG (`agents::adaptive_rag`)** (#10): LLM 路由判 `NoRetrieval`/`SingleSearch`/`MultiQuery`,复用现有 Retriever
-- **Batch API (`core::batch`)** (#11): `BatchClient` submit/poll/results/cancel,OpenAI + Anthropic batch 端点,`submit_and_wait` 便捷方法
-- **Agent Observability / 深度 Tracing (`callbacks::tracing`)** (#12): `Tracer` + `SpanGuard`(RAII) + `TracingBackend` trait + `InMemoryTracingBackend`/`ConsoleTracingBackend`/`OtelTracingBackend`,parent-child span tree
+- **Agentic / Corrective RAG (`agents::crag`)** (#1): `CorrectiveRAGAgent` LangGraph state machine: retrieve -> grade -> [rewrite+web|keep] -> generate, with hallucination detection
+- **MCP Full Protocol (`mcp`)** (#3): Added resources / prompts / completion / elicitation / roots / sampling primitives, with corresponding Client/Server handlers, 39 unit tests
+- **Code Interpreter Sandbox (`tools::sandbox`)** (#4): `CodeSandbox` trait + `SandboxTool<BaseTool>` + `LocalSandbox` (subprocess) + E2B/WASM backends (feature gate)
+- **OpenAI Responses API (`language_models::openai::responses`)** (#5): `ResponsesModel` implements `BaseChatModel`, using `/v1/responses`, with built-in web_search/file_search/code_interpreter/computer_use, streaming event parsing
+- **GraphRAG Knowledge Graph RAG (`retrieval::graph_rag`)** (#6): LLM extracts entities + relationships -> build graph -> Label Propagation community detection + summarization -> Global/Local/Hybrid queries, no petgraph dependency
+- **Anthropic Extended Thinking (`language_models::providers::anthropic`)** (#7): `ThinkingConfig` + `with_thinking(budget_tokens)`, thinking block parsing, `on_llm_thinking` callback, `LLMResult.thinking_content`, streaming thinking
+- **Deep Research Agent (`agents::deep_research`)** (#8): Multi-round search (query generation -> parallel retrieval -> deduplication -> sub-topic aggregation -> comprehensive report + citations), `ResearchReport` + `Citation`
+- **Streaming Structured Output (`core::structured_output`)** (#9): `PartialJsonParser` incremental JSON parsing + `stream_structured_output<T>` streaming partial structures + `StreamingStructuredOutputExt` trait
+- **Adaptive RAG (`agents::adaptive_rag`)** (#10): LLM routing to `NoRetrieval`/`SingleSearch`/`MultiQuery`, reusing existing Retrievers
+- **Batch API (`core::batch`)** (#11): `BatchClient` submit/poll/results/cancel, OpenAI + Anthropic batch endpoints, `submit_and_wait` convenience method
+- **Agent Observability / Deep Tracing (`callbacks::tracing`)** (#12): `Tracer` + `SpanGuard` (RAII) + `TracingBackend` trait + `InMemoryTracingBackend`/`ConsoleTracingBackend`/`OtelTracingBackend`, parent-child span tree
 
 ### Changed
-- `LLMResult` 新增 `thinking_content: Option<String>` 字段(#[serde(default)] 向后兼容)
-- `CallbackHandler` trait 新增 `on_llm_thinking` 默认方法
-- `AnthropicChat` 新增 `with_thinking(budget_tokens)` builder
-- Cargo.toml 新增 feature gates: `sandbox-e2b`, `sandbox-wasm`
+- `LLMResult` added `thinking_content: Option<String>` field (#[serde(default)] for backward compatibility)
+- `CallbackHandler` trait added `on_llm_thinking` default method
+- `AnthropicChat` added `with_thinking(budget_tokens)` builder
+- Cargo.toml added feature gates: `sandbox-e2b`, `sandbox-wasm`
 
 ### Fixed
-- **安全**: PythonREPLTool 加危险 import 检查(os/subprocess/socket 等 17 模块);HTTPTool SSRF 改 async DNS 防止 rebinding;URLFetchTool 加内网 IP 过滤;SQLTool 阻止分号/注释/子查询绕过;Gemini API key 从 URL 移至 header(C1-C5)
-- **Panic 修复**: choices[0] 改 `.first().ok_or()`(OpenAI+Ollama);from_env() 返回 Result 不再 expect panic(ResponsesConfig);Regex 改 LazyLock 编译一次;Mutex poison 改 `into_inner()` 恢复(C7-C11)
-- **SSE 流式**: Ollama/Anthropic/Gemini 三个 provider 加跨 chunk buffer,不再丢 token;回调从 `drop()` 改 `.then()` async 执行;Gemini stream_chat 加回调;激活 responses.rs 死模块(H1-H7)
-- **多轮 Function Calling**: Anthropic system 消息填入 top-level `system` 字段;Ollama AI 消息包含 tool_calls;Gemini tool_result 走 functionResponse;Anthropic tool_result 走 content block 格式(H42-H45)
-- **并发安全**: langgraph/compiled 改 tokio::sync::RwLock;sessions/memory_store 改 tokio::sync::Mutex;mongo_memory 避免 blocking_write 死锁;HandoffManager 合并为单 Mutex;MCP Transport 加请求级互斥(C17-C19,C23,H9-H13)
-- **数据正确性**: parent_id 分隔符从 `_` 改 `::`;错误传播替代 `.ok()` 静默吞掉;stream finalizer 重写为可靠机制;UTF-8 按字符边界切分(非字节);负分文档过滤;RRF 文档 ID 用内容 hash(C12-C16,H23-H27,H46)
-- **Runnable::stream() 假流式**: OpenAI/Anthropic/Ollama 改为逐 token 发射 LLMResult(H4)
-- **Batch API**: Anthropic 消息映射修正 — system 消息提取到 top-level `system` 字段,tool 消息走 tool_result 格式(H40)
-- **RouterLLM**: Mutex poison 改 into_inner;RoundRobin 加除零检查;stream_chat 更新延迟统计;Arc 共享 messages 减少 clone(H33-H38)
-- **JSON 修复**: repair_partial_json 正确跟踪字符串内花括号;处理转义引号;UTF-8 字符边界检查(C20-C21,M37)
-- **其他**: cosine_similarity 用 epsilon 浮点零判断;不同长度向量返回错误;缓存过期条目清理;structured_output parse 支持 markdown 包裹;score 范围校验 0-1;A2A 错误响应修正;thiserror 替代手动 Error 实现;多处 Regex 改 LazyLock;vector store 操作优化(C22,M21-M23,M30-M34,M7-M8)
+- **Security**: PythonREPLTool added dangerous import checks (os/subprocess/socket and 17 other modules); HTTPTool SSRF switched to async DNS to prevent rebinding; URLFetchTool added private IP filtering; SQLTool blocks semicolon/comment/subquery bypasses; Gemini API key moved from URL to header (C1-C5)
+- **Panic fixes**: choices[0] changed to `.first().ok_or()` (OpenAI+Ollama); from_env() returns Result instead of expect panic (ResponsesConfig); Regex changed to LazyLock for one-time compilation; Mutex poison changed to `into_inner()` recovery (C7-C11)
+- **SSE streaming**: Ollama/Anthropic/Gemini providers added cross-chunk buffer, no longer losing tokens; callbacks changed from `drop()` to `.then()` async execution; Gemini stream_chat added callbacks; activated dead module in responses.rs (H1-H7)
+- **Multi-round Function Calling**: Anthropic system messages placed in top-level `system` field; Ollama AI messages include tool_calls; Gemini tool_result uses functionResponse; Anthropic tool_result uses content block format (H42-H45)
+- **Concurrency safety**: langgraph/compiled switched to tokio::sync::RwLock; sessions/memory_store switched to tokio::sync::Mutex; mongo_memory avoids blocking_write deadlock; HandoffManager merged into single Mutex; MCP Transport added request-level mutex (C17-C19,C23,H9-H13)
+- **Data correctness**: parent_id separator changed from `_` to `::`; error propagation replaces `.ok()` silent swallowing; stream finalizer rewritten as reliable mechanism; UTF-8 splitting at character boundaries (not bytes); negative-score document filtering; RRF document IDs use content hash (C12-C16,H23-H27,H46)
+- **Runnable::stream() pseudo-streaming**: OpenAI/Anthropic/Ollama changed to emit LLMResult per token (H4)
+- **Batch API**: Anthropic message mapping corrected — system messages extracted to top-level `system` field, tool messages use tool_result format (H40)
+- **RouterLLM**: Mutex poison changed to into_inner; RoundRobin index zero-check; stream_chat updates latency statistics; Arc shared messages reduce clone (H33-H38)
+- **JSON fixes**: repair_partial_json correctly tracks braces inside strings; handles escaped quotes; UTF-8 character boundary checks (C20-C21,M37)
+- **Other**: cosine_similarity uses epsilon floating-point zero check; different-length vectors return error; cache expired structured_output parse supports markdown wrapping; score range validation 0-1; A2A error response corrected; thiserror replaces manual Error implementations; multiple Regex changed to LazyLock; vector store operations optimized (C22,M21-M23,M30-M34,M7-M8)
 
 ## [0.4.2] - 2026-07-22
 
 ### Added
-- **共享数学工具 `core::math`**: 新增 `src/core/math.rs`,提取 `cosine_similarity` 共享实现(带 doctest + 单元测试),供 vector_stores / retrieval / embeddings / evaluation 等 12 处复用,去除各模块内联重复实现
-- **Calculator 安全表达式求值**: `Calculator` 工具接入 `meval` crate(`meval::eval_str`),支持算术 / 幂 / 函数(sin/cos/tan/sqrt/log/exp/abs)/ 常量(pi/e),替代手写解析
-- **HTTP 工具 URL 解析**: `HTTPTool` 接入 `url` crate,用 `url::Url::parse` 规范化 URL
+- **Shared math utilities `core::math`**: Added `src/core/math.rs`, extracting `cosine_similarity` shared implementation (with doctest + unit tests), reused by vector_stores / retrieval / embeddings / evaluation and 12 other locations, removing inline duplicate implementations across modules
+- **Calculator safe expression evaluation**: `Calculator` tool integrated `meval` crate (`meval::eval_str`), supporting arithmetic / powers / functions (sin/cos/tan/sqrt/log/exp/abs) / constants (pi/e), replacing hand-written parsing
+- **HTTP tool URL parsing**: `HTTPTool` integrated `url` crate, using `url::Url::parse` for URL normalization
 
 ### Changed
-- **reqwest 0.11 -> 0.12**(breaking): 全量迁移 HTTP 客户端代码,涉及 providers / embeddings / tools / mcp / a2a / vector_stores 等模块
-- **内部重构与去重**: chains(document_chains / conversation_chain / retrieval_qa / llm_chain / router_chain)、tools(calculator / http / url_fetch / python_repl)、embeddings(deepseek / qwen)、vector_stores(memory / file_store / chunked)、mcp/transport、a2a/server、pinecone 等模块代码整理,统一复用 `core::math::cosine_similarity`
+- **reqwest 0.11 -> 0.12** (breaking): Full migration of HTTP client code, affecting providers / embeddings / tools / mcp / a2a / vector_stores and other modules
+- **Internal refactoring and deduplication**: Code cleanup in chains (document_chains / conversation_chain / retrieval_qa / llm_chain / router_chain), tools (calculator / http / url_fetch / python_repl), embeddings (deepseek / qwen), vector_stores (memory / file_store / chunked), mcp/transport, a2a/server, pinecone and other modules, unified reuse of `core::math::cosine_similarity`
 
 ### Fixed
-- `MapRerankDocumentsChain::extract_score` 集成测试调用泛型 `M` 推断失败(`tests/unit/conversation_retrieval_chains.rs`),对齐源码写法显式指定类型
+- `MapRerankDocumentsChain::extract_score` integration test generic `M` type inference failure (`tests/unit/conversation_retrieval_chains.rs`), aligned with source code style by explicitly specifying types
 
 ## [0.4.1] - 2026-07-20
 
 ### Added
-- **Assistants requires_action 工具调度**: `OpenAIAssistant` 轮询遇 `requires_action` → 解析 `tool_calls` → 经 `ToolRegistry` 执行 → `submit_tool_outputs` → 继续轮询至 `completed`/`failed`/`cancelled`
-- **A2A Agent 协议**: 新增 `src/a2a/` 模块
-  - `AgentCard` / `A2ATask` / `A2AMessage` / `TaskStatus` / `A2ARequest` / `A2AResponse` / `A2AErrorData` 协议类型
-  - `A2AServer`: handler 函数(`tasks/send`/`tasks/get`/`tasks/cancel`),可插入任意 HTTP 框架(axum/actix/warp),含 `RwLock<HashMap>` 内存 task persistence
-  - `A2AClient`: reqwest HTTP 客户端,`get_agent_card()`/`send_task()`/`get_task()`/`cancel_task()`
-- **with_structured_output**: `StructuredOutputExt` trait + 独立函数,按 provider 走 function calling 或 `JsonOutputParser` 降级,11 个测试
-- **Chain 流式**: `BaseChain::stream()` 默认实现 + `LLMChain`/`ConversationChain` 覆写,逐 token 回调 `on_llm_new_token`
-- **ContextWindow 长上下文管理**: `ContextWindow<M: BaseChatModel>`,两种策略:
-  - `Strategy::Truncate`: 按 token 数截断旧消息
-  - `Strategy::Summarize`: 超限时用 LLM 摘要压缩旧对话
-  - `TiktokenCounter` 集成,18 个测试
-- **FileVectorStore**: JSON 持久化向量存储,原子写入(tmp+rename),跨实例持久化,维度校验,`VectorStore` trait 完整实现
-- **ComputerUseTool**: Anthropic computer use API 接入 + Native 截图/键盘/鼠标(feature gate `computer-use-native`)
-- **DocxLoader**: ZIP 解压 + XML 解析 `<w:t>` 文本节点
-- **WebScraperLoader**: 网页爬取,递归链接跟踪,同域过滤,可配最大深度/页面数
-- **SitemapLoader**: 解析 sitemap.xml,批量爬取页面
-- **LocalEmbeddings ort**: ONNX Runtime 神经网络嵌入(feature gate `local-embeddings`,依赖 `ort` + `ndarray`),替代原 bag-of-words 占位实现
-- **wiremock 测试基础设施**: `wiremock` 作为 dev-dependency,mock 辅助函数,示范测试,默认测试不打真实网络
-- **MSRV 声明**: `rust-version = "1.82"`,CI 矩阵含 1.82
-- **criterion benchmark**: `benches/` 下 retrieval(6)/splitter(4)/embedding(4) 组基准
-- **12+ 新 examples**: evaluation / mcp_server / guardrails / sessions / context_window / vectorstore_memory / semantic_splitter / file_vectorstore / otel / assistants / handoffs / plan_execute / token_counter
+- **Assistants requires_action tool dispatch**: `OpenAIAssistant` polling encounters `requires_action` → parse `tool_calls` → execute via `ToolRegistry` → `submit_tool_outputs` → continue polling until `completed`/`failed`/`cancelled`
+- **A2A Agent Protocol**: Added `src/a2a/` module
+  - `AgentCard` / `A2ATask` / `A2AMessage` / `TaskStatus` / `A2ARequest` / `A2AResponse` / `A2AErrorData` protocol types
+  - `A2AServer`: handler functions (`tasks/send`/`tasks/get`/`tasks/cancel`), pluggable into any HTTP framework (axum/actix/warp), includes `RwLock<HashMap>` in-memory task persistence
+  - `A2AClient`: reqwest HTTP client, `get_agent_card()`/`send_task()`/`get_task()`/`cancel_task()`
+- **with_structured_output**: `StructuredOutputExt` trait + standalone function, routing by provider to function calling or `JsonOutputParser` fallback, 11 tests
+- **Chain streaming**: `BaseChain::stream()` default implementation + `LLMChain`/`ConversationChain` overrides, per-token callback `on_llm_new_token`
+- **ContextWindow long context management**: `ContextWindow<M: BaseChatModel>`, two strategies:
+  - `Strategy::Truncate`: Truncate old messages by token count
+  - `Strategy::Summarize`: Compress old conversations via LLM summary when exceeding limit
+  - `TiktokenCounter` integration, 18 tests
+- **FileVectorStore**: JSON-persisted vector store, atomic writes (tmp+rename), cross-instance persistence, dimension validation, full `VectorStore` trait implementation
+- **ComputerUseTool**: Anthropic computer use API integration + Native screenshot/keyboard/mouse (feature gate `computer-use-native`)
+- **DocxLoader**: ZIP extraction + XML parsing of `<w:t>` text nodes
+- **WebScraperLoader**: Web scraping, recursive link tracking, same-domain filtering, configurable max depth/page count
+- **SitemapLoader**: Parse sitemap.xml, batch crawl pages
+- **LocalEmbeddings ort**: ONNX Runtime neural network embeddings (feature gate `local-embeddings`, depends on `ort` + `ndarray`), replacing original bag-of-words placeholder implementation
+- **wiremock test infrastructure**: `wiremock` as dev-dependency, mock helper functions, example tests, default tests do not hit real network
+- **MSRV declaration**: `rust-version = "1.82"`, CI matrix includes 1.82
+- **criterion benchmark**: `benches/` with retrieval(6)/splitter(4)/embedding(4) benchmark groups
+- **12+ new examples**: evaluation / mcp_server / guardrails / sessions / context_window / vectorstore_memory / semantic_splitter / file_vectorstore / otel / assistants / handoffs / plan_execute / token_counter
 
 ### Changed
-- **unused import 修复**: `evaluation/pairwise.rs` 中 `async_trait` 移入 `#[cfg(test)]`
-- **LocalEmbeddings**: 原 bag-of-words 实现保留为默认,ort 实现在 `local-embeddings` feature 下
-- **VectorStoreProvider**: `provider.rs` 新增 `FileVectorStore` 工厂方法
-- **lib.rs**: 导出 A2A 模块、`ContextWindow`、`FileVectorStore`、`StructuredOutputExt`、新 loaders 等公开 API
+- **Unused import fix**: `async_trait` in `evaluation/pairwise.rs` moved into `#[cfg(test)]`
+- **LocalEmbeddings**: Original bag-of-words implementation retained as default, ort implementation under `local-embeddings` feature
+- **VectorStoreProvider**: `provider.rs` added `FileVectorStore` factory method
+- **lib.rs**: Exported A2A module, `ContextWindow`, `FileVectorStore`, `StructuredOutputExt`, new loaders and other public APIs
 
 ### Fixed
-- **Examples 编译修复**: 全部 25 个 example 编译通过(修复 API 名不匹配/类型推断/未用导入/async 缺失等)
-- **A2A server task persistence**: `tasks/get` 和 `tasks/cancel` 原本总是返回"not found",现已实现内存存储和状态查询/转换
+- **Examples compilation fix**: All 25 examples compile successfully (fixed API name mismatches / type inference / unused imports / missing async etc.)
+- **A2A server task persistence**: `tasks/get` and `tasks/cancel` previously always returned "not found", now implemented with in-memory storage and state query/transitions
 
 ## [0.4.0] - 2026-07-14
 
 ### Added
-- **Evaluation 评估模块**: 10 种评测器(5 类),框架含 `Score` / `Example` / `Dataset` / `Evaluator` / `Predictor` / `EvalRunner` / `Report`
-  - 字面: `ExactMatch` / `StringDistance`(Levenshtein 编辑距离归一)
-  - 语义: `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge`(交换 A/B 消位置偏差)
-  - 规则: `ContainsKeyword` / `RegexMatch` / `LengthCheck`
-  - 经典 NLP: `Bleu`(字符级分词 + 平滑)
-  - RAG: `Faithfulness`(拆主张逐条验证抓幻觉,`join_all` 并发,`llm_split` / `empty_score` 可配)
-- **MCP Server**: `MCPServer` 把本地 `BaseTool` 暴露为 MCP Server(`initialize` / `tools/list` / `tools/call`),供 Claude Desktop / Cursor 等 host 调用,与 `MCPClient` 对称
-- **VectorStoreRetrieverMemory**: 向量检索记忆,每轮对话嵌入存向量库,按当前输入语义召回 top-k 历史
-- **OpenAIAssistant**: 封装 OpenAI Assistants API(`Assistants` / `Threads` / `Run`,服务端会话状态)
-- **SemanticSplitter**: 语义分块器,相邻句相似度骤降处断块,中英文分句
-- **LocalEmbeddings**: 轻量本地嵌入(词频 hash + L2 归一,纯 Rust 无外部依赖)
-- **OtelHandler**: OpenTelemetry callback handler,执行事件转 OTel span(feature `opentelemetry`)
+- **Evaluation module**: 10 evaluators (5 categories), framework includes `Score` / `Example` / `Dataset` / `Evaluator` / `Predictor` / `EvalRunner` / `Report`
+  - Literal: `ExactMatch` / `StringDistance` (Levenshtein edit distance normalized)
+  - Semantic: `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` (swaps A/B positions to reduce position bias)
+  - Rule-based: `ContainsKeyword` / `RegexMatch` / `LengthCheck`
+  - Classic NLP: `Bleu` (character-level tokenization + smoothing)
+  - RAG: `Faithfulness` (splits claims for per-item verification to catch hallucinations, `join_all` concurrency, configurable `llm_split` / `empty_score`)
+- **MCP Server**: `MCPServer` exposes local `BaseTool` as MCP Server (`initialize` / `tools/list` / `tools/call`), callable by Claude Desktop / Cursor and other hosts, symmetric with `MCPClient`
+- **VectorStoreRetrieverMemory**: Vector retrieval memory, embeds each conversation turn into vector store, semantically recalls top-k history by current input
+- **OpenAIAssistant**: Wraps OpenAI Assistants API (`Assistants` / `Threads` / `Run`, server-side session state)
+- **SemanticSplitter**: Semantic chunker, splits at points where adjacent sentence similarity drops sharply, supports Chinese and English sentence splitting
+- **LocalEmbeddings**: Lightweight local embeddings (word frequency hash + L2 normalization, pure Rust with no external dependencies)
+- **OtelHandler**: OpenTelemetry callback handler, execution events converted to OTel spans (feature `opentelemetry`)
 
 ### Changed
-- **依赖**: 新增可选依赖 `opentelemetry` + feature flag `opentelemetry`(默认关闭,不影响默认编译)
-- **导出**: `lib.rs` 导出 evaluation 模块、`MCPServer`、`OpenAIAssistant`、`VectorStoreRetrieverMemory`、`LocalEmbeddings`、`SemanticSplitter`、`OtelHandler`
+- **Dependencies**: Added optional dependency `opentelemetry` + feature flag `opentelemetry` (disabled by default, does not affect default compilation)
+- **Exports**: `lib.rs` exports evaluation module, `MCPServer`, `OpenAIAssistant`, `VectorStoreRetrieverMemory`, `LocalEmbeddings`, `SemanticSplitter`, `OtelHandler`
 
 ## [0.3.0] - 2026-07-12
 
 ### Added
-- **examples 目录**: 12 个可运行示例(basic / agent / rag / langgraph / memory / chains)
-- **MCP 协议支持**: `MCPClient`(Stdio + SSE 传输,`tools/list` + `tools/call`,MCPTool -> BaseTool 适配)
-- **多模态 vision**: `ImageContent` + `Message::human_with_image`(OpenAI / Ollama Vision 序列化)
-- **Sessions 会话管理**: `SessionManager` + `SessionStore`(Memory)+ 多轮对话记忆
-- **Token 计数器**: `TiktokenCounter` + `TokenTrackingLLM` + `ModelPricing`(成本估算)
-- **Guardrails 安全护栏**: `InputGuardrail` / `OutputGuardrail` + `SensitiveInfoGuardrail` + `GuardedAgent`
-- **Plan-Execute Agent**: `Planner` + `PlanExecuteAgent`(规划 - 执行 - 重规划)
-- **Handoffs 多 Agent 交接**: `HandoffManager` + `HandoffTool`
-- **Streaming Tool Calls**: `StreamingFunctionCallingAgent`(`invoke_stream`)
-- **工具扩展**: `SQLTool`(只读 + 表白名单)+ `HTTPTool` + `FileTool`(沙箱 + 扩展名白名单)
-- **PGVector 向量库**: `PGVectorStore`(feature `pgvector-storage`,需用户配置 sqlx/pgvector 依赖)
-- **Pinecone 向量库**: `PineconeStore`(reqwest HTTP API)
-- **HTML Loader**: `HTMLLoader`(regex 提取文本,去 script/style)
+- **examples directory**: 12 runnable examples (basic / agent / rag / langgraph / memory / chains)
+- **MCP protocol support**: `MCPClient` (Stdio + SSE transport, `tools/list` + `tools/call`, MCPTool -> BaseTool adapter)
+- **Multimodal vision**: `ImageContent` + `Message::human_with_image` (OpenAI / Ollama Vision serialization)
+- **Sessions session management**: `SessionManager` + `SessionStore` (Memory) + multi-turn conversation memory
+- **Token counter**: `TiktokenCounter` + `TokenTrackingLLM` + `ModelPricing` (cost estimation)
+- **Guardrails safety guardrails**: `InputGuardrail` / `OutputGuardrail` + `SensitiveInfoGuardrail` + `GuardedAgent`
+- **Plan-Execute Agent**: `Planner` + `PlanExecuteAgent` (plan - execute - replan)
+- **Handoffs multi-agent handoff**: `HandoffManager` + `HandoffTool`
+- **Streaming Tool Calls**: `StreamingFunctionCallingAgent` (`invoke_stream`)
+- **Tool extensions**: `SQLTool` (read-only + table whitelist) + `HTTPTool` + `FileTool` (sandbox + extension whitelist)
+- **PGVector vector store**: `PGVectorStore` (feature `pgvector-storage`, requires user to configure sqlx/pgvector dependencies)
+- **Pinecone vector store**: `PineconeStore` (reqwest HTTP API)
+- **HTML Loader**: `HTMLLoader` (regex text extraction, removes script/style)
 
 ### Changed
-- **OpenAIChat**: 加 `Clone` derive(支持 PlanExecuteAgent / Streaming 复用)
-- **Message**: 加 `images` 字段(多模态)+ `additional_kwargs` 加 `serde(default)` 向后兼容
-- **清理**: `compiled.rs` clippy(type_complexity / collapsible_match / unnecessary_lazy_evaluations)
+- **OpenAIChat**: Added `Clone` derive (supports PlanExecuteAgent / Streaming reuse)
+- **Message**: Added `images` field (multimodal) + `additional_kwargs` with `serde(default)` for backward compatibility
+- **Cleanup**: `compiled.rs` clippy fixes (type_complexity / collapsible_match / unnecessary_lazy_evaluations)
 
 ## [0.2.20] - 2026-05-05
 
 ### Fixed
-- **create_resume_execution**: 修复 strip `after_` 前缀问题
+- **create_resume_execution**: Fixed stripping `after_` prefix issue
 
 ### Changed
-- **文档**: 更新 HTML interrupt/checkpointer API
+- **Documentation**: Updated HTML interrupt/checkpointer API
 
 ## [0.2.19] - 2026-05-05
 
 ### Added
-- **Interrupt/Resume 支持**: LangGraph 中断/恢复执行
-  - `last_checkpoint_state` 状态保存
-  - `create_resume_execution` 从中断点恢复执行
+- **Interrupt/Resume support**: LangGraph interrupt/resume execution
+  - `last_checkpoint_state` state saving
+  - `create_resume_execution` resume execution from interrupt point
 
 ### Changed
-- **文档**: 更新 interrupt/resume API 文档(中英文)
+- **Documentation**: Updated interrupt/resume API documentation (Chinese and English)
 
 ## [0.2.18] - 2026-04-30
 
 ### Added
 - **Output Parsers**: StrOutputParser + CommaSeparatedListOutputParser + JsonOutputParser + StructuredOutputParser + TypedOutputParser
 - **Document Chains**: StuffDocumentsChain + RefineDocumentsChain + MapReduceDocumentsChain + MapRerankDocumentsChain
-- **ConversationRetrievalChain**: 带记忆的检索增强对话
+- **ConversationRetrievalChain**: Retrieval-augmented conversation with memory
 - **Google Gemini**: GeminiChat (native API)
-- **ChromaDB**: 轻量级向量数据库 HTTP API
-- **LLM Cache**: 内存缓存 + TTL
-- **Redis/SQLite 存储**: RedisDocumentStore + SQLiteDocumentStore
-- **Tools 扩展**: Wikipedia + DuckDuckGo + PythonREPL
-- **FewShotPrompt + ExampleSelectors**: 少样本提示模板 + 示例选择器
-- **LCEL 组合操作符**: RunnableSequence + RunnableParallel + RunnablePassthrough + RunnableLambda + BitOr trait
-- **Qdrant**: `delete_by_metadata` 方法
-- **MongoPersistentMemory**: 条件编译(仅在 `mongodb-persistence` feature 启用时可用)
+- **ChromaDB**: Lightweight vector database HTTP API
+- **LLM Cache**: In-memory cache + TTL
+- **Redis/SQLite storage**: RedisDocumentStore + SQLiteDocumentStore
+- **Tools extensions**: Wikipedia + DuckDuckGo + PythonREPL
+- **FewShotPrompt + ExampleSelectors**: Few-shot prompt templates + example selectors
+- **LCEL composition operators**: RunnableSequence + RunnableParallel + RunnablePassthrough + RunnableLambda + BitOr trait
+- **Qdrant**: `delete_by_metadata` method
+- **MongoPersistentMemory**: Conditional compilation (only available when `mongodb-persistence` feature is enabled)
 
 ## [0.2.17] - 2025-04-24
 
 ### Added
-- **Memory 持久化**: 新增 PersistentMemory trait 和 MongoPersistentMemory 实现
-  - `PersistentMemory` trait: 框架层持久化接口，支持 load_from_store/save_to_store/delete_session
-  - `MongoPersistentMemory`: MongoDB 存储，组合 ConversationSummaryBufferMemory 压缩逻辑
-  - `PersistenceConfig`: 配置 auto_save/auto_load/token_limit
-  - `MemoryData`: 内存数据序列化结构
-  - 框架负责压缩算法，业务层负责存储实现
-- **ConversationSummaryBufferMemory**: 添加 `chat_memory_mut()` 方法支持可变访问
+- **Memory persistence**: Added PersistentMemory trait and MongoPersistentMemory implementation
+  - `PersistentMemory` trait: Framework-level persistence interface, supports load_from_store/save_to_store/delete_session
+  - `MongoPersistentMemory`: MongoDB storage, composes ConversationSummaryBufferMemory compression logic
+  - `PersistenceConfig`: Configures auto_save/auto_load/token_limit
+  - `MemoryData`: Memory data serialization structure
+  - Framework handles compression algorithm, business layer handles storage implementation
+- **ConversationSummaryBufferMemory**: Added `chat_memory_mut()` method for mutable access
 
 ## [0.2.16] - 2025-04-24
 
 ### Fixed
-- **BM25 分割算法**: 修复 Parent-Child 分割使用简单字符切分导致语义边界破坏的问题
-  - `InMemoryChunkedDocumentStore`: 使用 `RecursiveCharacterSplitter` 替代 `chars[start..end]`
-  - `MongoChunkedDocumentStore`: 同样修改，MongoDB 存储也使用语义分割
-  - 分隔符优先级：段落 > 行 > 句号 > 空格 > 字符
-  - 添加 chunk_overlap（默认 chunk_size / 10）避免边界信息丢失
+- **BM25 splitting algorithm**: Fixed Parent-Child splitting using simple character slicing that broke semantic boundaries
+  - `InMemoryChunkedDocumentStore`: Uses `RecursiveCharacterSplitter` instead of `chars[start..end]`
+  - `MongoChunkedDocumentStore`: Same change, MongoDB storage also uses semantic splitting
+  - Separator priority: paragraph > line > period > space > character
+  - Added chunk_overlap (default chunk_size / 10) to prevent boundary information loss
 
 ### Added
-- **文档**: `docs/bm25_split_fix.md` 详细说明分割算法修复
+- **Documentation**: `docs/bm25_split_fix.md` with detailed explanation of splitting algorithm fix
 
 ## [0.2.15] - 2025-04-23
 
 ### Fixed
-- **MongoChunkedDocumentStore**: 修复 blocking 方法在 tokio runtime 内部的兼容性问题
-  - 使用 `tokio::task::block_in_place` + `Handle::current().block_on` 替代创建新 runtime
-  - 解决 "Cannot block the current thread from within a runtime" 错误
+- **MongoChunkedDocumentStore**: Fixed compatibility issue of blocking methods inside tokio runtime
+  - Uses `tokio::task::block_in_place` + `Handle::current().block_on` instead of creating a new runtime
+  - Resolves "Cannot block the current thread from within a runtime" error
 
 ## [0.2.14] - 2025-04-23
 
 ### Changed
-- **ChunkedDocumentStoreTrait**: 添加 blocking 方法支持
-  - `add_parent_document_blocking`: 同步添加父文档
-  - `get_parent_document_blocking`: 同步获取父文档
-  - `get_chunk_blocking`: 同步获取 chunk
-  - `blocking_get_chunks_for_parent`: 同步获取父文档的所有 chunks
-- **MongoChunkedDocumentStore**: 实现 blocking 方法（使用 tokio runtime 桥接）
-- **ChunkedBM25Retriever/ChunkedBM25Index**: 改为泛型结构，支持多种 DocumentStore 后端
-  - 默认类型参数：`ChunkedBM25Retriever<S: ChunkedDocumentStoreTrait = ChunkedDocumentStore>`
-  - 向后兼容：现有代码无需修改即可继续使用
+- **ChunkedDocumentStoreTrait**: Added blocking method support
+  - `add_parent_document_blocking`: Synchronous add parent document
+  - `get_parent_document_blocking`: Synchronous get parent document
+  - `get_chunk_blocking`: Synchronous get chunk
+  - `blocking_get_chunks_for_parent`: Synchronous get all chunks for a parent document
+- **MongoChunkedDocumentStore**: Implemented blocking methods (using tokio runtime bridge)
+- **ChunkedBM25Retriever/ChunkedBM25Index**: Changed to generic structs, supporting multiple DocumentStore backends
+  - Default type parameter: `ChunkedBM25Retriever<S: ChunkedDocumentStoreTrait = ChunkedDocumentStore>`
+  - Backward compatible: existing code continues to work without modification
 
 ### Fixed
-- BM25 MongoDB 持久化支持：现在可以使用 `MongoChunkedDocumentStore` 作为 BM25 检索器的存储后端
+- BM25 MongoDB persistence support: `MongoChunkedDocumentStore` can now be used as BM25 retriever storage backend
 
 ## [0.2.13] - 2025-04-22
 
 ### Added
-- **LLM Providers**: 统一的第三方 LLM 提供者支持
-  - `DeepSeekChat`: DeepSeek API 支持
-  - `MoonshotChat`: Moonshot (Kimi) API 支持
-  - `QwenChat`: 阿里云通义千问 API 支持
-  - `ZhipuChat`: 智谱 ChatGLM API 支持
-  - `AnthropicChat`: Anthropic Claude API 支持
-  - 所有 providers 使用 OpenAI 兼容接口或原生 API
-- **Embeddings 扩展**: 新增向量生成服务
-  - `DeepSeekEmbeddings`: DeepSeek 向量生成
-  - `QwenEmbeddings`: 通义千问向量生成
-- **Ollama 增强**: 多模态和工具调用改进
-  - Vision 参数支持：`with_image()`, `with_images()`
-  - 工具调用改进：更好的 function calling 支持
-  - 配置增强：新增 `OllamaConfig` 配置项
+- **LLM Providers**: Unified third-party LLM provider support
+  - `DeepSeekChat`: DeepSeek API support
+  - `MoonshotChat`: Moonshot (Kimi) API support
+  - `QwenChat`: Alibaba Cloud Tongyi Qwen API support
+  - `ZhipuChat`: Zhipu ChatGLM API support
+  - `AnthropicChat`: Anthropic Claude API support
+  - All providers use OpenAI-compatible interface or native API
+- **Embeddings extensions**: New embedding generation services
+  - `DeepSeekEmbeddings`: DeepSeek embedding generation
+  - `QwenEmbeddings`: Tongyi Qwen embedding generation
+- **Ollama enhancements**: Multimodal and tool calling improvements
+  - Vision parameter support: `with_image()`, `with_images()`
+  - Tool calling improvements: Better function calling support
+  - Configuration enhancements: New `OllamaConfig` configuration options
 
 ### Changed
-- **LangSmith Client**: `request_id` 追踪增强
-  - 优化请求追踪链路
-  - 支持多层级 run 追踪
-- **Qdrant Vector Store**: 重构优化
-  - 更好的错误处理
-  - 改进的连接管理
-- **LangGraph Compiled**: 状态管理改进
-- **MultiQuery Retriever**: 错误处理优化
+- **LangSmith Client**: `request_id` tracing enhancements
+  - Optimized request tracing chain
+  - Supports multi-level run tracing
+- **Qdrant Vector Store**: Refactoring and optimization
+  - Better error handling
+  - Improved connection management
+- **LangGraph Compiled**: State management improvements
+- **MultiQuery Retriever**: Error handling optimization
 
 ### Configuration
-- **Cargo.toml**: demo 目录已 exclude (不上传 crates.io)
+- **Cargo.toml**: demo directory excluded (not uploaded to crates.io)
 
 ## [0.2.12] - 2025-04-19
 
 ### Documentation
-- **Callbacks 文档**: LangSmith 追踪完整说明
-- **README**: 更新多 Provider 支持列表
+- **Callbacks documentation**: Complete LangSmith tracing description
+- **README**: Updated multi-Provider support list
 
 ## [0.2.11] - 2025-04-17
 
 ### Added
-- **Document Loaders**: 文档加载器系列
-  - `TextLoader`: 纯文本加载
-  - `JSONLoader`: JSON 文档加载
-  - `MarkdownLoader`: Markdown 文档加载
-  - `PDFLoader`: PDF 文档提取
-  - `CSVLoader`: CSV 数据加载
-- **MultiQuery Retriever**: 多查询扩展检索
-  - 自动生成多个相关查询
-  - 合并多查询结果
-  - 提升检索召回率
-- **HyDE (Hypothetical Document Embeddings)**: 假设文档嵌入
-  - 基于问题生成假设答案
-  - 使用假设答案检索相关文档
-- **Reranking**: 重排序模块
-  - 支持多种重排序策略
-  - 提升检索精准度
+- **Document Loaders**: Document loader series
+  - `TextLoader`: Plain text loading
+  - `JSONLoader`: JSON document loading
+  - `MarkdownLoader`: Markdown document loading
+  - `PDFLoader`: PDF document extraction
+  - `CSVLoader`: CSV data loading
+- **MultiQuery Retriever**: Multi-query expanded retrieval
+  - Automatically generates multiple related queries
+  - Merges multi-query results
+  - Improves retrieval recall rate
+- **HyDE (Hypothetical Document Embeddings)**: Hypothetical document embeddings
+  - Generates hypothetical answers based on questions
+  - Uses hypothetical answers to retrieve relevant documents
+- **Reranking**: Re-ranking module
+  - Supports multiple re-ranking strategies
+  - Improves retrieval precision
 
 ## [0.2.6] - 2025-04-18
 
 ### Added
-- **LangGraph**: 图状工作流框架
-  - `StateGraph`: 状态图构建器
-  - `CompiledGraph`: 编译后的可执行图
-  - `GraphNode` trait + `SyncNode` + `AsyncNode`: 节点抽象
-  - `GraphEdge` + `ConditionalEdge`: 边和条件路由
-  - `StateSchema` trait + `AgentState`: 状态管理
-  - `Reducer` trait + `AppendReducer`: 状态更新策略
-- **LangGraph Checkpointer**: 执行状态持久化
-  - `MemoryCheckpointer`: 内存持久化
-  - `ThreadSafeMemoryCheckpointer`: 线程安全版本
-  - `FileCheckpointer`: 文件持久化
-- **LangGraph 可视化**: 图结构可视化输出
-  - `visualize_ascii()`: ASCII 图形
-  - `visualize_mermaid()`: Mermaid 图表格式
-  - `visualize_json()`: JSON 结构输出
-- **LangGraph Human-in-the-loop**: 人工干预机制
-  - `interrupt_before`: 执行前中断
-  - `interrupt_after`: 执行后中断
-  - `resume()`: 从中断点恢复执行
-- **LangGraph Graph 验证**: 图完整性验证
-  - `validate_cycles()`: 死循环检测
-  - `validate_unreachable_nodes()`: 孤立节点检测
-  - `validate_duplicate_edges()`: 重复边检测
-- **LangGraph Subgraph**: 子图嵌套支持
-  - `SubgraphNode`: 子图节点封装
-  - 状态映射器: 父子图状态转换
-- **LangGraph Parallel**: 并行节点执行
-  - `invoke_parallel()`: 并行执行多个节点
-  - FanOut/FanIn 模式支持
-- **LangGraph Persistence**: 图定义持久化
-  - `GraphDefinition`: 图定义结构
-  - `NodeRegistry`: 节点注册表
-  - `save_to_file()` / `load_from_file()`: 序列化/反序列化
+- **LangGraph**: Graph workflow framework
+  - `StateGraph`: State graph builder
+  - `CompiledGraph`: Compiled executable graph
+  - `GraphNode` trait + `SyncNode` + `AsyncNode`: Node abstractions
+  - `GraphEdge` + `ConditionalEdge`: Edges and conditional routing
+  - `StateSchema` trait + `AgentState`: State management
+  - `Reducer` trait + `AppendReducer`: State update strategies
+- **LangGraph Checkpointer**: Execution state persistence
+  - `MemoryCheckpointer`: In-memory persistence
+  - `ThreadSafeMemoryCheckpointer`: Thread-safe version
+  - `FileCheckpointer`: File persistence
+- **LangGraph Visualization**: Graph structure visualization output
+  - `visualize_ascii()`: ASCII graphics
+  - `visualize_mermaid()`: Mermaid diagram format
+  - `visualize_json()`: JSON structure output
+- **LangGraph Human-in-the-loop**: Human intervention mechanism
+  - `interrupt_before`: Interrupt before execution
+  - `interrupt_after`: Interrupt after execution
+  - `resume()`: Resume execution from interrupt point
+- **LangGraph Graph Validation**: Graph integrity validation
+  - `validate_cycles()`: Infinite loop detection
+  - `validate_unreachable_nodes()`: Orphan node detection
+  - `validate_duplicate_edges()`: Duplicate edge detection
+- **LangGraph Subgraph**: Subgraph nesting support
+  - `SubgraphNode`: Subgraph node wrapper
+  - State mappers: Parent-child graph state conversion
+- **LangGraph Parallel**: Parallel node execution
+  - `invoke_parallel()`: Execute multiple nodes in parallel
+  - FanOut/FanIn pattern support
+- **LangGraph Persistence**: Graph definition persistence
+  - `GraphDefinition`: Graph definition structure
+  - `NodeRegistry`: Node registry
+  - `save_to_file()` / `load_from_file()`: Serialization/deserialization
 
 ### Tests
-- 新增 `tests/langgraph/` 目录 (10+ 测试文件)
-- LangGraph 基础测试、条件边、状态管理
-- 异步节点、Checkpointer、可视化测试
-- Human-in-the-loop、Subgraph、Parallel 测试
+- Added `tests/langgraph/` directory (10+ test files)
+- LangGraph basic tests, conditional edges, state management
+- Async nodes, Checkpointer, visualization tests
+- Human-in-the-loop, Subgraph, Parallel tests
 
 ### Documentation
-- README.md 更新核心特性列表
-- ROADMAP.md 添加 LangGraph 模块详情
+- README.md updated core features list
+- ROADMAP.md added LangGraph module details
 
 ## [0.2.5] - 2025-04-15
 
 ### Added
-- **RetrievalQA**: 一站式检索问答 Chain
-  - 自动检索相关文档（RAG 核心）
-  - 组装 Prompt（上下文 + 问题）
-  - LLM 基于上下文生成答案
-  - `query()` 化接口，一行完成问答
-  - `with_return_source_documents(true)` 返回来源文档
-  - `with_prompt_template()` 自定义 Prompt
-  - `with_k()` 配置检索数量
-- **RouterChain**: 条件路由 Chain
-  - 根据输入关键词自动路由到不同 Chain
-  - `LLMRouterChain` 使用 LLM 智能判断路由
-  - 支持默认 Chain（未匹配时使用）
-- **ConversationChain**: 带记忆的对话 Chain
-  - 自动保存和加载对话历史
-  - 支持多轮对话记忆
-  - `predict()` 简化接口
-- **Memory 系统完善**: 完整的对话记忆管理
-  - `ConversationBufferMemory`: 无压缩，保存全部对话历史
-  - `ConversationBufferWindowMemory`: 窗口截断，只保留最近 k 轮
-  - `ConversationSummaryMemory`: LLM 智能摘要，压缩旧对话
-  - `ConversationSummaryBufferMemory`: 混合策略，摘要 + 最近对话
-  - `ChatMessageHistory`: 底层消息存储容器
-- **流式输出增强**: LLM stream_chat 完整实现
-  - `stream_chat()`: 逐 token 实时输出
-  - 打字机效果，用户感知延迟更低
-  - 支持流式部分收集、中途停止
+- **RetrievalQA**: One-stop retrieval QA Chain
+  - Automatically retrieves relevant documents (RAG core)
+  - Assembles Prompt (context + question)
+  - LLM generates answer based on context
+  - `query()` interface, one-line QA
+  - `with_return_source_documents(true)` returns source documents
+  - `with_prompt_template()` custom Prompt
+  - `with_k()` configure retrieval count
+- **RouterChain**: Conditional routing Chain
+  - Automatically routes to different Chains based on input keywords
+  - `LLMRouterChain` uses LLM for intelligent routing decisions
+  - Supports default Chain (used when no match)
+- **ConversationChain**: Conversation Chain with memory
+  - Automatically saves and loads conversation history
+  - Supports multi-turn conversation memory
+  - `predict()` simplified interface
+- **Memory system completion**: Complete conversation memory management
+  - `ConversationBufferMemory`: No compression, saves all conversation history
+  - `ConversationBufferWindowMemory`: Window truncation, keeps only the most recent k turns
+  - `ConversationSummaryMemory`: LLM intelligent summarization, compresses old conversations
+  - `ConversationSummaryBufferMemory`: Hybrid strategy, summary + recent conversations
+  - `ChatMessageHistory`: Underlying message storage container
+- **Streaming output enhancement**: Complete LLM stream_chat implementation
+  - `stream_chat()`: Real-time per-token output
+  - Typewriter effect, lower perceived latency for users
+  - Supports streaming partial collection, mid-stream stop
 
 ### Tests
-- 新增 `tests/unit/memory.rs` (Memory 基础测试)
-- 新增 `tests/unit/summary_buffer_memory.rs` (压缩触发测试)
-- 新增 `tests/unit/llm_stream.rs` (流式输出测试)
-- 新增 `tests/unit/retrieval_qa.rs` (RetrievalQA 测试)
-- 新增 `tests/unit/router_chain.rs` (RouterChain 测试)
+- Added `tests/unit/memory.rs` (Memory basic tests)
+- Added `tests/unit/summary_buffer_memory.rs` (Compression trigger tests)
+- Added `tests/unit/llm_stream.rs` (Streaming output tests)
+- Added `tests/unit/retrieval_qa.rs` (RetrievalQA tests)
+- Added `tests/unit/router_chain.rs` (RouterChain tests)
 
 ### Documentation
-- USAGE.md 添加 Memory 详细说明
-- USAGE.md 添加流式输出使用示例
-- README.md 更新 Memory 特性列表
+- USAGE.md added Memory detailed description
+- USAGE.md added streaming output usage examples
+- README.md updated Memory features list
 
 ## [0.2.4] - 2025-04-13
 
 ### Added
-- **FunctionCallingAgent**: 使用原生 Function Calling 的 Agent
-  - 不依赖文本解析，直接处理 `tool_calls`
-  - 类型安全：通过 JSON Schema 定义工具参数
-  - 更可靠：利用模型原生支持，不依赖 Prompt Engineering
-  - 更高效：Token 消耗更低
-- **to_tool_definition()**: 将 BaseTool 转为 ToolDefinition 的转换函数
-  - 自动从 `args_schema()` 生成 JSON Schema
-  - 简化工具绑定流程
-- **测试目录**: 新增 `tests/function_calling/` 专门用于 Function Calling 测试
-  - 5 个测试用例覆盖单工具、多工具、系统提示词等场景
-  - 对比测试：ReActAgent vs FunctionCallingAgent
+- **FunctionCallingAgent**: Agent using native Function Calling
+  - Does not depend on text parsing, directly handles `tool_calls`
+  - Type-safe: Tool parameters defined via JSON Schema
+  - More reliable: Leverages model's native support, no dependency on Prompt Engineering
+  - More efficient: Lower token consumption
+- **to_tool_definition()**: Conversion function from BaseTool to ToolDefinition
+  - Automatically generates JSON Schema from `args_schema()`
+  - Simplifies tool binding workflow
+- **Test directory**: Added `tests/function_calling/` dedicated to Function Calling tests
+  - 5 test cases covering single-tool, multi-tool, system prompt and other scenarios
+  - Comparison tests: ReActAgent vs FunctionCallingAgent
 
 ### Changed
-- **OpenAI 响应解析**: 修复 Function Calling 时 `content` 为 null 的解析错误
-  - `OpenAIMessage.content` 改为 `Option<String>`
-  - `OpenAIMessage.finish_reason` 改为 `Option<String>`
-- **项目结构**: `agents/` 目录新增 `function_calling/` 子模块
-- **导出**: 新增 `FunctionCallingAgent` 和 `to_tool_definition` 公开导出
+- **OpenAI response parsing**: Fixed parsing error when `content` is null during Function Calling
+  - `OpenAIMessage.content` changed to `Option<String>`
+  - `OpenAIMessage.finish_reason` changed to `Option<String>`
+- **Project structure**: Added `function_calling/` submodule under `agents/` directory
+- **Exports**: Added `FunctionCallingAgent` and `to_tool_definition` public exports
 
 ### Documentation
-- README 添加 FunctionCallingAgent 使用示例
-- 新增内部文档解释两种 Agent 的区别和适用场景
+- README added FunctionCallingAgent usage examples
+- Added internal documentation explaining the differences and applicable scenarios of the two Agent types
 
 ## [0.2.3] - 2025-04-11
 
 ### Changed
-- 移除源码中的 Python 参考注释，保持代码整洁
+- Removed Python reference comments from source code to keep codebase clean
 
 ## [0.2.2] - 2025-04-11
 
 ### Added
-- **回调系统 (Callback System)**: 完整的执行追踪和监控框架
-  - `CallbackHandler` trait: 定义 LLM/Chain/Tool/Retriever 回调接口
-  - `CallbackManager`: 多处理器管理和分发
-  - `StdOutHandler`: 控制台日志输出
-  - `LangSmithHandler`: LangSmith 平台追踪集成
-  - `RunTree`: 运行层次结构和追踪 ID 管理
-  - `RunType`: LLM/Chain/Tool/Retriever 类型枚举
-- **工具回调 (Tool Callbacks)**: 工具执行全生命周期追踪
-  - `on_tool_start`: 工具开始时记录输入
-  - `on_tool_end`: 工具完成时记录输出
-  - `on_tool_error`: 工具失败时记录错误
-- **Tool Calling 增强**: OpenAI function calling 完整支持
-  - `bind_tools()`: LLM 绑定工具定义
-  - `ToolDefinition`: 工具定义结构 (name, description, parameters)
-  - `ToolCall` / `ToolCallResult`: 工具调用解析
-  - `with_structured_output<T>()`: 结构化输出方法
-  - `StructuredOutput<T>`: 泛型结构化输出包装
-  - `StructuredTool<T>`: 泛型结构化工具包装
-- **Runnable 接口**: LCEL 基础 trait
-  - `Runnable<Input, Output>`: 统一执行接口
-  - `RunnableConfig`: 配置支持回调、标签、元数据
-  - `invoke()` / `batch()` 方法
+- **Callback System**: Complete execution tracing and monitoring framework
+  - `CallbackHandler` trait: Defines LLM/Chain/Tool/Retriever callback interfaces
+  - `CallbackManager`: Multi-handler management and dispatch
+  - `StdOutHandler`: Console log output
+  - `LangSmithHandler`: LangSmith platform tracing integration
+  - `RunTree`: Run hierarchy and trace ID management
+  - `RunType`: LLM/Chain/Tool/Retriever type enum
+- **Tool Callbacks**: Full lifecycle tracing of tool execution
+  - `on_tool_start`: Log input when tool starts
+  - `on_tool_end`: Log output when tool completes
+  - `on_tool_error`: Log error when tool fails
+- **Tool Calling enhancements**: Complete OpenAI function calling support
+  - `bind_tools()`: LLM binds tool definitions
+  - `ToolDefinition`: Tool definition structure (name, description, parameters)
+  - `ToolCall` / `ToolCallResult`: Tool call parsing
+  - `with_structured_output<T>()`: Structured output method
+  - `StructuredOutput<T>`: Generic structured output wrapper
+  - `StructuredTool<T>`: Generic structured tool wrapper
+- **Runnable interface**: LCEL base trait
+  - `Runnable<Input, Output>`: Unified execution interface
+  - `RunnableConfig`: Configuration supporting callbacks, tags, metadata
+  - `invoke()` / `batch()` methods
 
 ### Changed
-- `OpenAIChat` 实现 `Runnable<Vec<Message>, String>` trait
-- `RunnableConfig` 支持回调系统集成 (`with_callbacks()`)
-- AgentExecutor 自动触发工具回调
+- `OpenAIChat` implements `Runnable<Vec<Message>, String>` trait
+- `RunnableConfig` supports callback system integration (`with_callbacks()`)
+- AgentExecutor automatically triggers tool callbacks
 
 ### Documentation
-- 新增 `docs/internal/ROADMAP.md`: 功能开发路线图
-- 新增 `docs/internal/FEATURE_PLAN.md`: 详细实现计划
-- README 更新回调系统使用示例
+- Added `docs/internal/ROADMAP.md`: Feature development roadmap
+- Added `docs/internal/FEATURE_PLAN.md`: Detailed implementation plan
+- README updated with callback system usage examples
 
 ## [0.2.1] - 2025-04-09
 
@@ -495,7 +557,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed `memory_conversation.rs` to use `ChatMessageHistory`
   - Fixed `full_pipeline.rs` to work with current components
   - Removed unused imports in `multi_tool_agent.rs` and `rag_demo.rs`
-- **Removed Reference Comments**: Cleaned up "参考 Python 版本" comments from all source files
+- **Removed Reference Comments**: Cleaned up "reference Python version" comments from all source files
 - **Improved Documentation**: 
   - Rewritten README with bilingual support (English/Chinese)
   - Updated examples/README with clearer structure
@@ -523,6 +585,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.7.0]: https://github.com/atliliw/langchainrust/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/atliliw/langchainrust/compare/v0.5.2...v0.6.0
 [0.5.0]: https://github.com/atliliw/langchainrust/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/atliliw/langchainrust/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/atliliw/langchainrust/compare/v0.4.0...v0.4.1
