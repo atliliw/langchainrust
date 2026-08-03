@@ -1,14 +1,15 @@
 // src/agents/function_calling/agent.rs
 //! Function Calling Agent 实现
 //!
-//! 使用 OpenAI 原生 Function Calling 的 Agent，不依赖文本解析。
+//! 使用 LLM 原生 Function Calling 的 Agent，不依赖文本解析。
+//! 支持任何实现了 `BaseChatModel` 的 LLM Provider。
 
 use crate::agents::{
     AgentAction, AgentError, AgentFinish, AgentOutput, AgentStep, BaseAgent, ToolInput,
 };
-use crate::core::language_models::BaseChatModel;
+use crate::core::language_models::{BaseChatModel, LLMResult};
 use crate::core::tools::{to_tool_definition, BaseTool, ToolCall, ToolDefinition};
-use crate::language_models::OpenAIChat;
+use crate::error::Error;
 use crate::schema::Message;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -16,11 +17,12 @@ use std::sync::Arc;
 
 /// Function Calling Agent
 ///
-/// 使用 OpenAI 原生 Function Calling 的 Agent。
+/// 使用 LLM 原生 Function Calling 的 Agent。
 /// 不依赖文本解析，直接处理 tool_calls。
+/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
 pub struct FunctionCallingAgent {
     /// LLM 客户端（已绑定工具）
-    llm: OpenAIChat,
+    llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
 
     /// 可用工具列表
     tools: Vec<Arc<dyn BaseTool>>,
@@ -33,11 +35,45 @@ impl FunctionCallingAgent {
     /// 创建新的 Function Calling Agent
     ///
     /// # 参数
-    /// * `llm` - LLM 客户端
+    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
     /// * `tools` - 可用工具列表
     /// * `system_prompt` - 自定义系统提示词（可选）
-    pub fn new(
-        llm: OpenAIChat,
+    ///
+    /// # 向后兼容
+    /// 旧代码 `FunctionCallingAgent::new(openai_chat, tools, None)` 仍然可用，
+    /// 因为 `OpenAIChat: BaseChatModel` 且 `OpenAIError: Into<Error>`。
+    pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>, system_prompt: Option<String>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<Error>,
+    {
+        // 先包装 LLM，将错误类型统一为 crate::error::Error
+        let wrapped = crate::core::language_models::ChatModelWrapper::new(llm);
+
+        let tool_definitions: Vec<ToolDefinition> = tools
+            .iter()
+            .map(|t| to_tool_definition(t.as_ref()))
+            .collect();
+
+        // 优先用 trait bind_tools（返回 Box<dyn BaseChatModel<Error = Error>>）
+        // Provider 不支持则直接用包装后的 LLM
+        let llm_with_tools: Arc<dyn BaseChatModel<Error = Error> + Send + Sync> = wrapped
+            .bind_tools(tool_definitions)
+            .map(|boxed| Arc::from(boxed) as Arc<dyn BaseChatModel<Error = Error> + Send + Sync>)
+            .unwrap_or_else(|| Arc::new(wrapped));
+
+        Self {
+            llm: llm_with_tools,
+            tools,
+            system_prompt,
+        }
+    }
+
+    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    ///
+    /// 适用于已通过 `wrap_chat_model()` 或 `LLMClient` 创建的 LLM 实例。
+    pub fn from_arc(
+        llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
         tools: Vec<Arc<dyn BaseTool>>,
         system_prompt: Option<String>,
     ) -> Self {
@@ -46,13 +82,28 @@ impl FunctionCallingAgent {
             .map(|t| to_tool_definition(t.as_ref()))
             .collect();
 
-        let llm_with_tools = llm.bind_tools(tool_definitions);
+        let llm_with_tools = llm
+            .bind_tools(tool_definitions)
+            .map(|boxed| {
+                Arc::from(boxed) as Arc<dyn BaseChatModel<Error = Error> + Send + Sync>
+            })
+            .unwrap_or(llm);
 
         Self {
             llm: llm_with_tools,
             tools,
             system_prompt,
         }
+    }
+
+    /// 获取工具数量
+    pub fn tools_count(&self) -> usize {
+        self.tools.len()
+    }
+
+    /// 获取系统提示词
+    pub fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
     }
 
     /// 构建消息
@@ -101,7 +152,7 @@ impl BaseAgent for FunctionCallingAgent {
     ) -> Result<AgentOutput, AgentError> {
         let messages = self.build_messages(inputs, intermediate_steps);
 
-        let result = self
+        let result: LLMResult = self
             .llm
             .chat(messages, None)
             .await
@@ -245,5 +296,18 @@ mod tests {
 
         assert_eq!(messages.len(), 4);
         assert!(messages[2].has_tool_calls());
+    }
+
+    #[test]
+    fn test_from_arc_creation() {
+        let config = create_test_config();
+        let llm = OpenAIChat::new(config);
+        let llm_arc: Arc<dyn BaseChatModel<Error = Error> + Send + Sync> =
+            crate::core::language_models::wrap_chat_model(llm);
+        let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
+
+        let agent = FunctionCallingAgent::from_arc(llm_arc, tools, Some("test".into()));
+        assert_eq!(agent.tools.len(), 1);
+        assert_eq!(agent.system_prompt, Some("test".to_string()));
     }
 }

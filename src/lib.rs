@@ -84,8 +84,8 @@ pub mod a2a;
 
 // 重新导出常用类型
 pub use agents::{
-    AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentError, AgentExecutor,
-    AgentFinish, AgentOutput, AgentStep, BaseAgent, CRAGError, CRAGResult, Citation,
+    AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError,
+    AgentExecutor, AgentFinish, AgentOutput, AgentStep, BaseAgent, CRAGError, CRAGResult, Citation,
     CorrectiveRAGAgent, DeepResearchAgent, FunctionCallingAgent, HandoffManager, PlanExecuteAgent,
     PlanExecuteError, RagDecision, ReActAgent, ResearchError, ResearchReport,
     StreamingFunctionCallingAgent, ToolInput,
@@ -94,6 +94,7 @@ pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
 };
 pub use core::language_models::LLMResult;
+pub use core::language_models::wrap_chat_model;
 pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
 pub use core::tools::to_tool_definition;
@@ -115,7 +116,7 @@ pub use language_models::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
     AnthropicStructuredOutputMethod, AssistantError,
     DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig, GeminiError,
-    GeminiStructuredOutputMethod, MoonshotChat,
+    GeminiStructuredOutputMethod, LLMClient, MoonshotChat,
     MoonshotConfig, OllamaChat, OllamaConfig, OpenAIAssistant, OpenAIChat, OpenAIConfig, QwenChat,
     QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };
@@ -181,8 +182,8 @@ pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
 pub use retrieval::{
-    reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RetrievalSource,
-    RetrievedDocument,
+    reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RAGPipeline,
+    RAGPipelineBuilder, RAGQueryResult, RetrievalSource, RetrievedDocument,
 };
 pub use retrieval::{
     AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,

@@ -1,17 +1,20 @@
 //! Planner - 用 LLM 生成 / 重规划执行计划
 
+use crate::core::language_models::BaseChatModel;
+use crate::error::Error;
 use crate::schema::Message;
-use crate::BaseChatModel;
 
 use super::plan::Plan;
 
+use std::sync::Arc;
+
 /// 规划器:调用 LLM 生成步骤列表
-pub struct Planner<L: BaseChatModel> {
-    llm: L,
+pub struct Planner {
+    llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
 }
 
-impl<L: BaseChatModel> Planner<L> {
-    pub fn new(llm: L) -> Self {
+impl Planner {
+    pub fn new(llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>) -> Self {
         Self { llm }
     }
 

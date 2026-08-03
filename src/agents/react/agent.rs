@@ -2,13 +2,14 @@
 //! ReAct Agent 实现
 //!
 //! 基于 "ReAct: Synergizing Reasoning and Acting in Language Models" 论文。
+//! 支持任何实现了 `BaseChatModel` 的 LLM Provider。
 
 use super::parser::ReActOutputParser;
 use super::prompt::{build_react_prompt, format_scratchpad};
 use crate::agents::{AgentError, AgentOutput, AgentStep, BaseAgent};
 use crate::core::language_models::BaseChatModel;
 use crate::core::tools::BaseTool;
-use crate::language_models::OpenAIChat;
+use crate::error::Error;
 use crate::schema::Message;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -18,9 +19,10 @@ use std::sync::Arc;
 ///
 /// 使用 ReAct (Reasoning + Acting) 模式的 Agent。
 /// 会先思考，然后决定执行什么工具，最后观察结果。
+/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
 pub struct ReActAgent {
     /// LLM 客户端
-    llm: OpenAIChat,
+    llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
 
     /// 可用工具列表
     tools: Vec<Arc<dyn BaseTool>>,
@@ -36,11 +38,29 @@ impl ReActAgent {
     /// 创建新的 ReAct Agent
     ///
     /// # 参数
-    /// * `llm` - LLM 客户端
+    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
     /// * `tools` - 可用工具列表
     /// * `system_prompt` - 自定义系统提示词（可选）
-    pub fn new(
-        llm: OpenAIChat,
+    ///
+    /// # 向后兼容
+    /// 旧代码 `ReActAgent::new(openai_chat, tools, None)` 仍然可用，
+    /// 因为 `OpenAIChat: BaseChatModel` 且 `OpenAIError: Into<Error>`。
+    pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>, system_prompt: Option<String>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<Error>,
+    {
+        Self {
+            llm: crate::core::language_models::wrap_chat_model(llm),
+            tools,
+            parser: ReActOutputParser::new(),
+            system_prompt,
+        }
+    }
+
+    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    pub fn from_arc(
+        llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
         tools: Vec<Arc<dyn BaseTool>>,
         system_prompt: Option<String>,
     ) -> Self {
@@ -157,7 +177,7 @@ impl BaseAgent for ReActAgent {
 mod tests {
     use super::*;
     use crate::agents::{AgentAction, ToolInput};
-    use crate::language_models::OpenAIConfig;
+    use crate::language_models::{OpenAIChat, OpenAIConfig};
     use crate::tools::Calculator;
 
     /// 创建测试用的 OpenAI 配置

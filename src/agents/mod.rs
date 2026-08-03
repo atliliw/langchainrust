@@ -25,6 +25,7 @@
 
 pub mod adaptive_rag;
 pub mod base;
+pub mod builder;
 pub mod crag;
 pub mod deep_research;
 pub mod function_calling;
@@ -36,6 +37,7 @@ pub mod types;
 
 pub use adaptive_rag::{AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, RagDecision};
 pub use base::{AgentError, AgentExecutor, BaseAgent};
+pub use builder::AgentBuilder;
 pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
 pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
 pub use function_calling::FunctionCallingAgent;

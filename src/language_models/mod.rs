@@ -10,6 +10,8 @@
 //! - Zhipu (ChatGLM)
 //! - Anthropic (Claude)
 
+/// LLMClient — zero-config unified entry point.
+pub mod client;
 /// Ollama local LLM integration.
 pub mod ollama;
 /// OpenAI API integration.
@@ -17,6 +19,7 @@ pub mod openai;
 /// Third-party provider integrations.
 pub mod providers;
 
+pub use client::LLMClient;
 pub use ollama::{OllamaChat, OllamaConfig};
 pub use openai::{
     AssistantError, BuiltinTool, OpenAIAssistant, OpenAIChat, OpenAIConfig, ResponsesConfig,

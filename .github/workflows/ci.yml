@@ -100,6 +100,11 @@ jobs:
           # 使用模拟数据运行测试，不需要真实 API Key
           OPENAI_API_KEY: test-key
 
+      - name: Test all features
+        run: cargo test --all-features --verbose
+        env:
+          OPENAI_API_KEY: test-key
+
   # ==================== 文档检查 ====================
   docs:
     name: Documentation

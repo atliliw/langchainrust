@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::agents::{AgentError, AgentExecutor, BaseAgent, FunctionCallingAgent};
-use crate::language_models::OpenAIChat;
+use crate::core::language_models::BaseChatModel;
+use crate::error::Error;
 use crate::BaseTool;
 
 use super::plan::StepStatus;
@@ -33,14 +34,40 @@ impl From<AgentError> for PlanExecuteError {
 }
 
 /// Plan-Execute Agent:先规划,逐步执行,失败时重规划
+///
+/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
 pub struct PlanExecuteAgent {
-    llm: OpenAIChat,
+    llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
     tools: Vec<Arc<dyn BaseTool>>,
     max_replans: usize,
 }
 
 impl PlanExecuteAgent {
-    pub fn new(llm: OpenAIChat, tools: Vec<Arc<dyn BaseTool>>) -> Self {
+    /// 创建新的 Plan-Execute Agent
+    ///
+    /// # 参数
+    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
+    /// * `tools` - 可用工具列表
+    ///
+    /// # 向后兼容
+    /// 旧代码 `PlanExecuteAgent::new(openai_chat, tools)` 仍然可用。
+    pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<Error>,
+    {
+        Self {
+            llm: crate::core::language_models::wrap_chat_model(llm),
+            tools,
+            max_replans: 2,
+        }
+    }
+
+    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    pub fn from_arc(
+        llm: Arc<dyn BaseChatModel<Error = Error> + Send + Sync>,
+        tools: Vec<Arc<dyn BaseTool>>,
+    ) -> Self {
         Self {
             llm,
             tools,
@@ -126,7 +153,7 @@ impl PlanExecuteAgent {
 
     /// 执行单步:用 FunctionCallingAgent + tools
     async fn execute_step(&self, step: &str) -> Result<String, PlanExecuteError> {
-        let agent = FunctionCallingAgent::new(self.llm.clone(), self.tools.clone(), None);
+        let agent = FunctionCallingAgent::from_arc(self.llm.clone(), self.tools.clone(), None);
         let executor =
             AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, self.tools.clone())
                 .with_max_iterations(5);

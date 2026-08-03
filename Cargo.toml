@@ -578,6 +578,10 @@ path = "examples/basic/batch_api.rs"
 name = "basic_sandbox"
 path = "examples/basic/sandbox.rs"
 
+[[example]]
+name = "basic_quick_start"
+path = "examples/basic/quick_start.rs"
+
 # ============================================================================
 # Criterion Benchmarks
 # ============================================================================

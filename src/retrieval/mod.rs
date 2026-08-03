@@ -6,11 +6,14 @@ pub mod hybrid;
 pub mod hyde;
 mod loaders;
 pub mod multi_query;
+pub mod pipeline;
 pub mod reranking;
 mod retriever;
 mod semantic_splitter;
 mod splitter;
 pub mod unified_hybrid;
+
+pub use pipeline::{RAGPipeline, RAGPipelineBuilder, RAGQueryResult};
 
 pub use loaders::{
     CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
