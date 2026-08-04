@@ -25,6 +25,7 @@
 //! let result = seq_chain.invoke(inputs).await?;
 //! ```
 
+pub mod adapter;
 pub mod base;
 pub mod conversation_chain;
 pub mod conversation_retrieval;
@@ -34,6 +35,7 @@ pub mod retrieval_qa;
 pub mod router_chain;
 pub mod sequential_chain;
 
+pub use adapter::ChainRunnable;
 pub use base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 pub use conversation_chain::{ConversationChain, ConversationChainBuilder};
 pub use conversation_retrieval::ConversationRetrievalChain;

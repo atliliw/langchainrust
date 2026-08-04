@@ -64,10 +64,19 @@ impl ToolCallState {
 pub enum AgentStreamEvent {
     /// LLM 输出文本(token)
     Text { content: String },
-    /// 工具调用状态变化
+
+    /// 工具调用状态变化 (Function Calling 风格)
     ToolCall { state: ToolCallState },
+
+    /// ReAct 风格工具调用开始
+    ToolStart { name: String, input: String },
+
+    /// ReAct 风格工具调用完成
+    ToolEnd { name: String, output: String },
+
     /// 最终答案
     FinalAnswer { content: String },
+
     /// 流式执行错误
     Error { message: String },
 }

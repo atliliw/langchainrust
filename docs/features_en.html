@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.6.0 • Features</div>
+            <div class="sidebar-subtitle">v0.8.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -2307,47 +2307,47 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
 
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
-src/
-├── core/                # Core abstractions
+crates/
+├── lc/                  # Facade crate (package name: langchainrust)
+├── lc-shared/           # Shared types (ToolCall, Document, TextSplitter)
+├── lc-schema/           # Data structures (Message, ImageContent)
+├── lc-core/             # Core abstractions
 │   ├── language_models/ # Base LLM traits
 │   ├── runnables/       # Runnable trait
 │   ├── router_llm/      # RouterLLM (5 strategies + fallback)
 │   ├── batch/           # BatchClient (OpenAI/Anthropic)
 │   ├── structured_output/ # with_structured_output + streaming
 │   └── tools/           # Tool trait + ToolDefinition
-├── language_models/     # LLM implementations
+├── lc-providers/        # LLM implementations
 │   ├── openai/          # OpenAI client + Responses API
 │   ├── anthropic/       # Claude (extended thinking)
 │   ├── gemini/          # Google Gemini client
 │   └── ...              # DeepSeek, Moonshot, Qwen, Ollama, Zhipu
-├── agents/              # Agent framework
+├── lc-agents/           # Agent framework
 │   ├── react/           # ReActAgent (text parsing)
 │   ├── function_calling/ # FunctionCallingAgent
 │   ├── plan_execute/    # PlanExecuteAgent
 │   ├── crag/            # CorrectiveRAG (grade+rewrite+hallucination)
 │   ├── adaptive_rag/    # AdaptiveRAG (LLM-routed retrieval)
 │   └── deep_research/   # DeepResearchAgent (multi-round + citations)
-├── prompts/             # Prompt templates (incl. FewShot)
-├── output_parsers/      # Output parsers
-├── memory/              # Memory management (Buffer, Window, Summary, ContextWindow)
-├── chains/              # Chain operations (incl. Document Chains)
-├── retrieval/           # RAG components
+├── lc-prompts/          # Prompt templates (incl. FewShot)
+├── lc-memory/           # Memory management (Buffer, Window, Summary, ContextWindow)
+├── lc-chains/           # Chain operations (incl. Document Chains)
+├── lc-rag/              # RAG components
 │   ├── graph_rag/       # GraphRAG (knowledge graph + communities)
 │   ├── bm25/            # BM25 keyword search
 │   └── hybrid/          # Hybrid retrieval (BM25 + Vector, RRF)
-├── embeddings/          # Text embeddings (OpenAI, DeepSeek, Qwen, Local, Mock)
-├── vector_stores/       # Vector storage (InMemory, Qdrant, MongoDB, ChromaDB, Redis, SQLite, PGVector, Pinecone, File)
-├── storage/             # Storage backends (Redis, SQLite)
-├── cache/               # LLM Cache (InMemory, Redis)
-├── tools/               # Built-in tools + sandbox (Calculator, DateTime, HTTPTool, PythonREPL, CodeSandbox, ComputerUseTool)
-├── mcp/                 # MCP Client/Server + 6 primitives
-├── a2a/                 # Agent-to-Agent protocol
-├── langgraph/           # LangGraph (StateGraph, Subgraph, Parallel, Checkpointer)
-├── sessions/            # Session management
-├── guardrails/          # Input/output safety guardrails
-├── evaluation/          # 10 evaluators across 5 categories
-├── callbacks/           # Callbacks + Tracing (InMemory, Console, OTel)
-└── schema/              # Data structures</code></pre>
+├── lc-embeddings/       # Text embeddings (OpenAI, DeepSeek, Qwen, Local, Mock)
+├── lc-vector-stores/    # Vector storage (InMemory, Qdrant, MongoDB, ChromaDB, Redis, SQLite, PGVector, Pinecone, File)
+├── lc-tools/            # Built-in tools + sandbox (Calculator, DateTime, HTTPTool, PythonREPL, CodeSandbox, ComputerUseTool)
+├── lc-mcp/              # MCP Client/Server + 6 primitives
+├── lc-a2a/              # Agent-to-Agent protocol
+├── lc-langgraph/        # LangGraph (StateGraph, Subgraph, Parallel, Checkpointer)
+├── lc-sessions/         # Session management
+├── lc-guardrails/       # Input/output safety guardrails
+├── lc-evaluation/       # 10 evaluators across 5 categories
+├── lc-callbacks/        # Callbacks + Tracing (InMemory, Console, OTel)
+└── lc-a2a/              # Agent-to-Agent protocol</code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2490,7 +2490,7 @@ src/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.6.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.8.0 | MIT License</p>
             </footer>
         </div>
     </main>

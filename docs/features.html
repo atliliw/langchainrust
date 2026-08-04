@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.6.0 • 功能</div>
+            <div class="sidebar-subtitle">v0.8.0 • 功能</div>
         </div>
 
         <div class="sidebar-nav">
@@ -2308,47 +2308,47 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
 
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
-src/
-├── core/                # 核心抽象
+crates/
+├── lc/                  # Facade crate (package name: langchainrust)
+├── lc-shared/           # 共享类型 (ToolCall, Document, TextSplitter)
+├── lc-schema/           # 数据结构 (Message, ImageContent)
+├── lc-core/             # 核心抽象
 │   ├── language_models/ # 基础 LLM trait
 │   ├── runnables/       # Runnable trait
 │   ├── router_llm/      # RouterLLM（5 种策略 + Fallback）
 │   ├── batch/           # BatchClient（OpenAI/Anthropic）
 │   ├── structured_output/ # with_structured_output + 流式
 │   └── tools/           # Tool trait + ToolDefinition
-├── language_models/     # LLM 实现
+├── lc-providers/        # LLM 实现
 │   ├── openai/          # OpenAI 客户端 + Responses API
 │   ├── anthropic/       # Claude（扩展思考）
 │   ├── gemini/          # Google Gemini 客户端
 │   └── ...              # DeepSeek、Moonshot、Qwen、Ollama、Zhipu
-├── agents/              # Agent 框架
+├── lc-agents/           # Agent 框架
 │   ├── react/           # ReActAgent（文本解析）
 │   ├── function_calling/ # FunctionCallingAgent
 │   ├── plan_execute/    # PlanExecuteAgent
 │   ├── crag/            # CorrectiveRAG（评分+重写+幻觉检测）
 │   ├── adaptive_rag/    # AdaptiveRAG（LLM 路由检索）
 │   └── deep_research/   # DeepResearchAgent（多轮 + 引用）
-├── prompts/             # 提示词模板（含 FewShot）
-├── output_parsers/      # 输出解析器
-├── memory/              # 对话记忆管理（Buffer、Window、Summary、ContextWindow）
-├── chains/              # 链式操作（含文档处理链）
-├── retrieval/           # RAG 组件
+├── lc-prompts/          # 提示词模板（含 FewShot）
+├── lc-memory/           # 对话记忆管理（Buffer、Window、Summary、ContextWindow）
+├── lc-chains/           # 链式操作（含文档处理链）
+├── lc-rag/              # RAG 组件
 │   ├── graph_rag/       # GraphRAG（知识图谱 + 社区）
 │   ├── bm25/            # BM25 关键词检索
 │   └── hybrid/          # 混合检索（BM25 + 向量，RRF）
-├── embeddings/          # 文本嵌入（OpenAI、DeepSeek、Qwen、Local、Mock）
-├── vector_stores/       # 向量存储（InMemory、Qdrant、MongoDB、ChromaDB、Redis、SQLite、PGVector、Pinecone、File）
-├── storage/             # 存储后端（Redis、SQLite）
-├── cache/               # LLM 缓存（InMemory、Redis）
-├── tools/               # 内置工具 + 沙箱（Calculator、DateTime、HTTPTool、PythonREPL、CodeSandbox、ComputerUseTool）
-├── mcp/                 # MCP 客户端/服务端 + 6 大原语
-├── a2a/                 # Agent-to-Agent 协议
-├── langgraph/           # LangGraph（StateGraph、Subgraph、并行、Checkpointer）
-├── sessions/            # 会话管理
-├── guardrails/          # 输入/输出安全护栏
-├── evaluation/          # 10 个评估器，5 大类
-├── callbacks/           # 回调 + 追踪（InMemory、Console、OTel）
-└── schema/              # 数据结构</code></pre>
+├── lc-embeddings/       # 文本嵌入（OpenAI、DeepSeek、Qwen、Local、Mock）
+├── lc-vector-stores/    # 向量存储（InMemory、Qdrant、MongoDB、ChromaDB、Redis、SQLite、PGVector、Pinecone、File）
+├── lc-tools/            # 内置工具 + 沙箱（Calculator、DateTime、HTTPTool、PythonREPL、CodeSandbox、ComputerUseTool）
+├── lc-mcp/              # MCP 客户端/服务端 + 6 大原语
+├── lc-a2a/              # Agent-to-Agent 协议
+├── lc-langgraph/        # LangGraph（StateGraph、Subgraph、并行、Checkpointer）
+├── lc-sessions/         # 会话管理
+├── lc-guardrails/       # 输入/输出安全护栏
+├── lc-evaluation/       # 10 个评估器，5 大类
+├── lc-callbacks/        # 回调 + 追踪（InMemory、Console、OTel）
+└── lc-a2a/              # Agent-to-Agent 协议</code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2491,7 +2491,7 @@ src/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API 文档</a>
                 </div>
-                <p class="copyright">LangChainRust v0.6.0 | MIT 许可证</p>
+                <p class="copyright">LangChainRust v0.8.0 | MIT 许可证</p>
             </footer>
         </div>
     </main>

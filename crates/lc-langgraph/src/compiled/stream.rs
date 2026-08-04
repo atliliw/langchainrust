@@ -10,70 +10,130 @@ use crate::graph::END;
 use crate::node::NodeConfig;
 use crate::state::StateSchema;
 use futures_util::future::join_all;
+use futures_util::Stream;
 use std::collections::HashMap;
+use std::pin::Pin;
+use tokio_stream::wrappers::ReceiverStream;
 
-impl<S: StateSchema> CompiledGraph<S> {
-    pub async fn stream(&self, input: S) -> GraphResult<Vec<StreamEvent<S>>> {
-        let mut events = Vec::new();
-        let mut state = input;
-        let mut current_node = self.entry_point.clone();
-        let mut recursion_count = 0;
+impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
+    /// Stream graph execution as a true async stream.
+    ///
+    /// Each `StreamEvent` is emitted as soon as it occurs (node entry,
+    /// node completion, state update), enabling real-time consumption.
+    ///
+    /// This is the preferred streaming API. For the old all-at-once
+    /// behavior, use `stream_collected()`.
+    pub fn stream(&self, input: S) -> Pin<Box<dyn Stream<Item = Result<StreamEvent<S>, GraphError>> + Send>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
 
-        events.push(StreamEvent::start(state.clone()));
+        let graph = self.clone();
+        tokio::spawn(async move {
+            let mut state = input;
+            let mut current_node = graph.entry_point.clone();
+            let mut recursion_count = 0;
 
-        if let Some(ref checkpointer) = self.checkpointer {
-            let _checkpoint_id = checkpointer.lock().await.save(&state).await?;
-        }
-
-        while current_node != END && recursion_count < self.recursion_limit {
-            if self.interrupt_before.contains(&current_node) {
-                return Err(GraphError::ExecutionInterrupted(current_node.clone()));
+            if tx.send(Ok(StreamEvent::start(state.clone()))).await.is_err() {
+                return;
             }
 
-            recursion_count += 1;
-
-            events.push(StreamEvent::enter_node(current_node.clone(), state.clone()));
-
-            let node = self.get_node(&current_node).await?;
-
-            let config = NodeConfig {
-                recursion_limit: self.recursion_limit,
-                debug: false,
-                metadata: HashMap::new(),
-            };
-
-            let update = node.execute(&state, Some(config)).await?;
-
-            events.push(StreamEvent::node_complete(
-                current_node.clone(),
-                update.clone(),
-            ));
-
-            if let Some(new_state) = update.update {
-                state = self.default_reducer.reduce(&state, &new_state);
-                events.push(StreamEvent::state_update(state.clone()));
-            }
-
-            if self.interrupt_after.contains(&current_node) {
-                if let Some(ref checkpointer) = self.checkpointer {
-                    let _checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            if let Some(ref checkpointer) = graph.checkpointer {
+                match checkpointer.lock().await.save(&state).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
                 }
-                return Err(GraphError::ExecutionInterrupted(format!(
-                    "after_{}",
-                    current_node
-                )));
             }
 
-            let next_node = self.find_next_node(&current_node, &state).await?;
+            while current_node != END && recursion_count < graph.recursion_limit {
+                if graph.interrupt_before.contains(&current_node) {
+                    let _ = tx.send(Err(GraphError::ExecutionInterrupted(current_node.clone()))).await;
+                    return;
+                }
 
-            if let Some(ref checkpointer) = self.checkpointer {
-                let _checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                recursion_count += 1;
+
+                if tx.send(Ok(StreamEvent::enter_node(current_node.clone(), state.clone()))).await.is_err() {
+                    return;
+                }
+
+                let node = match graph.get_node(&current_node).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+
+                let config = NodeConfig {
+                    recursion_limit: graph.recursion_limit,
+                    debug: false,
+                    metadata: HashMap::new(),
+                };
+
+                let update = match node.execute(&state, Some(config)).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+
+                if tx.send(Ok(StreamEvent::node_complete(current_node.clone(), update.clone()))).await.is_err() {
+                    return;
+                }
+
+                if let Some(new_state) = update.update {
+                    state = graph.default_reducer.reduce(&state, &new_state);
+                    if tx.send(Ok(StreamEvent::state_update(state.clone()))).await.is_err() {
+                        return;
+                    }
+                }
+
+                if graph.interrupt_after.contains(&current_node) {
+                    if let Some(ref checkpointer) = graph.checkpointer {
+                        let _ = checkpointer.lock().await.save(&state).await;
+                    }
+                    let _ = tx.send(Err(GraphError::ExecutionInterrupted(format!(
+                        "after_{}",
+                        current_node
+                    )))).await;
+                    return;
+                }
+
+                let next_node = match graph.find_next_node(&current_node, &state).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+
+                if let Some(ref checkpointer) = graph.checkpointer {
+                    let _ = checkpointer.lock().await.save(&state).await;
+                }
+
+                current_node = next_node;
             }
 
-            current_node = next_node;
+            let _ = tx.send(Ok(StreamEvent::end(state))).await;
+        });
+
+        Box::pin(ReceiverStream::new(rx))
+    }
+
+    /// Collect all stream events into a Vec (backward-compatible API).
+    ///
+    /// This is the old `stream()` behavior. Prefer `stream()` for
+    /// real-time consumption.
+    pub async fn stream_collected(&self, input: S) -> GraphResult<Vec<StreamEvent<S>>> {
+        let mut events = Vec::new();
+        let mut stream = self.stream(input);
+        use futures_util::StreamExt;
+        while let Some(event) = stream.next().await {
+            events.push(event?);
         }
-
-        events.push(StreamEvent::end(state.clone()));
         Ok(events)
     }
 

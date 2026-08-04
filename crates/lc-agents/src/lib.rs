@@ -23,6 +23,7 @@
 //! Loop until AgentFinish returned
 //! ```
 
+pub mod adapter;
 pub mod adaptive_rag;
 pub mod base;
 pub mod builder;
@@ -35,6 +36,7 @@ pub mod react;
 pub mod streaming;
 pub mod types;
 
+pub use adapter::AgentRunnable;
 pub use adaptive_rag::{AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, RagDecision};
 pub use base::{AgentError, AgentExecutor, BaseAgent};
 pub use builder::AgentBuilder;

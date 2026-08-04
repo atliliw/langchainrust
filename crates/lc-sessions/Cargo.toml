@@ -1,6 +1,6 @@
 [package]
 name = "lc-sessions"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Session management for langchainrust"
@@ -8,8 +8,8 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-core = { path = "../lc-core" }
-lc-schema = { path = "../lc-schema" }
+lc-core = { path = "../lc-core", version = "0.9.0" }
+lc-schema = { path = "../lc-schema", version = "0.9.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

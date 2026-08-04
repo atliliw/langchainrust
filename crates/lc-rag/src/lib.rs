@@ -5,6 +5,7 @@
 //! hybrid retrieval, GraphRAG, HyDE, multi-query, reranking, and
 //! a full RAG pipeline builder.
 
+pub mod adapter;
 pub mod bm25;
 pub mod chunked_hybrid;
 pub mod graph_rag;
@@ -19,6 +20,7 @@ pub mod semantic_splitter;
 pub mod splitter;
 pub mod unified_hybrid;
 
+pub use adapter::RagRunnable;
 pub use pipeline::{RAGPipeline, RAGPipelineBuilder, RAGQueryResult};
 
 pub use loaders::{

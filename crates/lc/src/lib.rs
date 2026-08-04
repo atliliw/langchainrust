@@ -78,10 +78,10 @@ pub mod a2a;
 // 重新导出常用类型
 pub use agents::{
     AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError,
-    AgentExecutor, AgentFinish, AgentOutput, AgentStep, BaseAgent, CRAGError, CRAGResult, Citation,
-    CorrectiveRAGAgent, DeepResearchAgent, FunctionCallingAgent, HandoffManager, PlanExecuteAgent,
-    PlanExecuteError, RagDecision, ReActAgent, ResearchError, ResearchReport,
-    StreamingFunctionCallingAgent, ToolInput,
+    AgentExecutor, AgentFinish, AgentRunnable, AgentOutput, AgentStep, BaseAgent, CRAGError,
+    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FunctionCallingAgent,
+    HandoffManager, PlanExecuteAgent, PlanExecuteError, RagDecision, ReActAgent, ResearchError,
+    ResearchReport, StreamingFunctionCallingAgent, ToolInput,
 };
 pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
@@ -95,6 +95,10 @@ pub use core::tools::StructuredOutput;
 pub use core::{
     BaseChatModel, BaseLanguageModel, BaseTool, FunctionCall, FunctionDefinition, Runnable,
     RunnableConfig, Tool, ToolCall, ToolCallResult, ToolDefinition, ToolError, ToolRegistry,
+    // LCEL types
+    into_runnable_any, LcelError, LcelStreamEvent, RunnableAny, RunnableAnyWrapper, RunnableBinding,
+    RunnableBranch, RunnableExt, RunnableLambda, RunnableParallel, RunnablePassthrough,
+    RunnableSequence,
 };
 pub use evaluation::{
     Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator,
@@ -130,10 +134,10 @@ pub use tools::{
 };
 
 pub use chains::{
-    BaseChain, ChainError, ChainResult, ChainStream, ConversationChain, ConversationChainBuilder,
-    ConversationRetrievalChain, LLMChain, LLMChainBuilder, LLMRouterChain, MapReduceDocumentsChain,
-    MapRerankDocumentsChain, RefineDocumentsChain, RetrievalQA, RouteDestination, RouterChain,
-    SequentialChain, StreamToken, StuffDocumentsChain,
+    BaseChain, ChainError, ChainResult, ChainRunnable, ChainStream, ConversationChain,
+    ConversationChainBuilder, ConversationRetrievalChain, LLMChain, LLMChainBuilder,
+    LLMRouterChain, MapReduceDocumentsChain, MapRerankDocumentsChain, RefineDocumentsChain,
+    RetrievalQA, RouteDestination, RouterChain, SequentialChain, StreamToken, StuffDocumentsChain,
 };
 #[cfg(feature = "mongodb-persistence")]
 pub use memory::MongoPersistentMemory;
@@ -177,7 +181,7 @@ pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 // Retrieval
 pub use retrieval::{
     reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RAGPipeline,
-    RAGPipelineBuilder, RAGQueryResult, RetrievalSource, RetrievedDocument,
+    RAGPipelineBuilder, RAGQueryResult, RagRunnable, RetrievalSource, RetrievedDocument,
 };
 pub use retrieval::{
     AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,

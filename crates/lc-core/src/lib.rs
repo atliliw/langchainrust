@@ -29,7 +29,11 @@ pub use output_parsers::{
     BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
-pub use runnables::{Runnable, RunnableConfig};
+pub use runnables::{
+    into_runnable_any, LcelError, LcelStreamEvent, Runnable, RunnableAny, RunnableAnyWrapper,
+    RunnableBinding, RunnableBranch, RunnableConfig, RunnableExt, RunnableLambda, RunnableParallel,
+    RunnablePassthrough, RunnableSequence,
+};
 pub use structured_output::{
     stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,
     StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
@@ -93,4 +97,21 @@ impl From<std::convert::Infallible> for CoreError {
 /// Use this instead of `?` when the error type is not a known CoreError variant.
 pub fn other_error<E: std::fmt::Display>(err: E) -> CoreError {
     CoreError::Other(err.to_string())
+}
+
+// Allow CoreError to convert into LcelError for LCEL pipeline compatibility
+impl From<CoreError> for runnables::LcelError {
+    fn from(err: CoreError) -> Self {
+        match &err {
+            CoreError::Tool(_) => runnables::LcelError::Tool(err.to_string()),
+            CoreError::JsonParse(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::Batch(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::Router(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::StructuredOutput(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::PartialJson(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::OutputParser(_) => runnables::LcelError::OutputParser(err.to_string()),
+            CoreError::Math(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::Other(_) => runnables::LcelError::Other(err.to_string()),
+        }
+    }
 }

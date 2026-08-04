@@ -90,3 +90,13 @@ impl From<ResponsesError> for ProviderError {
         ProviderError::Responses(e)
     }
 }
+
+// ---- LCEL Error conversion ----
+
+/// Allow `ProviderError` to convert into `LcelError` for LCEL pipeline compatibility.
+/// This enables LLM providers to participate in `pipe()` chains.
+impl From<ProviderError> for lc_core::LcelError {
+    fn from(err: ProviderError) -> Self {
+        lc_core::LcelError::Provider(err.to_string())
+    }
+}

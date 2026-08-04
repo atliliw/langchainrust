@@ -15,6 +15,7 @@ use std::pin::Pin;
 /// - Single execution via `invoke`
 /// - Batch processing via `batch`
 /// - Streaming output via `stream`
+/// - Stream-to-stream transformation via `transform`
 ///
 /// # Example
 /// ```rust
@@ -111,6 +112,45 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }
+
+    /// Stream-to-stream transformation - the core of LCEL streaming.
+    ///
+    /// Takes an input stream and produces an output stream, enabling
+    /// pipeline streaming without buffering intermediate results.
+    ///
+    /// # Default Implementation
+    /// Buffers all input items, takes the last one (stream accumulation
+    /// semantics), and calls `invoke` on it. Components that support
+    /// true streaming (e.g. LLMs) should override this method.
+    ///
+    /// # Arguments
+    /// * `input` - Input stream to transform.
+    /// * `config` - Optional execution configuration.
+    ///
+    /// # Returns
+    /// Output stream.
+    async fn transform(
+        &self,
+        input: Pin<Box<dyn Stream<Item = Result<Input, Self::Error>> + Send>>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error> {
+        use futures_util::StreamExt;
+
+        // Default: buffer all input, take the last item, invoke on it
+        let mut items = Vec::new();
+        let mut input = input;
+        while let Some(item) = input.next().await {
+            items.push(item?);
+        }
+
+        // Use the last item (stream accumulation semantics)
+        if let Some(last) = items.into_iter().last() {
+            let result = self.invoke(last, config).await?;
+            Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+        } else {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,5 +195,36 @@ mod tests {
         let stream_result = stream.next().await.unwrap().unwrap();
 
         assert_eq!(invoke_result, stream_result);
+    }
+
+    #[tokio::test]
+    async fn test_default_transform_buffers_and_invokes() {
+        let runnable = TestRunnable;
+        let input_stream = Box::pin(futures_util::stream::iter(vec![
+            Ok("first".to_string()),
+            Ok("second".to_string()),
+            Ok("third".to_string()),
+        ])) as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
+
+        let mut output_stream = runnable.transform(input_stream, None).await.unwrap();
+
+        // Default transform takes the last item and invokes on it
+        let result = output_stream.next().await.unwrap().unwrap();
+        assert_eq!(result, "processed: third");
+
+        // Stream should be exhausted
+        assert!(output_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_default_transform_empty_input() {
+        let runnable = TestRunnable;
+        let input_stream = Box::pin(futures_util::stream::empty::<Result<String, std::convert::Infallible>>())
+            as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
+
+        let mut output_stream = runnable.transform(input_stream, None).await.unwrap();
+
+        // Empty input → empty output
+        assert!(output_stream.next().await.is_none());
     }
 }

@@ -40,7 +40,7 @@ mod tests {
             .unwrap();
 
         let input = AgentState::new("test".to_string());
-        let events = compiled.stream(input).await.unwrap();
+        let events = compiled.stream_collected(input).await.unwrap();
 
         assert!(!events.is_empty());
     }

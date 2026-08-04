@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 /// - Execution with recursion limits
 /// - Checkpointing for persistence
 #[allow(clippy::type_complexity)]
+#[derive(Clone)]
 pub struct CompiledGraph<S: StateSchema> {
     pub(super) nodes: HashMap<String, Arc<dyn GraphNode<S>>>,
     pub(super) edges: Vec<GraphEdge>,

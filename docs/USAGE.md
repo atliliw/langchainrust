@@ -1303,7 +1303,7 @@ Persistent vector store using Chroma:
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.5", features = ["chromadb"] }
+langchainrust = { version = "0.8", features = ["chromadb"] }
 ```
 
 ```rust
@@ -1872,7 +1872,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.5", features = ["opentelemetry"] }
+langchainrust = { version = "0.8", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -1959,7 +1959,7 @@ assert_eq!(halluc.value, 0.0); // fabricated, caught
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.5", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.8", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -1988,14 +1988,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.5", features = ["redis-storage"] }
+langchainrust = { version = "0.8", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.5", features = ["sqlite-storage"] }
+langchainrust = { version = "0.8", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore

@@ -2,13 +2,16 @@
 //! Agent base traits and executor implementation.
 
 use super::types::{AgentAction, AgentFinish, AgentOutput, AgentStep};
+use super::streaming::state::AgentStreamEvent;
 use async_trait::async_trait;
 use lc_callbacks::{CallbackManager, RunTree, RunType};
 use lc_core::tools::BaseTool;
 use lc_memory::BaseMemory;
 use serde_json::json;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use futures_util::Stream;
 
 /// Agent error types.
 #[derive(Debug, thiserror::Error)]
@@ -210,6 +213,127 @@ impl AgentExecutor {
         result
     }
 
+    /// Stream agent execution as a true async stream of events.
+    ///
+    /// Each step of the agent loop (tool calls, observations, final answer)
+    /// is emitted as an `AgentStreamEvent` as soon as it occurs.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = executor.stream("What is Rust?".to_string());
+    /// while let Some(event) = stream.next().await {
+    ///     match event {
+    ///         Ok(AgentStreamEvent::ToolStart { name, input }) => { /* show tool call */ }
+    ///         Ok(AgentStreamEvent::ToolEnd { name, output }) => { /* show result */ }
+    ///         Ok(AgentStreamEvent::FinalAnswer { content }) => { /* show answer */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    pub fn stream(&self, input: String) -> Pin<Box<dyn Stream<Item = Result<AgentStreamEvent, AgentError>> + Send>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        let agent = self.agent.clone();
+        let tools = self.tools.clone();
+        let max_iterations = self.max_iterations;
+        let verbose = self.verbose;
+
+        tokio::spawn(async move {
+            let mut intermediate_steps: Vec<AgentStep> = Vec::new();
+            let mut inputs = HashMap::new();
+            inputs.insert("input".to_string(), input);
+
+            for iteration in 0..max_iterations {
+                if verbose {
+                    log::info!("=== Stream Iteration {} ===", iteration + 1);
+                }
+
+                let output = match agent.plan(&intermediate_steps, &inputs).await {
+                    Ok(o) => o,
+                    Err(e) => {
+                        let _ = tx.send(Ok(AgentStreamEvent::Error { message: e.to_string() })).await;
+                        return;
+                    }
+                };
+
+                match output {
+                    AgentOutput::Finish(finish) => {
+                        let content = finish.output().unwrap_or("").to_string();
+                        let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
+                        return;
+                    }
+
+                    AgentOutput::Action(action) => {
+                        let tool_name = action.tool.clone();
+                        let tool_input_str = match &action.tool_input {
+                            super::types::ToolInput::String { value: s } => s.clone(),
+                            super::types::ToolInput::Object { value: v } => {
+                                serde_json::to_string(v).unwrap_or_default()
+                            }
+                        };
+
+                        let _ = tx.send(Ok(AgentStreamEvent::ToolStart {
+                            name: tool_name.clone(),
+                            input: tool_input_str.clone(),
+                        })).await;
+
+                        // Execute the tool
+                        let observation = match execute_tool_for_stream(&tools, &action).await {
+                            Ok(obs) => obs,
+                            Err(e) => {
+                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: e.to_string() })).await;
+                                return;
+                            }
+                        };
+
+                        let _ = tx.send(Ok(AgentStreamEvent::ToolEnd {
+                            name: tool_name,
+                            output: observation.clone(),
+                        })).await;
+
+                        intermediate_steps.push(AgentStep::new(action, observation));
+                    }
+
+                    AgentOutput::Actions(actions) => {
+                        for action in &actions {
+                            let tool_name = action.tool.clone();
+                            let tool_input_str = match &action.tool_input {
+                                super::types::ToolInput::String { value: s } => s.clone(),
+                                super::types::ToolInput::Object { value: v } => {
+                                    serde_json::to_string(v).unwrap_or_default()
+                                }
+                            };
+
+                            let _ = tx.send(Ok(AgentStreamEvent::ToolStart {
+                                name: tool_name.clone(),
+                                input: tool_input_str,
+                            })).await;
+                        }
+
+                        let observations = execute_tools_parallel_for_stream(&tools, &actions).await;
+
+                        for (action, observation) in actions.into_iter().zip(observations.into_iter()) {
+                            let _ = tx.send(Ok(AgentStreamEvent::ToolEnd {
+                                name: action.tool.clone(),
+                                output: observation.clone(),
+                            })).await;
+
+                            intermediate_steps.push(AgentStep::new(action, observation));
+                        }
+                    }
+                }
+            }
+
+            // Max iterations reached
+            let finish = agent.return_stopped_response(&intermediate_steps);
+            let content = finish.output().unwrap_or("").to_string();
+            let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
+        });
+
+        Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+
     /// Runs the agent loop.
     async fn run_agent_loop(
         &self,
@@ -370,6 +494,46 @@ impl std::fmt::Debug for AgentExecutor {
             .field("has_memory", &self.memory.is_some())
             .finish()
     }
+}
+
+/// Helper: execute a single tool for streaming (no RunTree dependency).
+async fn execute_tool_for_stream(
+    tools: &[Arc<dyn BaseTool>],
+    action: &AgentAction,
+) -> Result<String, AgentError> {
+    let tool = tools
+        .iter()
+        .find(|t| t.name() == action.tool)
+        .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
+
+    let input_str = match &action.tool_input {
+        super::types::ToolInput::String { value: s } => s.clone(),
+        super::types::ToolInput::Object { value: v } => serde_json::to_string(v)
+            .map_err(|e| AgentError::Other(format!("Failed to serialize tool input: {}", e)))?,
+    };
+
+    tool.run(input_str)
+        .await
+        .map_err(|e| AgentError::ToolExecutionError(e.to_string()))
+}
+
+/// Helper: execute multiple tools in parallel for streaming.
+async fn execute_tools_parallel_for_stream(
+    tools: &[Arc<dyn BaseTool>],
+    actions: &[AgentAction],
+) -> Vec<String> {
+    use futures_util::future::join_all;
+
+    let futures: Vec<_> = actions
+        .iter()
+        .map(|action| execute_tool_for_stream(tools, action))
+        .collect();
+
+    let results = join_all(futures).await;
+    results
+        .into_iter()
+        .map(|result| result.unwrap_or_else(|e| format!("[Tool execution error: {}]", e)))
+        .collect()
 }
 
 #[cfg(test)]
