@@ -30,6 +30,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Chains](#chains)
   - ConversationRetrievalChain
   - Chain Streaming ✨ v0.4.1
+- [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
 - [Document Chains](#document-chains)
 - [Agents](#agents)
 - [Plan-Execute Agent](#plan-execute-agent)
@@ -617,6 +618,146 @@ let llm = OpenAIChat::new(config)
 // Subsequent identical calls return cached result
 let r1 = llm.chat(vec![Message::human("Hello")], None).await?;
 let r2 = llm.chat(vec![Message::human("Hello")], None).await?;  // cache hit
+```
+
+---
+
+## LCEL (LangChain Expression Language) ✨ v0.9.0
+
+LCEL provides Python LangChain-style pipe composition, chaining `Runnable` components via `pipe()` into pipelines.
+
+### Basic Pipe
+
+```rust
+use langchainrust::{
+    RunnableExt, RunnableLambda, RunnablePassthrough,
+};
+
+// Simple pipeline: input -> double -> format as string
+let doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+let formatter = RunnableLambda::new_sync(|x: i32| format!("Result: {}", x));
+
+let chain = doubler.pipe(formatter);
+let result = chain.invoke(5, None).await?;
+// result = "Result: 10"
+```
+
+### Three-Step Pipeline (Prompt | LLM | Parser)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, StrOutputParser};
+
+let prompt = RunnableLambda::new_sync(|query: String| {
+    format!("Answer the following question: {}", query)
+});
+let parser = RunnableLambda::new_sync(|output: String| {
+    output.trim().to_string()
+});
+
+// prompt.pipe(llm).pipe(parser) — LLM step requires a real API
+let chain = prompt.pipe(parser);
+let result = chain.invoke("What is Rust?".to_string(), None).await?;
+```
+
+### RunnablePassthrough (Pass-through)
+
+```rust
+use langchainrust::RunnablePassthrough;
+
+// Passthrough passes input through unchanged
+let passthrough = RunnablePassthrough::<String>::new();
+let result = passthrough.invoke("hello".to_string(), None).await?;
+// result = "hello"
+
+// True streaming: transform passes input stream through without buffering
+let stream = passthrough.transform(input_stream, None).await;
+```
+
+### RunnableParallel (Fan-out / Fan-in)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
+
+let doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+let tripler = RunnableLambda::new_sync(|x: i32| x * 3);
+
+let parallel = RunnableParallel::new()
+    .with("double", doubler)
+    .with("triple", tripler);
+
+let result = parallel.invoke(5, None).await?;
+// result = {"double": 10, "triple": 15}
+```
+
+### RunnableBranch (Conditional Routing)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, RunnableBranch};
+
+let short_handler = RunnableLambda::new_sync(|s: String| format!("Short: {}", s));
+let long_handler = RunnableLambda::new_sync(|s: String| format!("Long: {}", s));
+let default_handler = RunnableLambda::new_sync(|s: String| format!("Default: {}", s));
+
+let branch = RunnableBranch::new(default_handler)
+    .when(
+        RunnableLambda::new_sync(|s: String| s.len() < 5),
+        short_handler,
+    )
+    .when(
+        RunnableLambda::new_sync(|s: String| s.len() >= 10),
+        long_handler,
+    );
+
+let result = branch.invoke("hi".to_string(), None).await?;
+// result = "Short: hi"
+```
+
+### RunnableBinding (Config Binding)
+
+```rust
+use langchainrust::{RunnableBinding, RunnableConfig};
+
+// Pre-bind config and kwargs
+let bound = runnable
+    .bind("temperature", serde_json::json!(0.7))
+    .with_config(RunnableConfig::new().with_tag("production"));
+let result = bound.invoke(input, None).await?;
+```
+
+### Batch Execution
+
+```rust
+let results = chain.batch(vec![1, 2, 3], None).await?;
+// results = ["Result: 2", "Result: 4", "Result: 6"]
+```
+
+### Stream Execution
+
+```rust
+use futures_util::StreamExt;
+
+let mut stream = chain.stream("hello".to_string(), None).await?;
+while let Some(item) = stream.next().await {
+    println!("Token: {}", item?);
+}
+```
+
+### Adapters (Bridge Existing Components to LCEL)
+
+```rust
+use langchainrust::{ChainRunnable, AgentRunnable, RagRunnable};
+
+// Chain adapter
+let chain_runnable = ChainRunnable::new(arc_chain);
+let result = chain_runnable.invoke(input_map, None).await?;
+
+// Agent adapter
+let agent_runnable = AgentRunnable::new(arc_agent_executor);
+let result = agent_runnable.invoke("query".to_string(), None).await?;
+
+// RAG adapter
+let rag_runnable = RagRunnable::new(arc_rag_pipeline);
+let result = rag_runnable.invoke("query".to_string(), None).await?;
 ```
 
 ---

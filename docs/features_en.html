@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.8.0 • Features</div>
+            <div class="sidebar-subtitle">v0.9.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -531,6 +531,7 @@
                 <div class="nav-section-title">Core Modules</div>
                 <a href="#agents" class="nav-item">🤖 Agents</a>
                 <a href="#chains" class="nav-item">🔗 Chains</a>
+                <a href="#lcel" class="nav-item new">⚡ LCEL</a>
                 <a href="#document-chains" class="nav-item new">📄 Document Chains</a>
                 <a href="#memory" class="nav-item">🧠 Memory</a>
                 <a href="#tools" class="nav-item">🔧 Tools</a>
@@ -770,6 +771,62 @@
 <span class="kw">let</span> result = chain.invoke(HashMap::from([
     (<span class="str">"question"</span>, <span class="str">"What is Rust ownership?"</span>)
 ])).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- LCEL -->
+            <section class="module" id="lcel" style="animation-delay: 0.21s;">
+                <div class="module-header">
+                    <span class="module-icon">⚡</span>
+                    <h2>LCEL <span class="badge new">v0.9.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>LCEL (LangChain Expression Language)</strong> provides pipe composition for <code>Runnable</code> components, inspired by Python LangChain's <code>prompt | llm | parser</code> syntax.</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">Core value: Declarative composition, type-safe, unified invoke/batch/stream/transform interface.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>RunnableSequence</h3><p>Pipeline: pipe() chaining</p></div>
+                    <div class="feature-card"><h3>RunnableLambda</h3><p>Closure wrapper: sync/async</p></div>
+                    <div class="feature-card"><h3>RunnablePassthrough</h3><p>Pass-through: true streaming</p></div>
+                    <div class="feature-card"><h3>RunnableParallel</h3><p>Fan-out / Fan-in</p></div>
+                    <div class="feature-card"><h3>RunnableBranch</h3><p>Conditional routing</p></div>
+                    <div class="feature-card"><h3>RunnableBinding</h3><p>Config/kwargs binding</p></div>
+                </div>
+
+                <h3>Pipe Composition Example</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">Rust</span>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
+
+<span class="kw">let</span> doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+<span class="kw">let</span> formatter = RunnableLambda::new_sync(|x: i32| format!(<span class="str">"Result: {}"</span>, x));
+
+<span class="comment">// Pipe composition</span>
+<span class="kw">let</span> chain = doubler.pipe(formatter);
+<span class="kw">let</span> result = chain.invoke(<span class="num">5</span>, <span class="kw">None</span>).await?;
+<span class="comment">// result = "Result: 10"</span>
+
+<span class="comment">// Parallel execution</span>
+<span class="kw">let</span> parallel = RunnableParallel::new()
+    .with(<span class="str">"double"</span>, RunnableLambda::new_sync(|x: i32| x * 2))
+    .with(<span class="str">"triple"</span>, RunnableLambda::new_sync(|x: i32| x * 3));
+<span class="kw">let</span> result = parallel.invoke(<span class="num">5</span>, <span class="kw">None</span>).await?;
+<span class="comment">// result = {"double": 10, "triple": 15}</span></code></pre>
+                </div>
+
+                <h3>Adapters (Bridge Existing Components to LCEL)</h3>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>ChainRunnable</h3><p>Chain → Runnable</p></div>
+                    <div class="feature-card"><h3>AgentRunnable</h3><p>Agent → Runnable</p></div>
+                    <div class="feature-card"><h3>RagRunnable</h3><p>RAG → Runnable</p></div>
                 </div>
 
                 <hr class="divider">
@@ -2490,7 +2547,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.8.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.9.0 | MIT License</p>
             </footer>
         </div>
     </main>

@@ -30,6 +30,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Chains](#chains)
   - ConversationRetrievalChain
   - Chain Streaming ✨ v0.4.1
+- [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
 - [Document Chains](#document-chains)
 - [Agents](#agents)
 - [Plan-Execute Agent](#plan-execute-agent)
@@ -617,6 +618,146 @@ let llm = OpenAIChat::new(config)
 // Subsequent identical calls return cached result
 let r1 = llm.chat(vec![Message::human("Hello")], None).await?;
 let r2 = llm.chat(vec![Message::human("Hello")], None).await?;  // cache hit
+```
+
+---
+
+## LCEL (LangChain Expression Language) ✨ v0.9.0
+
+LCEL 提供类似 Python LangChain 的管道组合语法，将 `Runnable` 组件通过 `pipe()` 串联成流水线。
+
+### 基本管道
+
+```rust
+use langchainrust::{
+    RunnableExt, RunnableLambda, RunnablePassthrough,
+};
+
+// 创建简单的管道: 输入 -> 加倍 -> 转字符串
+let doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+let formatter = RunnableLambda::new_sync(|x: i32| format!("Result: {}", x));
+
+let chain = doubler.pipe(formatter);
+let result = chain.invoke(5, None).await?;
+// result = "Result: 10"
+```
+
+### 三步管道 (Prompt | LLM | Parser)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, StrOutputParser};
+
+let prompt = RunnableLambda::new_sync(|query: String| {
+    format!("请回答以下问题：{}", query)
+});
+let parser = RunnableLambda::new_sync(|output: String| {
+    output.trim().to_string()
+});
+
+// prompt.pipe(llm).pipe(parser) — LLM 步骤需要真实 API
+let chain = prompt.pipe(parser);
+let result = chain.invoke("什么是Rust?".to_string(), None).await?;
+```
+
+### RunnablePassthrough (透传)
+
+```rust
+use langchainrust::RunnablePassthrough;
+
+// Passthrough 直接传递输入，不修改
+let passthrough = RunnablePassthrough::<String>::new();
+let result = passthrough.invoke("hello".to_string(), None).await?;
+// result = "hello"
+
+// 真流式: transform 直接传递输入流，不缓冲
+let stream = passthrough.transform(input_stream, None).await;
+```
+
+### RunnableParallel (扇出/扇入)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
+
+let doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+let tripler = RunnableLambda::new_sync(|x: i32| x * 3);
+
+let parallel = RunnableParallel::new()
+    .with("double", doubler)
+    .with("triple", tripler);
+
+let result = parallel.invoke(5, None).await?;
+// result = {"double": 10, "triple": 15}
+```
+
+### RunnableBranch (条件路由)
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda, RunnableBranch};
+
+let short_handler = RunnableLambda::new_sync(|s: String| format!("短: {}", s));
+let long_handler = RunnableLambda::new_sync(|s: String| format!("长: {}", s));
+let default_handler = RunnableLambda::new_sync(|s: String| format!("默认: {}", s));
+
+let branch = RunnableBranch::new(default_handler)
+    .when(
+        RunnableLambda::new_sync(|s: String| s.len() < 5),
+        short_handler,
+    )
+    .when(
+        RunnableLambda::new_sync(|s: String| s.len() >= 10),
+        long_handler,
+    );
+
+let result = branch.invoke("hi".to_string(), None).await?;
+// result = "短: hi"
+```
+
+### RunnableBinding (配置绑定)
+
+```rust
+use langchainrust::{RunnableBinding, RunnableConfig};
+
+// 预绑定配置和 kwargs
+let bound = runnable
+    .bind("temperature", serde_json::json!(0.7))
+    .with_config(RunnableConfig::new().with_tag("production"));
+let result = bound.invoke(input, None).await?;
+```
+
+### Batch 批量执行
+
+```rust
+let results = chain.batch(vec![1, 2, 3], None).await?;
+// results = ["Result: 2", "Result: 4", "Result: 6"]
+```
+
+### Stream 流式执行
+
+```rust
+use futures_util::StreamExt;
+
+let mut stream = chain.stream("hello".to_string(), None).await?;
+while let Some(item) = stream.next().await {
+    println!("Token: {}", item?);
+}
+```
+
+### 适配器 (将现有组件接入 LCEL)
+
+```rust
+use langchainrust::{ChainRunnable, AgentRunnable, RagRunnable};
+
+// Chain 适配器
+let chain_runnable = ChainRunnable::new(arc_chain);
+let result = chain_runnable.invoke(input_map, None).await?;
+
+// Agent 适配器
+let agent_runnable = AgentRunnable::new(arc_agent_executor);
+let result = agent_runnable.invoke("query".to_string(), None).await?;
+
+// RAG 适配器
+let rag_runnable = RagRunnable::new(arc_rag_pipeline);
+let result = rag_runnable.invoke("query".to_string(), None).await?;
 ```
 
 ---

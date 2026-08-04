@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.8.0 • 功能</div>
+            <div class="sidebar-subtitle">v0.9.0 • 功能</div>
         </div>
 
         <div class="sidebar-nav">
@@ -531,6 +531,7 @@
                 <div class="nav-section-title">核心模块</div>
                 <a href="#agents" class="nav-item">🤖 Agents</a>
                 <a href="#chains" class="nav-item">🔗 Chains</a>
+                <a href="#lcel" class="nav-item new">⚡ LCEL</a>
                 <a href="#document-chains" class="nav-item new">📄 Document Chains</a>
                 <a href="#memory" class="nav-item">🧠 Memory</a>
                 <a href="#tools" class="nav-item">🔧 Tools</a>
@@ -771,6 +772,62 @@
 <span class="kw">let</span> result = chain.invoke(HashMap::from([
     (<span class="str">"question"</span>, <span class="str">"What is Rust ownership?"</span>)
 ])).await?;</code></pre>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- LCEL -->
+            <section class="module" id="lcel" style="animation-delay: 0.21s;">
+                <div class="module-header">
+                    <span class="module-icon">⚡</span>
+                    <h2>LCEL <span class="badge new">v0.9.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>LCEL (LangChain Expression Language)</strong> 提供管道组合语法，将 Runnable 组件通过 <code>pipe()</code> 串联成流水线，类似 Python LangChain 的 <code>prompt | llm | parser</code>。</p>
+                    <p style="color: var(--accent-primary); margin-top: var(--gap-md);">核心价值：声明式组合、类型安全、统一 invoke/batch/stream/transform 接口。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>RunnableSequence</h3><p>管道执行：pipe() 串联</p></div>
+                    <div class="feature-card"><h3>RunnableLambda</h3><p>闭包包装：sync/async</p></div>
+                    <div class="feature-card"><h3>RunnablePassthrough</h3><p>透传：真流式</p></div>
+                    <div class="feature-card"><h3>RunnableParallel</h3><p>扇出/扇入</p></div>
+                    <div class="feature-card"><h3>RunnableBranch</h3><p>条件路由</p></div>
+                    <div class="feature-card"><h3>RunnableBinding</h3><p>配置/kwargs 绑定</p></div>
+                </div>
+
+                <h3>管道组合示例</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">Rust</span>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
+
+<span class="kw">let</span> doubler = RunnableLambda::new_sync(|x: i32| x * 2);
+<span class="kw">let</span> formatter = RunnableLambda::new_sync(|x: i32| format!(<span class="str">"Result: {}"</span>, x));
+
+<span class="comment">// 管道组合</span>
+<span class="kw">let</span> chain = doubler.pipe(formatter);
+<span class="kw">let</span> result = chain.invoke(<span class="num">5</span>, <span class="kw">None</span>).await?;
+<span class="comment">// result = "Result: 10"</span>
+
+<span class="comment">// 并行执行</span>
+<span class="kw">let</span> parallel = RunnableParallel::new()
+    .with(<span class="str">"double"</span>, RunnableLambda::new_sync(|x: i32| x * 2))
+    .with(<span class="str">"triple"</span>, RunnableLambda::new_sync(|x: i32| x * 3));
+<span class="kw">let</span> result = parallel.invoke(<span class="num">5</span>, <span class="kw">None</span>).await?;
+<span class="comment">// result = {"double": 10, "triple": 15}</span></code></pre>
+                </div>
+
+                <h3>适配器 (现有组件接入 LCEL)</h3>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>ChainRunnable</h3><p>Chain → Runnable</p></div>
+                    <div class="feature-card"><h3>AgentRunnable</h3><p>Agent → Runnable</p></div>
+                    <div class="feature-card"><h3>RagRunnable</h3><p>RAG → Runnable</p></div>
                 </div>
 
                 <hr class="divider">
@@ -2491,7 +2548,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API 文档</a>
                 </div>
-                <p class="copyright">LangChainRust v0.8.0 | MIT 许可证</p>
+                <p class="copyright">LangChainRust v0.9.0 | MIT 许可证</p>
             </footer>
         </div>
     </main>

@@ -5,7 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.1] - 2026-08-03
+## [0.9.0] - 2026-08-05
+
+### Added
+- **LCEL (LangChain Expression Language)**: Pipe composition for `Runnable` components, inspired by Python LangChain's `prompt | llm | parser` syntax
+  - `RunnableExt::pipe()`: Chain any `Runnable<I, O>` into a pipeline via `.pipe(other)`
+  - `RunnableSequence<I, O>`: Ordered pipeline of type-erased steps, supports `invoke` / `batch` / `stream` / `transform`
+  - `RunnableLambda<I, O>`: Wrap sync/async closures as `Runnable` steps (`new_sync` / `new_sync_fallible` / `new_async`)
+  - `RunnablePassthrough<I>`: Identity pass-through with true streaming (passes input stream through without buffering)
+  - `RunnableParallel<I>`: Fan-out/fan-in — run multiple steps concurrently, collect results into `HashMap<String, Value>`
+  - `RunnableBranch<I, O>`: Conditional routing — evaluate conditions in order, first match wins
+  - `RunnableBinding<I, O>`: Bind config/kwargs to a `Runnable` for pre-configured invocation
+  - `LcelError`: Unified error type for LCEL pipelines (9 variants, all String-based to avoid circular deps)
+  - `LcelStreamEvent`: Fine-grained pipeline events (OnLlmStart/Stream/End, OnToolEnd, OnChainEnd)
+  - `RunnableAny` trait + `RunnableAnyWrapper`: Type erasure for heterogeneous pipeline composition
+  - `into_runnable_any()`: Helper to wrap any `Runnable` into `Box<dyn RunnableAny>`
+- **`Runnable::transform()` method**: Core LCEL streaming primitive — takes input `Stream`, returns output `Stream`. Default implementation buffers input and invokes on last item; `RunnablePassthrough` overrides for true pass-through streaming
+- **True streaming for `CompiledGraph`**: `stream()` now returns `Pin<Box<dyn Stream>>` (real async stream via tokio::sync::mpsc) instead of collecting all events into `Vec`. Added `stream_collected()` for backward compatibility
+- **`CompiledGraph` Clone**: Added `#[derive(Clone)]` (all fields use Arc, so Clone is cheap) — required for true streaming (spawned tokio task needs owned graph)
+- **`AgentExecutor::stream()`**: New method returning `Pin<Box<dyn Stream<Item = Result<AgentStreamEvent, AgentError>>>>` with ToolStart/ToolEnd events
+- **`AgentStreamEvent` new variants**: `ToolStart { name, input }` and `ToolEnd { name, output }` for fine-grained tool execution observability
+- **Adapter pattern**: `ChainRunnable`, `AgentRunnable`, `RagRunnable` — bridge existing types to `Runnable` trait for LCEL pipeline participation
+- **Error conversions**: `From<CoreError> for LcelError`, `From<ProviderError> for LcelError` — seamless `?` operator across module boundaries
+- **`lcel_pipe` example**: Demonstrates pipe, three-step pipeline, passthrough, async lambda, branch, parallel, batch, config binding
+
+### Changed
+- **Workspace version**: All 20 crates bumped from 0.8.0 to 0.9.0
+- **`lc-core` dependencies**: Added `futures-util`, `tokio`, `tokio-stream`, `serde_json`, `uuid`
+- **`lc-langgraph` dependencies**: Added `tokio-stream`
+- **Facade crate re-exports**: All LCEL types (`RunnableSequence`, `RunnableLambda`, `RunnablePassthrough`, `RunnableParallel`, `RunnableBranch`, `RunnableBinding`, `LcelError`, `LcelStreamEvent`, `into_runnable_any`, etc.) re-exported from `langchainrust`
+
+## [0.8.0] - 2026-08-04
+
+### Changed
+- **Workspace restructure**: Migrated from single-crate to multi-crate workspace architecture
+  - `langchainrust` → facade crate (`lc`) re-exporting all sub-crates
+  - `lc-core`: Runnable, BaseTool, BaseLanguageModel, output parsers, structured output, token counter, batch, cache
+  - `lc-schema`: Message types (Human, AI, System, Tool)
+  - `lc-shared`: Shared utilities
+  - `lc-providers`: OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic / Gemini
+  - `lc-agents`: ReActAgent / FunctionCallingAgent / PlanExecute / Handoffs / CRAG / AdaptiveRAG / DeepResearch
+  - `lc-chains`: LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / Document chains
+  - `lc-memory`: Buffer / Window / Summary / SummaryBuffer / Persistent / ContextWindow
+  - `lc-embeddings`: OpenAI / DeepSeek / Qwen / Local / Mock
+  - `lc-vector-stores`: InMemory / Qdrant / MongoDB / ChromaDB / Redis / SQLite / PGVector / Pinecone / File
+  - `lc-retrieval`: RAG / BM25 / Hybrid / HyDE / MultiQuery / Reranking / GraphRAG / Loaders
+  - `lc-prompts`: PromptTemplate / ChatPromptTemplate / FewShot
+  - `lc-callbacks`: StdOut / LangSmith / File / OTel + Tracing
+  - `lc-tools`: Calculator / DateTime / Math / URLFetch / Wikipedia / PythonREPL / HTTP / File / SQL / ComputerUse / Sandbox
+  - `lc-evaluation`: 10 evaluators
+  - `lc-guardrails`: Input/Output guardrails
+  - `lc-sessions`: Session management
+  - `lc-mcp`: MCP Client + Server
+  - `lc-a2a`: A2A protocol
+  - `lc-langgraph`: StateGraph / CompiledGraph / Checkpointer / Subgraph / Parallel
+
+## [0.7.2] - 2026-08-03
+
+### Fixed
+- **docs.rs build**: pgvector.rs compilation with `--all-features`
+- **LocalEmbeddings thread safety**: RefCell → RwLock for Send + Sync
+- **Qdrant feature gate**: Parameter naming fix
 
 ### Fixed
 - **docs.rs build failure**: pgvector.rs `use pgvector`/`use sqlx` imports caused compilation errors when building with `--all-features` without actual pgvector/sqlx crates. Refactored pgvector.rs to only expose pure helper functions (`validate_table_name`, `build_table_sql`); the full `PGVectorStore` implementation requires user-configured dependencies
@@ -592,6 +652,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.9.0]: https://github.com/atliliw/langchainrust/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/atliliw/langchainrust/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/atliliw/langchainrust/compare/v0.7.1...v0.7.2
 [0.7.0]: https://github.com/atliliw/langchainrust/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/atliliw/langchainrust/compare/v0.5.2...v0.6.0
 [0.5.0]: https://github.com/atliliw/langchainrust/compare/v0.4.2...v0.5.0

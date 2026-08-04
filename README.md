@@ -25,6 +25,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
 | **Sessions** | Multi-turn conversation lifecycle management, pluggable storage (SessionManager + SessionStore) |
 | **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
+| **LCEL** | Runnable pipe composition (`prompt \| llm \| parser`), RunnableSequence / Lambda / Passthrough / Parallel / Branch / Binding, `transform()` streaming, LcelStreamEvent |
 | **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing) |
 | **Structured Output** | with_structured_output, StructuredOutputExt trait + JsonOutputParser fallback, Streaming Structured Output |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
@@ -110,6 +111,8 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  │           ContextWindow[Truncate+Summarize])             │
 │  ├── Chains (LLMChain, SequentialChain, RetrievalQA, ...)   │
 │  │         + Chain streaming (per-token output)              │
+│  ├── LCEL (Runnable pipe, Sequence, Lambda, Passthrough,    │
+│  │         Parallel, Branch, Binding, transform streaming)   │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate, FewShot)  │
 │  ├── Tools (Calculator, DateTime, URLFetch, HTTP/File/SQL,  │
 │  │          ComputerUseTool, CodeSandbox)                    │
@@ -128,19 +131,19 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.8.0"
+langchainrust = "0.9.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.8.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.8.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.8.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.8.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.8.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.8.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.8.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.8.0", features = ["sandbox-wasm"] }          # WASM sandbox
-langchainrust = { version = "0.8.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.9.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.9.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.9.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.9.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.9.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.9.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.9.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.9.0", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.9.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
@@ -223,6 +226,7 @@ The `examples/` directory provides 25+ runnable examples covering core functiona
 | langgraph | basic_graph / conditional_edge | No |
 | memory | buffer_memory / context_window / sessions / vectorstore_memory | No |
 | chains | llm_chain / sequential_chain | Yes |
+| lcel | lcel_pipe (pipe / lambda / branch / parallel / batch) | No |
 | evaluation | evaluation | No |
 | guardrails | guardrails | No |
 | mcp_server | mcp_server | No |
