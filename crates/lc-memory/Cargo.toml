@@ -1,0 +1,36 @@
+[package]
+name = "lc-memory"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Memory system for langchainrust — Buffer, Window, Summary, SummaryBuffer, ContextWindow, VectorStore, MongoDB persistence"
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-shared = { path = "../lc-shared" }
+lc-schema = { path = "../lc-schema" }
+lc-core = { path = "../lc-core" }
+lc-prompts = { path = "../lc-prompts" }
+lc-embeddings = { path = "../lc-embeddings", optional = true }
+lc-vector-stores = { path = "../lc-vector-stores", optional = true }
+lc-providers = { path = "../lc-providers", optional = true }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = { version = "0.3", optional = true }
+mongodb = { version = "2.8", optional = true }
+
+[dev-dependencies]
+lc-providers = { path = "../lc-providers" }
+lc-embeddings = { path = "../lc-embeddings" }
+lc-vector-stores = { path = "../lc-vector-stores" }
+futures-util = "0.3"
+
+[features]
+default = []
+mongodb-persistence = ["mongodb", "lc-providers"]
+vectorstore-memory = ["lc-embeddings", "lc-vector-stores", "futures-util"]

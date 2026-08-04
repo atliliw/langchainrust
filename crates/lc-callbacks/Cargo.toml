@@ -1,0 +1,32 @@
+[package]
+name = "lc-callbacks"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Callback and tracing infrastructure for langchainrust"
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-schema = { path = "../lc-schema" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+thiserror = "2.0"
+async-trait = "0.1"
+futures-util = "0.3"
+log = "0.4"
+
+[features]
+default = []
+opentelemetry = ["dep:opentelemetry"]
+
+[dependencies.opentelemetry]
+version = "0.27"
+optional = true
+
+[dev-dependencies]
+tempfile = "3.0"

@@ -1,0 +1,28 @@
+[package]
+name = "lc-providers"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "LLM provider integrations for langchainrust — OpenAI, Anthropic, Ollama, Gemini, etc."
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-core = { path = "../lc-core" }
+lc-schema = { path = "../lc-schema" }
+lc-callbacks = { path = "../lc-callbacks" }
+lc-shared = { path = "../lc-shared" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+futures-util = "0.3"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+regex = "1"
+log = "0.4"
+urlencoding = "2"
+schemars = "0.8"

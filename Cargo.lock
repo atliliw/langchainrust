@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "langchainrust"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -1618,12 +1618,29 @@ dependencies = [
  "criterion",
  "csv",
  "futures-util",
+ "lc-a2a",
+ "lc-agents",
+ "lc-callbacks",
+ "lc-chains",
+ "lc-core",
+ "lc-embeddings",
+ "lc-evaluation",
+ "lc-guardrails",
+ "lc-langgraph",
+ "lc-mcp",
+ "lc-memory",
+ "lc-prompts",
+ "lc-providers",
+ "lc-rag",
+ "lc-schema",
+ "lc-sessions",
+ "lc-shared",
+ "lc-tools",
+ "lc-vector-stores",
  "log",
  "meval",
  "mongodb",
- "ndarray",
  "opentelemetry",
- "ort",
  "pdf-extract",
  "qdrant-client",
  "redis",
@@ -1651,6 +1668,342 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "lc-a2a"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "lc-chains",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lc-agents"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lc-callbacks",
+ "lc-core",
+ "lc-embeddings",
+ "lc-memory",
+ "lc-prompts",
+ "lc-providers",
+ "lc-rag",
+ "lc-schema",
+ "lc-shared",
+ "lc-tools",
+ "lc-vector-stores",
+ "log",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+]
+
+[[package]]
+name = "lc-callbacks"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lc-schema",
+ "log",
+ "opentelemetry",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lc-chains"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "lc-core",
+ "lc-memory",
+ "lc-rag",
+ "lc-schema",
+ "lc-shared",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "lc-core"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lc-callbacks",
+ "lc-schema",
+ "lc-shared",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tiktoken-rs",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lc-embeddings"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "lc-core",
+ "ndarray",
+ "ort",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "lc-evaluation"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "lc-core",
+ "lc-embeddings",
+ "lc-providers",
+ "lc-schema",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "lc-guardrails"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "lc-agents",
+ "lc-core",
+ "lc-providers",
+ "regex",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "lc-langgraph"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lc-mcp"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "lc-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "lc-memory"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lc-core",
+ "lc-embeddings",
+ "lc-prompts",
+ "lc-providers",
+ "lc-schema",
+ "lc-shared",
+ "lc-vector-stores",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "lc-prompts"
+version = "0.8.0"
+dependencies = [
+ "lc-schema",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lc-providers"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lc-callbacks",
+ "lc-core",
+ "lc-schema",
+ "lc-shared",
+ "log",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
+name = "lc-rag"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "csv",
+ "lc-core",
+ "lc-embeddings",
+ "lc-prompts",
+ "lc-providers",
+ "lc-schema",
+ "lc-shared",
+ "lc-vector-stores",
+ "log",
+ "pdf-extract",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-test",
+ "uuid",
+ "zip",
+]
+
+[[package]]
+name = "lc-schema"
+version = "0.8.0"
+dependencies = [
+ "lc-shared",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lc-sessions"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lc-core",
+ "lc-schema",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "lc-shared"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "lc-tools"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lc-core",
+ "meval",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
+name = "lc-vector-stores"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "futures-util",
+ "lc-core",
+ "lc-embeddings",
+ "lc-shared",
+ "log",
+ "mongodb",
+ "qdrant-client",
+ "redis",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-test",
+ "uuid",
+]
 
 [[package]]
 name = "libc"

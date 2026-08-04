@@ -1,0 +1,18 @@
+[package]
+name = "lc-a2a"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A2A (Agent-to-Agent) protocol support for langchainrust — client, server, and protocol types."
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-chains = { path = "../lc-chains" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "2.0"
+reqwest = { version = "0.12", features = ["json"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }

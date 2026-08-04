@@ -1,0 +1,22 @@
+[package]
+name = "lc-chains"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Chain compositions for langchainrust — LLMChain, SequentialChain, RetrievalQA, etc."
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-core = { path = "../lc-core" }
+lc-schema = { path = "../lc-schema" }
+lc-shared = { path = "../lc-shared" }
+lc-memory = { path = "../lc-memory" }
+lc-rag = { path = "../lc-rag" }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+futures-util = "0.3"
+thiserror = "2.0"
+regex = "1"
