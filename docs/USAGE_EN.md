@@ -31,6 +31,8 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - ConversationRetrievalChain
   - Chain Streaming ✨ v0.4.1
 - [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
+  - RunnableWithFallbacks ✨ v0.10.0
+  - RunnableAssign ✨ v0.10.0
 - [Document Chains](#document-chains)
 - [Agents](#agents)
 - [Plan-Execute Agent](#plan-execute-agent)
@@ -46,6 +48,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - DuckDuckGoSearchTool
   - PythonREPLTool
   - Extended Tools (HTTPTool / FileTool / SQLTool)
+  - `#[tool]` Procedural Macro ✨ v0.10.0
 - [RAG](#rag)
   - ChromaDB
   - PGVectorStore
@@ -742,6 +745,46 @@ while let Some(item) = stream.next().await {
 }
 ```
 
+### RunnableWithFallbacks (Fallback on Failure) ✨ v0.10.0
+
+```rust
+use langchainrust::{RunnableExt, RunnableLambda};
+
+let primary = RunnableLambda::new_sync(|x: i32| -> i32 {
+    if x < 0 { panic!("negative") } else { x * 2 }
+});
+let fallback = RunnableLambda::new_sync(|x: i32| x.abs() * 2);
+
+// Automatically falls back when primary fails
+let chain = primary.with_fallbacks(vec![fallback.into_runnable_any()]);
+let result = chain.invoke(-5, None).await?;
+// result = 10 (fallback executed)
+```
+
+### RunnableAssign (Field Injection) ✨ v0.10.0
+
+```rust
+use langchainrust::{
+    RunnableExt, RunnableLambda, RunnableParallel, RunnableAssign,
+};
+use std::collections::HashMap;
+use serde_json::Value;
+
+// RunnableParallel.assign() — inject new fields into the parallel output HashMap
+let parallel = RunnableParallel::new()
+    .with("question", RunnablePassthrough::<String>::new())
+    .with("context", RunnableLambda::new_sync(|_: String| "some context".to_string()));
+
+// assign appends a field after the parallel output
+let chain = parallel.assign("answer", RunnableLambda::new_sync(|map: HashMap<String, Value>| {
+    let ctx = map.get("context").unwrap().as_str().unwrap();
+    format!("Based on: {}", ctx)
+}));
+
+let result = chain.invoke("What is Rust?".to_string(), None).await?;
+// result = {"question": "What is Rust?", "context": "some context", "answer": "Based on: some context"}
+```
+
 ### Adapters (Bridge Existing Components to LCEL)
 
 ```rust
@@ -1219,17 +1262,57 @@ pub struct EchoTool;
 #[async_trait::async_trait]
 impl BaseTool for EchoTool {
     fn name(&self) -> &str { "echo" }
-    
+
     fn description(&self) -> &str { "Echo the input text" }
-    
+
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let args: EchoInput = serde_json::from_str(&input)?;
         Ok(args.text)
     }
-    
+
     fn args_schema(&self) -> Option<serde_json::Value> {
         Some(serde_json::to_value(schemars::schema_for!(EchoInput)).unwrap())
     }
+}
+```
+
+### `#[tool]` Procedural Macro ✨ v0.10.0
+
+Auto-generate `BaseTool` + `Tool` implementations with the `#[tool]` macro — no boilerplate needed:
+
+```rust
+use langchainrust::{tool, BaseTool, Tool, ToolError};
+
+// One macro = ~20 lines of hand-written code above
+#[tool(description = "Echo the input text back")]
+fn echo(
+    #[param(desc = "The text to echo back")]
+    text: String,
+) -> Result<String, ToolError> {
+    Ok(text)
+}
+
+// Auto-generates:
+// - EchoTool struct (BaseTool + Tool impl)
+// - EchoInput struct (Deserialize + JsonSchema)
+// - args_schema() from JsonSchema automatically
+
+// Usage is identical to hand-written Tools
+let tool = EchoTool::new();
+let schema = BaseTool::args_schema(&tool);  // JSON Schema
+let result = tool.run(r#"{"text":"hello"}"#.to_string()).await?;
+// result = "\"hello\""
+
+// Supports Option<T> for optional parameters
+#[tool(description = "Greet someone")]
+fn greet(
+    #[param(desc = "Person's name")]
+    name: String,
+    #[param(desc = "Greeting style")]
+    style: Option<String>,
+) -> Result<String, ToolError> {
+    let style = style.unwrap_or_else(|| "Hello".to_string());
+    Ok(format!("{}, {}!", style, name))
 }
 ```
 
