@@ -35,9 +35,13 @@ impl Runnable<String, String> for AgentRunnable {
     async fn invoke(
         &self,
         input: String,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<String, LcelError> {
-        self.executor.invoke(input).await.map_err(|e| LcelError::Agent(e.to_string()))
+        // Merge config callbacks with executor's own callbacks
+        self.executor
+            .invoke_with_config(input, config)
+            .await
+            .map_err(|e| LcelError::Agent(e.to_string()))
     }
 
     // stream, batch, transform use default implementations

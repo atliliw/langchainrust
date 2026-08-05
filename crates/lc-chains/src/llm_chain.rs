@@ -5,11 +5,13 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::LLMResult;
+use lc_core::runnables::RunnableConfig;
 use lc_core::{BaseChatModel, Runnable};
 use lc_schema::Message;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -145,6 +147,97 @@ where
         output.insert(self.output_key.clone(), Value::String(result.content));
 
         Ok(output)
+    }
+
+    /// Execute the Chain with callback propagation.
+    ///
+    /// Fires `on_chain_start` → `on_llm_start` → LLM call → `on_llm_end` → `on_chain_end`.
+    /// On error, fires `on_llm_error` / `on_chain_error` instead.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let callbacks = config.as_ref().and_then(|c| c.callbacks.clone());
+
+        // Create root RunTree for this chain invocation
+        let mut run = RunTree::new(
+            self.name(),
+            RunType::Chain,
+            json!({ "inputs": inputs }),
+        );
+
+        // on_chain_start
+        if let Some(ref cb) = callbacks {
+            cb.dispatch_chain_start(&run, &run.inputs).await;
+        }
+
+        let prompt = self.render_prompt(&inputs)?;
+        let messages = vec![Message::human(&prompt)];
+
+        // on_llm_start
+        if let Some(ref cb) = callbacks {
+            let llm_run = run.create_child(
+                &format!("{}.llm", self.name()),
+                RunType::Llm,
+                json!({"messages_count": messages.len()}),
+            );
+            cb.dispatch_llm_start(&llm_run, &messages).await;
+        }
+
+        // LLM call with config propagation
+        let llm_config = config.clone();
+        let result = self.llm.invoke(messages, llm_config).await;
+
+        match result {
+            Ok(llm_result) => {
+                // on_llm_end
+                if let Some(ref cb) = callbacks {
+                    let llm_run = run.create_child(
+                        &format!("{}.llm", self.name()),
+                        RunType::Llm,
+                        json!({"response": llm_result.content}),
+                    );
+                    cb.dispatch_llm_end(&llm_run, &llm_result.content).await;
+                }
+
+                let mut output = HashMap::new();
+                output.insert(self.output_key.clone(), Value::String(llm_result.content.clone()));
+
+                run.end(json!({"output": &llm_result.content}));
+
+                // on_chain_end
+                if let Some(ref cb) = callbacks {
+                    cb.dispatch_chain_end(&run, &json!({"output": llm_result.content})).await;
+                }
+
+                Ok(output)
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+
+                // on_llm_error
+                if let Some(ref cb) = callbacks {
+                    let llm_run = run.create_child(
+                        &format!("{}.llm", self.name()),
+                        RunType::Llm,
+                        json!({"error": &err_msg}),
+                    );
+                    cb.dispatch_llm_error(&llm_run, &err_msg).await;
+                }
+
+                run.end_with_error(err_msg.clone());
+
+                // on_chain_error
+                if let Some(ref cb) = callbacks {
+                    cb.dispatch_chain_error(&run, &err_msg).await;
+                }
+
+                Err(ChainError::ExecutionError(format!("LLM call failed: {}", err_msg)))
+            }
+        }
     }
 
     /// Stream execution for LLMChain -- token by token output.

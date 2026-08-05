@@ -39,17 +39,25 @@ impl Runnable<HashMap<String, Value>, HashMap<String, Value>> for ChainRunnable 
     async fn invoke(
         &self,
         input: HashMap<String, Value>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<HashMap<String, Value>, LcelError> {
-        self.chain.invoke(input).await.map_err(|e| LcelError::Chain(e.to_string()))
+        // Propagate config (including callbacks) through to the chain
+        self.chain
+            .invoke_with_config(input, config)
+            .await
+            .map_err(|e| LcelError::Chain(e.to_string()))
     }
 
     async fn stream(
         &self,
         input: HashMap<String, Value>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>, LcelError> {
-        let chain_stream = self.chain.stream(input).await.map_err(|e| LcelError::Stream(e.to_string()))?;
+        // Propagate config (including callbacks) through to the chain
+        let chain_stream = self.chain
+            .stream_with_config(input, config)
+            .await
+            .map_err(|e| LcelError::Stream(e.to_string()))?;
 
         // Convert StreamToken stream to HashMap stream
         let mapped = chain_stream.map(|result| {

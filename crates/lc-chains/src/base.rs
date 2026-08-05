@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
+use lc_core::runnables::RunnableConfig;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -66,6 +67,24 @@ pub trait BaseChain: Send + Sync {
     /// Output result dictionary
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError>;
 
+    /// Execute the Chain with a RunnableConfig.
+    ///
+    /// This method propagates callbacks through the chain execution.
+    /// The default implementation delegates to `invoke()` without config,
+    /// so chains that don't need callback support work automatically.
+    ///
+    /// Chains that want to propagate callbacks (on_chain_start/end, on_llm_start/end)
+    /// should override this method.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        // Default: fire on_chain_start/end if callbacks are present, then delegate to invoke
+        let _ = config; // suppress unused warning
+        self.invoke(inputs).await
+    }
+
     /// Stream execute the Chain -- token by token output.
     ///
     /// Default implementation wraps the invoke result as a single-element stream.
@@ -93,6 +112,18 @@ pub trait BaseChain: Send + Sync {
             })
         });
         Ok(Box::pin(stream))
+    }
+
+    /// Stream execute the Chain with a RunnableConfig.
+    ///
+    /// The default implementation delegates to `stream()` without config.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let _ = config;
+        self.stream(inputs).await
     }
 
     /// Validate inputs.

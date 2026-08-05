@@ -3,8 +3,10 @@
 
 use super::types::{AgentAction, AgentFinish, AgentOutput, AgentStep};
 use super::streaming::state::AgentStreamEvent;
+use super::hooks::{AgentHook, ToolCallAction, ToolCallContext, ToolResultContext};
 use async_trait::async_trait;
 use lc_callbacks::{CallbackManager, RunTree, RunType};
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::BaseTool;
 use lc_memory::BaseMemory;
 use serde_json::json;
@@ -98,6 +100,9 @@ pub struct AgentExecutor {
 
     /// Callback manager (optional).
     callbacks: Option<Arc<CallbackManager>>,
+
+    /// Agent hooks (optional).
+    hooks: Vec<Arc<dyn AgentHook>>,
 }
 
 impl AgentExecutor {
@@ -110,6 +115,7 @@ impl AgentExecutor {
             verbose: false,
             memory: None,
             callbacks: None,
+            hooks: Vec::new(),
         }
     }
 
@@ -134,6 +140,12 @@ impl AgentExecutor {
     /// Sets callback manager.
     pub fn with_callbacks(mut self, callbacks: Arc<CallbackManager>) -> Self {
         self.callbacks = Some(callbacks);
+        self
+    }
+
+    /// Adds an agent hook.
+    pub fn hook(mut self, hook: impl AgentHook + 'static) -> Self {
+        self.hooks.push(Arc::new(hook));
         self
     }
 
@@ -211,6 +223,36 @@ impl AgentExecutor {
         }
 
         result
+    }
+
+    /// Execute the agent with a RunnableConfig, merging config callbacks
+    /// with the executor's own callbacks.
+    ///
+    /// This is the entry point used by `AgentRunnable` (LCEL adapter).
+    /// Config callbacks take precedence over the executor's callbacks.
+    pub async fn invoke_with_config(
+        &self,
+        input: String,
+        config: Option<RunnableConfig>,
+    ) -> Result<String, AgentError> {
+        // If config has callbacks, temporarily use them; otherwise use executor's own
+        let effective_callbacks = config
+            .as_ref()
+            .and_then(|c| c.callbacks.clone())
+            .or_else(|| self.callbacks.clone());
+
+        // Create a temporary executor with merged callbacks
+        let merged_executor = AgentExecutor {
+            agent: self.agent.clone(),
+            tools: self.tools.clone(),
+            max_iterations: self.max_iterations,
+            verbose: self.verbose,
+            memory: self.memory.clone(),
+            callbacks: effective_callbacks,
+            hooks: self.hooks.clone(),
+        };
+
+        merged_executor.invoke(input).await
     }
 
     /// Stream agent execution as a true async stream of events.
@@ -440,27 +482,57 @@ impl AgentExecutor {
             .find(|t| t.name() == action.tool)
             .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
 
-        let input_str = match &action.tool_input {
+        let _input_str = match &action.tool_input {
             super::types::ToolInput::String { value: s } => s.clone(),
             super::types::ToolInput::Object { value: v } => serde_json::to_string(v)
                 .map_err(|e| AgentError::Other(format!("Failed to serialize tool input: {}", e)))?,
         };
 
+        // Run hooks: on_before_tool_call
+        let mut tool_ctx = ToolCallContext {
+            name: action.tool.clone(),
+            arguments: match &action.tool_input {
+                super::types::ToolInput::String { value: s } => serde_json::Value::String(s.clone()),
+                super::types::ToolInput::Object { value: v } => v.clone(),
+            },
+            tool_id: String::new(),
+        };
+
+        for hook in &self.hooks {
+            match hook.on_before_tool_call(&mut tool_ctx) {
+                ToolCallAction::Continue => {}
+                ToolCallAction::Modify { name, arguments } => {
+                    tool_ctx.name = name;
+                    tool_ctx.arguments = arguments;
+                }
+                ToolCallAction::Reject { reason } => {
+                    return Err(AgentError::Other(format!("Tool call rejected by hook: {}", reason)));
+                }
+                ToolCallAction::Skip => {
+                    return Ok("[Skipped by hook]".to_string());
+                }
+            }
+        }
+
+        let tool_name = tool_ctx.name.clone();
+        let input_for_tool = serde_json::to_string(&tool_ctx.arguments)
+            .unwrap_or_else(|_| tool_ctx.arguments.to_string());
+
         let mut tool_run = root_run.create_child(
-            &action.tool,
+            &tool_name,
             RunType::Tool,
-            json!({"input": input_str.clone()}),
+            json!({"input": input_for_tool.clone()}),
         );
 
         if let Some(ref callbacks) = self.callbacks {
             for handler in callbacks.handlers() {
                 handler
-                    .on_tool_start(&tool_run, &action.tool, &input_str)
+                    .on_tool_start(&tool_run, &tool_name, &input_for_tool)
                     .await;
             }
         }
 
-        let result = tool.run(input_str.clone()).await;
+        let result = tool.run(input_for_tool.clone()).await;
 
         match result {
             Ok(output) => {
@@ -470,7 +542,20 @@ impl AgentExecutor {
                         handler.on_tool_end(&tool_run, &output).await;
                     }
                 }
-                Ok(output)
+
+                // Run hooks: on_after_tool_call
+                let mut result_ctx = ToolResultContext {
+                    name: tool_name,
+                    result: output.clone(),
+                    tool_id: String::new(),
+                };
+                for hook in &self.hooks {
+                    if let Err(e) = hook.on_after_tool_call(&mut result_ctx) {
+                        log::warn!("Hook on_after_tool_call error: {}", e);
+                    }
+                }
+
+                Ok(result_ctx.result)
             }
             Err(e) => {
                 tool_run.end_with_error(e.to_string());

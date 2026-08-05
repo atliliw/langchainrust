@@ -31,6 +31,7 @@ mod any;
 mod assign;
 mod binding;
 mod branch;
+mod cancellation;
 mod config;
 mod error;
 mod events;
@@ -42,10 +43,13 @@ mod passthrough;
 mod runnable_trait;
 mod sequence;
 
+mod retry;
+
 pub use any::{into_runnable_any, RunnableAny, RunnableAnyWrapper};
 pub use assign::RunnableAssign;
 pub use binding::RunnableBinding;
 pub use branch::RunnableBranch;
+pub use cancellation::CancellationToken;
 pub use config::RunnableConfig;
 pub use error::LcelError;
 pub use events::LcelStreamEvent;
@@ -54,5 +58,6 @@ pub use fallback::RunnableWithFallbacks;
 pub use lambda::RunnableLambda;
 pub use parallel::RunnableParallel;
 pub use passthrough::RunnablePassthrough;
+pub use retry::{RetryConfig, RetryOn, RunnableRetry};
 pub use runnable_trait::Runnable;
 pub use sequence::RunnableSequence;

@@ -168,3 +168,98 @@ impl Clone for CallbackManager {
         }
     }
 }
+
+// ============ Helper methods for dispatching callbacks ============
+
+impl CallbackManager {
+    /// Dispatch `on_chain_start` to all handlers.
+    pub async fn dispatch_chain_start(&self, run: &RunTree, inputs: &serde_json::Value) {
+        for handler in &self.inner.handlers {
+            handler.on_chain_start(run, inputs).await;
+        }
+    }
+
+    /// Dispatch `on_chain_end` to all handlers.
+    pub async fn dispatch_chain_end(&self, run: &RunTree, outputs: &serde_json::Value) {
+        for handler in &self.inner.handlers {
+            handler.on_chain_end(run, outputs).await;
+        }
+    }
+
+    /// Dispatch `on_chain_error` to all handlers.
+    pub async fn dispatch_chain_error(&self, run: &RunTree, error: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_chain_error(run, error).await;
+        }
+    }
+
+    /// Dispatch `on_llm_start` to all handlers.
+    pub async fn dispatch_llm_start(&self, run: &RunTree, messages: &[lc_schema::Message]) {
+        for handler in &self.inner.handlers {
+            handler.on_llm_start(run, messages).await;
+        }
+    }
+
+    /// Dispatch `on_llm_end` to all handlers.
+    pub async fn dispatch_llm_end(&self, run: &RunTree, response: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_llm_end(run, response).await;
+        }
+    }
+
+    /// Dispatch `on_llm_error` to all handlers.
+    pub async fn dispatch_llm_error(&self, run: &RunTree, error: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_llm_error(run, error).await;
+        }
+    }
+
+    /// Dispatch `on_llm_new_token` to all handlers.
+    pub async fn dispatch_llm_new_token(&self, run: &RunTree, token: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_llm_new_token(run, token).await;
+        }
+    }
+
+    /// Dispatch `on_tool_start` to all handlers.
+    pub async fn dispatch_tool_start(&self, run: &RunTree, tool_name: &str, input: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_tool_start(run, tool_name, input).await;
+        }
+    }
+
+    /// Dispatch `on_tool_end` to all handlers.
+    pub async fn dispatch_tool_end(&self, run: &RunTree, output: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_tool_end(run, output).await;
+        }
+    }
+
+    /// Dispatch `on_tool_error` to all handlers.
+    pub async fn dispatch_tool_error(&self, run: &RunTree, error: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_tool_error(run, error).await;
+        }
+    }
+
+    /// Dispatch `on_retriever_start` to all handlers.
+    pub async fn dispatch_retriever_start(&self, run: &RunTree, query: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_retriever_start(run, query).await;
+        }
+    }
+
+    /// Dispatch `on_retriever_end` to all handlers.
+    pub async fn dispatch_retriever_end(&self, run: &RunTree, documents: &[serde_json::Value]) {
+        for handler in &self.inner.handlers {
+            handler.on_retriever_end(run, documents).await;
+        }
+    }
+
+    /// Dispatch `on_retriever_error` to all handlers.
+    pub async fn dispatch_retriever_error(&self, run: &RunTree, error: &str) {
+        for handler in &self.inner.handlers {
+            handler.on_retriever_error(run, error).await;
+        }
+    }
+}

@@ -30,9 +30,10 @@ pub use output_parsers::{
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
 pub use runnables::{
-    into_runnable_any, LcelError, LcelStreamEvent, Runnable, RunnableAny, RunnableAnyWrapper,
+    CancellationToken, into_runnable_any, LcelError, LcelStreamEvent, Runnable, RunnableAny, RunnableAnyWrapper,
     RunnableAssign, RunnableBinding, RunnableBranch, RunnableConfig, RunnableExt, RunnableLambda,
-    RunnableParallel, RunnablePassthrough, RunnableSequence, RunnableWithFallbacks,
+    RunnableParallel, RunnablePassthrough, RunnableRetry, RunnableSequence, RunnableWithFallbacks,
+    RetryConfig, RetryOn,
 };
 pub use structured_output::{
     stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,

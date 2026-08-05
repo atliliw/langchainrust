@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use lc_callbacks::CallbackManager;
 
+use super::cancellation::CancellationToken;
+
 /// Runnable execution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct RunnableConfig {
@@ -28,6 +30,9 @@ pub struct RunnableConfig {
 
     /// Callback manager for tracing and monitoring.
     pub callbacks: Option<Arc<CallbackManager>>,
+
+    /// Cancellation token for aborting long-running operations.
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 impl RunnableConfig {
@@ -72,6 +77,19 @@ impl RunnableConfig {
         self
     }
 
+    /// Sets cancellation token.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+
+    /// Checks if cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token
+            .as_ref()
+            .map_or(false, |t| t.is_cancelled())
+    }
+
     /// Merges two configurations (later overrides earlier).
     pub fn merge(mut self, other: RunnableConfig) -> Self {
         // Merge tags (union)
@@ -94,6 +112,9 @@ impl RunnableConfig {
         }
         if other.callbacks.is_some() {
             self.callbacks = other.callbacks;
+        }
+        if other.cancellation_token.is_some() {
+            self.cancellation_token = other.cancellation_token;
         }
 
         self

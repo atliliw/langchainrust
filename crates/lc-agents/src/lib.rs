@@ -31,6 +31,7 @@ pub mod crag;
 pub mod deep_research;
 pub mod function_calling;
 pub mod handoffs;
+pub mod hooks;
 pub mod plan_execute;
 pub mod react;
 pub mod streaming;
@@ -44,6 +45,11 @@ pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
 pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
 pub use function_calling::FunctionCallingAgent;
 pub use handoffs::HandoffManager;
+pub use hooks::{
+    AgentHook, ApprovalHook, CompletionAction, CompletionContext, CompletionResult,
+    ContentFilterHook, ErrorAction, HookError, LoggingHook, StreamAction, ToolCallAction,
+    ToolCallContext, ToolResultContext,
+};
 pub use plan_execute::{PlanExecuteAgent, PlanExecuteError};
 pub use react::ReActAgent;
 pub use streaming::StreamingFunctionCallingAgent;

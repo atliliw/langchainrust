@@ -12,6 +12,7 @@
 use super::any::into_runnable_any;
 use super::error::LcelError;
 use super::fallback::RunnableWithFallbacks;
+use super::retry::{RetryConfig, RunnableRetry};
 use super::runnable_trait::Runnable;
 use super::sequence::RunnableSequence;
 
@@ -89,6 +90,37 @@ where
             .map(|r| into_runnable_any(r))
             .collect();
         RunnableWithFallbacks::new(self, fallback_boxes)
+    }
+
+    /// Wrap this runnable with retry logic using exponential backoff.
+    ///
+    /// On failure, the runnable is retried up to `max_retries` times
+    /// with increasing delays between attempts.
+    ///
+    /// The input type `Input` must be `Clone` so that the input can
+    /// be re-boxed for each retry attempt.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use lc_core::runnables::{RetryConfig, RunnableExt};
+    /// use std::time::Duration;
+    ///
+    /// let chain = prompt.pipe(llm).pipe(parser)
+    ///     .with_retry(RetryConfig {
+    ///         max_retries: 3,
+    ///         initial_delay: Duration::from_millis(500),
+    ///         max_delay: Duration::from_secs(10),
+    ///         backoff_multiplier: 2.0,
+    ///         ..Default::default()
+    ///     });
+    /// ```
+    fn with_retry(self, retry_config: RetryConfig) -> RunnableRetry<Input, Output>
+    where
+        Input: Clone,
+    {
+        let runnable_any = into_runnable_any(self);
+        RunnableRetry::new(runnable_any, retry_config)
     }
 }
 
