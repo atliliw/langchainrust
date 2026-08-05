@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream};
 
 /// Route destination.
 pub struct RouteDestination {
@@ -253,6 +253,33 @@ impl BaseChain for RouterChain {
         }
 
         Ok(result)
+    }
+
+    /// Stream execution for RouterChain.
+    ///
+    /// After routing (keyword matching), delegates to the selected chain's
+    /// `stream()` method.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let route_result = self.select_route(input)?;
+
+        let chain = match route_result {
+            Some(dest) => dest.chain(),
+            None => self
+                .default_chain
+                .as_ref()
+                .ok_or_else(|| ChainError::ExecutionError(
+                    "No matching route destination and no default Chain configured".to_string(),
+                ))?,
+        };
+
+        chain.stream(inputs).await
     }
 
     fn name(&self) -> &str {
@@ -531,6 +558,34 @@ where
         }
 
         Ok(result)
+    }
+
+    /// Stream execution for LLMRouterChain.
+    ///
+    /// The routing LLM call must complete first (to determine the destination),
+    /// then delegates to the selected chain's `stream()` method.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let route_result = self.select_route(input).await;
+
+        let chain = match route_result {
+            Ok(dest) => dest.chain(),
+            Err(e) => {
+                if let Some(default) = &self.default_chain {
+                    default
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        chain.stream(inputs).await
     }
 
     fn name(&self) -> &str {

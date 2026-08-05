@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
+use futures_util::StreamExt;
 use lc_core::language_models::LLMResult;
 use lc_core::{BaseChatModel, Runnable};
 use lc_schema::Message;
@@ -10,7 +11,7 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 
 /// Default Map processing prompt template.
 pub(crate) const DEFAULT_MAP_PROMPT: &str = "Answer the user's question based on the following document content. Provide a concise answer based on the document content.
@@ -237,6 +238,74 @@ where
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
         Ok(result)
+    }
+
+    /// Stream execution for MapReduceDocumentsChain.
+    ///
+    /// The map phase runs via invoke (parallel, non-streaming, since reduce
+    /// needs all summaries). The reduce phase is streamed token by token
+    /// via `stream_chat`.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let documents: Vec<Document> = inputs
+            .get("documents")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+
+        if documents.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
+        }
+
+        // Map phase: run all map calls in parallel (non-streaming)
+        let mut map_futures = Vec::new();
+        for (i, doc) in documents.iter().enumerate() {
+            map_futures.push(self.map_document(doc, input, i));
+        }
+        let summaries: Vec<String> = try_join_all(map_futures).await?;
+
+        // Reduce phase: stream the final merged answer
+        let reduce_prompt = self.build_reduce_prompt(&summaries, input);
+        let messages = vec![Message::human(&reduce_prompt)];
+
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, None)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+
+        let stream = llm_stream.map(|result| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
+
+        let final_stream =
+            stream.chain(futures_util::stream::once(async move {
+                Ok(StreamToken {
+                    token: String::new(),
+                    is_final: true,
+                })
+            }));
+
+        Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {

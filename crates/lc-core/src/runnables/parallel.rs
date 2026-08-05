@@ -5,6 +5,7 @@
 //! the same input, collecting results into a `HashMap<String, Value>`.
 //! This is the LCEL equivalent of Python's `RunnableParallel` / `RunnableMap`.
 
+use super::assign::RunnableAssign;
 use super::config::RunnableConfig;
 use super::error::LcelError;
 use super::runnable_trait::Runnable;
@@ -87,7 +88,46 @@ impl<I: Clone + Send + Sync + 'static> RunnableParallel<I> {
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
+
+    /// Add an assign step that injects a new key into the output HashMap.
+    ///
+    /// This is the LCEL equivalent of Python's `RunnableParallel.assign()`.
+    /// It pipes the parallel output (a `HashMap<String, Value>`) through
+    /// a `RunnableAssign` that runs the given runnable on the HashMap
+    /// and merges the result under the specified key.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let chain = RunnableParallel::<String>::new()
+    ///     .with("context", retriever.pipe(format_docs))
+    ///     .assign("question", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+    ///         m.get("context").map(|c| c.to_string()).unwrap_or_default()
+    ///     }))
+    ///     .pipe(prompt_template)
+    ///     .pipe(llm);
+    /// ```
+    ///
+    /// # How it works
+    ///
+    /// `assign()` returns `self.pipe(RunnableAssign)`. The RunnableAssign
+    /// receives the HashMap output from the parallel step, runs the
+    /// provided runnable on it, and merges the result back.
+    pub fn assign<O, R>(self, key: &str, runnable: R) -> RunnableSequence<I, HashMap<String, Value>>
+    where
+        I: 'static,
+        O: serde::Serialize + Send + Sync + 'static,
+        R: Runnable<HashMap<String, Value>, O> + Send + Sync + 'static,
+        R::Error: Into<LcelError>,
+    {
+        use super::ext::RunnableExt;
+
+        let assign = RunnableAssign::new().with(key, runnable);
+        self.pipe(assign)
+    }
 }
+
+use super::sequence::RunnableSequence;
 
 /// Trait for a single parallel step that produces a `serde_json::Value`.
 #[async_trait]
@@ -230,6 +270,31 @@ mod tests {
         assert_eq!(
             results[1].get("len").unwrap(),
             &Value::Number(serde_json::Number::from(5))
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_assign_adds_field() {
+        let chain = RunnableParallel::<String>::new()
+            .with("len", RunnableLambda::new_sync(|s: String| s.len() as i64))
+            .assign("upper", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+                // Use the "len" field from the parallel output
+                m.get("len")
+                    .and_then(|v| v.as_i64())
+                    .map(|n| format!("length={}", n))
+                    .unwrap_or_default()
+            }));
+
+        let result = chain.invoke("hello".to_string(), None).await.unwrap();
+        // Original parallel step result
+        assert_eq!(
+            result.get("len").unwrap(),
+            &Value::Number(serde_json::Number::from(5))
+        );
+        // Assign step result — can reference previous parallel output
+        assert_eq!(
+            result.get("upper").unwrap(),
+            &Value::String("length=5".to_string())
         );
     }
 }

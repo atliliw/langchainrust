@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-08-05
+
+### Added
+- **LCEL 补全 — RunnableWithFallbacks**: Fallback composition for LCEL pipelines. If the primary Runnable fails, each fallback is tried in order. `RunnableExt::with_fallbacks()` method for fluent API
+- **LCEL 补全 — RunnableAssign**: Inject new key-value pairs into `HashMap<String, Value>` mid-pipeline. Critical for RAG pipelines where context is injected alongside the question
+- **LCEL 补全 — RunnableParallel.assign()**: Convenience method that pipes parallel output through RunnableAssign
+- **`#[tool]` procedural macro**: New `lc-tools-derive` crate that auto-generates `BaseTool` + `Tool` impl from a simple function annotated with `#[tool(description = "...")]` and `#[param(desc = "...")]`. Reduces ~50 lines of boilerplate to 3 lines
+- **Document Chain streaming — StuffDocumentsChain**: Override `stream()` to emit LLM tokens as `StreamToken` stream
+- **Document Chain streaming — RefineDocumentsChain**: Initial + intermediate refine steps use invoke, final refine step streams via `stream_chat`
+- **Document Chain streaming — MapReduceDocumentsChain**: Map phase runs parallel invoke, reduce phase streams via `stream_chat`
+- **Document Chain streaming — SequentialChain**: All preceding chains use invoke, last chain's `stream()` is forwarded
+- **Document Chain streaming — RouterChain**: After routing, delegates to selected chain's `stream()` method
+- **Document Chain streaming — LLMRouterChain**: LLM routing call completes first, then delegates to selected chain's `stream()`
+
+### Changed
+- `lc-tools` now depends on `lc-tools-derive` and re-exports the `#[tool]` macro
+- Workspace root `Cargo.toml` now includes `lc-tools-derive` as a member
+- `CRATE_DEPENDENCIES.md` updated with `lc-tools-derive` in the dependency graph and publish order
+
+### Deprecated
+- Hand-written `BaseTool` + `Tool` implementations are still supported but `#[tool]` macro is preferred for new tools
+
 ## [0.9.0] - 2026-08-05
 
 ### Added

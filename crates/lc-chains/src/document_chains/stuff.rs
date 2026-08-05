@@ -2,6 +2,7 @@
 //! StuffDocumentsChain - stuffs all documents into a single prompt.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::language_models::LLMResult;
 use lc_core::{BaseChatModel, Runnable};
 use lc_schema::Message;
@@ -9,7 +10,7 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 
 /// Default Stuff prompt template.
 pub(crate) const DEFAULT_STUFF_PROMPT: &str =
@@ -186,6 +187,60 @@ where
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
         Ok(result)
+    }
+
+    /// Stream execution for StuffDocumentsChain — token by token output.
+    ///
+    /// Stuffs all documents into a single prompt, then streams the LLM
+    /// response token by token.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let documents: Vec<Document> = inputs
+            .get("documents")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+
+        let context = self.format_documents(&documents);
+        let prompt = self.build_prompt(&context, input);
+        let messages = vec![Message::human(&prompt)];
+
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, None)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+
+        let stream = llm_stream.map(|result| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
+
+        let final_stream =
+            stream.chain(futures_util::stream::once(async move {
+                Ok(StreamToken {
+                    token: String::new(),
+                    is_final: true,
+                })
+            }));
+
+        Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {

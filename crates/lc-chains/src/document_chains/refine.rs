@@ -2,6 +2,7 @@
 //! RefineDocumentsChain - iteratively refines the answer document by document.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::language_models::LLMResult;
 use lc_core::{BaseChatModel, Runnable};
 use lc_schema::Message;
@@ -9,7 +10,7 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 
 /// Default initial processing prompt template.
 pub(crate) const DEFAULT_REFINE_INITIAL_PROMPT: &str =
@@ -215,6 +216,96 @@ where
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
         Ok(result)
+    }
+
+    /// Stream execution for RefineDocumentsChain.
+    ///
+    /// Runs the initial + all intermediate refine steps via invoke (since
+    /// their output feeds the next step), then streams the final refine step
+    /// token by token via `stream_chat`.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let documents: Vec<Document> = inputs
+            .get("documents")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+
+        if documents.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
+        }
+
+        // Step 1: Generate initial answer from the first document
+        let first_context = &documents[0].content;
+        let initial_prompt = self.build_initial_prompt(first_context, input);
+        let messages = vec![Message::human(&initial_prompt)];
+        let response = self.llm.invoke(messages, None).await.map_err(|e| {
+            ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
+        })?;
+        let mut answer = response.content;
+
+        // Step 2: Run intermediate refine steps (all but the last) via invoke
+        let last_idx = documents.len() - 1;
+        for (i, doc) in documents[1..last_idx].iter().enumerate() {
+            let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
+            let messages = vec![Message::human(&refine_prompt)];
+            let response = self.llm.invoke(messages, None).await.map_err(|e| {
+                ChainError::ExecutionError(format!("LLM refinement call failed: {}", e))
+            })?;
+            answer = response.content;
+
+            if self.verbose {
+                println!("Refine step {} completed", i + 1);
+            }
+        }
+
+        // Step 3: Stream the final refine step
+        let final_prompt = if last_idx == 0 {
+            // Only one document — stream the initial answer
+            self.build_initial_prompt(&documents[0].content, input)
+        } else {
+            self.build_refine_prompt(&documents[last_idx].content, input, &answer)
+        };
+
+        let messages = vec![Message::human(&final_prompt)];
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, None)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+
+        let stream = llm_stream.map(|result| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
+
+        let final_stream =
+            stream.chain(futures_util::stream::once(async move {
+                Ok(StreamToken {
+                    token: String::new(),
+                    is_final: true,
+                })
+            }));
+
+        Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {

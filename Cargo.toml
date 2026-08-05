@@ -11,6 +11,7 @@ members = [
     "crates/lc-mcp",
     "crates/lc-providers",
     "crates/lc-tools",
+    "crates/lc-tools-derive",
     "crates/lc-embeddings",
     "crates/lc-vector-stores",
     "crates/lc-rag",

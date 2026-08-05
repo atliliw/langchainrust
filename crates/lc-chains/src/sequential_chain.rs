@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream};
 
 /// Sequential Chain
 ///
@@ -169,6 +169,75 @@ impl BaseChain for SequentialChain {
         }
 
         Ok(final_output)
+    }
+
+    /// Stream execution for SequentialChain.
+    ///
+    /// Runs all chains except the last via invoke (since their output feeds
+    /// into subsequent chains). The last chain's output is streamed token
+    /// by token by delegating to its `stream()` method.
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        if self.chains.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "SequentialChain has no chains".to_string(),
+            ));
+        }
+
+        let mut current_state = inputs.clone();
+
+        // Run all chains except the last via invoke
+        let last_idx = self.chains.len() - 1;
+        for (step_index, step) in self.chains[..last_idx].iter().enumerate() {
+            let mut chain_inputs = HashMap::new();
+            for (chain_key, global_key) in &step.input_mapping {
+                if let Some(value) = current_state.get(global_key) {
+                    chain_inputs.insert(chain_key.clone(), value.clone());
+                } else {
+                    return Err(ChainError::MissingInput(format!(
+                        "Step {}: missing input '{}' (mapped from '{}')",
+                        step_index, chain_key, global_key
+                    )));
+                }
+            }
+
+            let chain_output = step.chain.invoke(chain_inputs).await.map_err(|e| {
+                ChainError::ExecutionError(format!(
+                    "Step {} ({}) execution failed: {}",
+                    step_index,
+                    step.chain.name(),
+                    e
+                ))
+            })?;
+
+            for (chain_key, global_key) in &step.output_mapping {
+                if let Some(value) = chain_output.get(chain_key) {
+                    current_state.insert(global_key.clone(), value.clone());
+                } else {
+                    return Err(ChainError::OutputError(format!(
+                        "Step {} ({}) did not produce expected output key '{}'",
+                        step_index,
+                        step.chain.name(),
+                        chain_key,
+                    )));
+                }
+            }
+        }
+
+        // Stream the last chain
+        let last_step = &self.chains[last_idx];
+        let mut chain_inputs = HashMap::new();
+        for (chain_key, global_key) in &last_step.input_mapping {
+            if let Some(value) = current_state.get(global_key) {
+                chain_inputs.insert(chain_key.clone(), value.clone());
+            } else {
+                return Err(ChainError::MissingInput(format!(
+                    "Last step: missing input '{}' (mapped from '{}')",
+                    chain_key, global_key
+                )));
+            }
+        }
+
+        last_step.chain.stream(chain_inputs).await
     }
 
     fn name(&self) -> &str {

@@ -39,3 +39,6 @@ pub use wikipedia::{WikipediaInput, WikipediaOutput, WikipediaTool};
 
 // Re-export core tool types for convenience
 pub use lc_core::tools::{BaseTool, Tool, ToolError};
+
+// Re-export #[tool] procedural macro
+pub use lc_tools_derive::tool;

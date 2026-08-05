@@ -9,7 +9,9 @@
 //! let chain = prompt.pipe(llm).pipe(parser);
 //! ```
 
+use super::any::into_runnable_any;
 use super::error::LcelError;
+use super::fallback::RunnableWithFallbacks;
 use super::runnable_trait::Runnable;
 use super::sequence::RunnableSequence;
 
@@ -57,6 +59,36 @@ where
     /// steps later via `pipe()`.
     fn into_sequence(self) -> RunnableSequence<Input, Output> {
         RunnableSequence::from_single(self)
+    }
+
+    /// Add fallback runnables that are tried if this one fails.
+    ///
+    /// If `self` returns an error, each fallback is tried in order.
+    /// The first successful result is returned. If all fail, the
+    /// primary's error is returned.
+    ///
+    /// The input type `Input` must be `Clone` so that the input can
+    /// be re-boxed for each fallback attempt.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let chain = prompt
+    ///     .pipe(openai_llm)
+    ///     .with_fallbacks(vec![anthropic_llm, ollama_llm])
+    ///     .pipe(parser);
+    /// ```
+    fn with_fallbacks<R>(self, fallbacks: Vec<R>) -> RunnableWithFallbacks<Input, Output>
+    where
+        Input: Clone,
+        R: Runnable<Input, Output> + Send + Sync + 'static,
+        R::Error: Into<LcelError>,
+    {
+        let fallback_boxes: Vec<Box<dyn super::any::RunnableAny>> = fallbacks
+            .into_iter()
+            .map(|r| into_runnable_any(r))
+            .collect();
+        RunnableWithFallbacks::new(self, fallback_boxes)
     }
 }
 
