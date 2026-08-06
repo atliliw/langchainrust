@@ -48,7 +48,7 @@ impl Runnable<String, String> for RagRunnable {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn rag_runnable_creation() {

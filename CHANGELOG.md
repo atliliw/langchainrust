@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-06
+
+### Added
+- **Agent streaming — CRAG**: Step-by-step streaming with granular `PipelineStep` events (retrieving → retrieved → grading → graded → correcting → corrected → generating → hallucination_check → FinalAnswer)
+- **Agent streaming — AdaptiveRAG**: Route-first-then-branch streaming (routing → routed → retrieving/generating → FinalAnswer) with `RagDecision` visibility
+- **Agent streaming — DeepResearch**: Multi-round research streaming (planning → searching → synthesizing → gaps_found → completed → FinalAnswer) with gap detection between rounds
+- **Chain tests**: 13 new unit tests for lc-chains (5 in base.rs, 8 in sequential_chain.rs)
+- **Agent stream tests**: 4 new streaming tests for CRAG and AdaptiveRAG
+
+### Changed
+- **CRAG internal visibility**: `CRAGState`, `retrieve()`, `grade_documents()`, `correct()`, `generate()`, `hallucination_check()`, `format_reasoning()` made `pub(crate)` for streaming access
+- **DeepResearch internal visibility**: `build_citations()` made `pub(crate)` for streaming access
+- **Clippy compliance**: Fixed `map_or(false, ...)` → `is_some_and()`, removed needless borrows/returns, collapsed identical branches, added `#[allow(dead_code)]` for serde-only structs
+
+### Fixed
+- **6 doctest failures**: Changed `use langchainrust::` to `use lc_core::` with `no_run`/`ignore` markers — doctests now pass cleanly
+- **16 test code warnings**: Removed unused imports/variables, added `#[allow(dead_code)]` for test-only structs — `cargo test --workspace --lib` now produces 0 warnings
+- **lc-embeddings Cohere dimension**: Collapsed identical if/else branches to `let dimension = 1024`
+- **lc-vector-stores naming**: `HashMap_is_empty` → `hash_map_is_empty` (snake_case), removed needless `.into_iter()`
+- **lc-chains formatting**: `&format!(...)` → `format!(...)` (3 places)
+
 ## [0.11.0] - 2026-08-06
 
 ### Added

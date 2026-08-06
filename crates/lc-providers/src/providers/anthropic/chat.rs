@@ -619,6 +619,7 @@ mod tests {
         let config = AnthropicConfig::new("test-key");
         let chat = AnthropicChat::new(config);
         #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
         struct TestOutput {
             answer: String,
         }

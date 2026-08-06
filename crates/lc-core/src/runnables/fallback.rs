@@ -230,7 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn primary_fails_fallback_succeeds() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("primary failed".to_string()))
         });
         let fallback = RunnableLambda::new_sync(|x: i32| x * 3);
@@ -242,10 +242,10 @@ mod tests {
 
     #[tokio::test]
     async fn all_fail_returns_primary_error() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Provider("openai timeout".to_string()))
         });
-        let fallback = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let fallback = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Provider("anthropic timeout".to_string()))
         });
 
@@ -257,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_fallbacks_first_wins() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("primary failed".to_string()))
         });
         let fb1 = RunnableLambda::new_sync(|x: i32| x + 100);
@@ -270,10 +270,10 @@ mod tests {
 
     #[tokio::test]
     async fn first_fallback_fails_second_succeeds() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("primary failed".to_string()))
         });
-        let fb1 = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let fb1 = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("fb1 failed".to_string()))
         });
         let fb2 = RunnableLambda::new_sync(|x: i32| x + 200);
@@ -295,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_primary_fails_fallback_succeeds() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("primary failed".to_string()))
         });
         let fallback = RunnableLambda::new_sync(|x: i32| x * 3);
@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipe_with_fallbacks() {
-        let primary = RunnableLambda::new_sync_fallible(|x: i32| -> Result<i32, LcelError> {
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
             Err(LcelError::Other("fail".to_string()))
         });
         let fallback = RunnableLambda::new_sync(|x: i32| x + 10);

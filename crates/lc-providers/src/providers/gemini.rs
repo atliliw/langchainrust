@@ -989,6 +989,7 @@ mod tests {
         let config = GeminiConfig::new("test-key");
         let chat = GeminiChat::new(config);
         #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
         struct TestOutput {
             answer: String,
         }

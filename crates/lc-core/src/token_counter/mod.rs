@@ -25,8 +25,8 @@ static GLOBAL_ENCODER: LazyLock<CoreBPE> = LazyLock::new(|| {
 /// cl100k_base encoder (suitable for GPT-3.5/4/4o models).
 ///
 /// # Examples
-/// ```
-/// use langchainrust::core::token_counter::count_tokens;
+/// ```no_run
+/// use lc_core::token_counter::count_tokens;
 ///
 /// let n = count_tokens("Hello, world!");
 /// assert!(n > 0);

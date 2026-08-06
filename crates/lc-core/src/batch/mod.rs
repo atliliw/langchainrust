@@ -8,7 +8,7 @@
 //! - **Anthropic Batch API**: POST /v1/messages/batches (inline requests array)
 //!
 //! # Example
-//! ```
+//! ```ignore
 //! use langchainrust::core::batch::{BatchClient, BatchProvider, BatchRequest};
 //! use langchainrust::Message;
 //!

@@ -7,8 +7,8 @@
 //! the chosen one fails.
 //!
 //! # Example
-//! ```
-//! use langchainrust::{RouterLLM, RoutingStrategy};
+//! ```no_run
+//! use lc_core::router_llm::{RouterLLM, RoutingStrategy};
 //!
 //! // Empty primary-first fallback router. Register real models (OpenAIChat,
 //! // AnthropicChat, ...) via the `with_model` / `with_fallbacks` builders;

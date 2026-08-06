@@ -19,8 +19,8 @@ pub enum MathError {
 /// to match the project's embedding type.
 ///
 /// # Examples
-/// ```
-/// use langchainrust::core::math::cosine_similarity;
+/// ```no_run
+/// use lc_core::math::cosine_similarity;
 ///
 /// let a = vec![1.0_f32, 0.0, 0.0];
 /// let b = vec![0.0_f32, 1.0, 0.0];

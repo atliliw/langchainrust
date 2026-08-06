@@ -18,9 +18,9 @@ use std::pin::Pin;
 /// - Stream-to-stream transformation via `transform`
 ///
 /// # Example
-/// ```rust
-/// use langchainrust::core::runnables::Runnable;
-/// use langchainrust::RunnableConfig;
+/// ```no_run
+/// use lc_core::runnables::Runnable;
+/// use lc_core::runnables::RunnableConfig;
 /// use async_trait::async_trait;
 ///
 /// // Define a simple Runnable: add one

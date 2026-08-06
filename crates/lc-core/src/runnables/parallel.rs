@@ -227,7 +227,6 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
 mod tests {
     use super::*;
     use crate::RunnableLambda;
-    use futures_util::StreamExt;
 
     #[tokio::test]
     async fn parallel_invoke() {

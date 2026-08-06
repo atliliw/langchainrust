@@ -554,7 +554,7 @@ impl From<String> for OpenAIError {
 #[cfg(test)]
 mod tests_env {
     use super::*;
-    use crate::ENV_TEST_LOCK;
+    
     use std::env;
 
     fn save_and_set(key: &str, value: &str) -> Option<String> {

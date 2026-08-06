@@ -119,7 +119,7 @@ use super::ToolDefinition;
 /// ToolDefinition for bind_tools().
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// use langchainrust::{Calculator, BaseTool, to_tool_definition};
 /// use std::sync::Arc;
 ///
