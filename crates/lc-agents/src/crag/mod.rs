@@ -235,47 +235,108 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
         CRAGError,
     > {
         use crate::streaming::AgentStreamEvent;
-        use futures_util::stream;
+        use graph::CRAGState;
 
-        // Run the full pipeline and emit step events
-        let (_tx, _rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(64);
+        let web_ref: Option<&dyn BaseTool> = self.web_fallback.as_ref().map(|b| b.as_ref());
+        let grade_threshold = self.grade_threshold;
+        let retrieve_k = self.retrieve_k;
+        let enable_hallucination_check = self.enable_hallucination_check;
+        let max_context_tokens = self.max_context_tokens;
 
-        let _web_ref: Option<&dyn BaseTool> = self.web_fallback.as_ref().map(|b| b.as_ref());
-        let _grade_threshold = self.grade_threshold;
-        let _retrieve_k = self.retrieve_k;
-        let _enable_hallucination_check = self.enable_hallucination_check;
-        let _max_context_tokens = self.max_context_tokens;
+        let mut graph = CRAGGraph::new(&self.llm, &self.retriever, web_ref, grade_threshold)
+            .with_retrieve_k(retrieve_k)
+            .with_hallucination_check(enable_hallucination_check);
 
-        // We run invoke() and emit events for each step
-        // Since CRAGGraph::run() is a monolithic function, we emit events
-        // before and after the pipeline, then return the final answer.
-        let result = self.invoke(query).await?;
+        if let Some(ref grader) = self.grader_llm {
+            graph = graph.with_grader_llm(grader);
+        }
+        if let Some(tokens) = max_context_tokens {
+            graph = graph.with_max_context_tokens(tokens);
+        }
 
-        let events = vec![
-            AgentStreamEvent::PipelineStep {
-                step: "retrieving".to_string(),
-                detail: Some(format!("Retrieved {} documents", result.sources.len())),
-            },
-            AgentStreamEvent::PipelineStep {
-                step: "grading".to_string(),
-                detail: Some(format!(
-                    "Average grade score: {:.2}",
-                    result.grade_scores.iter().sum::<f64>()
-                        / result.grade_scores.len().max(1) as f64
-                )),
-            },
-            AgentStreamEvent::PipelineStep {
-                step: "generating".to_string(),
-                detail: None,
-            },
-        ];
+        let mut events: Vec<AgentStreamEvent> = Vec::new();
+        let mut state = CRAGState::new(query);
 
-        let mut all_events = events;
-        all_events.push(AgentStreamEvent::FinalAnswer {
-            content: result.answer,
+        // Step 1: Retrieve
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "retrieving".to_string(),
+            detail: Some("Retrieving documents...".to_string()),
         });
 
-        Ok(Box::pin(stream::iter(all_events)))
+        graph.retrieve(&mut state).await?;
+
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "retrieved".to_string(),
+            detail: Some(format!("Retrieved {} documents", state.documents.len())),
+        });
+
+        // Step 2: Grade
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "grading".to_string(),
+            detail: Some("Grading document relevance...".to_string()),
+        });
+
+        graph.grade_documents(&mut state).await?;
+
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "graded".to_string(),
+            detail: Some(format!("Average grade score: {:.2}", state.avg_score)),
+        });
+
+        // Step 3: Correct if needed
+        if state.avg_score < grade_threshold {
+            events.push(AgentStreamEvent::PipelineStep {
+                step: "correcting".to_string(),
+                detail: Some("Score below threshold, rewriting query...".to_string()),
+            });
+
+            graph.correct(&mut state).await?;
+
+            events.push(AgentStreamEvent::PipelineStep {
+                step: "corrected".to_string(),
+                detail: Some(format!("Query rewritten: {}", state.query_rewritten)),
+            });
+        }
+
+        // Step 4: Filter + Generate
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "generating".to_string(),
+            detail: Some("Generating answer...".to_string()),
+        });
+
+        let filtered: Vec<lc_vector_stores::Document> = state
+            .documents
+            .iter()
+            .zip(state.grade_scores.iter())
+            .filter(|(_, &score)| score >= grade_threshold)
+            .map(|(doc, _)| doc.clone())
+            .collect();
+
+        let source_docs = if filtered.is_empty() {
+            Vec::new()
+        } else {
+            filtered
+        };
+
+        let reasoning_section = graph::format_reasoning(&state.grade_reasoning);
+        graph.generate(&mut state, &source_docs, &reasoning_section).await?;
+
+        // Step 5: Hallucination check
+        if enable_hallucination_check && state.answer.is_some() {
+            events.push(AgentStreamEvent::PipelineStep {
+                step: "hallucination_check".to_string(),
+                detail: Some("Checking answer grounding...".to_string()),
+            });
+
+            let _ = graph.hallucination_check(&mut state, &source_docs).await;
+        }
+
+        // Final answer
+        events.push(AgentStreamEvent::FinalAnswer {
+            content: state.answer.unwrap_or_default(),
+        });
+
+        Ok(Box::pin(futures_util::stream::iter(events)))
     }
 }
 
@@ -651,5 +712,88 @@ mod tests {
 
         let result = agent.invoke("Who created Rust?").await.unwrap();
         assert!(!result.grounded);
+    }
+
+    #[tokio::test]
+    async fn test_crag_agent_stream_high_score() {
+        use futures_util::StreamExt;
+
+        let llm = MockChatModel::new(vec![
+            "Relevance: relevant\nScore: 0.9\nReasoning: Directly addresses the query.",
+            "Relevance: relevant\nScore: 0.8\nReasoning: Closely related.",
+            "Rust is a systems programming language.",
+            "grounded",
+        ]);
+
+        let retriever = MockRetriever::new(vec![
+            Document::new("Rust is a systems programming language."),
+            Document::new("Rust emphasizes memory safety."),
+        ]);
+
+        let agent = CorrectiveRAGAgent::new(llm, retriever)
+            .with_grade_threshold(0.5)
+            .with_hallucination_check(true);
+
+        let stream = agent.stream("What is Rust?").await.unwrap();
+        let events: Vec<_> = stream.collect().await;
+
+        // Should have: retrieving, retrieved, grading, graded, generating, hallucination_check, FinalAnswer
+        assert!(events.len() >= 5, "Expected at least 5 events, got {}", events.len());
+
+        // First event should be retrieving
+        assert!(matches!(
+            &events[0],
+            crate::streaming::AgentStreamEvent::PipelineStep { step, .. } if step == "retrieving"
+        ));
+
+        // Last event should be FinalAnswer
+        assert!(matches!(
+            events.last().unwrap(),
+            crate::streaming::AgentStreamEvent::FinalAnswer { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_crag_agent_stream_low_score_correction() {
+        use futures_util::StreamExt;
+
+        let llm = MockChatModel::new(vec![
+            "Relevance: irrelevant\nScore: 0.1\nReasoning: Not related.",
+            "1. Rust features\n2. Rust language\n3. Rust memory safety",
+            "Relevance: relevant\nScore: 0.9\nReasoning: Directly addresses.",
+            "Rust provides memory safety.",
+            "grounded",
+        ]);
+
+        let retriever = MockRetriever::new(vec![Document::new(
+            "Rust provides memory safety guarantees.",
+        )]);
+
+        let agent = CorrectiveRAGAgent::new(llm, retriever)
+            .with_grade_threshold(0.5)
+            .with_hallucination_check(false);
+
+        let stream = agent.stream("Tell me about Rust").await.unwrap();
+        let events: Vec<_> = stream.collect().await;
+
+        // Should contain correcting + corrected events
+        let step_names: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            step_names.contains(&"correcting"),
+            "Expected 'correcting' step, got: {:?}",
+            step_names
+        );
+        assert!(
+            step_names.contains(&"corrected"),
+            "Expected 'corrected' step, got: {:?}",
+            step_names
+        );
     }
 }

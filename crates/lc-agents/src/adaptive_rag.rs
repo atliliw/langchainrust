@@ -190,28 +190,63 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         AdaptiveRAGError,
     > {
         use crate::streaming::AgentStreamEvent;
-        use futures_util::stream;
 
-        let result = self.invoke(query).await?;
+        let mut events: Vec<AgentStreamEvent> = Vec::new();
 
-        let events = vec![
-            AgentStreamEvent::PipelineStep {
-                step: "routing".to_string(),
-                detail: Some(format!("Decision: {}", result.decision)),
-            },
-            AgentStreamEvent::PipelineStep {
-                step: "generating".to_string(),
-                detail: Some(format!(
-                    "Sources: {} documents",
-                    result.sources.len()
-                )),
-            },
-            AgentStreamEvent::FinalAnswer {
-                content: result.answer,
-            },
-        ];
+        // Step 1: Route
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "routing".to_string(),
+            detail: Some("Classifying query...".to_string()),
+        });
 
-        Ok(Box::pin(stream::iter(events)))
+        let decision = self.route(query).await?;
+
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "routed".to_string(),
+            detail: Some(format!("Decision: {}", decision)),
+        });
+
+        // Step 2: Execute based on decision
+        let result = match decision {
+            RagDecision::NoRetrieval => {
+                events.push(AgentStreamEvent::PipelineStep {
+                    step: "generating".to_string(),
+                    detail: Some("No retrieval needed, generating directly...".to_string()),
+                });
+                self.generate_no_retrieval(query).await?
+            }
+            RagDecision::SingleSearch => {
+                events.push(AgentStreamEvent::PipelineStep {
+                    step: "retrieving".to_string(),
+                    detail: Some("Single search retrieval...".to_string()),
+                });
+                let result = self.generate_single_search(query).await?;
+                events.push(AgentStreamEvent::PipelineStep {
+                    step: "generating".to_string(),
+                    detail: Some(format!("Sources: {} documents", result.sources.len())),
+                });
+                result
+            }
+            RagDecision::MultiQuery => {
+                events.push(AgentStreamEvent::PipelineStep {
+                    step: "multi_query".to_string(),
+                    detail: Some("Generating multiple queries...".to_string()),
+                });
+                let result = self.generate_multi_query(query).await?;
+                events.push(AgentStreamEvent::PipelineStep {
+                    step: "generating".to_string(),
+                    detail: Some(format!("Sources: {} documents", result.sources.len())),
+                });
+                result
+            }
+        };
+
+        // Final answer
+        events.push(AgentStreamEvent::FinalAnswer {
+            content: result.answer,
+        });
+
+        Ok(Box::pin(futures_util::stream::iter(events)))
     }
 
     // -- Routing -----------------------------------------------------------
@@ -766,5 +801,77 @@ mod tests {
         let err = AdaptiveRAGError::DecisionParse("bad output".to_string());
         assert!(err.to_string().contains("decision parse error"));
         assert!(err.to_string().contains("bad output"));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_rag_stream_no_retrieval() {
+        use futures_util::StreamExt;
+
+        let llm = MockLLM::new(vec!["no_retrieval".to_string(), "Direct answer here.".to_string()]);
+        let retriever = MockRetriever::new(vec![]);
+
+        let agent = AdaptiveRAG::new(llm, retriever);
+
+        let stream = agent.stream("What is 2+2?").await.unwrap();
+        let events: Vec<_> = stream.collect().await;
+
+        let step_names: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            step_names.contains(&"routing"),
+            "Expected 'routing' step, got: {:?}",
+            step_names
+        );
+        assert!(
+            step_names.contains(&"routed"),
+            "Expected 'routed' step, got: {:?}",
+            step_names
+        );
+        assert!(matches!(
+            events.last().unwrap(),
+            crate::streaming::AgentStreamEvent::FinalAnswer { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_rag_stream_single_search() {
+        use futures_util::StreamExt;
+
+        let llm = MockLLM::new(vec![
+            "single_search".to_string(),
+            "Relevance: relevant\nScore: 0.9\nReasoning: Direct match.".to_string(),
+            "Rust is a systems programming language.".to_string(),
+            "grounded".to_string(),
+        ]);
+        let retriever = MockRetriever::new(vec![Document::new("Rust is safe.")]);
+
+        let agent = AdaptiveRAG::new(llm, retriever);
+
+        let stream = agent.stream("What is Rust?").await.unwrap();
+        let events: Vec<_> = stream.collect().await;
+
+        let step_names: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            step_names.contains(&"retrieving"),
+            "Expected 'retrieving' step, got: {:?}",
+            step_names
+        );
+        assert!(matches!(
+            events.last().unwrap(),
+            crate::streaming::AgentStreamEvent::FinalAnswer { .. }
+        ));
     }
 }

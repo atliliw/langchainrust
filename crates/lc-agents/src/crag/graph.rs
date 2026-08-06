@@ -18,7 +18,7 @@ use super::{CRAGError, CRAGResult};
 
 /// Internal state for the CRAG execution graph.
 #[derive(Debug, Clone)]
-pub struct CRAGState {
+pub(crate) struct CRAGState {
     /// The original user query.
     pub query: String,
     /// The current (possibly rewritten) query.
@@ -177,7 +177,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     }
 
     /// Step 1: Retrieve documents from the retriever.
-    async fn retrieve(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
+    pub(crate) async fn retrieve(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
         let docs = self
             .retriever
             .retrieve(&state.current_query, self.retrieve_k)
@@ -193,7 +193,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     }
 
     /// Step 2: Grade each document for relevance.
-    async fn grade_documents(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
+    pub(crate) async fn grade_documents(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
         let grader = DocumentGrader::new(self.llm);
         let results = grader
             .grade_all(&state.current_query, &state.documents)
@@ -231,7 +231,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     /// Instead of a single rewrite, this generates multiple alternative queries
     /// via `generate_alternatives`, retrieves documents for each in parallel,
     /// and merges results with deduplication before re-grading.
-    async fn correct(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
+    pub(crate) async fn correct(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
         // Generate alternative queries for broader retrieval coverage
         let rewriter = QueryRewriter::new(self.llm);
         let alternatives = rewriter
@@ -287,7 +287,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     }
 
     /// Step 5: Generate an answer from the filtered documents.
-    async fn generate(
+    pub(crate) async fn generate(
         &self,
         state: &mut CRAGState,
         source_docs: &[Document],
@@ -314,7 +314,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     /// Uses `grader_llm` if configured (to avoid self-verification bias), otherwise
     /// falls back to the main LLM. If the check call itself fails, degrades
     /// gracefully by marking the answer as not grounded instead of aborting.
-    async fn hallucination_check(
+    pub(crate) async fn hallucination_check(
         &self,
         state: &mut CRAGState,
         source_docs: &[Document],
@@ -430,7 +430,7 @@ fn build_generate_prompt(context: &str, query: &str, reasoning: &str) -> String 
 /// Returns an empty string when no reasoning is available, so the prompt is
 /// unchanged for callers that did not collect reasoning. Otherwise it lists
 /// each document's grading rationale as a reference for generation.
-fn format_reasoning(reasoning: &[Option<String>]) -> String {
+pub(crate) fn format_reasoning(reasoning: &[Option<String>]) -> String {
     let notes: Vec<String> = reasoning
         .iter()
         .enumerate()

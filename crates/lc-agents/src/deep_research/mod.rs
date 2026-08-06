@@ -228,36 +228,117 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         ResearchError,
     > {
         use crate::streaming::AgentStreamEvent;
-        use futures_util::stream;
 
-        let result = self.research(topic).await?;
+        if self.searchers.is_empty() {
+            return Err(ResearchError::Search(
+                "no search tools configured; add at least one with with_searcher()".to_string(),
+            ));
+        }
 
-        let events = vec![
-            AgentStreamEvent::PipelineStep {
-                step: "planning".to_string(),
-                detail: Some(format!(
-                    "Subtopics: {}",
-                    result.subtopics.join(", ")
-                )),
-            },
-            AgentStreamEvent::PipelineStep {
+        let mut events: Vec<AgentStreamEvent> = Vec::new();
+
+        // Step 1: Plan
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "planning".to_string(),
+            detail: Some("Decomposing topic into subtopics...".to_string()),
+        });
+
+        let current_plan = self.plan(topic).await?;
+
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "planned".to_string(),
+            detail: Some(format!(
+                "Subtopics: {}",
+                current_plan
+                    .subtopics
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        });
+
+        // Step 2: Multi-round search
+        let mut all_results: Vec<SearchResult> = Vec::new();
+        let mut rounds_completed: usize = 0;
+        let mut follow_up_queries: Vec<String> = Vec::new();
+        let mut final_markdown = String::new();
+        let mut final_citations: Vec<Citation> = Vec::new();
+
+        for round in 0..self.max_rounds {
+            let queries = if round == 0 {
+                current_plan.all_queries()
+            } else {
+                follow_up_queries.clone()
+            };
+
+            if queries.is_empty() {
+                break;
+            }
+
+            events.push(AgentStreamEvent::PipelineStep {
                 step: "searching".to_string(),
                 detail: Some(format!(
-                    "Citations: {}, Rounds: {}",
-                    result.citations.len(),
-                    result.rounds_completed
+                    "Round {}: searching {} queries",
+                    round + 1,
+                    queries.len()
                 )),
-            },
-            AgentStreamEvent::PipelineStep {
-                step: "synthesizing".to_string(),
-                detail: None,
-            },
-            AgentStreamEvent::FinalAnswer {
-                content: result.markdown,
-            },
-        ];
+            });
 
-        Ok(Box::pin(stream::iter(events)))
+            let round_results = self.search(&queries).await?;
+            all_results.extend(round_results);
+            all_results = SearchCollector::dedup(all_results);
+            rounds_completed = round + 1;
+
+            // Synthesize after each round
+            events.push(AgentStreamEvent::PipelineStep {
+                step: "synthesizing".to_string(),
+                detail: Some(format!("Round {} synthesis", round + 1)),
+            });
+
+            let (markdown, gaps) = self
+                .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+                .await?;
+
+            if gaps.is_empty() || round + 1 >= self.max_rounds {
+                final_markdown = markdown;
+                final_citations = self.build_citations(&all_results);
+                break;
+            }
+
+            events.push(AgentStreamEvent::PipelineStep {
+                step: "gaps_found".to_string(),
+                detail: Some(format!("{} information gaps identified", gaps.len())),
+            });
+
+            // Generate follow-up queries for the next round
+            follow_up_queries = self.generate_follow_ups(topic, &gaps).await?;
+        }
+
+        // Final if we exhausted rounds without a final synthesis
+        if final_markdown.is_empty() {
+            let (markdown, _) = self
+                .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+                .await?;
+            final_markdown = markdown;
+            final_citations = self.build_citations(&all_results);
+        }
+
+        events.push(AgentStreamEvent::PipelineStep {
+            step: "completed".to_string(),
+            detail: Some(format!(
+                "Citations: {}, Rounds: {}",
+                final_citations.len(),
+                rounds_completed
+            )),
+        });
+
+        // Final answer
+        events.push(AgentStreamEvent::FinalAnswer {
+            content: final_markdown,
+        });
+
+        Ok(Box::pin(futures_util::stream::iter(events)))
     }
 
     // -- Private helpers -------------------------------------------------------
@@ -314,7 +395,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         parse_gap_queries(&response.content, gaps)
     }
 
-    fn build_citations(&self, results: &[SearchResult]) -> Vec<Citation> {
+    pub(crate) fn build_citations(&self, results: &[SearchResult]) -> Vec<Citation> {
         results
             .iter()
             .enumerate()

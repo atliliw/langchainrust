@@ -154,4 +154,81 @@ mod tests {
         let error = ChainError::ExecutionError("test".to_string());
         assert!(error.to_string().contains("Execution error"));
     }
+
+    #[test]
+    fn test_chain_error_all_variants() {
+        let err = ChainError::MissingInput("key".to_string());
+        assert!(err.to_string().contains("key"));
+
+        let err = ChainError::OutputError("bad".to_string());
+        assert!(err.to_string().contains("bad"));
+
+        let err = ChainError::ExecutionError("fail".to_string());
+        assert!(err.to_string().contains("fail"));
+
+        let err = ChainError::StreamError("broken".to_string());
+        assert!(err.to_string().contains("broken"));
+
+        let err = ChainError::Other("misc".to_string());
+        assert!(err.to_string().contains("misc"));
+    }
+
+    #[test]
+    fn test_stream_token_debug() {
+        let token = StreamToken {
+            token: "hello".to_string(),
+            is_final: false,
+        };
+        assert!(format!("{:?}", token).contains("hello"));
+    }
+
+    #[test]
+    fn test_validate_inputs_pass() {
+        struct PassthroughChain;
+        #[async_trait]
+        impl BaseChain for PassthroughChain {
+            fn input_keys(&self) -> Vec<&str> { vec!["input"] }
+            fn output_keys(&self) -> Vec<&str> { vec!["output"] }
+            async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+                Ok(inputs)
+            }
+        }
+
+        let chain = PassthroughChain;
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), Value::String("test".to_string()));
+        assert!(chain.validate_inputs(&inputs).is_ok());
+    }
+
+    #[test]
+    fn test_validate_inputs_missing_key() {
+        struct PassthroughChain;
+        #[async_trait]
+        impl BaseChain for PassthroughChain {
+            fn input_keys(&self) -> Vec<&str> { vec!["input"] }
+            fn output_keys(&self) -> Vec<&str> { vec!["output"] }
+            async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+                Ok(HashMap::new())
+            }
+        }
+
+        let chain = PassthroughChain;
+        let inputs = HashMap::new();
+        assert!(chain.validate_inputs(&inputs).is_err());
+    }
+
+    #[test]
+    fn test_default_chain_name() {
+        struct MyChain;
+        #[async_trait]
+        impl BaseChain for MyChain {
+            fn input_keys(&self) -> Vec<&str> { vec![] }
+            fn output_keys(&self) -> Vec<&str> { vec![] }
+            async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+                Ok(HashMap::new())
+            }
+        }
+        let chain = MyChain;
+        assert_eq!(chain.name(), "chain");
+    }
 }

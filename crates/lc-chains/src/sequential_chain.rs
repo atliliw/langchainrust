@@ -253,3 +253,130 @@ impl std::fmt::Debug for SequentialChain {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    /// A simple mock chain that echoes input to output.
+    struct EchoChain {
+        input_key: String,
+        output_key: String,
+    }
+
+    impl EchoChain {
+        fn new(input_key: &str, output_key: &str) -> Self {
+            Self {
+                input_key: input_key.to_string(),
+                output_key: output_key.to_string(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl BaseChain for EchoChain {
+        fn input_keys(&self) -> Vec<&str> {
+            vec![&self.input_key]
+        }
+        fn output_keys(&self) -> Vec<&str> {
+            vec![&self.output_key]
+        }
+        async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            let mut result = HashMap::new();
+            if let Some(v) = inputs.get(&self.input_key) {
+                result.insert(self.output_key.clone(), v.clone());
+            }
+            Ok(result)
+        }
+    }
+
+    /// A mock chain that transforms input (uppercases).
+    struct UppercaseChain {
+        input_key: String,
+        output_key: String,
+    }
+
+    #[async_trait]
+    impl BaseChain for UppercaseChain {
+        fn input_keys(&self) -> Vec<&str> { vec![&self.input_key] }
+        fn output_keys(&self) -> Vec<&str> { vec![&self.output_key] }
+        async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            let mut result = HashMap::new();
+            if let Some(Value::String(s)) = inputs.get(&self.input_key) {
+                result.insert(self.output_key.clone(), Value::String(s.to_uppercase()));
+            }
+            Ok(result)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_single_step() {
+        let chain = SequentialChain::new()
+            .add_chain(Arc::new(EchoChain::new("text", "result")), vec!["text"], vec!["result"]);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("text".to_string(), json!("hello"));
+
+        let result = chain.invoke(inputs).await.unwrap();
+        assert_eq!(result.get("result").unwrap(), &json!("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_two_steps() {
+        let chain = SequentialChain::new()
+            .add_chain(Arc::new(EchoChain::new("text", "intermediate")), vec!["text"], vec!["intermediate"])
+            .add_chain(Arc::new(UppercaseChain { input_key: "intermediate".to_string(), output_key: "result".to_string() }), vec!["intermediate"], vec!["result"]);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("text".to_string(), json!("hello"));
+
+        let result = chain.invoke(inputs).await.unwrap();
+        assert_eq!(result.get("result").unwrap(), &json!("HELLO"));
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_missing_input() {
+        let chain = SequentialChain::new()
+            .add_chain(Arc::new(EchoChain::new("text", "result")), vec!["text"], vec!["result"]);
+
+        let inputs = HashMap::new();
+        let result = chain.invoke(inputs).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_with_name() {
+        let chain = SequentialChain::new().with_name("my_chain");
+        assert_eq!(chain.name(), "my_chain");
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_default() {
+        let chain = SequentialChain::default();
+        assert_eq!(chain.name(), "sequential_chain");
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_debug() {
+        let chain = SequentialChain::new().with_name("test_chain");
+        let debug_str = format!("{:?}", chain);
+        assert!(debug_str.contains("test_chain"));
+        assert!(debug_str.contains("0")); // 0 steps
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_input_keys() {
+        let chain = SequentialChain::new()
+            .add_chain(Arc::new(EchoChain::new("query", "result")), vec!["query"], vec!["result"]);
+        assert_eq!(chain.input_keys(), vec!["query"]);
+    }
+
+    #[tokio::test]
+    async fn test_sequential_chain_output_keys() {
+        let chain = SequentialChain::new()
+            .add_chain(Arc::new(EchoChain::new("query", "answer")), vec!["query"], vec!["answer"]);
+        assert_eq!(chain.output_keys(), vec!["answer"]);
+    }
+}
