@@ -9,16 +9,27 @@
 //! - `MockEmbeddings` for testing
 
 mod deepseek;
+mod cohere;
 mod local;
 mod mock;
 mod openai;
 mod qwen;
 
+#[cfg(feature = "fastembed")]
+mod fastembed_emb;
+
+pub use cohere::{
+    CohereEmbeddings, CohereEmbeddingsConfig, CohereEmbedInputType, COHERE_EMBED_BASE_URL,
+    COHERE_EMBED_MODEL,
+};
 pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
 pub use local::{BagOfWordsEmbeddings, LocalEmbeddings};
 pub use mock::MockEmbeddings;
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
+
+#[cfg(feature = "fastembed")]
+pub use fastembed_emb::FastEmbedEmbeddings;
 
 use async_trait::async_trait;
 

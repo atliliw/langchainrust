@@ -17,15 +17,15 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Component | Description |
 |-----------|-------------|
-| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
+| **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude (Extended Thinking) / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
 | **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
-| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling |
+| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / Agent Hooks (Approval / ContentFilter / Logging) |
 | **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client |
 | **MCP** | Model Context Protocol Client + Server (Stdio + SSE), full 6 primitives, MCP tool adapter to BaseTool |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
 | **Sessions** | Multi-turn conversation lifecycle management, pluggable storage (SessionManager + SessionStore) |
 | **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
-| **LCEL** | Runnable pipe composition (`prompt \| llm \| parser`), RunnableSequence / Lambda / Passthrough / Parallel / Branch / Binding / WithFallbacks / Assign, `transform()` streaming, LcelStreamEvent |
+| **LCEL** | Runnable pipe composition (`prompt \| llm \| parser`), RunnableSequence / Lambda / Passthrough / Parallel / Branch / Binding / WithFallbacks / Assign / Retry, `transform()` streaming, CancellationToken, LcelStreamEvent |
 | **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing) |
 | **Structured Output** | with_structured_output, StructuredOutputExt trait + JsonOutputParser fallback, Streaming Structured Output |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
@@ -46,7 +46,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
 | **Code Interpreter** | LocalSandbox (subprocess + timeout) + E2B cloud sandbox + WASM sandbox (feature gate) |
 | **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
-| **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree |
+| **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree, GenAI SemConv fields |
 
 Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | [API Docs](https://docs.rs/langchainrust)
 
@@ -82,6 +82,7 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  ├── Handoffs (multi-agent handoff) / Streaming FC          │
 │  ├── GuardedAgent (Guardrails safety)                       │
 │  ├── DeepResearchAgent (multi-round research + citations)   │
+│  ├── Agent Hooks (Approval / ContentFilter / Logging)       │
 │  ├── AgentExecutor                                          │
 │  ├── A2A Server/Client (Agent-to-Agent protocol)            │
 │  └── LangGraph (StateGraph, Subgraph, Parallel)             │
@@ -113,7 +114,7 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  │         + Chain streaming (per-token output)              │
 │  ├── LCEL (Runnable pipe, Sequence, Lambda, Passthrough,    │
 │  │         Parallel, Branch, Binding, WithFallbacks, Assign,│
-│  │         transform streaming)                              │
+│  │         Retry, CancellationToken, transform streaming)    │
 │  ├── Prompts (PromptTemplate, ChatPromptTemplate, FewShot)  │
 │  ├── Tools (Calculator, DateTime, URLFetch, HTTP/File/SQL,  │
 │  │          ComputerUseTool, CodeSandbox, #[tool] macro)     │
@@ -121,7 +122,8 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  ├── Token Counter (Tiktoken + Cost Tracking)               │
 │  ├── LLM Cache                                              │
 │  ├── Evaluation (10 evaluators, including Faithfulness)     │
-│  ├── Tracing (Tracer + SpanGuard, InMemory/Console/OTel)   │
+│  ├── Tracing (Tracer + SpanGuard, InMemory/Console/OTel,   │
+│  │           GenAI SemConv)                                  │
 │  └── Callbacks (LangSmith, StdOut, FileHandler, Otel)       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -132,19 +134,19 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.10.0"
+langchainrust = "0.11.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.10.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.10.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.10.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.10.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.10.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.10.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.10.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.10.0", features = ["sandbox-wasm"] }          # WASM sandbox
-langchainrust = { version = "0.10.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.11.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.11.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.11.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.11.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.11.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.11.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.11.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.11.0", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.11.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

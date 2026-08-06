@@ -9,6 +9,8 @@ pub use crate::openai::responses::types::ResponsesError;
 pub use crate::openai::AssistantError;
 pub use crate::openai::OpenAIError;
 pub use crate::providers::anthropic::error::AnthropicError;
+pub use crate::providers::azure::AzureOpenAIError;
+pub use crate::providers::cohere::CohereError;
 pub use crate::providers::gemini::GeminiError;
 
 /// Unified error type that aggregates all LLM provider errors.
@@ -24,6 +26,10 @@ pub enum ProviderError {
     Anthropic(AnthropicError),
     /// Gemini API error.
     Gemini(GeminiError),
+    /// Azure OpenAI API error.
+    Azure(AzureOpenAIError),
+    /// Cohere API error.
+    Cohere(CohereError),
     /// Ollama API error.
     Ollama(OllamaError),
     /// OpenAI Assistants API error.
@@ -38,6 +44,8 @@ impl std::fmt::Display for ProviderError {
             ProviderError::OpenAI(e) => write!(f, "OpenAI error: {e}"),
             ProviderError::Anthropic(e) => write!(f, "Anthropic error: {e}"),
             ProviderError::Gemini(e) => write!(f, "Gemini error: {e}"),
+            ProviderError::Azure(e) => write!(f, "Azure OpenAI error: {e}"),
+            ProviderError::Cohere(e) => write!(f, "Cohere error: {e}"),
             ProviderError::Ollama(e) => write!(f, "Ollama error: {e}"),
             ProviderError::Assistant(e) => write!(f, "Assistant error: {e}"),
             ProviderError::Responses(e) => write!(f, "Responses error: {e}"),
@@ -51,6 +59,8 @@ impl std::error::Error for ProviderError {
             ProviderError::OpenAI(e) => Some(e),
             ProviderError::Anthropic(e) => Some(e),
             ProviderError::Gemini(e) => Some(e),
+            ProviderError::Azure(e) => Some(e),
+            ProviderError::Cohere(e) => Some(e),
             ProviderError::Ollama(e) => Some(e),
             ProviderError::Assistant(e) => Some(e),
             ProviderError::Responses(e) => Some(e),
@@ -88,6 +98,16 @@ impl From<AssistantError> for ProviderError {
 impl From<ResponsesError> for ProviderError {
     fn from(e: ResponsesError) -> Self {
         ProviderError::Responses(e)
+    }
+}
+impl From<AzureOpenAIError> for ProviderError {
+    fn from(e: AzureOpenAIError) -> Self {
+        ProviderError::Azure(e)
+    }
+}
+impl From<CohereError> for ProviderError {
+    fn from(e: CohereError) -> Self {
+        ProviderError::Cohere(e)
     }
 }
 

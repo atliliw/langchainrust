@@ -107,8 +107,59 @@ impl CallbackHandler for OtelHandler {
 
     async fn on_llm_start(&self, run: &RunTree, _messages: &[Message]) {
         self.start_span("llm", run).await;
+
+        // Set OTel GenAI SemConv attributes
+        let mut spans = self.spans.lock().await;
+        if let Some(span) = spans.get_mut(&run.id.to_string()) {
+            // gen_ai.system: identifies the LLM provider
+            if let Some(system) = run.metadata.get("model_provider") {
+                span.set_attribute(opentelemetry::KeyValue::new("gen_ai.system", system.as_str().unwrap_or("unknown").to_string()));
+            }
+            // gen_ai.request.model: the model being invoked
+            if let Some(model) = run.metadata.get("model") {
+                span.set_attribute(opentelemetry::KeyValue::new("gen_ai.request.model", model.as_str().unwrap_or("unknown").to_string()));
+            }
+            // gen_ai.operation.name
+            span.set_attribute(opentelemetry::KeyValue::new("gen_ai.operation.name", "chat".to_string()));
+        }
     }
     async fn on_llm_end(&self, run: &RunTree, _response: &str) {
+        // Set response-level SemConv attributes before ending span
+        let mut spans = self.spans.lock().await;
+        if let Some(span) = spans.get_mut(&run.id.to_string()) {
+            // gen_ai.response.finish_reason
+            if let Some(reason) = run.metadata.get("finish_reason") {
+                span.set_attribute(opentelemetry::KeyValue::new("gen_ai.response.finish_reason", reason.as_str().unwrap_or("stop").to_string()));
+            }
+            // gen_ai.response.model: actual model used (may differ from request)
+            if let Some(model) = run.metadata.get("response_model") {
+                span.set_attribute(opentelemetry::KeyValue::new("gen_ai.response.model", model.as_str().unwrap_or("").to_string()));
+            }
+            // gen_ai.client.token.usage
+            if let Some(tokens) = run.metadata.get("token_usage") {
+                if let Some(obj) = tokens.as_object() {
+                    if let Some(p) = obj.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                        span.set_attribute(opentelemetry::KeyValue::new("gen_ai.client.token.usage.prompt_tokens", p as i64));
+                    }
+                    if let Some(c) = obj.get("completion_tokens").and_then(|v| v.as_u64()) {
+                        span.set_attribute(opentelemetry::KeyValue::new("gen_ai.client.token.usage.completion_tokens", c as i64));
+                    }
+                }
+            }
+            // gen_ai.request.max_tokens
+            if let Some(max) = run.metadata.get("max_tokens") {
+                if let Some(v) = max.as_u64() {
+                    span.set_attribute(opentelemetry::KeyValue::new("gen_ai.request.max_tokens", v as i64));
+                }
+            }
+            // gen_ai.request.temperature
+            if let Some(temp) = run.metadata.get("temperature") {
+                if let Some(v) = temp.as_f64() {
+                    span.set_attribute(opentelemetry::KeyValue::new("gen_ai.request.temperature", v));
+                }
+            }
+        }
+        drop(spans);
         self.end_span(run).await;
     }
     async fn on_llm_new_token(&self, run: &RunTree, _token: &str) {
@@ -121,6 +172,11 @@ impl CallbackHandler for OtelHandler {
 
     async fn on_chain_start(&self, run: &RunTree, _inputs: &serde_json::Value) {
         self.start_span("chain", run).await;
+        // Set gen_ai.operation.name for chain spans
+        let mut spans = self.spans.lock().await;
+        if let Some(span) = spans.get_mut(&run.id.to_string()) {
+            span.set_attribute(opentelemetry::KeyValue::new("gen_ai.operation.name", "chain".to_string()));
+        }
     }
     async fn on_chain_end(&self, run: &RunTree, _outputs: &serde_json::Value) {
         self.end_span(run).await;
@@ -131,8 +187,13 @@ impl CallbackHandler for OtelHandler {
         self.end_span(run).await;
     }
 
-    async fn on_tool_start(&self, run: &RunTree, _tool_name: &str, _input: &str) {
+    async fn on_tool_start(&self, run: &RunTree, tool_name: &str, _input: &str) {
         self.start_span("tool", run).await;
+        // Set gen_ai.tool.name for tool spans
+        let mut spans = self.spans.lock().await;
+        if let Some(span) = spans.get_mut(&run.id.to_string()) {
+            span.set_attribute(opentelemetry::KeyValue::new("gen_ai.tool.name", tool_name.to_string()));
+        }
     }
     async fn on_tool_end(&self, run: &RunTree, _output: &str) {
         self.end_span(run).await;

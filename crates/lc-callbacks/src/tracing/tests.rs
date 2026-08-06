@@ -304,6 +304,14 @@ mod tests {
             latency_ms: Some(1000),
             metadata: serde_json::json!({"model": "gpt-4"}),
             status: SpanStatus::Ok,
+            gen_ai_system: Some("openai".to_string()),
+            gen_ai_request_model: Some("gpt-4".to_string()),
+            gen_ai_response_model: None,
+            gen_ai_finish_reason: None,
+            gen_ai_request_max_tokens: None,
+            gen_ai_request_temperature: None,
+            gen_ai_operation_name: Some("chat".to_string()),
+            gen_ai_tool_name: None,
         };
 
         let json = serde_json::to_string(&span).unwrap();
@@ -312,6 +320,9 @@ mod tests {
         assert_eq!(deserialized.name, span.name);
         assert_eq!(deserialized.kind, span.kind);
         assert_eq!(deserialized.tokens, span.tokens);
+        assert_eq!(deserialized.gen_ai_system, Some("openai".to_string()));
+        assert_eq!(deserialized.gen_ai_request_model, Some("gpt-4".to_string()));
+        assert_eq!(deserialized.gen_ai_operation_name, Some("chat".to_string()));
     }
 
     #[test]
@@ -329,6 +340,14 @@ mod tests {
             latency_ms: None,
             metadata: serde_json::Value::Null,
             status: SpanStatus::Ok,
+            gen_ai_system: None,
+            gen_ai_request_model: None,
+            gen_ai_response_model: None,
+            gen_ai_finish_reason: None,
+            gen_ai_request_max_tokens: None,
+            gen_ai_request_temperature: None,
+            gen_ai_operation_name: None,
+            gen_ai_tool_name: None,
         };
 
         // Should not panic

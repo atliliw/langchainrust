@@ -74,6 +74,15 @@ pub enum AgentStreamEvent {
     /// ReAct 风格工具调用完成
     ToolEnd { name: String, output: String },
 
+    /// Pipeline step event (for RAG/research agents).
+    /// Indicates which stage of the pipeline is currently executing.
+    PipelineStep {
+        /// Step name (e.g., "retrieving", "grading", "generating", "planning", "searching", "synthesizing").
+        step: String,
+        /// Optional detail message.
+        detail: Option<String>,
+    },
+
     /// 最终答案
     FinalAnswer { content: String },
 

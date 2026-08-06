@@ -3,6 +3,8 @@
 
 mod base;
 mod chat;
+mod multimodal;
 
 pub use base::BaseLanguageModel;
 pub use chat::{BaseChatModel, LLMResult, TokenUsage};
+pub use multimodal::{MultimodalError, MultimodalModel};

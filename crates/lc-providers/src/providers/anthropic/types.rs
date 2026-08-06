@@ -29,6 +29,11 @@ pub enum AnthropicContentBlock {
     /// Text content block.
     #[serde(rename = "text")]
     Text { text: String },
+    /// Image content block (base64-encoded).
+    #[serde(rename = "image")]
+    Image {
+        source: AnthropicImageSource,
+    },
     /// Tool use content block (from assistant).
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -42,6 +47,17 @@ pub enum AnthropicContentBlock {
         tool_use_id: String,
         content: String,
     },
+}
+
+/// Image source for Anthropic's image content block.
+///
+/// Anthropic only supports base64-encoded images (no URL-based images).
+#[derive(Serialize, Clone, Debug)]
+pub struct AnthropicImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub media_type: String,
+    pub data: String,
 }
 
 // --- Private API types ---

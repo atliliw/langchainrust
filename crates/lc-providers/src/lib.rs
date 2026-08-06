@@ -32,9 +32,10 @@ pub use openai::{
 };
 pub use providers::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
-    AnthropicStructuredOutputMethod, DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig,
-    GeminiError, GeminiStructuredOutputMethod, MoonshotChat, MoonshotConfig, QwenChat, QwenConfig,
-    ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
+    AnthropicStructuredOutputMethod, AzureOpenAIChat, AzureOpenAIConfig, AzureOpenAIError,
+    CohereChat, CohereConfig, CohereError, DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig,
+    GeminiError, GeminiStructuredOutputMethod, MistralChat, MistralConfig, MoonshotChat,
+    MoonshotConfig, QwenChat, QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
 };
 pub use wrapper::{wrap_chat_model, ChatModelWrapper};
 

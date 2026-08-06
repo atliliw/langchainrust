@@ -64,6 +64,8 @@ impl ChatPromptTemplate {
                 Ok(Message {
                     content,
                     images: msg.images.clone(),
+                    audio: msg.audio.clone(),
+                    files: msg.files.clone(),
                     message_type: msg.message_type.clone(),
                     name: msg.name.clone(),
                     additional_kwargs: msg.additional_kwargs.clone(),

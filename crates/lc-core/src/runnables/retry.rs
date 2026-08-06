@@ -202,7 +202,7 @@ where
         config: Option<RunnableConfig>,
     ) -> Result<O, Self::Error> {
         // Check cancellation before starting
-        if config.as_ref().map_or(false, |c| c.is_cancelled()) {
+        if config.as_ref().is_some_and(|c| c.is_cancelled()) {
             return Err(LcelError::Other("Operation cancelled".to_string()));
         }
 
@@ -210,7 +210,7 @@ where
 
         for attempt in 0..=self.retry_config.max_retries {
             // Check cancellation before each attempt
-            if attempt > 0 && config.as_ref().map_or(false, |c| c.is_cancelled()) {
+            if attempt > 0 && config.as_ref().is_some_and(|c| c.is_cancelled()) {
                 return Err(LcelError::Other("Operation cancelled".to_string()));
             }
 
@@ -251,7 +251,7 @@ where
         let mut last_error = None;
 
         for attempt in 0..=self.retry_config.max_retries {
-            if attempt > 0 && config.as_ref().map_or(false, |c| c.is_cancelled()) {
+            if attempt > 0 && config.as_ref().is_some_and(|c| c.is_cancelled()) {
                 return Err(LcelError::Other("Operation cancelled".to_string()));
             }
 

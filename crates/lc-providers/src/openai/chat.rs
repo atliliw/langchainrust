@@ -21,8 +21,8 @@ use std::marker::PhantomData;
 /// OpenAI chat client for GPT models.
 #[derive(Clone)]
 pub struct OpenAIChat {
-    config: OpenAIConfig,
-    client: reqwest::Client,
+    pub(crate) config: OpenAIConfig,
+    pub(crate) client: reqwest::Client,
 }
 
 impl OpenAIChat {

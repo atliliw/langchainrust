@@ -26,10 +26,16 @@ use crate::openai::OpenAIChat;
 use crate::openai::OpenAIConfig;
 use crate::providers::anthropic::AnthropicChat;
 use crate::providers::anthropic::AnthropicConfig;
+use crate::providers::azure::AzureOpenAIChat;
+use crate::providers::azure::AzureOpenAIConfig;
+use crate::providers::cohere::CohereChat;
+use crate::providers::cohere::CohereConfig;
 use crate::providers::deepseek::DeepSeekChat;
 use crate::providers::deepseek::DeepSeekConfig;
 use crate::providers::gemini::GeminiChat;
 use crate::providers::gemini::GeminiConfig;
+use crate::providers::mistral::MistralChat;
+use crate::providers::mistral::MistralConfig;
 use crate::providers::moonshot::MoonshotChat;
 use crate::providers::moonshot::MoonshotConfig;
 use crate::providers::qwen::QwenChat;
@@ -74,7 +80,8 @@ impl LLMClient {
     /// Detection priority:
     /// 1. `OPENAI_API_KEY` -> OpenAIChat
     /// 2. `ANTHROPIC_API_KEY` -> AnthropicChat
-    /// 3. `OLLAMA_BASE_URL` -> OllamaChat
+    /// 3. `MISTRAL_API_KEY` -> MistralChat
+    /// 4. `OLLAMA_BASE_URL` -> OllamaChat
     ///
     /// # Errors
     ///
@@ -92,14 +99,20 @@ impl LLMClient {
             return Ok(Self::anthropic(config));
         }
 
-        // Priority 3: Ollama
+        // Priority 3: Mistral
+        if std::env::var("MISTRAL_API_KEY").is_ok() {
+            let config = MistralConfig::from_env_result()?;
+            return Ok(Self::mistral(config));
+        }
+
+        // Priority 4: Ollama
         if std::env::var("OLLAMA_BASE_URL").is_ok() {
             let config = OllamaConfig::from_env_result()?;
             return Ok(Self::ollama(config));
         }
 
         Err(
-            "No LLM provider detected. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, OLLAMA_BASE_URL"
+            "No LLM provider detected. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, MISTRAL_API_KEY, OLLAMA_BASE_URL"
                 .to_string(),
         )
     }
@@ -167,6 +180,30 @@ impl LLMClient {
     /// Create Zhipu Client
     pub fn zhipu(config: ZhipuConfig) -> Self {
         let llm = ZhipuChat::new(config);
+        Self {
+            inner: wrap_chat_model(llm),
+        }
+    }
+
+    /// Create Mistral Client
+    pub fn mistral(config: MistralConfig) -> Self {
+        let llm = MistralChat::new(config);
+        Self {
+            inner: wrap_chat_model(llm),
+        }
+    }
+
+    /// Create Azure OpenAI Client
+    pub fn azure(config: AzureOpenAIConfig) -> Self {
+        let llm = AzureOpenAIChat::new(config);
+        Self {
+            inner: wrap_chat_model(llm),
+        }
+    }
+
+    /// Create Cohere Client
+    pub fn cohere(config: CohereConfig) -> Self {
+        let llm = CohereChat::new(config);
         Self {
             inner: wrap_chat_model(llm),
         }

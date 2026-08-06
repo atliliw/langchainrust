@@ -130,7 +130,7 @@ async fn test_stream_execution_returns_events() {
 
     // 流式执行获取所有事件
     let events = compiled
-        .stream(AgentState::new("test".to_string()))
+        .stream_collected(AgentState::new("test".to_string()))
         .await
         .unwrap();
 

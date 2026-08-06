@@ -6,8 +6,7 @@
 
 use async_trait::async_trait;
 
-use super::{AgentHook, CompletionAction, CompletionContext, CompletionResult, ErrorAction, HookError,
-            StreamAction, ToolCallAction, ToolCallContext, ToolResultContext};
+use super::{AgentHook, StreamAction};
 
 /// A hook that filters sensitive words from streaming output.
 ///

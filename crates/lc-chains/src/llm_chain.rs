@@ -180,7 +180,7 @@ where
         // on_llm_start
         if let Some(ref cb) = callbacks {
             let llm_run = run.create_child(
-                &format!("{}.llm", self.name()),
+                format!("{}.llm", self.name()),
                 RunType::Llm,
                 json!({"messages_count": messages.len()}),
             );
@@ -196,7 +196,7 @@ where
                 // on_llm_end
                 if let Some(ref cb) = callbacks {
                     let llm_run = run.create_child(
-                        &format!("{}.llm", self.name()),
+                        format!("{}.llm", self.name()),
                         RunType::Llm,
                         json!({"response": llm_result.content}),
                     );
@@ -221,7 +221,7 @@ where
                 // on_llm_error
                 if let Some(ref cb) = callbacks {
                     let llm_run = run.create_child(
-                        &format!("{}.llm", self.name()),
+                        format!("{}.llm", self.name()),
                         RunType::Llm,
                         json!({"error": &err_msg}),
                     );

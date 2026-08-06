@@ -489,6 +489,14 @@ fn test_console_backend_does_not_panic() {
         latency_ms: None,
         metadata: serde_json::Value::Null,
         status: SpanStatus::Ok,
+        gen_ai_system: None,
+        gen_ai_request_model: None,
+        gen_ai_response_model: None,
+        gen_ai_finish_reason: None,
+        gen_ai_request_max_tokens: None,
+        gen_ai_request_temperature: None,
+        gen_ai_operation_name: None,
+        gen_ai_tool_name: None,
     };
 
     // Should not panic
@@ -511,6 +519,14 @@ fn test_console_backend_end_span_does_not_panic() {
         latency_ms: Some(1000),
         metadata: serde_json::Value::Null,
         status: SpanStatus::Error("timeout".to_string()),
+        gen_ai_system: None,
+        gen_ai_request_model: None,
+        gen_ai_response_model: None,
+        gen_ai_finish_reason: None,
+        gen_ai_request_max_tokens: None,
+        gen_ai_request_temperature: None,
+        gen_ai_operation_name: None,
+        gen_ai_tool_name: None,
     };
 
     // Should not panic
@@ -539,6 +555,14 @@ fn test_trace_span_serialization_roundtrip() {
         latency_ms: Some(1000),
         metadata: serde_json::json!({"model": "gpt-4", "temperature": 0.7}),
         status: SpanStatus::Ok,
+        gen_ai_system: None,
+        gen_ai_request_model: None,
+        gen_ai_response_model: None,
+        gen_ai_finish_reason: None,
+        gen_ai_request_max_tokens: None,
+        gen_ai_request_temperature: None,
+        gen_ai_operation_name: None,
+        gen_ai_tool_name: None,
     };
 
     let json = serde_json::to_string(&span).unwrap();
@@ -566,6 +590,14 @@ fn test_trace_span_error_serialization() {
         latency_ms: Some(0),
         metadata: serde_json::Value::Null,
         status: SpanStatus::Error("connection refused".to_string()),
+        gen_ai_system: None,
+        gen_ai_request_model: None,
+        gen_ai_response_model: None,
+        gen_ai_finish_reason: None,
+        gen_ai_request_max_tokens: None,
+        gen_ai_request_temperature: None,
+        gen_ai_operation_name: None,
+        gen_ai_tool_name: None,
     };
 
     let json = serde_json::to_string(&span).unwrap();
@@ -591,6 +623,14 @@ fn test_trace_node_serialization() {
             latency_ms: Some(1000),
             metadata: serde_json::Value::Null,
             status: SpanStatus::Ok,
+            gen_ai_system: None,
+            gen_ai_request_model: None,
+            gen_ai_response_model: None,
+            gen_ai_finish_reason: None,
+            gen_ai_request_max_tokens: None,
+            gen_ai_request_temperature: None,
+            gen_ai_operation_name: None,
+            gen_ai_tool_name: None,
         },
         children: vec![TraceNode {
             span: TraceSpan {
@@ -605,6 +645,14 @@ fn test_trace_node_serialization() {
                 latency_ms: Some(500),
                 metadata: serde_json::Value::Null,
                 status: SpanStatus::Ok,
+                gen_ai_system: None,
+                gen_ai_request_model: None,
+                gen_ai_response_model: None,
+                gen_ai_finish_reason: None,
+                gen_ai_request_max_tokens: None,
+                gen_ai_request_temperature: None,
+                gen_ai_operation_name: None,
+                gen_ai_tool_name: None,
             },
             children: vec![],
         }],

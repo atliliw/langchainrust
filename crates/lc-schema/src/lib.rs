@@ -3,4 +3,4 @@
 
 pub mod messages;
 
-pub use messages::{ImageContent, Message, MessageType};
+pub use messages::{AudioContent, FileContent, ImageContent, Message, MessageType};

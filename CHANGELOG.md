@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-06
+
+### Added
+- **Callback 贯穿**: Callbacks now propagate through the full execution pipeline — LLMChain, AgentExecutor, and all chain/agent layers dispatch `on_llm_start/end`, `on_tool_start/end`, `on_chain_start/end` events. `CallbackPropagatable` trait for uniform callback propagation
+- **RunnableRetry**: Retry mechanism for LCEL pipelines with configurable max retries, exponential backoff, jitter, and retryable error filtering. `RunnableExt::with_retry()` for fluent API
+- **CancellationToken**: Cooperative cancellation for LCEL pipelines. `RunnableConfig` now carries an optional `CancellationToken`; long-running operations (retry loops, streaming) check `is_cancelled()` before each step
+- **Agent Hook 系统**: Composable lifecycle interception for agents — `AgentHook` trait with `on_before_completion`, `on_after_completion`, `on_before_tool_call`, `on_after_tool_call`, `on_stream_chunk`, `on_agent_start/end`, `on_error` callbacks. Built-in hooks: `ApprovalHook` (human-in-the-loop), `ContentFilterHook` (stream filtering), `LoggingHook` (structured logging)
+- **Anthropic Extended Thinking**: `with_thinking()` on AnthropicChat enables extended thinking with configurable budget tokens. Thinking content returned in `LLMResult.thinking_content`
+- **OTel GenAI SemConv**: TraceSpan now includes 8 GenAI semantic convention fields (gen_ai_system, gen_ai_request_model, gen_ai_response_model, gen_ai_finish_reason, gen_ai_request_max_tokens, gen_ai_request_temperature, gen_ai_operation_name, gen_ai_tool_name) for OpenTelemetry observability
+- **Message extensions**: `Message::human_with_images()`, `Message::merge_tool_results()`, and `Message::has_tool_calls()` helper methods on lc-schema
+
+### Changed
+- **Workspace version**: All 21 crates bumped from 0.9.0 to 0.11.0
+- **Tool input serialization**: Fixed double-encoding bug where `ToolInput::String` containing JSON was wrapped in `Value::String()` then double-encoded by `serde_json::to_string()`. Now attempts `serde_json::from_str()` first to parse as proper `Value`
+- **LangGraph stream API**: `stream()` returns `Pin<Box<dyn Stream>>` (not awaitable); use `stream_collected()` for `await`-able `Vec<StreamEvent>` result
+- **Clippy compliance**: All workspace crates now pass `cargo clippy --workspace -- -D warnings` with 0 warnings
+
+### Fixed
+- Tool input double-serialization causing 8 integration test failures (calculator, search, etc.)
+- TraceSpan missing gen_ai fields causing 6 unit test compilation errors
+- LangGraph `stream()` compilation error (dyn Stream is not Future)
+- Cargo cache corruption (E0786) requiring `cargo clean`
+
 ## [0.10.0] - 2026-08-05
 
 ### Added

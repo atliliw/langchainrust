@@ -7,6 +7,8 @@ pub mod chromadb;
 pub mod chunked_vector_store;
 pub mod document_store;
 mod file_store;
+pub mod lancedb;
+pub mod neo4j;
 mod memory;
 mod provider;
 
@@ -34,6 +36,8 @@ pub use document_store::{
 };
 pub use file_store::FileVectorStore;
 pub use memory::InMemoryVectorStore;
+pub use lancedb::{LanceDBConfig, LanceDBVectorStore};
+pub use neo4j::{Neo4jConfig, Neo4jVectorStore};
 pub use pinecone::PineconeStore;
 pub use provider::{VectorStoreBuilder, VectorStoreProvider, VectorStoreType};
 

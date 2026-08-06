@@ -176,3 +176,207 @@ pub trait AgentHook: Send + Sync {
         ErrorAction::Propagate
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completion_action_default_continue() {
+        let action = CompletionAction::Continue;
+        assert!(matches!(action, CompletionAction::Continue));
+    }
+
+    #[test]
+    fn test_tool_call_action_variants() {
+        let continue_action = ToolCallAction::Continue;
+        let modify_action = ToolCallAction::Modify {
+            name: "calc".to_string(),
+            arguments: serde_json::json!({"x": 1}),
+        };
+        let reject_action = ToolCallAction::Reject {
+            reason: "not allowed".to_string(),
+        };
+        let skip_action = ToolCallAction::Skip;
+
+        assert!(matches!(continue_action, ToolCallAction::Continue));
+        assert!(matches!(modify_action, ToolCallAction::Modify { .. }));
+        assert!(matches!(reject_action, ToolCallAction::Reject { .. }));
+        assert!(matches!(skip_action, ToolCallAction::Skip));
+    }
+
+    #[test]
+    fn test_stream_action_variants() {
+        let forward = StreamAction::Forward("hello".to_string());
+        let filter = StreamAction::Filter;
+        let replace = StreamAction::Replace("[REDACTED]".to_string());
+
+        assert!(matches!(forward, StreamAction::Forward(_)));
+        assert!(matches!(filter, StreamAction::Filter));
+        assert!(matches!(replace, StreamAction::Replace(_)));
+    }
+
+    #[test]
+    fn test_error_action_variants() {
+        assert!(matches!(ErrorAction::Propagate, ErrorAction::Propagate));
+        assert!(matches!(ErrorAction::Retry, ErrorAction::Retry));
+        assert!(matches!(ErrorAction::Ignore, ErrorAction::Ignore));
+    }
+
+    #[test]
+    fn test_hook_error_display() {
+        let rejected = HookError::Rejected("not allowed".to_string());
+        assert_eq!(format!("{}", rejected), "Hook rejected: not allowed");
+
+        let other = HookError::Other("something broke".to_string());
+        assert_eq!(format!("{}", other), "Hook error: something broke");
+    }
+
+    #[test]
+    fn test_completion_context_default() {
+        let ctx = CompletionContext {
+            messages: vec![],
+            model: "gpt-4".to_string(),
+            metadata: HashMap::new(),
+        };
+        assert_eq!(ctx.model, "gpt-4");
+        assert!(ctx.messages.is_empty());
+    }
+
+    #[test]
+    fn test_tool_call_context() {
+        let ctx = ToolCallContext {
+            name: "calculator".to_string(),
+            arguments: serde_json::json!({"expr": "2+2"}),
+            tool_id: "call_123".to_string(),
+        };
+        assert_eq!(ctx.name, "calculator");
+        assert_eq!(ctx.tool_id, "call_123");
+    }
+
+    #[test]
+    fn test_tool_result_context() {
+        let ctx = ToolResultContext {
+            name: "calculator".to_string(),
+            result: "4".to_string(),
+            tool_id: "call_123".to_string(),
+        };
+        assert_eq!(ctx.result, "4");
+    }
+
+    #[test]
+    fn test_completion_result() {
+        let result = CompletionResult {
+            message: lc_schema::Message::ai("Hello!"),
+            tokens_used: None,
+        };
+        assert_eq!(result.message.content, "Hello!");
+    }
+
+    /// A custom hook that tracks all hook calls for testing.
+    struct TrackingHook {
+        before_completion_called: std::sync::atomic::AtomicBool,
+        after_completion_called: std::sync::atomic::AtomicBool,
+        before_tool_called: std::sync::atomic::AtomicBool,
+        after_tool_called: std::sync::atomic::AtomicBool,
+        agent_start_called: std::sync::atomic::AtomicBool,
+        agent_end_called: std::sync::atomic::AtomicBool,
+        error_called: std::sync::atomic::AtomicBool,
+    }
+
+    impl TrackingHook {
+        fn new() -> Self {
+            Self {
+                before_completion_called: std::sync::atomic::AtomicBool::new(false),
+                after_completion_called: std::sync::atomic::AtomicBool::new(false),
+                before_tool_called: std::sync::atomic::AtomicBool::new(false),
+                after_tool_called: std::sync::atomic::AtomicBool::new(false),
+                agent_start_called: std::sync::atomic::AtomicBool::new(false),
+                agent_end_called: std::sync::atomic::AtomicBool::new(false),
+                error_called: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgentHook for TrackingHook {
+        fn on_before_completion(&self, _ctx: &mut CompletionContext) -> CompletionAction {
+            self.before_completion_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            CompletionAction::Continue
+        }
+
+        fn on_after_completion(&self, _ctx: &mut CompletionResult) -> Result<(), HookError> {
+            self.after_completion_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn on_before_tool_call(&self, _ctx: &mut ToolCallContext) -> ToolCallAction {
+            self.before_tool_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            ToolCallAction::Continue
+        }
+
+        fn on_after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), HookError> {
+            self.after_tool_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn on_agent_start(&self, _input: &str) -> Result<(), HookError> {
+            self.agent_start_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn on_agent_end(&self, _output: &str) -> Result<(), HookError> {
+            self.agent_end_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn on_error(&self, _error: &HookError) -> ErrorAction {
+            self.error_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            ErrorAction::Propagate
+        }
+    }
+
+    #[test]
+    fn test_custom_hook_tracking() {
+        let hook = TrackingHook::new();
+
+        // Simulate hook calls
+        let mut ctx = CompletionContext {
+            messages: vec![],
+            model: "gpt-4".to_string(),
+            metadata: HashMap::new(),
+        };
+        hook.on_before_completion(&mut ctx);
+        assert!(hook.before_completion_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        hook.on_agent_start("test input").unwrap();
+        assert!(hook.agent_start_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        hook.on_agent_end("test output").unwrap();
+        assert!(hook.agent_end_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_completion_action_reject() {
+        let action = CompletionAction::Reject {
+            reason: "blocked".to_string(),
+        };
+        if let CompletionAction::Reject { reason } = action {
+            assert_eq!(reason, "blocked");
+        } else {
+            panic!("Expected Reject");
+        }
+    }
+
+    #[test]
+    fn test_completion_action_modify() {
+        let action = CompletionAction::Modify {
+            messages: vec![lc_schema::Message::system("test")],
+        };
+        if let CompletionAction::Modify { messages } = action {
+            assert_eq!(messages.len(), 1);
+        } else {
+            panic!("Expected Modify");
+        }
+    }
+}

@@ -33,8 +33,11 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
   - RunnableWithFallbacks ✨ v0.10.0
   - RunnableAssign ✨ v0.10.0
+  - RunnableRetry ✨ v0.11.0
+  - CancellationToken ✨ v0.11.0
 - [Document Chains](#document-chains)
 - [Agents](#agents)
+  - Agent Hooks ✨ v0.11.0
 - [Plan-Execute Agent](#plan-execute-agent)
 - [Handoffs](#handoffs)
 - [Streaming Tool Calls](#streaming-tool-calls)

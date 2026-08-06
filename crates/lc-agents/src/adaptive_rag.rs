@@ -176,6 +176,44 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         }
     }
 
+    /// Streams the AdaptiveRAG execution, emitting pipeline step events.
+    ///
+    /// Emits `AgentStreamEvent::PipelineStep` events for routing and generation,
+    /// and `AgentStreamEvent::FinalAnswer` when the answer is ready.
+    pub async fn stream(
+        &self,
+        query: &str,
+    ) -> Result<
+        std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = crate::streaming::AgentStreamEvent> + Send>,
+        >,
+        AdaptiveRAGError,
+    > {
+        use crate::streaming::AgentStreamEvent;
+        use futures_util::stream;
+
+        let result = self.invoke(query).await?;
+
+        let events = vec![
+            AgentStreamEvent::PipelineStep {
+                step: "routing".to_string(),
+                detail: Some(format!("Decision: {}", result.decision)),
+            },
+            AgentStreamEvent::PipelineStep {
+                step: "generating".to_string(),
+                detail: Some(format!(
+                    "Sources: {} documents",
+                    result.sources.len()
+                )),
+            },
+            AgentStreamEvent::FinalAnswer {
+                content: result.answer,
+            },
+        ];
+
+        Ok(Box::pin(stream::iter(events)))
+    }
+
     // -- Routing -----------------------------------------------------------
 
     /// Asks the LLM to classify the query.

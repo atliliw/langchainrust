@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use lc_shared::tools::ToolCall;
 
+use super::audio::AudioContent;
+use super::file::FileContent;
 use super::image::ImageContent;
 
 /// Message type classification.
@@ -26,6 +28,14 @@ pub struct Message {
     /// 图片内容(多模态 vision)
     #[serde(default)]
     pub images: Vec<ImageContent>,
+
+    /// 音频内容(多模态 audio)
+    #[serde(default)]
+    pub audio: Vec<AudioContent>,
+
+    /// 文件内容(多模态 document)
+    #[serde(default)]
+    pub files: Vec<FileContent>,
 
     #[serde(rename = "type")]
     pub message_type: MessageType,
@@ -49,6 +59,8 @@ impl Message {
         Self {
             content: content.into(),
             images: Vec::new(),
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::System,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -62,6 +74,8 @@ impl Message {
         Self {
             content: content.into(),
             images: Vec::new(),
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -75,6 +89,8 @@ impl Message {
         Self {
             content: content.into(),
             images: vec![ImageContent::from_url(image_url)],
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -88,6 +104,38 @@ impl Message {
         Self {
             content: content.into(),
             images,
+            audio: Vec::new(),
+            files: Vec::new(),
+            message_type: MessageType::Human,
+            name: None,
+            additional_kwargs: HashMap::new(),
+            id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Creates a human message with audio content.
+    pub fn human_with_audio(content: impl Into<String>, audio: AudioContent) -> Self {
+        Self {
+            content: content.into(),
+            images: Vec::new(),
+            audio: vec![audio],
+            files: Vec::new(),
+            message_type: MessageType::Human,
+            name: None,
+            additional_kwargs: HashMap::new(),
+            id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Creates a human message with file content.
+    pub fn human_with_file(content: impl Into<String>, file: FileContent) -> Self {
+        Self {
+            content: content.into(),
+            images: Vec::new(),
+            audio: Vec::new(),
+            files: vec![file],
             message_type: MessageType::Human,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -101,6 +149,8 @@ impl Message {
         Self {
             content: content.into(),
             images: Vec::new(),
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::AI,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -114,6 +164,8 @@ impl Message {
         Self {
             content: content.into(),
             images: Vec::new(),
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::AI,
             name: None,
             additional_kwargs: HashMap::new(),
@@ -127,6 +179,8 @@ impl Message {
         Self {
             content: content.into(),
             images: Vec::new(),
+            audio: Vec::new(),
+            files: Vec::new(),
             message_type: MessageType::Tool {
                 tool_call_id: tool_call_id.into(),
             },
@@ -161,9 +215,36 @@ impl Message {
         self
     }
 
+    /// Adds audio content to the message.
+    pub fn with_audio(mut self, audio: AudioContent) -> Self {
+        self.audio.push(audio);
+        self
+    }
+
+    /// Adds file content to the message.
+    pub fn with_file(mut self, file: FileContent) -> Self {
+        self.files.push(file);
+        self
+    }
+
     /// Returns whether the message has images.
     pub fn has_images(&self) -> bool {
         !self.images.is_empty()
+    }
+
+    /// Returns whether the message has audio content.
+    pub fn has_audio(&self) -> bool {
+        !self.audio.is_empty()
+    }
+
+    /// Returns whether the message has file content.
+    pub fn has_files(&self) -> bool {
+        !self.files.is_empty()
+    }
+
+    /// Returns whether the message has any multimodal content (images, audio, or files).
+    pub fn is_multimodal(&self) -> bool {
+        self.has_images() || self.has_audio() || self.has_files()
     }
 
     /// Returns the message type as a string.

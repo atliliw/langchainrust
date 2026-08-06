@@ -492,7 +492,13 @@ impl AgentExecutor {
         let mut tool_ctx = ToolCallContext {
             name: action.tool.clone(),
             arguments: match &action.tool_input {
-                super::types::ToolInput::String { value: s } => serde_json::Value::String(s.clone()),
+                super::types::ToolInput::String { value: s } => {
+                    // If the string is valid JSON, parse it as a Value to avoid
+                    // double-encoding when serde_json::to_string() is called later.
+                    // Otherwise wrap it as Value::String.
+                    serde_json::from_str::<serde_json::Value>(s)
+                        .unwrap_or(serde_json::Value::String(s.clone()))
+                }
                 super::types::ToolInput::Object { value: v } => v.clone(),
             },
             tool_id: String::new(),

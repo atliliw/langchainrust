@@ -24,7 +24,7 @@ pub mod tools;
 // Re-export key types at crate root for convenience
 pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseError};
 
-pub use language_models::{BaseChatModel, BaseLanguageModel};
+pub use language_models::{BaseChatModel, BaseLanguageModel, MultimodalError, MultimodalModel};
 pub use output_parsers::{
     BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,

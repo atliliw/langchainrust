@@ -4,7 +4,9 @@
 //! This allows agents to participate in LCEL pipelines via `pipe()`.
 
 use async_trait::async_trait;
+use futures_util::Stream;
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::base::AgentExecutor;
@@ -44,8 +46,36 @@ impl Runnable<String, String> for AgentRunnable {
             .map_err(|e| LcelError::Agent(e.to_string()))
     }
 
-    // stream, batch, transform use default implementations
-    // (single-element stream, sequential batch, buffer-and-invoke)
+    /// Override stream() to delegate to AgentExecutor::stream(),
+    /// enabling real streaming in LCEL pipelines.
+    async fn stream(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>, LcelError> {
+        use futures_util::StreamExt;
+
+        let event_stream = self.executor.stream(input);
+
+        // Map AgentStreamEvent to String, extracting FinalAnswer content
+        let mapped = event_stream.filter_map(|event_result| async move {
+            match event_result {
+                Ok(event) => match event {
+                    crate::streaming::AgentStreamEvent::FinalAnswer { content } => {
+                        Some(Ok(content))
+                    }
+                    crate::streaming::AgentStreamEvent::Error { message } => {
+                        Some(Err(LcelError::Agent(message)))
+                    }
+                    // Skip other event types (ToolStart, ToolEnd, PipelineStep, etc.)
+                    _ => None,
+                },
+                Err(e) => Some(Err(LcelError::Agent(e.to_string()))),
+            }
+        });
+
+        Ok(Box::pin(mapped))
+    }
 }
 
 /// Allow `AgentError` to convert into `LcelError`.

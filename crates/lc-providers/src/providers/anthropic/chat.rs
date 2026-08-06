@@ -16,8 +16,8 @@ use lc_schema::Message;
 use super::config::{AnthropicConfig, ThinkingConfig};
 use super::error::AnthropicError;
 use super::types::{
-    AnthropicContentBlock, AnthropicMessage, AnthropicMessageContent, AnthropicResponse,
-    AnthropicStreamEvent, AnthropicStreamToken,
+    AnthropicContentBlock, AnthropicImageSource, AnthropicMessage, AnthropicMessageContent,
+    AnthropicResponse, AnthropicStreamEvent, AnthropicStreamToken,
 };
 
 /// Anthropic Claude chat client.
@@ -120,10 +120,44 @@ impl AnthropicChat {
 
     pub(crate) fn message_to_anthropic_format(message: &Message) -> AnthropicMessage {
         match &message.message_type {
-            lc_schema::MessageType::Human => AnthropicMessage {
-                role: "user".to_string(),
-                content: AnthropicMessageContent::Text(message.content.clone()),
-            },
+            lc_schema::MessageType::Human => {
+                // If the message has images, build a content blocks array
+                if message.has_images() {
+                    let mut content_parts: Vec<AnthropicContentBlock> = vec![];
+
+                    // Add text content first
+                    if !message.content.is_empty() {
+                        content_parts.push(AnthropicContentBlock::Text {
+                            text: message.content.clone(),
+                        });
+                    }
+
+                    // Add image blocks — Anthropic requires base64-encoded images
+                    for img in &message.images {
+                        if let Some(source) = Self::image_to_anthropic_source(img) {
+                            content_parts.push(AnthropicContentBlock::Image { source });
+                        }
+                        // URL-based images that aren't data URIs are silently skipped
+                        // (Anthropic doesn't support URL-based image sources)
+                    }
+
+                    if content_parts.is_empty() {
+                        content_parts.push(AnthropicContentBlock::Text {
+                            text: message.content.clone(),
+                        });
+                    }
+
+                    AnthropicMessage {
+                        role: "user".to_string(),
+                        content: AnthropicMessageContent::Blocks(content_parts),
+                    }
+                } else {
+                    AnthropicMessage {
+                        role: "user".to_string(),
+                        content: AnthropicMessageContent::Text(message.content.clone()),
+                    }
+                }
+            }
             lc_schema::MessageType::AI => {
                 let mut content_parts: Vec<AnthropicContentBlock> = vec![];
                 if let Some(tool_calls) = &message.tool_calls {
@@ -163,6 +197,34 @@ impl AnthropicChat {
                 role: "user".to_string(),
                 content: AnthropicMessageContent::Text(message.content.clone()),
             },
+        }
+    }
+
+    /// Converts an ImageContent to an AnthropicImageSource.
+    ///
+    /// Anthropic only supports base64-encoded images. If the ImageContent
+    /// is a URL (not a data URI), returns None (the image is skipped).
+    fn image_to_anthropic_source(img: &lc_schema::ImageContent) -> Option<AnthropicImageSource> {
+        if img.is_base64() {
+            // Parse data URI: "data:image/png;base64,abc123"
+            let url = &img.url;
+            // Extract media type from "data:{media_type};base64,{data}"
+            let media_type = url
+                .strip_prefix("data:")?
+                .split(';')
+                .next()?
+                .to_string();
+
+            let data = img.base64_data()?;
+            Some(AnthropicImageSource {
+                source_type: "base64".to_string(),
+                media_type,
+                data: data.to_string(),
+            })
+        } else {
+            // Anthropic doesn't support URL-based image sources
+            // The image is silently skipped
+            None
         }
     }
 
@@ -562,5 +624,121 @@ mod tests {
         }
         let _method: AnthropicStructuredOutputMethod<TestOutput> = chat.with_structured_output();
         // Just verify it compiles and the method is callable
+    }
+
+    // --- Image handling tests ---
+
+    #[test]
+    fn test_human_message_without_images_uses_text_content() {
+        let msg = Message::human("Hello");
+        let anthropic_msg = AnthropicChat::message_to_anthropic_format(&msg);
+        assert_eq!(anthropic_msg.role, "user");
+        // Without images, should use simple Text variant
+        assert!(matches!(
+            anthropic_msg.content,
+            AnthropicMessageContent::Text(_)
+        ));
+    }
+
+    #[test]
+    fn test_human_message_with_base64_image_uses_blocks() {
+        let msg = Message::human_with_image("Describe this", "data:image/png;base64,abc123");
+        let anthropic_msg = AnthropicChat::message_to_anthropic_format(&msg);
+        assert_eq!(anthropic_msg.role, "user");
+        // With images, should use Blocks variant
+        assert!(matches!(
+            anthropic_msg.content,
+            AnthropicMessageContent::Blocks(_)
+        ));
+
+        if let AnthropicMessageContent::Blocks(blocks) = &anthropic_msg.content {
+            // Should have: text block + image block
+            assert_eq!(blocks.len(), 2);
+
+            // First block should be text
+            assert!(matches!(&blocks[0], AnthropicContentBlock::Text { text } if text == "Describe this"));
+
+            // Second block should be image
+            if let AnthropicContentBlock::Image { source } = &blocks[1] {
+                assert_eq!(source.source_type, "base64");
+                assert_eq!(source.media_type, "image/png");
+                assert_eq!(source.data, "abc123");
+            } else {
+                panic!("Expected Image block");
+            }
+        }
+    }
+
+    #[test]
+    fn test_human_message_with_url_image_skips_image() {
+        // Anthropic doesn't support URL-based images, so they are silently skipped
+        let msg = Message::human_with_image("Describe this", "https://example.com/img.png");
+        let anthropic_msg = AnthropicChat::message_to_anthropic_format(&msg);
+        assert_eq!(anthropic_msg.role, "user");
+
+        // URL image is skipped, but since has_images() is true, we still use Blocks
+        if let AnthropicMessageContent::Blocks(blocks) = &anthropic_msg.content {
+            // Only text block remains (URL image was skipped)
+            assert_eq!(blocks.len(), 1);
+            assert!(matches!(&blocks[0], AnthropicContentBlock::Text { .. }));
+        } else {
+            panic!("Expected Blocks variant for message with images");
+        }
+    }
+
+    #[test]
+    fn test_human_message_with_jpeg_base64_image() {
+        let msg = Message::human_with_image(
+            "What is this?",
+            "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+        );
+        let anthropic_msg = AnthropicChat::message_to_anthropic_format(&msg);
+
+        if let AnthropicMessageContent::Blocks(blocks) = &anthropic_msg.content {
+            if let AnthropicContentBlock::Image { source } = &blocks[1] {
+                assert_eq!(source.media_type, "image/jpeg");
+                assert_eq!(source.data, "/9j/4AAQSkZJRg==");
+            }
+        }
+    }
+
+    #[test]
+    fn test_image_to_anthropic_source_base64() {
+        let img = lc_schema::ImageContent::from_base64_with_mime("testdata", "image/webp");
+        let source = AnthropicChat::image_to_anthropic_source(&img);
+        assert!(source.is_some());
+        let s = source.unwrap();
+        assert_eq!(s.source_type, "base64");
+        assert_eq!(s.media_type, "image/webp");
+        assert_eq!(s.data, "testdata");
+    }
+
+    #[test]
+    fn test_image_to_anthropic_source_url_returns_none() {
+        let img = lc_schema::ImageContent::from_url("https://example.com/img.png");
+        let source = AnthropicChat::image_to_anthropic_source(&img);
+        assert!(source.is_none());
+    }
+
+    #[test]
+    fn test_build_request_body_with_image_message() {
+        let config = AnthropicConfig::new("test-key");
+        let chat = AnthropicChat::new(config);
+        let msg = Message::human_with_image("Describe", "data:image/png;base64,abc");
+        let body = chat.build_request_body(vec![msg], false);
+
+        // Messages should be an array with one element
+        let messages = body.get("messages").unwrap().as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // The message content should be an array of blocks
+        let content = &messages[0]["content"];
+        assert!(content.is_array());
+        let blocks = content.as_array().unwrap();
+        assert_eq!(blocks.len(), 2); // text + image
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
     }
 }

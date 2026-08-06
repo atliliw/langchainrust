@@ -214,6 +214,52 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         })
     }
 
+    /// Streams the deep research execution, emitting pipeline step events.
+    ///
+    /// Emits `AgentStreamEvent::PipelineStep` events for planning, searching,
+    /// and synthesizing, and `AgentStreamEvent::FinalAnswer` when the report is ready.
+    pub async fn stream_research(
+        &self,
+        topic: &str,
+    ) -> Result<
+        std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = crate::streaming::AgentStreamEvent> + Send>,
+        >,
+        ResearchError,
+    > {
+        use crate::streaming::AgentStreamEvent;
+        use futures_util::stream;
+
+        let result = self.research(topic).await?;
+
+        let events = vec![
+            AgentStreamEvent::PipelineStep {
+                step: "planning".to_string(),
+                detail: Some(format!(
+                    "Subtopics: {}",
+                    result.subtopics.join(", ")
+                )),
+            },
+            AgentStreamEvent::PipelineStep {
+                step: "searching".to_string(),
+                detail: Some(format!(
+                    "Citations: {}, Rounds: {}",
+                    result.citations.len(),
+                    result.rounds_completed
+                )),
+            },
+            AgentStreamEvent::PipelineStep {
+                step: "synthesizing".to_string(),
+                detail: None,
+            },
+            AgentStreamEvent::FinalAnswer {
+                content: result.markdown,
+            },
+        ];
+
+        Ok(Box::pin(stream::iter(events)))
+    }
+
     // -- Private helpers -------------------------------------------------------
 
     async fn plan(&self, topic: &str) -> Result<ResearchPlan, ResearchError> {

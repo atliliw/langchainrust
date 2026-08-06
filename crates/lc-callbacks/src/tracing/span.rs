@@ -78,6 +78,32 @@ pub struct TraceSpan {
     pub metadata: serde_json::Value,
     /// Span completion status
     pub status: SpanStatus,
+
+    // --- OTel GenAI SemConv fields ---
+    /// gen_ai.system: The LLM provider name (e.g., "openai", "anthropic")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_system: Option<String>,
+    /// gen_ai.request.model: The model requested
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_request_model: Option<String>,
+    /// gen_ai.response.model: The actual model used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_response_model: Option<String>,
+    /// gen_ai.response.finish_reason: Why the model stopped generating
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_finish_reason: Option<String>,
+    /// gen_ai.request.max_tokens: Maximum tokens requested
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_request_max_tokens: Option<u64>,
+    /// gen_ai.request.temperature: Temperature parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_request_temperature: Option<f64>,
+    /// gen_ai.operation.name: The operation name (chat, completion)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_operation_name: Option<String>,
+    /// gen_ai.tool.name: The tool name (for tool spans)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_ai_tool_name: Option<String>,
 }
 
 /// A node in the trace tree (span + children).
@@ -119,5 +145,13 @@ pub(crate) fn make_span(
         latency_ms: None,
         metadata: serde_json::Value::Object(serde_json::Map::new()),
         status: SpanStatus::Ok,
+        gen_ai_system: None,
+        gen_ai_request_model: None,
+        gen_ai_response_model: None,
+        gen_ai_finish_reason: None,
+        gen_ai_request_max_tokens: None,
+        gen_ai_request_temperature: None,
+        gen_ai_operation_name: None,
+        gen_ai_tool_name: None,
     }
 }

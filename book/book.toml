@@ -1,0 +1,15 @@
+[book]
+title = "LangChainRust Documentation"
+authors = ["LangChainRust Contributors"]
+description = "Build high-performance LLM applications in Rust"
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://github.com/atliliw/langchainrust"
+edit-url-template = "https://github.com/atliliw/langchainrust/edit/main/{path}"

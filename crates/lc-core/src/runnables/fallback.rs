@@ -81,13 +81,13 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> RunnableWithFal
         let boxed_input = Box::new(input.clone()) as Box<dyn Any + Send>;
         match self.primary.invoke_any(boxed_input, config.clone()).await {
             Ok(result) => {
-                return result
+                result
                     .downcast::<O>()
                     .map(|b| *b)
                     .map_err(|_| LcelError::TypeMismatch(format!(
                         "fallback primary output downcast: expected {}",
                         std::any::type_name::<O>()
-                    )));
+                    )))
             }
             Err(primary_error) => {
                 // Try each fallback

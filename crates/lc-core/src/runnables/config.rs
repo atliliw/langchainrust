@@ -87,7 +87,7 @@ impl RunnableConfig {
     pub fn is_cancelled(&self) -> bool {
         self.cancellation_token
             .as_ref()
-            .map_or(false, |t| t.is_cancelled())
+            .is_some_and(|t| t.is_cancelled())
     }
 
     /// Merges two configurations (later overrides earlier).
