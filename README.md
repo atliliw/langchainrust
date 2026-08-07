@@ -48,7 +48,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
 | **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree, GenAI SemConv fields |
 
-Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | [API Docs](https://docs.rs/langchainrust)
+Full documentation: [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | [API Docs](https://docs.rs/langchainrust)
 
 ---
 
@@ -134,19 +134,19 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.11.0"
+langchainrust = "0.12.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.11.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.11.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.11.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.11.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.11.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.11.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.11.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.11.0", features = ["sandbox-wasm"] }          # WASM sandbox
-langchainrust = { version = "0.11.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.12.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.12.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.12.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.12.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.12.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.12.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.12.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.12.0", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.12.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
@@ -213,7 +213,7 @@ for result in results {
 }
 ```
 
-More examples in [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md).
+More examples in [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) or [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md).
 
 ---
 
@@ -250,6 +250,7 @@ Examples without API keys (BM25 / LangGraph / Memory / Loader) can run directly 
 
 | Docs | Content |
 |------|---------|
+| [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | 所有组件的详细用法（中文） |
 | [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
 | [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
 | [Changelog](https://github.com/atliliw/langchainrust/blob/main/CHANGELOG.md) | Release history and breaking changes |

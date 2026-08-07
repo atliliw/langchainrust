@@ -1,56 +1,57 @@
-# Usage Guide
+# 使用指南
 
-This document provides detailed usage instructions. For a quick overview, see [README.md](../README.md).
+本文档提供详细的使用说明。如需快速概览，请参阅 [README.md](../README.md)。
 
 ---
 
-## Table of Contents
+## 目录
 
 - [LLM](#llm)
-  - Multi-Provider Support
+  - 多 Provider 支持
   - OpenAI Chat
-  - Streaming
-  - Function Calling
-  - Ollama (Local LLM)
+  - 流式输出
+  - 函数调用
+  - Ollama（本地 LLM）
   - Google Gemini
-  - Multimodal Vision
+  - 多模态视觉
   - OpenAI Assistants API
-- [Embeddings](#embeddings)
+- [嵌入](#embeddings)
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
   - LocalEmbeddings
-- [Prompts](#prompts)
+- [提示词](#prompts)
   - FewShotPrompt + ExampleSelectors
-- [Output Parsers](#output-parsers)
-- [Memory](#memory)
+- [输出解析器](#output-parsers)
+- [记忆](#memory)
   - VectorStoreRetrieverMemory
-  - ContextWindow (Long Context Management) ✨ v0.4.1
-- [LLM Cache](#llm-cache)
-- [Chains](#chains)
+  - ContextWindow（长上下文管理） ✨ v0.4.1
+- [LLM 缓存](#llm-cache)
+- [链](#chains)
   - ConversationRetrievalChain
-  - Chain Streaming ✨ v0.4.1
+  - 链流式输出 ✨ v0.4.1
 - [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
   - RunnableWithFallbacks ✨ v0.10.0
   - RunnableAssign ✨ v0.10.0
   - RunnableRetry ✨ v0.11.0
   - CancellationToken ✨ v0.11.0
-- [Document Chains](#document-chains)
-- [Agents](#agents)
+- [文档链](#document-chains)
+- [智能体](#agents)
   - Agent Hooks ✨ v0.11.0
-- [Plan-Execute Agent](#plan-execute-agent)
+  - Agent 流式输出 ✨ v0.12.0
+- [Plan-Execute 智能体](#plan-execute-agent)
 - [Handoffs](#handoffs)
-- [Streaming Tool Calls](#streaming-tool-calls)
-- [Guardrails](#guardrails)
-- [Token Counter](#token-counter)
-- [Sessions](#sessions)
+- [流式工具调用](#streaming-tool-calls)
+- [护栏](#guardrails)
+- [Token 计数器](#token-counter)
+- [会话](#sessions)
 - [MCP](#mcp)
   - MCPServer
-- [Tools](#tools)
+- [工具](#tools)
   - WikipediaTool
   - DuckDuckGoSearchTool
   - PythonREPLTool
-  - Extended Tools (HTTPTool / FileTool / SQLTool)
+  - 扩展工具 (HTTPTool / FileTool / SQLTool)
   - `#[tool]` 过程宏 ✨ v0.10.0
 - [RAG](#rag)
   - ChromaDB
@@ -58,73 +59,73 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - PineconeStore
   - SemanticSplitter
 - [BM25](#bm25)
-- [Hybrid Retrieval](#hybrid-retrieval)
-- [Document Loaders](#document-loaders)
+- [混合检索](#hybrid-retrieval)
+- [文档加载器](#document-loaders)
   - HTMLLoader
   - DocxLoader ✨ v0.4.1
   - WebScraperLoader ✨ v0.4.1
   - SitemapLoader ✨ v0.4.1
 - [MultiQueryRetriever](#multiqueryretriever)
-- [HyDE Retriever](#hyde-retriever)
-- [Reranking](#reranking)
-- [Callbacks](#callbacks)
+- [HyDE 检索器](#hyde-retriever)
+- [重排序](#reranking)
+- [回调](#callbacks)
   - OtelHandler
-- [Evaluation](#evaluation)
-  - Evaluators (10 types)
+- [评估](#evaluation)
+  - 评估器（10 种类型）
   - EvalRunner
 - [LangGraph](#langgraph)
-- [A2A Agent Protocol](#a2a-agent-protocol) ✨ v0.4.1
+- [A2A 智能体协议](#a2a-agent-protocol) ✨ v0.4.1
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
 - [ComputerUseTool](#computerusetool) ✨ v0.4.1
-- [v0.5.0 New Features](#v050-new-features) ✨ v0.5.0
-  - RouterLLM (Model Routing + Fallback)
+- [v0.5.0 新特性](#v050-new-features) ✨ v0.5.0
+  - RouterLLM（模型路由 + 回退）
   - CorrectiveRAG
   - AdaptiveRAG
-  - GraphRAG (Knowledge Graph RAG)
-  - Deep Research Agent
-  - MCP Full Protocol (6 Primitives)
-  - Code Interpreter Sandbox
+  - GraphRAG（知识图谱 RAG）
+  - Deep Research 智能体
+  - MCP 完整协议（6 个原语）
+  - 代码解释器沙箱
   - OpenAI Responses API
   - Anthropic Extended Thinking
-  - Streaming Structured Output
+  - 流式结构化输出
   - Batch API
-  - Tracing (Distributed Tracing)
-  - v0.5.0 Quality Hardening (176 Fixes)
-- [v0.5.2 Fixes](#v052-fixes) ✨ v0.5.2
-- [Testing](#testing)
-- [MongoDB Storage](#mongodb-storage)
-- [Redis / SQLite Storage](#redis--sqlite-storage)
+  - 追踪（分布式追踪）
+  - v0.5.0 质量加固（176 项修复）
+- [v0.5.2 修复](#v052-fixes) ✨ v0.5.2
+- [测试](#testing)
+- [MongoDB 存储](#mongodb-storage)
+- [Redis / SQLite 存储](#redis--sqlite-storage)
 
 ---
 
 ## LLM
 
-### Multi-Provider Support
+### 多 Provider 支持
 
-LangChainRust supports multiple LLM providers with unified API:
+LangChainRust 支持多个 LLM Provider，提供统一的 API：
 
-| Provider | Class | Features |
+| Provider | 类 | 特性 |
 |----------|-------|----------|
 | **OpenAI** | `OpenAIChat` | GPT-4, GPT-3.5-turbo |
-| **DeepSeek** | `DeepSeekChat` | DeepSeek-V3, cost-effective |
-| **Moonshot** | `MoonshotChat` | Kimi, long context |
-| **Qwen** | `QwenChat` | Alibaba Cloud |
+| **DeepSeek** | `DeepSeekChat` | DeepSeek-V3，高性价比 |
+| **Moonshot** | `MoonshotChat` | Kimi，长上下文 |
+| **Qwen** | `QwenChat` | 阿里云 |
 | **Zhipu** | `ZhipuChat` | ChatGLM |
-| **Anthropic** | `AnthropicChat` | Claude, safety-focused |
-| **Ollama** | `OllamaChat` | Local deployment |
-| **Gemini** | `GeminiChat` | Google Gemini, multimodal |
+| **Anthropic** | `AnthropicChat` | Claude，注重安全 |
+| **Ollama** | `OllamaChat` | 本地部署 |
+| **Gemini** | `GeminiChat` | Google Gemini，多模态 |
 
-#### DeepSeek (Cost-Effective)
+#### DeepSeek（高性价比）
 
 ```rust
 use langchainrust::{DeepSeekChat, BaseChatModel};
 use langchainrust::schema::Message;
 
-// From environment
+// 从环境变量读取
 let llm = DeepSeekChat::from_env();
 
-// Or manual config
+// 或手动配置
 let llm = DeepSeekChat::with_model("deepseek-chat");
 
 let response = llm.chat(vec![
@@ -132,12 +133,12 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-#### Moonshot (Long Context)
+#### Moonshot（长上下文）
 
 ```rust
 use langchainrust::MoonshotChat;
 
-let llm = MoonshotChat::with_model("moonshot-v1-128k");  // 128K context
+let llm = MoonshotChat::with_model("moonshot-v1-128k");  // 128K 上下文
 
 let response = llm.chat(vec![
     Message::human("Analyze this long document..."),
@@ -149,19 +150,19 @@ let response = llm.chat(vec![
 ```rust
 use langchainrust::QwenChat;
 
-let llm = QwenChat::from_env();  // Or QwenChat::with_model("qwen-plus")
+let llm = QwenChat::from_env();  // 或 QwenChat::with_model("qwen-plus")
 
 let response = llm.chat(vec![
     Message::human("Explain microservices in Chinese"),
 ], None).await?;
 ```
 
-#### Zhipu (ChatGLM)
+#### Zhipu（ChatGLM）
 
 ```rust
 use langchainrust::ZhipuChat;
 
-let llm = ZhipuChat::from_env();  // Or ZhipuChat::with_model("glm-4")
+let llm = ZhipuChat::from_env();  // 或 ZhipuChat::with_model("glm-4")
 
 let response = llm.chat(vec![
     Message::human("Write Rust concurrent code"),
@@ -228,7 +229,7 @@ let response = llm.chat(vec![
 println!("{}", response.content);
 ```
 
-### Streaming
+### 流式输出
 
 ```rust
 use futures_util::StreamExt;
@@ -246,12 +247,12 @@ let mut stream = llm.stream_chat(vec![
 
 while let Some(chunk) = stream.next().await {
     if let Ok(token) = chunk {
-        print!("{}", token);  // Real-time output
+        print!("{}", token);  // 实时输出
     }
 }
 ```
 
-### Function Calling
+### 函数调用
 
 ```rust
 use langchainrust::{ToolDefinition, bind_tools};
@@ -282,7 +283,7 @@ if let Some(tool_calls) = response.tool_calls {
 }
 ```
 
-### Ollama (Local LLM)
+### Ollama（本地 LLM）
 
 ```rust
 use langchainrust::{OllamaChat, OllamaConfig};
@@ -300,16 +301,16 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-### Multimodal Vision
+### 多模态视觉
 
-`ImageContent` represents an image (URL or base64 data URI). Build image-bearing messages with `Message::human_with_image`; both `OpenAIChat` and `OllamaChat` serialize them to their native multimodal formats automatically.
+`ImageContent` 表示一张图片（URL 或 base64 数据 URI）。使用 `Message::human_with_image` 构建包含图片的消息；`OpenAIChat` 和 `OllamaChat` 会自动将其序列化为各自原生的多模态格式。
 
 ```rust
 use langchainrust::schema::{ImageContent, Message};
 use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
 
 let msg = Message::human_with_image("Describe this image", "https://example.com/cat.jpg");
-// Or multiple images:
+// 或多张图片：
 // let msg = Message::human_with_images("Compare these two", vec![
 //     ImageContent::from_url("https://example.com/a.jpg"),
 //     ImageContent::from_base64_with_mime(base64_str, "image/png"),
@@ -320,27 +321,27 @@ let resp = llm.chat(vec![msg], None).await?;
 println!("{}", resp.content);
 ```
 
-`ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`; you can also chain with `Message::human(text).with_image(ImageContent)`. Same for `OllamaChat`.
+`ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`；也可以链式调用 `Message::human(text).with_image(ImageContent)`。`OllamaChat` 同样适用。
 
 ---
 
 ### OpenAI Assistants API
 
-`OpenAIAssistant` wraps the official OpenAI Assistants API (Assistants / Threads / Run) with server-side session state, suited for multi-turn complex tasks. Requires the OpenAI official endpoint; some compatible-mode endpoints may not support it.
+`OpenAIAssistant` 封装了官方 OpenAI Assistants API（Assistants / Threads / Run），具有服务端会话状态，适合多轮复杂任务。需要 OpenAI 官方端点；部分兼容模式端点可能不支持。
 
 ```rust
 use langchainrust::{OpenAIAssistant, OpenAIConfig};
 
 let config = OpenAIConfig::default();
 let assistant = OpenAIAssistant::create(&config, "gpt-4o", "You are a translator").await?;
-// or reuse: OpenAIAssistant::from_id(config, "asst_xxx")
+// 或复用已有助手：OpenAIAssistant::from_id(config, "asst_xxx")
 
 let answer = assistant.run_once("Translate: Hello").await?;
 ```
 
-**Limitation**: Run with tool calls (`requires_action`) is not implemented; returns `AssistantError::RequiresAction`. Use `FunctionCallingAgent` for tool calls.
+**限制**：带工具调用的 Run（`requires_action`）尚未实现；会返回 `AssistantError::RequiresAction`。如需工具调用，请使用 `FunctionCallingAgent`。
 
-## Prompts
+## 提示词
 
 ### PromptTemplate
 
@@ -356,7 +357,7 @@ let vars = HashMap::from([
 ]);
 
 let prompt = template.format(&vars)?;
-// Output: "Hello, Alice! Today is Monday."
+// 输出："Hello, Alice! Today is Monday."
 ```
 
 ### ChatPromptTemplate
@@ -406,16 +407,16 @@ let prompt = FewShotPromptTemplate::new(
 ```rust
 use langchainrust::prompts::{LengthBasedExampleSelector, SemanticExampleSelector};
 
-// Length-based: selects examples up to max length
+// 基于长度：选择不超过最大长度的示例
 let selector = LengthBasedExampleSelector::new(examples, example_prompt, 50);
 
-// Semantic: selects most similar examples via embeddings
+// 基于语义：通过嵌入选择最相似的示例
 let selector = SemanticExampleSelector::new(embeddings, examples, 2);
 ```
 
 ---
 
-## Output Parsers
+## 输出解析器
 
 ### StrOutputParser
 
@@ -441,11 +442,11 @@ let result = parser.parse("apple, banana, cherry")?;
 use langchainrust::output_parsers::JsonOutputParser;
 use serde_json::Value;
 
-// Full JSON parsing
+// 完整 JSON 解析
 let parser = JsonOutputParser::<Value>::new();
 let result: Value = parser.parse(r#"{"name": "Rust"}"#)?;
 
-// Partial parsing (extract JSON from markdown)
+// 部分解析（从 markdown 中提取 JSON）
 let partial = parser.parse_partial("Here is the JSON:\n```json\n{\"name\": \"Rust\"\n}")?;
 ```
 
@@ -485,11 +486,11 @@ let person: Person = parser.parse(
 
 ---
 
-## Memory
+## 记忆
 
 ### ConversationBufferMemory
 
-Keeps all conversation history:
+保留所有对话历史：
 
 ```rust
 use langchainrust::{ConversationBufferMemory, BaseMemory};
@@ -502,17 +503,17 @@ memory.save_context(
 ).await?;
 
 let vars = memory.load_memory_variables(&HashMap::new()).await?;
-// Output: "Human: My name is Alice\nAI: Hello Alice!"
+// 输出："Human: My name is Alice\nAI: Hello Alice!"
 ```
 
 ### ConversationBufferWindowMemory
 
-Keeps only last k turns:
+仅保留最近 k 轮对话：
 
 ```rust
 use langchainrust::ConversationBufferWindowMemory;
 
-// k=2, keep last 2 turns (4 messages)
+// k=2，保留最近 2 轮（4 条消息）
 let mut memory = ConversationBufferWindowMemory::new(2);
 
 for i in 1..=5 {
@@ -522,42 +523,42 @@ for i in 1..=5 {
     ).await?;
 }
 
-// Only returns last 2 turns, Q1-Q3 are dropped
+// 仅返回最近 2 轮，Q1-Q3 被丢弃
 let vars = memory.load_memory_variables(&HashMap::new()).await?;
 ```
 
-### ConversationSummaryBufferMemory (Recommended)
+### ConversationSummaryBufferMemory（推荐）
 
-Summarizes old messages, keeps recent ones:
+对旧消息进行摘要，保留近期消息：
 
 ```rust
 use langchainrust::ConversationSummaryBufferMemory;
 
 let llm = OpenAIChat::new(config);
 
-// max_token_limit = 100, triggers compression when exceeded
+// max_token_limit = 100，超出时触发压缩
 let mut memory = ConversationSummaryBufferMemory::new(llm, 100);
 
 for i in 1..=10 {
     memory.save_context(&inputs, &outputs).await?;
 }
 
-// Returns: "Summary: User discussed...\n\nHuman: Recent\nAI: Response"
+// 返回："Summary: User discussed...\n\nHuman: Recent\nAI: Response"
 let vars = memory.load_memory_variables(&HashMap::new()).await?;
 ```
 
-| Memory Type | Compression | Token Control | Use Case |
+| 记忆类型 | 压缩方式 | Token 控制 | 适用场景 |
 |-------------|-------------|---------------|----------|
-| BufferMemory | None | Unlimited | Short conversations |
-| WindowMemory | Hard delete | Fixed k | Simple control |
-| SummaryMemory | LLM summary | Dynamic | Long conversations |
-| SummaryBufferMemory | Hybrid | Dynamic + keep recent | Balanced (recommended) |
+| BufferMemory | 无 | 无限制 | 短对话 |
+| WindowMemory | 硬删除 | 固定 k | 简单控制 |
+| SummaryMemory | LLM 摘要 | 动态 | 长对话 |
+| SummaryBufferMemory | 混合 | 动态 + 保留近期 | 均衡（推荐） |
 
 ---
 
 ### VectorStoreRetrieverMemory
 
-Embeds each turn into a vector store and recalls top-k relevant history by semantic similarity to the current input. Compared to fixed-window buffer memory, it preserves more useful context in long / cross-session conversations.
+将每轮对话嵌入向量存储，根据当前输入的语义相似度召回 top-k 相关历史。与固定窗口的缓冲记忆相比，在长对话/跨会话场景中能保留更多有用的上下文。
 
 ```rust
 use langchainrust::{VectorStoreRetrieverMemory, MockEmbeddings, BaseMemory};
@@ -574,20 +575,20 @@ memory.save_context(&inputs, &outputs).await?;
 let vars = memory.load_memory_variables(&HashMap::new()).await?;
 ```
 
-**Trade-off**: semantic recall keeps key info in long chats; depends on a vector store + embedding model (extra cost).
+**权衡**：语义召回在长对话中保留关键信息；但依赖向量存储 + 嵌入模型（额外成本）。
 
-### ContextWindow (Long Context Management) ✨ v0.4.1
+### ContextWindow（长上下文管理） ✨ v0.4.1
 
-`ContextWindow` manages token budget for long conversations with two strategies: Truncate and Summarize.
+`ContextWindow` 管理长对话的 token 预算，提供两种策略：截断（Truncate）和摘要（Summarize）。
 
 ```rust
 use langchainrust::{ContextWindow, Message, OpenAIChat, Strategy};
 use langchainrust::BaseChatModel;
 
-// Strategy 1: Truncate — discard oldest messages when over token budget
+// 策略 1：Truncate — 超出 token 预算时丢弃最旧的消息
 let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
 
-// Strategy 2: Summarize — use LLM to compress old conversation when over budget
+// 策略 2：Summarize — 超出预算时使用 LLM 压缩旧对话
 let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)
     .with_strategy(Strategy::Summarize)
     .with_llm(OpenAIChat::new(config));
@@ -598,32 +599,32 @@ cw.add_message(Message::ai("Hi! How can I help?")).await;
 let messages = cw.get_messages().await;
 ```
 
-| Strategy | Behavior | Use Case |
+| 策略 | 行为 | 适用场景 |
 |----------|----------|----------|
-| `Truncate` | Discard oldest messages over budget | Simple scenarios |
-| `Summarize` | LLM compresses old conversation into summary | Long conversations needing key info |
+| `Truncate` | 超出预算时丢弃最旧的消息 | 简单场景 |
+| `Summarize` | LLM 将旧对话压缩为摘要 | 需要保留关键信息的长对话 |
 
-## LLM Cache
+## LLM 缓存
 
-### In-Memory Cache with TTL
+### 带 TTL 的内存缓存
 
 ```rust
 use langchainrust::cache::{LLMCache, CacheConfig};
 use std::time::Duration;
 
 let config = CacheConfig::new()
-    .with_ttl(Duration::from_secs(3600))  // 1 hour
-    .with_max_size(1000);                 // 1000 entries
+    .with_ttl(Duration::from_secs(3600))  // 1 小时
+    .with_max_size(1000);                 // 1000 条记录
 
 let cache = LLMCache::new(config);
 
-// Use with LLM
+// 与 LLM 配合使用
 let llm = OpenAIChat::new(config)
     .with_cache(cache);
 
-// Subsequent identical calls return cached result
+// 后续相同的调用返回缓存结果
 let r1 = llm.chat(vec![Message::human("Hello")], None).await?;
-let r2 = llm.chat(vec![Message::human("Hello")], None).await?;  // cache hit
+let r2 = llm.chat(vec![Message::human("Hello")], None).await?;  // 缓存命中
 ```
 
 ---
@@ -859,7 +860,7 @@ let answer = qa.invoke(HashMap::from([
 
 ### ConversationRetrievalChain
 
-Retrieval-augmented conversation with memory:
+带记忆的检索增强对话：
 
 ```rust
 use langchainrust::{ConversationRetrievalChain, ConversationBufferMemory};
@@ -884,7 +885,7 @@ let answer = chain.invoke(HashMap::from([
 
 ### StuffDocumentsChain
 
-Combine all documents with a prompt:
+将所有文档与提示词组合：
 
 ```rust
 use langchainrust::chains::{StuffDocumentsChain, LLMChain};
@@ -901,7 +902,7 @@ let result = chain.invoke(documents).await?;
 
 ### RefineDocumentsChain
 
-Iteratively refine by processing one document at a time:
+逐个文档迭代优化：
 
 ```rust
 use langchainrust::chains::RefineDocumentsChain;
@@ -915,7 +916,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapReduceDocumentsChain
 
-Map each document then reduce:
+先对每个文档映射，再归约合并：
 
 ```rust
 use langchainrust::chains::MapReduceDocumentsChain;
@@ -929,7 +930,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapRerankDocumentsChain
 
-Map and rerank by score:
+映射后按分数重排序：
 
 ```rust
 use langchainrust::chains::MapRerankDocumentsChain;
@@ -944,7 +945,7 @@ let (best_doc, score) = chain.invoke(documents).await?;
 
 ### Chain Streaming ✨ v0.4.1
 
-`BaseChain::stream()` provides token-by-token streaming output. `LLMChain` and `ConversationChain` have overridden implementations.
+`BaseChain::stream()` 提供逐 token 的流式输出。`LLMChain` 和 `ConversationChain` 有自定义的实现。
 
 ```rust
 use langchainrust::{LLMChain, BaseChain};
@@ -965,7 +966,7 @@ while let Some(token) = stream.next().await {
 
 ## Agents
 
-### FunctionCallingAgent (Recommended)
+### FunctionCallingAgent (推荐)
 
 ```rust
 use langchainrust::{
@@ -989,7 +990,7 @@ let executor = AgentExecutor::new(
 let result = executor.invoke("Calculate 37 + 48".to_string()).await?;
 ```
 
-### ReActAgent (Legacy)
+### ReActAgent (旧版)
 
 ```rust
 use langchainrust::{ReActAgent, SimpleMathTool};
@@ -1008,26 +1009,94 @@ let executor = AgentExecutor::new(
 ).with_max_iterations(5);
 ```
 
-| Agent | Tool Calling | Reliability | Use Case |
-|-------|--------------|-------------|----------|
-| FunctionCallingAgent | Native FC | High (type-safe) | GPT-4, Claude, Gemini |
-| ReActAgent | Text parsing | Medium | Models without FC support |
+| Agent | 工具调用 | 可靠性 | 适用场景 |
+|-------|----------|--------|----------|
+| FunctionCallingAgent | 原生 FC | 高（类型安全） | GPT-4, Claude, Gemini |
+| ReActAgent | 文本解析 | 中等 | 不支持 FC 的模型 |
+
+### Agent 流式输出 ✨ v0.12.0
+
+CRAG、AdaptiveRAG、DeepResearch 支持 `stream()` 方法，逐步返回管道事件，让你可以实时展示 Agent 的执行进度。
+
+**CRAG 流式输出：**
+
+```rust
+use langchainrust::agents::crag::CorrectiveRAGAgent;
+
+let agent = CorrectiveRAGAgent::new(llm, retriever);
+let stream = agent.stream("What is Rust ownership?").await?;
+
+// 逐步接收事件：
+// PipelineStep { step: "retrieving", detail: "Retrieving documents..." }
+// PipelineStep { step: "retrieved", detail: "Retrieved 4 documents" }
+// PipelineStep { step: "grading", detail: "Grading documents..." }
+// PipelineStep { step: "graded", detail: "Average score: 0.85" }
+// PipelineStep { step: "generating", detail: "Generating answer..." }
+// FinalAnswer { content: "Rust ownership is..." }
+while let Some(event) = stream.next().await {
+    match event {
+        AgentStreamEvent::PipelineStep { step, detail } => {
+            println!("[{}] {}", step, detail.unwrap_or_default());
+        }
+        AgentStreamEvent::FinalAnswer { content } => {
+            println!("Answer: {}", content);
+        }
+    }
+}
+```
+
+**AdaptiveRAG 流式输出：**
+
+```rust
+use langchainrust::agents::adaptive_rag::AdaptiveRAG;
+
+let agent = AdaptiveRAG::new(llm, retriever);
+let stream = agent.stream("Compare tokio vs async-std").await?;
+
+// 事件流：
+// PipelineStep { step: "routing", detail: "Deciding retrieval strategy..." }
+// PipelineStep { step: "routed", detail: "Decision: MultiQuery" }
+// PipelineStep { step: "retrieving", ... }
+// PipelineStep { step: "generating", ... }
+// FinalAnswer { content: "..." }
+```
+
+**DeepResearch 流式输出：**
+
+```rust
+use langchainrust::agents::deep_research::DeepResearchAgent;
+
+let agent = DeepResearchAgent::new(llm)
+    .with_searcher(Box::new(DuckDuckGoSearchTool::new()));
+
+let stream = agent.stream_research("Rust async runtimes comparison").await?;
+
+// 事件流（多轮搜索）：
+// PipelineStep { step: "planning", detail: "Decomposing topic into subtopics..." }
+// PipelineStep { step: "searching", detail: "Round 1/3: Searching 3 subtopics..." }
+// PipelineStep { step: "searched", detail: "Found 12 results" }
+// PipelineStep { step: "synthesizing", detail: "Synthesizing findings..." }
+// PipelineStep { step: "gaps_found", detail: "Found 2 knowledge gaps" }
+// PipelineStep { step: "searching", detail: "Round 2/3: Searching gaps..." }
+// PipelineStep { step: "completed", detail: "Research completed in 2 rounds" }
+// FinalAnswer { content: "..." }
+```
 
 ## Plan-Execute Agent
 
-The Plan-Execute Agent first plans task steps with an LLM, executes them step by step, re-plans on failure, and finally summarizes. Suited for complex, multi-step tasks.
+Plan-Execute Agent 先用 LLM 规划任务步骤，逐步执行，失败时重新规划，最后总结。适用于复杂的多步骤任务。
 
-> Note: each step runs via `FunctionCallingAgent` + tools; `llm` must currently be `OpenAIChat`.
+> 注意：每个步骤通过 `FunctionCallingAgent` + 工具执行；`llm` 目前必须是 `OpenAIChat`。
 
 ```rust
 use langchainrust::{OpenAIChat, OpenAIConfig, PlanExecuteAgent, BaseTool};
 use std::sync::Arc;
 
 let llm = OpenAIChat::new(OpenAIConfig::default());
-let tools: Vec<Arc<dyn BaseTool>> = vec![]; // pass real tools
+let tools: Vec<Arc<dyn BaseTool>> = vec![]; // 传入实际工具
 
 let agent = PlanExecuteAgent::new(llm, tools)
-    .with_max_replans(2); // re-plan at most 2 times on failure
+    .with_max_replans(2); // 失败时最多重新规划 2 次
 
 let result = agent
     .run("Research Rust async runtimes, write example code, explain key points")
@@ -1035,13 +1104,13 @@ let result = agent
 println!("{}", result);
 ```
 
-Flow: plan -> execute each step (FunctionCallingAgent + tools) -> re-plan on failure -> summarize.
+流程：规划 -> 逐步执行（FunctionCallingAgent + 工具）-> 失败时重新规划 -> 总结。
 
 ---
 
 ## Handoffs
 
-Inspired by the OpenAI Agents SDK: a primary agent can delegate tasks to registered specialist agents via `HandoffTool`.
+受 OpenAI Agents SDK 启发：主 Agent 可以通过 `HandoffTool` 将任务委托给已注册的专家 Agent。
 
 ```rust
 use langchainrust::agents::HandoffManager;
@@ -1063,22 +1132,22 @@ mgr.register_agent("writer", writer)?;
 mgr.register_agent("researcher", researcher)?;
 mgr.set_primary("researcher")?;
 
-// Run the primary agent
+// 运行主 Agent
 let result = mgr.run("Research and write an article".to_string()).await?;
 
-// Generate a HandoffTool for each registered agent (named handoff_to_{agent})
+// 为每个已注册的 Agent 生成 HandoffTool（命名为 handoff_to_{agent}）
 let mgr = Arc::new(mgr);
 let handoff_tools = mgr.handoff_tools();
-let history = mgr.history(); // handoff history
+let history = mgr.history(); // 委托历史
 ```
 
-`handoff_tools()` returns tools named `handoff_to_{agent}`; you can also hand off directly with `execute_handoff(Handoff)`.
+`handoff_tools()` 返回名为 `handoff_to_{agent}` 的工具；也可以通过 `execute_handoff(Handoff)` 直接委托。
 
 ---
 
 ## Streaming Tool Calls
 
-`StreamingFunctionCallingAgent` streams LLM text token by token and exposes tool-call state through the event stream.
+`StreamingFunctionCallingAgent` 逐 token 流式输出 LLM 文本，并通过事件流暴露工具调用状态。
 
 ```rust
 use langchainrust::StreamingFunctionCallingAgent;
@@ -1099,13 +1168,13 @@ while let Some(event) = stream.next().await {
 }
 ```
 
-Events: `AgentStreamEvent` (`Text` / `ToolCall` / `FinalAnswer`) and `ToolCallState`.
+事件：`AgentStreamEvent`（`Text` / `ToolCall` / `FinalAnswer`）和 `ToolCallState`。
 
 ---
 
 ## Guardrails
 
-Input/output validation to block malicious input and sensitive-information leakage. Implement `InputGuardrail` / `OutputGuardrail`, or use built-in validators, then wrap an agent with `GuardedAgent`.
+输入/输出验证，用于阻止恶意输入和敏感信息泄露。实现 `InputGuardrail` / `OutputGuardrail`，或使用内置验证器，然后用 `GuardedAgent` 包装 Agent。
 
 ```rust
 use langchainrust::guardrails::{
@@ -1115,8 +1184,8 @@ use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, 
 use std::sync::Arc;
 
 let config = GuardrailsConfig::new()
-    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // limit input length
-    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // block sensitive output
+    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // 限制输入长度
+    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // 阻止敏感输出
 
 let agent = FunctionCallingAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![], None);
 let executor = Arc::new(AgentExecutor::new(
@@ -1125,17 +1194,17 @@ let executor = Arc::new(AgentExecutor::new(
 ));
 
 let mut guarded = GuardedAgent::new(executor, config);
-let result = guarded.invoke("Summarize this content".to_string()).await?; // validate input -> agent -> validate output
+let result = guarded.invoke("Summarize this content".to_string()).await?; // 验证输入 -> Agent -> 验证输出
 let violations = guarded.violations();
 ```
 
-Built-in validators: `MaxLengthGuardrail` (input length), `ForbiddenWordsGuardrail` (banned words), `SensitiveInfoGuardrail` (API keys / emails / credit cards / keywords, extend with `with_keywords`). You can also drive validation manually with `GuardrailRunner`.
+内置验证器：`MaxLengthGuardrail`（输入长度）、`ForbiddenWordsGuardrail`（禁用词）、`SensitiveInfoGuardrail`（API 密钥 / 邮箱 / 信用卡 / 关键词，可通过 `with_keywords` 扩展）。也可以使用 `GuardrailRunner` 手动驱动验证。
 
 ---
 
 ## Token Counter
 
-`TiktokenCounter` counts with cl100k_base (GPT-3.5/4/4o); `TokenTrackingLLM` wraps an LLM to accumulate usage; `ModelPricing` estimates cost.
+`TiktokenCounter` 使用 cl100k_base（GPT-3.5/4/4o）计数；`TokenTrackingLLM` 包装 LLM 以累计用量；`ModelPricing` 估算成本。
 
 ```rust
 use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
@@ -1149,13 +1218,13 @@ let usage = tracked.get_usage();                               // prompt / compl
 let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
 ```
 
-`ModelPricing::gpt4o()` / `gpt4o_mini()` are built-in; use `ModelPricing::new(prompt_per_1k, completion_per_1k)` for custom pricing.
+`ModelPricing::gpt4o()` / `gpt4o_mini()` 为内置定价；使用 `ModelPricing::new(prompt_per_1k, completion_per_1k)` 可自定义定价。
 
 ---
 
 ## Sessions
 
-`SessionManager` manages the lifecycle of multi-turn conversation sessions: create/get/archive, auto-maintain history on each chat, with pluggable storage (`SessionStore` trait).
+`SessionManager` 管理多轮对话会话的生命周期：创建/获取/归档，每次聊天自动维护历史，支持可插拔存储（`SessionStore` trait）。
 
 ```rust
 use langchainrust::sessions::{SessionManager, MemorySessionStore};
@@ -1167,39 +1236,39 @@ let id = manager.create_session_for("user_1").await?;
 
 let llm = OpenAIChat::new(OpenAIConfig::default());
 let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
-let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?; // remembers the previous turn
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?; // 记住上一轮对话
 
 let history = manager.history(&id).await?;  // Vec<Message>
-manager.clear(&id).await?;                   // clear history (keep session)
-manager.archive(&id).await?;                 // archive
+manager.clear(&id).await?;                   // 清除历史（保留会话）
+manager.archive(&id).await?;                 // 归档
 let sessions = manager.list_by_user("user_1").await?;
 ```
 
-The `SessionStore` trait has `create/get/update/delete/list_by_user`; implement your own backend (Redis/DB). `MemorySessionStore` is built-in for tests and single-process use.
+`SessionStore` trait 包含 `create/get/update/delete/list_by_user`；可实现自己的后端（Redis/数据库）。`MemorySessionStore` 为内置实现，适用于测试和单进程使用。
 
 ---
 
 ## MCP
 
-[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. `MCPClient` connects to any MCP Server to obtain tools and adapts them as `BaseTool` for agents.
+[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。`MCPClient` 连接任意 MCP Server 获取工具，并将其适配为 `BaseTool` 供 Agent 使用。
 
 ```rust
 use langchainrust::mcp::{MCPClient, MCPConfig};
 use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
 use std::sync::Arc;
 
-// Stdio: spawn an MCP Server subprocess
+// Stdio：启动 MCP Server 子进程
 let config = MCPConfig::stdio(
     "npx",
     vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
 );
-// Or SSE: MCPConfig::sse("http://localhost:3001/sse");
+// 或 SSE：MCPConfig::sse("http://localhost:3001/sse");
 
 let mut client = MCPClient::connect(config).await?;
 let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
-// Adapt to a BaseTool list and hand it to an agent
+// 适配为 BaseTool 列表并交给 Agent
 let mcp_tools = client.as_tools().await;
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
@@ -1212,13 +1281,13 @@ let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
 client.close().await?;
 ```
 
-`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`; `client.call_tool(name, arguments)` calls a tool directly; `as_tools()` wraps tools as `MCPToolAdapter` (implements `BaseTool`).
+`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`；`client.call_tool(name, arguments)` 直接调用工具；`as_tools()` 将工具包装为 `MCPToolAdapter`（实现 `BaseTool`）。
 
 ---
 
 ### MCPServer
 
-Symmetric to `MCPClient`: expose local `BaseTool`s as an MCP Server for Claude Desktop / Cursor hosts. Supports `initialize` / `tools/list` / `tools/call`.
+与 `MCPClient` 对称：将本地 `BaseTool` 暴露为 MCP Server，供 Claude Desktop / Cursor 等宿主使用。支持 `initialize` / `tools/list` / `tools/call`。
 
 ```rust
 use langchainrust::{MCPServer, Calculator, BaseTool};
@@ -1232,23 +1301,23 @@ let server = MCPServer::new()
 server.serve_stdio().await?;
 ```
 
-`server.handle_request(req)` for single-step JSON-RPC handling with custom transport.
+`server.handle_request(req)` 用于自定义传输层的单步 JSON-RPC 处理。
 
 ## Tools
 
-### Built-in Tools
+### 内置工具
 
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| Calculator | Math operations | `expression` |
-| DateTimeTool | Date/time queries | `operation`, `datetime` |
-| SimpleMathTool | Power, sqrt, trig | `operation`, `value` |
-| URLFetchTool | Fetch URLs | `url` |
-| WikipediaTool | Wikipedia search | `query` |
-| DuckDuckGoSearchTool | Web search | `query` |
-| PythonREPLTool | Execute Python | `code` |
+| 工具 | 描述 | 参数 |
+|------|------|------|
+| Calculator | 数学运算 | `expression` |
+| DateTimeTool | 日期/时间查询 | `operation`, `datetime` |
+| SimpleMathTool | 幂运算、开方、三角函数 | `operation`, `value` |
+| URLFetchTool | 获取 URL 内容 | `url` |
+| WikipediaTool | Wikipedia 搜索 | `query` |
+| DuckDuckGoSearchTool | 网页搜索 | `query` |
+| PythonREPLTool | 执行 Python 代码 | `code` |
 
-### Custom Tool
+### 自定义工具
 
 ```rust
 use langchainrust::{BaseTool, ToolError};
@@ -1346,11 +1415,11 @@ let tool = PythonREPLTool::new();
 let result = tool.run(r#"{"code": "print(sum(range(10)))"}"#).await?;
 ```
 
-### Extended Tools (HTTPTool / FileTool / SQLTool)
+### 扩展工具 (HTTPTool / FileTool / SQLTool)
 
-Three production-oriented tools added in v0.3.0, all implementing `BaseTool`.
+v0.3.0 新增的三个面向生产环境的工具，均实现 `BaseTool`。
 
-**HTTPTool** -- issue GET/POST requests:
+**HTTPTool** -- 发送 GET/POST 请求：
 
 ```rust
 use langchainrust::HTTPTool;
@@ -1358,10 +1427,10 @@ use serde_json::json;
 
 let http = HTTPTool::new();
 let body = http.post("https://httpbin.org/post", json!({"k": "v"})).await?;
-// As BaseTool: input JSON {"url":"...","method":"get|post","body":{...}}
+// 作为 BaseTool：输入 JSON {"url":"...","method":"get|post","body":{...}}
 ```
 
-**FileTool** -- sandboxed file read/write (confined to `base_path`, extension allowlist, size cap, path-traversal protection):
+**FileTool** -- 沙箱文件读写（限制在 `base_path` 内，扩展名白名单，大小上限，路径遍历防护）：
 
 ```rust
 use langchainrust::FileTool;
@@ -1372,10 +1441,10 @@ let file = FileTool::new(PathBuf::from("./workspace"))
     .with_max_size(10 * 1024 * 1024);
 let content = file.read("notes.txt").await?;
 file.write("out.txt", "hello").await?;
-// As BaseTool: input JSON {"op":"read|write|list","path":"...","content":"..."}
+// 作为 BaseTool：输入 JSON {"op":"read|write|list","path":"...","content":"..."}
 ```
 
-**SQLTool** -- read-only SQL queries (SELECT only, table allowlist; requires `sqlite-storage` feature):
+**SQLTool** -- 只读 SQL 查询（仅 SELECT，表白名单；需要 `sqlite-storage` feature）：
 
 ```rust
 use langchainrust::tools::extended::SQLTool;
@@ -1383,27 +1452,27 @@ use langchainrust::tools::extended::SQLTool;
 let sql = SQLTool::new("data.db")?
     .with_allowed_tables(vec!["users".into()]);
 let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,String>>
-// Non-SELECT (e.g. DROP/INSERT) is rejected
+// 非 SELECT 语句（如 DROP/INSERT）会被拒绝
 ```
 
-> `SQLTool` is available under the `sqlite-storage` feature; `HTTPTool` / `FileTool` are available by default.
+> `SQLTool` 在 `sqlite-storage` feature 下可用；`HTTPTool` / `FileTool` 默认可用。
 
 ---
 
 ## Embeddings
 
-**Embeddings** convert text to vectors for semantic retrieval and similarity calculation.
+**Embeddings** 将文本转换为向量，用于语义检索和相似度计算。
 
-### Supported Embeddings
+### 支持的 Embeddings
 
-| Provider | Class | Dimension | Features |
+| 提供商 | 类 | 维度 | 特性 |
 |----------|-------|-----------|----------|
-| **OpenAI** | `OpenAIEmbeddings` | 1536 | High quality |
-| **DeepSeek** | `DeepSeekEmbeddings` | 1536 | Cost-effective |
-| **Qwen** | `QwenEmbeddings` | 1536 | Chinese optimized |
-| **Mock** | `MockEmbeddings` | Custom | Testing |
+| **OpenAI** | `OpenAIEmbeddings` | 1536 | 高质量 |
+| **DeepSeek** | `DeepSeekEmbeddings` | 1536 | 高性价比 |
+| **Qwen** | `QwenEmbeddings` | 1536 | 中文优化 |
+| **Mock** | `MockEmbeddings` | 自定义 | 测试用 |
 
-### OpenAI Embeddings
+### OpenAI 嵌入
 
 ```rust
 use langchainrust::{OpenAIEmbeddings, Embeddings};
@@ -1413,11 +1482,11 @@ let embeddings = Arc::new(OpenAIEmbeddings::new(
     std::env::var("OPENAI_API_KEY")?
 ));
 
-// Single text embedding
+// 单文本嵌入
 let vector = embeddings.embed("Rust is a systems language").await?;
 println!("Dimension: {}", vector.len());  // 1536
 
-// Batch embedding
+// 批量嵌入
 let texts = vec![
     "Rust is a systems language",
     "Python is a scripting language",
@@ -1425,7 +1494,7 @@ let texts = vec![
 let vectors = embeddings.embed_batch(texts).await?;
 ```
 
-### DeepSeek Embeddings
+### DeepSeek 嵌入
 
 ```rust
 use langchainrust::{DeepSeekEmbeddings, Embeddings};
@@ -1436,7 +1505,7 @@ let embeddings = Arc::new(DeepSeekEmbeddings::from_env());
 let vector = embeddings.embed("Deep learning fundamentals").await?;
 ```
 
-### Qwen Embeddings
+### Qwen 嵌入
 
 ```rust
 use langchainrust::{QwenEmbeddings, Embeddings};
@@ -1447,13 +1516,13 @@ let embeddings = Arc::new(QwenEmbeddings::from_env());
 let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
-### Mock Embeddings (Testing)
+### Mock 嵌入（测试用）
 
 ```rust
 use langchainrust::{MockEmbeddings, Embeddings};
 use std::sync::Arc;
 
-// Custom dimension
+// 自定义维度
 let embeddings = Arc::new(MockEmbeddings::new(128));
 
 let vector = embeddings.embed("Test text").await?;
@@ -1464,7 +1533,7 @@ println!("Dimension: {}", vector.len());  // 128
 
 ### LocalEmbeddings
 
-Lightweight local embeddings in pure Rust (word-frequency hash + L2 normalization), no API calls. For offline / privacy / zero-cost coarse retrieval.
+纯 Rust 实现的轻量级本地嵌入（词频哈希 + L2 归一化），无需 API 调用。适用于离线/隐私/零成本的粗粒度检索。
 
 ```rust
 use langchainrust::LocalEmbeddings;
@@ -1473,11 +1542,11 @@ let emb = LocalEmbeddings::default_dim();
 let vec = emb.embed_query("hello world").await?;
 ```
 
-**Limitation**: bag-of-words hash, limited semantic quality. Use `OpenAIEmbeddings` etc. for high-quality embeddings.
+**限制**：基于词袋哈希，语义质量有限。如需高质量嵌入，请使用 `OpenAIEmbeddings` 等。
 
 ## RAG
 
-### Document Splitting
+### 文档分割
 
 ```rust
 use langchainrust::{RecursiveCharacterSplitter, TextSplitter};
@@ -1491,7 +1560,7 @@ let chunks = splitter.split_document(&Document::new(
 
 ### SemanticSplitter
 
-Splits by semantic relevance: sentence-tokenize + embed, break where adjacent similarity drops sharply. Better semantic integrity than character-level splitting. Chinese/English sentence boundaries (`。!?;` / `.!?\n`).
+按语义相关性分割：句子分词 + 嵌入，在相邻相似度急剧下降处断开。比字符级分割具有更好的语义完整性。支持中英文句子边界（`。!?;` / `.!?\n`）。
 
 ```rust
 use langchainrust::SemanticSplitter;
@@ -1503,9 +1572,9 @@ let splitter = SemanticSplitter::with_defaults(OpenAIEmbeddings::new(config));
 let chunks = splitter.split_text(long_text).await;  // Vec<String>
 ```
 
-**Note**: embedding is async while `TextSplitter` is sync; to avoid breaking the sync trait, this splitter exposes async `split_text` / `split_document` and does not implement sync `TextSplitter`.
+**注意**：嵌入是异步的，而 `TextSplitter` 是同步的；为避免破坏同步 trait，此分割器暴露异步的 `split_text` / `split_document`，不实现同步的 `TextSplitter`。
 
-### Vector Store
+### 向量存储
 
 ```rust
 use langchainrust::{InMemoryVectorStore, SimilarityRetriever};
@@ -1526,7 +1595,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### ChromaDB
 
-Persistent vector store using Chroma:
+使用 Chroma 的持久化向量存储：
 
 ```toml
 [dependencies]
@@ -1553,7 +1622,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### PGVectorStore
 
-PostgreSQL + pgvector extension vector store. Requires the `pgvector-storage` feature; since `sqlx` / `pgvector` deps are not enabled inside the crate, add `sqlx` and `pgvector` to your `Cargo.toml` yourself.
+PostgreSQL + pgvector 扩展向量存储。需要 `pgvector-storage` feature；由于 `sqlx` / `pgvector` 依赖未在 crate 内启用，需自行在 `Cargo.toml` 中添加 `sqlx` 和 `pgvector`。
 
 ```rust
 use langchainrust::vector_stores::PGVectorStore;
@@ -1562,7 +1631,7 @@ use langchainrust::embeddings::Embeddings;
 let store = PGVectorStore::new(
     "postgres://user:pass@localhost/db",
     "docs",
-    1536, // vector dimension
+    1536, // 向量维度
 ).await?;
 // embeddings: impl Embeddings (e.g. OpenAIEmbeddings); docs: &[Document]
 store.add_documents(&docs, &embeddings).await?;
@@ -1570,33 +1639,33 @@ let found = store.similarity_search("query", 5, &embeddings).await?;
 store.delete("doc-id").await?;
 ```
 
-`PGVectorStore::new` runs `CREATE EXTENSION IF NOT EXISTS vector` and creates the table; `build_table_sql(table, dim)` is a pure function for the table DDL.
+`PGVectorStore::new` 会执行 `CREATE EXTENSION IF NOT EXISTS vector` 并创建表；`build_table_sql(table, dim)` 是用于表 DDL 的纯函数。
 
 ### PineconeStore
 
-Pinecone vector store (reqwest HTTP API, no feature required, available by default).
+Pinecone 向量存储（reqwest HTTP API，无需 feature，默认可用）。
 
 ```rust
 use langchainrust::vector_stores::PineconeStore;
 use langchainrust::embeddings::Embeddings;
 
-// host format: https://{index-name}.svc.{environment}.pinecone.io
+// host 格式：https://{index-name}.svc.{environment}.pinecone.io
 let store = PineconeStore::new("your-api-key", "https://my-index.svc.prod.pinecone.io");
 
 // embeddings: impl Embeddings
-store.upsert(&docs, &embeddings).await?;       // auto-embeds documents
-let qvec: Vec<f32> = embeddings.embed_query("query").await?; // query takes an embedded vector
+store.upsert(&docs, &embeddings).await?;       // 自动嵌入文档
+let qvec: Vec<f32> = embeddings.embed_query("query").await?; // 查询接受已嵌入的向量
 let found = store.query(qvec, 5).await?;
 store.delete(&["id1".to_string()]).await?;
 ```
 
-`upsert` calls `embed_documents` automatically; `query` takes an already-embedded vector (result of `embed_query`).
+`upsert` 自动调用 `embed_documents`；`query` 接受已嵌入的向量（`embed_query` 的结果）。
 
 ---
 
 ## BM25
 
-### BM25Retriever (Keyword Search)
+### BM25Retriever（关键词搜索）
 
 ```rust
 use langchainrust::{BM25Retriever, Document};
@@ -1617,27 +1686,27 @@ for result in results {
 }
 ```
 
-### BM25 Parameters
+### BM25 参数
 
-| Parameter | Default | Description |
+| 参数 | 默认值 | 说明 |
 |-----------|---------|-------------|
-| k1 | 1.5 | Term frequency saturation |
-| b | 0.75 | Document length normalization |
+| k1 | 1.5 | 词频饱和度 |
+| b | 0.75 | 文档长度归一化 |
 
 ```rust
 let retriever = BM25Retriever::with_params(2.0, 0.5);
 ```
 
-### ChunkedBM25Retriever (Parent-Child)
+### ChunkedBM25Retriever（父子结构）
 
-AutoMerging: When multiple leaf chunks match, merge to parent:
+自动合并：当多个叶子块匹配时，合并到父级：
 
 ```rust
 use langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
 
 let config = AutoMergingConfig::new()
-    .with_leaf_size(400)      // Leaf chunk size
-    .with_threshold(0.5);     // Merge when 50%+ leaves match
+    .with_leaf_size(400)      // 叶子块大小
+    .with_threshold(0.5);     // 当 50%+ 叶子匹配时合并
 
 let store = Arc::new(ChunkedDocumentStore::new());
 let mut retriever = ChunkedBM25Retriever::with_config(store, config);
@@ -1657,19 +1726,19 @@ for result in results {
 
 ---
 
-## Hybrid Retrieval
+## 混合检索
 
-### RRF Fusion Algorithm
+### RRF 融合算法
 
 ```
 RRF_score(d) = Σ 1/(k + rank(d))
 ```
 
-Where k=60, rank(d) is document rank in each result list.
+其中 k=60，rank(d) 是文档在各结果列表中的排名。
 
 ### UnifiedHybridIndex
 
-One interface for BM25 + Vector dual retrieval:
+BM25 + 向量双检索的统一接口：
 
 ```rust
 use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
@@ -1682,10 +1751,10 @@ let config = HybridIndexConfig::new()
 let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
 let index = UnifiedHybridIndex::with_config(embeddings, 1536, config);
 
-// Auto-build dual index
+// 自动构建双索引
 index.add_document(Document::new("Document content")).await?;
 
-// Hybrid search
+// 混合搜索
 let results = index.retrieve("query", 5).await?;
 
 for result in results {
@@ -1694,13 +1763,13 @@ for result in results {
 }
 ```
 
-### Retrieval Mode Comparison
+### 检索模式对比
 
-| Mode | Content Storage | Lookup | Use Case |
+| 模式 | 内容存储 | 查找 | 使用场景 |
 |------|------------------|--------|----------|
-| SimpleVector | InMemoryVectorStore | No lookup | Vector-only, simple |
-| BM25 Only | ChunkedDocumentStore | Lookup | Keyword-only |
-| Hybrid | ChunkedDocumentStore (shared) | Lookup | Combined (recommended) |
+| SimpleVector | InMemoryVectorStore | 无查找 | 纯向量，简单场景 |
+| BM25 Only | ChunkedDocumentStore | 查找 | 纯关键词 |
+| Hybrid | ChunkedDocumentStore（共享） | 查找 | 组合检索（推荐） |
 
 ---
 
@@ -1732,7 +1801,7 @@ let compiled = graph.compile();
 let result = compiled.invoke(AgentState::new()).await?;
 ```
 
-### Conditional Edge
+### 条件边
 
 ```rust
 use langchainrust::langgraph::{ConditionalEdge, FunctionRouter};
@@ -1747,7 +1816,7 @@ graph.add_conditional_edge(
 );
 ```
 
-### Human-in-the-loop / Interrupt & Resume
+### 人工介入 / 中断与恢复
 
 ```rust
 use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
@@ -1758,32 +1827,32 @@ let compiled = graph.compile()
     .with_interrupt_before(vec!["output", "analyze"]);
 
 match compiled.invoke(state).await {
-    Ok(result) => { /* complete */ }
+    Ok(result) => { /* 完成 */ }
     Err(GraphError::ExecutionInterrupted(node)) => {
-        println!("Paused at: {}", node);
+        println!("暂停于: {}", node);
         if let Some(exec) = compiled.create_resume_execution(&node).await {
             let result = compiled.resume(exec).await?;
         }
     }
-    Err(e) => { /* error */ }
+    Err(e) => { /* 错误 */ }
 }
 ```
 
 ---
 
-## Document Loaders
+## 文档加载器
 
-Load documents from various file formats.
+从各种文件格式加载文档。
 
-### Supported Formats
+### 支持的格式
 
-| Loader | Format | Features |
+| 加载器 | 格式 | 特性 |
 |--------|--------|----------|
-| **TextLoader** | .txt | Line-by-line splitting |
-| **JSONLoader** | .json | Specify content_key |
-| **MarkdownLoader** | .md | Split by heading level |
-| **PDFLoader** | .pdf | Extract PDF text |
-| **CSVLoader** | .csv | Each row as document |
+| **TextLoader** | .txt | 按行分割 |
+| **JSONLoader** | .json | 指定 content_key |
+| **MarkdownLoader** | .md | 按标题级别分割 |
+| **PDFLoader** | .pdf | 提取 PDF 文本 |
+| **CSVLoader** | .csv | 每行作为一个文档 |
 
 ### TextLoader
 
@@ -1793,7 +1862,7 @@ use langchainrust::{TextLoader, DocumentLoader};
 let loader = TextLoader::new("document.txt");
 let docs = loader.load().await?;
 
-// Split by lines
+// 按行分割
 let loader = TextLoader::new_with_line_split("document.txt");
 let docs = loader.load().await?;
 ```
@@ -1806,7 +1875,7 @@ use langchainrust::{JSONLoader, DocumentLoader};
 let loader = JSONLoader::new("data.json");
 let docs = loader.load().await?;
 
-// Specify content field
+// 指定内容字段
 let loader = JSONLoader::new_with_content_key("data.json", "content");
 let docs = loader.load().await?;
 ```
@@ -1816,35 +1885,35 @@ let docs = loader.load().await?;
 ```rust
 use langchainrust::{MarkdownLoader, DocumentLoader};
 
-// Split by heading level
+// 按标题级别分割
 let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
 let docs = loader.load().await?;
 ```
 
 ### HTMLLoader
 
-Strips `<script>`/`<style>`, removes tags, decodes common HTML entities, and collapses whitespace to extract plain text from an HTML string or URL.
+去除 `<script>`/`<style>`，移除标签，解码常见 HTML 实体，折叠空白，从 HTML 字符串或 URL 中提取纯文本。
 
 ```rust
 use langchainrust::retrieval::HTMLLoader;
 use langchainrust::retrieval::loaders::DocumentLoader;
 
-// From an HTML string
+// 从 HTML 字符串
 let loader = HTMLLoader::new("<p>Hello <b>world</b></p>");
 let docs = loader.load().await?; // content: "Hello world"
 
-// From a URL (fetched asynchronously, then parsed)
+// 从 URL（异步获取后解析）
 let loader = HTMLLoader::from_url("https://example.com");
 let docs = loader.load().await?;
 
-// Pure function: extract text directly
+// 纯函数：直接提取文本
 let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
 // -> "a & b"
 ```
 
 ### DocxLoader ✨ v0.4.1
 
-Parse Word `.docx` files: ZIP extraction + XML `<w:t>` text node parsing.
+解析 Word `.docx` 文件：ZIP 解压 + XML `<w:t>` 文本节点解析。
 
 ```rust
 use langchainrust::retrieval::loaders::DocxLoader;
@@ -1856,7 +1925,7 @@ let docs = loader.load().await?;
 
 ### WebScraperLoader ✨ v0.4.1
 
-Web page scraping: extract page text, with recursive same-domain link following.
+网页抓取：提取页面文本，支持递归同域链接跟踪。
 
 ```rust
 use langchainrust::retrieval::loaders::WebScraperLoader;
@@ -1870,7 +1939,7 @@ let docs = loader.load().await?;
 
 ### SitemapLoader ✨ v0.4.1
 
-Parse `sitemap.xml` and batch-crawl pages.
+解析 `sitemap.xml` 并批量抓取页面。
 
 ```rust
 use langchainrust::retrieval::loaders::SitemapLoader;
@@ -1885,15 +1954,15 @@ let docs = loader.load().await?;
 
 ## MultiQueryRetriever
 
-Generate multiple query variations using LLM to improve retrieval recall.
+使用 LLM 生成多个查询变体以提高检索召回率。
 
-### How It Works
+### 工作方式
 
 ```
-User query → LLM generates N variations → Retrieve each → Merge & dedupe → Return results
+用户查询 → LLM 生成 N 个变体 → 分别检索 → 合并去重 → 返回结果
 ```
 
-### Usage
+### 使用方法
 
 ```rust
 use langchainrust::{MultiQueryRetriever, SimilarityRetriever, OpenAIChat};
@@ -1910,7 +1979,7 @@ let multi_query = MultiQueryRetriever::new(llm, retriever)
 let docs = multi_query.retrieve_multi("database timeout").await?;
 ```
 
-### StaticQueryGenerator (No LLM)
+### StaticQueryGenerator（无需 LLM）
 
 ```rust
 use langchainrust::StaticQueryGenerator;
@@ -1928,17 +1997,17 @@ let queries = generator.generate("database connection failed");
 
 ---
 
-## HyDE Retriever
+## HyDE 检索器
 
-**HyDE (Hypothetical Document Embedding)** generates a hypothetical document using LLM, then retrieves real documents similar to it.
+**HyDE（假设文档嵌入）** 使用 LLM 生成假设文档，然后检索与之相似的真实文档。
 
-### How It Works
+### 工作方式
 
 ```
-User query → LLM generates hypothetical document → Retrieve using hypothetical doc → Return real docs
+用户查询 → LLM 生成假设文档 → 使用假设文档检索 → 返回真实文档
 ```
 
-### Usage
+### 使用方法
 
 ```rust
 use langchainrust::{HyDERetriever, SimilarityRetriever, OpenAIChat, OpenAIEmbeddings};
@@ -1957,16 +2026,16 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 
 ---
 
-## Reranking
+## 重排序
 
-Re-score retrieval results to improve precision.
+对检索结果重新评分以提高精确度。
 
-### Supported Rerankers
+### 支持的重排序器
 
-| Reranker | Description |
+| 重排序器 | 说明 |
 |----------|-------------|
-| **KeywordReranker** | Keyword matching reranking |
-| **BM25Reranker** | BM25 formula reranking |
+| **KeywordReranker** | 关键词匹配重排序 |
+| **BM25Reranker** | BM25 公式重排序 |
 
 ### KeywordReranker
 
@@ -1997,13 +2066,13 @@ let reranked = executor.rerank("Rust programming", results)?;
 
 ---
 
-## Callbacks
+## 回调
 
-Callback system for tracing, monitoring, and logging LLM application execution.
+用于追踪、监控和日志记录 LLM 应用执行的回调系统。
 
 ### CallbackManager
 
-Manage multiple callback handlers:
+管理多个回调处理器：
 
 ```rust
 use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
@@ -2016,7 +2085,7 @@ let manager = CallbackManager::new()
 
 ### StdOutHandler
 
-Output to stdout (for debugging):
+输出到标准输出（用于调试）：
 
 ```rust
 use langchainrust::StdOutHandler;
@@ -2026,38 +2095,38 @@ let handler = StdOutHandler::new();
 
 ### FileCallbackHandler
 
-Output to file:
+输出到文件：
 
 ```rust
 use langchainrust::{FileCallbackHandler, LogFormat};
 
-// JSON format
+// JSON 格式
 let handler = FileCallbackHandler::new("trace.json", LogFormat::Json);
 
-// Text format
+// 文本格式
 let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
 ```
 
-### LangSmith Tracing
+### LangSmith 追踪
 
-LangSmith is LangChain's official tracing platform for monitoring and debugging LLM applications.
+LangSmith 是 LangChain 的官方追踪平台，用于监控和调试 LLM 应用。
 
-#### Environment Variables
+#### 环境变量
 
 ```bash
-export LANGSMITH_API_KEY="ls_xxxxx"       # Required
-export LANGSMITH_PROJECT="my-project"      # Project name
-export LANGSMITH_TRACING="true"            # Enable tracing
+export LANGSMITH_API_KEY="ls_xxxxx"       # 必填
+export LANGSMITH_PROJECT="my-project"      # 项目名称
+export LANGSMITH_TRACING="true"            # 启用追踪
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
 ```
 
-#### Use LangSmithHandler
+#### 使用 LangSmithHandler
 
 ```rust
 use langchainrust::{CallbackManager, LangSmithHandler, StdOutHandler};
 use std::sync::Arc;
 
-// Auto-configure from environment
+// 从环境变量自动配置
 let langsmith = LangSmithHandler::from_env()?;
 
 let manager = CallbackManager::new()
@@ -2065,7 +2134,7 @@ let manager = CallbackManager::new()
     .add_handler(Arc::new(langsmith));
 ```
 
-#### Manual Configuration
+#### 手动配置
 
 ```rust
 use langchainrust::{LangSmithHandler, LangSmithConfig};
@@ -2081,21 +2150,21 @@ let config = LangSmithConfig {
 let handler = LangSmithHandler::new(config);
 ```
 
-#### LangSmith Features
+#### LangSmith 功能
 
-| Feature | Description |
+| 功能 | 说明 |
 |---------|-------------|
-| **Tracing** | Record every LLM call |
-| **Monitoring** | View token usage, latency |
-| **Debugging** | Compare different version outputs |
-| **Evaluation** | Test set evaluation |
-| **Sharing** | Share trace links |
+| **追踪** | 记录每次 LLM 调用 |
+| **监控** | 查看 token 用量、延迟 |
+| **调试** | 比较不同版本输出 |
+| **评估** | 测试集评估 |
+| **分享** | 分享追踪链接 |
 
 ---
 
 ### OtelHandler
 
-Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTelemetry spans. Requires the `opentelemetry` feature and a configured global tracer provider.
+将 LLM / Chain / Tool / Retriever 的开始/结束/错误事件转换为 OpenTelemetry span。需要 `opentelemetry` feature 和已配置的全局 tracer provider。
 
 ```toml
 [dependencies]
@@ -2112,25 +2181,25 @@ let manager = CallbackManager::new()
 // llm.with_callbacks(Arc::new(manager));
 ```
 
-Nested spans; export to Jaeger / Tempo / Grafana.
+嵌套 span；导出到 Jaeger / Tempo / Grafana。
 
 ---
 
-## Evaluation
+## 评估
 
-Quantify LLM output quality: after changing prompts / models / adding RAG, run an eval set and see if scores improved. 10 evaluators in 5 categories:
+量化 LLM 输出质量：在更改提示词 / 模型 / 添加 RAG 之后，运行评估集并查看分数是否提升。5 个类别共 10 个评估器：
 
-| Category | Evaluators | Description |
+| 类别 | 评估器 | 描述 |
 |----------|-----------|-------------|
-| Literal | `ExactMatch` / `StringDistance` | exact equal / Levenshtein distance normalized |
-| Semantic | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | cosine / LLM judge / pairwise (swap A/B to remove position bias) |
-| Rule | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | keyword / regex / length |
-| Classic NLP | `Bleu` | n-gram precision (char-level + smoothing) |
-| RAG | `Faithfulness` | split claims, verify each, detect hallucination |
+| 字面匹配 | `ExactMatch` / `StringDistance` | 精确相等 / 归一化 Levenshtein 距离 |
+| 语义 | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | 余弦相似度 / LLM 评判 / 成对比较（交换 A/B 以消除位置偏差） |
+| 规则 | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | 关键词 / 正则 / 长度 |
+| 经典 NLP | `Bleu` | n-gram 精确率（字符级 + 平滑） |
+| RAG | `Faithfulness` | 拆分声明，逐一验证，检测幻觉 |
 
 ### EvalRunner
 
-Run a set of evaluators over a `Dataset`, produce a `Report` (per-example scores + per-evaluator averages).
+对 `Dataset` 运行一组评估器，生成 `Report`（每个示例的分数 + 每个评估器的平均值）。
 
 ```rust
 use langchainrust::evaluation::*;
@@ -2161,7 +2230,7 @@ println!("{:?}", report.summary);
 
 ### Faithfulness
 
-Splits the prediction into atomic claims and verifies each against the reference (context), detecting fabrication. Most useful for RAG.
+将预测拆分为原子声明，并逐一对照参考（上下文）进行验证，检测捏造内容。对 RAG 最为有用。
 
 ```rust
 use langchainrust::evaluation::{Faithfulness, Evaluator};
@@ -2176,20 +2245,20 @@ let halluc = judge.eval("", "annual leave 20 days", "annual leave 15 days").awai
 assert_eq!(halluc.value, 0.0); // fabricated, caught
 ```
 
-`with_llm_split(true)` uses LLM to split claims (default: by period); `with_empty_score(x)` sets the score when no claims. Verification runs concurrently (`join_all`).
+`with_llm_split(true)` 使用 LLM 拆分声明（默认：按句号拆分）；`with_empty_score(x)` 设置无声明时的分数。验证并发执行（`join_all`）。
 
 ---
 
-## MongoDB Storage
+## MongoDB 存储
 
-### Enable Feature
+### 启用 Feature
 
 ```toml
 [dependencies]
 langchainrust = { version = "0.8", features = ["mongodb-persistence"] }
 ```
 
-### Usage
+### 用法
 
 ```rust
 use langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
@@ -2202,23 +2271,23 @@ let config = MongoStoreConfig::new(
 let store = MongoChunkedDocumentStore::new(config).await?;
 store.create_indexes().await?;
 
-// Same interface as InMemory
+// 与 InMemory 相同的接口
 let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
 let chunks = store.get_chunks_for_parent(&parent_id).await?;
 ```
 
 ---
 
-## Redis / SQLite Storage
+## Redis / SQLite 存储
 
-### Enable Feature
+### 启用 Feature
 
 ```toml
 [dependencies]
 langchainrust = { version = "0.8", features = ["redis-storage"] }
 ```
 
-or
+或
 
 ```toml
 [dependencies]
@@ -2247,9 +2316,9 @@ let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
 let chunks = store.get_chunks_for_parent(&parent_id).await?;
 ```
 
-### Feature Gating
+### Feature 门控
 
-| Feature Flag | Storage Backend | Dependencies |
+| Feature 标志 | 存储后端 | 依赖 |
 |-------------|-----------------|--------------|
 | `redis-storage` | Redis | redis crate |
 | `sqlite-storage` | SQLite | rusqlite crate |
@@ -2257,7 +2326,7 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ---
 
-## Testing
+## 测试
 
 ```bash
 cargo test
@@ -2265,13 +2334,13 @@ cargo test
 
 ---
 
-## A2A Agent Protocol ✨ v0.4.1
+## A2A 智能体协议 ✨ v0.4.1
 
-[A2A](https://github.com/google/A2A) (Agent-to-Agent) is Google's protocol for inter-agent communication. LangChainRust provides full A2A support: Server to expose agents, Client to call remote agents, using JSON-RPC 2.0 style messaging.
+[A2A](https://github.com/google/A2A)（Agent-to-Agent）是 Google 的智能体间通信协议。LangChainRust 提供完整的 A2A 支持：Server 用于暴露智能体，Client 用于调用远程智能体，使用 JSON-RPC 2.0 风格的消息传递。
 
-### A2AServer (Expose Your Agent)
+### A2AServer（暴露你的智能体）
 
-`A2AServer` provides handler functions that you plug into any HTTP framework (axum, actix, warp) — it does NOT start its own HTTP listener.
+`A2AServer` 提供可插入任何 HTTP 框架（axum、actix、warp）的处理函数——它不会启动自己的 HTTP 监听器。
 
 ```rust
 use langchainrust::a2a::{A2AServer, AgentCard};
@@ -2282,30 +2351,30 @@ let chain = Arc::new(LLMChain::new(llm, "You are a helpful assistant"));
 let server = A2AServer::new(chain)
     .with_card(AgentCard::new("my-agent", "A helpful agent", "http://localhost:8080"));
 
-// In your HTTP handler:
+// 在你的 HTTP 处理函数中：
 // GET  /.well-known/agent.json → server.get_agent_card()
 // POST /                       → server.handle_a2a_request(body).await
 ```
 
-**Task Persistence**: Tasks from `tasks/send` are stored in an in-memory `RwLock<HashMap>`. `tasks/get` retrieves them, `tasks/cancel` transitions their status. For production, wrap with your own database-backed store.
+**任务持久化**：来自 `tasks/send` 的任务存储在内存中的 `RwLock<HashMap>` 中。`tasks/get` 检索任务，`tasks/cancel` 转换其状态。生产环境中，请使用自己的数据库支持的存储进行包装。
 
-### A2AClient (Call Remote Agent)
+### A2AClient（调用远程智能体）
 
 ```rust
 use langchainrust::a2a::{A2AClient, A2AMessage};
 
 let client = A2AClient::new("http://remote-agent:8080".to_string());
 
-// Discover agent
+// 发现智能体
 let card = client.get_agent_card().await?;
 
-// Send task
+// 发送任务
 let task = client.send_task(A2AMessage::user("hello")).await?;
 
-// Get task
+// 获取任务
 let task = client.get_task(&task.id).await?;
 
-// Cancel task
+// 取消任务
 let task = client.cancel_task(&task.id).await?;
 ```
 
@@ -2313,7 +2382,7 @@ let task = client.cancel_task(&task.id).await?;
 
 ## with_structured_output ✨ v0.4.1
 
-`StructuredOutputExt` trait lets you get strongly-typed output from an LLM in one call. Uses function calling when available, falls back to JsonOutputParser.
+`StructuredOutputExt` trait 让你通过一次调用从 LLM 获取强类型输出。在可用时使用函数调用，否则回退到 JsonOutputParser。
 
 ```rust
 use langchainrust::StructuredOutputExt;
@@ -2334,14 +2403,14 @@ let answer: Answer = llm.with_structured_output::<Answer>().await?;
 
 ## FileVectorStore ✨ v0.4.1
 
-JSON-persisted vector store. Bridges the gap between InMemory (not persistent) and external databases (too heavy).
+基于 JSON 持久化的向量存储。填补了 InMemory（不持久化）与外部数据库（过于重量级）之间的空白。
 
 ```rust
 use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
 use std::path::PathBuf;
 
 let path = PathBuf::from("./vectors.json");
-let store = FileVectorStore::new(path, 4)?;  // 4 dimensions
+let store = FileVectorStore::new(path, 4)?;  // 4 维
 
 let docs = vec![
     Document::new("Rust focuses on safety and performance").with_id("rust"),
@@ -2356,75 +2425,75 @@ let ids = store.add_documents(docs, embeddings).await?;
 let query = vec![0.9, 0.1, 0.0, 0.0];
 let results = store.similarity_search(&query, 2).await?;
 
-// Persistence: file is automatically written; load with new(path, dim) on restart
+// 持久化：文件自动写入；重启时使用 new(path, dim) 加载
 store.clear().await?;
 ```
 
-**Features**: Atomic write (tmp+rename), dimension validation, cross-instance persistence.
+**特性**：原子写入（tmp+rename）、维度验证、跨实例持久化。
 
 ---
 
 ## ComputerUseTool ✨ v0.4.1
 
-Computer use tool aligned with Anthropic's computer use API. Provides screenshot, mouse click, and keyboard input capabilities.
+与 Anthropic computer use API 对齐的计算机使用工具。提供截图、鼠标点击和键盘输入功能。
 
 ```rust
 use langchainrust::ComputerUseTool;
 use std::sync::Arc;
 
-// Anthropic API mode (default)
+// Anthropic API 模式（默认）
 let tool = ComputerUseTool::new();
 
-// Or Native mode (requires feature computer-use-native)
+// 或 Native 模式（需要 feature computer-use-native）
 // let tool = ComputerUseTool::new_native();
 
-// Use as BaseTool
+// 作为 BaseTool 使用
 let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 ```
 
 ---
 
-## v0.5.0 New Features ✨ v0.5.0
+## v0.5.0 新特性 ✨ v0.5.0
 
-### RouterLLM (Model Routing + Fallback)
+### RouterLLM（模型路由 + 回退）
 
-`RouterLLM` implements `BaseChatModel`, routing calls across a pool of heterogeneous models and falling back on failure.
+`RouterLLM` 实现了 `BaseChatModel`，在异构模型池中路由调用，并在失败时回退。
 
-**Five routing strategies:**
+**五种路由策略：**
 
-| Strategy | Behavior | Use Case |
+| 策略 | 行为 | 使用场景 |
 |----------|----------|----------|
-| `Fallback` | Primary fails → try next | Production fault tolerance |
-| `RoundRobin` | Rotate across models | Load balancing, rate-limit avoidance |
-| `LeastLatency` | Pick fastest recent model | Latency-sensitive |
-| `LowestCost` | Pick cheapest model | Cost optimization |
-| `InputDirected` | Custom closure over input text | Route by query complexity |
+| `Fallback` | 主模型失败 → 尝试下一个 | 生产环境容错 |
+| `RoundRobin` | 在模型间轮转 | 负载均衡、避免速率限制 |
+| `LeastLatency` | 选择最近最快的模型 | 延迟敏感场景 |
+| `LowestCost` | 选择最便宜的模型 | 成本优化 |
+| `InputDirected` | 基于输入文本的自定义闭包 | 按查询复杂度路由 |
 
 ```rust
 use langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
 
-// 1. Fallback: primary + backups
+// 1. Fallback：主模型 + 备用模型
 let router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
 let result = router.chat(messages, None).await?;
 
-// 2. Lowest cost routing
+// 2. 最低成本路由
 let router = RouterLLM::new(RoutingStrategy::LowestCost)
     .with_cost(cheap_model, 0.01)
     .with_cost(powerful_model, 0.03);
 
-// 3. Input-directed routing
+// 3. 输入定向路由
 let router = RouterLLM::new(RoutingStrategy::InputDirected(Arc::new(|input| {
     if input.contains("code") { 1 } else { 0 }
 })))
 .with_model(general_model)
 .with_model(code_model);
 
-// 4. Least latency routing
+// 4. 最低延迟路由
 let router = RouterLLM::new(RoutingStrategy::LeastLatency)
     .with_model(fast_model)
     .with_model(slow_but_smart_model);
 
-// Works as a normal BaseChatModel — drop-in replacement
+// 作为普通 BaseChatModel 使用——即插即用替换
 let result = router.chat(messages, None).await?;
 let stream = router.stream_chat(messages, None).await?;
 ```
@@ -2433,58 +2502,58 @@ let stream = router.stream_chat(messages, None).await?;
 
 ### CorrectiveRAG
 
-Standard RAG retrieves documents that may be irrelevant, yet the LLM still hallucinates a plausible answer. CorrectiveRAG adds three gates: grade documents -> rewrite query or supplement with web search -> hallucination check.
+标准 RAG 可能检索到不相关的文档，而 LLM 仍会幻觉出看似合理的答案。CorrectiveRAG 添加了三道关卡：评估文档 -> 重写查询或用网络搜索补充 -> 幻觉检查。
 
 ```rust
 use langchainrust::agents::crag::CorrectiveRAGAgent;
 
 let agent = CorrectiveRAGAgent::new(llm, retriever)
-    .with_web_fallback(Box::new(web_tool))  // optional: web search fallback
-    .with_hallucination_check(true)       // optional: hallucination detection (default: true)
-    .with_grade_threshold(0.6)            // optional: relevance threshold (default: 0.6)
-    .with_retrieve_k(4)                   // optional: number of docs to retrieve (default: 4)
-    .with_grader_llm(grader_llm)          // optional: separate LLM for grading (avoids self-verification bias)
-    .with_max_context_tokens(4000);       // optional: truncate low-scoring docs to fit token budget
+    .with_web_fallback(Box::new(web_tool))  // 可选：网络搜索回退
+    .with_hallucination_check(true)       // 可选：幻觉检测（默认：true）
+    .with_grade_threshold(0.6)            // 可选：相关性阈值（默认：0.6）
+    .with_retrieve_k(4)                   // 可选：检索文档数量（默认：4）
+    .with_grader_llm(grader_llm)          // 可选：独立的评分 LLM（避免自我验证偏差）
+    .with_max_context_tokens(4000);       // 可选：截断低分文档以适应 token 预算
 
 let answer = agent.invoke("What is Rust ownership?").await?;
 ```
 
-**Flow:** query -> retrieve -> grade -> [irrelevant? -> rewrite/web search -> re-retrieve] -> generate -> hallucination check -> output
+**流程：** 查询 -> 检索 -> 评分 -> [不相关？ -> 重写/网络搜索 -> 重新检索] -> 生成 -> 幻觉检查 -> 输出
 
-**Builder methods:**
+**Builder 方法：**
 
-| Method | Default | Description |
+| 方法 | 默认值 | 描述 |
 |-------|---------|-------------|
-| `with_web_fallback(tool)` | None | Web search tool (`Box<dyn BaseTool>`) for supplementing poor retrieval |
-| `with_hallucination_check(bool)` | `true` | Enable/disable hallucination detection |
-| `with_grade_threshold(f64)` | `0.6` | Average relevance score below this triggers corrective path (clamped to 0.0-1.0) |
-| `with_retrieve_k(usize)` | `4` | Number of documents to retrieve |
-| `with_grader_llm(llm)` | None | Separate LLM for hallucination checking; avoids self-verification bias where a model tends to endorse its own output |
-| `with_max_context_tokens(usize)` | None | Truncate lowest-scoring documents to fit within this token budget |
+| `with_web_fallback(tool)` | None | 网络搜索工具（`Box<dyn BaseTool>`），用于补充较差的检索结果 |
+| `with_hallucination_check(bool)` | `true` | 启用/禁用幻觉检测 |
+| `with_grade_threshold(f64)` | `0.6` | 平均相关性分数低于此值时触发纠正路径（限制在 0.0-1.0） |
+| `with_retrieve_k(usize)` | `4` | 检索的文档数量 |
+| `with_grader_llm(llm)` | None | 用于幻觉检查的独立 LLM；避免模型倾向于认可自身输出的自我验证偏差 |
+| `with_max_context_tokens(usize)` | None | 截断最低分文档以适应此 token 预算 |
 
 ---
 
 ### AdaptiveRAG
 
-LLM decides retrieval strategy per query: NoRetrieval (skip retrieval), SingleSearch (one query), MultiQuery (multiple angles).
+LLM 根据每个查询决定检索策略：NoRetrieval（跳过检索）、SingleSearch（单次查询）、MultiQuery（多角度查询）。
 
 ```rust
 use langchainrust::agents::adaptive_rag::AdaptiveRAG;
 
 let agent = AdaptiveRAG::new(llm, retriever);
 
-// Complex question -> LLM picks MultiQuery, generates multiple queries
+// 复杂问题 -> LLM 选择 MultiQuery，生成多个查询
 let answer = agent.invoke("Compare tokio vs async-std scheduling").await?;
 
-// Simple greeting -> LLM picks NoRetrieval, skips retrieval entirely
+// 简单问候 -> LLM 选择 NoRetrieval，完全跳过检索
 let answer = agent.invoke("Hello").await?;
 ```
 
 ---
 
-### GraphRAG (Knowledge Graph RAG)
+### GraphRAG（知识图谱 RAG）
 
-Vector search misses relationships. GraphRAG extracts entities + relations -> builds graph -> Label Propagation community detection -> community summaries -> query by community.
+向量搜索会遗漏关系。GraphRAG 提取实体 + 关系 -> 构建图 -> Label Propagation 社区检测 -> 社区摘要 -> 按社区查询。
 
 ```rust
 use langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
@@ -2492,112 +2561,112 @@ use langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
 let mut graph_rag = GraphRAG::new(llm);
 graph_rag.add_documents(&documents).await?;
 
-// Global query: search community summaries (macro questions)
+// 全局查询：搜索社区摘要（宏观问题）
 let result = graph_rag.query("overall tech stack architecture", GraphQueryMode::Global).await?;
 
-// Local query: search entity neighbors (specific questions)
+// 局部查询：搜索实体邻居（具体问题）
 let result = graph_rag.query("Alice's advisor's students", GraphQueryMode::Local).await?;
 
-// Hybrid: combine both
+// 混合：结合两者
 let result = graph_rag.query("...", GraphQueryMode::Hybrid).await?;
 ```
 
-**Pipeline:** documents -> LLM entity+relation extraction -> graph building -> Label Propagation community detection -> LLM community summaries -> query (Global/Local/Hybrid). No external graph library dependency.
+**流水线：** 文档 -> LLM 实体+关系提取 -> 图构建 -> Label Propagation 社区检测 -> LLM 社区摘要 -> 查询（Global/Local/Hybrid）。无外部图库依赖。
 
 ---
 
-### Deep Research Agent
+### Deep Research 智能体
 
-Multi-round deep research: decompose topic into sub-topics -> parallel search across multiple tools -> deduplicate -> synthesize -> discover gaps -> re-search -> cited report.
+多轮深度研究：将主题分解为子主题 -> 跨多个工具并行搜索 -> 去重 -> 综合 -> 发现空白 -> 重新搜索 -> 带引用的报告。
 
 ```rust
 use langchainrust::agents::deep_research::DeepResearchAgent;
 
 let agent = DeepResearchAgent::new(llm)
-    .with_searcher(Box::new(DuckDuckGoSearchTool::new()))  // add search tools (at least one required)
-    .with_max_rounds(3)           // max research rounds (default: 2)
-    .with_max_subtopics(5)        // max sub-topics to decompose (default: 5)
-    .with_max_source_tokens(8000);// optional: truncate source snippets to fit token budget
+    .with_searcher(Box::new(DuckDuckGoSearchTool::new()))  // 添加搜索工具（至少需要一个）
+    .with_max_rounds(3)           // 最大研究轮次（默认：2）
+    .with_max_subtopics(5)        // 最大分解子主题数（默认：5）
+    .with_max_source_tokens(8000);// 可选：截断来源片段以适应 token 预算
 
 let report = agent.research("Compare Rust async runtimes: tokio vs async-std vs smol").await?;
-println!("{}", report.markdown);           // full markdown report with inline citations
+println!("{}", report.markdown);           // 带内联引用的完整 markdown 报告
 println!("Rounds: {}", report.rounds_completed);
 for citation in &report.citations {
     println!("[{}] {} - {}", citation.index, citation.source, citation.snippet);
 }
 ```
 
-**Builder methods:**
+**Builder 方法：**
 
-| Method | Default | Description |
+| 方法 | 默认值 | 描述 |
 |-------|---------|-------------|
-| `with_searcher(tool)` | None (required) | Add a search tool; multiple tools are queried in parallel |
-| `with_max_rounds(n)` | `2` | Maximum search-synthesize iterations |
-| `with_max_subtopics(n)` | `5` | Maximum sub-topics for decomposition |
-| `with_max_source_tokens(n)` | None | Truncate source snippets to fit within this token budget |
+| `with_searcher(tool)` | None（必填） | 添加搜索工具；多个工具并行查询 |
+| `with_max_rounds(n)` | `2` | 最大搜索-综合迭代次数 |
+| `with_max_subtopics(n)` | `5` | 分解的最大子主题数 |
+| `with_max_source_tokens(n)` | None | 截断来源片段以适应此 token 预算 |
 
-**ResearchReport fields:** `markdown` (full report with inline `[1]` citations), `citations` (ordered list with `index`/`source`/`url`/`snippet`), `subtopics` (investigated sub-topics), `rounds_completed`.
+**ResearchReport 字段：** `markdown`（带内联 `[1]` 引用的完整报告）、`citations`（按顺序排列，含 `index`/`source`/`url`/`snippet`）、`subtopics`（已调查的子主题）、`rounds_completed`。
 
 ---
 
-### MCP Full Protocol (6 Primitives)
+### MCP 完整协议（6 个原语）
 
-v0.5.0 completes the MCP spec with all 6 primitives, both Client and Server:
+v0.5.0 完成了 MCP 规范的全部 6 个原语，包括 Client 和 Server：
 
-| Primitive | Purpose | Typical Use |
+| 原语 | 用途 | 典型用途 |
 |-----------|---------|-------------|
-| **Resources** | Browse/read server resources | Claude Desktop reading local files |
-| **Prompts** | Get predefined prompt templates | Standardized prompt management |
-| **Completion** | Auto-complete suggestions | Parameter auto-completion |
-| **Elicitation** | Interactive prompts to user | User confirmation needed |
-| **Roots** | Discover client root directories | Server needs to know accessible paths |
-| **Sampling** | Server proxies LLM request via client | Server needs LLM capability |
+| **Resources** | 浏览/读取服务器资源 | Claude Desktop 读取本地文件 |
+| **Prompts** | 获取预定义提示词模板 | 标准化提示词管理 |
+| **Completion** | 自动补全建议 | 参数自动补全 |
+| **Elicitation** | 向用户的交互式提示 | 需要用户确认 |
+| **Roots** | 发现客户端根目录 | 服务器需要知道可访问的路径 |
+| **Sampling** | 服务器通过客户端代理 LLM 请求 | 服务器需要 LLM 能力 |
 
 ```rust
 use langchainrust::mcp::MCPClient;
 
-// Client: browse resources
+// 客户端：浏览资源
 let resources = client.list_resources().await?;
 let content = client.read_resource("file:///data/report.pdf").await?;
 
-// Get prompt templates
+// 获取提示词模板
 let prompts = client.list_prompts().await?;
 let prompt = client.get_prompt("code_review", arguments).await?;
 
-// Completion suggestions
+// 补全建议
 let completions = client.complete("file:///src/", "main").await?;
 ```
 
 ---
 
-### Code Interpreter Sandbox
+### 代码解释器沙箱
 
-Safe code execution with `LocalSandbox` (subprocess + timeout).
+使用 `LocalSandbox`（子进程 + 超时）进行安全代码执行。
 
 ```rust
 use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox, SandboxTool, Language};
 
-// Direct sandbox usage
+// 直接使用沙箱
 let sandbox = LocalSandbox::new()
-    .with_python_path("python3");  // optional: custom interpreter path
+    .with_python_path("python3");  // 可选：自定义解释器路径
 
 let result = sandbox.run("print(2 + 2)", Language::Python, 30_000).await?;
 assert_eq!(result.stdout.trim(), "4");
 
-// Or wrap as a BaseTool for agent use
+// 或包装为 BaseTool 供智能体使用
 let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
-    .with_timeout(30_000);  // 30 second timeout
+    .with_timeout(30_000);  // 30 秒超时
 ```
 
-- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr, dangerous import check for Python
-- **E2B cloud sandbox** (feature gate `sandbox-e2b`): remote micro-VM, full isolation
-- **WASM sandbox** (feature gate `sandbox-wasm`): browser-grade sandbox, zero network
+- **LocalSandbox**：子进程执行，超时自动终止，捕获 stdout/stderr，Python 危险导入检查
+- **E2B 云沙箱**（feature gate `sandbox-e2b`）：远程微虚拟机，完全隔离
+- **WASM 沙箱**（feature gate `sandbox-wasm`）：浏览器级沙箱，零网络访问
 
 ---
 
 ### OpenAI Responses API
 
-Connect to `/v1/responses` with built-in tools: WebSearch, FileSearch, CodeInterpreter, ComputerUse -- one request, model handles tool calls automatically.
+连接到 `/v1/responses`，使用内置工具：WebSearch、FileSearch、CodeInterpreter、ComputerUse——一次请求，模型自动处理工具调用。
 
 ```rust
 use langchainrust::language_models::openai::responses::{ResponsesModel, ResponsesConfig, BuiltinTool};
@@ -2610,14 +2679,14 @@ let config = ResponsesConfig::new("your-api-key")
 let model = ResponsesModel::new(config);
 
 let result = model.chat(messages, None).await?;
-// result.content includes the final answer after tool execution
+// result.content 包含工具执行后的最终答案
 ```
 
 ---
 
 ### Anthropic Extended Thinking
 
-Configure `budget_tokens` to let Claude think before answering. Thinking block exposed via `thinking_content` in `LLMResult`; streaming via `on_llm_thinking` callback.
+配置 `budget_tokens` 让 Claude 在回答前先思考。思考块通过 `LLMResult` 中的 `thinking_content` 暴露；流式输出通过 `on_llm_thinking` 回调。
 
 ```rust
 use langchainrust::{AnthropicChat, AnthropicConfig};
@@ -2625,7 +2694,7 @@ use langchainrust::{AnthropicChat, AnthropicConfig};
 let config = AnthropicConfig::new("your-api-key")
     .with_model("claude-sonnet-5");
 let model = AnthropicChat::new(config)
-    .with_thinking(10000); // up to 10000 thinking tokens
+    .with_thinking(10000); // 最多 10000 个思考 token
 
 let result = model.chat(messages, None).await?;
 println!("Thinking: {:?}", result.thinking_content);
@@ -2634,9 +2703,9 @@ println!("Answer: {}", result.content);
 
 ---
 
-### Streaming Structured Output
+### 流式结构化输出
 
-`PartialJsonParser` incrementally parses streaming JSON into partial structs -- no need to wait for all tokens.
+`PartialJsonParser` 增量地将流式 JSON 解析为部分结构体——无需等待所有 token。
 
 ```rust
 use langchainrust::core::structured_output::StreamingStructuredOutputExt;
@@ -2659,7 +2728,7 @@ pin_mut!(stream);
 while let Some(result) = stream.next().await {
     let partial = result?;
     if let Some(name) = &partial.name {
-        println!("Got name: {}", name); // available before all fields arrive
+        println!("Got name: {}", name); // 在所有字段到达之前即可获取
     }
 }
 ```
@@ -2668,7 +2737,7 @@ while let Some(result) = stream.next().await {
 
 ### Batch API
 
-`BatchClient` unifies OpenAI and Anthropic batch workflows: submit → poll → results, at 50% cost.
+`BatchClient` 统一了 OpenAI 和 Anthropic 的批处理工作流：提交 → 轮询 → 结果，成本降低 50%。
 
 ```rust
 use langchainrust::batch::{BatchClient, BatchProvider, BatchRequest};
@@ -2700,9 +2769,9 @@ for result in results {
 
 ---
 
-### Tracing (Distributed Tracing)
+### 追踪（分布式追踪）
 
-`Tracer` + `SpanGuard` (RAII) auto-manages parent-child spans. Backends: InMemory / Console / OTel.
+`Tracer` + `SpanGuard`（RAII）自动管理父子 span。后端：InMemory / Console / OTel。
 
 ```rust
 use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend, SpanKind};
@@ -2713,44 +2782,44 @@ let span = tracer.start("agent_run", SpanKind::Internal);
 {
     let _retrieve = tracer.start_child("retrieve", SpanKind::Internal);
     let docs = retriever.retrieve(&query).await?;
-} // _retrieve drop -> child span auto-records end time
+} // _retrieve drop -> 子 span 自动记录结束时间
 {
     let _generate = tracer.start_child("generate", SpanKind::Internal);
     let answer = llm.chat(messages, None).await?;
 }
-span.end(); // span auto-records duration, token count, etc.
+span.end(); // span 自动记录持续时间、token 数等
 ```
 
 ---
 
-### v0.5.0 Quality Hardening (176 Fixes)
+### v0.5.0 质量加固（176 项修复）
 
-After implementing 12 new features, a two-pass full-codebase review of 223 files found and fixed 176 issues (23 CRITICAL / 63 HIGH / 75 MEDIUM / 15 LOW).
+在实现 12 个新特性后，对 223 个文件进行了两轮全代码库审查，发现并修复了 176 个问题（23 CRITICAL / 63 HIGH / 75 MEDIUM / 15 LOW）。
 
-**Key fixes:**
+**关键修复：**
 
-- **Security**: PythonREPL dangerous import check, HTTPTool/URLFetchTool SSRF protection (private IP + DNS rebinding), SQLTool injection prevention, Gemini API key moved to header
-- **Multi-turn Function Calling**: Anthropic/Gemini/Ollama tool message mapping errors causing multi-turn FC to break — all corrected
-- **Streaming**: Ollama/Anthropic/Gemini SSE cross-chunk token loss fixed; `Runnable::stream()` changed from fake streaming to real streaming (per-token emission)
-- **Concurrency**: `std::sync::Mutex` in async contexts replaced with `tokio::sync::Mutex`; MCP Transport request-level mutex; HandoffManager lock merging
-- **Panic fixes**: `choices[0]` out-of-bounds → `.first().ok_or()`; `from_env()` returns `Result`; Regex → LazyLock; Mutex poison → `into_inner()` recovery
-- **Data correctness**: UTF-8 char-boundary slicing; RRF document ID uses content hash; error propagation replaces silent swallowing
+- **安全**：PythonREPL 危险导入检查、HTTPTool/URLFetchTool SSRF 防护（私有 IP + DNS 重绑定）、SQLTool 注入防护、Gemini API 密钥移至 header
+- **多轮函数调用**：Anthropic/Gemini/Ollama 工具消息映射错误导致多轮 FC 中断——全部修正
+- **流式输出**：Ollama/Anthropic/Gemini SSE 跨 chunk token 丢失已修复；`Runnable::stream()` 从伪流式改为真实流式（逐 token 发射）
+- **并发**：异步上下文中的 `std::sync::Mutex` 替换为 `tokio::sync::Mutex`；MCP Transport 请求级互斥锁；HandoffManager 锁合并
+- **Panic 修复**：`choices[0]` 越界 → `.first().ok_or()`；`from_env()` 返回 `Result`；Regex → LazyLock；Mutex poison → `into_inner()` 恢复
+- **数据正确性**：UTF-8 字符边界切片；RRF 文档 ID 使用内容哈希；错误传播替代静默吞没
 
-**Verification:** 826 unit tests passing · clippy zero warnings · cargo fmt clean
+**验证：** 826 个单元测试通过 · clippy 零警告 · cargo fmt 干净
 
 ---
 
-## v0.5.2 Fixes ✨ v0.5.2
+## v0.5.2 修复 ✨ v0.5.2
 
-v0.5.2 is a stability and correctness release with critical bug fixes for several v0.5.0 features.
+v0.5.2 是一个稳定性和正确性版本，包含对多个 v0.5.0 特性的关键错误修复。
 
-### GraphRAG Community Summary Fix
+### GraphRAG 社区摘要修复
 
-Community summaries were concatenating raw entity IDs (`e_xxx`) instead of entity names, producing meaningless summaries that degraded Global/Hybrid query quality. Fixed by looking up entity names via `store.get_entity()`.
+社区摘要之前拼接的是原始实体 ID（`e_xxx`）而非实体名称，导致生成无意义的摘要，降低了 Global/Hybrid 查询质量。已通过 `store.get_entity()` 查找实体名称修复。
 
-### Deep Research Report Format Fix
+### Deep Research 报告格式修复
 
-The synthesizer asked the LLM to output a full markdown report as a JSON string field, causing frequent `serde_json` parse failures due to unescaped `\n`, `"`, `\` in markdown. Replaced with a delimiter-based format:
+合成器之前要求 LLM 将完整 markdown 报告输出为 JSON 字符串字段，由于 markdown 中未转义的 `\n`、`"`、`\` 导致频繁的 `serde_json` 解析失败。替换为基于分隔符的格式：
 
 ```
 <<<REPORT>>>
@@ -2761,41 +2830,41 @@ The synthesizer asked the LLM to output a full markdown report as a JSON string 
 <<<END_GAPS>>>
 ```
 
-The report portion is now raw text with no escaping needed. The old JSON format is kept as a fallback for backward compatibility.
+报告部分现在是原始文本，无需转义。旧的 JSON 格式作为向后兼容的回退保留。
 
-### DocumentStore Async Panic Fix
+### DocumentStore 异步 Panic 修复
 
-`InMemoryDocumentStore` and `InMemoryChunkedDocumentStore` used `tokio::sync::RwLock` with `blocking_read()`/`blocking_write()`, which panics inside async contexts with "Cannot block the current thread from within a runtime". Switched to `std::sync::RwLock` which works in both sync and async contexts.
+`InMemoryDocumentStore` 和 `InMemoryChunkedDocumentStore` 之前使用 `tokio::sync::RwLock` 的 `blocking_read()`/`blocking_write()`，在异步上下文中会因 "Cannot block the current thread from within a runtime" 而 panic。已切换为 `std::sync::RwLock`，在同步和异步上下文中均可工作。
 
-### CRAG Grading Improvements
+### CRAG 评分改进
 
-**Threshold fix**: Default `grade_threshold` changed from `0.5` to `0.6`. The old threshold sat in the zone where LLM grading is least stable, and the ambiguous parse default (`0.5`) was exactly equal to the threshold — making correction triggering nearly random. Now the ambiguous default is `0.4`, well below the `0.6` threshold.
+**阈值修复**：默认 `grade_threshold` 从 `0.5` 改为 `0.6`。旧阈值处于 LLM 评分最不稳定的区域，且模糊解析默认值（`0.5`）恰好等于阈值——使纠正触发近乎随机。现在模糊默认值为 `0.4`，远低于 `0.6` 阈值。
 
-**Hallucination detection bias fix**: Added `with_grader_llm()` builder to inject a separate LLM for hallucination detection, preventing the model from endorsing its own output:
+**幻觉检测偏差修复**：添加了 `with_grader_llm()` builder，注入独立的 LLM 进行幻觉检测，防止模型认可自身输出：
 
 ```rust
 use langchainrust::agents::crag::CorrectiveRAGAgent;
 
 let agent = CorrectiveRAGAgent::new(llm.clone(), retriever)
-    .with_grader_llm(claude_llm)  // Use a different LLM for grading
-    .with_grade_threshold(0.6);    // New default: 0.6 (was 0.5)
+    .with_grader_llm(claude_llm)  // 使用不同的 LLM 进行评分
+    .with_grade_threshold(0.6);    // 新默认值：0.6（原为 0.5）
 ```
 
-Additional improvements:
-- `GradeResult` now has an `is_ambiguous` field indicating whether the score came from fuzzy parsing
-- Hallucination detection prompt now includes adversarial framing ("Be skeptical")
-- Hallucination check LLM failure degrades gracefully (returns `grounded: false`) instead of aborting
+其他改进：
+- `GradeResult` 现在有 `is_ambiguous` 字段，指示分数是否来自模糊解析
+- 幻觉检测提示词现在包含对抗性框架（"Be skeptical"）
+- 幻觉检查 LLM 失败时优雅降级（返回 `grounded: false`）而非中止
 
-### Other v0.5.2 Changes
+### 其他 v0.5.2 变更
 
-- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — now properly declared
-- **Clippy zero warnings**: All clippy warnings resolved
+- **Feature gate 声明**：`sandbox-e2b` 和 `sandbox-wasm` feature 在代码中被引用但未在 `Cargo.toml` `[features]` 中声明——现已正确声明
+- **Clippy 零警告**：所有 clippy 警告已解决
 
 ---
 
-## More Resources
+## 更多资源
 
-| Resource | Content |
+| 资源 | 内容 |
 |----------|---------|
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | Contribution guide |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |
 | [API Docs](https://docs.rs/langchainrust) | Rust API reference |

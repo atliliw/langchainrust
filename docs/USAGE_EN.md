@@ -38,6 +38,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Document Chains](#document-chains)
 - [Agents](#agents)
   - Agent Hooks ✨ v0.11.0
+  - Agent Streaming ✨ v0.12.0
 - [Plan-Execute Agent](#plan-execute-agent)
 - [Handoffs](#handoffs)
 - [Streaming Tool Calls](#streaming-tool-calls)
@@ -1012,6 +1013,74 @@ let executor = AgentExecutor::new(
 |-------|--------------|-------------|----------|
 | FunctionCallingAgent | Native FC | High (type-safe) | GPT-4, Claude, Gemini |
 | ReActAgent | Text parsing | Medium | Models without FC support |
+
+### Agent Streaming ✨ v0.12.0
+
+CRAG, AdaptiveRAG, and DeepResearch support `stream()` for step-by-step pipeline events, enabling real-time progress display.
+
+**CRAG Streaming:**
+
+```rust
+use langchainrust::agents::crag::CorrectiveRAGAgent;
+
+let agent = CorrectiveRAGAgent::new(llm, retriever);
+let stream = agent.stream("What is Rust ownership?").await?;
+
+// Step-by-step events:
+// PipelineStep { step: "retrieving", detail: "Retrieving documents..." }
+// PipelineStep { step: "retrieved", detail: "Retrieved 4 documents" }
+// PipelineStep { step: "grading", detail: "Grading documents..." }
+// PipelineStep { step: "graded", detail: "Average score: 0.85" }
+// PipelineStep { step: "generating", detail: "Generating answer..." }
+// FinalAnswer { content: "Rust ownership is..." }
+while let Some(event) = stream.next().await {
+    match event {
+        AgentStreamEvent::PipelineStep { step, detail } => {
+            println!("[{}] {}", step, detail.unwrap_or_default());
+        }
+        AgentStreamEvent::FinalAnswer { content } => {
+            println!("Answer: {}", content);
+        }
+    }
+}
+```
+
+**AdaptiveRAG Streaming:**
+
+```rust
+use langchainrust::agents::adaptive_rag::AdaptiveRAG;
+
+let agent = AdaptiveRAG::new(llm, retriever);
+let stream = agent.stream("Compare tokio vs async-std").await?;
+
+// Event flow:
+// PipelineStep { step: "routing", detail: "Deciding retrieval strategy..." }
+// PipelineStep { step: "routed", detail: "Decision: MultiQuery" }
+// PipelineStep { step: "retrieving", ... }
+// PipelineStep { step: "generating", ... }
+// FinalAnswer { content: "..." }
+```
+
+**DeepResearch Streaming:**
+
+```rust
+use langchainrust::agents::deep_research::DeepResearchAgent;
+
+let agent = DeepResearchAgent::new(llm)
+    .with_searcher(Box::new(DuckDuckGoSearchTool::new()));
+
+let stream = agent.stream_research("Rust async runtimes comparison").await?;
+
+// Event flow (multi-round search):
+// PipelineStep { step: "planning", detail: "Decomposing topic into subtopics..." }
+// PipelineStep { step: "searching", detail: "Round 1/3: Searching 3 subtopics..." }
+// PipelineStep { step: "searched", detail: "Found 12 results" }
+// PipelineStep { step: "synthesizing", detail: "Synthesizing findings..." }
+// PipelineStep { step: "gaps_found", detail: "Found 2 knowledge gaps" }
+// PipelineStep { step: "searching", detail: "Round 2/3: Searching gaps..." }
+// PipelineStep { step: "completed", detail: "Research completed in 2 rounds" }
+// FinalAnswer { content: "..." }
+```
 
 ## Plan-Execute Agent
 
