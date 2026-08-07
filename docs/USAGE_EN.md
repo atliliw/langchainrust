@@ -207,6 +207,8 @@ let response = llm.chat(vec![
 
 ### OpenAI Chat
 
+Use OpenAI GPT series models. Supports custom `base_url` (compatible with all OpenAI API format services), `temperature` controls randomness.
+
 ```rust
 use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
 use langchainrust::schema::Message;
@@ -231,6 +233,8 @@ println!("{}", response.content);
 
 ### Streaming
 
+LLMs generate text token by token. Streaming lets you see each token in real time instead of waiting for the complete response. Ideal for chat interfaces and real-time display.
+
 ```rust
 use futures_util::StreamExt;
 
@@ -253,6 +257,8 @@ while let Some(chunk) = stream.next().await {
 ```
 
 ### Function Calling
+
+Let the LLM decide when to call tools. `bind_tools` attaches tool definitions to the LLM, which returns `tool_calls` instead of plain text. The framework handles parsing arguments, calling tools, and returning results.
 
 ```rust
 use langchainrust::{ToolDefinition, bind_tools};
@@ -284,6 +290,8 @@ if let Some(tool_calls) = response.tool_calls {
 ```
 
 ### Ollama (Local LLM)
+
+Ollama lets you run open-source models (Llama, Mistral, etc.) locally — no API key needed, data never leaves your machine. Good for privacy-sensitive scenarios or offline use.
 
 ```rust
 use langchainrust::{OllamaChat, OllamaConfig};
@@ -343,7 +351,11 @@ let answer = assistant.run_once("Translate: Hello").await?;
 
 ## Prompts
 
+Prompt templates replace `{variable}` placeholders with actual values, avoiding manual string concatenation. The framework provides three templates covering all scenarios from simple to complex.
+
 ### PromptTemplate
+
+The most basic template — a single text string with `{variable}` placeholders. Use when you don't need role distinction, just need to compose a prompt.
 
 ```rust
 use langchainrust::prompts::PromptTemplate;
@@ -361,6 +373,8 @@ let prompt = template.format(&vars)?;
 ```
 
 ### ChatPromptTemplate
+
+Multi-message template — each message has a role (system/human/ai), with variables replaced in the text. Use when you need to set a system role or distinguish conversation turns. This is the most commonly used template in Agents and Chains.
 
 ```rust
 use langchainrust::prompts::ChatPromptTemplate;
@@ -384,6 +398,10 @@ let messages = template.format(&vars)?;
 
 ### FewShotPromptTemplate
 
+Few-shot template — inserts "input→output" examples into the prompt to teach the LLM a specific format. Use when you need to guide the output format (e.g., translation, sentiment analysis, format conversion). The LLM sees the examples and mimics their format.
+
+**How it works**: Concatenates prefix + each example (formatted via `example_prompt`) + suffix into a complete prompt. The LLM sees a full text containing examples.
+
 ```rust
 use langchainrust::prompts::{FewShotPromptTemplate, PromptTemplate};
 use std::collections::HashMap;
@@ -404,6 +422,8 @@ let prompt = FewShotPromptTemplate::new(
 
 ### ExampleSelectors
 
+When you have many examples, you don't need to send them all to the LLM — selectors pick the most relevant ones by strategy, saving tokens and improving quality.
+
 ```rust
 use langchainrust::prompts::{LengthBasedExampleSelector, SemanticExampleSelector};
 
@@ -418,7 +438,21 @@ let selector = SemanticExampleSelector::new(embeddings, examples, 2);
 
 ## Output Parsers
 
+LLMs return plain text strings. Output parsers convert them into structured data. Choose based on what format you need:
+
+| Parser | Input | Output | Use Case |
+|--------|-------|--------|----------|
+| `StrOutputParser` | Any text | String as-is | Just need text, no conversion |
+| `CommaSeparatedListOutputParser` | Comma-separated text | `Vec<String>` | LLM outputs a list |
+| `JsonOutputParser` | JSON text | `serde_json::Value` | Need flexible JSON structure |
+| `StructuredOutputParser` | `key: value` text | `HashMap<String, String>` | Simple key-value pairs, no JSON needed |
+| `TypedOutputParser<T>` | JSON text | Strongly typed `T` | Need type-safe structured output |
+
+> **Tip**: If the LLM supports Function Calling, prefer `with_structured_output()` — it's more reliable than parsers.
+
 ### StrOutputParser
+
+The simplest parser — returns text as-is. Typically used as the last step in an LCEL pipeline to ensure the output type is `String`.
 
 ```rust
 use langchainrust::output_parsers::{StrOutputParser, BaseOutputParser};
@@ -429,6 +463,8 @@ let result = parser.parse("Hello world")?;
 
 ### CommaSeparatedListOutputParser
 
+Parses comma-separated text into a string list. Use when you want the LLM to enumerate items, tags, keywords, etc.
+
 ```rust
 use langchainrust::output_parsers::CommaSeparatedListOutputParser;
 
@@ -437,6 +473,8 @@ let result = parser.parse("apple, banana, cherry")?;
 ```
 
 ### JsonOutputParser
+
+Extracts JSON from LLM output. Supports both complete JSON and partial extraction from markdown code blocks (LLMs often wrap JSON in ` ```json ``` `).
 
 ```rust
 use langchainrust::output_parsers::JsonOutputParser;
@@ -451,6 +489,8 @@ let partial = parser.parse_partial("Here is the JSON:\n```json\n{\"name\": \"Rus
 ```
 
 ### StructuredOutputParser
+
+Parses `key: value` format text into a HashMap. More lenient than JsonOutputParser — the LLM doesn't need to output strict JSON, just write `key: value` per line.
 
 ```rust
 use langchainrust::output_parsers::StructuredOutputParser;
@@ -467,6 +507,8 @@ let result: HashMap<String, String> = parser.parse(
 ```
 
 ### TypedOutputParser\<T\>
+
+Deserializes JSON text into a strongly typed struct. Requires `T` to implement `Deserialize`. Safer than `JsonOutputParser<Value>` — field types are checked at compile time.
 
 ```rust
 use langchainrust::output_parsers::TypedOutputParser;
@@ -508,7 +550,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ### ConversationBufferWindowMemory
 
-Keeps only last k turns:
+Keeps only the last k conversation turns. Use when the conversation is long and you don't need the full history, to avoid exceeding token limits.
 
 ```rust
 use langchainrust::ConversationBufferWindowMemory;
@@ -529,7 +571,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ### ConversationSummaryBufferMemory (Recommended)
 
-Summarizes old messages, keeps recent ones:
+Summarizes old messages while keeping recent ones in full. Combines the benefits of BufferMemory (preserving recent details) and SummaryMemory (compressing old content). The best choice for long conversations.
 
 ```rust
 use langchainrust::ConversationSummaryBufferMemory;
@@ -605,6 +647,8 @@ let messages = cw.get_messages().await;
 | `Summarize` | LLM compresses old conversation into summary | Long conversations needing key info |
 
 ## LLM Cache
+
+LLM calls are the slowest and most expensive part of your application. The cache returns previous results for identical inputs, avoiding redundant calls. Supports TTL expiration and capacity limits.
 
 ### In-Memory Cache with TTL
 
@@ -811,7 +855,11 @@ let result = rag_runnable.invoke("query".to_string(), None).await?;
 
 ## Chains
 
+Chains combine LLMs with prompts, memory, retrieval, and other components into reusable pipelines. Each Chain receives input, executes a series of steps, and returns output.
+
 ### LLMChain
+
+The most basic chain — a prompt template + an LLM. Input variables are substituted into the template, sent to the LLM, and the result is returned. It's the building block for more complex chains.
 
 ```rust
 use langchainrust::{LLMChain, BaseChain};
@@ -829,8 +877,9 @@ let result = chain.invoke(HashMap::from([
 
 ### SequentialChain
 
+Chains multiple Chains in sequence — the output of one Chain becomes the input of the next. Use for multi-step tasks like "analyze first, then summarize".
+
 ```rust
-use langchainrust::{SequentialChain, LLMChain};
 use std::sync::Arc;
 
 let chain1 = LLMChain::new(llm1, "Analyze: {topic}");
@@ -847,6 +896,8 @@ let result = pipeline.invoke(HashMap::from([
 
 ### RetrievalQA
 
+Retrieval-Augmented Question Answering — first retrieves relevant documents from a vector store, then sends the documents and question together to the LLM. The simplest form of RAG.
+
 ```rust
 use langchainrust::{RetrievalQA, SimilarityRetriever};
 
@@ -860,7 +911,7 @@ let answer = qa.invoke(HashMap::from([
 
 ### ConversationRetrievalChain
 
-Retrieval-augmented conversation with memory:
+Retrieval-augmented conversation with memory: each question automatically retrieves relevant documents and loads conversation history, so the LLM can reference both the knowledge base and previous turns.
 
 ```rust
 use langchainrust::{ConversationRetrievalChain, ConversationBufferMemory};
@@ -883,9 +934,18 @@ let answer = chain.invoke(HashMap::from([
 
 ## Document Chains
 
+When you have too many documents to fit in a single prompt, Document Chains provide different strategies for processing multiple documents:
+
+| Chain | Strategy | Use Case |
+|-------|----------|----------|
+| **StuffDocumentsChain** | Stuff all docs into one prompt | Few docs, total length within token limit |
+| **RefineDocumentsChain** | Iterate over docs, refining the answer | Need incremental refinement, docs have dependencies |
+| **MapReduceDocumentsChain** | Process each doc independently, then combine | Many docs, can be processed in parallel |
+| **MapRerankDocumentsChain** | Score each doc independently, pick the best | Need to select the most relevant doc |
+
 ### StuffDocumentsChain
 
-Combine all documents with a prompt:
+Combine all documents with a prompt and send to the LLM in one call. Simplest approach, but total document length must fit within the LLM's token limit.
 
 ```rust
 use langchainrust::chains::{StuffDocumentsChain, LLMChain};
@@ -902,7 +962,7 @@ let result = chain.invoke(documents).await?;
 
 ### RefineDocumentsChain
 
-Iteratively refine by processing one document at a time:
+Iteratively refine: generate an initial answer from the first document, then progressively refine it with subsequent documents. Good for synthesizing information across documents, but cannot run in parallel.
 
 ```rust
 use langchainrust::chains::RefineDocumentsChain;
@@ -916,7 +976,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapReduceDocumentsChain
 
-Map each document then reduce:
+Map phase processes each document independently (can run in parallel), Reduce phase combines all results. Best for large document sets where each doc can be processed separately.
 
 ```rust
 use langchainrust::chains::MapReduceDocumentsChain;
@@ -930,7 +990,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapRerankDocumentsChain
 
-Map and rerank by score:
+Score each document independently, then pick the best by score. Use when you need to select the most relevant document from multiple candidates.
 
 ```rust
 use langchainrust::chains::MapRerankDocumentsChain;
@@ -966,7 +1026,11 @@ while let Some(token) = stream.next().await {
 
 ## Agents
 
+Agents are LLM applications that can autonomously call tools and perform multi-step reasoning. Unlike Chains with fixed flows, Agents dynamically decide which tools to call and how many steps to execute based on the input.
+
 ### FunctionCallingAgent (Recommended)
+
+Uses the LLM's native Function Calling capability to invoke tools. Type-safe and highly reliable — the preferred choice for models that support FC (GPT-4, Claude, Gemini).
 
 ```rust
 use langchainrust::{
@@ -991,6 +1055,8 @@ let result = executor.invoke("Calculate 37 + 48".to_string()).await?;
 ```
 
 ### ReActAgent (Legacy)
+
+Uses the ReAct (Reasoning + Acting) pattern: the LLM outputs "thought→action→observation" text, and the framework parses and calls tools. Good compatibility, but relies on text parsing so less reliable than FunctionCallingAgent. Use with models that don't support FC.
 
 ```rust
 use langchainrust::{ReActAgent, SimpleMathTool};
@@ -1147,7 +1213,7 @@ let history = mgr.history(); // handoff history
 
 ## Streaming Tool Calls
 
-`StreamingFunctionCallingAgent` streams LLM text token by token and exposes tool-call state through the event stream.
+Regular Agents wait until the entire execution completes before returning. `StreamingFunctionCallingAgent` streams LLM text token by token and exposes tool-call state through the event stream — users can see the Agent's thinking and actions in real time.
 
 ```rust
 use langchainrust::StreamingFunctionCallingAgent;
@@ -1204,7 +1270,7 @@ Built-in validators: `MaxLengthGuardrail` (input length), `ForbiddenWordsGuardra
 
 ## Token Counter
 
-`TiktokenCounter` counts with cl100k_base (GPT-3.5/4/4o); `TokenTrackingLLM` wraps an LLM to accumulate usage; `ModelPricing` estimates cost.
+LLMs charge by token, but token count ≠ character count. `TiktokenCounter` uses OpenAI's tokenizer for precise counting; `TokenTrackingLLM` wraps an LLM to automatically accumulate usage; `ModelPricing` estimates cost from usage.
 
 ```rust
 use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
@@ -1305,6 +1371,8 @@ server.serve_stdio().await?;
 
 ## Tools
 
+Tools are the "hands" of Agents — they let LLMs perform calculations, search, read/write files, and more. Each tool implements the `BaseTool` trait, defining its name, description, parameter schema, and execution logic.
+
 ### Built-in Tools
 
 | Tool | Description | Parameters |
@@ -1318,6 +1386,8 @@ server.serve_stdio().await?;
 | PythonREPLTool | Execute Python | `code` |
 
 ### Custom Tool
+
+When built-in tools aren't enough, implement the `BaseTool` trait to create your own. You need to define an input struct (`JsonSchema` + `Deserialize`) and a `run` method.
 
 ```rust
 use langchainrust::{BaseTool, ToolError};
@@ -1390,6 +1460,8 @@ fn greet(
 
 ### WikipediaTool
 
+Search Wikipedia article summaries. Use when an Agent needs to look up encyclopedic knowledge.
+
 ```rust
 use langchainrust::WikipediaTool;
 
@@ -1399,6 +1471,8 @@ let result = tool.run(r#"{"query": "Rust programming"}"#).await?;
 
 ### DuckDuckGoSearchTool
 
+Search the web using DuckDuckGo. No API key required. Use when an Agent needs real-time web information.
+
 ```rust
 use langchainrust::DuckDuckGoSearchTool;
 
@@ -1407,6 +1481,8 @@ let result = tool.run(r#"{"query": "langchain rust"}"#).await?;
 ```
 
 ### PythonREPLTool
+
+Execute Python code in a subprocess and return the output. Use for dynamic computation, data processing, or scientific calculations. Note: code runs locally, ensure your environment is secure.
 
 ```rust
 use langchainrust::PythonREPLTool;
@@ -1461,7 +1537,7 @@ let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,Str
 
 ## Embeddings
 
-**Embeddings** convert text to vectors for semantic retrieval and similarity calculation.
+**Embeddings** convert text into fixed-dimension floating-point vectors, where semantically similar texts are closer in vector space. The foundation for semantic retrieval, similarity calculation, and RAG.
 
 ### Supported Embeddings
 
@@ -1473,6 +1549,8 @@ let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,Str
 | **Mock** | `MockEmbeddings` | Custom | Testing |
 
 ### OpenAI Embeddings
+
+Uses OpenAI's text-embedding-ada-002 model, 1536 dimensions. Highest quality but requires API calls.
 
 ```rust
 use langchainrust::{OpenAIEmbeddings, Embeddings};
@@ -1496,6 +1574,8 @@ let vectors = embeddings.embed_batch(texts).await?;
 
 ### DeepSeek Embeddings
 
+DeepSeek's embedding model, 1536 dimensions. Lower cost than OpenAI.
+
 ```rust
 use langchainrust::{DeepSeekEmbeddings, Embeddings};
 use std::sync::Arc;
@@ -1507,6 +1587,8 @@ let vector = embeddings.embed("Deep learning fundamentals").await?;
 
 ### Qwen Embeddings
 
+Alibaba Cloud Qwen's embedding model, 1536 dimensions. Better performance for Chinese text.
+
 ```rust
 use langchainrust::{QwenEmbeddings, Embeddings};
 use std::sync::Arc;
@@ -1517,6 +1599,8 @@ let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
 ### Mock Embeddings (Testing)
+
+Generates fixed-dimension random vectors without any API calls. For testing and development only, not for production.
 
 ```rust
 use langchainrust::{MockEmbeddings, Embeddings};
@@ -1546,7 +1630,11 @@ let vec = emb.embed_query("hello world").await?;
 
 ## RAG
 
+RAG (Retrieval-Augmented Generation) lets LLMs answer questions based on your private data, not just training knowledge. Flow: documents → split → embed → store in vector DB → retrieve relevant docs → send to LLM with the question.
+
 ### Document Splitting
+
+Long documents must be split into smaller chunks for effective retrieval. `RecursiveCharacterSplitter` splits by character count, preferring to break at paragraph/sentence boundaries to maintain semantic integrity.
 
 ```rust
 use langchainrust::{RecursiveCharacterSplitter, TextSplitter};
@@ -1576,6 +1664,8 @@ let chunks = splitter.split_text(long_text).await;  // Vec<String>
 
 ### Vector Store
 
+Store embedded documents for similarity retrieval. `InMemoryVectorStore` is for development and testing; use ChromaDB, Qdrant, PGVector, etc. for production persistence.
+
 ```rust
 use langchainrust::{InMemoryVectorStore, SimilarityRetriever};
 use std::sync::Arc;
@@ -1595,7 +1685,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### ChromaDB
 
-Persistent vector store using Chroma:
+Persistent vector store using Chroma. Requires a running Chroma service (default port 8000). Good for production-grade persistence and retrieval.
 
 ```toml
 [dependencies]
@@ -1622,7 +1712,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### PGVectorStore
 
-PostgreSQL + pgvector extension vector store. Requires the `pgvector-storage` feature; since `sqlx` / `pgvector` deps are not enabled inside the crate, add `sqlx` and `pgvector` to your `Cargo.toml` yourself.
+PostgreSQL + pgvector extension vector store. Good when you already have PostgreSQL infrastructure and want relational DB + vector search in one. Requires the `pgvector-storage` feature; since `sqlx` / `pgvector` deps are not enabled inside the crate, add `sqlx` and `pgvector` to your `Cargo.toml` yourself.
 
 ```rust
 use langchainrust::vector_stores::PGVectorStore;
@@ -1643,7 +1733,7 @@ store.delete("doc-id").await?;
 
 ### PineconeStore
 
-Pinecone vector store (reqwest HTTP API, no feature required, available by default).
+Pinecone cloud vector store (reqwest HTTP API, no feature required, available by default). Good when you want a managed vector service without self-hosting a database.
 
 ```rust
 use langchainrust::vector_stores::PineconeStore;
@@ -1664,6 +1754,8 @@ store.delete(&["id1".to_string()]).await?;
 ---
 
 ## BM25
+
+BM25 is a classic keyword retrieval algorithm that scores relevance based on term frequency and document length. Unlike vector retrieval (semantic similarity), BM25 excels at exact keyword matching — searching "Rust ownership" prioritizes documents containing those exact words. No embedding model needed, zero cost, fast.
 
 ### BM25Retriever (Keyword Search)
 
@@ -1688,6 +1780,8 @@ for result in results {
 
 ### BM25 Parameters
 
+k1 controls term frequency saturation (higher = more weight on frequent terms), b controls document length normalization (higher = more penalty for long docs). Defaults k1=1.5, b=0.75 work well for most cases.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | k1 | 1.5 | Term frequency saturation |
@@ -1699,7 +1793,7 @@ let retriever = BM25Retriever::with_params(2.0, 0.5);
 
 ### ChunkedBM25Retriever (Parent-Child)
 
-AutoMerging: When multiple leaf chunks match, merge to parent:
+Solves the "small chunk matches but loses context" problem: documents are split into leaf chunks for the BM25 index, and when multiple leaf chunks from the same parent match, they're automatically merged into the full parent document.
 
 ```rust
 use langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
@@ -1728,6 +1822,8 @@ for result in results {
 
 ## Hybrid Retrieval
 
+Vector retrieval excels at semantic similarity, BM25 excels at keyword matching — they complement each other. Hybrid retrieval uses both and merges results with RRF (Reciprocal Rank Fusion), achieving higher recall than either method alone.
+
 ### RRF Fusion Algorithm
 
 ```
@@ -1738,7 +1834,7 @@ Where k=60, rank(d) is document rank in each result list.
 
 ### UnifiedHybridIndex
 
-One interface for BM25 + Vector dual retrieval:
+All-in-one hybrid retrieval: internally maintains both BM25 and vector indexes, auto-dual-indexes when adding documents, auto-dual-retrieves + RRF merges on query. No need to manually manage two indexes.
 
 ```rust
 use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
@@ -1775,7 +1871,11 @@ for result in results {
 
 ## LangGraph
 
+LangGraph defines complex workflows as directed graphs: each node is a processing step, edges define execution order. More flexible than Chains — supports conditional branching, loops, human-in-the-loop, and subgraphs. Use when you need fine-grained control over execution flow.
+
 ### StateGraph
+
+The most basic graph — define nodes and edges, state passes between nodes. `AgentState` is the built-in state struct with `messages`, `steps`, and other fields.
 
 ```rust
 use langchainrust::langgraph::{StateGraph, AgentState, START, END};
@@ -1803,6 +1903,8 @@ let result = compiled.invoke(AgentState::new()).await?;
 
 ### Conditional Edge
 
+Dynamically choose the next node based on current state. `FunctionRouter` takes a closure that returns the target node name. Good for "summarize if many messages, otherwise continue" branching logic.
+
 ```rust
 use langchainrust::langgraph::{ConditionalEdge, FunctionRouter};
 
@@ -1817,6 +1919,8 @@ graph.add_conditional_edge(
 ```
 
 ### Human-in-the-loop / Interrupt & Resume
+
+Pause execution before critical nodes, wait for human confirmation, then continue. `with_interrupt_before` specifies which nodes to interrupt at; `MemoryCheckpointer` saves execution state for cross-session resume.
 
 ```rust
 use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
@@ -1842,7 +1946,7 @@ match compiled.invoke(state).await {
 
 ## Document Loaders
 
-Load documents from various file formats.
+Load documents from various file formats, converting them into a unified `Document` structure (`content` + `metadata`) for downstream splitting and retrieval.
 
 ### Supported Formats
 
@@ -1855,6 +1959,8 @@ Load documents from various file formats.
 | **CSVLoader** | .csv | Each row as document |
 
 ### TextLoader
+
+Load plain text files. Supports whole-file loading and line-by-line splitting.
 
 ```rust
 use langchainrust::{TextLoader, DocumentLoader};
@@ -1869,6 +1975,8 @@ let docs = loader.load().await?;
 
 ### JSONLoader
 
+Load JSON files. By default extracts the entire JSON string as content; specify `content_key` to extract only a specific field's value.
+
 ```rust
 use langchainrust::{JSONLoader, DocumentLoader};
 
@@ -1881,6 +1989,8 @@ let docs = loader.load().await?;
 ```
 
 ### MarkdownLoader
+
+Load Markdown files. Supports splitting by heading level — content under each heading becomes a separate document, maintaining section-level semantic integrity.
 
 ```rust
 use langchainrust::{MarkdownLoader, DocumentLoader};
@@ -1954,7 +2064,7 @@ let docs = loader.load().await?;
 
 ## MultiQueryRetriever
 
-Generate multiple query variations using LLM to improve retrieval recall.
+A user's query may not match document wording, causing retrieval misses. MultiQueryRetriever uses an LLM to rewrite one query into multiple variations, retrieves for each, then merges and deduplicates — improving recall.
 
 ### How It Works
 
@@ -1981,6 +2091,8 @@ let docs = multi_query.retrieve_multi("database timeout").await?;
 
 ### StaticQueryGenerator (No LLM)
 
+Query generator that doesn't need an LLM — expands queries via a synonym table. Use when you don't want extra LLM calls, or when query patterns are predictable.
+
 ```rust
 use langchainrust::StaticQueryGenerator;
 use std::collections::HashMap;
@@ -1999,7 +2111,7 @@ let queries = generator.generate("database connection failed");
 
 ## HyDE Retriever
 
-**HyDE (Hypothetical Document Embedding)** generates a hypothetical document using LLM, then retrieves real documents similar to it.
+**HyDE (Hypothetical Document Embeddings)** solves the "query too short, doesn't match documents" problem: first use an LLM to generate a hypothetical answer (which may be inaccurate), then use the hypothetical answer's embedding to retrieve real documents. The hypothetical answer's wording is closer to real documents, so retrieval works better.
 
 ### How It Works
 
@@ -2028,7 +2140,7 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 
 ## Reranking
 
-Re-score retrieval results to improve precision.
+Initial retrieval may return less-relevant results. Rerankers re-score retrieval results, pushing the most relevant to the top for better precision.
 
 ### Supported Rerankers
 
@@ -2038,6 +2150,8 @@ Re-score retrieval results to improve precision.
 | **BM25Reranker** | BM25 formula reranking |
 
 ### KeywordReranker
+
+Rerank based on keyword matching — more query keywords appearing in a document and earlier in the text means a higher score. Simple and fast, no embedding model needed.
 
 ```rust
 use langchainrust::{KeywordReranker, RerankingExecutor};
@@ -2052,6 +2166,8 @@ let reranked = executor.rerank("Rust programming", search_results)?;
 ```
 
 ### BM25Reranker
+
+Rerank using the BM25 formula — more precise than KeywordReranker, considering term frequency saturation and document length normalization. Adjustable k1/b parameters.
 
 ```rust
 use langchainrust::{BM25Reranker, RerankingExecutor};
@@ -2068,11 +2184,11 @@ let reranked = executor.rerank("Rust programming", results)?;
 
 ## Callbacks
 
-Callback system for tracing, monitoring, and logging LLM application execution.
+The callback system lets you insert custom logic at key points in LLM calls (start, end, error, streaming token) for logging, tracing, and monitoring. `CallbackManager` manages multiple handlers and triggers them in order.
 
 ### CallbackManager
 
-Manage multiple callback handlers:
+Manage multiple callback handlers, supporting composition (e.g., output to both console and LangSmith simultaneously):
 
 ```rust
 use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
@@ -2085,7 +2201,7 @@ let manager = CallbackManager::new()
 
 ### StdOutHandler
 
-Output to stdout (for debugging):
+Output to stdout (for debugging). The simplest callback — directly prints LLM input and output.
 
 ```rust
 use langchainrust::StdOutHandler;
@@ -2095,7 +2211,7 @@ let handler = StdOutHandler::new();
 
 ### FileCallbackHandler
 
-Output to file:
+Output to file. Supports JSON format (for programmatic parsing) and text format (for human reading).
 
 ```rust
 use langchainrust::{FileCallbackHandler, LogFormat};
@@ -2187,7 +2303,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 
 ## Evaluation
 
-Quantify LLM output quality: after changing prompts / models / adding RAG, run an eval set and see if scores improved. 10 evaluators in 5 categories:
+Quantify LLM output quality: after changing prompts / models / adding RAG, run an eval set and see if scores improved. 10 evaluators in 5 categories, covering everything from literal matching to RAG hallucination detection:
 
 | Category | Evaluators | Description |
 |----------|-----------|-------------|
@@ -2199,7 +2315,7 @@ Quantify LLM output quality: after changing prompts / models / adding RAG, run a
 
 ### EvalRunner
 
-Run a set of evaluators over a `Dataset`, produce a `Report` (per-example scores + per-evaluator averages).
+Run a set of evaluators over a `Dataset`, produce a `Report` (per-example scores + per-evaluator averages). Supports loading eval sets from JSONL files.
 
 ```rust
 use langchainrust::evaluation::*;

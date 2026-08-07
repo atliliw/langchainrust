@@ -207,6 +207,8 @@ let response = llm.chat(vec![
 
 ### OpenAI Chat
 
+使用 OpenAI GPT 系列模型。支持自定义 base_url（兼容所有 OpenAI API 格式的服务），temperature 控制随机性。
+
 ```rust
 use langchainrust::{OpenAIChat, OpenAIConfig, BaseChatModel};
 use langchainrust::schema::Message;
@@ -231,6 +233,8 @@ println!("{}", response.content);
 
 ### 流式输出
 
+LLM 生成文本是逐 token 的，流式输出让你实时看到每个 token，而不是等整个回答完成。适合聊天界面、实时展示等场景。
+
 ```rust
 use futures_util::StreamExt;
 
@@ -253,6 +257,8 @@ while let Some(chunk) = stream.next().await {
 ```
 
 ### 函数调用
+
+让 LLM 决定何时调用工具。`bind_tools` 将工具定义附加到 LLM，LLM 返回 `tool_calls` 而非纯文本。框架负责解析参数、调用工具、返回结果。
 
 ```rust
 use langchainrust::{ToolDefinition, bind_tools};
@@ -284,6 +290,8 @@ if let Some(tool_calls) = response.tool_calls {
 ```
 
 ### Ollama（本地 LLM）
+
+Ollama 让你在本地运行开源模型（Llama、Mistral 等），无需 API Key，数据不出本机。适合隐私敏感场景或离线使用。
 
 ```rust
 use langchainrust::{OllamaChat, OllamaConfig};
@@ -343,7 +351,11 @@ let answer = assistant.run_once("Translate: Hello").await?;
 
 ## 提示词
 
+提示词模板将变量占位符（`{name}`）替换为实际值，避免手动拼接字符串。框架提供三种模板，覆盖从简单到复杂的所有场景。
+
 ### PromptTemplate
+
+最基础的模板——单条文本，用 `{variable}` 占位。适合不需要区分角色、只需拼一段 prompt 的场景。
 
 ```rust
 use langchainrust::prompts::PromptTemplate;
@@ -361,6 +373,8 @@ let prompt = template.format(&vars)?;
 ```
 
 ### ChatPromptTemplate
+
+多轮消息模板——每条消息有角色（system/human/ai），变量在消息文本中替换。适合需要设定系统角色、区分对话轮次的场景，是 Agent 和 Chain 中最常用的模板。
 
 ```rust
 use langchainrust::prompts::ChatPromptTemplate;
@@ -384,6 +398,10 @@ let messages = template.format(&vars)?;
 
 ### FewShotPromptTemplate
 
+少样本模板——在 prompt 前插入若干"输入→输出"示例，教 LLM 按特定格式回答。适合需要引导输出格式（如翻译、情感分析、格式转换）的场景。LLM 看到示例后，会模仿示例的格式来回答。
+
+**工作原理**：将前缀 + 每个示例（通过 `example_prompt` 格式化）+ 后缀拼接成完整 prompt，LLM 看到的是一段包含例子的完整文本。
+
 ```rust
 use langchainrust::prompts::{FewShotPromptTemplate, PromptTemplate};
 use std::collections::HashMap;
@@ -404,6 +422,8 @@ let prompt = FewShotPromptTemplate::new(
 
 ### ExampleSelectors
 
+当示例很多时，不需要全部塞给 LLM——选择器按策略挑选最相关的示例，节省 token 并提高质量。
+
 ```rust
 use langchainrust::prompts::{LengthBasedExampleSelector, SemanticExampleSelector};
 
@@ -418,7 +438,21 @@ let selector = SemanticExampleSelector::new(embeddings, examples, 2);
 
 ## 输出解析器
 
+LLM 返回的是纯文本字符串，输出解析器将其转换为结构化数据。选择哪个解析器取决于你需要什么格式：
+
+| 解析器 | 输入 | 输出 | 适用场景 |
+|--------|------|------|----------|
+| `StrOutputParser` | 任意文本 | 原样字符串 | 只需文本，不做转换 |
+| `CommaSeparatedListOutputParser` | 逗号分隔文本 | `Vec<String>` | LLM 输出列表 |
+| `JsonOutputParser` | JSON 文本 | `serde_json::Value` | 需要灵活的 JSON 结构 |
+| `StructuredOutputParser` | `key: value` 文本 | `HashMap<String, String>` | 简单键值对，无需 JSON |
+| `TypedOutputParser<T>` | JSON 文本 | 强类型 `T` | 需要类型安全的结构化输出 |
+
+> **提示**：如果 LLM 支持 Function Calling，优先使用 `with_structured_output()`——它比解析器更可靠。
+
 ### StrOutputParser
+
+最简单的解析器——原样返回文本。通常作为 LCEL 管道的最后一步，确保输出类型是 `String`。
 
 ```rust
 use langchainrust::output_parsers::{StrOutputParser, BaseOutputParser};
@@ -429,6 +463,8 @@ let result = parser.parse("Hello world")?;
 
 ### CommaSeparatedListOutputParser
 
+将逗号分隔的文本解析为字符串列表。适合让 LLM 列举项目、标签、关键词等场景。
+
 ```rust
 use langchainrust::output_parsers::CommaSeparatedListOutputParser;
 
@@ -437,6 +473,8 @@ let result = parser.parse("apple, banana, cherry")?;
 ```
 
 ### JsonOutputParser
+
+从 LLM 输出中提取 JSON。支持完整 JSON 和从 markdown 代码块中提取部分 JSON（LLM 经常把 JSON 包在 ` ```json ``` ` 里）。
 
 ```rust
 use langchainrust::output_parsers::JsonOutputParser;
@@ -451,6 +489,8 @@ let partial = parser.parse_partial("Here is the JSON:\n```json\n{\"name\": \"Rus
 ```
 
 ### StructuredOutputParser
+
+将 `key: value` 格式的文本解析为 HashMap。比 JsonOutputParser 更宽松——LLM 不需要输出严格的 JSON 格式，只需按行写 `key: value` 即可。
 
 ```rust
 use langchainrust::output_parsers::StructuredOutputParser;
@@ -467,6 +507,8 @@ let result: HashMap<String, String> = parser.parse(
 ```
 
 ### TypedOutputParser\<T\>
+
+将 JSON 文本反序列化为强类型结构体。需要 `T` 实现 `Deserialize`。比 `JsonOutputParser<Value>` 更安全——编译时就能检查字段类型。
 
 ```rust
 use langchainrust::output_parsers::TypedOutputParser;
@@ -508,7 +550,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ### ConversationBufferWindowMemory
 
-仅保留最近 k 轮对话：
+仅保留最近 k 轮对话。当对话很长、不需要完整历史时使用，避免 token 超限。
 
 ```rust
 use langchainrust::ConversationBufferWindowMemory;
@@ -529,7 +571,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ### ConversationSummaryBufferMemory（推荐）
 
-对旧消息进行摘要，保留近期消息：
+对旧消息进行摘要压缩，保留近期消息原文。结合了 BufferMemory（保留近期细节）和 SummaryMemory（压缩旧内容）的优点，是长对话场景的最佳选择。
 
 ```rust
 use langchainrust::ConversationSummaryBufferMemory;
@@ -605,6 +647,8 @@ let messages = cw.get_messages().await;
 | `Summarize` | LLM 将旧对话压缩为摘要 | 需要保留关键信息的长对话 |
 
 ## LLM 缓存
+
+LLM 调用是应用中最慢、最贵的部分。缓存对相同输入返回之前的结果，避免重复调用。支持 TTL 过期和容量上限。
 
 ### 带 TTL 的内存缓存
 
@@ -811,7 +855,11 @@ let result = rag_runnable.invoke("query".to_string(), None).await?;
 
 ## Chains
 
+Chain 将 LLM 与提示词、记忆、检索等组件组合成可复用的流水线。每个 Chain 接收输入、执行一系列步骤、返回输出。
+
 ### LLMChain
+
+最基础的链——一个提示词模板 + 一个 LLM。输入变量替换到模板中，发送给 LLM，返回结果。是构建更复杂链的积木。
 
 ```rust
 use langchainrust::{LLMChain, BaseChain};
@@ -828,6 +876,8 @@ let result = chain.invoke(HashMap::from([
 ```
 
 ### SequentialChain
+
+将多个 Chain 串联——前一个 Chain 的输出作为后一个 Chain 的输入。适合多步骤任务，如"先分析，再总结"。
 
 ```rust
 use langchainrust::{SequentialChain, LLMChain};
@@ -847,6 +897,8 @@ let result = pipeline.invoke(HashMap::from([
 
 ### RetrievalQA
 
+检索增强问答——先从向量存储中检索相关文档，再把文档和问题一起发给 LLM 回答。是 RAG 的最简形式。
+
 ```rust
 use langchainrust::{RetrievalQA, SimilarityRetriever};
 
@@ -860,7 +912,7 @@ let answer = qa.invoke(HashMap::from([
 
 ### ConversationRetrievalChain
 
-带记忆的检索增强对话：
+带记忆的检索增强对话：每次提问时，自动检索相关文档 + 加载对话历史，让 LLM 既能参考知识库，又能记住之前的对话。
 
 ```rust
 use langchainrust::{ConversationRetrievalChain, ConversationBufferMemory};
@@ -883,9 +935,18 @@ let answer = chain.invoke(HashMap::from([
 
 ## Document Chains
 
+当文档太多、无法一次性塞入 prompt 时，Document Chain 提供不同的策略来处理多文档场景：
+
+| Chain | 策略 | 适用场景 |
+|-------|------|----------|
+| **StuffDocumentsChain** | 所有文档塞入一个 prompt | 文档少、总长度在 token 限制内 |
+| **RefineDocumentsChain** | 逐个文档迭代优化答案 | 需要逐步精炼、文档间有依赖 |
+| **MapReduceDocumentsChain** | 每个文档独立处理，再合并 | 文档多、可并行处理 |
+| **MapRerankDocumentsChain** | 每个文档独立评分，选最佳 | 需要从多个文档中选最相关的 |
+
 ### StuffDocumentsChain
 
-将所有文档与提示词组合：
+将所有文档与提示词组合，一次性发给 LLM。最简单直接，但文档总量不能超过 LLM 的 token 限制。
 
 ```rust
 use langchainrust::chains::{StuffDocumentsChain, LLMChain};
@@ -902,7 +963,7 @@ let result = chain.invoke(documents).await?;
 
 ### RefineDocumentsChain
 
-逐个文档迭代优化：
+逐个文档迭代优化：先用第一个文档生成初始答案，再用后续文档逐步精炼。适合需要综合多个文档信息的场景，但无法并行。
 
 ```rust
 use langchainrust::chains::RefineDocumentsChain;
@@ -916,7 +977,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapReduceDocumentsChain
 
-先对每个文档映射，再归约合并：
+Map 阶段对每个文档独立处理（可并行），Reduce 阶段将所有结果合并。适合文档量大、各文档可独立处理的场景。
 
 ```rust
 use langchainrust::chains::MapReduceDocumentsChain;
@@ -930,7 +991,7 @@ let result = chain.invoke(documents).await?;
 
 ### MapRerankDocumentsChain
 
-映射后按分数重排序：
+对每个文档独立评分，按分数排序选最佳。适合"从多个候选中选最相关"的场景。
 
 ```rust
 use langchainrust::chains::MapRerankDocumentsChain;
@@ -966,7 +1027,11 @@ while let Some(token) = stream.next().await {
 
 ## Agents
 
+Agent 是能自主调用工具、多步推理的 LLM 应用。与 Chain 不同，Agent 不是固定流程，而是 LLM 根据输入动态决定调用哪些工具、执行多少步。
+
 ### FunctionCallingAgent (推荐)
+
+使用 LLM 原生的 Function Calling 能力来调用工具。类型安全、可靠性高，是支持 FC 的模型（GPT-4、Claude、Gemini）的首选。
 
 ```rust
 use langchainrust::{
@@ -991,6 +1056,8 @@ let result = executor.invoke("Calculate 37 + 48".to_string()).await?;
 ```
 
 ### ReActAgent (旧版)
+
+使用 ReAct（Reasoning + Acting）模式：LLM 输出"思考→行动→观察"文本，框架解析后调用工具。兼容性好，但依赖文本解析，可靠性不如 FunctionCallingAgent。适合不支持 FC 的模型。
 
 ```rust
 use langchainrust::{ReActAgent, SimpleMathTool};
@@ -1147,7 +1214,7 @@ let history = mgr.history(); // 委托历史
 
 ## Streaming Tool Calls
 
-`StreamingFunctionCallingAgent` 逐 token 流式输出 LLM 文本，并通过事件流暴露工具调用状态。
+普通 Agent 等整个执行完才返回结果。`StreamingFunctionCallingAgent` 逐 token 流式输出 LLM 文本，并通过事件流暴露工具调用状态——用户可以实时看到 Agent 的思考和操作过程。
 
 ```rust
 use langchainrust::StreamingFunctionCallingAgent;
@@ -1204,7 +1271,7 @@ let violations = guarded.violations();
 
 ## Token Counter
 
-`TiktokenCounter` 使用 cl100k_base（GPT-3.5/4/4o）计数；`TokenTrackingLLM` 包装 LLM 以累计用量；`ModelPricing` 估算成本。
+LLM 按 token 计费，但 token 数不等于字符数。`TiktokenCounter` 使用 OpenAI 的分词器精确计数；`TokenTrackingLLM` 包装 LLM 自动累计用量；`ModelPricing` 根据用量估算成本。
 
 ```rust
 use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
@@ -1305,6 +1372,8 @@ server.serve_stdio().await?;
 
 ## Tools
 
+工具是 Agent 的"手"——让 LLM 能执行计算、搜索、读写文件等操作。每个工具实现 `BaseTool` trait，定义名称、描述、参数 schema 和执行逻辑。
+
 ### 内置工具
 
 | 工具 | 描述 | 参数 |
@@ -1318,6 +1387,8 @@ server.serve_stdio().await?;
 | PythonREPLTool | 执行 Python 代码 | `code` |
 
 ### 自定义工具
+
+当内置工具不够用时，实现 `BaseTool` trait 创建自己的工具。需要定义输入结构体（`JsonSchema` + `Deserialize`）和 `run` 方法。
 
 ```rust
 use langchainrust::{BaseTool, ToolError};
@@ -1390,6 +1461,8 @@ fn greet(
 
 ### WikipediaTool
 
+搜索 Wikipedia 文章摘要。适合 Agent 需要查询百科知识的场景。
+
 ```rust
 use langchainrust::WikipediaTool;
 
@@ -1399,6 +1472,8 @@ let result = tool.run(r#"{"query": "Rust programming"}"#).await?;
 
 ### DuckDuckGoSearchTool
 
+使用 DuckDuckGo 搜索网页。无需 API Key，适合 Agent 需要实时网络信息的场景。
+
 ```rust
 use langchainrust::DuckDuckGoSearchTool;
 
@@ -1407,6 +1482,8 @@ let result = tool.run(r#"{"query": "langchain rust"}"#).await?;
 ```
 
 ### PythonREPLTool
+
+在子进程中执行 Python 代码并返回输出。适合需要动态计算、数据处理、科学计算的场景。注意：代码在本地执行，确保运行环境安全。
 
 ```rust
 use langchainrust::PythonREPLTool;
@@ -1461,7 +1538,7 @@ let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,Str
 
 ## Embeddings
 
-**Embeddings** 将文本转换为向量，用于语义检索和相似度计算。
+**Embeddings** 将文本转换为固定维度的浮点向量，使语义相近的文本在向量空间中距离更近。是语义检索、相似度计算、RAG 的基础。
 
 ### 支持的 Embeddings
 
@@ -1473,6 +1550,8 @@ let rows = sql.execute("SELECT id, name FROM users")?; // Vec<HashMap<String,Str
 | **Mock** | `MockEmbeddings` | 自定义 | 测试用 |
 
 ### OpenAI 嵌入
+
+使用 OpenAI 的 text-embedding-ada-002 模型，1536 维，质量最高但需要 API 调用。
 
 ```rust
 use langchainrust::{OpenAIEmbeddings, Embeddings};
@@ -1496,6 +1575,8 @@ let vectors = embeddings.embed_batch(texts).await?;
 
 ### DeepSeek 嵌入
 
+DeepSeek 的嵌入模型，1536 维，价格比 OpenAI 低。
+
 ```rust
 use langchainrust::{DeepSeekEmbeddings, Embeddings};
 use std::sync::Arc;
@@ -1507,6 +1588,8 @@ let vector = embeddings.embed("Deep learning fundamentals").await?;
 
 ### Qwen 嵌入
 
+阿里云 Qwen 的嵌入模型，1536 维，中文效果更好。
+
 ```rust
 use langchainrust::{QwenEmbeddings, Embeddings};
 use std::sync::Arc;
@@ -1517,6 +1600,8 @@ let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
 ### Mock 嵌入（测试用）
+
+生成固定维度的随机向量，不调用任何 API。仅用于测试和开发，不用于生产。
 
 ```rust
 use langchainrust::{MockEmbeddings, Embeddings};
@@ -1546,7 +1631,11 @@ let vec = emb.embed_query("hello world").await?;
 
 ## RAG
 
+RAG（Retrieval-Augmented Generation）让 LLM 基于你的私有数据回答问题，而不是只靠训练时的知识。流程：文档 → 分割 → 嵌入 → 存入向量库 → 检索相关文档 → 连同问题发给 LLM。
+
 ### 文档分割
+
+长文档需要先分割成小块，才能有效检索。`RecursiveCharacterSplitter` 按字符数分割，在段落/句子边界处优先断开，保持语义完整性。
 
 ```rust
 use langchainrust::{RecursiveCharacterSplitter, TextSplitter};
@@ -1576,6 +1665,8 @@ let chunks = splitter.split_text(long_text).await;  // Vec<String>
 
 ### 向量存储
 
+将文档嵌入后存入向量存储，支持相似度检索。`InMemoryVectorStore` 适合开发和测试；生产环境使用 ChromaDB、Qdrant、PGVector 等持久化存储。
+
 ```rust
 use langchainrust::{InMemoryVectorStore, SimilarityRetriever};
 use std::sync::Arc;
@@ -1595,7 +1686,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### ChromaDB
 
-使用 Chroma 的持久化向量存储：
+使用 Chroma 的持久化向量存储。需要运行 Chroma 服务（默认端口 8000），适合需要持久化和生产级检索的场景。
 
 ```toml
 [dependencies]
@@ -1622,7 +1713,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### PGVectorStore
 
-PostgreSQL + pgvector 扩展向量存储。需要 `pgvector-storage` feature；由于 `sqlx` / `pgvector` 依赖未在 crate 内启用，需自行在 `Cargo.toml` 中添加 `sqlx` 和 `pgvector`。
+PostgreSQL + pgvector 扩展向量存储。适合已有 PostgreSQL 基础设施、需要关系型数据库 + 向量检索合一的场景。需要 `pgvector-storage` feature；由于 `sqlx` / `pgvector` 依赖未在 crate 内启用，需自行在 `Cargo.toml` 中添加 `sqlx和 pgvector。
 
 ```rust
 use langchainrust::vector_stores::PGVectorStore;
@@ -1643,7 +1734,7 @@ store.delete("doc-id").await?;
 
 ### PineconeStore
 
-Pinecone 向量存储（reqwest HTTP API，无需 feature，默认可用）。
+Pinecone 云向量存储（reqwest HTTP API，无需 feature，默认可用）。适合需要托管向量服务、不想自建数据库的场景。
 
 ```rust
 use langchainrust::vector_stores::PineconeStore;
@@ -1664,6 +1755,8 @@ store.delete(&["id1".to_string()]).await?;
 ---
 
 ## BM25
+
+BM25 是经典的关键词检索算法，根据词频和文档长度计算相关性分数。与向量检索（语义相似）不同，BM25 擅长精确关键词匹配，如搜索"Rust ownership"会优先返回包含这些词的文档。不需要嵌入模型，零成本，速度快。
 
 ### BM25Retriever（关键词搜索）
 
@@ -1688,6 +1781,8 @@ for result in results {
 
 ### BM25 参数
 
+k1 控制词频饱和度（越大，高频词权重越高），b 控制文档长度归一化（越大，长文档惩罚越重）。默认值 k1=1.5, b=0.75 适合大多数场景。
+
 | 参数 | 默认值 | 说明 |
 |-----------|---------|-------------|
 | k1 | 1.5 | 词频饱和度 |
@@ -1699,7 +1794,7 @@ let retriever = BM25Retriever::with_params(2.0, 0.5);
 
 ### ChunkedBM25Retriever（父子结构）
 
-自动合并：当多个叶子块匹配时，合并到父级：
+解决"小块匹配但丢失上下文"的问题：文档先分割为叶子块建立 BM25 索引，检索时如果同一父文档的多个叶子块都匹配，就自动合并为完整的父文档返回。
 
 ```rust
 use langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
@@ -1728,6 +1823,8 @@ for result in results {
 
 ## 混合检索
 
+向量检索擅长语义相似，BM25 擅长关键词匹配——两者互补。混合检索同时使用两种方式，用 RRF（Reciprocal Rank Fusion）算法合并结果，比单一检索方式召回率更高。
+
 ### RRF 融合算法
 
 ```
@@ -1738,7 +1835,7 @@ RRF_score(d) = Σ 1/(k + rank(d))
 
 ### UnifiedHybridIndex
 
-BM25 + 向量双检索的统一接口：
+一站式混合检索：内部同时维护 BM25 索引和向量索引，添加文档时自动双索引，查询时自动双检索 + RRF 合并。无需手动管理两个索引。
 
 ```rust
 use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
@@ -1775,7 +1872,11 @@ for result in results {
 
 ## LangGraph
 
+LangGraph 用有向图定义复杂工作流：每个节点是一个处理步骤，边定义执行顺序。比 Chain 更灵活——支持条件分支、循环、人工介入、子图。适合需要精细控制执行流程的场景。
+
 ### StateGraph
+
+最基础的图——定义节点和边，状态在节点间传递。`AgentState` 是内置的状态结构，包含 `messages`、`steps` 等字段。
 
 ```rust
 use langchainrust::langgraph::{StateGraph, AgentState, START, END};
@@ -1803,6 +1904,8 @@ let result = compiled.invoke(AgentState::new()).await?;
 
 ### 条件边
 
+根据当前状态动态选择下一个节点。`FunctionRouter` 接收一个闭包，返回目标节点名称。适合"消息多就总结，少就继续"这类分支逻辑。
+
 ```rust
 use langchainrust::langgraph::{ConditionalEdge, FunctionRouter};
 
@@ -1817,6 +1920,8 @@ graph.add_conditional_edge(
 ```
 
 ### 人工介入 / 中断与恢复
+
+在关键节点前暂停执行，等待人工确认后继续。`with_interrupt_before` 指定哪些节点前中断；`MemoryCheckpointer` 保存执行状态，支持跨会话恢复。
 
 ```rust
 use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
@@ -1842,7 +1947,7 @@ match compiled.invoke(state).await {
 
 ## 文档加载器
 
-从各种文件格式加载文档。
+从各种文件格式加载文档，统一转为 `Document` 结构（`content` + `metadata`），供后续分割和检索使用。
 
 ### 支持的格式
 
@@ -1855,6 +1960,8 @@ match compiled.invoke(state).await {
 | **CSVLoader** | .csv | 每行作为一个文档 |
 
 ### TextLoader
+
+加载纯文本文件。支持整文件加载和按行分割加载。
 
 ```rust
 use langchainrust::{TextLoader, DocumentLoader};
@@ -1869,6 +1976,8 @@ let docs = loader.load().await?;
 
 ### JSONLoader
 
+加载 JSON 文件。默认提取整个 JSON 字符串作为内容；指定 `content_key` 后只提取特定字段的值。
+
 ```rust
 use langchainrust::{JSONLoader, DocumentLoader};
 
@@ -1881,6 +1990,8 @@ let docs = loader.load().await?;
 ```
 
 ### MarkdownLoader
+
+加载 Markdown 文件。支持按标题级别分割——每个标题下的内容作为一个独立文档，保持章节的语义完整性。
 
 ```rust
 use langchainrust::{MarkdownLoader, DocumentLoader};
@@ -1954,7 +2065,7 @@ let docs = loader.load().await?;
 
 ## MultiQueryRetriever
 
-使用 LLM 生成多个查询变体以提高检索召回率。
+用户的查询可能措辞与文档不一致，导致检索不到。MultiQueryRetriever 用 LLM 将一个查询改写为多个变体，分别检索后合并去重，提高召回率。
 
 ### 工作方式
 
@@ -1981,6 +2092,8 @@ let docs = multi_query.retrieve_multi("database timeout").await?;
 
 ### StaticQueryGenerator（无需 LLM）
 
+不需要 LLM 的查询生成器——通过同义词表扩展查询。适合不想额外调用 LLM、或查询模式可预测的场景。
+
 ```rust
 use langchainrust::StaticQueryGenerator;
 use std::collections::HashMap;
@@ -1999,7 +2112,7 @@ let queries = generator.generate("database connection failed");
 
 ## HyDE 检索器
 
-**HyDE（假设文档嵌入）** 使用 LLM 生成假设文档，然后检索与之相似的真实文档。
+**HyDE（Hypothetical Document Embeddings）** 解决"查询太短、与文档不匹配"的问题：先用 LLM 生成一个假设性答案（可能不准确），再用这个假设答案的嵌入去检索真实文档。假设答案的措辞更接近真实文档，所以检索效果更好。
 
 ### 工作方式
 
@@ -2028,7 +2141,7 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 
 ## 重排序
 
-对检索结果重新评分以提高精确度。
+初次检索可能返回不太相关的结果。重排序器对检索结果重新评分，把最相关的排到前面，提高精确度。
 
 ### 支持的重排序器
 
@@ -2038,6 +2151,8 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 | **BM25Reranker** | BM25 公式重排序 |
 
 ### KeywordReranker
+
+基于关键词匹配重排序——查询中的关键词在文档中出现越多、越靠前，分数越高。简单快速，不需要嵌入模型。
 
 ```rust
 use langchainrust::{KeywordReranker, RerankingExecutor};
@@ -2052,6 +2167,8 @@ let reranked = executor.rerank("Rust programming", search_results)?;
 ```
 
 ### BM25Reranker
+
+使用 BM25 公式重排序——比 KeywordReranker 更精确，考虑了词频饱和度和文档长度归一化。可调 k1/b 参数。
 
 ```rust
 use langchainrust::{BM25Reranker, RerankingExecutor};
@@ -2068,11 +2185,11 @@ let reranked = executor.rerank("Rust programming", results)?;
 
 ## 回调
 
-用于追踪、监控和日志记录 LLM 应用执行的回调系统。
+回调系统让你在 LLM 调用的关键节点（开始、结束、出错、流式 token）插入自定义逻辑，用于日志、追踪、监控。`CallbackManager` 管理多个处理器，按顺序触发。
 
 ### CallbackManager
 
-管理多个回调处理器：
+管理多个回调处理器，支持组合使用（如同时输出到控制台和 LangSmith）：
 
 ```rust
 use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
@@ -2085,7 +2202,7 @@ let manager = CallbackManager::new()
 
 ### StdOutHandler
 
-输出到标准输出（用于调试）：
+输出到标准输出（用于调试）。最简单的回调，直接打印 LLM 的输入输出。
 
 ```rust
 use langchainrust::StdOutHandler;
@@ -2095,7 +2212,7 @@ let handler = StdOutHandler::new();
 
 ### FileCallbackHandler
 
-输出到文件：
+输出到文件。支持 JSON 格式（便于程序解析）和文本格式（便于人阅读）。
 
 ```rust
 use langchainrust::{FileCallbackHandler, LogFormat};
@@ -2187,7 +2304,7 @@ let manager = CallbackManager::new()
 
 ## 评估
 
-量化 LLM 输出质量：在更改提示词 / 模型 / 添加 RAG 之后，运行评估集并查看分数是否提升。5 个类别共 10 个评估器：
+量化 LLM 输出质量：在更改提示词 / 模型 / 添加 RAG 之后，运行评估集并查看分数是否提升。5 个类别共 10 个评估器，覆盖从字面匹配到 RAG 幻觉检测：
 
 | 类别 | 评估器 | 描述 |
 |----------|-----------|-------------|
@@ -2199,7 +2316,7 @@ let manager = CallbackManager::new()
 
 ### EvalRunner
 
-对 `Dataset` 运行一组评估器，生成 `Report`（每个示例的分数 + 每个评估器的平均值）。
+对 `Dataset` 运行一组评估器，生成 `Report`（每个示例的分数 + 每个评估器的平均值）。支持从 JSONL 文件加载评估集。
 
 ```rust
 use langchainrust::evaluation::*;
