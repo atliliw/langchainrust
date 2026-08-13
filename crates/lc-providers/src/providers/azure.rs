@@ -355,8 +355,10 @@ impl AzureOpenAIChat {
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, AzureOpenAIError>> + Send>>, AzureOpenAIError>
-    {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<String, AzureOpenAIError>> + Send>>,
+        AzureOpenAIError,
+    > {
         use std::sync::{Arc, Mutex};
 
         let url = self.config.chat_url();
@@ -393,9 +395,7 @@ impl AzureOpenAIChat {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        let _ = tx
-                            .send(Err(AzureOpenAIError::Http(e.to_string())))
-                            .await;
+                        let _ = tx.send(Err(AzureOpenAIError::Http(e.to_string()))).await;
                         return;
                     }
                 };
@@ -733,11 +733,7 @@ mod tests {
 
     #[test]
     fn test_chat_url() {
-        let config = AzureOpenAIConfig::new(
-            "https://myresource.openai.azure.com",
-            "gpt4",
-            "key",
-        );
+        let config = AzureOpenAIConfig::new("https://myresource.openai.azure.com", "gpt4", "key");
         let url = config.chat_url();
         assert!(url.contains("myresource.openai.azure.com"));
         assert!(url.contains("/openai/deployments/gpt4/chat/completions"));
@@ -746,11 +742,7 @@ mod tests {
 
     #[test]
     fn test_chat_url_trailing_slash() {
-        let config = AzureOpenAIConfig::new(
-            "https://myresource.openai.azure.com/",
-            "gpt4",
-            "key",
-        );
+        let config = AzureOpenAIConfig::new("https://myresource.openai.azure.com/", "gpt4", "key");
         let url = config.chat_url();
         // Should not have double slashes
         assert!(!url.contains("//openai"));
@@ -774,8 +766,7 @@ mod tests {
 
     #[test]
     fn test_model_name() {
-        let config =
-            AzureOpenAIConfig::new("https://ep", "deploy", "key").with_model("gpt-4o");
+        let config = AzureOpenAIConfig::new("https://ep", "deploy", "key").with_model("gpt-4o");
         let chat = AzureOpenAIChat::new(config);
         assert_eq!(chat.model_name(), "gpt-4o");
     }

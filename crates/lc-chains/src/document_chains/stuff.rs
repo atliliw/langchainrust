@@ -121,6 +121,15 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
     where
         <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
     {
+        // P2-7: same loud empty-documents guard as map_reduce/refine/map_rerank —
+        // without it the LLM would be called with an empty context and fabricate
+        // an answer that has no reference information at all.
+        if documents.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
+        }
+
         let context = self.format_documents(&documents);
 
         if self.verbose {
@@ -167,20 +176,16 @@ where
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        // P2-8: validate inputs on the invoke path too, matching stream (and the
+        // crate-wide invoke+stream convention) so missing keys fail identically.
+        self.validate_inputs(&inputs)?;
+
         let input = inputs
             .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs
-            .get("documents")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
         let output = self.invoke_with_documents(documents, input).await?;
 
@@ -201,15 +206,16 @@ where
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs
-            .get("documents")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
+
+        // P2-7: guard empty documents on the stream path too, mirroring the
+        // other document chains — streaming with zero context would still call
+        // the LLM and emit a fabricated, reference-free answer.
+        if documents.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
+        }
 
         let context = self.format_documents(&documents);
         let prompt = self.build_prompt(&context, input);
@@ -232,18 +238,181 @@ where
             ))),
         });
 
-        let final_stream =
-            stream.chain(futures_util::stream::once(async move {
-                Ok(StreamToken {
-                    token: String::new(),
-                    is_final: true,
-                })
-            }));
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
 
         Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures_util::Stream;
+    use lc_core::language_models::LLMResult;
+    use lc_core::runnables::RunnableConfig;
+    use lc_core::{BaseLanguageModel, Runnable};
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct MockError(String);
+    impl std::fmt::Display for MockError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+    impl std::error::Error for MockError {}
+
+    /// Counting chat model that records `invoke` calls so the P2-7 typed entry
+    /// is provable: non-empty documents reach the LLM exactly once, and empty
+    /// documents never reach it at all.
+    struct CountingLLM {
+        invokes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for CountingLLM {
+        type Error = MockError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invokes.fetch_add(1, Ordering::SeqCst);
+            Ok(LLMResult {
+                content: "stuffed answer".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for CountingLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for CountingLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invokes.fetch_add(1, Ordering::SeqCst);
+            Ok(LLMResult {
+                content: "stuffed answer".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        {
+            let tokens = [Ok("streamed answer".to_string())];
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    /// P2-7: the typed `invoke_with_documents` entry skips the HashMap roundtrip
+    /// and runs the LLM over the documents directly.
+    #[tokio::test]
+    async fn test_stuff_typed_invoke_runs_llm() {
+        let invokes = Arc::new(AtomicUsize::new(0));
+        let chain = StuffDocumentsChain::new(CountingLLM {
+            invokes: invokes.clone(),
+        });
+
+        let out = chain
+            .invoke_with_documents(vec![Document::new("doc one")], "question")
+            .await
+            .unwrap();
+        assert_eq!(out, "stuffed answer");
+        assert_eq!(invokes.load(Ordering::SeqCst), 1);
+    }
+
+    /// P2-7: empty documents error loudly on the typed invoke path and the LLM
+    /// is never called with an empty context (consistent with
+    /// map_reduce/refine/map_rerank).
+    #[tokio::test]
+    async fn test_stuff_typed_invoke_empty_documents_errors() {
+        let invokes = Arc::new(AtomicUsize::new(0));
+        let chain = StuffDocumentsChain::new(CountingLLM {
+            invokes: invokes.clone(),
+        });
+
+        let err = match chain.invoke_with_documents(vec![], "q").await {
+            Ok(_) => panic!("expected an execution error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, ChainError::ExecutionError(_)));
+        assert_eq!(invokes.load(Ordering::SeqCst), 0);
+    }
+
+    /// P2-8: the HashMap `invoke` path validates inputs before any LLM call,
+    /// matching the stream path — a missing `input` key yields `MissingInput`
+    /// with zero invokes, instead of reaching the LLM first.
+    #[tokio::test]
+    async fn test_stuff_invoke_missing_input_errors_before_llm() {
+        let invokes = Arc::new(AtomicUsize::new(0));
+        let chain = StuffDocumentsChain::new(CountingLLM {
+            invokes: invokes.clone(),
+        });
+        let mut inputs = HashMap::new();
+        inputs.insert("documents".to_string(), serde_json::json!([]));
+
+        let err = match chain.invoke(inputs).await {
+            Ok(_) => panic!("expected a missing-input error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, ChainError::MissingInput(_)));
+        assert_eq!(invokes.load(Ordering::SeqCst), 0);
+    }
+
+    /// P2-7: the stream path guards empty documents the same way, erroring
+    /// before any `stream_chat` call.
+    #[tokio::test]
+    async fn test_stuff_stream_empty_documents_errors() {
+        let chain = StuffDocumentsChain::new(CountingLLM {
+            invokes: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), Value::String("q".to_string()));
+        inputs.insert("documents".to_string(), serde_json::json!([]));
+
+        let err = match chain.stream(inputs).await {
+            Ok(_) => panic!("expected an execution error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, ChainError::ExecutionError(_)));
     }
 }

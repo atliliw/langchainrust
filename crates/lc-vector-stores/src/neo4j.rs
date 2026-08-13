@@ -200,10 +200,7 @@ impl Neo4jVectorStore {
                 "Authorization",
                 format!(
                     "Basic {}",
-                    base64_encode(format!(
-                        "{}:{}",
-                        self.config.username, self.config.password
-                    ))
+                    base64_encode(format!("{}:{}", self.config.username, self.config.password))
                 ),
             )
             .json(&body)
@@ -313,7 +310,11 @@ impl VectorStore for Neo4jVectorStore {
 
         let ids: Vec<String> = documents
             .iter()
-            .map(|doc| doc.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+            .map(|doc| {
+                doc.id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            })
             .collect();
 
         // Build UNWIND Cypher for batch insert
@@ -349,8 +350,7 @@ impl VectorStore for Neo4jVectorStore {
             metadata_prop = self.config.metadata_property,
         );
 
-        self.run_query(&query, json!({ "rows": rows }))
-            .await?;
+        self.run_query(&query, json!({ "rows": rows })).await?;
 
         Ok(ids)
     }
@@ -587,30 +587,21 @@ mod tests {
     fn test_tx_url_bolt() {
         let config = Neo4jConfig::new("bolt://localhost:7687", "neo4j", "pass", "idx");
         let store = Neo4jVectorStore::new(config);
-        assert_eq!(
-            store.tx_url(),
-            "http://localhost:7687/db/neo4j/tx/commit"
-        );
+        assert_eq!(store.tx_url(), "http://localhost:7687/db/neo4j/tx/commit");
     }
 
     #[test]
     fn test_tx_url_neo4j_scheme() {
         let config = Neo4jConfig::new("neo4j://host:7687", "neo4j", "pass", "idx");
         let store = Neo4jVectorStore::new(config);
-        assert_eq!(
-            store.tx_url(),
-            "http://host:7687/db/neo4j/tx/commit"
-        );
+        assert_eq!(store.tx_url(), "http://host:7687/db/neo4j/tx/commit");
     }
 
     #[test]
     fn test_tx_url_bolt_s() {
         let config = Neo4jConfig::new("bolt+s://host:7687", "neo4j", "pass", "idx");
         let store = Neo4jVectorStore::new(config);
-        assert_eq!(
-            store.tx_url(),
-            "https://host:7687/db/neo4j/tx/commit"
-        );
+        assert_eq!(store.tx_url(), "https://host:7687/db/neo4j/tx/commit");
     }
 
     #[test]
@@ -618,10 +609,7 @@ mod tests {
         let config =
             Neo4jConfig::new("bolt://localhost:7687", "neo4j", "pass", "idx").with_database("mydb");
         let store = Neo4jVectorStore::new(config);
-        assert_eq!(
-            store.tx_url(),
-            "http://localhost:7687/db/mydb/tx/commit"
-        );
+        assert_eq!(store.tx_url(), "http://localhost:7687/db/mydb/tx/commit");
     }
 
     #[test]

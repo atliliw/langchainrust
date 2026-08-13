@@ -23,7 +23,20 @@ LangChainRust provides 10 built-in evaluators and an LLM-as-judge for quantifyin
 pub struct Score { pub value: f64, pub label: Option<String> }  // 0.0-1.0
 pub struct Example { pub input: String, pub reference: String }
 pub struct Dataset { pub examples: Vec<Example> }
-pub struct Report { pub per_example: Vec<HashMap<String, Score>>, pub summary: HashMap<String, f64> }
+// Report 携带原文 + 汇总(均值/标准差)+ 失败清单,可反序列化(落盘二次分析)
+pub struct Report {
+    pub per_example: Vec<ExampleReport>,          // 每条含 input/reference/prediction 原文
+    pub summary: HashMap<String, ScoreSummary>,   // 每个评测器: mean / std / count
+    pub failures: Vec<FailureRecord>,             // 逐条容错记录(为空 = 全部成功)
+}
+pub struct ExampleReport {
+    pub index: usize,
+    pub input: String,
+    pub reference: String,
+    pub prediction: String,
+    pub scores: HashMap<String, Score>,
+}
+pub struct ScoreSummary { pub mean: f64, pub std: f64, pub count: usize }
 ```
 
 ## Batch Evaluation
@@ -42,7 +55,8 @@ let runner = EvalRunner::new(vec![
 ]);
 
 let report = runner.run(&dataset, &predictor).await?;
-// report.summary: {"exact_match": 0.5, "string_distance": 0.85}
+// report.summary: {"exact_match": ScoreSummary { mean: 0.5, .. }, "string_distance": { .. }}
+// 单条 predict / 打分失败不中断整批,记入 report.failures(P1-3)
 ```
 
 ## Individual Evaluators
@@ -81,4 +95,14 @@ use langchainrust::{PairwiseJudge, Verdict};
 let judge = PairwiseJudge::new(llm).with_rubric("Which answer is more accurate?");
 let verdict = judge.compare("What is X?", "Answer A", "Answer B").await?;
 // Verdict::AWins, BWins, or Tie
+```
+
+`PairwiseJudge` 也实现了 `PairwiseEvaluator` trait(P1-1),可以直接进 `EvalRunner`
+统一报告:成对评测器以 `(prediction, reference)` 作为 A/B 两个候选(竞技场用法把待比
+答案放进 reference 槽),得分 1.0 = prediction 优、0.5 = 平局、0.0 = reference 优:
+
+```rust
+let runner = EvalRunner::new(vec![/* 单点评测器 */])
+    .with_pairwise(vec![Box::new(judge)]);
+let report = runner.run(&dataset, &predictor).await?;
 ```

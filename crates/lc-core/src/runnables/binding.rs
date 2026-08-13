@@ -97,23 +97,18 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableBinding<I, O> {
 impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for RunnableBinding<I, O> {
     type Error = LcelError;
 
-    async fn invoke(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         let merged = self.merged_config(config);
         let result = self
             .bound
             .invoke_any(Box::new(input) as Box<dyn Any + Send>, Some(merged))
             .await?;
-        result
-            .downcast::<O>()
-            .map(|b| *b)
-            .map_err(|_| LcelError::TypeMismatch(format!(
+        result.downcast::<O>().map(|b| *b).map_err(|_| {
+            LcelError::TypeMismatch(format!(
                 "binding output downcast: expected {}",
                 std::any::type_name::<O>()
-            )))
+            ))
+        })
     }
 
     async fn batch(
@@ -122,19 +117,20 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         config: Option<RunnableConfig>,
     ) -> Result<Vec<O>, LcelError> {
         let merged = self.merged_config(config);
-        let boxed_inputs: Vec<Box<dyn Any + Send>> =
-            inputs.into_iter().map(|i| Box::new(i) as Box<dyn Any + Send>).collect();
+        let boxed_inputs: Vec<Box<dyn Any + Send>> = inputs
+            .into_iter()
+            .map(|i| Box::new(i) as Box<dyn Any + Send>)
+            .collect();
         let results = self.bound.batch_any(boxed_inputs, Some(merged)).await?;
         results
             .into_iter()
             .map(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "binding batch downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
             .collect()
     }
@@ -151,13 +147,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
             .await?;
         let output_stream = stream.map(|result| {
             result.and_then(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "binding stream downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
         });
         Ok(Box::pin(output_stream))
@@ -176,13 +171,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
 
         let typed_output = output_stream.map(|result| {
             result.and_then(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "binding transform downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
         });
         Ok(Box::pin(typed_output))
@@ -205,9 +199,7 @@ mod tests {
             input: String,
             config: Option<RunnableConfig>,
         ) -> Result<String, Self::Error> {
-            let tags = config
-                .map(|c| c.tags.join(","))
-                .unwrap_or_default();
+            let tags = config.map(|c| c.tags.join(",")).unwrap_or_default();
             if tags.is_empty() {
                 Ok(input)
             } else {
@@ -227,8 +219,8 @@ mod tests {
 
     #[tokio::test]
     async fn binding_with_kwargs() {
-        let binding = RunnableBinding::new(EchoRunnable)
-            .bind("stop", Value::String("\n".to_string()));
+        let binding =
+            RunnableBinding::new(EchoRunnable).bind("stop", Value::String("\n".to_string()));
 
         // kwargs are stored in metadata
         let result = binding.invoke("test".to_string(), None).await.unwrap();

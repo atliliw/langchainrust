@@ -129,7 +129,7 @@ impl AgentStep {
 /// Agent output
 ///
 /// The plan method of the Agent may return an action or a final answer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentOutput {
     /// Execute a single action
     Action(AgentAction),

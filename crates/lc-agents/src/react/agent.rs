@@ -8,7 +8,7 @@ use super::parser::ReActOutputParser;
 use super::prompt::{build_react_prompt, format_scratchpad};
 use crate::{AgentError, AgentOutput, AgentStep, BaseAgent};
 use async_trait::async_trait;
-use lc_core::language_models::BaseChatModel;
+use lc_core::language_models::{BaseChatModel, TokenUsage};
 use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -32,6 +32,9 @@ pub struct ReActAgent {
 
     /// 自定义系统提示词（可选）
     system_prompt: Option<String>,
+
+    /// 最近一次 `plan()` 的 token 用量(P1-5)。
+    last_token_usage: std::sync::Mutex<Option<TokenUsage>>,
 }
 
 impl ReActAgent {
@@ -55,6 +58,7 @@ impl ReActAgent {
             tools,
             parser: ReActOutputParser::new(),
             system_prompt,
+            last_token_usage: std::sync::Mutex::new(None),
         }
     }
 
@@ -69,6 +73,7 @@ impl ReActAgent {
             tools,
             parser: ReActOutputParser::new(),
             system_prompt,
+            last_token_usage: std::sync::Mutex::new(None),
         }
     }
 
@@ -157,11 +162,19 @@ impl BaseAgent for ReActAgent {
         let messages = vec![Message::human(prompt_text)];
 
         // 调用 LLM
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| AgentError::Other(format!("LLM call failed: {}", e)))?;
+        let result = crate::retry::retry_chat(
+            self.llm.as_ref(),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| AgentError::Other(format!("LLM call failed: {}", e)))?;
+
+        // P1-5: record token usage for the executor's metrics.
+        if let Ok(mut guard) = self.last_token_usage.lock() {
+            *guard = result.token_usage.clone();
+        }
 
         // 解析输出
         self.parser.parse(&result.content)
@@ -170,6 +183,11 @@ impl BaseAgent for ReActAgent {
     /// 获取允许的工具列表
     fn get_allowed_tools(&self) -> Option<Vec<&str>> {
         Some(self.get_tool_names())
+    }
+
+    /// Reports the token usage from the most recent `plan()` call (P1-5).
+    fn last_token_usage(&self) -> Option<TokenUsage> {
+        self.last_token_usage.lock().ok().and_then(|g| g.clone())
     }
 }
 

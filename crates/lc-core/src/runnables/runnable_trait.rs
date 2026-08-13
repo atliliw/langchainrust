@@ -146,7 +146,9 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
         // Use the last item (stream accumulation semantics)
         if let Some(last) = items.into_iter().last() {
             let result = self.invoke(last, config).await?;
-            Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+            Ok(Box::pin(futures_util::stream::once(
+                async move { Ok(result) },
+            )))
         } else {
             Ok(Box::pin(futures_util::stream::empty()))
         }
@@ -204,7 +206,8 @@ mod tests {
             Ok("first".to_string()),
             Ok("second".to_string()),
             Ok("third".to_string()),
-        ])) as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
+        ]))
+            as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
 
         let mut output_stream = runnable.transform(input_stream, None).await.unwrap();
 
@@ -219,7 +222,9 @@ mod tests {
     #[tokio::test]
     async fn test_default_transform_empty_input() {
         let runnable = TestRunnable;
-        let input_stream = Box::pin(futures_util::stream::empty::<Result<String, std::convert::Infallible>>())
+        let input_stream = Box::pin(futures_util::stream::empty::<
+            Result<String, std::convert::Infallible>,
+        >())
             as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
 
         let mut output_stream = runnable.transform(input_stream, None).await.unwrap();

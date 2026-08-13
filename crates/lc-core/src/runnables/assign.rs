@@ -74,7 +74,8 @@ impl RunnableAssign {
             _marker: std::marker::PhantomData,
         };
 
-        self.mappings.push((key.to_string(), into_runnable_any(wrapped)));
+        self.mappings
+            .push((key.to_string(), into_runnable_any(wrapped)));
         self
     }
 
@@ -143,13 +144,12 @@ impl Runnable<HashMap<String, Value>, HashMap<String, Value>> for RunnableAssign
             let result = step.invoke_any(boxed_input, config.clone()).await?;
 
             // The result should be a Value (from AssignStepWrapper)
-            let value = result
-                .downcast::<Value>()
-                .map(|b| *b)
-                .map_err(|_| LcelError::TypeMismatch(format!(
+            let value = result.downcast::<Value>().map(|b| *b).map_err(|_| {
+                LcelError::TypeMismatch(format!(
                     "assign step output downcast: expected Value, got unknown type for key '{}'",
                     key
-                )))?;
+                ))
+            })?;
 
             input.insert(key.clone(), value);
         }
@@ -162,9 +162,14 @@ impl Runnable<HashMap<String, Value>, HashMap<String, Value>> for RunnableAssign
         &self,
         input: HashMap<String, Value>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>, LcelError> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>,
+        LcelError,
+    > {
         let result = self.invoke(input, config).await?;
-        Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(result) },
+        )))
     }
 
     /// Batch: invoke per input.
@@ -189,89 +194,122 @@ mod tests {
 
     #[tokio::test]
     async fn assign_single_field() {
-        let assign = RunnableAssign::new()
-            .with("length", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+        let assign = RunnableAssign::new().with(
+            "length",
+            RunnableLambda::new_sync(|m: HashMap<String, Value>| {
                 m.get("text")
                     .and_then(|v| v.as_str())
                     .map(|s| s.len() as i64)
                     .unwrap_or(0)
-            }));
+            }),
+        );
 
         let mut input = HashMap::new();
         input.insert("text".to_string(), Value::String("hello".to_string()));
 
         let result = assign.invoke(input, None).await.unwrap();
-        assert_eq!(result.get("text").unwrap(), &Value::String("hello".to_string()));
-        assert_eq!(result.get("length").unwrap(), &Value::Number(serde_json::Number::from(5)));
+        assert_eq!(
+            result.get("text").unwrap(),
+            &Value::String("hello".to_string())
+        );
+        assert_eq!(
+            result.get("length").unwrap(),
+            &Value::Number(serde_json::Number::from(5))
+        );
     }
 
     #[tokio::test]
     async fn assign_multiple_fields() {
         let assign = RunnableAssign::new()
-            .with("length", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
-                m.get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(0)
-            }))
-            .with("upper", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
-                m.get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_uppercase())
-                    .unwrap_or_default()
-            }));
+            .with(
+                "length",
+                RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+                    m.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.len() as i64)
+                        .unwrap_or(0)
+                }),
+            )
+            .with(
+                "upper",
+                RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+                    m.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_uppercase())
+                        .unwrap_or_default()
+                }),
+            );
 
         let mut input = HashMap::new();
         input.insert("text".to_string(), Value::String("hello".to_string()));
 
         let result = assign.invoke(input, None).await.unwrap();
-        assert_eq!(result.get("length").unwrap(), &Value::Number(serde_json::Number::from(5)));
-        assert_eq!(result.get("upper").unwrap(), &Value::String("HELLO".to_string()));
+        assert_eq!(
+            result.get("length").unwrap(),
+            &Value::Number(serde_json::Number::from(5))
+        );
+        assert_eq!(
+            result.get("upper").unwrap(),
+            &Value::String("HELLO".to_string())
+        );
         // Original field preserved
-        assert_eq!(result.get("text").unwrap(), &Value::String("hello".to_string()));
+        assert_eq!(
+            result.get("text").unwrap(),
+            &Value::String("hello".to_string())
+        );
     }
 
     #[tokio::test]
     async fn assign_overwrites_existing_key() {
-        let assign = RunnableAssign::new()
-            .with("text", RunnableLambda::new_sync(|_m: HashMap<String, Value>| {
-                "replaced".to_string()
-            }));
+        let assign = RunnableAssign::new().with(
+            "text",
+            RunnableLambda::new_sync(|_m: HashMap<String, Value>| "replaced".to_string()),
+        );
 
         let mut input = HashMap::new();
         input.insert("text".to_string(), Value::String("original".to_string()));
 
         let result = assign.invoke(input, None).await.unwrap();
-        assert_eq!(result.get("text").unwrap(), &Value::String("replaced".to_string()));
+        assert_eq!(
+            result.get("text").unwrap(),
+            &Value::String("replaced".to_string())
+        );
     }
 
     #[tokio::test]
     async fn assign_stream_works() {
-        let assign = RunnableAssign::new()
-            .with("length", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+        let assign = RunnableAssign::new().with(
+            "length",
+            RunnableLambda::new_sync(|m: HashMap<String, Value>| {
                 m.get("text")
                     .and_then(|v| v.as_str())
                     .map(|s| s.len() as i64)
                     .unwrap_or(0)
-            }));
+            }),
+        );
 
         let mut input = HashMap::new();
         input.insert("text".to_string(), Value::String("hi".to_string()));
 
         let mut stream = assign.stream(input, None).await.unwrap();
         let result = stream.next().await.unwrap().unwrap();
-        assert_eq!(result.get("length").unwrap(), &Value::Number(serde_json::Number::from(2)));
+        assert_eq!(
+            result.get("length").unwrap(),
+            &Value::Number(serde_json::Number::from(2))
+        );
     }
 
     #[tokio::test]
     async fn assign_batch_works() {
-        let assign = RunnableAssign::new()
-            .with("length", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+        let assign = RunnableAssign::new().with(
+            "length",
+            RunnableLambda::new_sync(|m: HashMap<String, Value>| {
                 m.get("text")
                     .and_then(|v| v.as_str())
                     .map(|s| s.len() as i64)
                     .unwrap_or(0)
-            }));
+            }),
+        );
 
         let mut input1 = HashMap::new();
         input1.insert("text".to_string(), Value::String("hi".to_string()));
@@ -280,8 +318,14 @@ mod tests {
         input2.insert("text".to_string(), Value::String("hello".to_string()));
 
         let results = assign.batch(vec![input1, input2], None).await.unwrap();
-        assert_eq!(results[0].get("length").unwrap(), &Value::Number(serde_json::Number::from(2)));
-        assert_eq!(results[1].get("length").unwrap(), &Value::Number(serde_json::Number::from(5)));
+        assert_eq!(
+            results[0].get("length").unwrap(),
+            &Value::Number(serde_json::Number::from(2))
+        );
+        assert_eq!(
+            results[1].get("length").unwrap(),
+            &Value::Number(serde_json::Number::from(5))
+        );
     }
 
     #[tokio::test]

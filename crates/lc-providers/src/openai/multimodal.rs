@@ -95,10 +95,7 @@ impl OpenAIChat {
     /// Transcribes audio using Whisper.
     ///
     /// Sends audio to the `/v1/audio/transcriptions` endpoint.
-    pub async fn whisper_transcribe(
-        &self,
-        audio: AudioContent,
-    ) -> Result<String, MultimodalError> {
+    pub async fn whisper_transcribe(&self, audio: AudioContent) -> Result<String, MultimodalError> {
         let url = format!("{}/audio/transcriptions", self.config.base_url);
 
         let audio_data = if audio.is_base64() {

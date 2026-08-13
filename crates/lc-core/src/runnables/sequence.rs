@@ -39,7 +39,9 @@ pub struct RunnableSequence<I: Send + Sync + 'static, O: Send + Sync + 'static> 
     _marker: PhantomData<(I, O)>,
 }
 
-impl<I: Send + Sync + 'static, O: Send + Sync + 'static> std::fmt::Debug for RunnableSequence<I, O> {
+impl<I: Send + Sync + 'static, O: Send + Sync + 'static> std::fmt::Debug
+    for RunnableSequence<I, O>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunnableSequence")
             .field("steps", &self.steps.len())
@@ -116,22 +118,17 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
     type Error = LcelError;
 
     /// Execute the pipeline: feed input through each step sequentially.
-    async fn invoke(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         let mut current: Box<dyn Any + Send> = Box::new(input);
         for step in &self.steps {
             current = step.invoke_any(current, config.clone()).await?;
         }
-        current
-            .downcast::<O>()
-            .map(|b| *b)
-            .map_err(|_| LcelError::TypeMismatch(format!(
+        current.downcast::<O>().map(|b| *b).map_err(|_| {
+            LcelError::TypeMismatch(format!(
                 "final downcast failed: expected {}",
                 std::any::type_name::<O>()
-            )))
+            ))
+        })
     }
 
     /// Batch processing: each step processes all inputs before
@@ -142,8 +139,10 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         inputs: Vec<I>,
         config: Option<RunnableConfig>,
     ) -> Result<Vec<O>, LcelError> {
-        let mut current: Vec<Box<dyn Any + Send>> =
-            inputs.into_iter().map(|i| Box::new(i) as Box<dyn Any + Send>).collect();
+        let mut current: Vec<Box<dyn Any + Send>> = inputs
+            .into_iter()
+            .map(|i| Box::new(i) as Box<dyn Any + Send>)
+            .collect();
 
         for step in &self.steps {
             current = step.batch_any(current, config.clone()).await?;
@@ -152,13 +151,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         current
             .into_iter()
             .map(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "batch final downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
             .collect()
     }
@@ -171,10 +169,11 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
         // Start with a single-element stream containing the input
-        let input_stream: Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>> =
-            Box::pin(futures_util::stream::once(async {
-                Ok(Box::new(input) as Box<dyn Any + Send>)
-            }));
+        let input_stream: Pin<
+            Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>,
+        > = Box::pin(futures_util::stream::once(async {
+            Ok(Box::new(input) as Box<dyn Any + Send>)
+        }));
 
         let mut current_stream = input_stream;
 
@@ -186,13 +185,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         // Downcast the final stream from Any to O
         let output_stream = current_stream.map(|result| {
             result.and_then(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "stream final downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
         });
 
@@ -207,10 +205,9 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
         // Upcast input stream from I to Any
-        let mut current_stream: Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>> =
-            Box::pin(input.map(|result| {
-                result.map(|item| Box::new(item) as Box<dyn Any + Send>)
-            }));
+        let mut current_stream: Pin<
+            Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>,
+        > = Box::pin(input.map(|result| result.map(|item| Box::new(item) as Box<dyn Any + Send>)));
 
         // Chain each step's transform
         for step in &self.steps {
@@ -220,13 +217,12 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         // Downcast the final stream from Any to O
         let output_stream = current_stream.map(|result| {
             result.and_then(|boxed| {
-                boxed
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
+                boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                    LcelError::TypeMismatch(format!(
                         "transform final downcast: expected {}",
                         std::any::type_name::<O>()
-                    )))
+                    ))
+                })
             })
         });
 
@@ -245,7 +241,11 @@ mod tests {
     impl Runnable<i32, i32> for Double {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<i32, Self::Error> {
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<i32, Self::Error> {
             Ok(input * 2)
         }
     }
@@ -256,7 +256,11 @@ mod tests {
     impl Runnable<i32, i32> for AddOne {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<i32, Self::Error> {
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<i32, Self::Error> {
             Ok(input + 1)
         }
     }
@@ -267,7 +271,11 @@ mod tests {
     impl Runnable<i32, String> for I32ToString {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<String, Self::Error> {
             Ok(format!("value={}", input))
         }
     }
@@ -327,7 +335,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipe_on_sequence_works() {
-        let seq = RunnableSequence::from_single(Double).pipe(AddOne).pipe(I32ToString);
+        let seq = RunnableSequence::from_single(Double)
+            .pipe(AddOne)
+            .pipe(I32ToString);
         let result = seq.invoke(5, None).await.unwrap();
         assert_eq!(result, "value=11"); // 5*2+1=11
     }

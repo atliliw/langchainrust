@@ -248,6 +248,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -256,10 +258,15 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -280,6 +287,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1170,6 +1178,9 @@ name = "esaxx-rs"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "euclid"
@@ -2042,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "langchainrust"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2103,21 +2114,28 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lc-a2a"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "hmac",
+ "lc-agents",
  "lc-chains",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-stream",
+ "tower-http",
  "uuid",
 ]
 
 [[package]]
 name = "lc-agents"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2142,11 +2160,12 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "uuid",
 ]
 
 [[package]]
 name = "lc-callbacks"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2165,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "lc-chains"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2175,6 +2194,7 @@ dependencies = [
  "lc-rag",
  "lc-schema",
  "lc-shared",
+ "log",
  "regex",
  "serde",
  "serde_json",
@@ -2184,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2192,6 +2212,7 @@ dependencies = [
  "lc-callbacks",
  "lc-schema",
  "lc-shared",
+ "log",
  "regex",
  "reqwest",
  "schemars",
@@ -2205,23 +2226,26 @@ dependencies = [
 
 [[package]]
 name = "lc-embeddings"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "fastembed",
+ "futures-util",
  "lc-core",
+ "log",
  "ndarray",
  "ort",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokenizers",
  "tokio",
 ]
 
 [[package]]
 name = "lc-evaluation"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2229,29 +2253,36 @@ dependencies = [
  "lc-embeddings",
  "lc-providers",
  "lc-schema",
+ "log",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
 ]
 
 [[package]]
 name = "lc-guardrails"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "lc-agents",
+ "lc-chains",
  "lc-core",
  "lc-providers",
+ "lc-schema",
+ "log",
  "regex",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "lc-langgraph"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2268,19 +2299,23 @@ dependencies = [
 
 [[package]]
 name = "lc-mcp"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "lc-core",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
 name = "lc-memory"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2292,6 +2327,7 @@ dependencies = [
  "lc-schema",
  "lc-shared",
  "lc-vector-stores",
+ "log",
  "mongodb",
  "serde",
  "serde_json",
@@ -2301,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "lc-prompts"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "lc-schema",
  "regex",
@@ -2311,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "lc-providers"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2336,11 +2372,12 @@ dependencies = [
 
 [[package]]
 name = "lc-rag"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "bincode",
  "csv",
+ "fnv",
  "lc-core",
  "lc-embeddings",
  "lc-prompts",
@@ -2364,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "lc-schema"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "lc-shared",
  "serde",
@@ -2373,11 +2410,13 @@ dependencies = [
 
 [[package]]
 name = "lc-sessions"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-util",
  "lc-core",
+ "lc-memory",
  "lc-schema",
  "serde",
  "serde_json",
@@ -2387,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "lc-shared"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2396,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "lc-tools"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2418,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "lc-tools-derive"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2427,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "lc-vector-stores"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4186,6 +4225,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4641,6 +4691,7 @@ dependencies = [
  "derive_builder",
  "esaxx-rs",
  "getrandom 0.3.4",
+ "indicatif",
  "itertools 0.14.0",
  "log",
  "macro_rules_attribute",
@@ -4728,6 +4779,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4822,6 +4874,7 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -4860,6 +4913,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

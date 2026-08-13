@@ -30,7 +30,7 @@ impl Default for MockEmbeddings {
 #[async_trait]
 impl Embeddings for MockEmbeddings {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
 

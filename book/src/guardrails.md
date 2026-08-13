@@ -14,11 +14,21 @@ Guardrails provide input/output validation to protect production agents from mal
 
 ## Guardrail Result
 
+Input and output guardrails return **different** result types, so the type system
+enforces that `Modify` can only be produced on the output side.
+
 ```rust
-pub enum GuardrailResult {
-    Pass,                    // Input/output is acceptable
-    Block { reason: String }, // Reject with reason
-    Modify { new_value: String }, // Replace (output-side only)
+// Input side: no Modify variant — input guardrails can only Pass or Block
+pub enum InputGuardrailResult {
+    Pass,
+    Block { reason: String },
+}
+
+// Output side: Modify is the only place rewriting is allowed
+pub enum OutputGuardrailResult {
+    Pass,
+    Block { reason: String },
+    Modify { new_value: String },
 }
 ```
 
@@ -54,7 +64,7 @@ let mut guarded = GuardedAgent::new(
 );
 
 let result = guarded.invoke("What is my password?".to_string()).await?;
-// Returns Err(GuardrailError::Blocked(...)) if guardrail triggers
+// Returns Err(GuardrailError::Blocked { .. }) if guardrail triggers
 
 // Check violations
 let violations = guarded.violations();
@@ -76,19 +86,22 @@ let guardrail = SensitiveInfoGuardrail::new()
 ## Custom Guardrails
 
 ```rust
-use langchainrust::{InputGuardrail, GuardrailResult};
+use langchainrust::{InputGuardrail, InputGuardrailResult};
 
 struct NoSQLInjection;
 
 #[async_trait]
 impl InputGuardrail for NoSQLInjection {
     fn name(&self) -> &str { "no_sql_injection" }
-    async fn validate(&self, input: &str) -> GuardrailResult {
+    async fn validate(&self, input: &str) -> InputGuardrailResult {
         if input.contains("{$") || input.contains("{$gt:") {
-            GuardrailResult::Block { reason: "Potential NoSQL injection".into() }
+            InputGuardrailResult::Block { reason: "Potential NoSQL injection".into() }
         } else {
-            GuardrailResult::Pass
+            InputGuardrailResult::Pass
         }
     }
 }
 ```
+
+> 输入护栏返回 [`InputGuardrailResult`]（没有 `Modify` 变体），输出护栏返回
+> [`OutputGuardrailResult`]（含 `Modify`）。类型系统强制"修改结果仅输出侧可产生"。

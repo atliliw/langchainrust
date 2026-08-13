@@ -3,20 +3,26 @@
 //!
 //! 使用 LLM 生成多个查询变体，提高检索召回率。
 
-use lc_core::Runnable;
+use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_prompts::PromptTemplate;
-use lc_providers::OpenAIChat;
+use lc_providers::ProviderError;
 use lc_schema::Message;
 use lc_vector_stores::{Document, SearchResult};
+use serde_json::json;
 
 use crate::retriever::RetrieverTrait;
+use crate::structured::chat_structured;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Generate a stable document ID from content hash (M58).
+///
+/// P2-3: 用 FNV-1a 64 替代 `DefaultHasher`(std 内部算法不保证跨进程稳定;
+/// FNV-1a 是完全指定的确定性哈希)。
 fn doc_content_hash(content: &str) -> String {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = fnv::FnvHasher::default();
     content.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
@@ -114,7 +120,9 @@ Alternative questions:"#;
 /// 最后合并去重结果返回。
 pub struct MultiQueryRetriever {
     /// LLM 用于生成查询变体
-    llm: OpenAIChat,
+    ///
+    /// P0-3: 不再硬编码 `OpenAIChat`,接受任意实现 `BaseChatModel` 的 LLM。
+    llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 
     /// 基础检索器
     base_retriever: Arc<dyn RetrieverTrait>,
@@ -124,7 +132,24 @@ pub struct MultiQueryRetriever {
 }
 
 impl MultiQueryRetriever {
-    pub fn new(llm: OpenAIChat, base_retriever: Arc<dyn RetrieverTrait>) -> Self {
+    /// 创建 MultiQueryRetriever(接受任意实现 `BaseChatModel` 的 LLM)
+    pub fn new<L>(llm: L, base_retriever: Arc<dyn RetrieverTrait>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
+        Self {
+            llm: lc_providers::wrap_chat_model(llm),
+            base_retriever,
+            config: MultiQueryConfig::default(),
+        }
+    }
+
+    /// P0-3: 从已包装的 `Arc<dyn BaseChatModel<Error = ProviderError>>` 构建
+    pub fn new_arc(
+        llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
+        base_retriever: Arc<dyn RetrieverTrait>,
+    ) -> Self {
         Self {
             llm,
             base_retriever,
@@ -160,29 +185,47 @@ impl MultiQueryRetriever {
             .format(&vars)
             .unwrap_or_else(|_| self.config.prompt_template.clone());
 
-        let messages = vec![Message::human(prompt)];
+        // P2-1: 优先 tool_calls 结构化查询列表;文本解析失败时带提示重试 1 次。
+        const MAX_RETRIES: usize = 1;
+        let mut current_prompt = prompt;
 
-        let response = self
-            .llm
-            .invoke(messages, None)
+        for attempt in 0..=MAX_RETRIES {
+            let result = chat_structured(
+                self.llm.as_ref(),
+                Some(queries_tool()),
+                vec![Message::human(&current_prompt)],
+            )
             .await
-            .map_err(|e| MultiQueryError::LLMError(e.to_string()))?;
+            .map_err(MultiQueryError::LLMError)?;
 
-        let content = response.content;
+            // 优先 tool_calls:查询字符串数组
+            if let Some(args) = &result.tool_args {
+                if let Some(queries) = parse_queries(args) {
+                    if !queries.is_empty() {
+                        return Ok(queries);
+                    }
+                }
+            }
 
-        let queries: Vec<String> = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| line.trim().to_string())
-            .collect();
+            // 文本兜底:逐行切,清理编号/引号/项目符号等脏文本
+            let queries = parse_query_lines(&result.content, self.config.num_queries);
+            if !queries.is_empty() {
+                return Ok(queries);
+            }
 
-        if queries.is_empty() {
-            return Err(MultiQueryError::ParseError(
-                "LLM 未生成有效的查询变体".to_string(),
-            ));
+            if attempt < MAX_RETRIES {
+                current_prompt = format!(
+                    "上次的输出不是有效的查询列表。请重新为原问题生成 {} 个不同的查询变体,\
+                     每行一个,不要编号、不要项目符号、不要解释或多余文字。\n\n原问题:{}\n\n\
+                     上次输出(无效):\n{}\n\n新的查询变体:",
+                    self.config.num_queries, original_query, result.content
+                );
+            }
         }
 
-        Ok(queries)
+        Err(MultiQueryError::ParseError(
+            "LLM 未生成有效的查询变体".to_string(),
+        ))
     }
 
     pub async fn retrieve_multi(&self, query: &str) -> Result<Vec<Document>, MultiQueryError> {
@@ -295,6 +338,57 @@ impl MultiQueryRetriever {
     }
 }
 
+/// 查询变体工具定义(P2-1):强制 LLM 输出查询字符串数组。
+fn queries_tool() -> ToolDefinition {
+    ToolDefinition::new(
+        "generate_queries",
+        "为原问题生成多个不同的检索查询变体,返回查询字符串数组",
+    )
+    .with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "queries": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "required": ["queries"]
+    }))
+}
+
+/// 从 tool_call 参数中提取查询数组。
+fn parse_queries(args: &serde_json::Value) -> Option<Vec<String>> {
+    args.get("queries")?
+        .as_array()?
+        .iter()
+        .map(|v| v.as_str().map(|s| s.trim().to_string()))
+        .collect()
+}
+
+/// 文本行解析:清理编号"1. xxx"、项目符号、两端引号,避免脏文本当查询。
+///
+/// 只取前 `limit` 行(通常为 `num_queries`):LLM 常把查询排在最前,
+/// 末尾的解释性散文行会被截掉,不会混入查询列表。
+fn parse_query_lines(content: &str, limit: usize) -> Vec<String> {
+    content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let stripped = line.trim_start_matches(['-', '•', '*', ' ']);
+            let stripped = stripped.trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == '、' || c == ')' || c == ' '
+            });
+            stripped
+                .trim_matches(['"', '\'', '“', '”'])
+                .trim()
+                .to_string()
+        })
+        .filter(|q| !q.is_empty())
+        .take(limit)
+        .collect()
+}
+
 /// 静态查询生成器（不依赖 LLM）
 #[allow(clippy::type_complexity)]
 pub struct StaticQueryGenerator {
@@ -397,5 +491,61 @@ mod tests {
         assert_eq!(config.num_queries, 3);
         assert_eq!(config.k_per_query, 5);
         assert_eq!(config.final_k, 10);
+    }
+
+    /// P2-1: 查询工具定义携带 queries 数组 schema。
+    #[test]
+    fn test_queries_tool_schema() {
+        let tool = queries_tool();
+        assert_eq!(tool.function.name, "generate_queries");
+        let params = tool.function.parameters.expect("parameters 应存在");
+        assert_eq!(params["properties"]["queries"]["type"], "array");
+    }
+
+    /// P2-1: tool_call 参数解析出查询数组。
+    #[test]
+    fn test_parse_queries() {
+        let args = json!({ "queries": ["数据库连接失败怎么办", "DB 连接错误排查"] });
+        let queries = parse_queries(&args).expect("应解析成功");
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0], "数据库连接失败怎么办");
+    }
+
+    /// P2-1: 缺失 queries 键 → None。
+    #[test]
+    fn test_parse_queries_missing_key() {
+        let args = json!({ "other": 1 });
+        assert!(parse_queries(&args).is_none());
+    }
+
+    /// P2-1: 文本行解析清理编号/项目符号/引号,并按 limit 截断尾部散文。
+    #[test]
+    fn test_parse_query_lines_cleanup() {
+        let content = "1. 数据库连接失败\n- 如何排查 DB 错误\n• \"连接超时怎么办\"\n\n补充解释";
+        let queries = parse_query_lines(content, 3);
+        assert_eq!(
+            queries,
+            vec![
+                "数据库连接失败".to_string(),
+                "如何排查 DB 错误".to_string(),
+                "连接超时怎么办".to_string(),
+            ]
+        );
+    }
+
+    /// P2-1: 空文本 → 空数组。
+    #[test]
+    fn test_parse_query_lines_empty() {
+        assert!(parse_query_lines("  \n\n", 3).is_empty());
+    }
+
+    /// P2-1: 超过 limit 的额外行被截断。
+    #[test]
+    fn test_parse_query_lines_capped() {
+        let content = "a\nb\nc\nd";
+        assert_eq!(
+            parse_query_lines(content, 2),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 }

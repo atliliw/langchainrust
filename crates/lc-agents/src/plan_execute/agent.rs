@@ -40,6 +40,8 @@ pub struct PlanExecuteAgent {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
     tools: Vec<Arc<dyn BaseTool>>,
     max_replans: usize,
+    /// 每步执行 Agent 的工厂(P1-2)。缺省回落 `FunctionCallingAgent`。
+    agent_factory: Option<Arc<dyn Fn() -> Arc<dyn BaseAgent> + Send + Sync>>,
 }
 
 impl PlanExecuteAgent {
@@ -60,6 +62,7 @@ impl PlanExecuteAgent {
             llm: lc_providers::wrap_chat_model(llm),
             tools,
             max_replans: 2,
+            agent_factory: None,
         }
     }
 
@@ -72,11 +75,25 @@ impl PlanExecuteAgent {
             llm,
             tools,
             max_replans: 2,
+            agent_factory: None,
         }
     }
 
     pub fn with_max_replans(mut self, n: usize) -> Self {
         self.max_replans = n;
+        self
+    }
+
+    /// 自定义每步执行 Agent 的工厂(P1-2)。
+    ///
+    /// 工厂返回的 `BaseAgent` 将用于 PlanExecute 的每个 `execute_step`。
+    /// 缺省回落 `FunctionCallingAgent`。适用于需要给执行 Agent 注入
+    /// ReAct / Streaming / 自研 Agent 的场景。
+    pub fn with_agent_factory(
+        mut self,
+        factory: Arc<dyn Fn() -> Arc<dyn BaseAgent> + Send + Sync>,
+    ) -> Self {
+        self.agent_factory = Some(factory);
         self
     }
 
@@ -151,15 +168,56 @@ impl PlanExecuteAgent {
         Err(PlanExecuteError::PlanIncomplete)
     }
 
-    /// 执行单步:用 FunctionCallingAgent + tools
+    /// 执行单步:优先用 `agent_factory` 产出的 Agent,缺省回落 FunctionCallingAgent(P1-2)
     async fn execute_step(&self, step: &str) -> Result<String, PlanExecuteError> {
-        let agent = FunctionCallingAgent::from_arc(self.llm.clone(), self.tools.clone(), None);
-        let executor =
-            AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, self.tools.clone())
-                .with_max_iterations(5);
+        let agent: Arc<dyn BaseAgent> = match &self.agent_factory {
+            Some(factory) => factory(),
+            None => Arc::new(FunctionCallingAgent::from_arc(
+                self.llm.clone(),
+                self.tools.clone(),
+                None,
+            )) as Arc<dyn BaseAgent>,
+        };
+        let executor = AgentExecutor::new(agent, self.tools.clone()).with_max_iterations(5);
         executor
             .invoke(step.to_string())
             .await
             .map_err(|e| PlanExecuteError::StepExecutionError(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AgentFinish, AgentOutput, AgentStep};
+    use crate::AgentError;
+    use async_trait::async_trait;
+    use lc_providers::{OpenAIChat, OpenAIConfig};
+    use std::collections::HashMap;
+
+    /// 可离线的 mock agent:直接返回 Finish,用于验证 agent_factory 生效(P1-2)。
+    struct FakeAgent;
+
+    #[async_trait]
+    impl BaseAgent for FakeAgent {
+        async fn plan(
+            &self,
+            _intermediate_steps: &[AgentStep],
+            _inputs: &HashMap<String, String>,
+        ) -> Result<AgentOutput, AgentError> {
+            Ok(AgentOutput::Finish(AgentFinish::new(
+                "executed by factory".to_string(),
+                String::new(),
+            )))
+        }
+    }
+
+    /// P1-2:execute_step 应使用 agent_factory 产出的 Agent,而非硬编码 FunctionCallingAgent。
+    #[tokio::test]
+    async fn test_execute_step_uses_agent_factory() {
+        let agent = PlanExecuteAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![])
+            .with_agent_factory(Arc::new(|| Arc::new(FakeAgent) as Arc<dyn BaseAgent>));
+        let result = agent.execute_step("step 1").await.unwrap();
+        assert_eq!(result, "executed by factory");
     }
 }

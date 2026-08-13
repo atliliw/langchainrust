@@ -10,6 +10,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::base::AgentExecutor;
+use crate::orchestration::{Orchestrator, RunContext};
+use crate::streaming::AgentStreamEvent;
 
 /// Adapter that wraps an `AgentExecutor` as a `Runnable<String, String>`.
 ///
@@ -78,6 +80,99 @@ impl Runnable<String, String> for AgentRunnable {
     }
 }
 
+/// Adapter that wraps an `AgentExecutor` as `Runnable<String, AgentStreamEvent>`.
+///
+/// Unlike [`AgentRunnable`], `stream()` preserves **all** `AgentStreamEvent`
+/// variants (`Text` / `ToolStart` / `ToolEnd` / `FinalAnswer` / `Error`)
+/// instead of filtering down to `FinalAnswer`. Use this in LCEL pipelines when
+/// you need the fused tool-event + text-token stream (P1-8).
+///
+/// Non-streaming `invoke()` runs the agent and returns the final answer as a
+/// single `AgentStreamEvent::FinalAnswer`.
+pub struct AgentEventRunnable {
+    executor: Arc<AgentExecutor>,
+}
+
+impl AgentEventRunnable {
+    /// Wrap an executor, exposing its full event stream.
+    pub fn new(executor: Arc<AgentExecutor>) -> Self {
+        Self { executor }
+    }
+}
+
+#[async_trait]
+impl Runnable<String, AgentStreamEvent> for AgentEventRunnable {
+    type Error = LcelError;
+
+    async fn invoke(
+        &self,
+        input: String,
+        config: Option<RunnableConfig>,
+    ) -> Result<AgentStreamEvent, LcelError> {
+        let output = self
+            .executor
+            .invoke_with_config(input, config)
+            .await
+            .map_err(|e| LcelError::Agent(e.to_string()))?;
+        Ok(AgentStreamEvent::FinalAnswer { content: output })
+    }
+
+    async fn stream(
+        &self,
+        input: String,
+        _config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<AgentStreamEvent, LcelError>> + Send>>, LcelError>
+    {
+        use futures_util::StreamExt;
+
+        let event_stream = self.executor.stream(input);
+        // Preserve every event; only map the error type.
+        let mapped = event_stream
+            .map(|event_result| event_result.map_err(|e| LcelError::Agent(e.to_string())));
+        Ok(Box::pin(mapped))
+    }
+}
+
+/// Adapter that wraps an [`Orchestrator`] (P1-1) as a `Runnable`.
+///
+/// 让 PlanExecute / AdaptiveRAG / CorrectiveRAG / DeepResearch 等高层编排器
+/// 能进 LCEL 管道。`config.metadata["trace_id"]` 会贯通到 [`RunContext`]。
+pub struct OrchestratorRunnable<O: Orchestrator> {
+    orchestrator: O,
+}
+
+impl<O: Orchestrator> OrchestratorRunnable<O> {
+    /// 包装一个编排器。
+    pub fn new(orchestrator: O) -> Self {
+        Self { orchestrator }
+    }
+}
+
+#[async_trait]
+impl<O> Runnable<O::Input, O::Output> for OrchestratorRunnable<O>
+where
+    O: Orchestrator,
+    O::Input: Send + Sync + 'static,
+    O::Output: Send + Sync + 'static,
+{
+    type Error = LcelError;
+
+    async fn invoke(
+        &self,
+        input: O::Input,
+        config: Option<RunnableConfig>,
+    ) -> Result<O::Output, LcelError> {
+        let ctx = match &config {
+            Some(cfg) => RunContext::from_config(cfg),
+            None => RunContext::new_random(),
+        };
+        self.orchestrator
+            .run_with_context(input, &ctx)
+            .await
+            .map_err(|e| LcelError::Agent(e.to_string()))
+    }
+}
+
 /// Allow `AgentError` to convert into `LcelError`.
 impl From<crate::base::AgentError> for LcelError {
     fn from(err: crate::base::AgentError) -> Self {
@@ -88,6 +183,8 @@ impl From<crate::base::AgentError> for LcelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streaming::AgentStreamEvent;
+    use std::collections::HashMap;
 
     #[test]
     fn agent_error_into_lcel_error() {
@@ -95,5 +192,60 @@ mod tests {
         let lcel_err: LcelError = agent_err.into();
         assert!(matches!(lcel_err, LcelError::Agent(_)));
         assert!(lcel_err.to_string().contains("Max iterations"));
+    }
+
+    /// Mock agent that always finishes immediately.
+    struct TestFinishAgent;
+
+    #[async_trait]
+    impl crate::BaseAgent for TestFinishAgent {
+        async fn plan(
+            &self,
+            _intermediate_steps: &[crate::types::AgentStep],
+            _inputs: &HashMap<String, String>,
+        ) -> Result<crate::types::AgentOutput, crate::base::AgentError> {
+            Ok(crate::types::AgentOutput::Finish(
+                crate::types::AgentFinish::new("answer".to_string(), String::new()),
+            ))
+        }
+    }
+
+    /// P1-8: AgentEventRunnable::stream 保留全部事件(Text + FinalAnswer),
+    /// 而非像 AgentRunnable 那样 filter_map 成单个字符串。
+    #[tokio::test]
+    async fn agent_event_runnable_preserves_all_events() {
+        use futures_util::StreamExt;
+
+        let executor = Arc::new(crate::base::AgentExecutor::new(
+            Arc::new(TestFinishAgent),
+            vec![],
+        ));
+        let runnable = AgentEventRunnable::new(executor);
+
+        let mut stream = runnable.stream("hi".to_string(), None).await.unwrap();
+        let mut events = Vec::new();
+        while let Some(item) = stream.next().await {
+            events.push(item.unwrap());
+        }
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AgentStreamEvent::Text { .. }));
+        assert!(matches!(events[1], AgentStreamEvent::FinalAnswer { .. }));
+    }
+
+    /// P1-8: 非流式 invoke 返回单个 FinalAnswer 事件。
+    #[tokio::test]
+    async fn agent_event_runnable_invoke_returns_final_answer() {
+        let executor = Arc::new(crate::base::AgentExecutor::new(
+            Arc::new(TestFinishAgent),
+            vec![],
+        ));
+        let runnable = AgentEventRunnable::new(executor);
+
+        let event = runnable.invoke("hi".to_string(), None).await.unwrap();
+        match event {
+            AgentStreamEvent::FinalAnswer { content } => assert_eq!(content, "answer"),
+            other => panic!("expected FinalAnswer, got {:?}", other),
+        }
     }
 }

@@ -136,7 +136,7 @@ impl OpenAIConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use std::env;
 
     fn save_and_set(key: &str, value: &str) -> Option<String> {

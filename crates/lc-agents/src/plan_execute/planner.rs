@@ -1,12 +1,40 @@
 //! Planner - 用 LLM 生成 / 重规划执行计划
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_providers::ProviderError;
 use lc_schema::Message;
+use serde_json::{json, Value};
 
 use super::plan::Plan;
 
 use std::sync::Arc;
+
+/// 规划工具的 JSON Schema:强制 LLM 输出结构化步骤数组(P1-3)。
+fn plan_tool() -> ToolDefinition {
+    ToolDefinition::new(
+        "generate_plan",
+        "为给定目标生成执行计划,返回按顺序执行的步骤描述数组",
+    )
+    .with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "按顺序执行的步骤描述"
+            }
+        },
+        "required": ["steps"]
+    }))
+}
+
+/// 从 tool_call 参数中取出 steps 数组,序列化回 `["a", "b"]` 供 parse_plan 复用。
+fn steps_to_json_string(args: &Value) -> String {
+    args.get("steps")
+        .and_then(|v| serde_json::to_string(v).ok())
+        .unwrap_or_default()
+}
 
 /// 规划器:调用 LLM 生成步骤列表
 pub struct Planner {
@@ -31,12 +59,20 @@ impl Planner {
             Message::system("你是规划助手,只输出 JSON。"),
             Message::human(prompt),
         ];
-        let response = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| format!("LLM 错误: {:?}", e))?;
-        self.parse_plan(objective, &response.content)
+        let structured = crate::structured::chat_structured(
+            self.llm.as_ref(),
+            Some(plan_tool()),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| format!("LLM 错误: {:?}", e))?;
+        let content = match &structured.tool_args {
+            Some(args) => steps_to_json_string(args),
+            None => structured.content,
+        };
+        self.parse_plan(objective, &content)
     }
 
     /// 重新规划(当步骤失败时)
@@ -54,12 +90,20 @@ impl Planner {
             Message::system("你是规划助手,只输出 JSON。"),
             Message::human(prompt),
         ];
-        let response = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| format!("LLM 错误: {:?}", e))?;
-        self.parse_plan(objective, &response.content)
+        let structured = crate::structured::chat_structured(
+            self.llm.as_ref(),
+            Some(plan_tool()),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| format!("LLM 错误: {:?}", e))?;
+        let content = match &structured.tool_args {
+            Some(args) => steps_to_json_string(args),
+            None => structured.content,
+        };
+        self.parse_plan(objective, &content)
     }
 
     fn parse_plan(&self, objective: &str, content: &str) -> Result<Plan, String> {
@@ -125,5 +169,25 @@ mod tests {
         let json = extract_json_array(content);
         let descs: Vec<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(descs, vec!["搜索资料", "总结"]);
+    }
+
+    #[test]
+    fn test_steps_to_json_string() {
+        // P1-3:tool_call 的 steps 数组序列化回 parse_plan 可吃的 JSON 数组。
+        let args = serde_json::json!({"steps": ["a", "b"]});
+        assert_eq!(steps_to_json_string(&args), r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn test_steps_to_json_string_missing_steps() {
+        let args = serde_json::json!({"other": 1});
+        assert_eq!(steps_to_json_string(&args), "");
+    }
+
+    #[test]
+    fn test_plan_tool_schema() {
+        let tool = plan_tool();
+        assert_eq!(tool.function.name, "generate_plan");
+        assert!(tool.function.parameters.is_some());
     }
 }

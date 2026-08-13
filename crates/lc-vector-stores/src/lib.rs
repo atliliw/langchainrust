@@ -8,8 +8,8 @@ pub mod chunked_vector_store;
 pub mod document_store;
 mod file_store;
 pub mod lancedb;
-pub mod neo4j;
 mod memory;
+pub mod neo4j;
 mod provider;
 
 #[cfg(feature = "mongodb-persistence")]
@@ -35,8 +35,8 @@ pub use document_store::{
     InMemoryDocumentStore,
 };
 pub use file_store::FileVectorStore;
-pub use memory::InMemoryVectorStore;
 pub use lancedb::{LanceDBConfig, LanceDBVectorStore};
+pub use memory::InMemoryVectorStore;
 pub use neo4j::{Neo4jConfig, Neo4jVectorStore};
 pub use pinecone::PineconeStore;
 pub use provider::{VectorStoreBuilder, VectorStoreProvider, VectorStoreType};

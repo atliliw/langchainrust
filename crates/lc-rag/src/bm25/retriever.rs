@@ -1,6 +1,8 @@
 use super::algorithm::{bm25_score, BM25Params};
 use super::index::BM25Index;
 use super::tokenizer::Tokenizer;
+use crate::retriever::{RetrieverError, RetrieverTrait};
+use async_trait::async_trait;
 use lc_vector_stores::{Document, SearchResult};
 use std::sync::Mutex;
 
@@ -115,6 +117,32 @@ impl BM25Retriever {
 
     pub fn index(&self) -> std::sync::MutexGuard<'_, BM25Index> {
         self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// P0-1: `BM25Retriever` 实现 `RetrieverTrait`,可与其他检索器统一通过
+/// `Arc<dyn RetrieverTrait>` 使用。
+#[async_trait]
+impl RetrieverTrait for BM25Retriever {
+    async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
+        Ok(self
+            .search(query, k)
+            .into_iter()
+            .map(|r| r.document)
+            .collect())
+    }
+
+    async fn retrieve_with_scores(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<SearchResult>, RetrieverError> {
+        Ok(self.search(query, k))
+    }
+
+    async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
+        self.add_documents_sync(documents);
+        Ok(())
     }
 }
 

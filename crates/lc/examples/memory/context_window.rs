@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Truncate 策略: 超限时丢弃最旧消息
     //    ContextWindow<OpenAIChat> 是默认泛型,Truncate 策略不需要 LLM
-    let cw: ContextWindow<langchainrust::OpenAIChat> = ContextWindow::new(4096);
+    let cw: ContextWindow<langchainrust::OpenAIChat> = ContextWindow::new(4096)?;
 
     let messages = vec![
         Message::system("你是一个助手"),

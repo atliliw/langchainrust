@@ -5,8 +5,40 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// MCP 协议版本
+/// MCP 协议版本(本库当前实现的版本,`initialize` 时作为请求版本)。
 pub const MCP_VERSION: &str = "2024-11-05";
+
+/// 本库支持的协议版本列表(P2-10)。
+///
+/// 握手时按序识别;列表首项为当前实现版本。随协议演进追加新版本,
+/// 保留旧版本以便与旧 Server 兼容(降级);不在列表内的版本由
+/// [`VersionPolicy`] 决定降级还是拒绝。
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_VERSION];
+
+/// 协议版本协商策略(P2-10):Server 声明版本不在支持列表时怎么处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VersionPolicy {
+    /// 降级到本库实现版本继续用(兼容声明了新 / 旧协议的 Server)。
+    #[default]
+    Degrade,
+    /// 严格模式:版本不受支持则握手失败、拒绝连接。
+    Reject,
+}
+
+/// 一次握手的版本协商结果(P2-10)。
+///
+/// 握手完成后由客户端锁定(连接后锁版本),`protocol_info()` 可随时读取。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolInfo {
+    /// 客户端在 `initialize` 请求中声明的版本。
+    pub requested: String,
+    /// Server 在 `initialize` 响应中声明的版本。
+    pub server_version: String,
+    /// 实际协商生效的版本(连接后锁定;降级时为本库实现版本)。
+    pub negotiated: String,
+    /// Server 声明版本是否在本库支持列表内。
+    pub supported: bool,
+}
 
 /// JSON-RPC 请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +114,18 @@ impl MCPError {
     /// 标准错误:无效参数
     pub fn invalid_params(msg: impl Into<String>) -> Self {
         Self::new(-32602, msg)
+    }
+
+    /// 传输层连接断开(子进程退出 / SSE 长连接中断)。
+    ///
+    /// 上层收到此错误后应触发重连流程并重新握手。
+    pub fn connection_lost() -> Self {
+        Self::new(-32000, "MCP connection lost")
+    }
+
+    /// 是否为连接断开错误。
+    pub fn is_connection_lost(&self) -> bool {
+        self.code == -32000
     }
 }
 

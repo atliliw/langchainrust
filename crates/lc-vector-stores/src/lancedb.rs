@@ -175,7 +175,10 @@ impl VectorStore for LanceDBVectorStore {
             .into_iter()
             .zip(embeddings)
             .map(|(doc, vec)| {
-                let id = doc.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let id = doc
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 LanceDBDocument {
                     id: id.clone(),
                     vector: vec,
@@ -413,20 +416,14 @@ mod tests {
     fn test_table_url() {
         let config = LanceDBConfig::new("http://localhost:1337", "my_table");
         let store = LanceDBVectorStore::new(config);
-        assert_eq!(
-            store.table_url(),
-            "http://localhost:1337/v1/table/my_table"
-        );
+        assert_eq!(store.table_url(), "http://localhost:1337/v1/table/my_table");
     }
 
     #[test]
     fn test_table_url_trailing_slash() {
         let config = LanceDBConfig::new("http://localhost:1337/", "my_table");
         let store = LanceDBVectorStore::new(config);
-        assert_eq!(
-            store.table_url(),
-            "http://localhost:1337/v1/table/my_table"
-        );
+        assert_eq!(store.table_url(), "http://localhost:1337/v1/table/my_table");
     }
 
     #[test]

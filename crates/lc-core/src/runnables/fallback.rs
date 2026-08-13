@@ -72,36 +72,28 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> RunnableWithFal
 
     /// Try all runnables (primary then fallbacks) on the given input.
     /// Returns the first successful result, or the primary's error if all fail.
-    async fn try_all(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn try_all(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         // Try primary
         let boxed_input = Box::new(input.clone()) as Box<dyn Any + Send>;
         match self.primary.invoke_any(boxed_input, config.clone()).await {
-            Ok(result) => {
-                result
-                    .downcast::<O>()
-                    .map(|b| *b)
-                    .map_err(|_| LcelError::TypeMismatch(format!(
-                        "fallback primary output downcast: expected {}",
-                        std::any::type_name::<O>()
-                    )))
-            }
+            Ok(result) => result.downcast::<O>().map(|b| *b).map_err(|_| {
+                LcelError::TypeMismatch(format!(
+                    "fallback primary output downcast: expected {}",
+                    std::any::type_name::<O>()
+                ))
+            }),
             Err(primary_error) => {
                 // Try each fallback
                 for fallback in &self.fallbacks {
                     let boxed_input = Box::new(input.clone()) as Box<dyn Any + Send>;
                     match fallback.invoke_any(boxed_input, config.clone()).await {
                         Ok(result) => {
-                            return result
-                                .downcast::<O>()
-                                .map(|b| *b)
-                                .map_err(|_| LcelError::TypeMismatch(format!(
+                            return result.downcast::<O>().map(|b| *b).map_err(|_| {
+                                LcelError::TypeMismatch(format!(
                                     "fallback output downcast: expected {}",
                                     std::any::type_name::<O>()
-                                )));
+                                ))
+                            });
                         }
                         Err(_) => continue,
                     }
@@ -120,11 +112,7 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
     type Error = LcelError;
 
     /// Try the primary, then fallbacks on failure.
-    async fn invoke(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         self.try_all(input, config).await
     }
 
@@ -205,7 +193,9 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
 
         if let Some(last) = items.into_iter().last() {
             let result = self.invoke(last, config).await?;
-            Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+            Ok(Box::pin(futures_util::stream::once(
+                async move { Ok(result) },
+            )))
         } else {
             Ok(Box::pin(futures_util::stream::empty()))
         }

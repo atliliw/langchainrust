@@ -92,7 +92,8 @@ impl MistralConfig {
         let base_url =
             env::var("MISTRAL_BASE_URL").unwrap_or_else(|_| MISTRAL_BASE_URL.to_string());
 
-        let model = env::var("MISTRAL_MODEL").unwrap_or_else(|_| "mistral-large-latest".to_string());
+        let model =
+            env::var("MISTRAL_MODEL").unwrap_or_else(|_| "mistral-large-latest".to_string());
 
         Ok(Self {
             api_key,

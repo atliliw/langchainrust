@@ -334,9 +334,12 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        self.index
-            .store
-            .add_parent_document_blocking(document, self.index.config.leaf_chunk_size)?;
+        // P0-1: 无 id 的文档先把预分配的 parent_id 挂到文档上再入库,
+        // 否则 store 内部会再生成一个新 uuid,导致 get_chunks_for_parent 用错 key 查空。
+        self.index.store.add_parent_document_blocking(
+            document.clone().with_id(parent_id.clone()),
+            self.index.config.leaf_chunk_size,
+        )?;
 
         let chunks = self
             .index
@@ -362,7 +365,10 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
 
         self.index
             .store
-            .add_parent_document(document, self.index.config.leaf_chunk_size)
+            .add_parent_document(
+                document.clone().with_id(parent_id.clone()),
+                self.index.config.leaf_chunk_size,
+            )
             .await?;
 
         let chunks = self.index.store.get_chunks_for_parent(&parent_id).await?;

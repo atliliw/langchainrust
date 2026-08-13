@@ -77,11 +77,14 @@ pub mod a2a;
 
 // 重新导出常用类型
 pub use agents::{
-    AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError,
-    AgentExecutor, AgentFinish, AgentRunnable, AgentOutput, AgentStep, BaseAgent, CRAGError,
-    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FunctionCallingAgent,
-    HandoffManager, PlanExecuteAgent, PlanExecuteError, RagDecision, ReActAgent, ResearchError,
-    ResearchReport, StreamingFunctionCallingAgent, ToolInput,
+    parse_review_verdict, review_envelope, task_adapter, AdaptiveRAG, AdaptiveRAGError,
+    AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError, AgentEventRunnable, AgentExecutor,
+    AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, BaseAgent,
+    CRAGError, CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn,
+    FunctionCallingAgent, HandoffManager, Orchestrator, OrchestratorRunnable, PlanExecuteAgent,
+    PlanExecuteError, PromptInjectionHook, RagDecision, ReActAgent, ResearchError, ResearchReport,
+    ReviewOrchestrator, ReviewVerdict, RunContext, SequentialPipeline,
+    StreamingFunctionCallingAgent, TaskAdapter, TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk,
 };
 pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
@@ -93,17 +96,37 @@ pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, Token
 pub use core::tools::to_tool_definition;
 pub use core::tools::StructuredOutput;
 pub use core::{
-    BaseChatModel, BaseLanguageModel, BaseTool, FunctionCall, FunctionDefinition, Runnable,
-    RunnableConfig, Tool, ToolCall, ToolCallResult, ToolDefinition, ToolError, ToolRegistry,
     // LCEL types
-    into_runnable_any, LcelError, LcelStreamEvent, RunnableAny, RunnableAnyWrapper, RunnableBinding,
-    RunnableBranch, RunnableExt, RunnableLambda, RunnableParallel, RunnablePassthrough,
+    into_runnable_any,
+    BaseChatModel,
+    BaseLanguageModel,
+    BaseTool,
+    FunctionCall,
+    FunctionDefinition,
+    LcelError,
+    LcelStreamEvent,
+    Runnable,
+    RunnableAny,
+    RunnableAnyWrapper,
+    RunnableBinding,
+    RunnableBranch,
+    RunnableConfig,
+    RunnableExt,
+    RunnableLambda,
+    RunnableParallel,
+    RunnablePassthrough,
     RunnableSequence,
+    Tool,
+    ToolCall,
+    ToolCallResult,
+    ToolDefinition,
+    ToolError,
+    ToolRegistry,
 };
 pub use evaluation::{
     Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator,
-    ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, PairwiseJudge, Predictor,
-    RegexMatch, Report, Score, StringDistance, Verdict,
+    ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, PairwiseEvaluator, PairwiseJudge,
+    Predictor, RegexMatch, Report, Score, StringDistance, Verdict,
 };
 pub use guardrails::{
     ForbiddenWordsGuardrail, GuardedAgent, GuardrailError, GuardrailRunner, GuardrailsConfig,
@@ -143,10 +166,13 @@ pub use chains::{
 pub use memory::MongoPersistentMemory;
 
 // Embeddings
+// P2-1: 无 `local-embeddings` feature 时 `LocalEmbeddings` 是已弃用的
+// BagOfWordsEmbeddings 别名(静默降级);`#[allow(deprecated)]` 豁免重导出警告。
+#[allow(deprecated)]
 pub use embeddings::{
-    cosine_similarity, BagOfWordsEmbeddings, DeepSeekEmbeddings, DeepSeekEmbeddingsConfig,
-    EmbeddingError, Embeddings, LocalEmbeddings, MockEmbeddings, OpenAIEmbeddings,
-    OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
+    cosine_similarity, l2_normalize, BagOfWordsEmbeddings, DeepSeekEmbeddings,
+    DeepSeekEmbeddingsConfig, EmbeddingError, Embeddings, LocalEmbeddings, MockEmbeddings,
+    OpenAIEmbeddings, OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
 };
 
 // Vector Stores
@@ -179,8 +205,9 @@ pub use vector_stores::{QdrantConfig, QdrantVectorStore};
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
+#[allow(deprecated)]
 pub use retrieval::{
-    reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RAGPipeline,
+    filter_by_score, reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RAGPipeline,
     RAGPipelineBuilder, RAGQueryResult, RagRunnable, RetrievalSource, RetrievedDocument,
 };
 pub use retrieval::{

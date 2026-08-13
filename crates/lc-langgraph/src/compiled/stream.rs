@@ -23,7 +23,10 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
     ///
     /// This is the preferred streaming API. For the old all-at-once
     /// behavior, use `stream_collected()`.
-    pub fn stream(&self, input: S) -> Pin<Box<dyn Stream<Item = Result<StreamEvent<S>, GraphError>> + Send>> {
+    pub fn stream(
+        &self,
+        input: S,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent<S>, GraphError>> + Send>> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         let graph = self.clone();
@@ -32,7 +35,11 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
             let mut current_node = graph.entry_point.clone();
             let mut recursion_count = 0;
 
-            if tx.send(Ok(StreamEvent::start(state.clone()))).await.is_err() {
+            if tx
+                .send(Ok(StreamEvent::start(state.clone())))
+                .await
+                .is_err()
+            {
                 return;
             }
 
@@ -48,13 +55,22 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
 
             while current_node != END && recursion_count < graph.recursion_limit {
                 if graph.interrupt_before.contains(&current_node) {
-                    let _ = tx.send(Err(GraphError::ExecutionInterrupted(current_node.clone()))).await;
+                    let _ = tx
+                        .send(Err(GraphError::ExecutionInterrupted(current_node.clone())))
+                        .await;
                     return;
                 }
 
                 recursion_count += 1;
 
-                if tx.send(Ok(StreamEvent::enter_node(current_node.clone(), state.clone()))).await.is_err() {
+                if tx
+                    .send(Ok(StreamEvent::enter_node(
+                        current_node.clone(),
+                        state.clone(),
+                    )))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
 
@@ -80,13 +96,24 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                     }
                 };
 
-                if tx.send(Ok(StreamEvent::node_complete(current_node.clone(), update.clone()))).await.is_err() {
+                if tx
+                    .send(Ok(StreamEvent::node_complete(
+                        current_node.clone(),
+                        update.clone(),
+                    )))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
 
                 if let Some(new_state) = update.update {
                     state = graph.default_reducer.reduce(&state, &new_state);
-                    if tx.send(Ok(StreamEvent::state_update(state.clone()))).await.is_err() {
+                    if tx
+                        .send(Ok(StreamEvent::state_update(state.clone())))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -95,10 +122,12 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                     if let Some(ref checkpointer) = graph.checkpointer {
                         let _ = checkpointer.lock().await.save(&state).await;
                     }
-                    let _ = tx.send(Err(GraphError::ExecutionInterrupted(format!(
-                        "after_{}",
-                        current_node
-                    )))).await;
+                    let _ = tx
+                        .send(Err(GraphError::ExecutionInterrupted(format!(
+                            "after_{}",
+                            current_node
+                        ))))
+                        .await;
                     return;
                 }
 

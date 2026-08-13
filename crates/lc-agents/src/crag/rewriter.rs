@@ -38,11 +38,14 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
         let prompt = build_rewrite_prompt(query);
 
         let messages = vec![Message::human(&prompt)];
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| RewriterError::LLMError(e.to_string()))?;
+        let result = crate::retry::retry_chat(
+            self.llm,
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| RewriterError::LLMError(e.to_string()))?;
 
         let rewritten = extract_rewritten_query(&result.content);
         if rewritten.is_empty() {
@@ -63,11 +66,14 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
         let prompt = build_alternatives_prompt(query, count);
 
         let messages = vec![Message::human(&prompt)];
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| RewriterError::LLMError(e.to_string()))?;
+        let result = crate::retry::retry_chat(
+            self.llm,
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| RewriterError::LLMError(e.to_string()))?;
 
         let alternatives = parse_alternatives(&result.content);
         if alternatives.is_empty() {

@@ -3,7 +3,9 @@ use lc_tools::{tool, BaseTool, Tool, ToolError};
 
 /// A simple tool defined with the #[tool] macro.
 #[tool(description = "Greets a person by name")]
-fn greet(#[param(desc = "The name of the person to greet")] name: String) -> Result<String, ToolError> {
+fn greet(
+    #[param(desc = "The name of the person to greet")] name: String,
+) -> Result<String, ToolError> {
     Ok(format!("Hello, {}!", name))
 }
 
@@ -73,6 +75,9 @@ async fn tool_macro_optional_param() {
     let result = tool.run(r#"{"name": "Alice"}"#.to_string()).await.unwrap();
     assert!(result.contains("Hello, Alice!"));
     // With title
-    let result = tool.run(r#"{"name": "Alice", "title": "Dr"}"#.to_string()).await.unwrap();
+    let result = tool
+        .run(r#"{"name": "Alice", "title": "Dr"}"#.to_string())
+        .await
+        .unwrap();
     assert!(result.contains("Hello, Dr Alice!"));
 }

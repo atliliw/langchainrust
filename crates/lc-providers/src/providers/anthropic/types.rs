@@ -31,9 +31,7 @@ pub enum AnthropicContentBlock {
     Text { text: String },
     /// Image content block (base64-encoded).
     #[serde(rename = "image")]
-    Image {
-        source: AnthropicImageSource,
-    },
+    Image { source: AnthropicImageSource },
     /// Tool use content block (from assistant).
     #[serde(rename = "tool_use")]
     ToolUse {

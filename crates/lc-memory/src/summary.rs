@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::base::{BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
 use lc_core::language_models::BaseChatModel;
 use lc_core::language_models::LLMResult;
 use lc_core::runnables::Runnable;
@@ -87,6 +87,14 @@ pub struct ConversationSummaryMemory<M: BaseChatModel> {
     /// after summarization. Older messages are discarded since the summary
     /// already captures their content. Default: 2 (last turn only).
     max_recent_turns: usize,
+
+    /// P2-4: 摘要 LLM 失败时累计的未总结增量(本轮 + 之前失败的轮次)。
+    /// 下轮成功总结时并入 `new_lines` 一并总结,保证失败轮次的内容不丢失。
+    pending_lines: String,
+
+    /// P2-4: 最近一次摘要 LLM 失败的原因;成功总结或 `clear()` 后清空。
+    /// 摘要失败不再让 `save_context` 冒泡错误打断链,而是保留旧摘要继续工作。
+    last_summary_error: Option<String>,
 }
 
 impl<M: BaseChatModel> ConversationSummaryMemory<M> {
@@ -102,6 +110,8 @@ impl<M: BaseChatModel> ConversationSummaryMemory<M> {
             summary_prompt: DEFAULT_SUMMARY_PROMPT.to_string(),
             return_messages: false,
             max_recent_turns: 2,
+            pending_lines: String::new(),
+            last_summary_error: None,
         }
     }
 
@@ -118,6 +128,8 @@ impl<M: BaseChatModel> ConversationSummaryMemory<M> {
             summary_prompt: DEFAULT_SUMMARY_PROMPT.to_string(),
             return_messages: false,
             max_recent_turns: 2,
+            pending_lines: String::new(),
+            last_summary_error: None,
         }
     }
 
@@ -167,6 +179,16 @@ impl<M: BaseChatModel> ConversationSummaryMemory<M> {
         self.buffer.clone()
     }
 
+    /// P2-4: 最近一次摘要失败的原因(无失败则 `None`)。
+    pub fn last_summary_error(&self) -> Option<&str> {
+        self.last_summary_error.as_deref()
+    }
+
+    /// P2-4: 摘要失败后累计的待总结增量行。
+    pub fn pending_lines(&self) -> &str {
+        &self.pending_lines
+    }
+
     /// Format new conversation lines
     fn format_new_lines(&self, input: &str, output: &str) -> String {
         format!("Human: {}\nAI: {}", input, output)
@@ -176,11 +198,19 @@ impl<M: BaseChatModel> ConversationSummaryMemory<M> {
     async fn predict_new_summary(&self, new_lines: &str) -> Result<String, MemoryError> {
         let buffer = self.buffer.clone();
 
+        // P2-4: 把之前失败轮次累计的增量并入本次总结,失败轮次的内容不丢失。
+        let mut combined = String::new();
+        if !self.pending_lines.is_empty() {
+            combined.push_str(&self.pending_lines);
+            combined.push('\n');
+        }
+        combined.push_str(new_lines);
+
         let prompt = {
             let template = PromptTemplate::new(&self.summary_prompt);
             let mut vars: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
             vars.insert("summary", buffer.as_str());
-            vars.insert("new_lines", new_lines);
+            vars.insert("new_lines", combined.as_str());
             template
                 .format(&vars)
                 .unwrap_or_else(|_| self.summary_prompt.clone())
@@ -232,17 +262,41 @@ where
         inputs: &HashMap<String, String>,
         outputs: &HashMap<String, String>,
     ) -> Result<(), MemoryError> {
-        let empty = String::new();
-        let input = inputs.get(&self.input_key).unwrap_or(&empty);
-        let output = outputs.get(&self.output_key).unwrap_or(&empty);
+        // P1-1: 与 Buffer/Window 一致——缺失 key 返回 SaveError,不再静默用空串
+        // 存空消息(否则 LLM 会对 "Human: \nAI: " 空行总结,白烧一次调用)。
+        let input = inputs.get(&self.input_key).ok_or_else(|| {
+            MemoryError::SaveError(format!("Missing input key '{}'", self.input_key))
+        })?;
+        let output = outputs.get(&self.output_key).ok_or_else(|| {
+            MemoryError::SaveError(format!("Missing output key '{}'", self.output_key))
+        })?;
 
         self.chat_memory.add_user_message(input);
         self.chat_memory.add_ai_message(output);
 
         let new_lines = self.format_new_lines(input, output);
-        let new_summary = self.predict_new_summary(&new_lines).await?;
+
+        // P2-4: 摘要失败时保留旧摘要、记录错误并把本轮增量累计到 pending_lines
+        // 供下轮重试,而不是让错误冒泡打断上层链。
+        let new_summary = match self.predict_new_summary(&new_lines).await {
+            Ok(s) => s,
+            Err(e) => {
+                if !self.pending_lines.is_empty() {
+                    self.pending_lines.push('\n');
+                }
+                self.pending_lines.push_str(&new_lines);
+                self.last_summary_error = Some(e.to_string());
+                log::warn!(
+                    "ConversationSummaryMemory 摘要失败,保留旧摘要待下轮重试: {}",
+                    e
+                );
+                return Ok(());
+            }
+        };
 
         self.buffer = new_summary;
+        self.pending_lines.clear();
+        self.last_summary_error = None;
 
         // H29: Trim chat_memory to prevent unbounded growth.
         // Since the summary already captures all conversation content,
@@ -276,13 +330,30 @@ where
     async fn clear(&mut self) -> Result<(), MemoryError> {
         self.buffer = String::new();
         self.chat_memory.clear();
+        self.pending_lines.clear();
+        self.last_summary_error = None;
         Ok(())
+    }
+}
+
+/// P0-1: `ConversationSummaryMemory` 实现 `BaseChatMemory`。
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChatMemory for ConversationSummaryMemory<M>
+where
+    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
+{
+    fn messages(&self) -> &[Message] {
+        self.chat_memory.messages()
+    }
+
+    fn add_message(&mut self, message: Message) {
+        self.chat_memory.add_message(message);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MockLlm;
     use lc_providers::{OpenAIChat, OpenAIConfig};
 
     fn create_test_config() -> OpenAIConfig {
@@ -369,5 +440,35 @@ mod tests {
 
         assert!(memory.buffer().await.is_empty());
         assert_eq!(memory.chat_memory().len(), 0);
+    }
+
+    /// P2-4: 摘要 LLM 失败时保留旧摘要、记录错误、不让 `save_context` 冒泡;
+    /// 下轮成功总结时把失败轮次补进新摘要。
+    #[tokio::test]
+    async fn test_summary_failure_keeps_old_summary_and_retries() {
+        // MockLlm 按 LIFO 消费:先失败,后成功。
+        let llm = MockLlm::new(vec![
+            Ok("final summary".to_string()),
+            Err("summarizer down".to_string()),
+        ]);
+        let mut memory: ConversationSummaryMemory<MockLlm> = ConversationSummaryMemory::new(llm);
+
+        let inputs = HashMap::from([("input".to_string(), "你好".to_string())]);
+        let outputs = HashMap::from([("output".to_string(), "你好!".to_string())]);
+
+        // 第一轮:摘要失败 -> save_context 返回 Ok,旧摘要保留,错误被记录
+        memory.save_context(&inputs, &outputs).await.unwrap();
+        assert!(memory.buffer().await.is_empty(), "失败时不应覆盖旧摘要");
+        assert!(memory
+            .last_summary_error()
+            .unwrap()
+            .contains("summarizer down"));
+        assert!(memory.pending_lines().contains("Human: 你好"));
+
+        // 第二轮:摘要成功 -> 新摘要生效,错误与增量清空
+        memory.save_context(&inputs, &outputs).await.unwrap();
+        assert_eq!(memory.buffer().await, "final summary");
+        assert!(memory.last_summary_error().is_none());
+        assert!(memory.pending_lines().is_empty());
     }
 }

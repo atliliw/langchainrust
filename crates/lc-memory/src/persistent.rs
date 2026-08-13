@@ -57,13 +57,20 @@ pub trait PersistentMemory: BaseMemory {
     async fn session_exists(&self, session_id: &str) -> Result<bool, MemoryError>;
 
     /// Get current session ID
-    fn current_session_id(&self) -> Option<&str>;
+    ///
+    /// P0-2: 从内部字段读取真实会话 ID(而非恒返回 None 的伪实现)。
+    /// 返回 `Option<String>` 避免暴露内部锁的借用生命周期。
+    fn current_session_id(&self) -> Option<String>;
 
     /// Set session ID
     fn set_session_id(&mut self, session_id: String);
 }
 
 /// Memory persistence configuration
+///
+/// P1-3: 删除 `max_messages` 死字段(全库无压缩逻辑引用它,`with_max_messages(50)`
+/// 是"API 承诺多于实现");`token_limit` 作为 token 预算的单一来源,构造参数与
+/// `with_config` 都落到它。
 #[derive(Debug, Clone)]
 pub struct PersistenceConfig {
     /// Auto-save after each save_context call
@@ -71,9 +78,6 @@ pub struct PersistenceConfig {
 
     /// Auto-load on first access
     pub auto_load: bool,
-
-    /// Maximum messages to keep in memory before compression
-    pub max_messages: usize,
 
     /// Token limit for summary buffer memory
     pub token_limit: usize,
@@ -84,7 +88,6 @@ impl Default for PersistenceConfig {
         Self {
             auto_save: true,
             auto_load: true,
-            max_messages: 100,
             token_limit: 4000,
         }
     }
@@ -102,11 +105,6 @@ impl PersistenceConfig {
 
     pub fn with_auto_load(mut self, auto_load: bool) -> Self {
         self.auto_load = auto_load;
-        self
-    }
-
-    pub fn with_max_messages(mut self, max_messages: usize) -> Self {
-        self.max_messages = max_messages;
         self
     }
 
@@ -136,6 +134,11 @@ pub struct MemoryData {
 
     /// Last updated timestamp
     pub updated_at: String,
+
+    /// P2-3: 乐观锁版本号。每次写入 +1,保存时按 `{session_id, version}` 过滤,
+    /// 未命中即并发冲突。旧数据反序列化缺省为 0。
+    #[serde(default)]
+    pub version: u64,
 }
 
 impl MemoryData {
@@ -148,6 +151,7 @@ impl MemoryData {
             metadata: std::collections::HashMap::new(),
             created_at: now.clone(),
             updated_at: now,
+            version: 0,
         }
     }
 
@@ -183,7 +187,6 @@ mod tests {
         let config = PersistenceConfig::default();
         assert!(config.auto_save);
         assert!(config.auto_load);
-        assert_eq!(config.max_messages, 100);
         assert_eq!(config.token_limit, 4000);
     }
 
@@ -191,11 +194,9 @@ mod tests {
     fn test_persistence_config_custom() {
         let config = PersistenceConfig::new()
             .with_auto_save(false)
-            .with_max_messages(50)
             .with_token_limit(2000);
 
         assert!(!config.auto_save);
-        assert_eq!(config.max_messages, 50);
         assert_eq!(config.token_limit, 2000);
     }
 

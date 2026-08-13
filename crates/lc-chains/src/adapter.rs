@@ -41,23 +41,26 @@ impl Runnable<HashMap<String, Value>, HashMap<String, Value>> for ChainRunnable 
         input: HashMap<String, Value>,
         config: Option<RunnableConfig>,
     ) -> Result<HashMap<String, Value>, LcelError> {
-        // Propagate config (including callbacks) through to the chain
-        self.chain
-            .invoke_with_config(input, config)
-            .await
-            .map_err(|e| LcelError::Chain(e.to_string()))
+        // Propagate config (including callbacks) through to the chain.
+        // P2-1: single conversion point — ChainError → LcelError via the
+        // `From` impl below, so `?` applies it uniformly.
+        let result = self.chain.invoke_with_config(input, config).await?;
+        Ok(result)
     }
 
     async fn stream(
         &self,
         input: HashMap<String, Value>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>, LcelError> {
-        // Propagate config (including callbacks) through to the chain
-        let chain_stream = self.chain
-            .stream_with_config(input, config)
-            .await
-            .map_err(|e| LcelError::Stream(e.to_string()))?;
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>,
+        LcelError,
+    > {
+        // Propagate config (including callbacks) through to the chain.
+        // P2-1: same single `From` conversion as `invoke` — outer error and
+        // every stream item error both convert via `LcelError::from`, so the
+        // invoke/stream paths surface identical error variants.
+        let chain_stream = self.chain.stream_with_config(input, config).await?;
 
         // Convert StreamToken stream to HashMap stream
         let mapped = chain_stream.map(|result| {
@@ -67,7 +70,7 @@ impl Runnable<HashMap<String, Value>, HashMap<String, Value>> for ChainRunnable 
                     map.insert("text".to_string(), Value::String(token.token));
                     map
                 })
-                .map_err(|e| LcelError::Stream(e.to_string()))
+                .map_err(LcelError::from)
         });
 
         Ok(Box::pin(mapped))
@@ -104,12 +107,12 @@ mod tests {
             &self,
             inputs: HashMap<String, Value>,
         ) -> Result<HashMap<String, Value>, crate::base::ChainError> {
-            let input = inputs
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let input = inputs.get("input").and_then(|v| v.as_str()).unwrap_or("");
             let mut result = HashMap::new();
-            result.insert("output".to_string(), Value::String(format!("echo: {}", input)));
+            result.insert(
+                "output".to_string(),
+                Value::String(format!("echo: {}", input)),
+            );
             Ok(result)
         }
     }
@@ -120,6 +123,9 @@ mod tests {
         let mut input = HashMap::new();
         input.insert("input".to_string(), Value::String("hello".to_string()));
         let result = chain.invoke(input, None).await.unwrap();
-        assert_eq!(result.get("output").unwrap(), &Value::String("echo: hello".to_string()));
+        assert_eq!(
+            result.get("output").unwrap(),
+            &Value::String("echo: hello".to_string())
+        );
     }
 }

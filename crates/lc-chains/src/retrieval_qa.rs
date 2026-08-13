@@ -4,6 +4,7 @@
 //! One-stop retrieval QA chain that encapsulates the complete RAG workflow.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::language_models::LLMResult;
 use lc_core::{BaseChatModel, Runnable};
 use lc_rag::retriever::RetrieverTrait;
@@ -13,7 +14,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::base::{BaseChain, ChainError, ChainResult};
+use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 
 /// Default QA prompt template.
 const DEFAULT_QA_PROMPT: &str = "Answer the question based on the following context. If the context does not contain relevant information, say 'I don't know'.
@@ -141,52 +142,65 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
         &self,
         question: impl Into<String>,
     ) -> Result<(String, Vec<Document>), ChainError> {
-        let inputs = HashMap::from([(self.input_key.clone(), Value::String(question.into()))]);
+        // Reuses the single `run` pipeline instead of duplicating retrieval +
+        // prompt assembly here (P1-5: previously re-implemented the whole chain
+        // when `return_source_documents` was false).
+        let question = question.into();
+        self.run(&question).await
+    }
 
-        let was_returning_sources = self.return_source_documents;
-        if !was_returning_sources {
-            let question_str = inputs
-                .get(&self.input_key)
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
-
-            let documents = self
-                .retriever
-                .retrieve(question_str, self.k)
-                .await
-                .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
-
-            let context = self.format_context(&documents);
-            let prompt = self.build_prompt(&context, question_str);
-            let messages = vec![Message::human(&prompt)];
-            let response = self
-                .llm
-                .invoke(messages, None)
-                .await
-                .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
-
-            return Ok((response.content, documents));
+    /// Shared execution pipeline: retrieve → assemble prompt → LLM.
+    ///
+    /// Used by both [`BaseChain::invoke`] and [`Self::query_with_sources`] so the
+    /// RAG path is defined exactly once.
+    async fn run(&self, question: &str) -> Result<(String, Vec<Document>), ChainError> {
+        if self.verbose {
+            println!("\n=== RetrievalQA Execution ===");
+            println!("Question: {}", question);
+            println!("Retrieval count (k): {}", self.k);
+            println!("\n--- Step 1: Retrieve relevant documents ---");
         }
 
-        let result = self.invoke(inputs).await?;
+        let documents = self
+            .retriever
+            .retrieve(question, self.k)
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
 
-        let answer = result
-            .get(&self.output_key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))?;
+        if self.verbose {
+            println!("Retrieved {} documents", documents.len());
+            for (i, doc) in documents.iter().enumerate() {
+                let preview: String = doc.content.chars().take(100).collect();
+                println!("Document {}: {}", i + 1, preview);
+            }
+            if documents.is_empty() {
+                println!("Warning: No relevant documents retrieved");
+            }
+            println!("\n--- Step 2: Assemble Prompt ---");
+        }
 
-        let sources: Vec<Document> = result
-            .get(&self.source_document_key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let context = self.format_context(&documents);
+        let prompt = self.build_prompt(&context, question);
 
-        Ok((answer, sources))
+        if self.verbose {
+            println!("Context length: {} characters", context.len());
+            println!("Prompt length: {} characters", prompt.len());
+            println!("\n--- Step 3: LLM generates answer ---");
+        }
+
+        let messages = vec![Message::human(&prompt)];
+        let response = self
+            .llm
+            .invoke(messages, None)
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
+
+        if self.verbose {
+            println!("Answer: {}", response.content);
+            println!("=== RetrievalQA Complete ===\n");
+        }
+
+        Ok((response.content, documents))
     }
 }
 
@@ -215,14 +229,37 @@ where
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        if self.verbose {
-            println!("\n=== RetrievalQA Execution ===");
-            println!("Question: {}", question);
-            println!("Retrieval count (k): {}", self.k);
+        let (answer, documents) = self.run(question).await?;
+
+        let mut result = HashMap::new();
+        result.insert(self.output_key.clone(), Value::String(answer));
+
+        if self.return_source_documents {
+            // Explicit error instead of silently inserting Value::Null (P1-2).
+            let sources = crate::base::documents_to_values(&documents)?;
+            result.insert(self.source_document_key.clone(), Value::Array(sources));
         }
 
+        Ok(result)
+    }
+
+    /// Stream execution for RetrievalQA -- token by token output.
+    ///
+    /// P2-2: real streaming — retrieves and assembles the prompt first, then
+    /// pushes LLM tokens via `stream_chat` instead of wrapping `invoke` in a
+    /// single chunk (the base default).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let question = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
         if self.verbose {
-            println!("\n--- Step 1: Retrieve relevant documents ---");
+            println!("\n=== RetrievalQA Stream ===");
+            println!("Question: {}", question);
+            println!("Retrieval count (k): {}", self.k);
         }
 
         let documents = self
@@ -233,61 +270,185 @@ where
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
-            for (i, doc) in documents.iter().enumerate() {
-                let preview: String = doc.content.chars().take(100).collect();
-                println!("Document {}: {}", i + 1, preview);
-            }
-        }
-
-        if documents.is_empty() && self.verbose {
-            println!("Warning: No relevant documents retrieved");
-        }
-
-        if self.verbose {
-            println!("\n--- Step 2: Assemble Prompt ---");
         }
 
         let context = self.format_context(&documents);
         let prompt = self.build_prompt(&context, question);
 
-        if self.verbose {
-            println!("Context length: {} characters", context.len());
-            println!("Prompt length: {} characters", prompt.len());
-        }
-
-        if self.verbose {
-            println!("\n--- Step 3: LLM generates answer ---");
-        }
-
         let messages = vec![Message::human(&prompt)];
-        let response = self
+        let llm_stream = self
             .llm
-            .invoke(messages, None)
+            .stream_chat(messages, None)
             .await
-            .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
-        let answer = response.content;
+        let stream = llm_stream.map(move |result| match result {
+            Ok(token) => Ok(StreamToken {
+                token,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
 
-        if self.verbose {
-            println!("Answer: {}", answer);
-            println!("=== RetrievalQA Complete ===\n");
-        }
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
 
-        let mut result = HashMap::new();
-        result.insert(self.output_key.clone(), Value::String(answer));
-
-        if self.return_source_documents {
-            let sources: Vec<Value> = documents
-                .iter()
-                .map(|doc| serde_json::to_value(doc).unwrap_or(Value::Null))
-                .collect();
-            result.insert(self.source_document_key.clone(), Value::Array(sources));
-        }
-
-        Ok(result)
+        Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures_util::Stream;
+    use lc_core::language_models::LLMResult;
+    use lc_core::runnables::RunnableConfig;
+    use lc_core::{BaseLanguageModel, Runnable};
+    use lc_rag::retriever::RetrieverError;
+    use lc_shared::document::SearchResult;
+    use std::pin::Pin;
+
+    /// Mock retriever that returns the preloaded documents (up to `k`).
+    struct MockRetriever(Vec<Document>);
+
+    #[async_trait]
+    impl RetrieverTrait for MockRetriever {
+        async fn retrieve(&self, _query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
+            Ok(self.0.iter().take(k).cloned().collect())
+        }
+        async fn retrieve_with_scores(
+            &self,
+            _query: &str,
+            _k: usize,
+        ) -> Result<Vec<SearchResult>, RetrieverError> {
+            Ok(Vec::new())
+        }
+        async fn add_documents(&self, _documents: Vec<Document>) -> Result<(), RetrieverError> {
+            Ok(())
+        }
+    }
+
+    /// Mock chat model with a deterministic token stream.
+    #[derive(Debug)]
+    struct MockError(String);
+    impl std::fmt::Display for MockError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+    impl std::error::Error for MockError {}
+
+    struct MockLLM;
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for MockLLM {
+        type Error = MockError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Ok(LLMResult {
+                content: "hello world".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for MockLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for MockLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Ok(LLMResult {
+                content: "hello world".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        {
+            let tokens = [
+                Ok("hello".to_string()),
+                Ok(" ".to_string()),
+                Ok("world".to_string()),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    fn doc(content: &str) -> Document {
+        Document::new(content.to_string())
+    }
+
+    /// P2-2: RetrievalQA streams real tokens from the LLM instead of wrapping
+    /// `invoke` in a single chunk.
+    #[tokio::test]
+    async fn test_retrieval_qa_stream_emits_tokens() {
+        let retriever: Arc<dyn RetrieverTrait> = Arc::new(MockRetriever(vec![doc("ctx")]));
+        let chain = RetrievalQA::new(MockLLM, retriever);
+        let inputs = HashMap::from([("query".to_string(), Value::String("q".to_string()))]);
+
+        let mut stream = chain.stream(inputs).await.unwrap();
+        let mut tokens = Vec::new();
+        while let Some(item) = stream.next().await {
+            tokens.push(item.unwrap());
+        }
+        let text: String = tokens.iter().map(|t| t.token.as_str()).collect();
+        assert_eq!(text, "hello world");
+        assert!(tokens.last().unwrap().is_final);
+        // Multiple non-final tokens prove the stream is token-by-token, not one
+        // wrapped chunk.
+        assert!(tokens.iter().filter(|t| !t.is_final).count() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_retrieval_qa_stream_missing_input() {
+        let retriever: Arc<dyn RetrieverTrait> = Arc::new(MockRetriever(vec![]));
+        let chain = RetrievalQA::new(MockLLM, retriever);
+        let err = match chain.stream(HashMap::new()).await {
+            Ok(_) => panic!("expected a missing-input error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, ChainError::MissingInput(_)));
     }
 }

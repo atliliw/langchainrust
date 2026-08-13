@@ -1,6 +1,10 @@
 // tests/bm25/hybrid_rag.rs
 //! 混合检索 (BM25 + 向量) + LLM 完整 RAG 流程测试
 
+// HybridRetriever 已弃用(P1-1),但本文件仍在覆盖其行为;
+// 新代码请迁移到 UnifiedHybridIndex。
+#![allow(deprecated)]
+
 #[path = "../common/mod.rs"]
 mod common;
 

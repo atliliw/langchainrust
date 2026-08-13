@@ -56,13 +56,15 @@ let mut memory = ConversationSummaryBufferMemory::new(llm, 4000)
 use langchainrust::{ContextWindow, Strategy};
 
 // Truncate strategy (default) -- drops oldest, preserves system messages
-let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)?;
 let fitted = cw.fit(messages).await?;
 
 // Summarize strategy -- LLM compresses older messages
-let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm));
+let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm))?;
 let fitted = cw.fit(messages).await?;
 ```
+
+> **Budget semantics (Truncate)**: System 消息恒保留且不占预算;若 System 自身超预算,原样返回(可能超预算)。
 
 ## Persistent Memory
 
@@ -71,7 +73,6 @@ use langchainrust::{PersistentMemory, PersistenceConfig};
 
 let config = PersistenceConfig::new()
     .with_auto_save(true)
-    .with_max_messages(100)
     .with_token_limit(4000);
 
 // Implement PersistentMemory for your storage backend

@@ -625,20 +625,14 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ```rust
 use langchainrust::{ContextWindow, Message, OpenAIChat, Strategy};
-use langchainrust::BaseChatModel;
 
 // 策略 1：Truncate — 超出 token 预算时丢弃最旧的消息
-let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)?;
+let fitted = cw.fit(messages).await?;
 
 // 策略 2：Summarize — 超出预算时使用 LLM 压缩旧对话
-let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)
-    .with_strategy(Strategy::Summarize)
-    .with_llm(OpenAIChat::new(config));
-
-cw.add_message(Message::human("hello")).await;
-cw.add_message(Message::ai("Hi! How can I help?")).await;
-
-let messages = cw.get_messages().await;
+let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm))?;
+let fitted = cw.fit(messages).await?;
 ```
 
 | 策略 | 行为 | 适用场景 |
@@ -1336,7 +1330,8 @@ let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
 // 适配为 BaseTool 列表并交给 Agent
-let mcp_tools = client.as_tools().await;
+// P0-3: as_tools 自动发现工具,无需先手动调用 list_tools
+let mcp_tools = client.as_tools().await?;
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
     mcp_tools,
@@ -2130,7 +2125,7 @@ let llm = OpenAIChat::new(config);
 let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
 let base_retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
 
-let hyde = HyDERetriever::new(llm, embeddings, base_retriever)
+let hyde = HyDERetriever::new(llm, base_retriever)
     .with_k(5)
     .with_include_original_query(true);
 
@@ -2469,7 +2464,7 @@ let server = A2AServer::new(chain)
     .with_card(AgentCard::new("my-agent", "A helpful agent", "http://localhost:8080"));
 
 // 在你的 HTTP 处理函数中：
-// GET  /.well-known/agent.json → server.get_agent_card()
+// GET  /.well-known/agent-card.json → server.get_agent_card()
 // POST /                       → server.handle_a2a_request(body).await
 ```
 

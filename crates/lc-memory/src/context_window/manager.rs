@@ -26,35 +26,32 @@ pub struct ContextWindow<M: BaseChatModel> {
 
 impl<M: BaseChatModel> ContextWindow<M> {
     /// Creates a new ContextWindow with the Truncate strategy and default TiktokenCounter.
-    pub fn new(max_tokens: usize) -> Self
-    where
-        TiktokenCounter: TokenCounter,
-    {
-        Self {
-            max_tokens,
-            counter: Arc::new(TiktokenCounter::new().expect("tiktoken cl100k_base load failed")),
-            strategy: Strategy::Truncate,
-        }
+    ///
+    /// P1-4: 返回 `Result` 而非 panic——tiktoken 模型下载/加载失败(离线/缺模型)
+    /// 时返回 [`MemoryError`],库构造器不再因本地环境崩溃。
+    pub fn new(max_tokens: usize) -> Result<Self, MemoryError> {
+        Self::build(max_tokens, Strategy::Truncate)
     }
 
     /// Creates a new ContextWindow with a specific strategy and default TiktokenCounter.
-    pub fn with_strategy(max_tokens: usize, strategy: Strategy<M>) -> Self
-    where
-        TiktokenCounter: TokenCounter,
-    {
-        Self {
-            max_tokens,
-            counter: Arc::new(TiktokenCounter::new().expect("tiktoken cl100k_base load failed")),
-            strategy,
-        }
+    pub fn with_strategy(max_tokens: usize, strategy: Strategy<M>) -> Result<Self, MemoryError> {
+        Self::build(max_tokens, strategy)
     }
 
     /// Creates a new ContextWindow with a custom max token limit and default counter/strategy.
-    pub fn with_max_tokens(max_tokens: usize) -> Self
-    where
-        TiktokenCounter: TokenCounter,
-    {
+    pub fn with_max_tokens(max_tokens: usize) -> Result<Self, MemoryError> {
         Self::new(max_tokens)
+    }
+
+    /// Shared constructor: loads the TiktokenCounter once, propagating failures.
+    fn build(max_tokens: usize, strategy: Strategy<M>) -> Result<Self, MemoryError> {
+        let counter = TiktokenCounter::new()
+            .map_err(|e| MemoryError::Other(format!("Failed to load tiktoken encoder: {}", e)))?;
+        Ok(Self {
+            max_tokens,
+            counter: Arc::new(counter),
+            strategy,
+        })
     }
 
     /// Sets a custom token counter.
@@ -72,6 +69,16 @@ impl<M: BaseChatModel> ContextWindow<M> {
     ///
     /// - If total tokens are within `max_tokens`, returns messages as-is.
     /// - If over, applies the `Strategy` (truncate or summarize).
+    ///
+    /// # Budget semantics (P1-4 契约)
+    ///
+    /// **`Strategy::Truncate`**: System 消息恒保留且**不占预算**;若 System 消息
+    /// 自身超过 `max_tokens`,原样返回(结果可能超预算)。调用方不应假设 `fit`
+    /// 的返回结果一定在预算内。
+    ///
+    /// **`Strategy::Summarize`**: 摘要占位计入预算,但 LLM 实际产出的摘要 token
+    /// 数未知——预算语义与 Truncate 不同,两者在 System 消息上口径不一致是有意为之,
+    /// 各策略自行定义。
     ///
     /// # Arguments
     /// * `messages` - The conversation messages to fit.
@@ -97,7 +104,10 @@ impl<M: BaseChatModel> ContextWindow<M> {
     /// Truncates messages by removing the oldest non-system messages
     /// until the total fits within `max_tokens`.
     ///
-    /// System messages are always preserved and placed at the beginning.
+    /// System messages are always preserved and placed at the beginning,
+    /// and they do **not** count toward the budget (P1-4 契约): if the system
+    /// messages alone exceed `max_tokens`, they are returned as-is and the
+    /// result may exceed the budget.
     ///
     /// M10: Optimized from O(n^2) to O(n) by computing token counts
     /// incrementally instead of rebuilding and recounting the full candidate

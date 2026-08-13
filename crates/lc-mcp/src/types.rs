@@ -43,14 +43,32 @@ impl MCPContent {
             _ => None,
         }
     }
+
+    /// 渲染为文本(P1-7):文本原样;图片/资源用占位描述代表,不静默丢弃。
+    ///
+    /// `BaseTool` 只接受 String 输出,多类型内容(图/资源)无法直接表达,
+    /// 用带元信息的占位串告知上层"这里有一个非文本内容",而不是悄悄吞掉。
+    pub fn render_text(&self) -> String {
+        match self {
+            MCPContent::Text { text } => text.clone(),
+            MCPContent::Image { mime_type, .. } => {
+                format!("[image: {} (base64 数据已省略)]", mime_type)
+            }
+            MCPContent::Resource { uri, name } => {
+                format!("[resource: {} ({})]", name, uri)
+            }
+        }
+    }
 }
 
 impl MCPToolResult {
-    /// 提取所有文本内容,用换行连接
+    /// 渲染所有内容为文本,用换行连接(P1-7)。
+    ///
+    /// 图片/资源等非文本内容以占位描述代表,不再被静默丢弃。
     pub fn text(&self) -> String {
         self.content
             .iter()
-            .filter_map(|c| c.as_text().map(|s| s.to_string()))
+            .map(|c| c.render_text())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -141,6 +159,49 @@ mod tests {
         let json = r#"{"content":[{"type":"text","text":"ok"}]}"#;
         let result: MCPToolResult = serde_json::from_str(json).unwrap();
         assert!(!result.is_error);
+    }
+
+    #[test]
+    fn test_render_image_placeholder_not_dropped() {
+        // P1-7:图片内容以占位描述代表,不再被静默丢弃。
+        let content = MCPContent::Image {
+            data: "base64...".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        let text = content.render_text();
+        assert!(text.contains("[image: image/png"));
+        assert!(text.contains("base64"));
+    }
+
+    #[test]
+    fn test_render_resource_placeholder_not_dropped() {
+        // P1-7:资源内容以占位描述代表。
+        let content = MCPContent::Resource {
+            uri: "file:///tmp/x.json".to_string(),
+            name: "x.json".to_string(),
+        };
+        let text = content.render_text();
+        assert!(text.contains("[resource: x.json (file:///tmp/x.json)]"));
+    }
+
+    #[test]
+    fn test_tool_result_text_mixed_content() {
+        // 文本 + 图片混排:文本保留,图片降级为占位,两者都进 text()。
+        let result = MCPToolResult {
+            content: vec![
+                MCPContent::Text {
+                    text: "title".to_string(),
+                },
+                MCPContent::Image {
+                    data: "d".to_string(),
+                    mime_type: "image/jpeg".to_string(),
+                },
+            ],
+            is_error: false,
+        };
+        let text = result.text();
+        assert!(text.contains("title"));
+        assert!(text.contains("[image: image/jpeg"));
     }
 
     #[test]

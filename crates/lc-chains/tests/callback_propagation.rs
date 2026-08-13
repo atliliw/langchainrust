@@ -2,12 +2,17 @@
 //! Integration test for callback propagation through Chain execution.
 
 use async_trait::async_trait;
+use futures_util::{Stream, StreamExt};
 use lc_callbacks::{CallbackHandler, CallbackManager, RunTree, RunType};
 use lc_chains::base::{BaseChain, ChainError, ChainResult};
-use lc_chains::ChainRunnable;
+use lc_chains::{ChainRunnable, LLMChain, RouterChain, SequentialChain};
+use lc_core::language_models::LLMResult;
 use lc_core::runnables::{Runnable, RunnableConfig};
+use lc_core::{BaseChatModel, BaseLanguageModel};
+use lc_schema::Message;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 /// A callback handler that records which callbacks were fired.
@@ -80,7 +85,10 @@ impl BaseChain for EchoChain {
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
         let input = inputs.get("input").and_then(|v| v.as_str()).unwrap_or("");
         let mut result = HashMap::new();
-        result.insert("output".to_string(), Value::String(format!("echo: {}", input)));
+        result.insert(
+            "output".to_string(),
+            Value::String(format!("echo: {}", input)),
+        );
         Ok(result)
     }
 }
@@ -94,11 +102,17 @@ async fn test_chain_invoke_without_config() {
 
     // invoke without config
     let result = chain.invoke(inputs.clone()).await.unwrap();
-    assert_eq!(result.get("output").unwrap(), &Value::String("echo: hello".to_string()));
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("echo: hello".to_string())
+    );
 
     // invoke_with_config with None
     let result = chain.invoke_with_config(inputs, None).await.unwrap();
-    assert_eq!(result.get("output").unwrap(), &Value::String("echo: hello".to_string()));
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("echo: hello".to_string())
+    );
 }
 
 /// Test that CallbackManager dispatch methods work correctly.
@@ -158,5 +172,292 @@ async fn test_chain_runnable_propagates_callbacks() {
     let config = RunnableConfig::new().with_callbacks(callbacks);
 
     let result: HashMap<String, Value> = chain.invoke(inputs, Some(config)).await.unwrap();
-    assert_eq!(result.get("output").unwrap(), &Value::String("echo: test".to_string()));
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("echo: test".to_string())
+    );
+}
+
+/// A chain with a custom name that doesn't override `invoke_with_config`
+/// (exercises the base default which must no longer drop config).
+struct NamedChain {
+    name: String,
+}
+
+#[async_trait]
+impl BaseChain for NamedChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec!["input"]
+    }
+    fn output_keys(&self) -> Vec<&str> {
+        vec!["output"]
+    }
+    async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        let mut result = HashMap::new();
+        result.insert("output".to_string(), Value::String("ok".to_string()));
+        Ok(result)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Minimal chat model mock for LLMChain callback tests.
+#[derive(Debug)]
+struct MockChatError(String);
+impl std::fmt::Display for MockChatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl std::error::Error for MockChatError {}
+
+struct MockChatModel;
+
+#[async_trait]
+impl Runnable<Vec<Message>, LLMResult> for MockChatModel {
+    type Error = MockChatError;
+    async fn invoke(
+        &self,
+        _input: Vec<Message>,
+        _config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, Self::Error> {
+        Ok(LLMResult {
+            content: "rust rocks".to_string(),
+            model: "mock-chat".to_string(),
+            token_usage: None,
+            tool_calls: None,
+            thinking_content: None,
+        })
+    }
+}
+
+#[async_trait]
+impl BaseLanguageModel<Vec<Message>, LLMResult> for MockChatModel {
+    fn model_name(&self) -> &str {
+        "mock-chat"
+    }
+    fn get_num_tokens(&self, t: &str) -> usize {
+        t.len()
+    }
+    fn with_temperature(self, _: f32) -> Self {
+        self
+    }
+    fn with_max_tokens(self, _: usize) -> Self {
+        self
+    }
+}
+
+#[async_trait]
+impl BaseChatModel for MockChatModel {
+    async fn chat(
+        &self,
+        _messages: Vec<Message>,
+        _config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, Self::Error> {
+        Ok(LLMResult {
+            content: "rust rocks".to_string(),
+            model: "mock-chat".to_string(),
+            token_usage: None,
+            tool_calls: None,
+            thinking_content: None,
+        })
+    }
+    async fn stream_chat(
+        &self,
+        _messages: Vec<Message>,
+        _config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+        Err(MockChatError("stream not supported".into()))
+    }
+}
+
+/// P0-1: The default `invoke_with_config` must fire on_chain_start/end
+/// (previously it did `let _ = config;` and dropped the callbacks).
+#[tokio::test]
+async fn test_invoke_with_config_fires_chain_callbacks() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler = RecordingHandler::new(events.clone());
+    let callbacks = Arc::new(CallbackManager::new().add_handler(Arc::new(handler)));
+
+    let chain = NamedChain {
+        name: "leaf".to_string(),
+    };
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), Value::String("hi".to_string()));
+
+    let config = RunnableConfig::new().with_callbacks(callbacks);
+    let result = chain
+        .invoke_with_config(inputs, Some(config))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("ok".to_string())
+    );
+
+    let recorded = events.lock().unwrap().clone();
+    assert!(recorded.contains(&"chain_start:leaf".to_string()));
+    assert!(recorded.contains(&"chain_end:leaf".to_string()));
+    assert!(!recorded.iter().any(|e| e.starts_with("chain_error")));
+}
+
+/// P0-1: SequentialChain must thread config into sub-chains — the inner chain
+/// receives its own chain_start/chain_end (proving callbacks crossed the
+/// composition boundary instead of being dropped).
+#[tokio::test]
+async fn test_sequential_chain_propagates_callbacks() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler = RecordingHandler::new(events.clone());
+    let callbacks = Arc::new(CallbackManager::new().add_handler(Arc::new(handler)));
+
+    let seq = SequentialChain::new().with_name("seq").add_chain(
+        Arc::new(NamedChain {
+            name: "inner".to_string(),
+        }),
+        vec!["input"],
+        vec!["output"],
+    );
+
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), Value::String("hi".to_string()));
+
+    let config = RunnableConfig::new().with_callbacks(callbacks);
+    let result = seq.invoke_with_config(inputs, Some(config)).await.unwrap();
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("ok".to_string())
+    );
+
+    let recorded = events.lock().unwrap().clone();
+    // SequentialChain itself fires its own chain_start/end...
+    assert!(recorded.contains(&"chain_start:seq".to_string()));
+    assert!(recorded.contains(&"chain_end:seq".to_string()));
+    // ...and the config reached the inner sub-chain.
+    assert!(recorded.contains(&"chain_start:inner".to_string()));
+    assert!(recorded.contains(&"chain_end:inner".to_string()));
+}
+
+/// P0-1: RouterChain must thread config into the routed destination chain.
+#[tokio::test]
+async fn test_router_chain_propagates_callbacks() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler = RecordingHandler::new(events.clone());
+    let callbacks = Arc::new(CallbackManager::new().add_handler(Arc::new(handler)));
+
+    let router = RouterChain::new()
+        .with_name("router")
+        .add_route_with_keywords(
+            "math",
+            "handles math",
+            Arc::new(NamedChain {
+                name: "math_chain".to_string(),
+            }),
+            vec!["calc"],
+        )
+        .add_route(
+            "other",
+            "anything else",
+            Arc::new(NamedChain {
+                name: "other_chain".to_string(),
+            }),
+        );
+
+    let mut inputs = HashMap::new();
+    inputs.insert(
+        "input".to_string(),
+        Value::String("please calc this".to_string()),
+    );
+
+    let config = RunnableConfig::new().with_callbacks(callbacks);
+    let result = router
+        .invoke_with_config(inputs, Some(config))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.get("output").unwrap(),
+        &Value::String("ok".to_string())
+    );
+
+    let recorded = events.lock().unwrap().clone();
+    assert!(recorded.contains(&"chain_start:router".to_string()));
+    assert!(recorded.contains(&"chain_end:router".to_string()));
+    // The routed destination chain received config too.
+    assert!(recorded.contains(&"chain_start:math_chain".to_string()));
+    assert!(recorded.contains(&"chain_end:math_chain".to_string()));
+    assert!(!recorded.iter().any(|e| e.contains("other_chain")));
+}
+
+/// P0-1: LLMChain fires chain_start → llm_start → llm_end → chain_end in order,
+/// with exactly ONE LLM node per call (llm_start/llm_end reuse the same child
+/// run — the double-object fix).
+#[tokio::test]
+async fn test_llm_chain_callback_order() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler = RecordingHandler::new(events.clone());
+    let callbacks = Arc::new(CallbackManager::new().add_handler(Arc::new(handler)));
+
+    let chain = LLMChain::new(MockChatModel, "Tell me about {topic}").with_input_key("topic");
+
+    let mut inputs = HashMap::new();
+    inputs.insert("topic".to_string(), Value::String("rust".to_string()));
+
+    let config = RunnableConfig::new().with_callbacks(callbacks);
+    let result = chain
+        .invoke_with_config(inputs, Some(config))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.get("text").unwrap(),
+        &Value::String("rust rocks".to_string())
+    );
+
+    let recorded = events.lock().unwrap().clone();
+    let llm_starts = recorded
+        .iter()
+        .filter(|e| e.starts_with("llm_start:"))
+        .count();
+    let llm_ends = recorded
+        .iter()
+        .filter(|e| e.starts_with("llm_end:"))
+        .count();
+    assert_eq!(llm_starts, 1, "exactly one llm_start");
+    assert_eq!(llm_ends, 1, "exactly one llm_end");
+
+    let pos = |prefix: &str| {
+        recorded
+            .iter()
+            .position(|e| e.starts_with(prefix))
+            .expect("event should fire")
+    };
+    assert!(pos("chain_start:") < pos("llm_start:"));
+    assert!(pos("llm_start:") < pos("llm_end:"));
+    assert!(pos("llm_end:") < pos("chain_end:"));
+}
+
+/// P0-1: The default `stream_with_config` fires on_chain_start up front and
+/// on_chain_end once the token stream is exhausted.
+#[tokio::test]
+async fn test_stream_with_config_fires_chain_callbacks() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler = RecordingHandler::new(events.clone());
+    let callbacks = Arc::new(CallbackManager::new().add_handler(Arc::new(handler)));
+
+    let chain = NamedChain {
+        name: "leaf".to_string(),
+    };
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), Value::String("hi".to_string()));
+
+    let config = RunnableConfig::new().with_callbacks(callbacks);
+    let mut stream = chain
+        .stream_with_config(inputs, Some(config))
+        .await
+        .unwrap();
+    while let Some(_token) = stream.next().await {}
+
+    let recorded = events.lock().unwrap().clone();
+    assert!(recorded.contains(&"chain_start:leaf".to_string()));
+    assert!(recorded.contains(&"chain_end:leaf".to_string()));
+    assert!(!recorded.iter().any(|e| e.starts_with("chain_error")));
 }

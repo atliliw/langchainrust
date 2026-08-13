@@ -37,12 +37,7 @@ use lc_schema::Message;
 pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
 
 /// Cohere model list.
-pub const COHERE_MODELS: [&str; 4] = [
-    "command-r-plus",
-    "command-r",
-    "command",
-    "command-light",
-];
+pub const COHERE_MODELS: [&str; 4] = ["command-r-plus", "command-r", "command", "command-light"];
 
 /// Cohere configuration.
 #[derive(Debug, Clone)]
@@ -337,8 +332,7 @@ impl CohereChat {
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, CohereError>> + Send>>, CohereError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, CohereError>> + Send>>, CohereError> {
         use crate::openai::sse::SSEParser;
         use std::sync::{Arc, Mutex};
 
@@ -691,7 +685,10 @@ mod tests {
         assert_eq!(config.base_url, "https://custom.cohere.com/v2");
         assert_eq!(config.temperature, Some(0.5));
         assert_eq!(config.max_tokens, Some(1024));
-        assert_eq!(config.preamble, Some("You are a helpful assistant.".to_string()));
+        assert_eq!(
+            config.preamble,
+            Some("You are a helpful assistant.".to_string())
+        );
     }
 
     #[test]

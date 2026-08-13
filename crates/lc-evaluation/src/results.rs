@@ -1,10 +1,14 @@
 //! Built-in evaluators: ExactMatch, StringDistance, EmbeddingSimilarity, LLMAsJudge.
 
 use async_trait::async_trait;
+use serde::Deserialize;
 
+use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
 use lc_embeddings::{cosine_similarity, Embeddings};
 use lc_schema::Message;
+
+use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
 
 use super::criteria::{EvalError, Evaluator, Score};
 
@@ -105,7 +109,9 @@ impl<E: Embeddings> Evaluator for EmbeddingSimilarity<E> {
             .embed_query(reference)
             .await
             .map_err(|e| EvalError::EmbeddingError(e.to_string()))?;
-        let sim = cosine_similarity(&p, &r).unwrap_or(0.0);
+        // P2-7: cosine 长度不匹配是数据缺陷(向量维度不一致),不再吞成 0.0 静默降级
+        let sim =
+            cosine_similarity(&p, &r).map_err(|e| EvalError::EmbeddingError(e.to_string()))?;
         let v = ((sim + 1.0) / 2.0).clamp(0.0, 1.0);
         Ok(Score::new(v as f64))
     }
@@ -156,6 +162,37 @@ impl<M: BaseChatModel> LLMAsJudge<M> {
     }
 }
 
+/// 结构化评分参数(经 tool_calls 返回)。
+#[derive(Debug, Deserialize)]
+struct ScoreArgs {
+    score: f64,
+    /// 让 LLM 附上简短理由(改善打分质量),当前不消费。
+    #[serde(default)]
+    #[allow(dead_code)]
+    reason: String,
+}
+
+/// 构建评分工具:让 LLM 以 `{"score": 0..max, "reason": "..."}` 提交评分。
+fn score_tool(max_score: u8) -> ToolDefinition {
+    ToolDefinition::new(
+        "submit_evaluation",
+        "提交你对回答的评分。score 为 0 到 max 的整数,reason 给出简短分析。",
+    )
+    .with_parameters(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "score": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": max_score,
+                "description": "0 到 max 的整数分数"
+            },
+            "reason": { "type": "string", "description": "简短分析" }
+        },
+        "required": ["score", "reason"]
+    }))
+}
+
 #[async_trait]
 impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
     async fn eval(
@@ -165,15 +202,25 @@ impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
         reference: &str,
     ) -> Result<Score, EvalError> {
         let (system, user) = self.build_prompt(input, prediction, reference);
-        let result = self
-            .judge
-            .chat_with_system(system, vec![Message::human(user)])
-            .await
-            .map_err(|e| EvalError::PredictorError(e.to_string()))?;
-        let raw = result.content;
-        let value = parse_score(&raw, self.max_score).ok_or_else(|| {
-            EvalError::ParseError(format!("无法从裁判回复解析分数: {}", truncate(&raw, 200)))
-        })?;
+        let messages = vec![Message::system(system), Message::human(user)];
+
+        // P0-1: 优先结构化输出(tool_calls);不支持工具绑定的模型走文本解析回落。
+        let args: ScoreArgs =
+            structured_call(&self.judge, score_tool(self.max_score), messages, |raw| {
+                let norm = parse_score(raw, self.max_score).ok_or_else(|| {
+                    StructuredJudgeError::Parse(format!(
+                        "无法从裁判回复解析分数: {}",
+                        truncate(raw, 200)
+                    ))
+                })?;
+                Ok(ScoreArgs {
+                    score: norm * self.max_score as f64,
+                    reason: String::new(),
+                })
+            })
+            .await?;
+
+        let value = (args.score / self.max_score as f64).clamp(0.0, 1.0);
         Ok(Score::new(value).with_label("llm_judge"))
     }
     fn name(&self) -> &str {
@@ -227,19 +274,30 @@ fn first_number(s: &str) -> Option<f64> {
     })
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{}...", truncated)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lc_embeddings::MockEmbeddings;
+    use lc_embeddings::{EmbeddingError, MockEmbeddings};
+
+    /// 让 embed_query 按文本返回不同维度的向量,复现"向量长度不匹配"。
+    struct MismatchedDimEmbeddings;
+
+    #[async_trait]
+    impl Embeddings for MismatchedDimEmbeddings {
+        async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            if text == "pred" {
+                Ok(vec![1.0; 4])
+            } else {
+                Ok(vec![1.0; 8])
+            }
+        }
+        fn dimension(&self) -> usize {
+            4
+        }
+        fn model_name(&self) -> &str {
+            "mismatched-dim"
+        }
+    }
 
     #[tokio::test]
     async fn test_exact_match() {
@@ -263,6 +321,14 @@ mod tests {
         let ev = EmbeddingSimilarity::new(MockEmbeddings::new(32));
         let s = ev.eval("", "hello", "hello").await.unwrap().value;
         assert!((s - 1.0).abs() < 1e-6);
+    }
+
+    /// P2-7: 向量长度不匹配是数据缺陷,报错而不是静默返回 0.0。
+    #[tokio::test]
+    async fn test_embedding_similarity_mismatched_dim_errors() {
+        let ev = EmbeddingSimilarity::new(MismatchedDimEmbeddings);
+        let err = ev.eval("", "pred", "ref").await.unwrap_err();
+        assert!(matches!(err, EvalError::EmbeddingError(_)));
     }
 
     #[test]

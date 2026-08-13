@@ -148,7 +148,11 @@ mod tests {
     impl Runnable<i32, i32> for Double {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<i32, Self::Error> {
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<i32, Self::Error> {
             Ok(input * 2)
         }
     }
@@ -159,7 +163,11 @@ mod tests {
     impl Runnable<i32, String> for AddSuffix {
         type Error = std::convert::Infallible;
 
-        async fn invoke(&self, input: i32, _config: Option<RunnableConfig>) -> Result<String, Self::Error> {
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<String, Self::Error> {
             Ok(format!("result: {}", input))
         }
     }

@@ -6,7 +6,7 @@
 
 use crate::{AgentAction, AgentError, AgentFinish, AgentOutput, AgentStep, BaseAgent, ToolInput};
 use async_trait::async_trait;
-use lc_core::language_models::{BaseChatModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, LLMResult, TokenUsage};
 use lc_core::tools::{to_tool_definition, BaseTool, ToolCall, ToolDefinition};
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -27,6 +27,9 @@ pub struct FunctionCallingAgent {
 
     /// 自定义系统提示词
     system_prompt: Option<String>,
+
+    /// 最近一次 `plan()` 的 token 用量(P1-5)。
+    last_token_usage: std::sync::Mutex<Option<TokenUsage>>,
 }
 
 impl FunctionCallingAgent {
@@ -66,6 +69,7 @@ impl FunctionCallingAgent {
             llm: llm_with_tools,
             tools,
             system_prompt,
+            last_token_usage: std::sync::Mutex::new(None),
         }
     }
 
@@ -93,6 +97,7 @@ impl FunctionCallingAgent {
             llm: llm_with_tools,
             tools,
             system_prompt,
+            last_token_usage: std::sync::Mutex::new(None),
         }
     }
 
@@ -152,11 +157,19 @@ impl BaseAgent for FunctionCallingAgent {
     ) -> Result<AgentOutput, AgentError> {
         let messages = self.build_messages(inputs, intermediate_steps);
 
-        let result: LLMResult = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| AgentError::Other(format!("LLM 调用失败: {}", e)))?;
+        let result: LLMResult = crate::retry::retry_chat(
+            self.llm.as_ref(),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| AgentError::Other(format!("LLM 调用失败: {}", e)))?;
+
+        // P1-5: record token usage for the executor's metrics.
+        if let Ok(mut guard) = self.last_token_usage.lock() {
+            *guard = result.token_usage.clone();
+        }
 
         if let Some(tool_calls) = &result.tool_calls {
             if !tool_calls.is_empty() {
@@ -197,6 +210,11 @@ impl BaseAgent for FunctionCallingAgent {
     fn get_allowed_tools(&self) -> Option<Vec<&str>> {
         Some(self.tools.iter().map(|t| t.name()).collect())
     }
+
+    /// Reports the token usage from the most recent `plan()` call (P1-5).
+    fn last_token_usage(&self) -> Option<TokenUsage> {
+        self.last_token_usage.lock().ok().and_then(|g| g.clone())
+    }
 }
 
 impl std::fmt::Debug for FunctionCallingAgent {
@@ -204,6 +222,10 @@ impl std::fmt::Debug for FunctionCallingAgent {
         f.debug_struct("FunctionCallingAgent")
             .field("tools_count", &self.tools.len())
             .field("system_prompt", &self.system_prompt)
+            .field(
+                "has_token_usage",
+                &self.last_token_usage.lock().ok().is_some(),
+            )
             .finish()
     }
 }

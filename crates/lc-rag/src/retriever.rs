@@ -126,8 +126,59 @@ pub type Retriever = SimilarityRetriever;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bm25::{AutoMergingConfig, BM25Retriever, ChunkedBM25Retriever};
+    use crate::chunked_hybrid::ChunkedHybridRetriever;
+    use crate::unified_hybrid::UnifiedHybridIndex;
     use lc_embeddings::MockEmbeddings;
+    use lc_vector_stores::ChunkedDocumentStore;
     use lc_vector_stores::InMemoryVectorStore;
+
+    /// P0-1: 验证 BM25 / UnifiedHybrid / ChunkedHybrid 均可作为
+    /// `Arc<dyn RetrieverTrait>` 使用,完成 add + retrieve 全流程。
+    #[allow(deprecated)] // 该 trait-object 测试仍在覆盖已弃用的 ChunkedHybridRetriever
+    #[tokio::test]
+    async fn test_retriever_trait_object_hybrid_retrievers() {
+        // BM25Retriever 作为 trait object
+        let bm25: Arc<dyn RetrieverTrait> = Arc::new(BM25Retriever::new());
+        bm25.add_documents(vec![Document::new(
+            "Rust is a systems programming language",
+        )])
+        .await
+        .unwrap();
+        let results = bm25.retrieve("systems", 1).await.unwrap();
+        assert!(!results.is_empty());
+
+        // UnifiedHybridIndex 作为 trait object
+        let embeddings = Arc::new(MockEmbeddings::new(128));
+        let unified: Arc<dyn RetrieverTrait> =
+            Arc::new(UnifiedHybridIndex::new(embeddings.clone(), 128));
+        unified
+            .add_documents(vec![Document::new(
+                "Rust is a systems programming language",
+            )])
+            .await
+            .unwrap();
+        let results = unified.retrieve("systems", 1).await.unwrap();
+        assert!(!results.is_empty());
+
+        // ChunkedHybridRetriever 作为 trait object
+        let store = Arc::new(ChunkedDocumentStore::new());
+        let bm25_retriever =
+            ChunkedBM25Retriever::with_config(store.clone(), AutoMergingConfig::new());
+        let chunked: Arc<dyn RetrieverTrait> = Arc::new(ChunkedHybridRetriever::new(
+            bm25_retriever,
+            store,
+            embeddings,
+        ));
+        chunked
+            .add_documents(vec![Document::new(
+                "Rust is a systems programming language",
+            )])
+            .await
+            .unwrap();
+        let results = chunked.retrieve("systems", 1).await.unwrap();
+        assert!(!results.is_empty());
+    }
 
     #[tokio::test]
     async fn test_retriever() {
@@ -149,7 +200,7 @@ mod tests {
         // 检索文档
         let results = retriever.retrieve("programming language", 2).await.unwrap();
         assert!(
-            results.len() >= 1,
+            !results.is_empty(),
             "expected at least 1 result, got {}",
             results.len()
         );

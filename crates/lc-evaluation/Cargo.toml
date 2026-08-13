@@ -1,6 +1,6 @@
 [package]
 name = "lc-evaluation"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Evaluation framework for langchainrust — Evaluator trait, built-in evaluators, dataset runner"
@@ -8,14 +8,20 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.12.0" }
-lc-schema = { path = "../lc-schema", version = "0.12.0" }
-lc-embeddings = { path = "../lc-embeddings", version = "0.12.0" }
-lc-providers = { path = "../lc-providers", version = "0.12.0" }
+lc-core = { path = "../lc-core", version = "0.13.0" }
+lc-schema = { path = "../lc-schema", version = "0.13.0" }
+lc-embeddings = { path = "../lc-embeddings", version = "0.13.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 thiserror = "2.0"
 futures-util = "0.3"
+log = "0.4"
 regex = "1"
+
+# P2-3: lc-providers 只被 real_llm_tests(忽略测试)使用,降级为 dev 依赖,
+# 不再让 lc-evaluation 的正常构建拖上整个 provider 栈。
+[dev-dependencies]
+lc-providers = { path = "../lc-providers", version = "0.13.0" }
+tempfile = "3"

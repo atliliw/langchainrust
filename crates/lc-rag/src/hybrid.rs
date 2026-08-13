@@ -9,9 +9,13 @@ use std::collections::HashMap;
 pub const RRF_K: usize = 60;
 
 /// Generate a stable document ID from content hash to avoid collisions (H46).
+///
+/// P2-3: 用 FNV-1a 64 替代 `DefaultHasher`。`DefaultHasher` 的算法是 std 内部
+/// 实现细节,不保证跨进程/跨版本稳定;FNV-1a 是完全指定的确定性哈希,同一
+/// 内容的 `doc.id` 缺失时融合去重不会漂移。
 fn doc_content_hash(doc: &Document) -> String {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = fnv::FnvHasher::default();
     doc.content.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
@@ -30,6 +34,16 @@ pub enum RetrievalSource {
     BM25,
     Vector,
     Hybrid,
+}
+
+/// 按最小分数过滤检索结果(P1-2)。
+///
+/// 消除 `score > 0.0` 幽灵阈值在 `unified_hybrid` / `chunked_hybrid` /
+/// `graph_rag::matcher` 三处的重复实现。`min_score` 在**原始分数尺度**上比较:
+/// 默认 0.0 保持旧行为(只保留正相似度)。余弦相似度范围 [-1,1],
+/// 非归一化嵌入模型下相关文档的余弦可能为负,不同模型可自行调低阈值。
+pub fn filter_by_score<T, S: PartialOrd>(scored: Vec<(T, S)>, min_score: S) -> Vec<(T, S)> {
+    scored.into_iter().filter(|(_, s)| *s > min_score).collect()
 }
 
 /// RRF 融合算法
@@ -152,14 +166,22 @@ pub fn reciprocal_rank_fusion_with_scores(
     results
 }
 
-/// 混合检索器
+/// 混合检索器（已废弃）
+///
+/// 旧版 BM25 + 向量 RRF 融合检索器。请迁移到
+/// [`UnifiedHybridIndex`](crate::unified_hybrid::UnifiedHybridIndex)，
+/// 后者统一了索引、自带向量存储并实现 `RetrieverTrait`。
 #[allow(dead_code)]
+#[deprecated(
+    note = "Use UnifiedHybridIndex instead (see crate::unified_hybrid::UnifiedHybridIndex)"
+)]
 pub struct HybridRetriever {
     bm25_k: usize,
     vector_k: usize,
     rrf_k: usize,
 }
 
+#[allow(deprecated)] // 已弃用类型的内部实现仍需引用自身字段
 impl HybridRetriever {
     pub fn new() -> Self {
         Self {
@@ -209,6 +231,7 @@ impl HybridRetriever {
     }
 }
 
+#[allow(deprecated)] // 已弃用类型的 Default 实现
 impl Default for HybridRetriever {
     fn default() -> Self {
         Self::new()
@@ -274,6 +297,37 @@ mod tests {
         }
     }
 
+    /// P1-2: 共享 filter_by_score 工具函数——默认 0.0 只保留正相似度,
+    /// 调低阈值可保留负相似度文档(非归一化嵌入模型下相关文档余弦可为负)。
+    #[test]
+    fn test_filter_by_score() {
+        let scored = vec![("a", 0.9_f32), ("b", 0.2), ("c", -0.3), ("d", 0.0)];
+
+        // 默认阈值 0.0: 严格大于才保留(与旧 `score > 0.0` 行为一致)
+        let filtered = filter_by_score(scored.clone(), 0.0);
+        let ids: Vec<&str> = filtered.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+
+        // 调低阈值可保留负相似度
+        let relaxed = filter_by_score(scored.clone(), -0.5);
+        assert_eq!(relaxed.len(), 4);
+
+        // 调高阈值更严格
+        let strict = filter_by_score(scored.clone(), 0.5);
+        let ids: Vec<&str> = strict.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec!["a"]);
+    }
+
+    /// P1-2: filter_by_score 对 f64 分数同样适用。
+    #[test]
+    fn test_filter_by_score_f64() {
+        let scored = vec![("x", 0.8_f64), ("y", 0.0), ("z", -0.5)];
+        let filtered = filter_by_score(scored, 0.0);
+        let ids: Vec<&str> = filtered.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec!["x"]);
+    }
+
+    #[allow(deprecated)] // 已弃用类型的兼容性测试
     #[test]
     fn test_hybrid_retriever() {
         let retriever = HybridRetriever::new();
@@ -298,5 +352,23 @@ mod tests {
                 r.score
             );
         }
+    }
+
+    /// P2-3: `doc_content_hash` 为确定性哈希——同内容多次调用结果一致,
+    /// 不同内容结果不同。FNV-1a 完全指定,跨进程/跨版本不漂移。
+    #[test]
+    fn test_doc_content_hash_stable() {
+        let content = "Rust 系统编程与并发";
+        let doc_a = Document::new(content.to_string());
+        let doc_b = Document::new(content.to_string());
+        let doc_c = Document::new("Python 数据科学");
+
+        let hash_a1 = doc_content_hash(&doc_a);
+        let hash_a2 = doc_content_hash(&doc_b);
+        assert_eq!(hash_a1, hash_a2, "相同内容应产生相同哈希");
+
+        let hash_c = doc_content_hash(&doc_c);
+        assert_ne!(hash_a1, hash_c, "不同内容应产生不同哈希");
+        assert_eq!(hash_a1.len(), 16, "应为 64 位哈希的 16 位十六进制表示");
     }
 }

@@ -1,9 +1,12 @@
 // lc-embeddings/src/deepseek.rs
 //! DeepSeek embeddings implementation.
+//!
+//! DeepSeek 走 OpenAI 兼容 `/embeddings` 协议，复用
+//! [`crate::openai_compat`] 公共基类（P1-5），本文件只配置规格
+//! （URL / 模型 / 维度 / 批量大小）。
 
-use crate::{EmbeddingError, Embeddings};
-use async_trait::async_trait;
-use serde::Deserialize;
+use crate::openai_compat::{CompatConfigAccess, CompatSpec, OpenAICompatEmbeddings};
+use crate::EmbeddingError;
 
 /// Default base URL for the DeepSeek API.
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
@@ -75,160 +78,119 @@ impl DeepSeekEmbeddingsConfig {
     }
 }
 
+impl CompatConfigAccess for DeepSeekEmbeddingsConfig {
+    fn api_key(&self) -> &str {
+        &self.api_key
+    }
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+impl CompatSpec for DeepSeekEmbeddingsConfig {
+    fn api_key_env() -> &'static str {
+        "DEEPSEEK_API_KEY"
+    }
+    fn batch_size() -> usize {
+        64
+    }
+    fn dimension_for(model: &str) -> Result<usize, EmbeddingError> {
+        if model == DEEPSEEK_EMBED_MODEL {
+            Ok(1536)
+        } else {
+            Err(EmbeddingError::Config(format!(
+                "unknown embedding dimension for DeepSeek model '{model}' (supported: '{DEEPSEEK_EMBED_MODEL}')"
+            )))
+        }
+    }
+    fn from_env_result() -> Result<Self, String> {
+        Self::from_env_result()
+    }
+}
+
 /// DeepSeek embeddings client for generating vector embeddings.
-pub struct DeepSeekEmbeddings {
-    config: DeepSeekEmbeddingsConfig,
-    client: reqwest::Client,
-}
-
-impl DeepSeekEmbeddings {
-    /// Creates a DeepSeekEmbeddings with the given configuration.
-    pub fn new(config: DeepSeekEmbeddingsConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-        }
-    }
-
-    /// Creates a DeepSeekEmbeddings from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| Self::new(DeepSeekEmbeddingsConfig::default()))
-    }
-
-    /// Creates a DeepSeekEmbeddings from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
-        let config = DeepSeekEmbeddingsConfig::from_env_result()?;
-        Ok(Self::new(config))
-    }
-}
-
-#[async_trait]
-impl Embeddings for DeepSeekEmbeddings {
-    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        if text.is_empty() {
-            return Err(EmbeddingError::EmptyInput);
-        }
-
-        let url = format!("{}/embeddings", self.config.base_url);
-
-        let body = serde_json::json!({
-            "model": self.config.model,
-            "input": text,
-        });
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(EmbeddingError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let embedding_response: EmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-
-        Ok(embedding_response
-            .data
-            .first()
-            .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
-            .embedding
-            .clone())
-    }
-
-    async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let url = format!("{}/embeddings", self.config.base_url);
-        let batch_size = 64; // DeepSeek API batch limit
-        let mut all_results = vec![Vec::new(); texts.len()];
-        let mut offset = 0;
-
-        for chunk in texts.chunks(batch_size) {
-            let body = serde_json::json!({
-                "model": self.config.model,
-                "input": chunk,
-            });
-
-            let response = self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.config.api_key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-
-            let status = response.status();
-            if !status.is_success() {
-                let error_text = response.text().await.unwrap_or_default();
-                return Err(EmbeddingError::ApiError(format!(
-                    "HTTP {}: {}",
-                    status, error_text
-                )));
-            }
-
-            let embedding_response: EmbeddingResponse = response
-                .json()
-                .await
-                .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-
-            for item in embedding_response.data {
-                let global_index = offset + item.index as usize;
-                if global_index < all_results.len() {
-                    all_results[global_index] = item.embedding;
-                }
-            }
-            offset += chunk.len();
-        }
-
-        Ok(all_results)
-    }
-
-    fn dimension(&self) -> usize {
-        1536
-    }
-
-    fn model_name(&self) -> &str {
-        &self.config.model
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct EmbeddingResponse {
-    data: Vec<EmbeddingData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-    index: i32,
-}
+///
+/// 复用 OpenAI 兼容协议公共基类（P1-5）：构造时 fail fast 校验 API key 非空
+/// 与模型维度已知（P1-2/P1-3），批量对齐显式报错（P0-1），错误体不吞错（P1-4）。
+pub type DeepSeekEmbeddings = OpenAICompatEmbeddings<DeepSeekEmbeddingsConfig>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{spawn_embeddings_stub, spawn_status_stub};
+    use crate::Embeddings;
     use std::env;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    /// P0-1: 服务端少返回 → 显式 `EmptyVectorInBatch`，而非静默空向量。
+    #[tokio::test]
+    async fn test_embed_documents_truncated_errors() {
+        let base_url = spawn_embeddings_stub(Arc::new(|n| n.saturating_sub(1))).await;
+        let config = DeepSeekEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: DEEPSEEK_EMBED_MODEL.into(),
+        };
+        let embeddings = DeepSeekEmbeddings::new(config).unwrap();
+
+        let result = embeddings.embed_documents(&["a", "b"]).await;
+        assert!(
+            matches!(result, Err(EmbeddingError::EmptyVectorInBatch)),
+            "少返回应报 EmptyVectorInBatch，实际: {:?}",
+            result
+        );
+    }
+
+    /// P2-5: DeepSeek（复用 OpenAI 兼容基类）同样接线 429 重试。
+    #[tokio::test]
+    async fn test_embed_query_retries_on_429() {
+        let success_body = r#"{"data":[{"embedding":[0.6,0.8],"index":0}],"model":"stub","usage":{"prompt_tokens":0,"total_tokens":0}}"#;
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let config = DeepSeekEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: DEEPSEEK_EMBED_MODEL.into(),
+        };
+        let embeddings = DeepSeekEmbeddings::new(config).unwrap();
+
+        let v = embeddings
+            .embed_query("hello")
+            .await
+            .expect("429 两次后应重试成功");
+        assert_eq!(v.len(), 2);
+        // P2-8: 返回向量应已归一化。
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+    }
+
+    /// P1-3: API key 为空 → 构造期 fail fast 报 `Config`，而非拖到发请求才 401。
+    #[test]
+    fn test_new_rejects_empty_api_key() {
+        let config = DeepSeekEmbeddingsConfig {
+            api_key: String::new(),
+            base_url: DEEPSEEK_BASE_URL.into(),
+            model: DEEPSEEK_EMBED_MODEL.into(),
+        };
+        let err = DeepSeekEmbeddings::new(config).unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+    }
+
+    /// P1-2: 未知模型 → 构造期报错，不得回落默认 1536 撒谎。
+    #[test]
+    fn test_new_rejects_unknown_model() {
+        let config = DeepSeekEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url: DEEPSEEK_BASE_URL.into(),
+            model: "some-unknown-model".into(),
+        };
+        let err = DeepSeekEmbeddings::new(config).unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+    }
 
     fn save_and_set(key: &str, value: &str) -> Option<String> {
         let old = env::var(key).ok();

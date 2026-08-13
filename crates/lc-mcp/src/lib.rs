@@ -22,20 +22,50 @@
 
 pub mod client;
 pub mod completion;
+pub mod connection_manager;
 pub mod elicitation;
+pub mod gateway;
+pub mod health;
+pub mod orchestrate;
 pub mod prompts;
 pub mod protocol;
 pub mod resources;
 pub mod roots;
 pub mod sampling;
+pub mod sandbox;
 pub mod server;
+pub mod stream;
+pub mod tenant;
 pub mod tool_adapter;
+pub mod tool_discovery;
+pub mod tool_namespace;
+pub mod tool_timeout;
 pub mod transport;
 pub mod types;
 
+#[cfg(test)]
+mod test_support;
+
 pub use client::MCPClient;
-pub use protocol::{MCPError, MCPRequest, MCPResponse, MCP_VERSION};
+pub use connection_manager::{ConnectionManager, ServerSpec};
+pub use gateway::{GatewayAuditRecord, GatewayServerSpec, MCPGateway, RateLimiter};
+pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
+pub use orchestrate::{OrchestrateError, ToolCaller, ToolOrchestrator, ToolStep};
+pub use protocol::{
+    MCPError, MCPRequest, MCPResponse, ProtocolInfo, VersionPolicy, MCP_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+};
+pub use sampling::{
+    ModelHint, ModelPreferences, SamplingContent, SamplingGuard, SamplingGuardError, SamplingLease,
+    SamplingMessage, SamplingRequest, SamplingResult, SamplingRole,
+};
+pub use sandbox::{AuditRecord, EgressPolicy, ParamRule, SandboxError, ServerSandbox};
 pub use server::MCPServer;
+pub use stream::{PartialContent, ToolStream, ToolStreamError};
+pub use tenant::TenantGateway;
 pub use tool_adapter::MCPToolAdapter;
-pub use transport::{MCPTransport, SseTransport, StdioTransport};
+pub use tool_discovery::{KeywordScorer, ToolDiscovery, ToolScorer};
+pub use tool_namespace::{NamespacedTool, ToolConflict, ToolNamespace};
+pub use tool_timeout::{call_tool_with_timeout, ToolSpec};
+pub use transport::{InMemoryTransport, MCPEvent, MCPTransport, SseTransport, StdioTransport};
 pub use types::{MCPConfig, MCPContent, MCPToolDefinition, MCPToolResult};

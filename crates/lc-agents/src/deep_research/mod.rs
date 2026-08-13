@@ -386,11 +386,14 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             Message::system("You are a research assistant. Output only valid JSON."),
             Message::human(prompt),
         ];
-        let response = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
+        let response = crate::retry::retry_chat(
+            &self.llm,
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
 
         parse_gap_queries(&response.content, gaps)
     }

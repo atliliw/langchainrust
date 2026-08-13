@@ -4,9 +4,13 @@
 //! Sends a structured prompt to the LLM, parses the JSON response into
 //! [`ExtractedEntity`] and [`ExtractedRelation`] lists.
 
-use lc_core::language_models::{BaseChatModel, LLMResult};
+use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_schema::Message;
 use serde::Deserialize;
+use serde_json::json;
+
+use crate::structured::{chat_structured, StructuredChatResult};
 
 /// An entity extracted from text by the LLM.
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +75,55 @@ Output:
 Text:
 {text}"#;
 
+/// 实体/关系提取工具定义(P2-1):强制 LLM 输出结构化 JSON 参数。
+fn extraction_tool() -> ToolDefinition {
+    ToolDefinition::new(
+        "extract_entities_relations",
+        "从文本中提取知识图谱实体与关系,返回 entities 与 relations 两个数组",
+    )
+    .with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "entities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "type": { "type": "string" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["name", "type", "description"]
+                }
+            },
+            "relations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": { "type": "string" },
+                        "target": { "type": "string" },
+                        "type": { "type": "string" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["source", "target", "type", "description"]
+                }
+            }
+        },
+        "required": ["entities", "relations"]
+    }))
+}
+
+/// 解析一次结构化调用结果:优先 tool_calls 参数,其次文本 JSON。
+fn parse_structured(result: &StructuredChatResult) -> Option<ExtractionResult> {
+    if let Some(args) = &result.tool_args {
+        if let Ok(parsed) = serde_json::from_value::<ExtractionResult>(args.clone()) {
+            return Some(parsed);
+        }
+    }
+    parse_extraction(&result.content).ok()
+}
+
 /// Extracts entities and relations from text using the LLM.
 pub async fn extract<M: BaseChatModel>(
     llm: &M,
@@ -92,14 +145,45 @@ pub async fn extract<M: BaseChatModel>(
             .unwrap_or_else(|_| EXTRACTION_PROMPT.to_string())
     };
 
-    let messages = vec![Message::human(prompt)];
+    extract_with_retry(llm, text, prompt).await
+}
 
-    let response: LLMResult = llm
-        .chat(messages, None)
+/// P2-1/P2-2: 优先原生 tool_calls 结构化输出;文本 JSON 解析失败时,
+/// 带"只返回 JSON"提示重试 1-2 次,仍失败才返回错误。
+async fn extract_with_retry<M: BaseChatModel>(
+    llm: &M,
+    original_text: &str,
+    prompt: String,
+) -> Result<ExtractionResult, super::GraphRAGError> {
+    const MAX_RETRIES: usize = 2;
+    let mut current_prompt = prompt;
+
+    for attempt in 0..=MAX_RETRIES {
+        let result = chat_structured(
+            llm,
+            Some(extraction_tool()),
+            vec![Message::human(&current_prompt)],
+        )
         .await
-        .map_err(|e| super::GraphRAGError::LLMError(e.to_string()))?;
+        .map_err(super::GraphRAGError::LLMError)?;
 
-    parse_extraction(&response.content)
+        if let Some(parsed) = parse_structured(&result) {
+            return Ok(parsed);
+        }
+
+        if attempt < MAX_RETRIES {
+            current_prompt = format!(
+                "上次的输出不是合法 JSON,无法解析。请重新从下面文本提取实体与关系,\
+                 只返回一个 JSON 对象(键为 entities 与 relations),不要包含任何解释、\
+                 编号、引号或代码块。\n\n文本:\n{}\n\n上次输出(无效):\n{}\n\n只输出 JSON 对象:",
+                original_text, result.content
+            );
+        }
+    }
+
+    Err(super::GraphRAGError::ExtractionError(
+        "LLM 多次输出非合法 JSON,实体/关系提取失败".to_string(),
+    ))
 }
 
 /// Parses the LLM JSON response into an `ExtractionResult`.
@@ -211,5 +295,52 @@ mod tests {
             EXTRACTION_PROMPT.contains("works_at"),
             "extraction prompt example should contain relation type 'works_at'"
         );
+    }
+
+    /// P2-1: 提取工具定义携带完整 JSON Schema(entities + relations)。
+    #[test]
+    fn test_extraction_tool_schema() {
+        let tool = extraction_tool();
+        assert_eq!(tool.function.name, "extract_entities_relations");
+        let params = tool.function.parameters.expect("parameters 应存在");
+        assert!(params["properties"]["entities"].is_object());
+        assert!(params["properties"]["relations"].is_object());
+    }
+
+    /// P2-1: tool_calls 参数可解析为 ExtractionResult。
+    #[test]
+    fn test_parse_structured_tool_args() {
+        let result = StructuredChatResult {
+            content: "".to_string(),
+            tool_args: Some(json!({
+                "entities": [{"name": "Alice", "type": "Person", "description": "dev"}],
+                "relations": []
+            })),
+        };
+        let parsed = parse_structured(&result).expect("tool_args 应解析成功");
+        assert_eq!(parsed.entities.len(), 1);
+        assert_eq!(parsed.entities[0].name, "Alice");
+        assert!(parsed.relations.is_empty());
+    }
+
+    /// P2-1: 无 tool_calls 时回落文本 JSON 解析。
+    #[test]
+    fn test_parse_structured_text_fallback() {
+        let result = StructuredChatResult {
+            content: r#"{"entities": [{"name": "Bob", "type": "Person", "description": "mgr"}], "relations": []}"#.to_string(),
+            tool_args: None,
+        };
+        let parsed = parse_structured(&result).expect("文本 JSON 应解析成功");
+        assert_eq!(parsed.entities[0].name, "Bob");
+    }
+
+    /// P2-1: tool_args 反序列化失败且文本非 JSON → None(触发重试)。
+    #[test]
+    fn test_parse_structured_none() {
+        let result = StructuredChatResult {
+            content: "not json".to_string(),
+            tool_args: Some(json!("not an object")),
+        };
+        assert!(parse_structured(&result).is_none());
     }
 }

@@ -4,10 +4,9 @@
 //! 使用 LLM 生成假设文档，然后用假设文档进行检索，
 //! 提升语义检索的召回率和精确度。
 
-use lc_core::Runnable;
-use lc_embeddings::Embeddings;
+use lc_core::language_models::BaseChatModel;
 use lc_prompts::PromptTemplate;
-use lc_providers::OpenAIChat;
+use lc_providers::ProviderError;
 use lc_schema::Message;
 use lc_vector_stores::{Document, SearchResult};
 
@@ -93,15 +92,34 @@ Passage:"#;
 /// 4. 用假设文档向量检索真实文档
 /// 5. 返回相关文档
 pub struct HyDERetriever {
-    llm: OpenAIChat,
+    /// LLM 用于生成假设文档
+    ///
+    /// P0-3: 不再硬编码 `OpenAIChat`,接受任意实现 `BaseChatModel` 的 LLM。
+    llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
     base_retriever: Arc<dyn RetrieverTrait>,
     config: HyDEConfig,
 }
 
 impl HyDERetriever {
-    pub fn new(
-        llm: OpenAIChat,
-        _embeddings: Arc<dyn Embeddings>,
+    /// 创建 HyDERetriever(接受任意实现 `BaseChatModel` 的 LLM)
+    ///
+    /// P0-3: 移除死参数 `_embeddings`——假设文档的向量化由内部
+    /// `base_retriever` 完成,不需要外部传入 Embeddings。
+    pub fn new<L>(llm: L, base_retriever: Arc<dyn RetrieverTrait>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
+        Self {
+            llm: lc_providers::wrap_chat_model(llm),
+            base_retriever,
+            config: HyDEConfig::default(),
+        }
+    }
+
+    /// P0-3: 从已包装的 `Arc<dyn BaseChatModel<Error = ProviderError>>` 构建
+    pub fn new_arc(
+        llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         base_retriever: Arc<dyn RetrieverTrait>,
     ) -> Self {
         Self {

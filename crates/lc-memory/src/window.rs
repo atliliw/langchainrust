@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::base::{BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
 use lc_schema::Message;
 
 /// Conversation Buffer Window Memory
@@ -130,6 +130,17 @@ impl ConversationBufferWindowMemory {
 impl Default for ConversationBufferWindowMemory {
     fn default() -> Self {
         Self::new(5)
+    }
+}
+
+/// P0-1: `ConversationBufferWindowMemory` 实现 `BaseChatMemory`。
+impl BaseChatMemory for ConversationBufferWindowMemory {
+    fn messages(&self) -> &[Message] {
+        self.chat_memory.messages()
+    }
+
+    fn add_message(&mut self, message: Message) {
+        self.chat_memory.add_message(message);
     }
 }
 

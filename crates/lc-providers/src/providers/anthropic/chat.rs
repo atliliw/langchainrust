@@ -209,11 +209,7 @@ impl AnthropicChat {
             // Parse data URI: "data:image/png;base64,abc123"
             let url = &img.url;
             // Extract media type from "data:{media_type};base64,{data}"
-            let media_type = url
-                .strip_prefix("data:")?
-                .split(';')
-                .next()?
-                .to_string();
+            let media_type = url.strip_prefix("data:")?.split(';').next()?.to_string();
 
             let data = img.base64_data()?;
             Some(AnthropicImageSource {
@@ -657,7 +653,9 @@ mod tests {
             assert_eq!(blocks.len(), 2);
 
             // First block should be text
-            assert!(matches!(&blocks[0], AnthropicContentBlock::Text { text } if text == "Describe this"));
+            assert!(
+                matches!(&blocks[0], AnthropicContentBlock::Text { text } if text == "Describe this")
+            );
 
             // Second block should be image
             if let AnthropicContentBlock::Image { source } = &blocks[1] {
@@ -689,10 +687,8 @@ mod tests {
 
     #[test]
     fn test_human_message_with_jpeg_base64_image() {
-        let msg = Message::human_with_image(
-            "What is this?",
-            "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
-        );
+        let msg =
+            Message::human_with_image("What is this?", "data:image/jpeg;base64,/9j/4AAQSkZJRg==");
         let anthropic_msg = AnthropicChat::message_to_anthropic_format(&msg);
 
         if let AnthropicMessageContent::Blocks(blocks) = &anthropic_msg.content {

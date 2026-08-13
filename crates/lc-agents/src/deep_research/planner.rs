@@ -63,10 +63,10 @@ pub async fn plan<M: BaseChatModel>(
         Message::human(prompt),
     ];
 
-    let response = llm
-        .chat(messages, None)
-        .await
-        .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
+    let response =
+        crate::retry::retry_chat(llm, messages, None, &crate::retry::RetryConfig::default())
+            .await
+            .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
 
     let subtopics = parse_subtopics(&response.content)?;
     Ok(ResearchPlan {

@@ -196,20 +196,15 @@ where
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        // P2-8: validate inputs on the invoke path too, matching stream.
+        self.validate_inputs(&inputs)?;
+
         let input = inputs
             .get(&self.input_key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs
-            .get("documents")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
         let output = self.invoke_with_documents(documents, input).await?;
 
@@ -222,7 +217,9 @@ where
     ///
     /// Runs the initial + all intermediate refine steps via invoke (since
     /// their output feeds the next step), then streams the final refine step
-    /// token by token via `stream_chat`.
+    /// token by token via `stream_chat`. With a single document there is no
+    /// final refine step — the initial answer is emitted directly (P2-4), so
+    /// the LLM is not re-called on the identical initial prompt.
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
@@ -231,15 +228,7 @@ where
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let documents: Vec<Document> = inputs
-            .get("documents")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect()
-            })
-            .ok_or_else(|| ChainError::MissingInput("documents".to_string()))?;
+        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
@@ -251,14 +240,25 @@ where
         let first_context = &documents[0].content;
         let initial_prompt = self.build_initial_prompt(first_context, input);
         let messages = vec![Message::human(&initial_prompt)];
-        let response = self.llm.invoke(messages, None).await.map_err(|e| {
-            ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
-        })?;
+        let response =
+            self.llm.invoke(messages, None).await.map_err(|e| {
+                ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
+            })?;
         let mut answer = response.content;
 
         // Step 2: Run intermediate refine steps (all but the last) via invoke
+        //
+        // P2-4: with a single document `last_idx == 0` and `documents[1..0]`
+        // would panic on the slice index — iterate with skip/take so zero
+        // intermediate documents (1 or 2 documents) is a no-op and the initial
+        // answer flows straight to the final step.
         let last_idx = documents.len() - 1;
-        for (i, doc) in documents[1..last_idx].iter().enumerate() {
+        for (i, doc) in documents
+            .iter()
+            .skip(1)
+            .take(last_idx.saturating_sub(1))
+            .enumerate()
+        {
             let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
             let messages = vec![Message::human(&refine_prompt)];
             let response = self.llm.invoke(messages, None).await.map_err(|e| {
@@ -272,12 +272,23 @@ where
         }
 
         // Step 3: Stream the final refine step
-        let final_prompt = if last_idx == 0 {
-            // Only one document — stream the initial answer
-            self.build_initial_prompt(&documents[0].content, input)
-        } else {
-            self.build_refine_prompt(&documents[last_idx].content, input, &answer)
-        };
+        //
+        // P2-4: with a single document the initial invoke above already produced
+        // the complete answer — calling `stream_chat` on the identical initial
+        // prompt would make a second, redundant LLM call for the same output
+        // (the invoke result was previously discarded and the prompt re-sent).
+        // Stream the computed answer directly instead.
+        if last_idx == 0 {
+            let stream = futures_util::stream::once(async move {
+                Ok(StreamToken {
+                    token: answer,
+                    is_final: true,
+                })
+            });
+            return Ok(Box::pin(stream));
+        }
+
+        let final_prompt = self.build_refine_prompt(&documents[last_idx].content, input, &answer);
 
         let messages = vec![Message::human(&final_prompt)];
         let llm_stream = self
@@ -297,18 +308,193 @@ where
             ))),
         });
 
-        let final_stream =
-            stream.chain(futures_util::stream::once(async move {
-                Ok(StreamToken {
-                    token: String::new(),
-                    is_final: true,
-                })
-            }));
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
 
         Ok(Box::pin(final_stream))
     }
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use futures_util::Stream;
+    use lc_core::language_models::LLMResult;
+    use lc_core::runnables::RunnableConfig;
+    use lc_core::{BaseLanguageModel, Runnable};
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Mock chat model that counts `invoke`/`stream_chat` calls so the P2-4
+    /// single-document fix (no second LLM call) is provable.
+    #[derive(Debug)]
+    struct MockError(String);
+    impl std::fmt::Display for MockError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+    impl std::error::Error for MockError {}
+
+    struct CountingLLM {
+        invokes: Arc<AtomicUsize>,
+        streams: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for CountingLLM {
+        type Error = MockError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invokes.fetch_add(1, Ordering::SeqCst);
+            Ok(LLMResult {
+                content: "initial answer".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for CountingLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for CountingLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invokes.fetch_add(1, Ordering::SeqCst);
+            Ok(LLMResult {
+                content: "initial answer".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        {
+            self.streams.fetch_add(1, Ordering::SeqCst);
+            let tokens = [Ok("refined answer".to_string())];
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    fn inputs_for(documents: Vec<Document>) -> HashMap<String, Value> {
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), Value::String("question".to_string()));
+        inputs.insert(
+            "documents".to_string(),
+            serde_json::to_value(documents).unwrap(),
+        );
+        inputs
+    }
+
+    /// P2-4: a single document reuses the invoke-computed initial answer —
+    /// `stream_chat` is never called on the identical prompt (one LLM call
+    /// total, not two).
+    #[tokio::test]
+    async fn test_refine_stream_single_document_skips_second_llm_call() {
+        let invokes = Arc::new(AtomicUsize::new(0));
+        let streams = Arc::new(AtomicUsize::new(0));
+        let chain = RefineDocumentsChain::new(CountingLLM {
+            invokes: invokes.clone(),
+            streams: streams.clone(),
+        });
+        let inputs = inputs_for(vec![Document::new("doc one")]);
+
+        let mut stream = chain.stream(inputs).await.unwrap();
+        let mut tokens = Vec::new();
+        while let Some(item) = stream.next().await {
+            tokens.push(item.unwrap());
+        }
+        let text: String = tokens.iter().map(|t| t.token.as_str()).collect();
+        assert_eq!(text, "initial answer");
+        assert!(tokens.last().unwrap().is_final);
+        assert_eq!(invokes.load(Ordering::SeqCst), 1, "one initial invoke");
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            0,
+            "single-document stream must not re-call the LLM"
+        );
+    }
+
+    /// Multi-document: initial + intermediate refines run via invoke, the final
+    /// refine is genuinely streamed (one `stream_chat` call).
+    #[tokio::test]
+    async fn test_refine_stream_multi_document_streams_final_refine() {
+        let invokes = Arc::new(AtomicUsize::new(0));
+        let streams = Arc::new(AtomicUsize::new(0));
+        let chain = RefineDocumentsChain::new(CountingLLM {
+            invokes: invokes.clone(),
+            streams: streams.clone(),
+        });
+        let inputs = inputs_for(vec![
+            Document::new("doc one"),
+            Document::new("doc two"),
+            Document::new("doc three"),
+        ]);
+
+        let mut stream = chain.stream(inputs).await.unwrap();
+        let mut tokens = Vec::new();
+        while let Some(item) = stream.next().await {
+            tokens.push(item.unwrap());
+        }
+        let text: String = tokens.iter().map(|t| t.token.as_str()).collect();
+        assert!(text.contains("refined answer"));
+        assert!(tokens.last().unwrap().is_final);
+        // 3 documents → 1 initial + 1 intermediate invoke, then 1 streamed final.
+        assert_eq!(invokes.load(Ordering::SeqCst), 2);
+        assert_eq!(streams.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refine_stream_empty_documents() {
+        let chain = RefineDocumentsChain::new(CountingLLM {
+            invokes: Arc::new(AtomicUsize::new(0)),
+            streams: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), Value::String("q".to_string()));
+        inputs.insert("documents".to_string(), serde_json::json!([]));
+        let err = match chain.stream(inputs).await {
+            Ok(_) => panic!("expected an execution error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, ChainError::ExecutionError(_)));
     }
 }

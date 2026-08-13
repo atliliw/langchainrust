@@ -13,9 +13,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// Type alias for the boxed async closure stored in `RunnableLambda`.
-type AsyncFn<I, O> = Arc<
-    dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<O, LcelError>> + Send>> + Send + Sync,
->;
+type AsyncFn<I, O> =
+    Arc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<O, LcelError>> + Send>> + Send + Sync>;
 
 /// A `Runnable` that wraps a closure.
 ///
@@ -103,11 +102,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableLambda<I, O> {
 impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for RunnableLambda<I, O> {
     type Error = LcelError;
 
-    async fn invoke(
-        &self,
-        input: I,
-        _config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn invoke(&self, input: I, _config: Option<RunnableConfig>) -> Result<O, LcelError> {
         (self.func)(input).await
     }
 
@@ -155,7 +150,8 @@ mod tests {
     #[tokio::test]
     async fn async_closure_works() {
         let lambda = RunnableLambda::new_async(|x: i32| async move {
-            tokio::task::spawn_blocking(move || x + 100).await
+            tokio::task::spawn_blocking(move || x + 100)
+                .await
                 .map_err(|e| LcelError::Other(e.to_string()))
         });
         let result = lambda.invoke(5, None).await.unwrap();

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::base::{BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
 use lc_schema::Message;
 
 /// Conversation Buffer Memory
@@ -115,6 +115,17 @@ impl ConversationBufferMemory {
 impl Default for ConversationBufferMemory {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// P0-1: `ConversationBufferMemory` 实现 `BaseChatMemory`,可当聊天缓冲用。
+impl BaseChatMemory for ConversationBufferMemory {
+    fn messages(&self) -> &[Message] {
+        self.chat_memory.messages()
+    }
+
+    fn add_message(&mut self, message: Message) {
+        self.chat_memory.add_message(message);
     }
 }
 
@@ -237,6 +248,36 @@ mod tests {
         // Clear
         memory.clear().await.unwrap();
         assert_eq!(memory.chat_memory().len(), 0);
+    }
+
+    /// P0-1: 验证四种 Memory 可实现 `BaseChatMemory`,从而支持
+    /// 泛型记忆代码 `fn f<T: BaseChatMemory>(m: &T)` 与 trait 对象。
+    #[tokio::test]
+    async fn test_base_chat_memory_generic_function() {
+        use crate::window::ConversationBufferWindowMemory;
+
+        // 泛型函数:对任意 BaseChatMemory 实现读取消息数
+        fn count_messages<T: BaseChatMemory>(memory: &T) -> usize {
+            memory.messages().len()
+        }
+
+        // Buffer 实现 BaseChatMemory
+        let mut buffer = ConversationBufferMemory::new();
+        buffer.add_user_message("Hello");
+        buffer.add_ai_message("Hi!");
+        assert_eq!(count_messages(&buffer), 2);
+
+        // Window 实现 BaseChatMemory
+        let mut window = ConversationBufferWindowMemory::new(2);
+        window.add_user_message("Q1");
+        window.add_ai_message("A1");
+        assert_eq!(count_messages(&window), 2);
+
+        // trait 对象(多态分发)
+        let mut dyn_mem: Box<dyn BaseChatMemory> = Box::new(ConversationBufferWindowMemory::new(2));
+        dyn_mem.add_user_message("q");
+        dyn_mem.add_ai_message("a");
+        assert_eq!(dyn_mem.messages().len(), 2);
     }
 
     #[tokio::test]

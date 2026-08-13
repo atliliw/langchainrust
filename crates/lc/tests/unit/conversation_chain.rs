@@ -6,8 +6,27 @@ mod common;
 use common::TestConfig;
 use langchainrust::memory::BaseMemory;
 use langchainrust::schema::{Message, MessageType};
-use langchainrust::{BaseChain, ConversationBufferMemory, ConversationChain};
+use langchainrust::{BaseChain, ConversationBufferMemory, ConversationChain, OpenAIChat};
 use std::collections::HashMap;
+
+/// Load the messages a chain's memory currently holds, through the
+/// `BaseMemory` trait (the concrete `chat_memory()` accessor no longer exists
+/// on the trait object stored by the chain).
+async fn load_history_messages(chain: &ConversationChain<OpenAIChat>) -> Vec<Message> {
+    let mem = chain.memory().lock().await;
+    let vars = mem.load_memory_variables(&HashMap::new()).await.unwrap();
+    let mut messages = Vec::new();
+    for value in vars.values() {
+        if let Some(arr) = value.as_array() {
+            for item in arr {
+                if let Ok(m) = serde_json::from_value::<Message>(item.clone()) {
+                    messages.push(m);
+                }
+            }
+        }
+    }
+    messages
+}
 
 #[test]
 fn test_conversation_chain_new() {
@@ -58,8 +77,8 @@ async fn test_clear_memory() {
 
     chain.clear_memory().await.unwrap();
 
-    let mem = chain.memory().lock().await;
-    assert_eq!(mem.chat_memory().len(), 0);
+    let messages = load_history_messages(&chain).await;
+    assert_eq!(messages.len(), 0);
 }
 
 #[tokio::test]
@@ -136,10 +155,7 @@ async fn test_conversation_chain_invoke_structure() {
     let memory = ConversationBufferMemory::new();
     let chain = ConversationChain::new(llm, memory);
 
-    let mem_before = chain.memory().lock().await;
-    let count_before = mem_before.chat_memory().len();
-    drop(mem_before);
-
+    let count_before = load_history_messages(&chain).await.len();
     assert_eq!(count_before, 0);
 }
 
@@ -197,8 +213,8 @@ async fn test_llm_single_call() {
 
     assert!(!result.is_empty());
 
-    let mem = chain.memory().lock().await;
-    assert_eq!(mem.chat_memory().len(), 2);
+    let messages = load_history_messages(&chain).await;
+    assert_eq!(messages.len(), 2);
 }
 
 #[tokio::test]
@@ -226,13 +242,17 @@ async fn test_llm_multi_turn_memory() {
     assert!(!result2.is_empty());
 
     println!("\n--- 验证记忆 ---");
-    let mem = chain.memory().lock().await;
-    let history = mem.chat_memory().to_string();
+    let messages = load_history_messages(&chain).await;
+    let history = messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     println!("历史记录:\n{}", history);
 
     assert!(history.contains("张三"), "记忆应包含名字");
     assert!(history.contains("编程"), "记忆应包含爱好");
-    assert_eq!(mem.chat_memory().len(), 4);
+    assert_eq!(messages.len(), 4);
 }
 
 #[tokio::test]
@@ -253,10 +273,9 @@ async fn test_llm_clear_memory() {
     println!("\n--- 清空记忆 ---");
     chain.clear_memory().await.unwrap();
 
-    let mem = chain.memory().lock().await;
-    assert_eq!(mem.chat_memory().len(), 0);
+    let messages = load_history_messages(&chain).await;
+    assert_eq!(messages.len(), 0);
     println!("记忆已清空");
-    drop(mem);
 
     println!("\n--- 第二轮（清空后） ---");
     let result2 = chain.predict("我叫什么名字？").await.unwrap();

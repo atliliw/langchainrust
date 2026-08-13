@@ -8,9 +8,11 @@
 //! - **MultiQuery**: The query is complex and needs multiple search angles.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_rag::{RetrieverError, RetrieverTrait};
 use lc_schema::Message;
 use lc_vector_stores::Document;
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Decision enum
@@ -256,13 +258,23 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         let prompt = ROUTING_PROMPT.replace("{query}", query);
         let messages = vec![Message::human(&prompt)];
 
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| AdaptiveRAGError::Llm(e.to_string()))?;
+        // P1-3:优先 tool_calls 结构化路由,不支持绑定时回落文本解析。
+        let structured = crate::structured::chat_structured(
+            &self.llm,
+            Some(route_tool()),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| AdaptiveRAGError::Llm(e.to_string()))?;
 
-        parse_decision(&result.content)
+        if let Some(args) = &structured.tool_args {
+            if let Some(decision) = args.get("decision").and_then(|v| v.as_str()) {
+                return parse_decision(decision);
+            }
+        }
+        parse_decision(&structured.content)
     }
 
     // -- No retrieval ------------------------------------------------------
@@ -354,11 +366,14 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
             .replace("{question}", query);
 
         let messages = vec![Message::human(&prompt)];
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| AdaptiveRAGError::Llm(e.to_string()))?;
+        let result = crate::retry::retry_chat(
+            &self.llm,
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| AdaptiveRAGError::Llm(e.to_string()))?;
 
         let queries: Vec<String> = result
             .content
@@ -409,6 +424,24 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// 路由工具定义:强制 LLM 输出三态决策(P1-3)。
+fn route_tool() -> ToolDefinition {
+    ToolDefinition::new(
+        "route_decision",
+        "判断查询是否需要检索及检索策略:no_retrieval / single_search / multi_query",
+    )
+    .with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["no_retrieval", "single_search", "multi_query"]
+            }
+        },
+        "required": ["decision"]
+    }))
+}
 
 /// Parses the routing decision from the LLM response.
 fn parse_decision(response: &str) -> Result<RagDecision, AdaptiveRAGError> {
@@ -566,6 +599,84 @@ mod tests {
         }
     }
 
+    /// P1-3:chat() 直接返回结构化 tool_call 决策的 mock(不走 bind_tools)。
+    #[derive(Clone)]
+    struct MockToolCallLLM {
+        decision: String,
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for MockToolCallLLM {
+        type Error = MockLlmError;
+
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Ok(LLMResult {
+                content: String::new(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: Some(vec![lc_core::tools::ToolCall::new(
+                    "call_route",
+                    "route_decision",
+                    format!(r#"{{"decision": "{}"}}"#, self.decision),
+                )]),
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for MockToolCallLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+
+        fn get_num_tokens(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+
+        fn with_temperature(self, _temp: f32) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+
+        fn with_max_tokens(self, _max: usize) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for MockToolCallLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(_messages, _config).await
+        }
+
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<
+            std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<String, Self::Error>> + Send>>,
+            Self::Error,
+        > {
+            let decision = self.decision.clone();
+            let stream = futures_util::stream::once(async move { Ok(decision) });
+            Ok(Box::pin(stream))
+        }
+    }
+
     // -- Mock Retriever ---------------------------------------------------
 
     struct MockRetriever {
@@ -665,6 +776,25 @@ mod tests {
     }
 
     // -- RagDecision Display test ------------------------------------------
+
+    #[tokio::test]
+    async fn test_route_uses_tool_call_decision() {
+        // P1-3:LLM 以 tool_calls 返回结构化决策,route 应直接采用,不靠文本关键字。
+        let llm = MockToolCallLLM {
+            decision: "multi_query".to_string(),
+        };
+        let retriever = MockRetriever::new(vec![]);
+        let rag = AdaptiveRAG::new(llm, retriever);
+        let decision = rag.route("some query").await.unwrap();
+        assert_eq!(decision, RagDecision::MultiQuery);
+    }
+
+    #[test]
+    fn test_route_tool_schema() {
+        let tool = route_tool();
+        assert_eq!(tool.function.name, "route_decision");
+        assert!(tool.function.parameters.is_some());
+    }
 
     #[test]
     fn test_rag_decision_display() {
@@ -807,7 +937,10 @@ mod tests {
     async fn test_adaptive_rag_stream_no_retrieval() {
         use futures_util::StreamExt;
 
-        let llm = MockLLM::new(vec!["no_retrieval".to_string(), "Direct answer here.".to_string()]);
+        let llm = MockLLM::new(vec![
+            "no_retrieval".to_string(),
+            "Direct answer here.".to_string(),
+        ]);
         let retriever = MockRetriever::new(vec![]);
 
         let agent = AdaptiveRAG::new(llm, retriever);
@@ -818,7 +951,9 @@ mod tests {
         let step_names: Vec<&str> = events
             .iter()
             .filter_map(|e| match e {
-                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => {
+                    Some(step.as_str())
+                }
                 _ => None,
             })
             .collect();
@@ -859,7 +994,9 @@ mod tests {
         let step_names: Vec<&str> = events
             .iter()
             .filter_map(|e| match e {
-                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => {
+                    Some(step.as_str())
+                }
                 _ => None,
             })
             .collect();

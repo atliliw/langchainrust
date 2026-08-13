@@ -7,6 +7,7 @@
 //! - **Hybrid**: combines both global and local context.
 
 use super::graph_store::GraphStore;
+use super::matcher::{EntityMatcher, KeywordMatcher};
 use lc_core::language_models::{BaseChatModel, LLMResult};
 use lc_core::token_counter::count_tokens;
 use lc_prompts::PromptTemplate;
@@ -372,42 +373,15 @@ fn truncate_prompt(prompt: &str, max_tokens: Option<usize>) -> String {
 }
 
 /// Finds entity ids whose name or description contains query keywords.
+///
+/// P1-6: 委托给 [`KeywordMatcher`](super::matcher::KeywordMatcher),消除
+/// 原先 query.rs 与 matcher.rs 两处重复的 name+3/type+2/desc+1 关键词权重实现。
+/// 旧函数返回全部命中(无 top_k 限制),故传一个足够大的 k 保持行为不变。
+/// P2-4: 同义词/中英归一化/CJK 二元组/TF-IDF 加权等改进都随委托落在
+/// `KeywordMatcher` 上,这里无需改动。
 fn find_relevant_entities(store: &GraphStore, query: &str) -> Vec<String> {
-    let query_lower = query.to_lowercase();
-    // Split on whitespace and strip common punctuation so "Rust?" matches "Rust".
-    let keywords: Vec<&str> = query_lower
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| !w.is_empty())
-        .collect();
-
-    let mut scored: Vec<(String, usize)> = Vec::new();
-
-    for (id, entity) in store.all_entities() {
-        let name_lower = entity.name.to_lowercase();
-        let desc_lower = entity.description.to_lowercase();
-        let type_lower = entity.entity_type.to_lowercase();
-
-        let mut score = 0usize;
-        for kw in &keywords {
-            if name_lower.contains(kw) {
-                score += 3; // name match is strongest
-            }
-            if type_lower.contains(kw) {
-                score += 2;
-            }
-            if desc_lower.contains(kw) {
-                score += 1;
-            }
-        }
-
-        if score > 0 {
-            scored.push((id.clone(), score));
-        }
-    }
-
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored.into_iter().map(|(id, _)| id).collect()
+    let matcher = KeywordMatcher::new();
+    matcher.find_relevant(query, store, usize::MAX)
 }
 
 #[cfg(test)]
@@ -455,6 +429,35 @@ mod tests {
 
         let results = find_relevant_entities(&store, "cooking recipe");
         assert!(results.is_empty());
+    }
+
+    /// P1-6: `find_relevant_entities` 委托 `KeywordMatcher`,结果必须一致。
+    #[test]
+    fn test_find_relevant_entities_matches_keyword_matcher() {
+        let mut store = GraphStore::new();
+        store.add_entity(Entity {
+            id: "e1".into(),
+            name: "Rust".into(),
+            entity_type: "Technology".into(),
+            description: "A systems programming language".into(),
+        });
+        store.add_entity(Entity {
+            id: "e2".into(),
+            name: "Python".into(),
+            entity_type: "Technology".into(),
+            description: "A scripting language".into(),
+        });
+        store.add_entity(Entity {
+            id: "e3".into(),
+            name: "Alice".into(),
+            entity_type: "Person".into(),
+            description: "A developer who uses Rust".into(),
+        });
+
+        let via_delegate = find_relevant_entities(&store, "Rust programming");
+        let via_matcher =
+            KeywordMatcher::new().find_relevant("Rust programming", &store, usize::MAX);
+        assert_eq!(via_delegate, via_matcher);
     }
 
     #[test]

@@ -196,11 +196,7 @@ where
 {
     type Error = LcelError;
 
-    async fn invoke(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, Self::Error> {
+    async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, Self::Error> {
         // Check cancellation before starting
         if config.as_ref().is_some_and(|c| c.is_cancelled()) {
             return Err(LcelError::Other("Operation cancelled".to_string()));
@@ -220,16 +216,21 @@ where
                 tokio::time::sleep(delay).await;
             }
 
-            match self.runnable.invoke_any(Box::new(input.clone()), config.clone()).await {
+            match self
+                .runnable
+                .invoke_any(Box::new(input.clone()), config.clone())
+                .await
+            {
                 Ok(result) => {
-                    return result
-                        .downcast::<O>()
-                        .map(|boxed| *boxed)
-                        .map_err(|_| LcelError::Other("Type mismatch in retry result".to_string()));
+                    return result.downcast::<O>().map(|boxed| *boxed).map_err(|_| {
+                        LcelError::Other("Type mismatch in retry result".to_string())
+                    });
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    if attempt < self.retry_config.max_retries && self.retry_config.should_retry(&error_str) {
+                    if attempt < self.retry_config.max_retries
+                        && self.retry_config.should_retry(&error_str)
+                    {
                         last_error = Some(e);
                         continue;
                     }
@@ -238,7 +239,9 @@ where
             }
         }
 
-        Err(last_error.unwrap_or_else(|| LcelError::Other("Retry exhausted with no error recorded".to_string())))
+        Err(last_error.unwrap_or_else(|| {
+            LcelError::Other("Retry exhausted with no error recorded".to_string())
+        }))
     }
 
     async fn stream(
@@ -260,23 +263,27 @@ where
                 tokio::time::sleep(delay).await;
             }
 
-            match self.runnable.stream_any(Box::new(input.clone()), config.clone()).await {
+            match self
+                .runnable
+                .stream_any(Box::new(input.clone()), config.clone())
+                .await
+            {
                 Ok(stream) => {
                     // Convert the type-erased stream to a typed stream
                     let typed_stream = stream.map(|result| {
-                        result
-                            .and_then(|boxed| {
-                                boxed
-                                    .downcast::<O>()
-                                    .map(|b| *b)
-                                    .map_err(|_| LcelError::Other("Type mismatch in retry stream".to_string()))
+                        result.and_then(|boxed| {
+                            boxed.downcast::<O>().map(|b| *b).map_err(|_| {
+                                LcelError::Other("Type mismatch in retry stream".to_string())
                             })
+                        })
                     });
                     return Ok(Box::pin(typed_stream));
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    if attempt < self.retry_config.max_retries && self.retry_config.should_retry(&error_str) {
+                    if attempt < self.retry_config.max_retries
+                        && self.retry_config.should_retry(&error_str)
+                    {
                         last_error = Some(e);
                         continue;
                     }
@@ -285,14 +292,16 @@ where
             }
         }
 
-        Err(last_error.unwrap_or_else(|| LcelError::Other("Retry exhausted with no error recorded".to_string())))
+        Err(last_error.unwrap_or_else(|| {
+            LcelError::Other("Retry exhausted with no error recorded".to_string())
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runnables::{CancellationToken, RunnableConfig, RunnableLambda, RunnableExt};
+    use crate::runnables::{CancellationToken, RunnableConfig, RunnableExt, RunnableLambda};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -339,7 +348,9 @@ mod tests {
             async move {
                 let n = count.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
-                    Err(LcelError::Other("HTTP 503: Service Unavailable".to_string()))
+                    Err(LcelError::Other(
+                        "HTTP 503: Service Unavailable".to_string(),
+                    ))
                 } else {
                     Ok(42)
                 }
@@ -361,7 +372,9 @@ mod tests {
             let count = count_clone.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err(LcelError::Other("HTTP 503: Service Unavailable".to_string()))
+                Err(LcelError::Other(
+                    "HTTP 503: Service Unavailable".to_string(),
+                ))
             }
         });
 

@@ -1,6 +1,6 @@
 [package]
 name = "lc-mcp"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "MCP (Model Context Protocol) client for langchainrust"
@@ -8,9 +8,15 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.12.0" }
+lc-core = { path = "../lc-core", version = "0.13.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+log = "0.4"
+# P1-4: stderr 采集用 tracing(开 `log` feature,事件同时进入 log facade,
+# 与工作区 `env_logger` 兼容,不引入双日志体系)。
+tracing = { version = "0.1", features = ["log"] }

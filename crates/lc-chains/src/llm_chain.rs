@@ -163,11 +163,7 @@ where
         let callbacks = config.as_ref().and_then(|c| c.callbacks.clone());
 
         // Create root RunTree for this chain invocation
-        let mut run = RunTree::new(
-            self.name(),
-            RunType::Chain,
-            json!({ "inputs": inputs }),
-        );
+        let mut run = RunTree::new(self.name(), RunType::Chain, json!({ "inputs": inputs }));
 
         // on_chain_start
         if let Some(ref cb) = callbacks {
@@ -177,13 +173,15 @@ where
         let prompt = self.render_prompt(&inputs)?;
         let messages = vec![Message::human(&prompt)];
 
-        // on_llm_start
+        // on_llm_start — single child run reused for both on_llm_end and
+        // on_llm_error, so the trace has exactly one LLM node per call
+        // (previously each callback created its own child, producing duplicate runs).
+        let mut llm_run = run.create_child(
+            format!("{}.llm", self.name()),
+            RunType::Llm,
+            json!({"messages_count": messages.len()}),
+        );
         if let Some(ref cb) = callbacks {
-            let llm_run = run.create_child(
-                format!("{}.llm", self.name()),
-                RunType::Llm,
-                json!({"messages_count": messages.len()}),
-            );
             cb.dispatch_llm_start(&llm_run, &messages).await;
         }
 
@@ -194,23 +192,23 @@ where
         match result {
             Ok(llm_result) => {
                 // on_llm_end
+                llm_run.end(json!({"response": &llm_result.content}));
                 if let Some(ref cb) = callbacks {
-                    let llm_run = run.create_child(
-                        format!("{}.llm", self.name()),
-                        RunType::Llm,
-                        json!({"response": llm_result.content}),
-                    );
                     cb.dispatch_llm_end(&llm_run, &llm_result.content).await;
                 }
 
                 let mut output = HashMap::new();
-                output.insert(self.output_key.clone(), Value::String(llm_result.content.clone()));
+                output.insert(
+                    self.output_key.clone(),
+                    Value::String(llm_result.content.clone()),
+                );
 
                 run.end(json!({"output": &llm_result.content}));
 
                 // on_chain_end
                 if let Some(ref cb) = callbacks {
-                    cb.dispatch_chain_end(&run, &json!({"output": llm_result.content})).await;
+                    cb.dispatch_chain_end(&run, &json!({"output": llm_result.content}))
+                        .await;
                 }
 
                 Ok(output)
@@ -219,12 +217,8 @@ where
                 let err_msg = e.to_string();
 
                 // on_llm_error
+                llm_run.end_with_error(err_msg.clone());
                 if let Some(ref cb) = callbacks {
-                    let llm_run = run.create_child(
-                        format!("{}.llm", self.name()),
-                        RunType::Llm,
-                        json!({"error": &err_msg}),
-                    );
                     cb.dispatch_llm_error(&llm_run, &err_msg).await;
                 }
 
@@ -235,7 +229,10 @@ where
                     cb.dispatch_chain_error(&run, &err_msg).await;
                 }
 
-                Err(ChainError::ExecutionError(format!("LLM call failed: {}", err_msg)))
+                Err(ChainError::ExecutionError(format!(
+                    "LLM call failed: {}",
+                    err_msg
+                )))
             }
         }
     }

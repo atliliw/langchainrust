@@ -32,7 +32,12 @@ pub mod vectorstore_memory;
 #[cfg(feature = "mongodb-persistence")]
 pub mod mongo_memory;
 
-pub use base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
+#[cfg(test)]
+mod test_support;
+
+pub use base::{
+    memory_variables_to_messages, BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError,
+};
 pub use buffer::ConversationBufferMemory;
 pub use context_window::{ContextWindow, Strategy};
 pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};

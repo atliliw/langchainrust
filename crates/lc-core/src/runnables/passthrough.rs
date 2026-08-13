@@ -57,11 +57,7 @@ impl<I: Clone + Send + Sync + 'static> Clone for RunnablePassthrough<I> {
 impl<I: Clone + Send + Sync + 'static> Runnable<I, I> for RunnablePassthrough<I> {
     type Error = LcelError;
 
-    async fn invoke(
-        &self,
-        input: I,
-        _config: Option<RunnableConfig>,
-    ) -> Result<I, LcelError> {
+    async fn invoke(&self, input: I, _config: Option<RunnableConfig>) -> Result<I, LcelError> {
         Ok(input)
     }
 
@@ -72,7 +68,9 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, I> for RunnablePassthrough<I>
         input: I,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>, LcelError> {
-        Ok(Box::pin(futures_util::stream::once(async move { Ok(input) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(input) },
+        )))
     }
 
     /// Passthrough supports true transform: each item in the

@@ -17,11 +17,11 @@
 //! use lc_core::token_counter::TiktokenCounter;
 //!
 //! // Truncation strategy
-//! let cw = ContextWindow::new(4096);
+//! let cw = ContextWindow::new(4096)?;
 //! let fitted = cw.fit(messages).await?;
 //!
 //! // Summarization strategy
-//! let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm));
+//! let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm))?;
 //! let fitted = cw.fit(messages).await?;
 //! ```
 

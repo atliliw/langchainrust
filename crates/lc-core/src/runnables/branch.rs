@@ -71,7 +71,8 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> RunnableBranch<
         R2: Runnable<I, O> + 'static,
         R2::Error: Into<LcelError>,
     {
-        self.branches.push((into_runnable_any(condition), into_runnable_any(branch)));
+        self.branches
+            .push((into_runnable_any(condition), into_runnable_any(branch)));
         self
     }
 
@@ -107,21 +108,14 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
 
     /// Evaluate conditions in order, execute the first matching branch.
     /// If no condition matches, execute the default.
-    async fn invoke(
-        &self,
-        input: I,
-        config: Option<RunnableConfig>,
-    ) -> Result<O, LcelError> {
+    async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         for (condition, branch) in &self.branches {
             // Clone input for condition evaluation (input is preserved for branch)
             let cond_input: Box<dyn Any + Send> = Box::new(input.clone());
             let cond_result = condition.invoke_any(cond_input, config.clone()).await?;
-            let matches: bool = cond_result
-                .downcast::<bool>()
-                .map(|b| *b)
-                .map_err(|_| {
-                    LcelError::TypeMismatch("branch condition must return bool".to_string())
-                })?;
+            let matches: bool = cond_result.downcast::<bool>().map(|b| *b).map_err(|_| {
+                LcelError::TypeMismatch("branch condition must return bool".to_string())
+            })?;
 
             if matches {
                 let branch_input: Box<dyn Any + Send> = Box::new(input);
@@ -138,13 +132,12 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         // No condition matched, use default
         let default_input: Box<dyn Any + Send> = Box::new(input);
         let result = self.default.invoke_any(default_input, config).await?;
-        result
-            .downcast::<O>()
-            .map(|b| *b)
-            .map_err(|_| LcelError::TypeMismatch(format!(
+        result.downcast::<O>().map(|b| *b).map_err(|_| {
+            LcelError::TypeMismatch(format!(
                 "branch default output downcast: expected {}",
                 std::any::type_name::<O>()
-            )))
+            ))
+        })
     }
 
     /// Stream: invoke and return single-element stream.
@@ -154,7 +147,9 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
         let result = self.invoke(input, config).await?;
-        Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(result) },
+        )))
     }
 }
 
@@ -197,21 +192,20 @@ mod tests {
 
     #[tokio::test]
     async fn branch_matches_condition() {
-        let branch = RunnableBranch::new(EchoDefault).when_fn(
-            |input: &String| input.len() > 5,
-            LongHandler,
-        );
+        let branch =
+            RunnableBranch::new(EchoDefault).when_fn(|input: &String| input.len() > 5, LongHandler);
 
-        let result = branch.invoke("hello world".to_string(), None).await.unwrap();
+        let result = branch
+            .invoke("hello world".to_string(), None)
+            .await
+            .unwrap();
         assert_eq!(result, "long: hello world");
     }
 
     #[tokio::test]
     async fn branch_falls_to_default() {
-        let branch = RunnableBranch::new(EchoDefault).when_fn(
-            |input: &String| input.len() > 100,
-            LongHandler,
-        );
+        let branch = RunnableBranch::new(EchoDefault)
+            .when_fn(|input: &String| input.len() > 100, LongHandler);
 
         let result = branch.invoke("hi".to_string(), None).await.unwrap();
         assert_eq!(result, "default: hi");
@@ -236,12 +230,13 @@ mod tests {
 
     #[tokio::test]
     async fn branch_stream_works() {
-        let branch = RunnableBranch::new(EchoDefault).when_fn(
-            |input: &String| input.len() > 5,
-            LongHandler,
-        );
+        let branch =
+            RunnableBranch::new(EchoDefault).when_fn(|input: &String| input.len() > 5, LongHandler);
 
-        let mut stream = branch.stream("hello world".to_string(), None).await.unwrap();
+        let mut stream = branch
+            .stream("hello world".to_string(), None)
+            .await
+            .unwrap();
         let result = stream.next().await.unwrap().unwrap();
         assert_eq!(result, "long: hello world");
     }

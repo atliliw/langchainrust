@@ -7,8 +7,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::broadcast;
 
-use super::protocol::{MCPError, MCPRequest, MCPResponse, MCP_VERSION};
+use super::protocol::{
+    MCPError, MCPRequest, MCPResponse, MCP_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
+};
+use super::stream::PartialContent;
 use super::types::{MCPContent, MCPToolDefinition, MCPToolResult};
 use lc_core::BaseTool;
 
@@ -17,6 +21,9 @@ pub struct MCPServer {
     tools: Vec<Arc<dyn BaseTool>>,
     server_name: String,
     server_version: String,
+    /// 流式工具输出广播(P2-9):`publish_partial` 推送增量片段,
+    /// `InMemoryTransport` 等传输层订阅后转发给客户端。
+    partial_tx: broadcast::Sender<PartialContent>,
 }
 
 impl MCPServer {
@@ -26,6 +33,7 @@ impl MCPServer {
             tools: Vec::new(),
             server_name: "langchainrust-mcp-server".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            partial_tx: broadcast::channel(64).0,
         }
     }
 
@@ -40,6 +48,24 @@ impl MCPServer {
         self.server_name = name.into();
         self.server_version = version.into();
         self
+    }
+
+    /// 推送一个流式工具输出增量片段(P2-9)。
+    ///
+    /// 长任务工具"边跑边推":执行期间把部分结果拆成多个片段,逐个
+    /// `publish_partial` 推给已连接的 Host(`InMemoryTransport` 等传输层
+    /// 订阅后经 `notifications/tool_partial` 转发给客户端)。无订阅者时
+    /// 静默丢弃——增量是预览,最终结果仍由 `tools/call` 响应承载。
+    pub fn publish_partial(&self, partial: PartialContent) {
+        let _ = self.partial_tx.send(partial);
+    }
+
+    /// 订阅本 server 推送的流式增量片段(P2-9)。
+    ///
+    /// 供传输层(如 [`InMemoryTransport`](crate::InMemoryTransport))把
+    /// server 侧的 `publish_partial` 转成客户端可见的推送事件。
+    pub fn subscribe_partials(&self) -> broadcast::Receiver<PartialContent> {
+        self.partial_tx.subscribe()
     }
 
     /// 从 BaseTool 构造 MCP 工具定义
@@ -58,16 +84,29 @@ impl MCPServer {
     /// 供单元测试直接调用;`serve_stdio` 内部也用它处理每行请求。
     pub async fn handle_request(&self, req: MCPRequest) -> MCPResponse {
         match req.method.as_str() {
-            "initialize" => MCPResponse {
-                jsonrpc: "2.0".to_string(),
-                id: Some(req.id),
-                result: Some(json!({
-                    "protocolVersion": MCP_VERSION,
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": self.server_name, "version": self.server_version }
-                })),
-                error: None,
-            },
+            // P2-10 版本协商:客户端请求的版本在支持列表内则回显,否则降级到
+            // 本实现版本(Server 永远只回复自己支持的版本)。
+            "initialize" => {
+                let requested = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("protocolVersion"))
+                    .and_then(Value::as_str);
+                let protocol_version = match requested {
+                    Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v.to_string(),
+                    _ => MCP_VERSION.to_string(),
+                };
+                MCPResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: Some(req.id),
+                    result: Some(json!({
+                        "protocolVersion": protocol_version,
+                        "capabilities": { "tools": {} },
+                        "serverInfo": { "name": self.server_name, "version": self.server_version }
+                    })),
+                    error: None,
+                }
+            }
             "tools/list" => {
                 let tools: Vec<MCPToolDefinition> = self
                     .tools
@@ -185,10 +224,13 @@ impl MCPServer {
                 }
             };
 
-            // 通知(无 id)忽略
+            // 通知(无 id):P0-4 分发给 handle_notification,不再直接丢弃
             let id = match msg.id {
                 Some(id) => id,
-                None => continue,
+                None => {
+                    self.handle_notification(&msg.method, msg.params).await;
+                    continue;
+                }
             };
 
             let req = MCPRequest {
@@ -205,6 +247,38 @@ impl MCPServer {
                 .map_err(|e| MCPError::new(-1, format!("写 stdout 失败: {}", e)))?;
         }
         Ok(())
+    }
+
+    /// 处理服务器收到的通知(无 id 的消息)。
+    ///
+    /// P0-4: 对 MCP 标准通知显式分发处理,而不是直接丢弃:
+    /// - `notifications/cancelled` —— 客户端请求取消某个工具调用
+    /// - `notifications/progress` —— 客户端上报工具执行进度
+    /// - `notifications/roots/list_changed` —— 根目录列表变化
+    /// - `notifications/initialized` —— 客户端完成握手
+    ///
+    /// 当前实现记录日志并预留扩展点;后续可在派生类型中覆盖以接入
+    /// 取消/进度回调。
+    pub async fn handle_notification(&self, method: &str, params: Option<Value>) {
+        match method {
+            "notifications/cancelled" => {
+                // 携带 requestId,指向要取消的请求
+                log::info!("MCP 收到 cancelled 通知: {:?}", params);
+            }
+            "notifications/progress" => {
+                // 携带 token + progress/estimatedTotal
+                log::info!("MCP 收到 progress 通知: {:?}", params);
+            }
+            "notifications/roots/list_changed" => {
+                log::info!("MCP 收到 roots/list_changed 通知: {:?}", params);
+            }
+            "notifications/initialized" => {
+                log::debug!("MCP 收到 initialized 通知");
+            }
+            _ => {
+                log::debug!("忽略未知通知: {}", method);
+            }
+        }
     }
 }
 
@@ -269,6 +343,45 @@ mod tests {
         assert!(result.get("protocolVersion").is_some());
         assert!(result.get("capabilities").is_some());
         assert!(result.get("serverInfo").is_some());
+    }
+
+    /// P2-10 版本协商:请求受支持版本时回显,无请求版本时回复本实现版本。
+    #[tokio::test]
+    async fn test_initialize_echoes_supported_version() {
+        let server = server_with_echo();
+        let params = serde_json::json!({ "protocolVersion": MCP_VERSION });
+        let resp = server
+            .handle_request(MCPRequest::new(1, "initialize", Some(params)))
+            .await;
+        let version = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        assert_eq!(version.as_deref(), Some(MCP_VERSION));
+    }
+
+    /// P2-10 版本协商:请求不受支持的版本时降级到本实现版本(Server 只回复
+    /// 自己支持的版本,不回显未知版本)。
+    #[tokio::test]
+    async fn test_initialize_degrades_unsupported_version() {
+        let server = server_with_echo();
+        let params = serde_json::json!({ "protocolVersion": "2099-01-01" });
+        let resp = server
+            .handle_request(MCPRequest::new(1, "initialize", Some(params)))
+            .await;
+        let version = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        assert_eq!(
+            version.as_deref(),
+            Some(MCP_VERSION),
+            "未知版本应降级到当前实现版本"
+        );
     }
 
     #[tokio::test]
@@ -344,5 +457,28 @@ mod tests {
         let json = r#"{"jsonrpc":"2.0","id":42,"method":"tools/list"}"#;
         let msg: ServerMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.id, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_handle_notification_known_and_unknown() {
+        let server = server_with_echo();
+        // 标准通知应被处理(不 panic)
+        server
+            .handle_notification("notifications/cancelled", Some(json!({"requestId": 1})))
+            .await;
+        server
+            .handle_notification(
+                "notifications/progress",
+                Some(json!({"token": 1, "progress": 0.5})),
+            )
+            .await;
+        server
+            .handle_notification("notifications/roots/list_changed", None)
+            .await;
+        server
+            .handle_notification("notifications/initialized", None)
+            .await;
+        // 未知通知应被忽略
+        server.handle_notification("foo/bar", None).await;
     }
 }

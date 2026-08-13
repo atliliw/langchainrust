@@ -12,6 +12,7 @@
 pub mod batch;
 pub mod cache;
 pub mod json_parse;
+pub mod judge;
 pub mod language_models;
 pub mod math;
 pub mod output_parsers;
@@ -24,16 +25,18 @@ pub mod tools;
 // Re-export key types at crate root for convenience
 pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseError};
 
+pub use judge::{structured_call, truncate, StructuredJudgeError};
+
 pub use language_models::{BaseChatModel, BaseLanguageModel, MultimodalError, MultimodalModel};
 pub use output_parsers::{
     BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
 pub use runnables::{
-    CancellationToken, into_runnable_any, LcelError, LcelStreamEvent, Runnable, RunnableAny, RunnableAnyWrapper,
-    RunnableAssign, RunnableBinding, RunnableBranch, RunnableConfig, RunnableExt, RunnableLambda,
-    RunnableParallel, RunnablePassthrough, RunnableRetry, RunnableSequence, RunnableWithFallbacks,
-    RetryConfig, RetryOn,
+    into_runnable_any, CancellationToken, LcelError, LcelStreamEvent, RetryConfig, RetryOn,
+    Runnable, RunnableAny, RunnableAnyWrapper, RunnableAssign, RunnableBinding, RunnableBranch,
+    RunnableConfig, RunnableExt, RunnableLambda, RunnableParallel, RunnablePassthrough,
+    RunnableRetry, RunnableSequence, RunnableWithFallbacks,
 };
 pub use structured_output::{
     stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,

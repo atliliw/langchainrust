@@ -108,7 +108,11 @@ where
                 std::any::type_name::<I>()
             ))
         })?;
-        let result = self.inner.invoke(*typed_input, config).await.map_err(Into::into)?;
+        let result = self
+            .inner
+            .invoke(*typed_input, config)
+            .await
+            .map_err(Into::into)?;
         Ok(Box::new(result) as Box<dyn Any + Send>)
     }
 
@@ -116,14 +120,19 @@ where
         &self,
         input: Box<dyn Any + Send>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>, LcelError>
+    {
         let typed_input = input.downcast::<I>().map_err(|_| {
             LcelError::TypeMismatch(format!(
                 "stream_any: expected {}, got unknown type",
                 std::any::type_name::<I>()
             ))
         })?;
-        let stream = self.inner.stream(*typed_input, config).await.map_err(Into::into)?;
+        let stream = self
+            .inner
+            .stream(*typed_input, config)
+            .await
+            .map_err(Into::into)?;
         let any_stream = stream.map(|result| {
             result
                 .map(|output| Box::new(output) as Box<dyn Any + Send>)
@@ -136,7 +145,8 @@ where
         &self,
         input: Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>, LcelError>
+    {
         // Buffer all input, downcast to I, take the last, invoke, return as stream.
         // We can't call self.inner.transform() directly because the error types
         // don't match (LcelError vs Self::Error). Instead, we use the default
@@ -182,8 +192,15 @@ where
                 })
             })
             .collect::<Result<Vec<I>, LcelError>>()?;
-        let results = self.inner.batch(typed_inputs, config).await.map_err(Into::into)?;
-        Ok(results.into_iter().map(|r| Box::new(r) as Box<dyn Any + Send>).collect())
+        let results = self
+            .inner
+            .batch(typed_inputs, config)
+            .await
+            .map_err(Into::into)?;
+        Ok(results
+            .into_iter()
+            .map(|r| Box::new(r) as Box<dyn Any + Send>)
+            .collect())
     }
 }
 
@@ -235,7 +252,10 @@ mod tests {
         let wrapper = RunnableAnyWrapper::new(AddOne);
         let inputs: Vec<Box<dyn Any + Send>> = vec![Box::new(1i32), Box::new(2i32), Box::new(3i32)];
         let results = wrapper.batch_any(inputs, None).await.unwrap();
-        let outputs: Vec<i32> = results.into_iter().map(|b| *b.downcast::<i32>().unwrap()).collect();
+        let outputs: Vec<i32> = results
+            .into_iter()
+            .map(|b| *b.downcast::<i32>().unwrap())
+            .collect();
         assert_eq!(outputs, vec![2, 3, 4]);
     }
 

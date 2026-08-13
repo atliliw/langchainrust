@@ -106,6 +106,7 @@ impl TestConfig {
 
     pub fn embeddings(&self) -> OpenAIEmbeddings {
         OpenAIEmbeddings::new(self.embeddings_config())
+            .expect("test config must include a valid API key and known model")
     }
 }
 

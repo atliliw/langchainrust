@@ -9,7 +9,7 @@
 //! ```ignore
 //! let rag = RAGPipelineBuilder::new()
 //!     .llm(OpenAIChat::new(OpenAIConfig::new("sk-...")))
-//!     .embeddings(OpenAIEmbeddings::new(config))
+//!     .embeddings(OpenAIEmbeddings::new(config)?)
 //!     .vector_store(InMemoryVectorStore::new())
 //!     .build()?;
 //!
@@ -23,18 +23,21 @@ use lc_providers::ProviderError;
 use lc_schema::Message;
 use lc_vector_stores::{Document, VectorStore, VectorStoreError};
 
-use crate::retriever::RetrieverError;
+use crate::retriever::{RetrieverError, RetrieverTrait, SimilarityRetriever};
 
 use std::sync::Arc;
 
 /// RAG Pipeline — 切分 + 嵌入 + 存储 + 检索 + 生成
 ///
-/// 将 LLM、Embeddings、VectorStore 组装成完整的 RAG 管线，
-/// 提供 `index_documents()`、`query()`、`query_with_sources()` 三个核心方法。
+/// 将 LLM 与一个 `RetrieverTrait` 实现(BM25、向量相似度、混合检索等)组装成
+/// 完整的 RAG 管线，提供 `index_documents()`、`query()`、`query_with_sources()`
+/// 三个核心方法。
+///
+/// P0-2: 检索路径收敛到 `Arc<dyn RetrieverTrait>`,不再直接依赖
+/// `Embeddings + VectorStore`,可无缝切换任意检索器。
 pub struct RAGPipeline {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
-    embeddings: Arc<dyn Embeddings + Send + Sync>,
-    vector_store: Arc<dyn VectorStore + Send + Sync>,
+    retriever: Arc<dyn RetrieverTrait>,
     /// 检索文档数量
     retrieve_k: usize,
     /// 系统提示词
@@ -52,23 +55,11 @@ impl std::fmt::Debug for RAGPipeline {
 }
 
 impl RAGPipeline {
-    /// 索引文档：嵌入 + 存储
+    /// 索引文档
     ///
-    /// 将文档列表嵌入向量并添加到 VectorStore。
+    /// P0-2: 委托给 `RetrieverTrait::add_documents`(嵌入 + 存储由检索器内部完成)。
     pub async fn index_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
-        let texts: Vec<&str> = documents.iter().map(|d| d.page_content()).collect();
-        let embeddings = self
-            .embeddings
-            .embed_documents(&texts)
-            .await
-            .map_err(|e| RetrieverError::EmbeddingError(e.to_string()))?;
-
-        self.vector_store
-            .add_documents(documents, embeddings)
-            .await
-            .map_err(RetrieverError::StoreError)?;
-
-        Ok(())
+        self.retriever.add_documents(documents).await
     }
 
     /// 查询：检索 + 生成回答
@@ -88,19 +79,11 @@ impl RAGPipeline {
         &self,
         question: &str,
     ) -> Result<RAGQueryResult, RetrieverError> {
-        // 1. 嵌入问题
-        let query_embedding = self
-            .embeddings
-            .embed_query(question)
-            .await
-            .map_err(|e| RetrieverError::EmbeddingError(e.to_string()))?;
-
-        // 2. 检索相似文档
+        // 1. 检索相关文档(P0-2: 委托给 RetrieverTrait)
         let search_results = self
-            .vector_store
-            .similarity_search(&query_embedding, self.retrieve_k)
-            .await
-            .map_err(RetrieverError::StoreError)?;
+            .retriever
+            .retrieve_with_scores(question, self.retrieve_k)
+            .await?;
 
         let sources: Vec<Document> = search_results.iter().map(|r| r.document.clone()).collect();
 
@@ -158,7 +141,7 @@ pub struct RAGQueryResult {
 /// ```ignore
 /// let rag = RAGPipelineBuilder::new()
 ///     .llm(OpenAIChat::new(OpenAIConfig::new("sk-...")))
-///     .embeddings(OpenAIEmbeddings::new(config))
+///     .embeddings(OpenAIEmbeddings::new(config)?)
 ///     .vector_store(InMemoryVectorStore::new())
 ///     .build()?;
 /// ```
@@ -166,6 +149,8 @@ pub struct RAGPipelineBuilder {
     llm: Option<Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>>,
     embeddings: Option<Arc<dyn Embeddings + Send + Sync>>,
     vector_store: Option<Arc<dyn VectorStore + Send + Sync>>,
+    /// P0-2: 显式传入的检索器(优先);未提供时用 embeddings + vector_store 构建
+    retriever: Option<Arc<dyn RetrieverTrait>>,
     retrieve_k: usize,
     system_prompt: Option<String>,
 }
@@ -177,6 +162,7 @@ impl RAGPipelineBuilder {
             llm: None,
             embeddings: None,
             vector_store: None,
+            retriever: None,
             retrieve_k: 4,
             system_prompt: None,
         }
@@ -220,6 +206,25 @@ impl RAGPipelineBuilder {
         self
     }
 
+    /// 设置自定义检索器(任何实现了 `RetrieverTrait` 的类型,
+    /// 如 BM25、UnifiedHybridIndex、ChunkedHybridRetriever 等)
+    ///
+    /// P0-2: 显式检索器优先于 `.embeddings() + .vector_store()` 构建的
+    /// 相似度检索器。
+    pub fn retriever<R>(mut self, retriever: R) -> Self
+    where
+        R: RetrieverTrait + Send + Sync + 'static,
+    {
+        self.retriever = Some(Arc::new(retriever));
+        self
+    }
+
+    /// 设置检索器(从已包装的 `Arc<dyn RetrieverTrait>`)
+    pub fn retriever_from_arc(mut self, retriever: Arc<dyn RetrieverTrait>) -> Self {
+        self.retriever = Some(retriever);
+        self
+    }
+
     /// 设置检索文档数量
     pub fn retrieve_k(mut self, k: usize) -> Self {
         self.retrieve_k = k;
@@ -244,22 +249,32 @@ impl RAGPipelineBuilder {
             )
         })?;
 
-        let embeddings = self.embeddings.ok_or_else(|| {
-            RetrieverError::EmbeddingError(
-                "RAGPipelineBuilder: Embeddings is required. Call .embeddings() first.".into(),
-            )
-        })?;
+        // P0-2: 优先使用显式检索器;否则回退到 embeddings + vector_store
+        // 构建 SimilarityRetriever,兼容旧用法。
+        let retriever = match self.retriever {
+            Some(r) => r,
+            None => {
+                let embeddings = self.embeddings.ok_or_else(|| {
+                    RetrieverError::EmbeddingError(
+                        "RAGPipelineBuilder: Embeddings is required (or use .retriever()). Call .embeddings() first."
+                            .into(),
+                    )
+                })?;
 
-        let vector_store = self.vector_store.ok_or_else(|| {
-            RetrieverError::StoreError(VectorStoreError::StorageError(
-                "RAGPipelineBuilder: VectorStore is required. Call .vector_store() first.".into(),
-            ))
-        })?;
+                let vector_store = self.vector_store.ok_or_else(|| {
+                    RetrieverError::StoreError(VectorStoreError::StorageError(
+                        "RAGPipelineBuilder: VectorStore is required (or use .retriever()). Call .vector_store() first."
+                            .into(),
+                    ))
+                })?;
+
+                Arc::new(SimilarityRetriever::new(vector_store, embeddings))
+            }
+        };
 
         Ok(RAGPipeline {
             llm,
-            embeddings,
-            vector_store,
+            retriever,
             retrieve_k: self.retrieve_k,
             system_prompt: self.system_prompt.unwrap_or_else(|| {
                 "You are a helpful assistant that answers questions based on the provided context.".to_string()
@@ -344,5 +359,23 @@ mod tests {
         let builder = RAGPipelineBuilder::default();
         assert_eq!(builder.retrieve_k, 4);
         assert!(builder.llm.is_none());
+    }
+
+    /// P0-2: 支持通过 `.retriever()` 注入自定义 `RetrieverTrait` 实现(BM25),
+    /// `index_documents` 委托给该检索器,无需 Embeddings/VectorStore。
+    #[tokio::test]
+    async fn test_builder_with_custom_retriever() {
+        use crate::bm25::BM25Retriever;
+
+        let config = OpenAIConfig::new("test_key").with_base_url("http://localhost:8080/v1");
+        let rag = RAGPipelineBuilder::new()
+            .llm(OpenAIChat::new(config))
+            .retriever(BM25Retriever::new())
+            .build()
+            .expect("build 应成功");
+
+        rag.index_documents(vec![Document::new("Rust is a systems language")])
+            .await
+            .expect("index_documents 应委托给 BM25 检索器成功");
     }
 }

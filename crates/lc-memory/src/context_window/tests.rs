@@ -138,19 +138,21 @@ fn make_messages(contents: &[(&str, &str)]) -> Vec<Message> {
 
 #[test]
 fn test_new_creates_truncate_strategy() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096).unwrap();
     assert_eq!(cw.max_tokens(), 4096);
 }
 
 #[test]
 fn test_with_max_tokens() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::with_max_tokens(8192);
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::with_max_tokens(8192).unwrap();
     assert_eq!(cw.max_tokens(), 8192);
 }
 
 #[tokio::test]
 async fn test_fit_under_limit_returns_as_is() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(1000).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(1000)
+        .unwrap()
+        .with_counter(char_counter());
 
     let messages = make_messages(&[("human", "Hello"), ("ai", "Hi there")]);
 
@@ -160,7 +162,9 @@ async fn test_fit_under_limit_returns_as_is() {
 
 #[tokio::test]
 async fn test_fit_empty_messages() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(100).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(100)
+        .unwrap()
+        .with_counter(char_counter());
 
     let result = cw.fit(vec![]).await.unwrap();
     assert!(result.is_empty());
@@ -168,7 +172,8 @@ async fn test_fit_empty_messages() {
 
 #[tokio::test]
 async fn test_truncate_preserves_system_messages() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(30).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(30).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[
         ("system", "You are"),
@@ -190,7 +195,8 @@ async fn test_truncate_preserves_system_messages() {
 
 #[tokio::test]
 async fn test_truncate_drops_oldest_first() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(25).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(25).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[
         ("system", "Sys"),
@@ -212,7 +218,8 @@ async fn test_truncate_drops_oldest_first() {
 
 #[tokio::test]
 async fn test_truncate_only_system_messages() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(20).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(20).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[("system", "Hello")]);
 
@@ -223,7 +230,7 @@ async fn test_truncate_only_system_messages() {
 
 #[tokio::test]
 async fn test_truncate_system_only_over_budget() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(5).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(5).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[("system", "Very long system prompt that exceeds budget")]);
 
@@ -237,6 +244,7 @@ async fn test_summarize_replaces_old_messages() {
     let mock_llm = MockLLM::new(vec!["S.".to_string()]);
 
     let cw = ContextWindow::with_strategy(50, Strategy::summarize(mock_llm))
+        .unwrap()
         .with_counter(char_counter());
 
     let messages = make_messages(&[
@@ -270,6 +278,7 @@ async fn test_summarize_preserves_recent_messages() {
     let mock_llm = MockLLM::new(vec!["S.".to_string()]);
 
     let cw = ContextWindow::with_strategy(50, Strategy::summarize(mock_llm))
+        .unwrap()
         .with_counter(char_counter());
 
     let messages = make_messages(&[
@@ -299,6 +308,7 @@ async fn test_summarize_with_custom_prompt() {
         50,
         Strategy::summarize_with_prompt(mock_llm, "Please compress: {conversation}\nCompressed:"),
     )
+    .unwrap()
     .with_counter(char_counter());
 
     let messages = make_messages(&[
@@ -328,6 +338,7 @@ async fn test_summarize_no_non_system_messages() {
 
     let cw: ContextWindow<MockLLM> =
         ContextWindow::with_strategy(50, Strategy::summarize(mock_llm))
+            .unwrap()
             .with_counter(char_counter());
 
     let messages = make_messages(&[("system", "S")]);
@@ -340,6 +351,7 @@ async fn test_summarize_no_non_system_messages() {
 #[tokio::test]
 async fn test_strategy_truncate_enum() {
     let cw = ContextWindow::with_strategy(100, Strategy::<OpenAIChat>::Truncate)
+        .unwrap()
         .with_counter(char_counter());
 
     let messages = make_messages(&[("human", "Hello"), ("ai", "World")]);
@@ -377,7 +389,7 @@ fn test_strategy_summarize_with_custom_prompt() {
 
 #[tokio::test]
 async fn test_fit_with_real_tiktoken_counter() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096).unwrap();
 
     let messages = make_messages(&[
         ("system", "You are a helpful assistant."),
@@ -392,7 +404,8 @@ async fn test_fit_with_real_tiktoken_counter() {
 
 #[tokio::test]
 async fn test_truncate_preserves_order() {
-    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(40).with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(40).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[
         ("system", "Sys"),
@@ -421,6 +434,7 @@ async fn test_summarize_fallback_to_truncate() {
     // Very small budget that even the summary won't fit.
     let cw: ContextWindow<MockLLM> =
         ContextWindow::with_strategy(20, Strategy::summarize(mock_llm))
+            .unwrap()
             .with_counter(char_counter());
 
     let messages = make_messages(&[

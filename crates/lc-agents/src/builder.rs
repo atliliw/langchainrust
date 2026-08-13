@@ -101,9 +101,14 @@ impl AgentBuilder {
         self
     }
 
-    /// 设置最大迭代次数
+    /// 设置最大迭代次数（clamp 到 [1, 100]，防止 0 或失控上限）
     pub fn max_iterations(mut self, n: usize) -> Self {
-        self.max_iterations = n;
+        const MIN_MAX_ITERATIONS: usize = 1;
+        const MAX_MAX_ITERATIONS: usize = 100;
+        self.max_iterations = n.clamp(MIN_MAX_ITERATIONS, MAX_MAX_ITERATIONS);
+        if n > MAX_MAX_ITERATIONS {
+            log::warn!("max_iterations {} clamped to {}", n, MAX_MAX_ITERATIONS);
+        }
         self
     }
 
@@ -219,6 +224,18 @@ mod tests {
     fn test_builder_max_iterations() {
         let builder = AgentBuilder::new().max_iterations(5);
         assert_eq!(builder.get_max_iterations(), 5);
+    }
+
+    #[test]
+    fn test_builder_max_iterations_clamped_to_min() {
+        let builder = AgentBuilder::new().max_iterations(0);
+        assert_eq!(builder.get_max_iterations(), 1);
+    }
+
+    #[test]
+    fn test_builder_max_iterations_clamped_to_max() {
+        let builder = AgentBuilder::new().max_iterations(1_000_000_000);
+        assert_eq!(builder.get_max_iterations(), 100);
     }
 
     #[test]

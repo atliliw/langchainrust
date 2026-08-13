@@ -1,6 +1,9 @@
 //! Real LLM integration tests (ignored by default, need network + API key).
 
 use super::*;
+// P2-1: 无 `local-embeddings` feature 时 `LocalEmbeddings` 是已弃用的
+// BagOfWordsEmbeddings 别名;此处有意使用廉价本地嵌入,豁免降级警告。
+#[allow(deprecated)]
 use lc_embeddings::LocalEmbeddings;
 use lc_providers::openai::{OpenAIChat, OpenAIConfig};
 

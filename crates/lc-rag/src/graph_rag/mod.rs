@@ -53,7 +53,11 @@ pub enum GraphRAGError {
 pub struct GraphRAGConfig {
     pub max_entities_per_doc: usize,
     pub max_relations_per_doc: usize,
-    pub community_max_levels: usize,
+    /// 社区大小分桶数(P1-3)。
+    ///
+    /// 注意:这是**大小分桶**(size tiering),不是经典层级社区(父-子包含关系)。
+    /// 社区按大小排名均分为这么多档,`Community::level` 表示"第几档大小"。
+    pub community_size_tiers: usize,
     /// Maximum number of tokens for context in query prompts.
     /// When set, community summaries or subgraph context is truncated to fit.
     pub max_context_tokens: Option<usize>,
@@ -67,7 +71,7 @@ impl Default for GraphRAGConfig {
         Self {
             max_entities_per_doc: 10,
             max_relations_per_doc: 10,
-            community_max_levels: 3,
+            community_size_tiers: 3,
             max_context_tokens: None,
             entity_matcher: None,
         }
@@ -89,8 +93,9 @@ impl GraphRAGConfig {
         self
     }
 
-    pub fn with_community_max_levels(mut self, n: usize) -> Self {
-        self.community_max_levels = n;
+    /// 设置社区大小分桶数(P1-3,见 [`GraphRAGConfig::community_size_tiers`])。
+    pub fn with_community_size_tiers(mut self, n: usize) -> Self {
+        self.community_size_tiers = n;
         self
     }
 
@@ -225,7 +230,7 @@ impl<M: BaseChatModel> GraphRAG<M> {
     pub async fn build_communities(&self) -> Result<(), GraphRAGError> {
         let communities = {
             let store = self.store.read().await;
-            community::detect_communities(&store, self.config.community_max_levels)
+            community::detect_communities(&store, self.config.community_size_tiers)
         };
 
         // Generate summaries for each community.
@@ -297,7 +302,7 @@ mod tests {
         let config = GraphRAGConfig::default();
         assert_eq!(config.max_entities_per_doc, 10);
         assert_eq!(config.max_relations_per_doc, 10);
-        assert_eq!(config.community_max_levels, 3);
+        assert_eq!(config.community_size_tiers, 3);
         assert!(config.max_context_tokens.is_none());
     }
 
@@ -306,11 +311,11 @@ mod tests {
         let config = GraphRAGConfig::new()
             .with_max_entities_per_doc(5)
             .with_max_relations_per_doc(8)
-            .with_community_max_levels(2);
+            .with_community_size_tiers(2);
 
         assert_eq!(config.max_entities_per_doc, 5);
         assert_eq!(config.max_relations_per_doc, 8);
-        assert_eq!(config.community_max_levels, 2);
+        assert_eq!(config.community_size_tiers, 2);
     }
 
     #[test]

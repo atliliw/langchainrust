@@ -6,10 +6,12 @@
 use lc_core::math::cosine_similarity;
 use lc_embeddings::Embeddings;
 use lc_vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait};
-use lc_vector_stores::{Document, VectorStoreError};
+use lc_vector_stores::{Document, SearchResult, VectorStoreError};
 
 use crate::bm25::{AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult};
-use crate::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
+use crate::hybrid::{filter_by_score, reciprocal_rank_fusion, RetrievedDocument, RRF_K};
+use crate::retriever::{RetrieverError, RetrieverTrait};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -21,6 +23,8 @@ pub struct HybridIndexConfig {
     pub vector_k: usize,
     pub rrf_k: usize,
     pub merge_threshold: f32,
+    /// 向量检索最小分数阈值(P1-2),默认 0.0 保持旧行为。
+    pub min_score: f32,
 }
 
 impl Default for HybridIndexConfig {
@@ -32,6 +36,7 @@ impl Default for HybridIndexConfig {
             vector_k: 10,
             rrf_k: RRF_K,
             merge_threshold: 0.5,
+            min_score: 0.0,
         }
     }
 }
@@ -61,6 +66,11 @@ impl HybridIndexConfig {
         self.merge_threshold = threshold;
         self
     }
+
+    pub fn with_min_score(mut self, min_score: f32) -> Self {
+        self.min_score = min_score;
+        self
+    }
 }
 
 pub struct HybridSearchResult {
@@ -85,15 +95,18 @@ pub struct UnifiedHybridIndex {
     document_store: Arc<ChunkedDocumentStore>,
     bm25_retriever: Arc<Mutex<ChunkedBM25Retriever>>,
     embeddings: Arc<dyn Embeddings>,
-    #[allow(dead_code)]
-    vector_size: usize,
     pub config: HybridIndexConfig,
     vector_index: Arc<RwLock<Vec<VectorEntry>>>,
 }
 
 impl UnifiedHybridIndex {
-    pub fn new(embeddings: Arc<dyn Embeddings>, vector_size: usize) -> Self {
-        Self::with_config(embeddings, vector_size, HybridIndexConfig::default())
+    /// Creates a new hybrid index with default configuration.
+    ///
+    /// `_vector_size` is retained for API compatibility (P1-7); the embedding
+    /// dimension is derived from the `embeddings` backend itself, so it is no
+    /// longer stored.
+    pub fn new(embeddings: Arc<dyn Embeddings>, _vector_size: usize) -> Self {
+        Self::with_config(embeddings, _vector_size, HybridIndexConfig::default())
     }
 
     pub fn document_store(&self) -> Arc<ChunkedDocumentStore> {
@@ -102,7 +115,7 @@ impl UnifiedHybridIndex {
 
     pub fn with_config(
         embeddings: Arc<dyn Embeddings>,
-        vector_size: usize,
+        _vector_size: usize,
         config: HybridIndexConfig,
     ) -> Self {
         let bm25_config = AutoMergingConfig::new()
@@ -116,7 +129,6 @@ impl UnifiedHybridIndex {
             document_store,
             bm25_retriever: Arc::new(Mutex::new(bm25_retriever)),
             embeddings,
-            vector_size,
             config,
             vector_index: Arc::new(RwLock::new(Vec::new())),
         }
@@ -128,8 +140,13 @@ impl UnifiedHybridIndex {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+        // P0-1: 无 id 的文档先把预分配的 parent_id 挂到文档上再入库,
+        // 否则 store 内部会再生成一个新 uuid,导致 get_chunks_for_parent 用错 key 查空。
         self.document_store
-            .add_parent_document(document.clone(), self.config.chunk_size)
+            .add_parent_document(
+                document.clone().with_id(parent_id.clone()),
+                self.config.chunk_size,
+            )
             .await?;
 
         let chunks = self
@@ -294,35 +311,6 @@ impl UnifiedHybridIndex {
         Ok(hybrid_results)
     }
 
-    #[allow(dead_code)]
-    async fn bm25_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
-        let mut retriever = self.bm25_retriever.lock().await;
-        let results = retriever.search(query, self.config.bm25_k);
-
-        let docs = results
-            .into_iter()
-            .map(|r| Document::new(r.content()).with_id(r.parent_id))
-            .collect();
-
-        Ok(docs)
-    }
-
-    #[allow(dead_code)]
-    async fn bm25_search_with_scores(
-        &self,
-        query: &str,
-    ) -> Result<Vec<(Document, f32)>, VectorStoreError> {
-        let mut retriever = self.bm25_retriever.lock().await;
-        let results = retriever.search(query, self.config.bm25_k);
-
-        let docs = results
-            .into_iter()
-            .map(|r| (Document::new(r.content()).with_id(r.parent_id), r.score))
-            .collect();
-
-        Ok(docs)
-    }
-
     async fn vector_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
         let query_embedding = self
             .embeddings
@@ -332,18 +320,16 @@ impl UnifiedHybridIndex {
 
         let vectors = self.vector_index.read().await;
 
-        let mut scored: Vec<(usize, f32)> = vectors
+        let scored: Vec<(usize, f32)> = vectors
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| {
+            .map(|(idx, entry)| {
                 let score = cosine_similarity(&query_embedding, &entry.embedding).unwrap_or(0.0);
-                if score > 0.0 {
-                    Some((idx, score))
-                } else {
-                    None
-                }
+                (idx, score)
             })
             .collect();
+
+        let mut scored = filter_by_score(scored, self.config.min_score);
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -373,18 +359,16 @@ impl UnifiedHybridIndex {
 
         let vectors = self.vector_index.read().await;
 
-        let mut scored: Vec<(usize, f32)> = vectors
+        let scored: Vec<(usize, f32)> = vectors
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| {
+            .map(|(idx, entry)| {
                 let score = cosine_similarity(&query_embedding, &entry.embedding).unwrap_or(0.0);
-                if score > 0.0 {
-                    Some((idx, score))
-                } else {
-                    None
-                }
+                (idx, score)
             })
             .collect();
+
+        let mut scored = filter_by_score(scored, self.config.min_score);
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -426,6 +410,39 @@ impl UnifiedHybridIndex {
             vectors.clear();
         }
 
+        Ok(())
+    }
+}
+
+/// P0-1: `UnifiedHybridIndex` 实现 `RetrieverTrait`。
+///
+/// 内部的 `retrieve()` / `add_documents()`(inherent 方法)在方法解析时优先于
+/// trait 方法,故直接调用即可,不会产生递归。
+#[async_trait]
+impl RetrieverTrait for UnifiedHybridIndex {
+    async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
+        let results = self.retrieve(query, k).await?;
+        Ok(results.into_iter().map(|r| r.document).collect())
+    }
+
+    async fn retrieve_with_scores(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<SearchResult>, RetrieverError> {
+        let results = self.retrieve(query, k).await?;
+        Ok(results
+            .into_iter()
+            .map(|r| SearchResult {
+                document: r.document,
+                // RetrievedDocument.score 为 f64,统一收敛到 SearchResult 的 f32
+                score: r.score as f32,
+            })
+            .collect())
+    }
+
+    async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
+        self.add_documents(documents).await?;
         Ok(())
     }
 }

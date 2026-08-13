@@ -15,6 +15,10 @@ use langchainrust::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "../common/mod.rs"]
+mod common;
+use common::mock_openai_chat_server;
+
 /// 创建测试用的配置
 fn create_test_config() -> OpenAIConfig {
     OpenAIConfig {
@@ -418,19 +422,65 @@ fn test_map_rerank_build_prompt() {
 fn test_map_rerank_extract_score() {
     use langchainrust::chains::document_chains::extract_score;
     // 中文格式
-    let (score, answer) = extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言");
+    let (score, answer) = extract_score("相关性评分：85\n答案：Rust 是一门系统编程语言").unwrap();
     assert_eq!(score, 85);
     assert!(answer.contains("Rust"));
 
     // 英文格式
-    let (score2, _answer2) = extract_score("Score: 92\nAnswer: It's a programming language");
+    let (score2, _answer2) =
+        extract_score("Score: 92\nAnswer: It's a programming language").unwrap();
     assert_eq!(score2, 92);
 
-    // 无评分格式（默认 50）
-    let (score3, _) = extract_score("这是一段普通文本");
-    assert_eq!(score3, 50);
+    // 无评分格式：返回 None，不再默认给 50（P1-3）
+    assert!(extract_score("这是一段普通文本").is_none());
 
     // 评分超过 100 时取 100
-    let (score4, _) = extract_score("相关性评分：150");
+    let (score4, _) = extract_score("相关性评分：150").unwrap();
     assert_eq!(score4, 100);
+}
+
+/// 测试 MapRerankDocumentsChain 的默认评分配置（P1-3）
+///
+/// 验证：`with_default_score` 为无评分输出提供兜底分参与排序（走 mock server，不打真实网络）。
+#[tokio::test]
+async fn test_map_rerank_default_score() {
+    // 起 mock server：返回无评分文本，触发 default_score 兜底分支
+    let (_server, base_url) = mock_openai_chat_server("这是没有评分标签的普通回答").await;
+    let config = OpenAIConfig {
+        api_key: "test-key".to_string(),
+        base_url,
+        model: "gpt-4o-mini".to_string(),
+        ..Default::default()
+    };
+    let llm = OpenAIChat::new(config);
+
+    let chain = MapRerankDocumentsChain::new(llm).with_default_score(60);
+    let docs = vec![Document::new("document content")];
+    let results = chain.invoke_with_documents(docs, "question").await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 60);
+}
+
+/// 测试 MapRerankDocumentsChain 未配置默认分时跳过无评分文档（P1-3）
+///
+/// 验证：`default_score` 为 `None`（默认）时，无评分输出全部被排除并返回显式错误，
+/// 不再静默赋予中间分 50。
+#[tokio::test]
+async fn test_map_rerank_all_excluded_without_default_score() {
+    let (_server, base_url) = mock_openai_chat_server("普通文本，没有分数").await;
+    let config = OpenAIConfig {
+        api_key: "test-key".to_string(),
+        base_url,
+        model: "gpt-4o-mini".to_string(),
+        ..Default::default()
+    };
+    let llm = OpenAIChat::new(config);
+
+    let chain = MapRerankDocumentsChain::new(llm); // default_score = None
+    let docs = vec![Document::new("document content")];
+    let err = chain
+        .invoke_with_documents(docs, "question")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("excluded"));
 }

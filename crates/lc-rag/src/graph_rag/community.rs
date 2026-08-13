@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Returns a list of communities (non-singleton groups only) sorted
 /// largest-first.
-pub fn detect_communities(store: &GraphStore, max_levels: usize) -> Vec<Community> {
+pub fn detect_communities(store: &GraphStore, num_tiers: usize) -> Vec<Community> {
     let entity_ids: Vec<String> = store.entity_ids();
     if entity_ids.is_empty() {
         return Vec::new();
@@ -27,7 +27,7 @@ pub fn detect_communities(store: &GraphStore, max_levels: usize) -> Vec<Communit
     }
 
     // Iterate label propagation.
-    for _ in 0..max_levels * 10 {
+    for _ in 0..num_tiers * 10 {
         let mut changed = false;
         for eid in &entity_ids {
             let neighbors = store.neighbors(eid);
@@ -81,27 +81,31 @@ pub fn detect_communities(store: &GraphStore, max_levels: usize) -> Vec<Communit
     // Sort largest first.
     communities.sort_by(|a, b| b.entities.len().cmp(&a.entities.len()));
 
-    // Assign hierarchical levels by merging smaller communities.
-    assign_levels(&mut communities, max_levels);
+    // Assign size-tier buckets (NOT hierarchical parent-child levels).
+    assign_size_tiers(&mut communities, num_tiers);
 
     communities
 }
 
-/// Assigns hierarchical levels to communities (simple size-based tiering).
-fn assign_levels(communities: &mut [Community], max_levels: usize) {
-    if communities.is_empty() || max_levels <= 1 {
+/// Assigns size-tier buckets to communities.
+///
+/// 注意:这是**大小分桶**——按社区大小排名均分为 `num_tiers` 档,
+/// `Community::level` 的含义是"第几档大小",**不是**经典的层级社区
+/// (逐层合并出父-子包含关系)。命名已诚实化(P1-3)。
+fn assign_size_tiers(communities: &mut [Community], num_tiers: usize) {
+    if communities.is_empty() || num_tiers <= 1 {
         return;
     }
 
-    // Sort by size descending, then assign levels based on size tiers.
+    // Sort by size descending, then assign tiers based on size buckets.
     let n = communities.len();
-    let tier_size = (n as f64 / max_levels as f64).ceil() as usize;
+    let tier_size = (n as f64 / num_tiers as f64).ceil() as usize;
     if tier_size == 0 {
         return;
     }
 
     for (i, community) in communities.iter_mut().enumerate() {
-        community.level = std::cmp::min(i / tier_size, max_levels - 1);
+        community.level = std::cmp::min(i / tier_size, num_tiers - 1);
     }
 }
 
@@ -130,15 +134,14 @@ pub async fn summarize_community<M: BaseChatModel>(
         .map(|e| format!("- {} ({}): {}", e.name, e.entity_type, e.description))
         .collect();
 
+    // M55(P1-5): HashSet 只在链外构建一次,而非 filter 闭包内每条 relation 重建。
+    let entity_set: HashSet<&String> = community.entities.iter().collect();
+
     let relation_lines: Vec<String> = community
         .entities
         .iter()
         .flat_map(|eid| store.relations_for(eid))
-        .filter(|r| {
-            // M55: O(1) HashSet lookup instead of O(n) Vec::contains
-            let entity_set: HashSet<&String> = community.entities.iter().collect();
-            entity_set.contains(&r.source) && entity_set.contains(&r.target)
-        })
+        .filter(|r| entity_set.contains(&r.source) && entity_set.contains(&r.target))
         .map(|r| {
             // Use entity names instead of IDs for LLM readability.
             let source_name = store
@@ -313,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assign_levels() {
+    fn test_assign_size_tiers() {
         let mut communities: Vec<Community> = (0..6)
             .map(|i| Community {
                 id: i,
@@ -321,7 +324,7 @@ mod tests {
                 level: 0,
             })
             .collect();
-        assign_levels(&mut communities, 3);
+        assign_size_tiers(&mut communities, 3);
         // With 6 communities and 3 levels, tier_size = 2
         assert_eq!(communities[0].level, 0);
         assert_eq!(communities[1].level, 0);
@@ -365,14 +368,12 @@ mod tests {
         let community = &communities[0];
 
         // Simulate the formatting logic from summarize_community
+        let entity_set: HashSet<&String> = community.entities.iter().collect();
         let relation_lines: Vec<String> = community
             .entities
             .iter()
             .flat_map(|eid| store.relations_for(eid))
-            .filter(|r| {
-                let entity_set: HashSet<&String> = community.entities.iter().collect();
-                entity_set.contains(&r.source) && entity_set.contains(&r.target)
-            })
+            .filter(|r| entity_set.contains(&r.source) && entity_set.contains(&r.target))
             .map(|r| {
                 let source_name = store
                     .get_entity(&r.source)

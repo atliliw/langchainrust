@@ -7,7 +7,7 @@ pub mod counter;
 pub mod tiktoken;
 pub mod tracker;
 
-pub use counter::{TokenCounter, TokenUsage};
+pub use counter::{CharRatioCounter, TokenCounter, TokenUsage};
 pub use tiktoken::TiktokenCounter;
 pub use tracker::{ModelPricing, TokenTrackingLLM};
 

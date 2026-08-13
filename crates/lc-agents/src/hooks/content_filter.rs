@@ -72,7 +72,12 @@ impl ContentFilterHook {
             while let Some(pos) = lower[start..].find(&word.to_lowercase()) {
                 let actual_pos = start + pos;
                 let end = actual_pos + word.len();
-                result = format!("{}{}{}", &result[..actual_pos], self.placeholder, &result[end..]);
+                result = format!(
+                    "{}{}{}",
+                    &result[..actual_pos],
+                    self.placeholder,
+                    &result[end..]
+                );
                 start = actual_pos + self.placeholder.len();
                 // Re-check the modified string
                 let new_lower = result.to_lowercase();

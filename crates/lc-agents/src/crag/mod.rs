@@ -319,7 +319,9 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
         };
 
         let reasoning_section = graph::format_reasoning(&state.grade_reasoning);
-        graph.generate(&mut state, &source_docs, &reasoning_section).await?;
+        graph
+            .generate(&mut state, &source_docs, &reasoning_section)
+            .await?;
 
         // Step 5: Hallucination check
         if enable_hallucination_check && state.answer.is_some() {
@@ -738,7 +740,11 @@ mod tests {
         let events: Vec<_> = stream.collect().await;
 
         // Should have: retrieving, retrieved, grading, graded, generating, hallucination_check, FinalAnswer
-        assert!(events.len() >= 5, "Expected at least 5 events, got {}", events.len());
+        assert!(
+            events.len() >= 5,
+            "Expected at least 5 events, got {}",
+            events.len()
+        );
 
         // First event should be retrieving
         assert!(matches!(
@@ -780,7 +786,9 @@ mod tests {
         let step_names: Vec<&str> = events
             .iter()
             .filter_map(|e| match e {
-                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => Some(step.as_str()),
+                crate::streaming::AgentStreamEvent::PipelineStep { step, .. } => {
+                    Some(step.as_str())
+                }
                 _ => None,
             })
             .collect();

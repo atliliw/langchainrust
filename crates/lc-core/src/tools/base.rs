@@ -106,6 +106,17 @@ pub enum ToolError {
     /// Tool not found.
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
+
+    /// MCP 传输层错误(经 `MCPToolAdapter` 适配),保留 code/message/data(P1-6)。
+    ///
+    /// 不静默降级为 `ExecutionFailed`,上层可据 `code` 区分连接断开 / 方法不存在 /
+    /// 参数错误等场景。
+    #[error("MCP error [{code}]: {message}")]
+    McpError {
+        code: i32,
+        message: String,
+        data: Option<Value>,
+    },
 }
 
 use super::ToolDefinition;

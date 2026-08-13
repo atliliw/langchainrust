@@ -14,14 +14,19 @@
 //!     .with_output(Arc::new(SensitiveInfoGuardrail::new()));
 //! ```
 
+pub mod audit;
 pub mod guarded_agent;
 pub mod guardrail;
+pub mod judge;
 pub mod runner;
 pub mod validators;
 
-pub use guarded_agent::GuardedAgent;
+pub use audit::{AuditSink, FileAuditSink};
+pub use guarded_agent::{ChainGuardable, Guardable, GuardableChunk, GuardedAgent};
 pub use guardrail::{
-    GuardrailError, GuardrailResult, GuardrailsConfig, InputGuardrail, OutputGuardrail,
+    ChunkAction, GuardrailError, GuardrailsConfig, InputGuardrail, InputGuardrailResult,
+    OutputGuardrail, OutputGuardrailResult, StreamingOutputGuardrail,
 };
-pub use runner::{GuardrailRunner, GuardrailViolation};
+pub use judge::{LlmSensitiveJudge, SensitiveJudge};
+pub use runner::{GuardrailRunner, GuardrailViolation, OutputValidation};
 pub use validators::{ForbiddenWordsGuardrail, MaxLengthGuardrail, SensitiveInfoGuardrail};

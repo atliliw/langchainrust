@@ -4,8 +4,10 @@
 //! Uses an LLM to score document relevance against a query.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_schema::Message;
 use lc_vector_stores::Document;
+use serde_json::{json, Value};
 
 /// Grade result for a single document.
 #[derive(Debug, Clone)]
@@ -41,13 +43,23 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
         let prompt = build_grade_prompt(query, &document.content);
 
         let messages = vec![Message::human(&prompt)];
-        let result = self
-            .llm
-            .chat(messages, None)
-            .await
-            .map_err(|e| GraderError::LLMError(e.to_string()))?;
+        // P1-3:优先 tool_calls 结构化打分,不支持绑定时回落文本解析。
+        let structured = crate::structured::chat_structured(
+            self.llm,
+            Some(grade_tool()),
+            messages,
+            None,
+            &crate::retry::RetryConfig::default(),
+        )
+        .await
+        .map_err(|e| GraderError::LLMError(e.to_string()))?;
 
-        parse_grade_response(&result.content)
+        if let Some(args) = &structured.tool_args {
+            if let Some(result) = grade_from_tool_args(args) {
+                return Ok(result);
+            }
+        }
+        parse_grade_response(&structured.content)
     }
 
     /// Grades multiple documents in parallel.
@@ -80,6 +92,47 @@ fn build_grade_prompt(query: &str, document_content: &str) -> String {
     template
         .format(&vars)
         .unwrap_or_else(|_| GRADE_PROMPT.to_string())
+}
+
+/// 打分工具定义:强制 LLM 输出相关性与 0-1 分数(P1-3)。
+fn grade_tool() -> ToolDefinition {
+    ToolDefinition::new(
+        "grade_document",
+        "评估文档与查询的相关性,返回是否相关、0.0-1.0 分数与简要理由",
+    )
+    .with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "relevant": {
+                "type": "boolean",
+                "description": "文档是否包含直接回答查询的信息"
+            },
+            "score": {
+                "type": "number",
+                "description": "相关性分数,1.0 完全相关,0.0 完全无关"
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "简要理由"
+            }
+        },
+        "required": ["relevant", "score"]
+    }))
+}
+
+/// 从 tool_call 参数构造打分结果。解析失败返回 None(回落文本解析)。
+fn grade_from_tool_args(args: &Value) -> Option<GradeResult> {
+    let score = args.get("score").and_then(|v| v.as_f64())?.clamp(0.0, 1.0);
+    let reasoning = args
+        .get("reasoning")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // 结构化输出带显式 score → 不算歧义。
+    Some(GradeResult {
+        score,
+        reasoning,
+        is_ambiguous: false,
+    })
 }
 
 /// Parses the LLM grading response into a structured result.
@@ -282,6 +335,39 @@ mod tests {
         let result = parse_grade_response("The document mentions the topic briefly.").unwrap();
         assert!(result.reasoning.is_some());
         assert!(result.reasoning.unwrap().contains("briefly"));
+    }
+
+    #[test]
+    fn test_grade_from_tool_args() {
+        // P1-3:tool_call 结构化参数 → GradeResult。
+        let args = json!({"relevant": true, "score": 0.9, "reasoning": "direct match"});
+        let result = grade_from_tool_args(&args).unwrap();
+        assert!((result.score - 0.9).abs() < 1e-9);
+        assert_eq!(result.reasoning.as_deref(), Some("direct match"));
+        assert!(!result.is_ambiguous);
+    }
+
+    #[test]
+    fn test_grade_from_tool_args_score_out_of_range() {
+        let args = json!({"relevant": true, "score": 5.0});
+        let result = grade_from_tool_args(&args).unwrap();
+        assert!((result.score - 1.0).abs() < 1e-9, "分数应被 clamp 到 1.0");
+    }
+
+    #[test]
+    fn test_grade_from_tool_args_missing_score() {
+        let args = json!({"relevant": true});
+        assert!(
+            grade_from_tool_args(&args).is_none(),
+            "缺 score 应回落文本解析"
+        );
+    }
+
+    #[test]
+    fn test_grade_tool_schema() {
+        let tool = grade_tool();
+        assert_eq!(tool.function.name, "grade_document");
+        assert!(tool.function.parameters.is_some());
     }
 
     #[test]

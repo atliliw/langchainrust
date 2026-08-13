@@ -340,7 +340,9 @@ fn to_pascal_case(s: &str) -> String {
 fn strip_param_attrs(func: &mut ItemFn) {
     for arg in &mut func.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
-            pat_type.attrs.retain(|attr| !attr.path().is_ident(PARAM_ATTR));
+            pat_type
+                .attrs
+                .retain(|attr| !attr.path().is_ident(PARAM_ATTR));
         }
     }
 }

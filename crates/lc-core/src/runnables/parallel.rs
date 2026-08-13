@@ -157,7 +157,8 @@ where
 {
     async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<Value, LcelError> {
         let result = self.inner.invoke(input, config).await.map_err(Into::into)?;
-        (self.serialize)(&result).map_err(|e| LcelError::Other(format!("parallel serialization: {}", e)))
+        (self.serialize)(&result)
+            .map_err(|e| LcelError::Other(format!("parallel serialization: {}", e)))
     }
 }
 
@@ -191,8 +192,7 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
         for handle in handles {
             let (k, v) = handle
                 .await
-                .map_err(|e| LcelError::Other(format!("parallel task join error: {}", e)))?
-                ?;
+                .map_err(|e| LcelError::Other(format!("parallel task join error: {}", e)))??;
             results.insert(k, v);
         }
 
@@ -217,9 +217,14 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
         &self,
         input: I,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>, LcelError> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<HashMap<String, Value>, LcelError>> + Send>>,
+        LcelError,
+    > {
         let result = self.invoke(input, config).await?;
-        Ok(Box::pin(futures_util::stream::once(async move { Ok(result) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(result) },
+        )))
     }
 }
 
@@ -232,7 +237,10 @@ mod tests {
     async fn parallel_invoke() {
         let parallel = RunnableParallel::<String>::new()
             .with("len", RunnableLambda::new_sync(|s: String| s.len() as i64))
-            .with("upper", RunnableLambda::new_sync(|s: String| s.to_uppercase()));
+            .with(
+                "upper",
+                RunnableLambda::new_sync(|s: String| s.to_uppercase()),
+            );
 
         let result = parallel.invoke("hello".to_string(), None).await.unwrap();
         assert_eq!(
@@ -276,13 +284,16 @@ mod tests {
     async fn parallel_assign_adds_field() {
         let chain = RunnableParallel::<String>::new()
             .with("len", RunnableLambda::new_sync(|s: String| s.len() as i64))
-            .assign("upper", RunnableLambda::new_sync(|m: HashMap<String, Value>| {
-                // Use the "len" field from the parallel output
-                m.get("len")
-                    .and_then(|v| v.as_i64())
-                    .map(|n| format!("length={}", n))
-                    .unwrap_or_default()
-            }));
+            .assign(
+                "upper",
+                RunnableLambda::new_sync(|m: HashMap<String, Value>| {
+                    // Use the "len" field from the parallel output
+                    m.get("len")
+                        .and_then(|v| v.as_i64())
+                        .map(|n| format!("length={}", n))
+                        .unwrap_or_default()
+                }),
+            );
 
         let result = chain.invoke("hello".to_string(), None).await.unwrap();
         // Original parallel step result

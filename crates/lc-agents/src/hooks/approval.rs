@@ -30,7 +30,9 @@ pub struct ApprovalHook {
 impl ApprovalHook {
     /// Creates a new ApprovalHook that requires manual approval.
     pub fn new() -> Self {
-        Self { auto_approve: false }
+        Self {
+            auto_approve: false,
+        }
     }
 
     /// Creates an ApprovalHook that automatically approves all tool calls.

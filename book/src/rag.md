@@ -34,6 +34,12 @@ let rag = RAGPipelineBuilder::new()
     .system("Answer based on the provided context.")
     .build()?;
 
+// Or inject any `RetrieverTrait` implementation directly (BM25, hybrid, ...):
+// let rag = RAGPipelineBuilder::new()
+//     .llm(OpenAIChat::new(OpenAIConfig::new("sk-...")))
+//     .retriever(BM25Retriever::new())
+//     .build()?;
+
 rag.index_documents(docs).await?;
 let answer = rag.query("What is Rust?").await?;
 let result = rag.query_with_sources("What is Rust?").await?;

@@ -6,11 +6,13 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use super::base::{BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
 use lc_core::language_models::BaseChatModel;
 use lc_core::language_models::LLMResult;
 use lc_core::runnables::Runnable;
+use lc_core::token_counter::{CharRatioCounter, TiktokenCounter, TokenCounter};
 use lc_prompts::PromptTemplate;
 use lc_schema::Message;
 
@@ -52,12 +54,20 @@ pub struct ConversationSummaryBufferMemory<M: BaseChatModel> {
 
     max_token_limit: usize,
 
+    /// P1-2: 可插拔 token 计数器。默认 `TiktokenCounter`(与 `ContextWindow`
+    /// 同口径,BPE 预算语义统一);可注入 `CharRatioCounter` 保留零依赖快路径。
+    counter: Arc<dyn TokenCounter>,
+
     input_key: String,
     output_key: String,
     memory_key: String,
 
     summary_prompt: String,
     return_messages: bool,
+
+    /// P2-4: 最近一次摘要 LLM 失败的原因;成功总结或 `clear()` 后清空。
+    /// 摘要失败时保留旧摘要与原始消息,不清空 `chat_memory`,下轮 prune 重试。
+    last_summary_error: Option<String>,
 }
 
 impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
@@ -67,11 +77,13 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
             buffer: String::new(),
             chat_memory: ChatMessageHistory::new(),
             max_token_limit,
+            counter: Self::default_token_counter(),
             input_key: "input".to_string(),
             output_key: "output".to_string(),
             memory_key: "history".to_string(),
             summary_prompt: DEFAULT_SUMMARY_PROMPT.to_string(),
             return_messages: false,
+            last_summary_error: None,
         }
     }
 
@@ -100,6 +112,25 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         self
     }
 
+    /// 注入自定义 token 计数器。
+    ///
+    /// 默认 `TiktokenCounter`(BPE 口径,与 `ContextWindow` 一致);需要零依赖
+    /// 快路径时注入 `CharRatioCounter::new(4)`。
+    pub fn with_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
+        self.counter = counter;
+        self
+    }
+
+    /// P1-3: 从持久化存储回灌摘要状态,保证续写会话摘要链连续。
+    pub fn set_summary(&mut self, summary: String) {
+        self.buffer = summary;
+    }
+
+    /// P1-3: 设置 token 预算(持久化 config 的单一来源)。
+    pub fn set_max_token_limit(&mut self, max_token_limit: usize) {
+        self.max_token_limit = max_token_limit;
+    }
+
     pub fn chat_memory(&self) -> &ChatMessageHistory {
         &self.chat_memory
     }
@@ -116,14 +147,20 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         self.buffer.clone()
     }
 
-    fn estimate_tokens(text: &str) -> usize {
-        text.len() / 4
+    /// P2-4: 最近一次摘要失败的原因(无失败则 `None`)。
+    pub fn last_summary_error(&self) -> Option<&str> {
+        self.last_summary_error.as_deref()
+    }
+
+    /// P1-2: 估算文本 token 数,委托给可插拔计数器(默认 BPE 口径)。
+    fn estimate_tokens(&self, text: &str) -> usize {
+        self.counter.count_tokens(text) as usize
     }
 
     fn prune_messages(&self, messages: &[Message]) -> Vec<Message> {
         let total_tokens = messages
             .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
+            .map(|m| self.estimate_tokens(&m.content))
             .sum::<usize>();
 
         if total_tokens <= self.max_token_limit {
@@ -134,7 +171,7 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         let mut current_tokens = 0;
 
         for msg in messages.iter().rev() {
-            let msg_tokens = Self::estimate_tokens(&msg.content);
+            let msg_tokens = self.estimate_tokens(&msg.content);
             if current_tokens + msg_tokens <= self.max_token_limit {
                 kept_messages.push(msg.clone());
                 current_tokens += msg_tokens;
@@ -145,6 +182,15 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
 
         kept_messages.reverse();
         kept_messages
+    }
+
+    /// 默认 token 计数器:优先 `TiktokenCounter`(BPE 口径,与 `ContextWindow` 一致);
+    /// tiktoken 模型加载失败(离线/缺模型)时优雅降级为字符比估算,
+    /// 使 `new()` 保持不可失败的签名。
+    fn default_token_counter() -> Arc<dyn TokenCounter> {
+        TiktokenCounter::new()
+            .map(|c| Arc::new(c) as Arc<dyn TokenCounter>)
+            .unwrap_or_else(|_| Arc::new(CharRatioCounter::new(4)) as Arc<dyn TokenCounter>)
     }
 
     async fn predict_new_summary(&self, new_lines: &str) -> Result<String, MemoryError> {
@@ -233,9 +279,14 @@ where
         inputs: &HashMap<String, String>,
         outputs: &HashMap<String, String>,
     ) -> Result<(), MemoryError> {
-        let empty = String::new();
-        let input = inputs.get(&self.input_key).unwrap_or(&empty);
-        let output = outputs.get(&self.output_key).unwrap_or(&empty);
+        // P1-1: 与 Buffer/Window 一致——缺失 key 返回 SaveError,不再静默用空串
+        // 存空消息(否则会对空行做无意义摘要,白烧一次 LLM 调用)。
+        let input = inputs.get(&self.input_key).ok_or_else(|| {
+            MemoryError::SaveError(format!("Missing input key '{}'", self.input_key))
+        })?;
+        let output = outputs.get(&self.output_key).ok_or_else(|| {
+            MemoryError::SaveError(format!("Missing output key '{}'", self.output_key))
+        })?;
 
         self.chat_memory.add_user_message(input);
         self.chat_memory.add_ai_message(output);
@@ -243,7 +294,7 @@ where
         let messages = self.chat_memory.messages();
         let total_tokens = messages
             .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
+            .map(|m| self.estimate_tokens(&m.content))
             .sum::<usize>();
 
         if total_tokens > self.max_token_limit {
@@ -272,20 +323,34 @@ where
                         .collect::<Vec<_>>()
                         .join("\n");
 
-                    let new_summary = self.predict_new_summary(&new_lines).await?;
+                    // P2-4: 摘要失败时保留旧摘要、不清空 chat_memory(原始消息
+                    // 留下,下轮 prune 会再次尝试总结);错误记录到 last_summary_error
+                    // 供上层观察,不冒泡打断链。
+                    match self.predict_new_summary(&new_lines).await {
+                        Ok(new_summary) => {
+                            self.buffer = new_summary;
+                            self.last_summary_error = None;
 
-                    self.buffer = new_summary;
-                }
-
-                self.chat_memory.clear();
-                for msg in pruned {
-                    if matches!(msg.message_type, lc_schema::MessageType::Human) {
-                        self.chat_memory.add_user_message(&msg.content);
-                    } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                        self.chat_memory.add_ai_message(&msg.content);
-                    } else if matches!(msg.message_type, lc_schema::MessageType::System) {
-                        // H28: Preserve System messages during pruning
-                        self.chat_memory.add_system_message(&msg.content);
+                            self.chat_memory.clear();
+                            for msg in pruned {
+                                if matches!(msg.message_type, lc_schema::MessageType::Human) {
+                                    self.chat_memory.add_user_message(&msg.content);
+                                } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
+                                    self.chat_memory.add_ai_message(&msg.content);
+                                } else if matches!(msg.message_type, lc_schema::MessageType::System)
+                                {
+                                    // H28: Preserve System messages during pruning
+                                    self.chat_memory.add_system_message(&msg.content);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.last_summary_error = Some(e.to_string());
+                            log::warn!(
+                                "ConversationSummaryBufferMemory 摘要失败,保留旧摘要与原始消息待下轮重试: {}",
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -297,13 +362,29 @@ where
     async fn clear(&mut self) -> Result<(), MemoryError> {
         self.buffer = String::new();
         self.chat_memory.clear();
+        self.last_summary_error = None;
         Ok(())
+    }
+}
+
+/// P0-1: `ConversationSummaryBufferMemory` 实现 `BaseChatMemory`。
+impl<M: BaseChatModel + Send + Sync + 'static> BaseChatMemory for ConversationSummaryBufferMemory<M>
+where
+    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
+{
+    fn messages(&self) -> &[Message] {
+        self.chat_memory.messages()
+    }
+
+    fn add_message(&mut self, message: Message) {
+        self.chat_memory.add_message(message);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MockLlm;
     use lc_providers::{OpenAIChat, OpenAIConfig};
 
     fn create_test_config() -> OpenAIConfig {
@@ -337,17 +418,45 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_tokens() {
+    fn test_estimate_tokens_uses_default_counter() {
+        // 默认 TiktokenCounter(BPE 口径);离线时降级 CharRatioCounter。
+        // 两种实现下,较长文本的估算 token 数都严格大于较短文本。
+        let llm = OpenAIChat::new(create_test_config());
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> =
+            ConversationSummaryBufferMemory::new(llm, 1000);
+
         let text1 = "Hello";
         let text2 = "Hello World";
         let text3 = "This is some Chinese text";
 
-        assert!(ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text1) > 0);
-        assert!(
-            ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text2)
-                > ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text1)
-        );
-        assert!(ConversationSummaryBufferMemory::<OpenAIChat>::estimate_tokens(text3) > 0);
+        assert!(memory.estimate_tokens(text1) > 0);
+        assert!(memory.estimate_tokens(text2) > memory.estimate_tokens(text1));
+        assert!(memory.estimate_tokens(text3) > 0);
+    }
+
+    #[test]
+    fn test_with_counter_injection() {
+        // 注入 CharRatioCounter(ratio=4):8 个字符估算 2 token,可复现、不依赖 tiktoken。
+        let llm = OpenAIChat::new(create_test_config());
+        let memory: ConversationSummaryBufferMemory<OpenAIChat> =
+            ConversationSummaryBufferMemory::new(llm, 1000)
+                .with_counter(std::sync::Arc::new(CharRatioCounter::new(4)));
+
+        assert_eq!(memory.estimate_tokens("abcdefgh"), 2);
+    }
+
+    #[tokio::test]
+    async fn test_set_summary_and_token_limit() {
+        // P1-3: 持久化回灌摘要 + 预算单一来源。
+        let llm = OpenAIChat::new(create_test_config());
+        let mut memory: ConversationSummaryBufferMemory<OpenAIChat> =
+            ConversationSummaryBufferMemory::new(llm, 1000);
+
+        memory.set_summary("previous summary".to_string());
+        assert_eq!(memory.buffer().await, "previous summary");
+
+        memory.set_max_token_limit(500);
+        assert_eq!(memory.max_token_limit(), 500);
     }
 
     #[test]
@@ -403,5 +512,40 @@ mod tests {
 
         assert!(memory.buffer().await.is_empty());
         assert_eq!(memory.chat_memory().len(), 0);
+    }
+
+    /// P2-4: 剪枝触发摘要、但摘要 LLM 失败时——保留旧摘要、不清空 chat_memory、
+    /// 记录错误且不冒泡;下轮成功总结后摘要生效、错误清空。
+    #[tokio::test]
+    async fn test_prune_summary_failure_keeps_messages_and_retries() {
+        // MockLlm 按 LIFO 消费:第一次剪枝总结失败,第二次成功。
+        let llm = MockLlm::new(vec![
+            Ok("summary-b".to_string()),
+            Err("summarizer down".to_string()),
+        ]);
+        // CharRatioCounter 保证 token 估算可复现(不依赖 tiktoken 在线)。
+        let mut memory: ConversationSummaryBufferMemory<MockLlm> =
+            ConversationSummaryBufferMemory::new(llm, 5)
+                .with_counter(std::sync::Arc::new(CharRatioCounter::new(4)));
+
+        let long_input =
+            "这是一段足够长的中文消息,用来确保本轮消息总 token 数超过预算并触发剪枝总结逻辑";
+        let inputs = HashMap::from([("input".to_string(), long_input.to_string())]);
+        let outputs = HashMap::from([("output".to_string(), long_input.to_string())]);
+
+        // 第一轮:总 token 超限 -> 触发剪枝总结 -> LLM 失败
+        memory.save_context(&inputs, &outputs).await.unwrap();
+        assert!(memory.buffer().await.is_empty(), "失败时不应覆盖旧摘要");
+        assert!(memory
+            .last_summary_error()
+            .unwrap()
+            .contains("summarizer down"));
+        // 失败时不清空原始消息,下轮 prune 才能重试总结
+        assert_eq!(memory.chat_memory().len(), 2);
+
+        // 第二轮:再次触发剪枝总结 -> 成功,摘要生效、错误清空
+        memory.save_context(&inputs, &outputs).await.unwrap();
+        assert_eq!(memory.buffer().await, "summary-b");
+        assert!(memory.last_summary_error().is_none());
     }
 }

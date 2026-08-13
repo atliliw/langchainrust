@@ -18,11 +18,15 @@
 
 mod approval;
 mod content_filter;
+mod injection;
 mod logging;
+mod rate_limit;
 
 pub use approval::ApprovalHook;
 pub use content_filter::ContentFilterHook;
+pub use injection::PromptInjectionHook;
 pub use logging::LoggingHook;
+pub use rate_limit::TokenBudgetHook;
 
 use async_trait::async_trait;
 use lc_schema::Message;
@@ -301,37 +305,44 @@ mod tests {
     #[async_trait]
     impl AgentHook for TrackingHook {
         fn on_before_completion(&self, _ctx: &mut CompletionContext) -> CompletionAction {
-            self.before_completion_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.before_completion_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             CompletionAction::Continue
         }
 
         fn on_after_completion(&self, _ctx: &mut CompletionResult) -> Result<(), HookError> {
-            self.after_completion_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.after_completion_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
         fn on_before_tool_call(&self, _ctx: &mut ToolCallContext) -> ToolCallAction {
-            self.before_tool_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.before_tool_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             ToolCallAction::Continue
         }
 
         fn on_after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), HookError> {
-            self.after_tool_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.after_tool_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
         fn on_agent_start(&self, _input: &str) -> Result<(), HookError> {
-            self.agent_start_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.agent_start_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
         fn on_agent_end(&self, _output: &str) -> Result<(), HookError> {
-            self.agent_end_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.agent_end_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
         fn on_error(&self, _error: &HookError) -> ErrorAction {
-            self.error_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.error_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             ErrorAction::Propagate
         }
     }
@@ -347,13 +358,19 @@ mod tests {
             metadata: HashMap::new(),
         };
         hook.on_before_completion(&mut ctx);
-        assert!(hook.before_completion_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hook
+            .before_completion_called
+            .load(std::sync::atomic::Ordering::SeqCst));
 
         hook.on_agent_start("test input").unwrap();
-        assert!(hook.agent_start_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hook
+            .agent_start_called
+            .load(std::sync::atomic::Ordering::SeqCst));
 
         hook.on_agent_end("test output").unwrap();
-        assert!(hook.agent_end_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hook
+            .agent_end_called
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

@@ -21,11 +21,10 @@ use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 /// A Chain with memory that automatically saves and loads conversation history.
 pub struct ConversationChain<M: BaseChatModel> {
     llm: M,
-    memory: Arc<Mutex<ConversationBufferMemory>>,
+    memory: Arc<Mutex<dyn BaseMemory>>,
     system_prompt: Option<String>,
     input_key: String,
     output_key: String,
-    memory_key: String,
     name: String,
     verbose: bool,
 }
@@ -37,13 +36,22 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     /// * `llm` - LLM client (any type implementing BaseChatModel)
     /// * `memory` - Conversation memory
     pub fn new(llm: M, memory: ConversationBufferMemory) -> Self {
+        Self::from_memory(llm, Arc::new(Mutex::new(memory.with_return_messages(true))))
+    }
+
+    /// Create a ConversationChain from any [`BaseMemory`] implementation.
+    ///
+    /// Unlike [`ConversationChain::new`] (which takes the concrete
+    /// `ConversationBufferMemory`), this accepts any memory — window, summary,
+    /// vector-store, persistent — so the chain's memory is pluggable without
+    /// changing the chain source.
+    pub fn from_memory(llm: M, memory: Arc<Mutex<dyn BaseMemory>>) -> Self {
         Self {
             llm,
-            memory: Arc::new(Mutex::new(memory.with_return_messages(true))),
+            memory,
             system_prompt: None,
             input_key: "input".to_string(),
             output_key: "output".to_string(),
-            memory_key: "history".to_string(),
             name: "conversation_chain".to_string(),
             verbose: false,
         }
@@ -67,12 +75,6 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
         self
     }
 
-    /// Set memory key name.
-    pub fn with_memory_key(mut self, key: impl Into<String>) -> Self {
-        self.memory_key = key.into();
-        self
-    }
-
     /// Set chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
@@ -86,7 +88,7 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     }
 
     /// Get memory reference.
-    pub fn memory(&self) -> &Arc<Mutex<ConversationBufferMemory>> {
+    pub fn memory(&self) -> &Arc<Mutex<dyn BaseMemory>> {
         &self.memory
     }
 
@@ -138,11 +140,19 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
         messages
     }
 
-    /// Load history messages.
-    async fn load_history(&self) -> Result<Vec<Message>, ChainError> {
+    /// Load history messages through the memory trait's `load_memory_variables`.
+    ///
+    /// Accepts any memory shape (array of `Message` objects or a rendered
+    /// history string); the current input is forwarded so input-aware memories
+    /// (e.g. `VectorStoreRetrieverMemory`) can use it as the retrieval query.
+    async fn load_history(&self, input: &str) -> Result<Vec<Message>, ChainError> {
         let memory = self.memory.lock().await;
-        let messages = memory.chat_memory().messages().to_vec();
-        Ok(messages)
+        let inputs = HashMap::from([(self.input_key.clone(), input.to_string())]);
+        let vars = memory
+            .load_memory_variables(&inputs)
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("Failed to load memory: {}", e)))?;
+        Ok(crate::base::variables_to_messages(&vars))
     }
 
     /// Save conversation context.
@@ -187,7 +197,7 @@ where
             println!("User input: {}", input);
         }
 
-        let history_messages = self.load_history().await?;
+        let history_messages = self.load_history(input).await?;
 
         if self.verbose && !history_messages.is_empty() {
             println!("History message count: {}", history_messages.len());
@@ -232,7 +242,7 @@ where
             .and_then(|v| v.as_str())
             .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
 
-        let history_messages = self.load_history().await?;
+        let history_messages = self.load_history(input).await?;
 
         let messages = self.prepare_messages(input, &history_messages);
 
@@ -247,15 +257,14 @@ where
         let output_key = self.output_key.clone();
         let input_str = input.to_string();
 
-        let accumulated: Arc<tokio::sync::Mutex<String>> =
-            Arc::new(tokio::sync::Mutex::new(String::new()));
-        let accumulated_clone = accumulated.clone();
+        // P1-4: queue tokens through an unbounded channel instead of `try_lock`
+        // on a shared mutex. The map closure's sync sender never drops a token,
+        // so the memory write sees the full output rather than a truncated one.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         let stream = llm_stream.map(move |result| match result {
             Ok(token) => {
-                if let Ok(mut acc) = accumulated_clone.try_lock() {
-                    acc.push_str(&token);
-                }
+                let _ = tx.send(token.clone());
                 Ok(StreamToken {
                     token,
                     is_final: false,
@@ -268,14 +277,20 @@ where
         });
 
         let finalizer_stream = async move {
-            let output = accumulated.lock().await.clone();
+            // The channel closes once the map closure's sender is dropped (stream
+            // exhausted); drain every queued token into the memory write.
+            let mut output = String::new();
+            let mut rx = rx;
+            while let Some(token) = rx.recv().await {
+                output.push_str(&token);
+            }
 
             if !output.is_empty() {
                 let mut mem = memory.lock().await;
                 let ctx_inputs = HashMap::from([(input_key.clone(), input_str.clone())]);
                 let ctx_outputs = HashMap::from([(output_key.clone(), output)]);
                 if let Err(e) = mem.save_context(&ctx_inputs, &ctx_outputs).await {
-                    eprintln!("[ConversationChain] Warning: failed to save context: {}", e);
+                    log::error!("[ConversationChain] failed to save context: {}", e);
                 }
             }
         };
@@ -301,11 +316,10 @@ where
 /// Convenience builder for ConversationChain.
 pub struct ConversationChainBuilder<M: BaseChatModel> {
     llm: M,
-    memory: Option<ConversationBufferMemory>,
+    memory: Option<Arc<Mutex<dyn BaseMemory>>>,
     system_prompt: Option<String>,
     input_key: Option<String>,
     output_key: Option<String>,
-    memory_key: Option<String>,
     name: Option<String>,
     verbose: Option<bool>,
 }
@@ -318,14 +332,13 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
             system_prompt: None,
             input_key: None,
             output_key: None,
-            memory_key: None,
             name: None,
             verbose: None,
         }
     }
 
-    pub fn memory(mut self, memory: ConversationBufferMemory) -> Self {
-        self.memory = Some(memory);
+    pub fn memory<Mem: BaseMemory + 'static>(mut self, memory: Mem) -> Self {
+        self.memory = Some(Arc::new(Mutex::new(memory)));
         self
     }
 
@@ -344,11 +357,6 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
         self
     }
 
-    pub fn memory_key(mut self, key: impl Into<String>) -> Self {
-        self.memory_key = Some(key.into());
-        self
-    }
-
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -360,8 +368,10 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
     }
 
     pub fn build(self) -> ConversationChain<M> {
-        let memory = self.memory.unwrap_or_default();
-        let mut chain = ConversationChain::new(self.llm, memory);
+        let mut chain = match self.memory {
+            Some(memory) => ConversationChain::from_memory(self.llm, memory),
+            None => ConversationChain::new(self.llm, ConversationBufferMemory::new()),
+        };
 
         if let Some(prompt) = self.system_prompt {
             chain = chain.with_system_prompt(prompt);
@@ -373,10 +383,6 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
 
         if let Some(key) = self.output_key {
             chain = chain.with_output_key(key);
-        }
-
-        if let Some(key) = self.memory_key {
-            chain = chain.with_memory_key(key);
         }
 
         if let Some(name) = self.name {

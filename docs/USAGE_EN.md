@@ -625,20 +625,14 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ```rust
 use langchainrust::{ContextWindow, Message, OpenAIChat, Strategy};
-use langchainrust::BaseChatModel;
 
 // Strategy 1: Truncate — discard oldest messages when over token budget
-let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096);
+let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)?;
+let fitted = cw.fit(messages).await?;
 
 // Strategy 2: Summarize — use LLM to compress old conversation when over budget
-let cw: ContextWindow<OpenAIChat> = ContextWindow::new(4096)
-    .with_strategy(Strategy::Summarize)
-    .with_llm(OpenAIChat::new(config));
-
-cw.add_message(Message::human("hello")).await;
-cw.add_message(Message::ai("Hi! How can I help?")).await;
-
-let messages = cw.get_messages().await;
+let cw = ContextWindow::with_strategy(4096, Strategy::summarize(llm))?;
+let fitted = cw.fit(messages).await?;
 ```
 
 | Strategy | Behavior | Use Case |
@@ -1335,7 +1329,8 @@ let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
 // Adapt to a BaseTool list and hand it to an agent
-let mcp_tools = client.as_tools().await;
+// P0-3: as_tools auto-discovers tools, no need to call list_tools first
+let mcp_tools = client.as_tools().await?;
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
     mcp_tools,
@@ -2129,7 +2124,7 @@ let llm = OpenAIChat::new(config);
 let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
 let base_retriever = Arc::new(SimilarityRetriever::new(store, embeddings));
 
-let hyde = HyDERetriever::new(llm, embeddings, base_retriever)
+let hyde = HyDERetriever::new(llm, base_retriever)
     .with_k(5)
     .with_include_original_query(true);
 
@@ -2468,7 +2463,7 @@ let server = A2AServer::new(chain)
     .with_card(AgentCard::new("my-agent", "A helpful agent", "http://localhost:8080"));
 
 // In your HTTP handler:
-// GET  /.well-known/agent.json → server.get_agent_card()
+// GET  /.well-known/agent-card.json → server.get_agent_card()
 // POST /                       → server.handle_a2a_request(body).await
 ```
 

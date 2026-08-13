@@ -49,6 +49,81 @@ impl Bleu {
         self.smoothing = v;
         self
     }
+
+    /// corpus 级 BLEU:跨多条样例聚合 n-gram 匹配计数,再整体算几何均值 +
+    /// corpus 级 brevity penalty。
+    ///
+    /// P2-1:句子级 BLEU 的 brevity penalty 会把短句一刀切(如 BLEU-4 下
+    /// "the cat" 直接归零);corpus 聚合用总长度算惩罚、各阶 n-gram 计数合并,
+    /// 短句的匹配仍能贡献低阶精度。开启 `with_smoothing` 后某阶无匹配给小值
+    /// 而非整体归零。
+    ///
+    /// `predictions` 与 `references` 长度必须一致(逐条对应),否则 panic。
+    pub fn corpus_bleu(&self, predictions: &[&str], references: &[&str]) -> f64 {
+        assert_eq!(
+            predictions.len(),
+            references.len(),
+            "predictions 与 references 样例数不一致"
+        );
+        if predictions.is_empty() {
+            return 0.0;
+        }
+        let mut total = vec![0usize; self.max_n];
+        let mut matches = vec![0usize; self.max_n];
+        let mut pred_len = 0usize;
+        let mut ref_len = 0usize;
+        for (pred, reference) in predictions.iter().zip(references) {
+            let pred_t = tokenize(pred, self.char_level);
+            let ref_t = tokenize(reference, self.char_level);
+            pred_len += pred_t.len();
+            ref_len += ref_t.len();
+            for n in 1..=self.max_n {
+                let pred_grams = ngrams(&pred_t, n);
+                let ref_grams = ngrams(&ref_t, n);
+                for (g, &c) in &pred_grams {
+                    total[n - 1] += c;
+                    let r = ref_grams.get(g).copied().unwrap_or(0);
+                    matches[n - 1] += c.min(r);
+                }
+            }
+        }
+        if pred_len == 0 {
+            return 0.0;
+        }
+        let mut log_precisions: Vec<f64> = Vec::new();
+        for n in 0..self.max_n {
+            let t = total[n];
+            let m = matches[n];
+            let p = if t == 0 {
+                // 该阶整条语料都没有 n-gram(所有预测都太短):平滑时跳过不惩罚,否则归零
+                if self.smoothing {
+                    continue;
+                }
+                return 0.0;
+            } else if m == 0 {
+                if self.smoothing {
+                    // 平滑:0 匹配给小值,避免 log(0) 把整体归零
+                    0.5 / t as f64
+                } else {
+                    return 0.0;
+                }
+            } else {
+                m as f64 / t as f64
+            };
+            log_precisions.push(p.ln());
+        }
+        if log_precisions.is_empty() {
+            return 0.0;
+        }
+        let geo_mean = log_precisions.iter().sum::<f64>() / log_precisions.len() as f64;
+        // corpus 级 brevity penalty:总预测长度 vs 总参考长度
+        let bp = if pred_len > ref_len {
+            1.0
+        } else {
+            (1.0 - ref_len as f64 / pred_len as f64).exp()
+        };
+        (bp * geo_mean.exp()).clamp(0.0, 1.0)
+    }
 }
 
 /// 分词:默认按空白切分并小写化;char_level 时按字符切(中文用)。
@@ -212,5 +287,51 @@ mod tests {
         let smooth = Bleu::new().with_smoothing(true);
         let s2 = smooth.eval("", "the cat", "the cat").await.unwrap();
         assert!(s2.value > 0.0);
+    }
+
+    /// P2-1: corpus 级 BLEU,完全相同语料 = 1.0。
+    #[test]
+    fn test_corpus_bleu_identical() {
+        let ev = Bleu::new();
+        let v = ev.corpus_bleu(
+            &["the cat", "the dog sat on the mat"],
+            &["the cat", "the dog sat on the mat"],
+        );
+        assert!((v - 1.0).abs() < 1e-9);
+    }
+
+    /// P2-1: corpus 聚合下,短句"the cat"不再因缺 4-gram 把整体归零。
+    #[tokio::test]
+    async fn test_corpus_bleu_short_sentence_aggregated() {
+        // 句子级 strict BLEU-4:"the cat" 无 4-gram,直接归零
+        let strict = Bleu::new();
+        let s = strict.eval("", "the cat", "the cat").await.unwrap();
+        assert!((s.value - 0.0).abs() < 1e-9);
+        // corpus 级:短句的匹配贡献低阶精度,整体不再为零
+        let v = strict.corpus_bleu(
+            &["the cat", "the dog sat on the mat"],
+            &["the cat", "the dog sat on the mat"],
+        );
+        assert!((v - 1.0).abs() < 1e-9);
+    }
+
+    /// P2-1: 某阶全语料无匹配时,strict 归零;平滑给小值而非整体归零。
+    #[test]
+    fn test_corpus_bleu_smoothing() {
+        let preds = &["the cat", "completely different"];
+        let refs = &["the cat", "the dog"];
+        let strict = Bleu::new();
+        let v0 = strict.corpus_bleu(preds, refs);
+        assert!((v0 - 0.0).abs() < 1e-9, "strict 应为 0,实际 {v0}");
+        let smooth = Bleu::new().with_smoothing(true);
+        let v1 = smooth.corpus_bleu(preds, refs);
+        assert!((v1 - 0.5).abs() < 1e-9, "平滑后应为 0.5,实际 {v1}");
+    }
+
+    /// P2-1: 空语料返回 0.0,不 panic。
+    #[test]
+    fn test_corpus_bleu_empty() {
+        let v = Bleu::new().corpus_bleu(&[], &[]);
+        assert!((v - 0.0).abs() < 1e-9);
     }
 }

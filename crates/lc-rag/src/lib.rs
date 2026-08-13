@@ -18,6 +18,7 @@ pub mod reranking;
 pub mod retriever;
 pub mod semantic_splitter;
 pub mod splitter;
+mod structured;
 pub mod unified_hybrid;
 
 pub use adapter::RagRunnable;
@@ -36,8 +37,12 @@ pub use bm25::{
     ChunkedSearchResult, Tokenizer,
 };
 
+#[allow(deprecated)]
 pub use chunked_hybrid::ChunkedHybridRetriever;
-pub use hybrid::{reciprocal_rank_fusion, HybridRetriever, RetrievalSource, RetrievedDocument};
+#[allow(deprecated)]
+pub use hybrid::{
+    filter_by_score, reciprocal_rank_fusion, HybridRetriever, RetrievalSource, RetrievedDocument,
+};
 pub use unified_hybrid::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 
 pub use multi_query::{
