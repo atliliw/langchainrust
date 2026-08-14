@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-13
+
+### Added
+- **LCEL adapters**: `AgentEventRunnable` (`Runnable<String, AgentStreamEvent>`) exposes the full agent event stream (`Text` / `ToolCall` / `ToolStart` / `ToolEnd` / `PipelineStep` / `FinalAnswer` / `Error`) instead of filtering to the final answer; `OrchestratorRunnable<O: Orchestrator>` wraps high-level orchestrators (PlanExecute / AdaptiveRAG / CorrectiveRAG / DeepResearch / FanOutFanIn / SequentialPipeline / TaskAdapter / ReviewOrchestrator) as `Runnable` — `config.metadata["trace_id"]` propagates into `RunContext`
+- **Unified `Orchestrator` trait**: `PlanExecuteAgent` / `DeepResearchAgent` / `CorrectiveRAGAgent` / `AdaptiveRAG` previously had incompatible `run()` signatures; they now converge on a single trait with `Input` / `Output` associated types and a shared `RunContext`
+- **ConversationChain pluggable memory**: `ConversationChain::from_memory(llm, Arc<Mutex<dyn BaseMemory>>)` accepts any `BaseMemory` implementation (window / summary / vector-store / persistent); new `ConversationChainBuilder` adds system-prompt and input/output-key customization
+- **AdaptiveRAG structured routing**: tool-call routing decisions now use structured output
+- **Per-call token tracking**: `last_token_usage()` on `FunctionCallingAgent` and `ReActAgent`
+- **PlanExecuteAgent execution factory**: custom execution-agent factory with `FunctionCallingAgent` fallback
+- **Agent hardening**: per-execution metrics (LLM/tool call counts, token usage, duration); LLM result cache keyed on input + intermediate steps + executor namespace; `PromptInjectionHook` (detect / sanitize prompt injection in tool-returned content); `TokenBudgetHook` (token-budget / call-quota limiting); `ToolPolicy` (risk-graded tool permissions + sandbox gating); exponential-backoff retry for LLM provider calls; structured tool-call output helper for planner / router / grader; `AgentTask` type (objective / expected_output / allowed_tools) for multi-agent dispatch
+- **A2A enterprise scaling**: `FederationGateway` (cross-org federation), `AgentRegistry` (skill-aware discovery), `SkillRouter` (skill-based dispatch), `ResilientA2AClient` (layered fault tolerance), `RateLimiter` (concurrency + rate limiting), security module (anti-impersonation / tamper / hostile-agent defense), ~1000-agent scale building blocks, pluggable `TaskStore` persistence, axum HTTP serving (`A2AServer::serve`, feature-gated), and an `AgentExecutor` ↔ `BaseChain` adapter for stateful multi-turn tasks
+- **MCP at 100+ Server scale**: `ConnectionManager` (lazy start + idle reclamation + pooling), `MCPGateway` (single entry, `server:tool` routing), `TenantGateway` (per-tenant isolation), health-check circuit breaker, static + dynamic tool discovery, `server:tool` namespace with conflict policy, per-tool timeout with progress reset, streaming tool output (`notifications/tool_partial`), `ToolOrchestrator` (DAG tool execution), per-Server process sandbox isolation
+- **Embeddings**: Cohere provider; FastEmbed embeddings (feature-gated `fastembed`); shared OpenAI-compatible base for DeepSeek / Qwen; exponential-backoff HTTP retry
+- **Guardrails**: audit sink (persist violations); LLM judge to reduce sensitive-info false positives
+- **Shared LLM judge** (`lc-core`): structured `bind_tools` judge reused by evaluation + guardrails, with text-parsing fallback
+- **RAG structured output**: structured helper for GraphRAG entity extraction and MultiQuery query generation
+
+### Changed
+- **Workspace version**: All 21 crates bumped from 0.12.0 to 0.13.0
+- **Orchestrators unified**: PlanExecute / DeepResearch / CorrectiveRAG / AdaptiveRAG migrated onto the shared `Orchestrator` trait
+- **Dependency docs corrected**: `docs/internal/CRATE_DEPENDENCIES.md` dependency lists and publish order updated for `lc-sessions` (adds `lc-memory`), `lc-chains` (adds `lc-callbacks`), `lc-guardrails` (adds `lc-chains` / `lc-schema` / `lc-providers`), and `lc-a2a` (adds `lc-agents`)
+
+### Fixed
+- **lc-vector-stores doc IDs**: `lancedb.rs` / `neo4j.rs` now generate a UUID fallback when a document has no ID
+- **lc-vector-stores Neo4j auth**: basic auth header now base64-encodes `username:password`
+- **Adapters polish**: error handling and code formatting cleanup across lc-agents / lc-chains / lc-rag / lc-core adapters
+
 ## [0.12.0] - 2026-08-06
 
 ### Added

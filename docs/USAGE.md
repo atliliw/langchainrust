@@ -30,11 +30,13 @@
 - [链](#chains)
   - ConversationRetrievalChain
   - 链流式输出 ✨ v0.4.1
+  - ConversationChain ✨ v0.13.0
 - [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
   - RunnableWithFallbacks ✨ v0.10.0
   - RunnableAssign ✨ v0.10.0
   - RunnableRetry ✨ v0.11.0
   - CancellationToken ✨ v0.11.0
+  - 适配器 (AgentEventRunnable / OrchestratorRunnable) ✨ v0.13.0
 - [文档链](#document-chains)
 - [智能体](#agents)
   - Agent Hooks ✨ v0.11.0
@@ -845,6 +847,64 @@ let rag_runnable = RagRunnable::new(arc_rag_pipeline);
 let result = rag_runnable.invoke("query".to_string(), None).await?;
 ```
 
+**AgentEventRunnable** ✨ v0.13.0
+
+与 `AgentRunnable` 不同，`AgentEventRunnable` 的 `stream()` 保留**全部** `AgentStreamEvent` 事件变体（`Text` / `ToolCall` / `ToolStart` / `ToolEnd` / `PipelineStep` / `FinalAnswer` / `Error`），而非只过滤出最终答案；非流式 `invoke()` 则返回单个 `FinalAnswer` 事件。
+
+```rust
+use langchainrust::{
+    AgentEventRunnable, AgentExecutor, AgentStreamEvent, BaseAgent, FunctionCallingAgent,
+    OpenAIChat, OpenAIConfig, Runnable,
+};
+use std::sync::Arc;
+use futures_util::StreamExt;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let executor = AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm, vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+);
+let agent = AgentEventRunnable::new(Arc::new(executor));
+
+// stream 保留全部事件变体
+let mut stream = agent.stream("What is Rust?".to_string(), None).await?;
+while let Some(item) = stream.next().await {
+    match item? {
+        AgentStreamEvent::Text { content } => println!("[text] {}", content),
+        AgentStreamEvent::ToolStart { name, .. } => println!("[tool] {name} start"),
+        AgentStreamEvent::ToolEnd { name, .. } => println!("[tool] {name} end"),
+        AgentStreamEvent::FinalAnswer { content } => println!("[answer] {}", content),
+        AgentStreamEvent::Error { message } => eprintln!("[error] {}", message),
+        _ => {} // ToolCall / PipelineStep
+    }
+}
+
+// invoke 返回单个 FinalAnswer
+if let AgentStreamEvent::FinalAnswer { content } =
+    agent.invoke("What is Rust?".to_string(), None).await?
+{
+    println!("{}", content);
+}
+```
+
+**OrchestratorRunnable** ✨ v0.13.0
+
+将高层编排器（`PlanExecuteAgent` / `AdaptiveRAG` / `CorrectiveRAG` / `DeepResearch` / `FanOutFanIn` / `SequentialPipeline` / `TaskAdapter` / `ReviewOrchestrator`）包装为 `Runnable`，让它们能进入 LCEL 管道。`config.metadata["trace_id"]` 会贯通到编排器的 `RunContext`。
+
+```rust
+use langchainrust::{BaseTool, OrchestratorRunnable, PlanExecuteAgent, Runnable, RunnableConfig};
+use std::sync::Arc;
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![];
+let plan_exec = PlanExecuteAgent::new(llm, tools);
+let runnable = OrchestratorRunnable::new(plan_exec);
+
+// trace_id 贯通到 RunContext
+let config = RunnableConfig::new()
+    .with_metadata("trace_id".to_string(), serde_json::json!("trace-001"));
+let result: String = runnable.invoke("Research Rust async runtimes".to_string(), Some(config)).await?;
+```
+
 ---
 
 ## Chains
@@ -923,6 +983,33 @@ let chain = ConversationRetrievalChain::new(
 let answer = chain.invoke(HashMap::from([
     ("question", "What is BM25?"),
 ])).await?;
+```
+
+### ConversationChain ✨ v0.13.0
+
+带可插拔记忆的对话链——`from_memory` 接受任何实现了 `BaseMemory` 的记忆（窗口 / 摘要 / 向量库 / 持久化），或用 `ConversationChainBuilder` 组装并自定义系统提示词与键名。
+
+```rust
+use langchainrust::{
+    ConversationChain, ConversationChainBuilder, ConversationBufferWindowMemory,
+    OpenAIChat, OpenAIConfig,
+};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+
+// 方式一:from_memory 传入任意 BaseMemory
+let memory = Arc::new(Mutex::new(ConversationBufferWindowMemory::new(4)));
+let chain = ConversationChain::from_memory(llm.clone(), memory);
+let answer = chain.predict("Hello!").await?;
+
+// 方式二:Builder(同样可插拔 + 自定义系统提示词/键)
+let chain = ConversationChainBuilder::new(llm)
+    .memory(ConversationBufferWindowMemory::new(6))
+    .system_prompt("You are a helpful assistant.")
+    .build();
+let answer = chain.predict("What is Rust?").await?;
 ```
 
 ---

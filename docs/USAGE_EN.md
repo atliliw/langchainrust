@@ -30,11 +30,13 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Chains](#chains)
   - ConversationRetrievalChain
   - Chain Streaming ✨ v0.4.1
+  - ConversationChain ✨ v0.13.0
 - [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
   - RunnableWithFallbacks ✨ v0.10.0
   - RunnableAssign ✨ v0.10.0
   - RunnableRetry ✨ v0.11.0
   - CancellationToken ✨ v0.11.0
+  - Adapters (AgentEventRunnable / OrchestratorRunnable) ✨ v0.13.0
 - [Document Chains](#document-chains)
 - [Agents](#agents)
   - Agent Hooks ✨ v0.11.0
@@ -845,6 +847,64 @@ let rag_runnable = RagRunnable::new(arc_rag_pipeline);
 let result = rag_runnable.invoke("query".to_string(), None).await?;
 ```
 
+**AgentEventRunnable** ✨ v0.13.0
+
+Unlike `AgentRunnable`, `AgentEventRunnable::stream()` preserves **all** `AgentStreamEvent` variants (`Text` / `ToolCall` / `ToolStart` / `ToolEnd` / `PipelineStep` / `FinalAnswer` / `Error`) instead of filtering down to the final answer; the non-streaming `invoke()` returns a single `FinalAnswer` event.
+
+```rust
+use langchainrust::{
+    AgentEventRunnable, AgentExecutor, AgentStreamEvent, BaseAgent, FunctionCallingAgent,
+    OpenAIChat, OpenAIConfig, Runnable,
+};
+use std::sync::Arc;
+use futures_util::StreamExt;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let executor = AgentExecutor::new(
+    Arc::new(FunctionCallingAgent::new(llm, vec![], None)) as Arc<dyn BaseAgent>,
+    vec![],
+);
+let agent = AgentEventRunnable::new(Arc::new(executor));
+
+// stream preserves all event variants
+let mut stream = agent.stream("What is Rust?".to_string(), None).await?;
+while let Some(item) = stream.next().await {
+    match item? {
+        AgentStreamEvent::Text { content } => println!("[text] {}", content),
+        AgentStreamEvent::ToolStart { name, .. } => println!("[tool] {name} start"),
+        AgentStreamEvent::ToolEnd { name, .. } => println!("[tool] {name} end"),
+        AgentStreamEvent::FinalAnswer { content } => println!("[answer] {}", content),
+        AgentStreamEvent::Error { message } => eprintln!("[error] {}", message),
+        _ => {} // ToolCall / PipelineStep
+    }
+}
+
+// invoke returns a single FinalAnswer
+if let AgentStreamEvent::FinalAnswer { content } =
+    agent.invoke("What is Rust?".to_string(), None).await?
+{
+    println!("{}", content);
+}
+```
+
+**OrchestratorRunnable** ✨ v0.13.0
+
+Wraps high-level orchestrators (`PlanExecuteAgent` / `AdaptiveRAG` / `CorrectiveRAG` / `DeepResearch` / `FanOutFanIn` / `SequentialPipeline` / `TaskAdapter` / `ReviewOrchestrator`) as a `Runnable`, letting them enter LCEL pipelines. `config.metadata["trace_id"]` is propagated through to the orchestrator's `RunContext`.
+
+```rust
+use langchainrust::{BaseTool, OrchestratorRunnable, PlanExecuteAgent, Runnable, RunnableConfig};
+use std::sync::Arc;
+
+let tools: Vec<Arc<dyn BaseTool>> = vec![];
+let plan_exec = PlanExecuteAgent::new(llm, tools);
+let runnable = OrchestratorRunnable::new(plan_exec);
+
+// trace_id propagates to RunContext
+let config = RunnableConfig::new()
+    .with_metadata("trace_id".to_string(), serde_json::json!("trace-001"));
+let result: String = runnable.invoke("Research Rust async runtimes".to_string(), Some(config)).await?;
+```
+
 ---
 
 ## Chains
@@ -922,6 +982,33 @@ let chain = ConversationRetrievalChain::new(
 let answer = chain.invoke(HashMap::from([
     ("question", "What is BM25?"),
 ])).await?;
+```
+
+### ConversationChain ✨ v0.13.0
+
+A conversational chain with pluggable memory — `from_memory` accepts any `BaseMemory` implementation (window / summary / vector-store / persistent), or assemble one with `ConversationChainBuilder` and customize the system prompt and keys.
+
+```rust
+use langchainrust::{
+    ConversationChain, ConversationChainBuilder, ConversationBufferWindowMemory,
+    OpenAIChat, OpenAIConfig,
+};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+
+// Option 1: from_memory with any BaseMemory
+let memory = Arc::new(Mutex::new(ConversationBufferWindowMemory::new(4)));
+let chain = ConversationChain::from_memory(llm.clone(), memory);
+let answer = chain.predict("Hello!").await?;
+
+// Option 2: Builder (also pluggable + custom system prompt / keys)
+let chain = ConversationChainBuilder::new(llm)
+    .memory(ConversationBufferWindowMemory::new(6))
+    .system_prompt("You are a helpful assistant.")
+    .build();
+let answer = chain.predict("What is Rust?").await?;
 ```
 
 ---

@@ -601,6 +601,11 @@ path = "examples/basic/sandbox.rs"
 name = "basic_quick_start"
 path = "examples/basic/quick_start.rs"
 
+# lcel_pipe lives in the top-level examples/ directory
+[[example]]
+name = "lcel_pipe"
+path = "../../examples/lcel_pipe.rs"
+
 # ============================================================================
 # Criterion Benchmarks
 # ============================================================================

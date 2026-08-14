@@ -8,8 +8,8 @@
 //! Run with: cargo run --example lcel_pipe
 
 use langchainrust::{
-    RunnableBranch, RunnableConfig, RunnableExt, RunnableLambda, RunnableParallel,
-    RunnablePassthrough, RunnableSequence,
+    Runnable, RunnableBranch, RunnableConfig, RunnableExt, RunnableLambda, RunnableParallel,
+    RunnablePassthrough,
 };
 
 #[tokio::main]

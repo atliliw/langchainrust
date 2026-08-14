@@ -19,13 +19,13 @@ A LangChain-inspired Rust framework for building LLM applications.
 |-----------|-------------|
 | **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude (Extended Thinking) / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
 | **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
-| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / Agent Hooks (Approval / ContentFilter / Logging) |
+| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / Agent Hooks (Approval / ContentFilter / Logging) / per-call token usage tracking (last_token_usage()) / PlanExecute custom execution-agent factory |
 | **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client |
 | **MCP** | Model Context Protocol Client + Server (Stdio + SSE), full 6 primitives, MCP tool adapter to BaseTool |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
 | **Sessions** | Multi-turn conversation lifecycle management, pluggable storage (SessionManager + SessionStore) |
-| **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
-| **LCEL** | Runnable pipe composition (`prompt \| llm \| parser`), RunnableSequence / Lambda / Passthrough / Parallel / Branch / Binding / WithFallbacks / Assign / Retry, `transform()` streaming, CancellationToken, LcelStreamEvent |
+| **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming + pluggable memory (ConversationChain::from_memory / builder) |
+| **LCEL** | Runnable pipe composition (`prompt \| llm \| parser`), RunnableSequence / Lambda / Passthrough / Parallel / Branch / Binding / WithFallbacks / Assign / Retry, `transform()` streaming, CancellationToken, LcelStreamEvent, AgentEventRunnable (full agent event stream), OrchestratorRunnable (orchestrators into LCEL: PlanExecute / AdaptiveRAG / CorrectiveRAG / DeepResearch / FanOutFanIn / SequentialPipeline / TaskAdapter / ReviewOrchestrator) |
 | **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing) |
 | **Structured Output** | with_structured_output, StructuredOutputExt trait + JsonOutputParser fallback, Streaming Structured Output |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
@@ -41,7 +41,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
 | **Callbacks** | StdOut / LangSmith / FileHandler / OpenTelemetry |
 | **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness |
-| **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval) / GraphRAG (knowledge graph) |
+| **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval + structured tool-call routing decisions) / GraphRAG (knowledge graph) |
 | **Model Routing** | RouterLLM with 5 strategies (Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected) |
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
 | **Code Interpreter** | LocalSandbox (subprocess + timeout) + E2B cloud sandbox + WASM sandbox (feature gate) |
@@ -134,19 +134,23 @@ Full documentation: [中文使用指南](https://github.com/atliliw/langchainrus
 
 ```toml
 [dependencies]
-langchainrust = "0.12.0"
+langchainrust = "0.13.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.12.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.12.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.12.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.12.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.12.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.12.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.12.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.12.0", features = ["sandbox-wasm"] }          # WASM sandbox
-langchainrust = { version = "0.12.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.13.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.13.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.13.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.13.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.13.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.13.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.13.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
+langchainrust = { version = "0.13.0", features = ["sandbox-wasm"] }          # WASM sandbox
+langchainrust = { version = "0.13.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.13.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.13.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.13.0", features = ["native-computer"] }      # Native computer-operation mode (local)
+langchainrust = { version = "0.13.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
@@ -219,13 +223,13 @@ More examples in [中文使用指南](https://github.com/atliliw/langchainrust/b
 
 ## Examples
 
-The `examples/` directory provides 25+ runnable examples covering core functionality:
+The `crates/lc/examples/` directory provides 35 runnable examples covering core functionality (the LCEL pipeline example lives at `examples/lcel_pipe.rs`):
 
 | Category | Examples | Requires API Key |
 |----------|----------|-----------------|
-| basic | chat / streaming / multi_provider / token_counter | Yes |
-| agent | function_calling / multi_tool / assistants / handoffs / plan_execute | Yes |
-| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter | No |
+| basic | chat / streaming / multi_provider / token_counter / quick_start / responses_api / batch_api / sandbox | Yes |
+| agent | function_calling / multi_tool / assistants / handoffs / plan_execute / deep_research / extended_thinking | Yes |
+| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter / adaptive_rag / corrective_rag / graph_rag | No |
 | langgraph | basic_graph / conditional_edge | No |
 | memory | buffer_memory / context_window / sessions / vectorstore_memory | No |
 | chains | llm_chain / sequential_chain | Yes |
