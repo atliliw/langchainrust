@@ -134,21 +134,21 @@ Full documentation: [中文使用指南](https://github.com/atliliw/langchainrus
 
 ```toml
 [dependencies]
-langchainrust = "0.13.0"
+langchainrust = "0.14.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.13.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.13.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.13.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.13.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.13.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.13.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.13.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
-langchainrust = { version = "0.13.0", features = ["fastembed"] }            # FastEmbed embeddings
-langchainrust = { version = "0.13.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.13.0", features = ["native-computer"] }      # Native computer-operation mode (local)
-langchainrust = { version = "0.13.0", features = ["experimental"] }         # Experimental features
+langchainrust = { version = "0.14.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.14.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.14.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.14.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.14.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.14.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.14.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.14.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.14.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.14.0", features = ["native-computer"] }      # Native computer-operation mode (local)
+langchainrust = { version = "0.14.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
