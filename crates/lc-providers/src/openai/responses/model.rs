@@ -429,7 +429,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for ResponsesModel {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text)
+        lc_core::token_counter::count_tokens(text).unwrap_or(0)
     }
 
     fn temperature(&self) -> Option<f32> {

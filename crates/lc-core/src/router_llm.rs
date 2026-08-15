@@ -345,16 +345,21 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for RouterLLM {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        crate::token_counter::count_tokens(text)
+        crate::token_counter::count_tokens(text).unwrap_or(0)
     }
 
     fn with_temperature(self, _temp: f32) -> Self {
-        // Per-model temperature is owned by each slot; the router itself does
-        // not override it. No-op to satisfy the trait contract.
+        // The router deliberately does not override temperature: each slot
+        // owns its model's sampling parameters, and they cannot be mutated
+        // behind a `Box<dyn RoutedModel>` trait object. Configure temperature
+        // on the individual models before registering them (Q5: no silent
+        // change — this is an explicit no-op, not an attempt to apply it).
         self
     }
 
     fn with_max_tokens(self, _max: usize) -> Self {
+        // Same rationale as `with_temperature`: per-slot max_tokens is owned
+        // by each registered model and cannot be changed after boxing.
         self
     }
 }

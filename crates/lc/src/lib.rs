@@ -104,7 +104,6 @@ pub use core::{
     FunctionCall,
     FunctionDefinition,
     LcelError,
-    LcelStreamEvent,
     Runnable,
     RunnableAny,
     RunnableAnyWrapper,

@@ -161,24 +161,27 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
             .collect()
     }
 
-    /// Streaming: use `transform` to chain steps as stream-to-stream
-    /// transformations, enabling true pipeline streaming.
+    /// Streaming: the first step runs through `stream_any` (single input →
+    /// item stream) and every following step runs through `transform_any`.
+    /// Steps that override `stream` (e.g. LLMs) therefore emit a real token
+    /// stream instead of being collapsed to a single `invoke`.
     async fn stream(
         &self,
         input: I,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
-        // Start with a single-element stream containing the input
-        let input_stream: Pin<
-            Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>,
-        > = Box::pin(futures_util::stream::once(async {
-            Ok(Box::new(input) as Box<dyn Any + Send>)
-        }));
+        if self.steps.is_empty() {
+            return Ok(Box::pin(futures_util::stream::empty()));
+        }
 
-        let mut current_stream = input_stream;
+        let mut steps = self.steps.iter();
+        let first = steps.next().expect("steps is non-empty");
 
-        // Chain each step's transform
-        for step in &self.steps {
+        let input_boxed: Box<dyn Any + Send> = Box::new(input);
+        let mut current_stream = first.stream_any(input_boxed, config.clone()).await?;
+
+        // Chain each subsequent step's transform
+        for step in steps {
             current_stream = step.transform_any(current_stream, config.clone()).await?;
         }
 
@@ -312,7 +315,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transform_works() {
+    async fn transform_works_elementwise() {
         let seq = RunnableSequence::from_pair(Double, AddOne);
         let input = Box::pin(futures_util::stream::iter(vec![
             Ok(1i32),
@@ -320,10 +323,70 @@ mod tests {
             Ok(3i32),
         ])) as Pin<Box<dyn Stream<Item = Result<i32, LcelError>> + Send>>;
 
+        // Default transform maps each item through the chain elementwise
+        // (LangChain default semantics): 1→3, 2→5, 3→7.
         let mut output = seq.transform(input, None).await.unwrap();
-        // Default transform buffers and takes last: 3 * 2 + 1 = 7
-        let result = output.next().await.unwrap().unwrap();
-        assert_eq!(result, 7);
+        let mut results = Vec::new();
+        while let Some(item) = output.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(results, vec![3, 5, 7]);
+    }
+
+    // A runnable that overrides `stream` to emit several items, mimicking an
+    // LLM token stream. `invoke` returns a distinguishable value so tests can
+    // prove the streaming path was actually taken.
+    struct StreamingTokenLLM;
+
+    #[async_trait]
+    impl Runnable<i32, i32> for StreamingTokenLLM {
+        type Error = std::convert::Infallible;
+
+        async fn invoke(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<i32, Self::Error> {
+            Ok(input * 1000)
+        }
+
+        async fn stream(
+            &self,
+            input: i32,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<i32, Self::Error>> + Send>>, Self::Error>
+        {
+            let stream =
+                futures_util::stream::iter(vec![Ok(input), Ok(input + 100), Ok(input + 200)]);
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_uses_real_streaming_for_first_step() {
+        // Single step with a real `stream` override: `sequence.stream` must
+        // emit every streamed item (proving it goes through `stream_any`, not
+        // a single `invoke`).
+        let seq: RunnableSequence<i32, i32> = RunnableSequence::from_single(StreamingTokenLLM);
+        let mut stream = seq.stream(5, None).await.unwrap();
+        let mut results = Vec::new();
+        while let Some(item) = stream.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(results, vec![5, 105, 205]);
+    }
+
+    #[tokio::test]
+    async fn stream_chains_subsequent_steps_elementwise() {
+        // StreamingTokenLLM → AddOne: the token stream [5, 105, 205] is
+        // transformed elementwise by AddOne → [6, 106, 206].
+        let seq = RunnableSequence::from_pair(StreamingTokenLLM, AddOne);
+        let mut stream = seq.stream(5, None).await.unwrap();
+        let mut results = Vec::new();
+        while let Some(item) = stream.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(results, vec![6, 106, 206]);
     }
 
     #[tokio::test]

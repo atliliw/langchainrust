@@ -12,8 +12,25 @@ use std::collections::HashMap;
 pub trait ExampleSelector: Send + Sync {
     /// 选择示例
     fn select_examples(&self, input: &HashMap<String, String>) -> Vec<&HashMap<String, String>>;
+
+    /// 基于长度约束选择示例。
+    ///
+    /// 默认实现委托给 [`select_examples`](ExampleSelector::select_examples)。
+    /// 需要精确计长的实现（如 [`LengthBasedExampleSelector`]）覆盖此方法。
+    fn select_examples_by_length(
+        &self,
+        input: &HashMap<String, String>,
+        example_prompt: &PromptTemplate,
+        prefix: &str,
+        suffix: &str,
+    ) -> Vec<&HashMap<String, String>> {
+        let _ = (example_prompt, prefix, suffix);
+        self.select_examples(input)
+    }
+
     /// 获取所有示例
     fn examples(&self) -> &[HashMap<String, String>];
+
     /// 添加示例
     fn add_example(&mut self, example: HashMap<String, String>);
 }
@@ -39,59 +56,6 @@ impl LengthBasedExampleSelector {
         self.max_length = max;
         self
     }
-
-    /// 计算格式化后的示例长度
-    #[allow(dead_code)]
-    fn format_example_length(
-        &self,
-        example: &HashMap<String, String>,
-        prefix: &str,
-        suffix: &str,
-    ) -> usize {
-        let mut formatted = prefix.to_string();
-        for val in example.values() {
-            formatted.push_str(val);
-        }
-        formatted.push_str(suffix);
-        formatted.len()
-    }
-
-    /// 选择最大数量的示例而不超过长度限制
-    pub fn select_examples_by_length(
-        &self,
-        input: &HashMap<String, String>,
-        example_prompt: &PromptTemplate,
-        prefix: &str,
-        suffix: &str,
-    ) -> Vec<&HashMap<String, String>> {
-        // 计算输入长度
-        let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
-        let input_len = prefix.len() + suffix.len() + input_text.len();
-        let available = self.max_length.saturating_sub(input_len);
-
-        let mut selected = Vec::new();
-        let mut used = 0usize;
-
-        for example in &self.examples {
-            // 估算这个示例会占用的长度
-            let example_vars: HashMap<&str, &str> = example
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-
-            if let Ok(formatted) = example_prompt.format(&example_vars) {
-                let ex_len = formatted.len() + 10; // 加上分隔符的余量
-                if used + ex_len <= available || selected.is_empty() {
-                    selected.push(example);
-                    used += ex_len;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        selected
-    }
 }
 
 impl ExampleSelector for LengthBasedExampleSelector {
@@ -113,6 +77,42 @@ impl ExampleSelector for LengthBasedExampleSelector {
                 used += ex_len;
             } else {
                 break;
+            }
+        }
+
+        selected
+    }
+
+    fn select_examples_by_length(
+        &self,
+        input: &HashMap<String, String>,
+        example_prompt: &PromptTemplate,
+        prefix: &str,
+        suffix: &str,
+    ) -> Vec<&HashMap<String, String>> {
+        // 计算输入长度
+        let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
+        let input_len = prefix.len() + suffix.len() + input_text.len();
+        let available = self.max_length.saturating_sub(input_len);
+
+        let mut selected = Vec::new();
+        let mut used = 0usize;
+
+        for example in &self.examples {
+            // 用真实格式化后的长度估算（含分隔符余量），确保不超上限
+            let example_vars: HashMap<&str, &str> = example
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            if let Ok(formatted) = example_prompt.format(&example_vars) {
+                let ex_len = formatted.len() + 10; // 加上分隔符的余量
+                if used + ex_len <= available || selected.is_empty() {
+                    selected.push(example);
+                    used += ex_len;
+                } else {
+                    break;
+                }
             }
         }
 
@@ -230,7 +230,12 @@ impl FewShotPromptTemplate {
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
-                selector.select_examples(&input_map)
+                selector.select_examples_by_length(
+                    &input_map,
+                    &self.example_prompt,
+                    &self.prefix,
+                    &self.suffix,
+                )
             } else {
                 self.examples.iter().collect()
             };
@@ -250,15 +255,12 @@ impl FewShotPromptTemplate {
         let example_texts = example_texts?;
         let examples_str = example_texts.join(&self.example_separator);
 
-        // 格式化后缀（用户输入）
+        // 格式化后缀（用户输入）。
+        // 通过 PromptTemplate 校验，缺失变量直接报错，不再静默保留 `{var}` 原文。
         let suffix_formatted = if self.suffix.is_empty() {
             String::new()
         } else {
-            let mut suffix_result = self.suffix.clone();
-            for (key, value) in variables {
-                suffix_result = suffix_result.replace(&format!("{{{}}}", key), value);
-            }
-            suffix_result
+            PromptTemplate::new(self.suffix.clone()).format(variables)?
         };
 
         // 组合完整 prompt
@@ -348,6 +350,25 @@ mod tests {
     }
 
     #[test]
+    fn test_suffix_undeclared_variable_errors() {
+        // Q3：后缀中出现未声明的变量必须报错，而不是静默保留 `{answer}` 原文
+        let few_shot = FewShotPromptTemplate::new(
+            vec![],
+            PromptTemplate::new("{input} -> {output}"),
+            "Prefix",
+            "结果是: {answer}",
+            vec!["input".to_string()],
+        );
+
+        let mut vars = HashMap::new();
+        vars.insert("input", "x");
+
+        let result = few_shot.format(&vars);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("answer"));
+    }
+
+    #[test]
     fn test_few_shot_empty_examples() {
         let few_shot = FewShotPromptTemplate::new(
             vec![],
@@ -408,6 +429,20 @@ mod tests {
         let input_vars = HashMap::new();
         let selected = selector.select_examples(&input_vars);
         assert!(!selected.is_empty());
+    }
+
+    #[test]
+    fn test_length_based_selector_by_length_is_object_safe() {
+        let examples = vec![make_example("a", "1"), make_example("b", "2")];
+
+        // 通过 trait 对象调用：验证方法进入了 trait（Q2）
+        let selector: Box<dyn ExampleSelector> =
+            Box::new(LengthBasedExampleSelector::new(examples).with_max_length(100));
+
+        let input_vars = HashMap::new();
+        let example_prompt = PromptTemplate::new("{input}={output}");
+        let selected = selector.select_examples_by_length(&input_vars, &example_prompt, "", "");
+        assert_eq!(selected.len(), 2);
     }
 
     #[test]

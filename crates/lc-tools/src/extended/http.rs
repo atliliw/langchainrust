@@ -1,66 +1,13 @@
 //! HTTP tool with SSRF protection
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::ssrf::url_points_to_private_ip;
 use lc_core::tools::ToolError;
 use lc_core::BaseTool;
-
-/// Check if an IP address is private/internal (SSRF protection).
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            octets[0] == 127
-                || octets[0] == 10
-                || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
-                || (octets[0] == 192 && octets[1] == 168)
-                || (octets[0] == 169 && octets[1] == 254)
-                || *v4 == Ipv4Addr::UNSPECIFIED
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || matches!(v6.segments(), [0xfe80, ..])
-                || *v6 == Ipv6Addr::UNSPECIFIED
-        }
-    }
-}
-
-/// Resolve a URL hostname and check if it points to a private IP.
-async fn url_points_to_private_ip(url: &str) -> Result<bool, ToolError> {
-    let parsed =
-        url::Url::parse(url).map_err(|e| ToolError::InvalidInput(format!("Invalid URL: {}", e)))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| ToolError::InvalidInput("URL has no host".to_string()))?;
-
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(is_private_ip(&ip));
-    }
-
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let addr_str = format!("{}:{}", host, port);
-    let addrs: Vec<IpAddr> = tokio::net::lookup_host(&addr_str)
-        .await
-        .map_err(|e| {
-            ToolError::ExecutionFailed(format!("DNS resolution failed for {}: {}", host, e))
-        })?
-        .map(|sa: SocketAddr| sa.ip())
-        .collect();
-
-    if addrs.is_empty() {
-        return Err(ToolError::ExecutionFailed(format!(
-            "DNS resolution returned no addresses for {}",
-            host
-        )));
-    }
-
-    Ok(addrs.iter().any(is_private_ip))
-}
 
 /// HTTP request tool (GET/POST) with SSRF protection.
 pub struct HTTPTool {
@@ -178,6 +125,8 @@ impl BaseTool for HTTPTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssrf::is_private_ip;
+    use std::net::IpAddr;
 
     #[test]
     fn test_name_description() {

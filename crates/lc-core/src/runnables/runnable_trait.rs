@@ -60,29 +60,44 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
 
     /// Batch processing - transforms multiple inputs to outputs.
     ///
-    /// Default implementation processes inputs sequentially.
-    /// Override for concurrent execution or batch optimization.
+    /// Default implementation processes inputs concurrently with a bounded
+    /// concurrency: `config.max_concurrency` items run at once (defaults to
+    /// all inputs), and results are returned in input order regardless of
+    /// completion order (`buffered`, not `buffer_unordered`). Override for
+    /// provider-level batch optimization.
     ///
     /// # Arguments
     /// * `inputs` - Input vector.
     /// * `config` - Optional batch configuration.
     ///
     /// # Returns
-    /// Result vector.
+    /// Result vector, ordered as the inputs.
     async fn batch(
         &self,
         inputs: Vec<Input>,
         config: Option<RunnableConfig>,
     ) -> Result<Vec<Output>, Self::Error> {
-        let mut results = Vec::with_capacity(inputs.len());
+        use futures_util::StreamExt;
 
-        // Process each input sequentially
-        for input in inputs {
-            let result = self.invoke(input, config.clone()).await?;
-            results.push(result);
-        }
+        // Concurrency cap: `max_concurrency`, clamped to at least 1 so an
+        // explicit `Some(0)` (or an empty input list) cannot panic `buffered`.
+        let limit = config
+            .as_ref()
+            .and_then(|c| c.max_concurrency)
+            .unwrap_or(inputs.len())
+            .max(1);
 
-        Ok(results)
+        let results = futures_util::stream::iter(inputs)
+            .map(|input| {
+                let config = config.clone();
+                async move { self.invoke(input, config).await }
+            })
+            .buffered(limit)
+            .collect::<Vec<Result<_, _>>>()
+            .await;
+
+        // Short-circuit on the first error, preserving input order otherwise.
+        results.into_iter().collect()
     }
 
     /// Streaming output - for real-time responses (LLM, etc).
@@ -119,9 +134,12 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     /// pipeline streaming without buffering intermediate results.
     ///
     /// # Default Implementation
-    /// Buffers all input items, takes the last one (stream accumulation
-    /// semantics), and calls `invoke` on it. Components that support
-    /// true streaming (e.g. LLMs) should override this method.
+    /// Drives each input item through `stream` and concatenates the per-item
+    /// streams in order — the LangChain default `transform` semantics. A step
+    /// that overrides `stream` (e.g. an LLM) yields a real token stream per
+    /// item; a step using the default `stream` maps elementwise via `invoke`.
+    /// Components that want aggregation (e.g. incremental parsers) should
+    /// override this method.
     ///
     /// # Arguments
     /// * `input` - Input stream to transform.
@@ -136,22 +154,22 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error> {
         use futures_util::StreamExt;
 
-        // Default: buffer all input, take the last item, invoke on it
+        // Buffer the input items, then run each one through `stream` and
+        // concatenate the per-item streams (elementwise semantics).
         let mut items = Vec::new();
         let mut input = input;
         while let Some(item) = input.next().await {
             items.push(item?);
         }
 
-        // Use the last item (stream accumulation semantics)
-        if let Some(last) = items.into_iter().last() {
-            let result = self.invoke(last, config).await?;
-            Ok(Box::pin(futures_util::stream::once(
-                async move { Ok(result) },
-            )))
-        } else {
-            Ok(Box::pin(futures_util::stream::empty()))
+        let mut per_item_streams = Vec::with_capacity(items.len());
+        for item in items {
+            let stream = self.stream(item, config.clone()).await?;
+            per_item_streams.push(stream);
         }
+
+        let flattened = futures_util::stream::iter(per_item_streams).flatten();
+        Ok(Box::pin(flattened))
     }
 }
 
@@ -200,7 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_default_transform_buffers_and_invokes() {
+    async fn test_default_transform_maps_elementwise() {
         let runnable = TestRunnable;
         let input_stream = Box::pin(futures_util::stream::iter(vec![
             Ok("first".to_string()),
@@ -211,12 +229,19 @@ mod tests {
 
         let mut output_stream = runnable.transform(input_stream, None).await.unwrap();
 
-        // Default transform takes the last item and invokes on it
-        let result = output_stream.next().await.unwrap().unwrap();
-        assert_eq!(result, "processed: third");
-
-        // Stream should be exhausted
-        assert!(output_stream.next().await.is_none());
+        // Default transform maps each item through invoke (elementwise).
+        let mut results = Vec::new();
+        while let Some(item) = output_stream.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(
+            results,
+            vec![
+                "processed: first".to_string(),
+                "processed: second".to_string(),
+                "processed: third".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -231,5 +256,53 @@ mod tests {
 
         // Empty input → empty output
         assert!(output_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_default_batch_preserves_order() {
+        let runnable = TestRunnable;
+        let results = runnable
+            .batch(
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            results,
+            vec![
+                "processed: a".to_string(),
+                "processed: b".to_string(),
+                "processed: c".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_batch_respects_max_concurrency() {
+        let runnable = TestRunnable;
+        let config = RunnableConfig::new().with_max_concurrency(1);
+        let results = runnable
+            .batch(
+                vec!["x".to_string(), "y".to_string(), "z".to_string()],
+                Some(config),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            results,
+            vec![
+                "processed: x".to_string(),
+                "processed: y".to_string(),
+                "processed: z".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_batch_empty_input() {
+        let runnable = TestRunnable;
+        let results = runnable.batch(vec![], None).await.unwrap();
+        assert!(results.is_empty());
     }
 }

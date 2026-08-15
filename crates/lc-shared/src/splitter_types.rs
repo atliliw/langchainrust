@@ -20,7 +20,9 @@ pub trait TextSplitter: Send + Sync {
             .enumerate()
             .map(|(i, chunk)| {
                 let mut metadata = document.metadata.clone();
-                metadata.insert("chunk".to_string(), i.to_string());
+                // Only insert the chunk index when the user hasn't already
+                // provided a "chunk" key — never silently overwrite it.
+                metadata.entry("chunk".to_string()).or_insert(i.to_string());
 
                 Document {
                     content: chunk,
@@ -166,75 +168,25 @@ impl TextSplitter for RecursiveCharacterSplitter {
                     let prev = &overlapped[i - 1];
                     let chars: Vec<char> = prev.chars().collect();
                     let overlap_chars = chars.len().saturating_sub(self.chunk_overlap);
-                    let overlap: String = chars[overlap_chars..].iter().collect();
+                    let mut overlap: String = chars[overlap_chars..].iter().collect();
+
+                    // `chunk_size` is a hard cap: the prepended overlap counts
+                    // toward the quota, so trim the overlap from the back if
+                    // pushing it in would exceed `chunk_size`. This keeps
+                    // `chunk_size` a true upper bound on every emitted chunk.
+                    let budget = self.chunk_size.saturating_sub(chunk.chars().count());
+                    if overlap.chars().count() > budget {
+                        let ov_chars: Vec<char> = overlap.chars().collect();
+                        overlap = ov_chars[ov_chars.len().saturating_sub(budget)..]
+                            .iter()
+                            .collect();
+                    }
 
                     overlapped.push(format!("{}{}", overlap, chunk));
                 }
             }
 
             chunks = overlapped;
-        }
-
-        chunks
-    }
-}
-
-/// Simple character splitter
-#[allow(dead_code)]
-pub struct CharacterTextSplitter {
-    /// Chunk size
-    chunk_size: usize,
-
-    /// Chunk overlap
-    chunk_overlap: usize,
-
-    /// Separator
-    separator: String,
-}
-
-#[allow(dead_code)]
-impl CharacterTextSplitter {
-    /// Create a new character splitter
-    pub fn new(chunk_size: usize, chunk_overlap: usize, separator: &str) -> Self {
-        Self {
-            chunk_size,
-            chunk_overlap,
-            separator: separator.to_string(),
-        }
-    }
-}
-
-impl TextSplitter for CharacterTextSplitter {
-    fn split_text(&self, text: &str) -> Vec<String> {
-        let splits: Vec<&str> = text.split(&self.separator).collect();
-        let mut chunks = Vec::new();
-        let mut current = String::new();
-
-        for split in splits {
-            if current.chars().count() + split.chars().count() + self.separator.chars().count()
-                > self.chunk_size
-                && !current.is_empty()
-            {
-                chunks.push(current.clone());
-
-                // Add overlap — cut at character boundaries to avoid UTF-8 panic
-                if self.chunk_overlap > 0 {
-                    let chars: Vec<char> = current.chars().collect();
-                    let overlap_start = chars.len().saturating_sub(self.chunk_overlap);
-                    current = chars[overlap_start..].iter().collect();
-                } else {
-                    current.clear();
-                }
-            }
-
-            if !current.is_empty() {
-                current.push_str(&self.separator);
-            }
-            current.push_str(split);
-        }
-
-        if !current.is_empty() {
-            chunks.push(current);
         }
 
         chunks
@@ -253,8 +205,9 @@ mod tests {
         let chunks = splitter.split_text(text);
 
         assert!(!chunks.is_empty());
+        // chunk_size is a hard cap — even with overlap prepended
         for chunk in &chunks {
-            assert!(chunk.len() <= 60); // allow some margin
+            assert!(chunk.chars().count() <= 50);
         }
     }
 
@@ -276,13 +229,22 @@ mod tests {
     }
 
     #[test]
-    fn test_character_splitter() {
-        let splitter = CharacterTextSplitter::new(20, 5, " ");
+    fn test_split_document_preserves_user_chunk_key() {
+        let splitter = RecursiveCharacterSplitter::new(20, 5);
 
-        let text = "This is a test sentence with multiple words";
-        let chunks = splitter.split_text(text);
+        // User already numbered the chunks — split_document must not overwrite it
+        let doc = Document::new("This is a longer paragraph that gets split into several chunks.")
+            .with_metadata("chunk", "user-supplied");
+
+        let chunks = splitter.split_document(&doc);
 
         assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.metadata.get("chunk"),
+                Some(&"user-supplied".to_string())
+            );
+        }
     }
 
     #[test]

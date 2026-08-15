@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 
-use super::session::Session;
+use super::session::{Session, SessionStatus};
 use super::store::{SessionError, SessionStore};
 
 /// 内存 Session 存储(用于测试与单进程场景)
@@ -40,10 +40,13 @@ impl SessionStore for MemorySessionStore {
     }
 
     async fn update(&self, session: &Session) -> Result<(), SessionError> {
-        self.sessions
-            .lock()
-            .await
-            .insert(session.id.clone(), session.clone());
+        let mut sessions = self.sessions.lock().await;
+        // Q4: 更新必须作用于已存在的会话 —— 无条件 insert 会把 "会话不存在"
+        // 误当成 "覆盖成功"。更新不存在的会话应显式报 NotFound。
+        if !sessions.contains_key(&session.id) {
+            return Err(SessionError::NotFound(session.id.clone()));
+        }
+        sessions.insert(session.id.clone(), session.clone());
         Ok(())
     }
 
@@ -58,7 +61,7 @@ impl SessionStore for MemorySessionStore {
             .lock()
             .await
             .values()
-            .filter(|s| s.user_id.as_deref() == Some(user_id))
+            .filter(|s| s.user_id.as_deref() == Some(user_id) && s.status != SessionStatus::Deleted)
             .cloned()
             .collect())
     }
@@ -108,6 +111,32 @@ mod tests {
     async fn test_get_nonexistent() {
         let store = MemorySessionStore::new();
         assert!(store.get("nope").await.unwrap().is_none());
+    }
+
+    /// Q4: 更新不存在的会话必须报 NotFound,而不是静默地当 insert 成功。
+    #[tokio::test]
+    async fn test_update_nonexistent_errors() {
+        let store = MemorySessionStore::new();
+        let session = sample_session("s1", "u1");
+        let err = store.update(&session).await.unwrap_err();
+        assert!(matches!(err, SessionError::NotFound(id) if id == "s1"));
+    }
+
+    /// Q4: 软删除的会话不出现在 list_by_user 中,但记录仍可通过 get 取得(便于审计/恢复)。
+    #[tokio::test]
+    async fn test_deleted_session_hidden_from_list_but_kept_in_store() {
+        let store = MemorySessionStore::new();
+        store.create(sample_session("s1", "u1")).await.unwrap();
+
+        let mut s = store.get("s1").await.unwrap().unwrap();
+        s.delete();
+        store.update(&s).await.unwrap();
+
+        assert!(store.list_by_user("u1").await.unwrap().is_empty());
+        assert_eq!(
+            store.get("s1").await.unwrap().unwrap().status,
+            SessionStatus::Deleted
+        );
     }
 
     #[tokio::test]

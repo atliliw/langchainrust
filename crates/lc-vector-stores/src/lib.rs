@@ -124,6 +124,63 @@ pub trait VectorStore: Send + Sync {
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError>;
 
+    /// 返回该向量存储自带的文本嵌入器(若有)。
+    ///
+    /// Q1: 此前 trait 只接收 `query_embedding: &[f32]`,调用方必须自己嵌入查询
+    /// 文本,却没有契约告诉它"该用哪个嵌入器"。有了该 getter,内嵌嵌入器的实现
+    /// 可以直接用 [`similarity_search_text`](Self::similarity_search_text) 传文本;
+    /// 没有的返回 `None`,调用方会收到显式错误而不是静默地用错模型。
+    fn embed_query(&self) -> Option<&dyn Embeddings> {
+        None
+    }
+
+    /// 文本相似度检索:用 [`embed_query`](Self::embed_query) 返回的嵌入器把
+    /// `query` 向量化后再检索。
+    ///
+    /// 未配置嵌入器时返回 [`VectorStoreError::EmbeddingError`],提示改用
+    /// [`similarity_search`](Self::similarity_search) 直接传入查询向量。
+    async fn similarity_search_text(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let Some(embeddings) = self.embed_query() else {
+            return Err(VectorStoreError::EmbeddingError(
+                "该向量存储未配置嵌入器,无法自动向量化查询文本;请改用 similarity_search 直接传入查询向量"
+                    .to_string(),
+            ));
+        };
+        let query_embedding = embeddings
+            .embed_query(query)
+            .await
+            .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
+        self.similarity_search(&query_embedding, k).await
+    }
+
+    /// 带最低分数阈值的相似度检索。
+    ///
+    /// - `min_score: None` —— 不过滤,返回全库 top-k(即使分数为负)。
+    /// - `min_score: Some(t)` —— 只返回 `score >= t` 的结果,最多 `k` 条。
+    ///
+    /// Q2: 默认实现基于 [`similarity_search`](Self::similarity_search) 的结果做二次过滤
+    /// (对检索期无法直接按阈值过滤的后端是最佳近似)。本地计算相似度的实现应覆盖此
+    /// 方法,以获得"先过滤再取 top-k"的精确语义。
+    async fn similarity_search_with_min_score(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        min_score: Option<f32>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let results = self.similarity_search(query_embedding, k).await?;
+        match min_score {
+            Some(threshold) => Ok(results
+                .into_iter()
+                .filter(|r| r.score >= threshold)
+                .collect()),
+            None => Ok(results),
+        }
+    }
+
     /// Gets document by ID.
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError>;
 

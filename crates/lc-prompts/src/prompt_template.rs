@@ -1,17 +1,17 @@
 // crates/lc-prompts/src/prompt_template.rs
 //! 简单字符串模板
 
-use regex::Regex;
+use crate::template_parser::{
+    format_template, parse_template, template_variables, TemplateSegment,
+};
 use std::collections::HashMap;
-use std::sync::LazyLock;
-
-static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(\w+)\}").unwrap());
 
 /// 提示词模板
 ///
-/// 使用 `{variable}` 格式的模板，支持变量替换。
+/// 使用 `{variable}` 格式的模板，支持变量替换；`{{` 与 `}}` 可转义字面花括号。
 pub struct PromptTemplate {
     template: String,
+    segments: Vec<TemplateSegment>,
 }
 
 impl PromptTemplate {
@@ -29,9 +29,9 @@ impl PromptTemplate {
     /// let result = template.format(&vars).unwrap();
     /// ```
     pub fn new(template: impl Into<String>) -> Self {
-        Self {
-            template: template.into(),
-        }
+        let template = template.into();
+        let segments = parse_template(&template);
+        Self { template, segments }
     }
 
     /// 格式化模板，替换所有变量
@@ -45,29 +45,7 @@ impl PromptTemplate {
     /// # 错误
     /// 如果模板中有变量但 `variables` 中没有提供对应的值，返回错误
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<String, String> {
-        let mut result = String::with_capacity(self.template.len());
-        let mut last_end = 0;
-
-        for cap in VARIABLE_RE.captures_iter(&self.template) {
-            let var_match = cap.get(0).unwrap();
-            let var_name = cap.get(1).unwrap().as_str();
-
-            // Push text before this variable
-            result.push_str(&self.template[last_end..var_match.start()]);
-
-            if let Some(value) = variables.get(var_name) {
-                result.push_str(value);
-            } else {
-                return Err(format!("Missing variable: {}", var_name));
-            }
-
-            last_end = var_match.end();
-        }
-
-        // Push remaining text after the last variable
-        result.push_str(&self.template[last_end..]);
-
-        Ok(result)
+        format_template(&self.template, &self.segments, variables)
     }
 
     /// 获取模板中需要的所有变量名
@@ -75,10 +53,7 @@ impl PromptTemplate {
     /// # 返回
     /// 变量名列表
     pub fn variables(&self) -> Vec<String> {
-        VARIABLE_RE
-            .captures_iter(&self.template)
-            .map(|cap| cap.get(1).unwrap().as_str().to_string())
-            .collect()
+        template_variables(&self.segments)
     }
 
     /// 获取原始模板字符串
@@ -135,5 +110,25 @@ mod tests {
         let template = PromptTemplate::new("{a}, {b}, {c}");
         let vars = template.variables();
         assert_eq!(vars, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_escaped_braces() {
+        let template = PromptTemplate::new("{{literal}} {name} }}");
+        let mut vars = HashMap::new();
+        vars.insert("name", "N");
+
+        let result = template.format(&vars).unwrap();
+        assert_eq!(result, "{literal} N }");
+    }
+
+    #[test]
+    fn test_cjk_variable_name() {
+        let template = PromptTemplate::new("你好，{姓名}！");
+        let mut vars = HashMap::new();
+        vars.insert("姓名", "小明");
+
+        let result = template.format(&vars).unwrap();
+        assert_eq!(result, "你好，小明！");
     }
 }

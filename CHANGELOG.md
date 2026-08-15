@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-08-14
+
+### Added
+- **True streaming in `RunnableSequence`** (`lc-core`): `stream` / `transform` now send a single input through the first step via `stream_any` and each later step via a real `transform` forward-path — LLM-backed chains emit tokens incrementally instead of degrading to `invoke`; LLM steps implement streaming `transform` (prompt-in → token-stream-out)
+- **True concurrency in `Runnable::batch`** (`lc-core`): default `batch` maps inputs with `buffered(limit)`, honoring `config.max_concurrency` (order-preserving, bounded concurrency) instead of serial `for` loops
+- **Shared SSRF guard** (`lc-tools`): a single `ssrf` module (private-IP detection + URL check) is now used by both `url_fetch` and `extended::http` — one implementation, no duplication
+- **`URLFetchInput::include_headers` implemented**: response headers are merged into the fetch output when enabled (previously a dead field)
+- **`select_examples_by_length` on a trait** (`lc-prompts`): FewShot example-length selection exposed as a trait method with a default implementation
+- **Multi-provider `from_env`** (`lc-providers`): Azure / DeepSeek / Qwen / Moonshot / Zhipu / Cohere / Gemini environment-variable detection
+- **`VectorStore::embed_query`** (`lc-vector-stores`): default returns `None` (no auto-embedding); similarity search falls back to embedding the query when a value is provided
+- **`json_repair` module** (`lc-shared`): tolerant-JSON repair moved down from `lc-core` and reused by `ToolCall::parse_arguments` and `parse_llm_json`, adding an unescaped-quote repair step
+- **`RunnableConfig` `temperature` / `max_tokens` fields**: per-client overrides flow into provider request bodies
+
+### Changed
+- **Workspace version**: All 21 crates bumped from 0.13.0 to 0.14.0
+- **`MessageType::type_str` returns `String`** and includes the tool_call_id (`tool:{id}`) for tool messages
+- **`count_tokens` returns `Result<usize, _>`** instead of panicking (`expect`) when the global encoder is missing
+- **LLM cache is a true LRU**: hits refresh `cached_at`, eviction keeps `min_by_key(cached_at)` (no more FIFO-impersonating-LRU)
+- **`RunnableConfig::merge` semantics**: `tags` deduplicated preserving insertion order; `callbacks` merged (handlers appended) rather than wholesale-overwritten
+- **`bind_tools` honored** through `ChatModelWrapper` / `LLMClient` (no longer silently swallowed); `with_temperature` / `with_max_tokens` take effect via per-client overrides
+- **Callback dispatch unified**: providers route through `CallbackManager::dispatch_*` instead of touching handlers directly; a generic combo handler keeps default delegation
+- **OpenTelemetry span parenting**: child spans derive from the parent span context; backend `end_span` removes by run_id
+- **Qdrant without the `qdrant-integration` feature errors** instead of silently degrading
+- **FewShot format validates variables**: undeclared `{var}` placeholders in the suffix error out instead of staying as literal text
+- **`extract_unique_links` truly deduplicates** (insertion order preserved); content length now reports the actual body length
+- **SQLTool executes parameterized statements** (positional `?N` bindings) instead of raw string interpolation
+- **PythonREPL blacklist hardened**: detects `__import__` / `eval` / `exec` / `execfile` / `compile` builtin calls; error text clarifies the blacklist is a noise filter, not a security boundary
+- **Shared `MediaContent` struct** (`lc-schema`): Image / Audio / File multimodal types reuse a common url+mime_type structure
+- **PromptTemplate placeholder caching**: placeholders parsed once at construction into `(Range, name)`; `format` no longer re-scans the template
+- **`CharacterTextSplitter` dead code removed**; `chunk_size` is now a hard cap (overlap counts toward the quota); the auto `chunk` metadata key no longer overwrites an existing user key
+- **`SearchResult` is serializable** (`Serialize` / `Deserialize`)
+- **StdOutHandler respects `verbose`** on `on_run_error`; LangSmith dead state and unused batch-ingest methods removed
+
+### Fixed
+- **Recursion limit off-by-one** (`lc-langgraph`): a graph that uses exactly `limit` steps no longer misreports `RecursionLimitReached`; `FanOut` branches share the main-path step budget
+- **Session concurrency** (`lc-sessions`): per-session striped locks around `chat` / `clear` / `archive` (no more get→modify→llm→update races); `Deleted` dead status removed; LLM errors mapped to a dedicated `SessionError::Llm`
+- **`has_tool_calls`** no longer panics on a `None` tool_calls list
+- **Reasoning content** (`lc-providers`): empty `content` no longer silently falls back to `reasoning_content` (thinking stays in `thinking_content`)
+- **`stream_chat` request** now actually sends `stream=true` instead of carrying a dead config field
+- **Vector-store `delete_by_metadata` / `count`** return real values instead of hard-coded placeholders; `std::sync::RwLock` + `unwrap` replaced with `tokio::sync::RwLock` + `?`
+- **`parse_with_retry` actually retries** instead of discarding the retry parameters
+- **Vector-store score filtering** uses a configurable threshold instead of a hard `score > 0`
+- **Wasm / E2B sandbox shells removed** (`lc-tools`): the feature-gated backends always returned `NotImplemented` and are deleted (with their feature flags) rather than promising unsupported backends
+- **`fetch_url` header test** accounts for reqwest lowercase-normalizing response header names
+
 ## [0.13.0] - 2026-08-13
 
 ### Added

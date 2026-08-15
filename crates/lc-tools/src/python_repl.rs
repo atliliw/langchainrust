@@ -7,8 +7,13 @@
 //! # 安全警告
 //! 此工具默认**禁用**，必须调用 `with_dangerously_allow(true)` 显式启用。
 //! 启用后会执行任意 Python 代码，仅应在受控/沙箱环境中使用。
+//!
+//! 内置的"危险 import 黑名单"只是**噪音过滤，不是安全边界**——它挡不住
+//! `__import__`/`eval`/`exec`/字符串拼接等编码混淆，也会误伤字符串字面量。
+//! 真正的隔离必须走沙箱（[`crate::sandbox`]），黑名单只用于减少误入沙箱的噪音。
 
 use async_trait::async_trait;
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -62,14 +67,44 @@ const BLOCKED_IMPORTS: &[&str] = &[
     "antigravity",
 ];
 
-/// Check if Python code contains dangerous imports.
-fn contains_dangerous_import(code: &str) -> Option<String> {
+/// 常见绕过 import 黑名单的危险内建调用（单词边界 + 函数调用形式）。
+const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
+    "__import__",
+    "import_module",
+    "eval",
+    "exec",
+    "execfile",
+    "compile",
+];
+
+/// 匹配 `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(` 等危险调用。
+///
+/// `\b` 保证不会误伤 `evaluate(` / `execute(` / `length(` 这类含子串的普通词；
+/// 但仍会误伤字符串字面量里的 `"eval(...)"` 字样——这是字符串级拦截的固有局限，
+/// 详见 [`contains_dangerous_code`] 的安全定位说明。
+static DANGEROUS_CALL_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(&format!(
+        r"\b(?:{})\s*\(",
+        DANGEROUS_BUILTIN_CALLS.join("|")
+    ))
+    .unwrap()
+});
+
+/// Check if Python code contains dangerous imports or builtin calls.
+///
+/// **安全定位**：这是噪音过滤层，**不是安全边界**。逐行子串/正则匹配永远可以被
+/// unicode 混淆、`"o"+"s"` 拼接、`().__class__` 反射等绕过，也会误伤字符串字面量。
+/// 不可信代码必须走沙箱（[`crate::sandbox`]）。
+fn contains_dangerous_code(code: &str) -> Option<String> {
     for line in code.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
             continue;
         }
+        // 去掉行内注释（# 之后的部分），避免注释内容误伤。
         let code_part = trimmed.split('#').next().unwrap_or(trimmed);
+
+        // 1) 危险 import 检查（BLOCKED_IMPORTS）
         if code_part.contains("import") {
             for blocked in BLOCKED_IMPORTS {
                 if code_part.contains(&format!("import {}", blocked))
@@ -80,6 +115,11 @@ fn contains_dangerous_import(code: &str) -> Option<String> {
                     return Some(blocked.to_string());
                 }
             }
+        }
+
+        // 2) 危险内建调用检查（__import__ / import_module / eval / exec / compile 等常见绕过）
+        if let Some(call) = DANGEROUS_CALL_REGEX.find(code_part) {
+            return Some(call.as_str().to_string());
         }
     }
     None
@@ -173,10 +213,11 @@ impl Tool for PythonREPLTool {
         }
 
         if self.check_dangerous_imports {
-            if let Some(blocked) = contains_dangerous_import(&input.code) {
+            if let Some(blocked) = contains_dangerous_code(&input.code) {
                 return Err(ToolError::ExecutionFailed(format!(
-                    "Code contains dangerous import: '{}'. \
-                     This module is blocked for security. \
+                    "Code contains dangerous import or builtin call: '{}'. \
+                     Blocked by the noise-filter blacklist (note: this is not a security boundary; \
+                     untrusted code must run in a sandbox). \
                      Call .with_skip_dangerous_imports_check(true) to bypass (not recommended).",
                     blocked
                 )));
@@ -328,16 +369,36 @@ mod tests {
 
     #[test]
     fn test_dangerous_import_detection() {
-        assert!(contains_dangerous_import("import os").is_some());
-        assert!(contains_dangerous_import("import subprocess").is_some());
-        assert!(contains_dangerous_import("from sys import path").is_some());
-        assert!(contains_dangerous_import("from os.path import join").is_some());
+        assert!(contains_dangerous_code("import os").is_some());
+        assert!(contains_dangerous_code("import subprocess").is_some());
+        assert!(contains_dangerous_code("from sys import path").is_some());
+        assert!(contains_dangerous_code("from os.path import join").is_some());
         // Safe imports should pass
-        assert!(contains_dangerous_import("import math").is_none());
-        assert!(contains_dangerous_import("import json").is_none());
-        assert!(contains_dangerous_import("from datetime import datetime").is_none());
+        assert!(contains_dangerous_code("import math").is_none());
+        assert!(contains_dangerous_code("import json").is_none());
+        assert!(contains_dangerous_code("from datetime import datetime").is_none());
         // Comments should be ignored
-        assert!(contains_dangerous_import("# import os").is_none());
+        assert!(contains_dangerous_code("# import os").is_none());
+    }
+
+    #[test]
+    fn test_dangerous_builtin_calls_detected() {
+        // 常见绕过：不经过 import 语句，直接调用内建/导入函数
+        assert!(contains_dangerous_code("__import__('os').system('ls')").is_some());
+        assert!(contains_dangerous_code("importlib.import_module('os')").is_some());
+        assert!(contains_dangerous_code("eval('os')").is_some());
+        assert!(contains_dangerous_code("exec('import os')").is_some());
+        assert!(contains_dangerous_code("compile('import os', '<x>', 'exec')").is_some());
+        assert!(contains_dangerous_code("execfile('/tmp/x.py')").is_some());
+    }
+
+    #[test]
+    fn test_dangerous_builtin_calls_no_false_positive_on_words() {
+        // 单词边界：不误伤 evaluate / execute / length 等含子串的普通词
+        assert!(contains_dangerous_code("print('evaluate the result')").is_none());
+        assert!(contains_dangerous_code("result = execute_query()").is_none());
+        assert!(contains_dangerous_code("print(len([1, 2, 3]))").is_none());
+        assert!(contains_dangerous_code("x = len('hello')").is_none());
     }
 
     #[tokio::test]

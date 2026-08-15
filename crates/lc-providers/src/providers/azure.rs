@@ -435,7 +435,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for AzureOpenAIChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text)
+        lc_core::token_counter::count_tokens(text).unwrap_or(0)
     }
 
     fn temperature(&self) -> Option<f32> {
@@ -476,10 +476,17 @@ impl Runnable<Vec<Message>, LLMResult> for AzureOpenAIChat {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
         use futures_util::StreamExt;
-        let _ = config; // Reserved for future use (e.g., stop conditions, metadata)
 
         let model = self.config.effective_model().to_string();
-        let token_stream = self.stream_chat_internal(input).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        let token_stream = effective.stream_chat_internal(input).await?;
 
         let stream = token_stream.map(move |token_result| match token_result {
             Ok(token) => Ok(LLMResult {
@@ -534,7 +541,15 @@ impl BaseChatModel for AzureOpenAIChat {
             }
         }
 
-        let result = self.chat_internal(messages.clone()).await;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        let result = effective.chat_internal(messages.clone()).await;
 
         match result {
             Ok(response) => {
@@ -599,7 +614,15 @@ impl BaseChatModel for AzureOpenAIChat {
             }
         }
 
-        let stream = self.stream_chat_internal(messages).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
         let stream = stream.then(move |token_result| {

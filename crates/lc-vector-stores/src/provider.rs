@@ -65,10 +65,11 @@ impl VectorStoreProvider {
 
         #[cfg(not(feature = "qdrant-integration"))]
         {
-            let _ = (url, collection);
-            eprintln!("Warning: Qdrant requested but feature 'qdrant-integration' not enabled. Falling back to InMemory store.");
-            use crate::InMemoryVectorStore;
-            Ok(Arc::new(InMemoryVectorStore::new()))
+            // Q3: 未启用 feature 时显式报错,拒绝静默降级到内存存储 ——
+            // 生产代码若以为在写 Qdrant 实际写进内存,进程重启数据即丢。
+            Err(VectorStoreError::ConnectionError(format!(
+                "Qdrant 存储需要启用 'qdrant-integration' feature (url={url}, collection={collection});拒绝静默降级为 InMemory,请在 Cargo.toml 开启该 feature"
+            )))
         }
     }
 }
@@ -137,11 +138,12 @@ mod tests {
         assert!(store.is_ok());
     }
 
+    #[cfg(not(feature = "qdrant-integration"))]
     #[tokio::test]
-    async fn test_builder_qdrant_fallback() {
-        // 没有 feature 时，应该回退到内存存储
+    async fn test_builder_qdrant_errors_when_feature_disabled() {
+        // Q3: 未启用 feature 时必须显式报错,不能静默降级到内存存储。
         let builder = VectorStoreBuilder::qdrant("http://localhost:6334", "test_collection");
         let store = builder.build().await;
-        assert!(store.is_ok());
+        assert!(store.is_err());
     }
 }

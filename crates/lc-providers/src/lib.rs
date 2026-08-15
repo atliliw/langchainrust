@@ -12,6 +12,7 @@
 //! - Gemini (Google)
 
 mod error;
+mod sampling;
 mod wrapper;
 
 /// LLMClient — zero-config unified entry point.

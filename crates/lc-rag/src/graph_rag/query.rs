@@ -326,7 +326,7 @@ fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String
             let mut used_tokens = 0usize;
 
             for summary in summaries {
-                let summary_tokens = count_tokens(summary);
+                let summary_tokens = count_tokens(summary).unwrap_or(0);
                 if used_tokens + summary_tokens > budget {
                     break;
                 }
@@ -356,7 +356,7 @@ fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String
 fn truncate_prompt(prompt: &str, max_tokens: Option<usize>) -> String {
     match max_tokens {
         Some(budget) => {
-            let current_tokens = count_tokens(prompt);
+            let current_tokens = count_tokens(prompt).unwrap_or(0);
             if current_tokens <= budget {
                 return prompt.to_string();
             }

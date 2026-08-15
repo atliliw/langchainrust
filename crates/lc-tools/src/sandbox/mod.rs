@@ -7,25 +7,15 @@
 //!
 //! # Backends
 //!
-//! - **[`LocalSandbox`]**: Default backend using subprocess with timeout.
-//! - **`E2BSandbox`**: Cloud sandbox via E2B (behind `sandbox-e2b` feature gate).
-//! - **`WasmSandbox`**: WASM-based sandbox (behind `sandbox-wasm` feature gate).
+//! - **[`LocalSandbox`]**: 当前唯一后端,子进程 + 超时。
+//!
+//! > 曾有的 `WasmSandbox` / `E2BSandbox` 是"接口齐全但实现恒 not implemented"的空壳
+//! > (评审 Q2),已连同 `sandbox-wasm` / `sandbox-e2b` feature 一起删除——承诺了但做不到
+//! > 的后端最伤信任,等真正实现了再放出来。
 
 mod local;
 
-#[cfg(feature = "sandbox-e2b")]
-mod e2b;
-
-#[cfg(feature = "sandbox-wasm")]
-mod wasm;
-
 pub use local::LocalSandbox;
-
-#[cfg(feature = "sandbox-e2b")]
-pub use e2b::E2BSandbox;
-
-#[cfg(feature = "sandbox-wasm")]
-pub use wasm::WasmSandbox;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

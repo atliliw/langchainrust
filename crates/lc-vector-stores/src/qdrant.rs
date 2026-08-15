@@ -124,12 +124,35 @@ impl QdrantVectorStore {
     ) -> Result<usize, VectorStoreError> {
         let filter = Filter::must([Condition::matches(key, value.to_string())]);
 
-        self.client
-            .delete_points(DeletePointsBuilder::new(&self.config.collection_name).points(filter))
+        // Q4: 先按 metadata 过滤统计匹配点,再删除,返回真实删除数。
+        // 旧实现删完直接 Ok(0) —— 无论删除是否生效,上层都误以为"没删任何数据"。
+        let total = self.count().await as u64;
+        let matched = self
+            .client
+            .query(
+                QueryPointsBuilder::new(&self.config.collection_name)
+                    .query(vec![0.0; self.config.vector_size])
+                    .filter(filter.clone())
+                    .limit(total.max(1))
+                    .with_payload(false),
+            )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("按metadata删除失败: {}", e)))?;
+            .map_err(|e| VectorStoreError::StorageError(format!("按metadata统计失败: {}", e)))?;
 
-        Ok(0)
+        let deleted = matched.result.len();
+
+        if deleted > 0 {
+            self.client
+                .delete_points(
+                    DeletePointsBuilder::new(&self.config.collection_name).points(filter),
+                )
+                .await
+                .map_err(|e| {
+                    VectorStoreError::StorageError(format!("按metadata删除失败: {}", e))
+                })?;
+        }
+
+        Ok(deleted)
     }
 }
 

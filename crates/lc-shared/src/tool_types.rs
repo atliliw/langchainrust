@@ -5,6 +5,7 @@
 //! and `lc-core` (tool definitions), so they live here to break the
 //! circular dependency between schema and core.
 
+use crate::json_repair::{parse_tolerant_json, JsonRepairError};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// Tool call from LLM response
@@ -50,9 +51,13 @@ impl ToolCall {
         &self.function.arguments
     }
 
-    /// Parse arguments as JSON
-    pub fn parse_arguments<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
-        serde_json::from_str(&self.function.arguments)
+    /// Parse arguments as JSON.
+    ///
+    /// Arguments come from LLM output, so a tolerant parser is used — code
+    /// fences, trailing commas, unescaped quotes and trailing garbage are
+    /// repaired before deserialization (see [`crate::json_repair`]).
+    pub fn parse_arguments<T: DeserializeOwned>(&self) -> Result<T, JsonRepairError> {
+        parse_tolerant_json(&self.function.arguments)
     }
 }
 
@@ -109,6 +114,20 @@ mod tests {
 
         let args: HashMap<String, String> = call.parse_arguments().unwrap();
         assert_eq!(args.get("expression").unwrap(), "2 + 3");
+    }
+
+    #[test]
+    fn test_parse_arguments_tolerates_messy_llm_json() {
+        // LLM-generated arguments with trailing comma + trailing garbage
+        let call = ToolCall::new(
+            "call_456",
+            "weather",
+            r#"{"city": "beijing", "unit": "celsius",} plus extra text"#,
+        );
+
+        let args: HashMap<String, String> = call.parse_arguments().unwrap();
+        assert_eq!(args.get("city").unwrap(), "beijing");
+        assert_eq!(args.get("unit").unwrap(), "celsius");
     }
 
     #[test]

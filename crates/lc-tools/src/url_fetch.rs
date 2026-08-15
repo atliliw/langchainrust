@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 
+use crate::ssrf::url_points_to_private_ip;
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
 static SCRIPT_REGEX: std::sync::LazyLock<Regex> =
@@ -43,57 +43,22 @@ static KW_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         .unwrap()
 });
 
-/// Check if an IP address is private/internal (SSRF protection).
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            octets[0] == 127
-                || octets[0] == 10
-                || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
-                || (octets[0] == 192 && octets[1] == 168)
-                || (octets[0] == 169 && octets[1] == 254)
-                || *v4 == std::net::Ipv4Addr::UNSPECIFIED
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || matches!(v6.segments(), [0xfe80, ..])
-                || *v6 == std::net::Ipv6Addr::UNSPECIFIED
-        }
-    }
-}
-
-/// Resolve a URL hostname and check if it points to a private IP (async).
-async fn url_points_to_private_ip(url: &str) -> Result<bool, ToolError> {
-    let parsed =
-        url::Url::parse(url).map_err(|e| ToolError::InvalidInput(format!("Invalid URL: {}", e)))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| ToolError::InvalidInput("URL has no host".to_string()))?;
-
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(is_private_ip(&ip));
-    }
-
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let addr_str = format!("{}:{}", host, port);
-    let addrs: Vec<IpAddr> = tokio::net::lookup_host(&addr_str)
-        .await
-        .map_err(|e| {
-            ToolError::ExecutionFailed(format!("DNS resolution failed for {}: {}", host, e))
-        })?
-        .map(|sa| sa.ip())
+/// 从 HTML 中提取链接并去重(保留首次出现顺序)。
+///
+/// 返回 `(去重后的链接, 原始条数)`。原始条数用于 details 展示"去重前后对比"。
+/// Q4: 旧实现只给 Vec 换了个名 `unique_links`,并没有真正去重。
+fn extract_unique_links(html: &str) -> (Vec<String>, usize) {
+    let raw: Vec<String> = LINK_REGEX
+        .captures_iter(html)
+        .map(|cap| cap[1].to_string())
         .collect();
-
-    if addrs.is_empty() {
-        return Err(ToolError::ExecutionFailed(format!(
-            "DNS resolution returned no addresses for {}",
-            host
-        )));
-    }
-
-    Ok(addrs.iter().any(is_private_ip))
+    let raw_count = raw.len();
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<String> = raw
+        .into_iter()
+        .filter(|link| seen.insert(link.clone()))
+        .collect();
+    (unique, raw_count)
 }
 
 /// URLFetch 工具输入
@@ -177,6 +142,7 @@ impl URLFetchTool {
         &self,
         url: &str,
         max_length: Option<usize>,
+        include_headers: Option<bool>,
     ) -> Result<URLFetchOutput, ToolError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(ToolError::InvalidInput(
@@ -202,6 +168,25 @@ impl URLFetchTool {
             )));
         }
 
+        // Q3: include_headers = Some(true) 时,把响应头并入输出(details),不再静默忽略。
+        // 头必须在消费 response 前读出(reqwest 的 headers() 借用、text() 消费)。
+        let header_block: String = if include_headers.unwrap_or(false) {
+            let mut lines: Vec<String> = response
+                .headers()
+                .iter()
+                .map(|(name, value)| format!("{}: {}", name, value.to_str().unwrap_or("<非UTF-8>")))
+                .collect();
+            lines.sort();
+            let mut block = String::from("响应头:\n");
+            for line in lines {
+                block.push_str(&line);
+                block.push('\n');
+            }
+            block
+        } else {
+            String::new()
+        };
+
         let content = response
             .text()
             .await
@@ -216,23 +201,29 @@ impl URLFetchTool {
             content
         };
 
+        let mut details = format!(
+            "状态码: {}, 内容长度: {} 字节{}",
+            status.as_u16(),
+            content_len,
+            if truncated { " (已截断)" } else { "" }
+        );
+        if !header_block.is_empty() {
+            details.push('\n');
+            details.push_str(&header_block);
+        }
+
         Ok(URLFetchOutput {
             result,
             operation: "fetch".to_string(),
             url: url.to_string(),
             content_length: content_len,
-            details: Some(format!(
-                "状态码: {}, 内容长度: {} 字节{}",
-                status.as_u16(),
-                content_len,
-                if truncated { " (已截断)" } else { "" }
-            )),
+            details: Some(details),
         })
     }
 
     /// 提取纯文本内容
     async fn extract_text(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
-        let fetch_result = self.fetch_url(url, Some(100000)).await?;
+        let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
 
         let html = SCRIPT_REGEX.replace_all(html, "");
@@ -259,31 +250,30 @@ impl URLFetchTool {
         })
     }
 
-    /// 提取链接
+    /// 提取链接(去重,保留首次出现顺序)
     async fn extract_links(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
-        let fetch_result = self.fetch_url(url, Some(100000)).await?;
+        let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
 
-        let links: Vec<String> = LINK_REGEX
-            .captures_iter(html)
-            .map(|cap| cap[1].to_string())
-            .collect();
-
-        let unique_links: Vec<String> = links.into_iter().collect();
+        let (unique_links, raw_count) = extract_unique_links(html);
         let result = unique_links.join("\n");
 
         Ok(URLFetchOutput {
             result,
             operation: "extract_links".to_string(),
             url: url.to_string(),
-            content_length: unique_links.len(),
-            details: Some(format!("找到 {} 个链接", unique_links.len())),
+            content_length: html.len(), // Q4: 真实正文长度,而非链接条数
+            details: Some(format!(
+                "找到 {} 个唯一链接(原始 {} 个)",
+                unique_links.len(),
+                raw_count
+            )),
         })
     }
 
     /// 提取图片链接
     async fn extract_images(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
-        let fetch_result = self.fetch_url(url, Some(100000)).await?;
+        let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
 
         let images: Vec<String> = IMG_REGEX
@@ -304,7 +294,7 @@ impl URLFetchTool {
 
     /// 提取元数据
     async fn extract_metadata(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
-        let fetch_result = self.fetch_url(url, Some(50000)).await?;
+        let fetch_result = self.fetch_url(url, Some(50000), None).await?;
         let html = &fetch_result.result;
 
         let title = TITLE_REGEX
@@ -350,7 +340,10 @@ impl Tool for URLFetchTool {
 
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
         match input.operation.as_str() {
-            "fetch" => self.fetch_url(&input.url, input.max_length).await,
+            "fetch" => {
+                self.fetch_url(&input.url, input.max_length, input.include_headers)
+                    .await
+            }
             "extract_text" => self.extract_text(&input.url).await,
             "extract_links" => self.extract_links(&input.url).await,
             "extract_images" => self.extract_images(&input.url).await,
@@ -438,6 +431,125 @@ mod tests {
         let result = tool.invoke(input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("http://"));
+    }
+
+    /// Q4: extract_links 真正去重且保留首次出现顺序;content_length 是正文长度。
+    #[test]
+    fn test_extract_unique_links_dedups() {
+        let html = r#"
+            <a href="https://a.com/1">first</a>
+            <a href="https://a.com/1">dup</a>
+            <a href="https://a.com/2">second</a>
+            <a href="https://a.com/1">dup2</a>
+        "#;
+        let (unique, raw) = extract_unique_links(html);
+        assert_eq!(raw, 4, "原始链接数应为 4");
+        assert_eq!(
+            unique,
+            vec!["https://a.com/1".to_string(), "https://a.com/2".to_string()],
+            "应去重且保持首次出现顺序"
+        );
+    }
+
+    /// Q1: SSRF 抽取公共模块后,URLFetch 默认仍拦截内网地址。
+    #[tokio::test]
+    async fn test_url_fetch_blocks_localhost_by_default() {
+        let tool = URLFetchTool::new();
+        let input = URLFetchInput {
+            operation: "fetch".to_string(),
+            url: "http://127.0.0.1:6379/".to_string(),
+            include_headers: None,
+            max_length: None,
+        };
+        let result = tool.invoke(input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("SSRF"), "expected SSRF error, got: {}", err);
+    }
+
+    /// Q3: include_headers = Some(true) 时,响应头并入输出(details)。
+    #[tokio::test]
+    async fn test_fetch_include_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let body = "hello world";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nX-Test-Header: hello\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            drop(socket);
+        });
+
+        let tool = URLFetchTool::new().with_allow_private_ips(true);
+        let input = URLFetchInput {
+            operation: "fetch".to_string(),
+            url: format!("http://{}/", addr),
+            include_headers: Some(true),
+            max_length: None,
+        };
+
+        let output = tool.invoke(input).await.unwrap();
+        let details = output.details.unwrap();
+        assert!(details.contains("响应头:"), "details: {}", details);
+        // reqwest 会把响应头名规范化为小写（HTTP 头名不区分大小写）
+        assert!(
+            details.contains("x-test-header: hello"),
+            "details: {}",
+            details
+        );
+        assert!(output.result.contains("hello world"));
+        server.await.unwrap();
+    }
+
+    /// Q3: include_headers = false/None 时不返回响应头。
+    #[tokio::test]
+    async fn test_fetch_without_include_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let body = "hello world";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Test-Header: hello\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            drop(socket);
+        });
+
+        let tool = URLFetchTool::new().with_allow_private_ips(true);
+        let input = URLFetchInput {
+            operation: "fetch".to_string(),
+            url: format!("http://{}/", addr),
+            include_headers: Some(false),
+            max_length: None,
+        };
+
+        let output = tool.invoke(input).await.unwrap();
+        let details = output.details.unwrap();
+        assert!(
+            !details.contains("X-Test-Header"),
+            "不应包含响应头, got: {}",
+            details
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]

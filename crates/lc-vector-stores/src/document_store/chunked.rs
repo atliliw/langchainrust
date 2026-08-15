@@ -14,7 +14,27 @@ use uuid::Uuid;
 // InMemoryChunkedDocumentStore（内存实现）
 // ============================================================================
 
-/// 内存存储实现（开发/测试用）
+/// 将 std 锁中毒 (poisoned) 转换为 [`VectorStoreError::StorageError`],而不是 unwrap panic。
+///
+/// Q5: std::sync::RwLock 在持有者 panic 后会被"中毒",之后所有 read/write 都返回 Err;
+/// 旧代码 `.read().unwrap()`/`.write().unwrap()` 会在中毒后直接 panic。这里显式
+/// 转换为 StorageError 向上传播。
+pub(crate) fn lock_error<T>(
+    result: Result<T, std::sync::PoisonError<T>>,
+) -> Result<T, VectorStoreError> {
+    result.map_err(|_| {
+        VectorStoreError::StorageError("文档存储内部锁已中毒 (lock poisoned)".to_string())
+    })
+}
+
+/// 内存存储实现(开发/测试用)
+///
+/// Q5: 这里刻意保留 `std::sync::RwLock`(而不是像 InMemoryVectorStore 那样用
+/// `tokio::sync::RwLock`):`ChunkedDocumentStoreTrait` 的 `_blocking` 同步方法会被
+/// BM25 等同步检索路径在 async 上下文中调用(见 lc-rag 的 hybrid retriever),而 tokio
+/// 的 `blocking_read/blocking_write` 在 async 上下文调用会 panic(见 tokio 文档
+/// "Panics if called within an asynchronous execution context")。因此只消除
+/// `.unwrap()` 的锁中毒 panic 风险,见 [`lock_error`]。
 pub struct InMemoryChunkedDocumentStore {
     pub(crate) parent_docs: Arc<std::sync::RwLock<HashMap<String, Document>>>,
     pub(crate) chunks: Arc<std::sync::RwLock<HashMap<String, ChunkDocument>>>,
@@ -34,7 +54,7 @@ impl InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let chunks = self.chunks.read().unwrap();
+        let chunks = lock_error(self.chunks.read())?;
         Ok(chunks.get(chunk_id).map(|c| c.to_document()))
     }
 
@@ -60,12 +80,12 @@ impl InMemoryChunkedDocumentStore {
             );
 
             {
-                let mut chunks_store = self.chunks.write().unwrap();
+                let mut chunks_store = lock_error(self.chunks.write())?;
                 chunks_store.insert(chunk_id.clone(), chunk);
             }
 
             {
-                let mut mapping = self.parent_to_chunks.write().unwrap();
+                let mut mapping = lock_error(self.parent_to_chunks.write())?;
                 mapping
                     .entry(parent_id.to_string())
                     .or_default()
@@ -90,8 +110,8 @@ impl InMemoryChunkedDocumentStore {
         let mut chunk_ids = Vec::new();
 
         // Acquire locks once for all chunks
-        let mut chunks_store = self.chunks.write().unwrap();
-        let mut mapping = self.parent_to_chunks.write().unwrap();
+        let mut chunks_store = lock_error(self.chunks.write())?;
+        let mut mapping = lock_error(self.parent_to_chunks.write())?;
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}::{}", parent_id, segment);
@@ -136,7 +156,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         {
-            let mut parents = self.parent_docs.write().unwrap();
+            let mut parents = lock_error(self.parent_docs.write())?;
             parents.insert(parent_id.clone(), document.clone());
         }
 
@@ -164,12 +184,12 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let parents = self.parent_docs.read().unwrap();
+        let parents = lock_error(self.parent_docs.read())?;
         Ok(parents.get(parent_id).cloned())
     }
 
     async fn get_chunk(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.read().unwrap();
+        let chunks = lock_error(self.chunks.read())?;
         Ok(chunks.get(chunk_id).cloned())
     }
 
@@ -177,7 +197,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let chunks = self.chunks.read().unwrap();
+        let chunks = lock_error(self.chunks.read())?;
         Ok(chunks.get(chunk_id).map(|c| c.to_document()))
     }
 
@@ -185,8 +205,8 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let mapping = self.parent_to_chunks.read().unwrap();
-        let chunks = self.chunks.read().unwrap();
+        let mapping = lock_error(self.parent_to_chunks.read())?;
+        let chunks = lock_error(self.chunks.read())?;
 
         let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
 
@@ -208,24 +228,24 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
 
     async fn delete_parent_document(&self, parent_id: &str) -> Result<(), VectorStoreError> {
         let chunk_ids = {
-            let mapping = self.parent_to_chunks.read().unwrap();
+            let mapping = lock_error(self.parent_to_chunks.read())?;
             mapping.get(parent_id).cloned().unwrap_or_default()
         };
 
         {
-            let mut chunks = self.chunks.write().unwrap();
+            let mut chunks = lock_error(self.chunks.write())?;
             for chunk_id in &chunk_ids {
                 chunks.remove(chunk_id);
             }
         }
 
         {
-            let mut mapping = self.parent_to_chunks.write().unwrap();
+            let mut mapping = lock_error(self.parent_to_chunks.write())?;
             mapping.remove(parent_id);
         }
 
         {
-            let mut parents = self.parent_docs.write().unwrap();
+            let mut parents = lock_error(self.parent_docs.write())?;
             parents.remove(parent_id);
         }
 
@@ -233,24 +253,29 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 
     async fn parent_count(&self) -> usize {
-        let parents = self.parent_docs.read().unwrap();
-        parents.len()
+        // count 返回 usize,锁中毒时恢复出内部值(仅数量统计,不值得整体失败)
+        self.parent_docs
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     async fn chunk_count(&self) -> usize {
-        let chunks = self.chunks.read().unwrap();
-        chunks.len()
+        self.chunks
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     async fn get_all_chunks(&self) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.read().unwrap();
+        let chunks = lock_error(self.chunks.read())?;
         Ok(chunks.values().cloned().collect())
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let mut parents = self.parent_docs.write().unwrap();
-        let mut chunks = self.chunks.write().unwrap();
-        let mut mapping = self.parent_to_chunks.write().unwrap();
+        let mut parents = lock_error(self.parent_docs.write())?;
+        let mut chunks = lock_error(self.chunks.write())?;
+        let mut mapping = lock_error(self.parent_to_chunks.write())?;
 
         parents.clear();
         chunks.clear();
@@ -260,9 +285,9 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 
     async fn save(&self, path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        let parents = self.parent_docs.read().unwrap();
-        let chunks = self.chunks.read().unwrap();
-        let mapping = self.parent_to_chunks.read().unwrap();
+        let parents = lock_error(self.parent_docs.read())?;
+        let chunks = lock_error(self.chunks.read())?;
+        let mapping = lock_error(self.parent_to_chunks.read())?;
 
         let data = ChunkedStoreData {
             parent_docs: parents.clone(),
@@ -304,7 +329,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         {
-            let mut parents = self.parent_docs.write().unwrap();
+            let mut parents = lock_error(self.parent_docs.write())?;
             parents.insert(parent_id.clone(), document.clone());
         }
 
@@ -318,7 +343,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let parents = self.parent_docs.read().unwrap();
+        let parents = lock_error(self.parent_docs.read())?;
         Ok(parents.get(parent_id).cloned())
     }
 
@@ -326,7 +351,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let chunks = self.chunks.read().unwrap();
+        let chunks = lock_error(self.chunks.read())?;
         Ok(chunks.get(chunk_id).cloned())
     }
 
@@ -334,8 +359,8 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let mapping = self.parent_to_chunks.read().unwrap();
-        let chunks = self.chunks.read().unwrap();
+        let mapping = lock_error(self.parent_to_chunks.read())?;
+        let chunks = lock_error(self.chunks.read())?;
 
         let chunk_ids = mapping.get(parent_id).cloned().unwrap_or_default();
 

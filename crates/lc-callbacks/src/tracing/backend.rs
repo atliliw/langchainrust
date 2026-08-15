@@ -1,5 +1,8 @@
 use std::sync::Mutex;
 
+#[cfg(feature = "opentelemetry")]
+use std::collections::HashMap;
+
 use super::span::{build_tree, TraceSpan};
 use super::TracingBackend;
 
@@ -103,7 +106,8 @@ impl TracingBackend for ConsoleTracingBackend {
 #[cfg(feature = "opentelemetry")]
 pub struct OtelTracingBackend {
     tracer: opentelemetry::global::BoxedTracer,
-    spans: Mutex<Vec<opentelemetry::global::BoxedSpan>>,
+    /// Active OTel spans keyed by framework span ID.
+    spans: Mutex<HashMap<String, opentelemetry::global::BoxedSpan>>,
 }
 
 #[cfg(feature = "opentelemetry")]
@@ -112,7 +116,7 @@ impl OtelTracingBackend {
     pub fn new(tracer: opentelemetry::global::BoxedTracer) -> Self {
         Self {
             tracer,
-            spans: Mutex::new(Vec::new()),
+            spans: Mutex::new(HashMap::new()),
         }
     }
 
@@ -130,12 +134,17 @@ impl TracingBackend for OtelTracingBackend {
         self.spans
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(otel_span);
+            .insert(span.id.clone(), otel_span);
     }
 
-    fn end_span(&self, _span: &TraceSpan) {
+    fn end_span(&self, span: &TraceSpan) {
         use opentelemetry::trace::Span as OtelSpan;
-        if let Some(mut s) = self.spans.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+        if let Some(mut s) = self
+            .spans
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&span.id)
+        {
             OtelSpan::end(&mut s);
         }
     }

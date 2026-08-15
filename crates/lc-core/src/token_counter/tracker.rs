@@ -7,7 +7,7 @@ use crate::{BaseChatModel, RunnableConfig};
 use lc_schema::Message;
 use tokio::sync::Mutex;
 
-use super::counter::{TokenCounter, TokenUsage};
+use super::counter::{TokenCounter, TrackerTokenUsage};
 use super::tiktoken::TiktokenCounter;
 
 /// 带 Token 统计的 LLM 包装器
@@ -17,7 +17,7 @@ use super::tiktoken::TiktokenCounter;
 pub struct TokenTrackingLLM<L: BaseChatModel> {
     llm: L,
     counter: Arc<dyn TokenCounter>,
-    usage: Arc<Mutex<TokenUsage>>,
+    usage: Arc<Mutex<TrackerTokenUsage>>,
 }
 
 impl<L: BaseChatModel> TokenTrackingLLM<L> {
@@ -25,7 +25,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         Self {
             llm,
             counter,
-            usage: Arc::new(Mutex::new(TokenUsage::new())),
+            usage: Arc::new(Mutex::new(TrackerTokenUsage::new())),
         }
     }
 
@@ -44,19 +44,24 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         let estimated_prompt = self.counter.count_messages(&messages);
         let result = self.llm.chat(messages, config).await?;
 
-        // 优先用 LLM 返回的真实 usage,否则用估算
+        // 优先用 LLM 返回的真实 usage,否则用估算。
+        // `TrackerTokenUsage` 与 `language_models::TokenUsage` 同为 usize，
+        // 无需精度损失转换（Q6）。
         let (prompt, completion) = result
             .token_usage
             .as_ref()
-            .map(|u| (u.prompt_tokens as u32, u.completion_tokens as u32))
-            .unwrap_or((estimated_prompt, self.counter.count_tokens(&result.content)));
+            .map(|u| (u.prompt_tokens, u.completion_tokens))
+            .unwrap_or((
+                estimated_prompt as usize,
+                self.counter.count_tokens(&result.content) as usize,
+            ));
 
         self.usage.lock().await.add(prompt, completion);
         Ok(result)
     }
 
     /// 获取累计用量
-    pub async fn get_usage(&self) -> TokenUsage {
+    pub async fn get_usage(&self) -> TrackerTokenUsage {
         self.usage.lock().await.clone()
     }
 
@@ -97,7 +102,7 @@ impl ModelPricing {
     }
 
     /// 计算成本
-    pub fn calculate(&self, prompt: u32, completion: u32) -> f64 {
+    pub fn calculate(&self, prompt: usize, completion: usize) -> f64 {
         (prompt as f64 / 1000.0) * self.prompt_price_per_1k
             + (completion as f64 / 1000.0) * self.completion_price_per_1k
     }

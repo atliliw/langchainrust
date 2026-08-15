@@ -73,14 +73,26 @@ impl VectorStore for InMemoryVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        // Q2: 不再硬过滤 score > 0 —— 全负分语料下也应返回 top-k;
+        // 是否设阈值由调用方通过 similarity_search_with_min_score 显式决定。
+        self.similarity_search_with_min_score(query_embedding, k, None)
+            .await
+    }
+
+    async fn similarity_search_with_min_score(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        min_score: Option<f32>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let store = self.documents.read().await;
 
-        // 计算所有文档的相似度并过滤负分 (H27)
+        // 计算所有文档的相似度,先按阈值过滤再取 top-k (Q2)
         let mut results: Vec<SearchResult> = store
             .values()
             .filter_map(|vd| {
                 let score = cosine_similarity(query_embedding, &vd.embedding).unwrap_or(0.0);
-                if score > 0.0 {
+                if min_score.is_none_or(|t| score >= t) {
                     Some(SearchResult {
                         document: vd.document.clone(),
                         score,
@@ -200,6 +212,54 @@ mod tests {
 
         store.clear().await.unwrap();
         assert_eq!(store.count().await, 0);
+    }
+
+    /// Q1: 未配置嵌入器时,similarity_search_text 应显式报 EmbeddingError,
+    /// 而不是静默成功或 panic。
+    #[tokio::test]
+    async fn test_similarity_search_text_without_embedder_errors() {
+        let store = InMemoryVectorStore::new();
+        let err = store.similarity_search_text("hello", 3).await.unwrap_err();
+        assert!(matches!(err, VectorStoreError::EmbeddingError(_)));
+    }
+
+    /// Q2: 全非正分语料下 similarity_search 仍返回 top-k(不再被 score>0 硬过滤清空);
+    /// similarity_search_with_min_score 按阈值显式过滤。
+    #[tokio::test]
+    async fn test_negative_scores_not_dropped() {
+        let store = InMemoryVectorStore::new();
+        store
+            .add_documents(
+                vec![
+                    Document::new("orthogonal-up"),
+                    Document::new("opposite"),
+                    Document::new("orthogonal-down"),
+                ],
+                vec![vec![0.0, 1.0], vec![-1.0, 0.0], vec![0.0, -1.0]],
+            )
+            .await
+            .unwrap();
+
+        let query = vec![1.0, 0.0];
+
+        // 旧实现 score > 0.0 硬过滤,该语料下会返回空;现在返回 top-k(3 条,全部非正分)。
+        let results = store.similarity_search(&query, 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.score <= 0.0));
+
+        // 显式阈值:score >= -0.5 → 排除 score = -1.0 的那条
+        let filtered = store
+            .similarity_search_with_min_score(&query, 3, Some(-0.5))
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 2);
+
+        // min_score = None 时与 similarity_search 行为一致
+        let all = store
+            .similarity_search_with_min_score(&query, 3, None)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
     }
 
     #[test]

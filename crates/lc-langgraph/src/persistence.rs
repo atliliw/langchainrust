@@ -383,12 +383,11 @@ impl FilePersistence {
     }
 }
 
-impl Default for FilePersistence {
-    fn default() -> Self {
-        Self::new(".graph_definitions")
-            .expect("Failed to create default graph definitions directory")
-    }
-}
+// NOTE: `Default` is intentionally NOT implemented for `FilePersistence` (Q1).
+// The default constructor would have to create a directory, which is I/O that can
+// fail (read-only cwd, disk full, permissions) — `Default` cannot report that
+// failure, so it would have to panic. Use `FilePersistence::new(...)` which
+// returns a `Result` and surfaces the error instead.
 
 #[async_trait]
 impl GraphPersistence for FilePersistence {

@@ -28,7 +28,16 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
         }
 
-        while current_node != END && recursion_count < self.recursion_limit {
+        loop {
+            if current_node == END {
+                break;
+            }
+
+            // Q3: check the limit before executing a step (same guard as `invoke`).
+            if recursion_count >= self.recursion_limit {
+                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            }
+
             if self.interrupt_before.contains(&current_node) {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
@@ -38,7 +47,9 @@ impl<S: StateSchema> CompiledGraph<S> {
             let fan_out_targets = self.find_fan_out_targets(&current_node).await;
 
             if let Some(targets) = fan_out_targets {
-                let branch_results = self.execute_parallel_branches(&targets, &state).await?;
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
 
                 for (name, inv) in branch_results {
                     parallel_branches.push(ParallelBranch {
@@ -94,10 +105,6 @@ impl<S: StateSchema> CompiledGraph<S> {
             }
         }
 
-        if recursion_count >= self.recursion_limit {
-            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
-        }
-
         Ok(ParallelInvocation {
             final_state: state,
             steps,
@@ -129,7 +136,16 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
         }
 
-        while current_node != END && recursion_count < self.recursion_limit {
+        loop {
+            if current_node == END {
+                break;
+            }
+
+            // Q3: check the limit before executing a step (same guard as `invoke`).
+            if recursion_count >= self.recursion_limit {
+                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            }
+
             // Check for pending dynamically-submitted tasks
             let pending = {
                 let mut inbox = self.task_inbox.lock().await;
@@ -190,10 +206,6 @@ impl<S: StateSchema> CompiledGraph<S> {
             }
 
             current_node = next_node;
-        }
-
-        if recursion_count >= self.recursion_limit {
-            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
         }
 
         Ok(GraphInvocation {

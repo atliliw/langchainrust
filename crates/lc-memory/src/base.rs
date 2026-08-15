@@ -190,9 +190,7 @@ impl Default for ChatMessageHistory {
 ///   文本,包装为 `System` 消息。
 ///
 /// 供 `lc-sessions` 桥接、`lc-chains` 等把记忆变量灌进 LLM 上下文时复用。
-pub fn memory_variables_to_messages(
-    vars: &HashMap<String, serde_json::Value>,
-) -> Vec<Message> {
+pub fn memory_variables_to_messages(vars: &HashMap<String, serde_json::Value>) -> Vec<Message> {
     let mut messages = Vec::new();
     for value in vars.values() {
         match value {

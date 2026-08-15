@@ -248,18 +248,21 @@ impl Message {
     }
 
     /// Returns the message type as a string.
-    pub fn type_str(&self) -> &str {
+    ///
+    /// Tool messages include their `tool_call_id` (e.g. `"tool:call_123"`) so
+    /// the type string is unambiguous about which tool result the message holds.
+    pub fn type_str(&self) -> String {
         match &self.message_type {
-            MessageType::System => "system",
-            MessageType::Human => "human",
-            MessageType::AI => "ai",
-            MessageType::Tool { .. } => "tool",
+            MessageType::System => "system".to_string(),
+            MessageType::Human => "human".to_string(),
+            MessageType::AI => "ai".to_string(),
+            MessageType::Tool { tool_call_id } => format!("tool:{tool_call_id}"),
         }
     }
 
     /// Returns whether the message has tool calls.
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls.is_some() && !self.tool_calls.as_ref().unwrap().is_empty()
+        self.tool_calls.as_deref().is_some_and(|t| !t.is_empty())
     }
 
     /// Returns the tool calls if present.
@@ -322,5 +325,31 @@ mod tests {
         assert!(Message::system("s").images.is_empty());
         assert!(Message::ai("a").images.is_empty());
         assert!(Message::tool("id", "c").images.is_empty());
+    }
+
+    #[test]
+    fn test_type_str_includes_tool_call_id() {
+        assert_eq!(Message::system("s").type_str(), "system");
+        assert_eq!(Message::human("h").type_str(), "human");
+        assert_eq!(Message::ai("a").type_str(), "ai");
+        assert_eq!(
+            Message::tool("call_123", "result").type_str(),
+            "tool:call_123"
+        );
+    }
+
+    #[test]
+    fn test_has_tool_calls_empty_and_present() {
+        let with_calls = Message::ai_with_tool_calls(
+            "call tool",
+            vec![ToolCall::new("call_1", "weather", r#"{"city":"beijing"}"#)],
+        );
+        assert!(with_calls.has_tool_calls());
+        assert_eq!(with_calls.get_tool_calls().unwrap().len(), 1);
+
+        // No panic on None or on an empty vec
+        assert!(!Message::ai("plain").has_tool_calls());
+        let empty = Message::ai_with_tool_calls("no calls", vec![]);
+        assert!(!empty.has_tool_calls());
     }
 }

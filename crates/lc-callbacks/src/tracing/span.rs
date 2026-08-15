@@ -35,6 +35,21 @@ impl std::fmt::Display for SpanKind {
     }
 }
 
+impl From<crate::RunType> for SpanKind {
+    fn from(run_type: crate::RunType) -> Self {
+        match run_type {
+            crate::RunType::Llm => SpanKind::Llm,
+            crate::RunType::Chain => SpanKind::Chain,
+            crate::RunType::Tool => SpanKind::Tool,
+            crate::RunType::Retriever => SpanKind::Retriever,
+            // RunType variants without a dedicated SpanKind collapse to Custom
+            crate::RunType::Embedding => SpanKind::Custom("embedding".to_string()),
+            crate::RunType::Prompt => SpanKind::Custom("prompt".to_string()),
+            crate::RunType::Parser => SpanKind::Custom("parser".to_string()),
+        }
+    }
+}
+
 /// Token usage recorded in a span.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpanTokenUsage {

@@ -122,7 +122,7 @@ fn format_sources(results: &[SearchResult], max_source_tokens: Option<usize>) ->
             let mut truncated_entries = Vec::new();
 
             for entry in &entries {
-                let entry_tokens = count_tokens(entry);
+                let entry_tokens = count_tokens(entry).unwrap_or(0);
                 if used_tokens + entry_tokens > budget && !truncated_entries.is_empty() {
                     break;
                 }

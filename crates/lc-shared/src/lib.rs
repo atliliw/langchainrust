@@ -18,18 +18,22 @@ pub mod document {
 }
 
 pub mod splitter {
-    pub use crate::splitter_types::{
-        CharacterTextSplitter, RecursiveCharacterSplitter, TextSplitter,
-    };
+    pub use crate::splitter_types::{RecursiveCharacterSplitter, TextSplitter};
 }
 
 pub mod tools {
     pub use crate::tool_types::{FunctionCall, ToolCall, ToolCallResult};
 }
 
+// Tolerant JSON repair — sinks the LLM-JSON repair pipeline from lc-core so
+// that `ToolCall::parse_arguments` (in this crate) shares a single tolerant
+// parser with lc-core's `json_parse` instead of duplicating strict parsing.
+pub mod json_repair;
+
 // Flat re-exports for convenience
 pub use document_types::{ChunkDocument, Document, SearchResult, VectorDocument};
-pub use splitter_types::{CharacterTextSplitter, RecursiveCharacterSplitter, TextSplitter};
+pub use json_repair::{parse_tolerant_json, repair_json, JsonRepairError};
+pub use splitter_types::{RecursiveCharacterSplitter, TextSplitter};
 pub use tool_types::{FunctionCall, ToolCall, ToolCallResult};
 
 mod document_types;

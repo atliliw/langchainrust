@@ -117,8 +117,7 @@ impl LocalSandbox {
                 Ok(cmd)
             }
             Language::Rust => Err(SandboxError::UnsupportedLanguage(
-                "Rust compilation is not supported by LocalSandbox (use E2BSandbox or WasmSandbox)"
-                    .to_string(),
+                "Rust compilation is not supported by LocalSandbox".to_string(),
             )),
         }
     }
@@ -304,11 +303,8 @@ mod tests {
         let sandbox = LocalSandbox::new();
         let result = sandbox.run("print('hi')", Language::Python, 10_000).await;
 
-        match result {
-            Ok(run_result) => {
-                assert!(run_result.execution_time_ms < 10_000);
-            }
-            Err(_) => {}
+        if let Ok(run_result) = result {
+            assert!(run_result.execution_time_ms < 10_000);
         }
     }
 
@@ -323,17 +319,14 @@ mod tests {
             )
             .await;
 
-        match result {
-            Ok(run_result) => {
-                if run_result.exit_code == 0 {
-                    assert!(
-                        run_result.stderr.contains("error"),
-                        "stderr should contain 'error', got: '{}'",
-                        run_result.stderr
-                    );
-                }
+        if let Ok(run_result) = result {
+            if run_result.exit_code == 0 {
+                assert!(
+                    run_result.stderr.contains("error"),
+                    "stderr should contain 'error', got: '{}'",
+                    run_result.stderr
+                );
             }
-            Err(_) => {}
         }
     }
 }

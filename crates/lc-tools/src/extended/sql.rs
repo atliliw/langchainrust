@@ -1,4 +1,4 @@
-//! SQL tool (read-only, SQLite)
+//! SQL tool (read-only, SQLite, 支持绑定参数)
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -50,8 +50,21 @@ impl SQLTool {
         tables
     }
 
-    /// Execute a SELECT query (read-only)
+    /// Execute a SELECT query (read-only, without bind parameters).
     pub fn execute(&self, sql: &str) -> Result<Vec<HashMap<String, String>>, ToolError> {
+        self.execute_parameterized(sql, &[])
+    }
+
+    /// Execute a SELECT query with bind parameters (read-only, single statement).
+    ///
+    /// SQL 文本中的占位符 `?1` / `?2` ... 由 `params` 按位置绑定（Q5）——值不再以
+    /// 字面量拼进 SQL，注入内容只会按字面值参与匹配，不会变成新的语句。
+    /// 校验规则与 `execute` 一致：只允许单条 SELECT，禁多语句/注释/危险函数，可选表白名单。
+    pub fn execute_parameterized(
+        &self,
+        sql: &str,
+        params: &[rusqlite::types::Value],
+    ) -> Result<Vec<HashMap<String, String>>, ToolError> {
         let trimmed = sql.trim();
 
         if !trimmed.to_lowercase().starts_with("select") {
@@ -126,7 +139,7 @@ impl SQLTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
                 let mut m = HashMap::new();
                 for (i, col) in col_names.iter().enumerate() {
                     let val: String = row
@@ -157,8 +170,50 @@ impl BaseTool for SQLTool {
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
-        let rows = self.execute(&input)?;
+        let (sql, params) = parse_sql_input(&input)?;
+        let rows = self.execute_parameterized(&sql, &params)?;
         serde_json::to_string(&rows).map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+    }
+}
+
+/// 解析工具输入：优先 `{"sql": "...", "params": [...]}`（参数化，Q5），
+/// 否则把整个输入当纯 SQL 文本（兼容旧接口）。
+fn parse_sql_input(input: &str) -> Result<(String, Vec<rusqlite::types::Value>), ToolError> {
+    if input.trim_start().starts_with('{') {
+        let json: serde_json::Value = serde_json::from_str(input)
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse error: {}", e)))?;
+        let sql = json
+            .get("sql")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ToolError::InvalidInput("JSON input must have a 'sql' string field".to_string())
+            })?
+            .to_string();
+        let params = json
+            .get("params")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().map(json_to_sql_value).collect())
+            .unwrap_or_default();
+        Ok((sql, params))
+    } else {
+        Ok((input.to_string(), Vec::new()))
+    }
+}
+
+/// 把 JSON 值转成 SQL 绑定参数：null → NULL，bool → 0/1，数字 → Integer/Real，
+/// 字符串 → Text，其它复合值 → NULL。
+fn json_to_sql_value(v: &serde_json::Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value as SqlValue;
+    match v {
+        serde_json::Value::Null => SqlValue::Null,
+        serde_json::Value::Bool(b) => SqlValue::Integer(*b as i64),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(SqlValue::Integer)
+            .or_else(|| n.as_f64().map(SqlValue::Real))
+            .unwrap_or(SqlValue::Null),
+        serde_json::Value::String(s) => SqlValue::Text(s.clone()),
+        _ => SqlValue::Null,
     }
 }
 
@@ -175,6 +230,12 @@ mod tests {
             conn.execute("INSERT INTO users VALUES (1, 'Alice')", [])
                 .unwrap();
             conn.execute("INSERT INTO users VALUES (2, 'Bob')", [])
+                .unwrap();
+            // orders 表供多表 JOIN 的 whitelist 测试使用（此前缺失导致 prepare 报
+            // "no such table"，SQL 测试因 feature 门控从未被默认运行而一直沉睡）。
+            conn.execute("CREATE TABLE orders (id INTEGER, user_id INTEGER)", [])
+                .unwrap();
+            conn.execute("INSERT INTO orders VALUES (1, 1)", [])
                 .unwrap();
         }
         tool
@@ -261,5 +322,58 @@ mod tests {
         let tool = tool_with_data();
         assert!(tool.execute("SELECT sleep(1) FROM users").is_err());
         assert!(tool.execute("SELECT benchmark(1, 1) FROM users").is_err());
+    }
+
+    /// Q5: 绑定参数按位置生效。
+    #[test]
+    fn test_parameterized_query() {
+        let tool = tool_with_data();
+        let rows = tool
+            .execute_parameterized(
+                "SELECT * FROM users WHERE name = ?1",
+                &[rusqlite::types::Value::Text("Alice".to_string())],
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("name"), Some(&"Alice".to_string()));
+    }
+
+    /// Q5: 参数值即使含注入片段,也只按字面值匹配,不构成新语句。
+    #[test]
+    fn test_parameterized_prevents_injection() {
+        let tool = tool_with_data();
+        let rows = tool
+            .execute_parameterized(
+                "SELECT * FROM users WHERE name = ?1",
+                &[rusqlite::types::Value::Text(
+                    "Alice'; DROP TABLE users;--".to_string(),
+                )],
+            )
+            .unwrap();
+        assert!(rows.is_empty(), "注入片段只应作为字面值匹配不到任何行");
+
+        // 表仍在,后续查询不受影响
+        let rows = tool.execute("SELECT COUNT(*) FROM users").unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_run_accepts_parameterized_json() {
+        let tool = tool_with_data();
+        let result = tool
+            .run(r#"{"sql": "SELECT * FROM users WHERE id = ?1", "params": [1]}"#.to_string())
+            .await;
+        assert!(result.is_ok(), "got error: {:?}", result.err());
+        let rows: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_run_accepts_raw_sql() {
+        let tool = tool_with_data();
+        let result = tool.run("SELECT * FROM users".to_string()).await;
+        assert!(result.is_ok());
+        let rows: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 2);
     }
 }

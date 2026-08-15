@@ -4,6 +4,7 @@
 //! This module provides the state abstraction for graph execution.
 //! States are data structures that flow through nodes in the graph.
 
+use crate::errors::{GraphError, GraphResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -17,9 +18,15 @@ pub trait StateSchema:
         input
     }
 
-    /// Get state as JSON for debugging/checkpointing
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    /// Get state as JSON for debugging/checkpointing.
+    ///
+    /// Returns a `Result` instead of silently producing `Value::Null` (Q2):
+    /// a serialization failure is data corruption in the state machine and
+    /// must surface at the call site, not be swallowed.
+    fn to_json(&self) -> GraphResult<serde_json::Value> {
+        serde_json::to_value(self).map_err(|e| {
+            GraphError::StateError(format!("Failed to serialize state to JSON: {}", e))
+        })
     }
 }
 

@@ -76,12 +76,14 @@ impl CallbackHandler for StdOutHandler {
     }
 
     async fn on_run_error(&self, run: &RunTree, error: &str) {
-        println!(
-            "\n❌ [{}] ERROR: {}",
-            run.run_type.as_str().to_uppercase(),
-            run.name
-        );
-        println!("   Error: {}", error);
+        if self.verbose {
+            println!(
+                "\n❌ [{}] ERROR: {}",
+                run.run_type.as_str().to_uppercase(),
+                run.name
+            );
+            println!("   Error: {}", error);
+        }
     }
 
     async fn on_llm_start(&self, run: &RunTree, messages: &[Message]) {
@@ -92,8 +94,10 @@ impl CallbackHandler for StdOutHandler {
     }
 
     async fn on_llm_new_token(&self, _run: &RunTree, token: &str) {
-        print!("{}", token);
-        let _ = std::io::stdout().flush();
+        if self.verbose {
+            print!("{}", token);
+            let _ = std::io::stdout().flush();
+        }
     }
 
     async fn on_tool_start(&self, run: &RunTree, tool_name: &str, input: &str) {

@@ -36,6 +36,16 @@ pub enum ProviderError {
     Assistant(AssistantError),
     /// OpenAI Responses API error.
     Responses(ResponsesError),
+    /// DeepSeek API error (OpenAI-compatible endpoint).
+    DeepSeek(OpenAIError),
+    /// Qwen (Alibaba) API error (OpenAI-compatible endpoint).
+    Qwen(OpenAIError),
+    /// Moonshot (Kimi) API error (OpenAI-compatible endpoint).
+    Moonshot(OpenAIError),
+    /// Zhipu (ChatGLM) API error (OpenAI-compatible endpoint).
+    Zhipu(OpenAIError),
+    /// Mistral API error (OpenAI-compatible endpoint).
+    Mistral(OpenAIError),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -49,6 +59,11 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Ollama(e) => write!(f, "Ollama error: {e}"),
             ProviderError::Assistant(e) => write!(f, "Assistant error: {e}"),
             ProviderError::Responses(e) => write!(f, "Responses error: {e}"),
+            ProviderError::DeepSeek(e) => write!(f, "DeepSeek error: {e}"),
+            ProviderError::Qwen(e) => write!(f, "Qwen error: {e}"),
+            ProviderError::Moonshot(e) => write!(f, "Moonshot error: {e}"),
+            ProviderError::Zhipu(e) => write!(f, "Zhipu error: {e}"),
+            ProviderError::Mistral(e) => write!(f, "Mistral error: {e}"),
         }
     }
 }
@@ -64,6 +79,11 @@ impl std::error::Error for ProviderError {
             ProviderError::Ollama(e) => Some(e),
             ProviderError::Assistant(e) => Some(e),
             ProviderError::Responses(e) => Some(e),
+            ProviderError::DeepSeek(e) => Some(e),
+            ProviderError::Qwen(e) => Some(e),
+            ProviderError::Moonshot(e) => Some(e),
+            ProviderError::Zhipu(e) => Some(e),
+            ProviderError::Mistral(e) => Some(e),
         }
     }
 }

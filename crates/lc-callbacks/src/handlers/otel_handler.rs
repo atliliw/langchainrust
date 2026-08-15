@@ -13,7 +13,8 @@
 
 use async_trait::async_trait;
 use opentelemetry::global::{self, BoxedSpan, BoxedTracer};
-use opentelemetry::trace::{Span, Tracer};
+use opentelemetry::trace::{Span, TraceContextExt, Tracer};
+use opentelemetry::Context;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -50,23 +51,24 @@ impl OtelHandler {
 
     /// Start a new span, setting parent context from the run tree if available.
     async fn start_span(&self, name: &str, run: &RunTree) {
-        // Check if the run has a parent run ID with an active span for context linking
-        let span = {
+        // If the run has a parent run with an active span, build an OTel Context
+        // carrying that span's SpanContext so the new span is a true child in the
+        // trace topology. The SpanContext is cloned while the lock is held, then
+        // released before `start_with_context` runs.
+        let parent_cx = {
             let spans = self.spans.lock().await;
-            if let Some(parent_run_id) = &run.parent_run_id {
-                let key = parent_run_id.to_string();
-                if let Some(_parent_span) = spans.get(&key) {
-                    // Parent span exists; create child span linked by run ID association.
-                    // Note: opentelemetry 0.27 BoxedTracer does not expose a direct
-                    // start_with_context API for BoxedSpan, so we create a new span
-                    // and rely on the HashMap key association for parent-child tracking.
-                    self.tracer.start(name.to_string())
-                } else {
-                    self.tracer.start(name.to_string())
-                }
-            } else {
-                self.tracer.start(name.to_string())
-            }
+            run.parent_run_id
+                .and_then(|parent_id| {
+                    spans
+                        .get(&parent_id.to_string())
+                        .map(|parent_span| parent_span.span_context().clone())
+                })
+                .map(|parent_ctx| Context::new().with_remote_span_context(parent_ctx))
+        };
+
+        let span = match parent_cx {
+            Some(cx) => self.tracer.start_with_context(name.to_string(), &cx),
+            None => self.tracer.start(name.to_string()),
         };
         self.spans.lock().await.insert(run.id.to_string(), span);
     }

@@ -22,6 +22,7 @@ mod math;
 mod python_repl;
 pub mod sandbox;
 mod search;
+mod ssrf;
 mod url_fetch;
 mod wikipedia;
 

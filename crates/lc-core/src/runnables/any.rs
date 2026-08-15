@@ -147,10 +147,15 @@ where
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>, LcelError>
     {
-        // Buffer all input, downcast to I, take the last, invoke, return as stream.
-        // We can't call self.inner.transform() directly because the error types
-        // don't match (LcelError vs Self::Error). Instead, we use the default
-        // transform semantics: buffer → last → invoke.
+        // We can't forward the input stream to `self.inner.transform()` directly
+        // because the error types don't match (LcelError vs `R::Error` and
+        // `R::Error: From<LcelError>` does not hold for e.g. `Infallible`).
+        //
+        // Instead we drive each input item through `self.inner.stream(item, ..)`
+        // and concatenate the per-item streams in order. This is the LangChain
+        // default `transform` semantics: a step that overrides `stream` (e.g. an
+        // LLM) yields a real token stream per item, while a step using the
+        // default `stream` (single-element) degrades to elementwise `invoke`.
         use futures_util::StreamExt;
 
         let mut items = Vec::new();
@@ -166,14 +171,23 @@ where
             items.push(*typed);
         }
 
-        if let Some(last) = items.into_iter().last() {
-            let result = self.inner.invoke(last, config).await.map_err(Into::into)?;
-            Ok(Box::pin(futures_util::stream::once(async move {
-                Ok(Box::new(result) as Box<dyn Any + Send>)
-            })))
-        } else {
-            Ok(Box::pin(futures_util::stream::empty()))
+        let mut per_item_streams = Vec::with_capacity(items.len());
+        for item in items {
+            let stream = self
+                .inner
+                .stream(item, config.clone())
+                .await
+                .map_err(Into::into)?;
+            let any_stream = stream.map(|result| {
+                result
+                    .map(|output| Box::new(output) as Box<dyn Any + Send>)
+                    .map_err(Into::into)
+            });
+            per_item_streams.push(any_stream);
         }
+
+        let flattened = futures_util::stream::iter(per_item_streams).flatten();
+        Ok(Box::pin(flattened))
     }
 
     async fn batch_any(

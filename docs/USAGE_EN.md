@@ -2856,9 +2856,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
     .with_timeout(30_000);  // 30 second timeout
 ```
 
-- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr, dangerous import check for Python
-- **E2B cloud sandbox** (feature gate `sandbox-e2b`): remote micro-VM, full isolation
-- **WASM sandbox** (feature gate `sandbox-wasm`): browser-grade sandbox, zero network
+- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr, dangerous import check for Python (the only built-in backend)
 
 ---
 

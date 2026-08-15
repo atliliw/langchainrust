@@ -44,7 +44,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval + structured tool-call routing decisions) / GraphRAG (knowledge graph) |
 | **Model Routing** | RouterLLM with 5 strategies (Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected) |
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
-| **Code Interpreter** | LocalSandbox (subprocess + timeout) + E2B cloud sandbox + WASM sandbox (feature gate) |
+| **Code Interpreter** | LocalSandbox (subprocess + timeout) |
 | **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
 | **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree, GenAI SemConv fields |
 
@@ -144,8 +144,6 @@ langchainrust = { version = "0.13.0", features = ["redis-storage"] }         # R
 langchainrust = { version = "0.13.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
 langchainrust = { version = "0.13.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
 langchainrust = { version = "0.13.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.13.0", features = ["sandbox-e2b"] }           # E2B cloud sandbox
-langchainrust = { version = "0.13.0", features = ["sandbox-wasm"] }          # WASM sandbox
 langchainrust = { version = "0.13.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 langchainrust = { version = "0.13.0", features = ["fastembed"] }            # FastEmbed embeddings
 langchainrust = { version = "0.13.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)

@@ -59,7 +59,7 @@ pub struct VectorDocument {
 }
 
 /// Search result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     /// Document.
     pub document: Document,

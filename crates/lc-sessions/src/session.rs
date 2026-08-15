@@ -70,6 +70,13 @@ impl Session {
         self.status = SessionStatus::Archived;
         self.updated_at = Utc::now();
     }
+
+    /// 软删除:置为 `Deleted` 状态,保留记录以便审计/恢复。
+    /// (Q4:`Deleted` 此前全仓库无人置位,补上删除流程让状态机闭环。)
+    pub fn delete(&mut self) {
+        self.status = SessionStatus::Deleted;
+        self.updated_at = Utc::now();
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +122,13 @@ mod tests {
         let mut s = Session::new("s1");
         s.archive();
         assert_eq!(s.status, SessionStatus::Archived);
+    }
+
+    #[test]
+    fn test_session_delete() {
+        let mut s = Session::new("s1");
+        s.delete();
+        assert_eq!(s.status, SessionStatus::Deleted);
     }
 
     #[test]

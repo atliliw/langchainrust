@@ -2857,9 +2857,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
     .with_timeout(30_000);  // 30 秒超时
 ```
 
-- **LocalSandbox**：子进程执行，超时自动终止，捕获 stdout/stderr，Python 危险导入检查
-- **E2B 云沙箱**（feature gate `sandbox-e2b`）：远程微虚拟机，完全隔离
-- **WASM 沙箱**（feature gate `sandbox-wasm`）：浏览器级沙箱，零网络访问
+- **LocalSandbox**：子进程执行，超时自动终止，捕获 stdout/stderr，Python 危险导入检查（唯一内置后端）
 
 ---
 

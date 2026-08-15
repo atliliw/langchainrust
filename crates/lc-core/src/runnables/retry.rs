@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.initial_delay, Duration::from_millis(500));
         assert_eq!(config.max_delay, Duration::from_secs(10));
-        assert!(config.backoff_multiplier - 2.0 < f64::EPSILON);
+        assert!((config.backoff_multiplier - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]

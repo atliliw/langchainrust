@@ -50,7 +50,19 @@ use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// Per-client sampling overrides (providers Q2).
+///
+/// Stored on `LLMClient` so the consuming `with_temperature` /
+/// `with_max_tokens` builders can affect later `chat` / `stream_chat` calls
+/// even though the wrapped model sits behind a trait object. The overrides
+/// are merged into the `RunnableConfig` per call.
+#[derive(Debug, Default)]
+struct ClientOverrides {
+    temperature: Option<f32>,
+    max_tokens: Option<usize>,
+}
 
 /// LLM Client unified entry point
 ///
@@ -60,6 +72,29 @@ use std::sync::Arc;
 /// Implements `Deref<Target = dyn BaseChatModel>`, so you can call `.chat()` etc. directly.
 pub struct LLMClient {
     inner: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
+    overrides: Mutex<ClientOverrides>,
+}
+
+impl LLMClient {
+    /// Wrap an already-normalized `Arc<dyn BaseChatModel>` with fresh overrides.
+    fn from_inner(inner: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>) -> Self {
+        Self {
+            inner,
+            overrides: Mutex::new(ClientOverrides::default()),
+        }
+    }
+
+    /// Merge per-client sampling overrides into the invocation config.
+    fn apply_overrides(&self, config: Option<RunnableConfig>) -> Option<RunnableConfig> {
+        let overrides = self.overrides.lock().unwrap_or_else(|e| e.into_inner());
+        if overrides.temperature.is_none() && overrides.max_tokens.is_none() {
+            return config;
+        }
+        let mut cfg = config.unwrap_or_default();
+        cfg.temperature = overrides.temperature.or(cfg.temperature);
+        cfg.max_tokens = overrides.max_tokens.or(cfg.max_tokens);
+        Some(cfg)
+    }
 }
 
 impl std::fmt::Debug for LLMClient {
@@ -80,8 +115,15 @@ impl LLMClient {
     /// Detection priority:
     /// 1. `OPENAI_API_KEY` -> OpenAIChat
     /// 2. `ANTHROPIC_API_KEY` -> AnthropicChat
-    /// 3. `MISTRAL_API_KEY` -> MistralChat
-    /// 4. `OLLAMA_BASE_URL` -> OllamaChat
+    /// 3. `AZURE_OPENAI_API_KEY` -> AzureOpenAIChat
+    /// 4. `DEEPSEEK_API_KEY` -> DeepSeekChat
+    /// 5. `QWEN_API_KEY` -> QwenChat
+    /// 6. `MOONSHOT_API_KEY` -> MoonshotChat
+    /// 7. `ZHIPU_API_KEY` -> ZhipuChat
+    /// 8. `MISTRAL_API_KEY` -> MistralChat
+    /// 9. `COHERE_API_KEY` -> CohereChat
+    /// 10. `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) -> GeminiChat
+    /// 11. `OLLAMA_BASE_URL` -> OllamaChat
     ///
     /// # Errors
     ///
@@ -89,30 +131,63 @@ impl LLMClient {
     pub fn from_env() -> Result<Self, String> {
         // Priority 1: OpenAI
         if std::env::var("OPENAI_API_KEY").is_ok() {
-            let config = OpenAIConfig::from_env_result()?;
-            return Ok(Self::openai(config));
+            return Ok(Self::openai(OpenAIConfig::from_env_result()?));
         }
 
         // Priority 2: Anthropic
         if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-            let config = AnthropicConfig::from_env_result()?;
-            return Ok(Self::anthropic(config));
+            return Ok(Self::anthropic(AnthropicConfig::from_env_result()?));
         }
 
-        // Priority 3: Mistral
+        // Priority 3: Azure OpenAI (endpoint + deployment based)
+        if std::env::var("AZURE_OPENAI_API_KEY").is_ok() {
+            return Ok(Self::azure(AzureOpenAIConfig::from_env_result()?));
+        }
+
+        // Priority 4: DeepSeek
+        if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            return Ok(Self::deepseek(DeepSeekConfig::from_env_result()?));
+        }
+
+        // Priority 5: Qwen
+        if std::env::var("QWEN_API_KEY").is_ok() {
+            return Ok(Self::qwen(QwenConfig::from_env_result()?));
+        }
+
+        // Priority 6: Moonshot
+        if std::env::var("MOONSHOT_API_KEY").is_ok() {
+            return Ok(Self::moonshot(MoonshotConfig::from_env_result()?));
+        }
+
+        // Priority 7: Zhipu
+        if std::env::var("ZHIPU_API_KEY").is_ok() {
+            return Ok(Self::zhipu(ZhipuConfig::from_env_result()?));
+        }
+
+        // Priority 8: Mistral
         if std::env::var("MISTRAL_API_KEY").is_ok() {
-            let config = MistralConfig::from_env_result()?;
-            return Ok(Self::mistral(config));
+            return Ok(Self::mistral(MistralConfig::from_env_result()?));
         }
 
-        // Priority 4: Ollama
+        // Priority 9: Cohere
+        if std::env::var("COHERE_API_KEY").is_ok() {
+            return Ok(Self::cohere(CohereConfig::from_env_result()?));
+        }
+
+        // Priority 10: Gemini
+        if std::env::var("GEMINI_API_KEY").is_ok() || std::env::var("GOOGLE_API_KEY").is_ok() {
+            return Ok(Self::gemini(GeminiConfig::from_env_result()?));
+        }
+
+        // Priority 11: Ollama (local, no API key required)
         if std::env::var("OLLAMA_BASE_URL").is_ok() {
-            let config = OllamaConfig::from_env_result()?;
-            return Ok(Self::ollama(config));
+            return Ok(Self::ollama(OllamaConfig::from_env_result()?));
         }
 
         Err(
-            "No LLM provider detected. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, MISTRAL_API_KEY, OLLAMA_BASE_URL"
+            "No LLM provider detected. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, \
+             AZURE_OPENAI_API_KEY, DEEPSEEK_API_KEY, QWEN_API_KEY, MOONSHOT_API_KEY, \
+             ZHIPU_API_KEY, MISTRAL_API_KEY, COHERE_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL"
                 .to_string(),
         )
     }
@@ -124,89 +199,67 @@ impl LLMClient {
     /// Create OpenAI Client
     pub fn openai(config: OpenAIConfig) -> Self {
         let llm = OpenAIChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Anthropic Client
     pub fn anthropic(config: AnthropicConfig) -> Self {
         let llm = AnthropicChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Ollama Client
     pub fn ollama(config: OllamaConfig) -> Self {
         let llm = OllamaChat::with_config(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Gemini Client
     pub fn gemini(config: GeminiConfig) -> Self {
         let llm = GeminiChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create DeepSeek Client
     pub fn deepseek(config: DeepSeekConfig) -> Self {
         let llm = DeepSeekChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Qwen Client
     pub fn qwen(config: QwenConfig) -> Self {
         let llm = QwenChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Moonshot Client
     pub fn moonshot(config: MoonshotConfig) -> Self {
         let llm = MoonshotChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Zhipu Client
     pub fn zhipu(config: ZhipuConfig) -> Self {
         let llm = ZhipuChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Mistral Client
     pub fn mistral(config: MistralConfig) -> Self {
         let llm = MistralChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Azure OpenAI Client
     pub fn azure(config: AzureOpenAIConfig) -> Self {
         let llm = AzureOpenAIChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Cohere Client
     pub fn cohere(config: CohereConfig) -> Self {
         let llm = CohereChat::new(config);
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     // -----------------------------------------------------------------------
@@ -219,14 +272,12 @@ impl LLMClient {
         L: BaseChatModel + Send + Sync + 'static,
         L::Error: Into<ProviderError>,
     {
-        Self {
-            inner: wrap_chat_model(llm),
-        }
+        Self::from_inner(wrap_chat_model(llm))
     }
 
     /// Create Client from `Arc<dyn BaseChatModel>`
     pub fn from_arc(llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>) -> Self {
-        Self { inner: llm }
+        Self::from_inner(llm)
     }
 
     // -----------------------------------------------------------------------
@@ -255,7 +306,7 @@ impl Runnable<Vec<Message>, LLMResult> for LLMClient {
         input: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, ProviderError> {
-        self.inner.invoke(input, config).await
+        self.inner.invoke(input, self.apply_overrides(config)).await
     }
 
     async fn batch(
@@ -263,7 +314,7 @@ impl Runnable<Vec<Message>, LLMResult> for LLMClient {
         inputs: Vec<Vec<Message>>,
         config: Option<RunnableConfig>,
     ) -> Result<Vec<LLMResult>, ProviderError> {
-        self.inner.batch(inputs, config).await
+        self.inner.batch(inputs, self.apply_overrides(config)).await
     }
 
     async fn stream(
@@ -274,7 +325,7 @@ impl Runnable<Vec<Message>, LLMResult> for LLMClient {
         std::pin::Pin<Box<dyn Stream<Item = Result<LLMResult, ProviderError>> + Send>>,
         ProviderError,
     > {
-        self.inner.stream(input, config).await
+        self.inner.stream(input, self.apply_overrides(config)).await
     }
 }
 
@@ -288,26 +339,43 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for LLMClient {
     }
 
     fn temperature(&self) -> Option<f32> {
-        self.inner.temperature()
+        // Per-client override takes precedence over the wrapped model's own value.
+        self.overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .temperature
+            .or_else(|| self.inner.temperature())
     }
 
     fn max_tokens(&self) -> Option<usize> {
-        self.inner.max_tokens()
+        self.overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .max_tokens
+            .or_else(|| self.inner.max_tokens())
     }
 
-    fn with_temperature(self, _temp: f32) -> Self
+    fn with_temperature(self, temp: f32) -> Self
     where
         Self: Sized,
     {
-        // Cannot modify a wrapped LLM's temperature.
+        // Store the override; `chat`/`stream_chat` merge it into the
+        // `RunnableConfig` for the wrapped model (providers Q2).
+        self.overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .temperature = Some(temp);
         self
     }
 
-    fn with_max_tokens(self, _max: usize) -> Self
+    fn with_max_tokens(self, max: usize) -> Self
     where
         Self: Sized,
     {
-        // Cannot modify a wrapped LLM's max_tokens.
+        self.overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .max_tokens = Some(max);
         self
     }
 }
@@ -319,7 +387,9 @@ impl BaseChatModel for LLMClient {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, ProviderError> {
-        self.inner.chat(messages, config).await
+        self.inner
+            .chat(messages, self.apply_overrides(config))
+            .await
     }
 
     async fn stream_chat(
@@ -330,7 +400,9 @@ impl BaseChatModel for LLMClient {
         std::pin::Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>,
         ProviderError,
     > {
-        self.inner.stream_chat(messages, config).await
+        self.inner
+            .stream_chat(messages, self.apply_overrides(config))
+            .await
     }
 
     fn bind_tools(
@@ -353,6 +425,35 @@ impl std::ops::Deref for LLMClient {
 mod tests {
     use super::*;
     use crate::openai::{OpenAIChat, OpenAIConfig};
+    use crate::ENV_TEST_LOCK;
+
+    /// Env vars that `LLMClient::from_env` checks, in detection order.
+    const DETECTION_ENV_VARS: [&str; 11] = [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "QWEN_API_KEY",
+        "MOONSHOT_API_KEY",
+        "ZHIPU_API_KEY",
+        "MISTRAL_API_KEY",
+        "COHERE_API_KEY",
+        "GEMINI_API_KEY",
+        "OLLAMA_BASE_URL",
+    ];
+
+    fn save_and_set(key: &str, value: &str) -> Option<String> {
+        let old = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        old
+    }
+
+    fn restore(key: &str, old: Option<String>) {
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
 
     #[test]
     fn test_from_llm_openai() {
@@ -382,14 +483,110 @@ mod tests {
 
     #[test]
     fn test_from_env_no_keys() {
-        // Clear env vars, ensure from_env errors
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("OLLAMA_BASE_URL");
+        let _lock = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Clear all detection vars, ensure from_env errors
+        let saved: Vec<(&str, Option<String>)> = DETECTION_ENV_VARS
+            .iter()
+            .map(|k| {
+                let old = std::env::var(k).ok();
+                std::env::remove_var(k);
+                (*k, old)
+            })
+            .collect();
 
         let result = LLMClient::from_env();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No LLM provider detected"));
+
+        for (k, old) in saved {
+            restore(k, old);
+        }
+    }
+
+    #[test]
+    fn test_from_env_detects_each_provider() {
+        for key in DETECTION_ENV_VARS {
+            let _lock = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // Clear every detection var, then set exactly one.
+            let saved: Vec<(&str, Option<String>)> = DETECTION_ENV_VARS
+                .iter()
+                .map(|k| {
+                    let old = std::env::var(k).ok();
+                    std::env::remove_var(k);
+                    (*k, old)
+                })
+                .collect();
+
+            let old = save_and_set(key, "test-value");
+            // Azure also needs endpoint + deployment to build its config.
+            let azure_extra: Vec<(&str, Option<String>)> = if key == "AZURE_OPENAI_API_KEY" {
+                vec![
+                    (
+                        "AZURE_OPENAI_ENDPOINT",
+                        save_and_set("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com"),
+                    ),
+                    (
+                        "AZURE_OPENAI_DEPLOYMENT_NAME",
+                        save_and_set("AZURE_OPENAI_DEPLOYMENT_NAME", "test-deployment"),
+                    ),
+                    (
+                        "AZURE_OPENAI_API_VERSION",
+                        save_and_set("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+                    ),
+                ]
+            } else {
+                vec![]
+            };
+
+            let result = LLMClient::from_env();
+            assert!(result.is_ok(), "expected detection via {key}");
+
+            restore(key, old);
+            for (k, v) in azure_extra {
+                restore(k, v);
+            }
+            for (k, old) in saved {
+                restore(k, old);
+            }
+        }
+    }
+
+    #[test]
+    fn test_with_temperature_override_applies_to_config() {
+        let config = OpenAIConfig::new("test_key");
+        let client = LLMClient::openai(config)
+            .with_temperature(0.7)
+            .with_max_tokens(128);
+
+        // Getter reflects the per-client override (providers Q2).
+        assert_eq!(client.temperature(), Some(0.7));
+        assert_eq!(client.max_tokens(), Some(128));
+
+        // The merged config carries the overrides to the wrapped model.
+        let merged = client.apply_overrides(None).unwrap();
+        assert_eq!(merged.temperature, Some(0.7));
+        assert_eq!(merged.max_tokens, Some(128));
+
+        // Per-client override takes precedence over a per-call config value.
+        let cfg = RunnableConfig::default().with_temperature(0.2);
+        let merged = client.apply_overrides(Some(cfg)).unwrap();
+        assert_eq!(merged.temperature, Some(0.7));
+        assert_eq!(merged.max_tokens, Some(128));
+    }
+
+    #[test]
+    fn test_no_overrides_passes_config_through() {
+        let config = OpenAIConfig::new("test_key");
+        let client = LLMClient::openai(config);
+
+        assert_eq!(client.temperature(), None);
+        assert_eq!(client.max_tokens(), None);
+
+        // No overrides: config is returned as-is (not cloned).
+        let cfg = RunnableConfig::default().with_temperature(0.5);
+        let merged = client.apply_overrides(Some(cfg.clone())).unwrap();
+        assert_eq!(merged.temperature, Some(0.5));
+        assert!(client.apply_overrides(None).is_none());
     }
 
     #[test]

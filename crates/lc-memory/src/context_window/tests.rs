@@ -418,7 +418,7 @@ async fn test_truncate_preserves_order() {
     let result = cw.fit(messages).await.unwrap();
 
     // Verify order: system first, then conversation in order.
-    let types: Vec<&str> = result.iter().map(|m| m.type_str()).collect();
+    let types: Vec<String> = result.iter().map(|m| m.type_str()).collect();
     // System should be first.
     assert_eq!(types[0], "system");
 }

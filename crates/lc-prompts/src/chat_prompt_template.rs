@@ -1,18 +1,19 @@
 // crates/lc-prompts/src/chat_prompt_template.rs
 //! 聊天消息模板
 
+use crate::template_parser::{
+    format_template, parse_template, template_variables, TemplateSegment,
+};
 use lc_schema::Message;
-use regex::Regex;
 use std::collections::HashMap;
-use std::sync::LazyLock;
-
-static VARIABLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{(\w+)\}").unwrap());
 
 /// 聊天提示词模板
 ///
 /// 支持多条消息的模板，每条消息内容可以使用 `{variable}` 格式。
+/// 消息内容在构造时被解析一次，`format` 直接替换占位符而不是每次重扫正则。
 pub struct ChatPromptTemplate {
     messages: Vec<Message>,
+    segments: Vec<Vec<TemplateSegment>>,
 }
 
 impl ChatPromptTemplate {
@@ -33,7 +34,11 @@ impl ChatPromptTemplate {
     /// let messages = template.format(&vars).unwrap();
     /// ```
     pub fn new(messages: Vec<Message>) -> Self {
-        Self { messages }
+        let segments = messages
+            .iter()
+            .map(|msg| parse_template(&msg.content))
+            .collect();
+        Self { messages, segments }
     }
 
     /// 格式化模板，替换所有消息中的变量
@@ -49,29 +54,13 @@ impl ChatPromptTemplate {
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, String> {
         self.messages
             .iter()
-            .map(|msg| {
-                let mut content = msg.content.clone();
-
-                for cap in VARIABLE_RE.captures_iter(&msg.content) {
-                    let var_name = cap.get(1).unwrap().as_str();
-                    if let Some(value) = variables.get(var_name) {
-                        content = content.replace(&format!("{{{}}}", var_name), value);
-                    } else {
-                        return Err(format!("Missing variable: {} in message", var_name));
-                    }
-                }
-
-                Ok(Message {
-                    content,
-                    images: msg.images.clone(),
-                    audio: msg.audio.clone(),
-                    files: msg.files.clone(),
-                    message_type: msg.message_type.clone(),
-                    name: msg.name.clone(),
-                    additional_kwargs: msg.additional_kwargs.clone(),
-                    id: msg.id.clone(),
-                    tool_calls: msg.tool_calls.clone(),
-                })
+            .zip(&self.segments)
+            .map(|(msg, segments)| {
+                let content = format_template(&msg.content, segments, variables)
+                    .map_err(|e| format!("{e} in message {msg:?}"))?;
+                let mut formatted = msg.clone();
+                formatted.content = content;
+                Ok(formatted)
             })
             .collect()
     }
@@ -81,15 +70,13 @@ impl ChatPromptTemplate {
     /// # 返回
     /// 变量名列表（去重）
     pub fn variables(&self) -> Vec<String> {
-        let mut vars = std::collections::HashSet::new();
-
-        for msg in &self.messages {
-            for cap in VARIABLE_RE.captures_iter(&msg.content) {
-                vars.insert(cap.get(1).unwrap().as_str().to_string());
+        let mut seen = std::collections::HashSet::new();
+        for segments in &self.segments {
+            for var in template_variables(segments) {
+                seen.insert(var);
             }
         }
-
-        vars.into_iter().collect()
+        seen.into_iter().collect()
     }
 
     /// 获取原始消息模板
@@ -145,6 +132,15 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "你是一个编程助手。");
         assert_eq!(messages[1].content, "你好，我是小明。");
+        // 非 content 字段应被保留（Q4：不再手工逐字段克隆）
+        assert!(matches!(
+            messages[0].message_type,
+            lc_schema::MessageType::System
+        ));
+        assert!(matches!(
+            messages[1].message_type,
+            lc_schema::MessageType::Human
+        ));
     }
 
     #[test]
@@ -180,5 +176,33 @@ mod tests {
 
         let result = template.format(&vars);
         assert!(result.is_err());
+        assert!(result.unwrap_err().contains("day"));
+    }
+
+    #[test]
+    fn test_escaped_braces_in_message() {
+        let template = ChatPromptTemplate::new(vec![Message::system(
+            "请输出 JSON: {{\"key\": \"{value}\"}}",
+        )]);
+
+        let mut vars = HashMap::new();
+        vars.insert("value", "v");
+
+        let messages = template.format(&vars).unwrap();
+        assert_eq!(messages[0].content, "请输出 JSON: {\"key\": \"v\"}");
+    }
+
+    #[test]
+    fn test_multimodal_fields_preserved_on_format() {
+        let msg = Message::human_with_image("{question}", "https://example.com/i.png");
+        let template = ChatPromptTemplate::new(vec![msg]);
+
+        let mut vars = HashMap::new();
+        vars.insert("question", "看这张图");
+
+        let messages = template.format(&vars).unwrap();
+        assert_eq!(messages[0].content, "看这张图");
+        assert_eq!(messages[0].images.len(), 1);
+        assert_eq!(messages[0].images[0].url, "https://example.com/i.png");
     }
 }

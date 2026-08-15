@@ -1,12 +1,13 @@
 // lc-vector-stores/src/document_store/store.rs
 //! In-memory document store implementation.
 
-use crate::document_store::chunked::InMemoryChunkedDocumentStore;
+use crate::document_store::chunked::{lock_error, InMemoryChunkedDocumentStore};
 use crate::document_store::types::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{Document, VectorStoreError};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 // ============================================================================
@@ -14,16 +15,20 @@ use uuid::Uuid;
 // ============================================================================
 
 /// 内存文档存储
+///
+/// Q5: 用 `tokio::sync::RwLock`(与 InMemoryVectorStore 一致),方法内直接 `.await`,
+/// 不会阻塞 executor;且没有同步 `_blocking` 方法在 async 上下文中被调用,不存在
+/// `blocking_read/write` 会 panic 的约束。
 pub struct InMemoryDocumentStore {
     /// 文档集合
-    documents: Arc<std::sync::RwLock<HashMap<String, Document>>>,
+    documents: Arc<RwLock<HashMap<String, Document>>>,
 }
 
 impl InMemoryDocumentStore {
     /// 创建新的内存文档存储
     pub fn new() -> Self {
         Self {
-            documents: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            documents: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -42,7 +47,7 @@ impl DocumentStore for InMemoryDocumentStore {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut store = self.documents.write().unwrap();
+        let mut store = self.documents.write().await;
         store.insert(id.clone(), document);
 
         Ok(id)
@@ -52,7 +57,7 @@ impl DocumentStore for InMemoryDocumentStore {
         &self,
         documents: Vec<Document>,
     ) -> Result<Vec<String>, VectorStoreError> {
-        let mut store = self.documents.write().unwrap();
+        let mut store = self.documents.write().await;
         let mut ids = Vec::new();
 
         for doc in documents {
@@ -65,23 +70,23 @@ impl DocumentStore for InMemoryDocumentStore {
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
-        let store = self.documents.read().unwrap();
+        let store = self.documents.read().await;
         Ok(store.get(id).cloned())
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let mut store = self.documents.write().unwrap();
+        let mut store = self.documents.write().await;
         store.remove(id);
         Ok(())
     }
 
     async fn count(&self) -> usize {
-        let store = self.documents.read().unwrap();
+        let store = self.documents.read().await;
         store.len()
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let mut store = self.documents.write().unwrap();
+        let mut store = self.documents.write().await;
         store.clear();
         Ok(())
     }
@@ -101,11 +106,11 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         // Write to parent_docs so the document is retrievable as a parent
         {
-            let mut parents = self.parent_docs.write().unwrap();
+            let mut parents = lock_error(self.parent_docs.write())?;
             parents.insert(id.clone(), document.clone());
         }
 
-        let mut chunks = self.chunks.write().unwrap();
+        let mut chunks = lock_error(self.chunks.write())?;
 
         let chunk = ChunkDocument::new(id.clone(), id.clone(), document.content.clone(), 0);
 
@@ -113,7 +118,7 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         // Also update parent_to_chunks mapping
         {
-            let mut mapping = self.parent_to_chunks.write().unwrap();
+            let mut mapping = lock_error(self.parent_to_chunks.write())?;
             mapping.entry(id.clone()).or_default().push(id.clone());
         }
 
@@ -137,7 +142,7 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let mut chunks = self.chunks.write().unwrap();
+        let mut chunks = lock_error(self.chunks.write())?;
         chunks.remove(id);
         Ok(())
     }

@@ -86,12 +86,14 @@ mod char_ratio_tests {
 /// Token 用量统计（计数器模块内部类型）
 ///
 /// 注意：`language_models::TokenUsage` 是 LLM API 返回的用量（字段为 `usize`），
-/// 此 `TrackerTokenUsage` 是本地追踪累计用量（字段为 `u32`），两者职责不同。
+/// 此 `TrackerTokenUsage` 是本地追踪累计用量，**字段同为 `usize`**，两者可互转
+/// 而无精度损失（Q6：统一底层类型，不再存在 `usize` vs `u32` 的命名冲突）。
+/// 这里不使用 `TokenUsage` 别名，避免与 `language_models::TokenUsage` 混淆。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TrackerTokenUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
 }
 
 impl TrackerTokenUsage {
@@ -100,7 +102,7 @@ impl TrackerTokenUsage {
     }
 
     /// 累加用量
-    pub fn add(&mut self, prompt: u32, completion: u32) {
+    pub fn add(&mut self, prompt: usize, completion: usize) {
         self.prompt_tokens += prompt;
         self.completion_tokens += completion;
         self.total_tokens = self.prompt_tokens + self.completion_tokens;
@@ -110,9 +112,6 @@ impl TrackerTokenUsage {
         *self = Self::default();
     }
 }
-
-// Re-export as TokenUsage for backward compatibility within this module
-pub use TrackerTokenUsage as TokenUsage;
 
 #[cfg(test)]
 mod tests {

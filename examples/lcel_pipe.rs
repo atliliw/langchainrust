@@ -31,7 +31,10 @@ async fn main() {
         .pipe(to_string);
 
     let result = pipeline.invoke(3, None).await.unwrap();
-    println!("3 → double → add_one → to_string = {} (expected \"result: 7\")", result);
+    println!(
+        "3 → double → add_one → to_string = {} (expected \"result: 7\")",
+        result
+    );
 
     // 3. Passthrough: input passes through unchanged
     let passthrough = RunnablePassthrough::<i32>::new();
@@ -68,15 +71,24 @@ async fn main() {
     // 6. Parallel: run multiple steps concurrently
     let parallel = RunnableParallel::<String>::new()
         .with("len", RunnableLambda::new_sync(|s: String| s.len() as i64))
-        .with("upper", RunnableLambda::new_sync(|s: String| s.to_uppercase()));
+        .with(
+            "upper",
+            RunnableLambda::new_sync(|s: String| s.to_uppercase()),
+        );
 
     let result = parallel.invoke("hello".to_string(), None).await.unwrap();
-    println!("parallel(\"hello\") = {:?} (expected len=5, upper=HELLO)", result);
+    println!(
+        "parallel(\"hello\") = {:?} (expected len=5, upper=HELLO)",
+        result
+    );
 
     // 7. Batch processing
     let doubler = RunnableLambda::new_sync(|x: i32| x * 2);
     let results = doubler.batch(vec![1, 2, 3, 4, 5], None).await.unwrap();
-    println!("batch([1,2,3,4,5]) → double = {:?} (expected [2,4,6,8,10])", results);
+    println!(
+        "batch([1,2,3,4,5]) → double = {:?} (expected [2,4,6,8,10])",
+        results
+    );
 
     // 8. Pipeline with config
     let pipeline = RunnableLambda::new_sync(|x: i32| x + 100);

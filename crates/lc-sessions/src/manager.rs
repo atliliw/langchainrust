@@ -25,6 +25,15 @@ pub struct SessionManager {
 
     /// 记忆输出 key(需与记忆实例的 output_key 对齐,默认 `"output"`)。
     memory_output_key: String,
+
+    /// Q2: 按 session id 的条纹锁,序列化 `chat`/`clear`/`archive` 的
+    /// get→modify→update 整段操作,避免同一会话并发对话时互相覆盖丢消息。
+    /// 外层 map 的 Mutex 只保护 map 本身,拿到 `Arc<Mutex<()>>` 后立即释放。
+    locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+
+    /// Q3: 可选上下文窗口(消息条数)。`Some(n)` 时未挂记忆的 `chat()` 只把
+    /// 最近 n 条消息喂给 LLM;`None` 保持原行为(完整历史)。
+    max_context_messages: Option<usize>,
 }
 
 impl SessionManager {
@@ -34,7 +43,25 @@ impl SessionManager {
             memory: None,
             memory_input_key: "input".to_string(),
             memory_output_key: "output".to_string(),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+            max_context_messages: None,
         }
+    }
+
+    /// Q3: 限定未挂记忆时 `chat()` 喂给 LLM 的消息窗口(最近 `n` 条)。
+    /// `n` 为消息条数而非 token 数;不调用则保持完整历史。
+    pub fn with_max_context_messages(mut self, n: usize) -> Self {
+        self.max_context_messages = Some(n);
+        self
+    }
+
+    /// Q2: 获取 session id 对应的条纹锁(不存在则惰性创建)。
+    async fn session_lock(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().await;
+        locks
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// P2-1: 挂接记忆组件,启用记忆管理的对话上下文。
@@ -97,6 +124,11 @@ impl SessionManager {
     where
         L::Error: std::fmt::Display,
     {
+        // Q2: 持有本会话的条纹锁,整段 get→modify→llm→update 互斥,
+        // 并发对话不会读到彼此写入中间的中间态。
+        let lock = self.session_lock(id).await;
+        let _guard = lock.lock().await;
+
         let mut session = self
             .store
             .get(id)
@@ -112,7 +144,7 @@ impl SessionManager {
                 let vars = mem
                     .load_memory_variables(&inputs)
                     .await
-                    .map_err(|e| SessionError::StoreError(format!("加载记忆失败: {}", e)))?;
+                    .map_err(|e| SessionError::Memory(format!("加载记忆失败: {}", e)))?;
                 lc_memory::memory_variables_to_messages(&vars)
             };
 
@@ -120,11 +152,17 @@ impl SessionManager {
             messages.push(Message::human(&user_message));
             llm.chat(messages, None)
                 .await
-                .map_err(|e| SessionError::StoreError(e.to_string()))?
+                .map_err(|e| SessionError::Llm(e.to_string()))?
         } else {
-            llm.chat(session.messages.clone(), None)
+            // Q3: 限定上下文窗口时只取最近 n 条消息(含本轮用户消息),
+            // 未限定则保持完整历史。
+            let messages: Vec<Message> = match self.max_context_messages {
+                Some(n) => session.recent_messages(n).into_iter().cloned().collect(),
+                None => session.messages.clone(),
+            };
+            llm.chat(messages, None)
                 .await
-                .map_err(|e| SessionError::StoreError(e.to_string()))?
+                .map_err(|e| SessionError::Llm(e.to_string()))?
         };
         let content = response.content.clone();
         session.add_message(Message::ai(content.clone()));
@@ -135,7 +173,7 @@ impl SessionManager {
             let outputs = HashMap::from([(self.memory_output_key.clone(), content.clone())]);
             mem.save_context(&inputs, &outputs)
                 .await
-                .map_err(|e| SessionError::StoreError(format!("保存记忆失败: {}", e)))?;
+                .map_err(|e| SessionError::Memory(format!("保存记忆失败: {}", e)))?;
         }
 
         self.store.update(&session).await?;
@@ -154,6 +192,9 @@ impl SessionManager {
 
     /// 清空会话历史(保留会话)
     pub async fn clear(&self, id: &str) -> Result<(), SessionError> {
+        // Q2: 与 chat 走同一把条纹锁,避免与并发对话交错。
+        let lock = self.session_lock(id).await;
+        let _guard = lock.lock().await;
         let mut session = self
             .store
             .get(id)
@@ -165,12 +206,27 @@ impl SessionManager {
 
     /// 归档会话
     pub async fn archive(&self, id: &str) -> Result<(), SessionError> {
+        let lock = self.session_lock(id).await;
+        let _guard = lock.lock().await;
         let mut session = self
             .store
             .get(id)
             .await?
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
         session.archive();
+        self.store.update(&session).await
+    }
+
+    /// 软删除会话(Q4:置为 `Deleted`,记录保留但不再出现在列表中)。
+    pub async fn delete_session(&self, id: &str) -> Result<(), SessionError> {
+        let lock = self.session_lock(id).await;
+        let _guard = lock.lock().await;
+        let mut session = self
+            .store
+            .get(id)
+            .await?
+            .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
+        session.delete();
         self.store.update(&session).await
     }
 
@@ -473,5 +529,116 @@ mod tests {
         assert_eq!(received[1][0].content, "第一句");
         assert_eq!(received[1][1].content, "回复");
         assert_eq!(received[1][2].content, "第二句");
+    }
+
+    /// Q3: 未挂记忆 + `with_max_context_messages(n)` 时,LLM 只收到最近 n 条消息。
+    /// 第三轮会话历史已满 4 条,窗口 2 只取最近 2 条(上轮 AI + 本轮用户)。
+    #[tokio::test]
+    async fn test_chat_respects_context_window() {
+        let llm = MockSessionLlm::new("回复");
+        let mgr = manager().with_max_context_messages(2);
+        let id = mgr.create_session().await.unwrap();
+
+        mgr.chat(&id, &llm, "第一句".to_string()).await.unwrap();
+        mgr.chat(&id, &llm, "第二句".to_string()).await.unwrap();
+        mgr.chat(&id, &llm, "第三句".to_string()).await.unwrap();
+
+        let received = llm.received().await;
+        assert_eq!(received.len(), 3);
+        // 第一轮:1 条;第二轮:2 条(上轮 AI + 本轮用户)
+        assert_eq!(received[0].len(), 1);
+        assert_eq!(received[1].len(), 2);
+        // 第三轮:窗口 2 → 只取最近 2 条,不再携带完整历史
+        assert_eq!(received[2].len(), 2);
+        assert_eq!(received[2][0].content, "回复");
+        assert_eq!(received[2][1].content, "第三句");
+    }
+
+    /// Q4: 软删除会话后状态为 Deleted,记录保留但不再出现在用户列表。
+    #[tokio::test]
+    async fn test_delete_session() {
+        let mgr = manager();
+        let id = mgr.create_session_for("u1").await.unwrap();
+        mgr.delete_session(&id).await.unwrap();
+
+        let session = mgr.get_session(&id).await.unwrap().unwrap();
+        assert_eq!(session.status, SessionStatus::Deleted);
+        assert!(mgr.list_by_user("u1").await.unwrap().is_empty());
+
+        // 删除不存在的会话 → NotFound
+        assert!(mgr.delete_session("nope").await.is_err());
+    }
+
+    // ---- mock 失败的 LLM:验证 LLM 错误被映射为 SessionError::Llm 而非 StoreError ----
+
+    #[derive(Clone)]
+    struct MockFailLlm;
+
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for MockFailLlm {
+        fn model_name(&self) -> &str {
+            "mock-fail-llm"
+        }
+
+        fn get_num_tokens(&self, text: &str) -> usize {
+            text.len()
+        }
+
+        fn with_temperature(self, _temp: f32) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+
+        fn with_max_tokens(self, _max: usize) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for MockFailLlm {
+        type Error = MockSessionLlmError;
+
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Err(MockSessionLlmError("模型超时".to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for MockFailLlm {
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(messages, config).await
+        }
+
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        {
+            unimplemented!("stream_chat not needed for tests")
+        }
+    }
+
+    /// Q1: LLM 调用失败必须映射为 `SessionError::Llm`,不能伪装成存储错误。
+    #[tokio::test]
+    async fn test_chat_maps_llm_error() {
+        let llm = MockFailLlm;
+        let mgr = manager();
+        let id = mgr.create_session().await.unwrap();
+
+        let err = mgr.chat(&id, &llm, "你好".to_string()).await.unwrap_err();
+        assert!(matches!(err, SessionError::Llm(ref msg) if msg.contains("模型超时")));
     }
 }

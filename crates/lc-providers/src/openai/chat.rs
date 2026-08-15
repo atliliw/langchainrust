@@ -206,13 +206,21 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
     async fn stream(
         &self,
         input: Vec<Message>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
         use futures_util::StreamExt;
 
         let model = self.config.model.clone();
-        let token_stream = self.stream_chat_internal(input).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        let token_stream = effective.stream_chat_internal(input).await?;
 
         // H4: True streaming — emit one LLMResult per token instead of
         // collecting all tokens first and emitting a single result.
@@ -238,7 +246,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OpenAIChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text)
+        lc_core::token_counter::count_tokens(text).unwrap_or(0)
     }
 
     fn temperature(&self) -> Option<f32> {
@@ -298,7 +306,30 @@ impl BaseChatModel for OpenAIChat {
             }
         }
 
-        let result = self.chat_internal(messages.clone()).await;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+
+        // Q4: honor `config.streaming` — aggregate the streaming token stream
+        // into a single LLMResult instead of ignoring the field.
+        let result = if effective.config.streaming {
+            let stream = effective.stream_chat_internal(messages.clone()).await?;
+            let content = Self::aggregate_stream(stream).await?;
+            Ok(LLMResult {
+                content,
+                model: effective.config.model.clone(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        } else {
+            effective.chat_internal(messages.clone()).await
+        };
 
         match result {
             Ok(response) => {
@@ -363,7 +394,15 @@ impl BaseChatModel for OpenAIChat {
             }
         }
 
-        let stream = self.stream_chat_internal(messages).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
         let stream = stream.then(move |token_result| {
@@ -382,6 +421,15 @@ impl BaseChatModel for OpenAIChat {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn bind_tools(
+        &self,
+        tools: Vec<ToolDefinition>,
+    ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+        // Expose the inherent tool-binding capability at the trait level so it
+        // survives being wrapped by `ChatModelWrapper` / `LLMClient` (Q1).
+        Some(Box::new(self.bind_tools(tools)))
     }
 }
 
@@ -417,9 +465,24 @@ impl OpenAIChat {
             .ok_or_else(|| OpenAIError::Api("No choices in response".to_string()))?;
         let message = &choice.message;
 
-        // 推理模型(如 glm-5.2, DeepSeek-R1)的 content 可能为空,
-        // 实际回答在 reasoning_content 中;优先用 content,fallback 到 reasoning_content
-        // reasoning_content 应存入 thinking_content 而非 content (H63)
+        Ok(Self::llm_result_from_message(
+            message,
+            chat_response.model,
+            chat_response.usage,
+        ))
+    }
+
+    /// Builds the `LLMResult` from a parsed response message (Q3).
+    ///
+    /// Thinking models (glm-5.2, DeepSeek-R1) may return an empty `content` with
+    /// the actual reasoning in `reasoning_content`. `content` stays empty in that
+    /// case — it is never filled from `reasoning_content` — and the reasoning only
+    /// goes into `thinking_content`.
+    fn llm_result_from_message(
+        message: &OpenAIMessage,
+        model: String,
+        usage: Option<OpenAIUsage>,
+    ) -> LLMResult {
         let content = message
             .content
             .clone()
@@ -428,24 +491,17 @@ impl OpenAIChat {
 
         let thinking_content = message.reasoning_content.clone().filter(|c| !c.is_empty());
 
-        // If content is empty but reasoning_content exists, use reasoning as content (backward compat)
-        let content = if content.is_empty() {
-            message.reasoning_content.clone().unwrap_or_default()
-        } else {
-            content
-        };
-
-        Ok(LLMResult {
+        LLMResult {
             content,
-            model: chat_response.model,
-            token_usage: chat_response.usage.map(|u| TokenUsage {
+            model,
+            token_usage: usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
             }),
             tool_calls: message.tool_calls.clone(),
             thinking_content,
-        })
+        }
     }
 
     async fn stream_chat_internal(
@@ -523,6 +579,21 @@ impl OpenAIChat {
 
         Ok(Box::pin(stream))
     }
+
+    /// Aggregates a token stream into a single string (Q4).
+    ///
+    /// This is the piece that makes `config.streaming` observable: the
+    /// non-streaming `chat()` path consumes the token stream through here.
+    async fn aggregate_stream(
+        mut stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>,
+    ) -> Result<String, OpenAIError> {
+        use futures_util::StreamExt;
+        let mut content = String::new();
+        while let Some(item) = stream.next().await {
+            content.push_str(&item?);
+        }
+        Ok(content)
+    }
 }
 
 /// OpenAI 错误类型
@@ -589,6 +660,91 @@ mod tests_env {
         env::remove_var("OPENAI_API_KEY");
         assert!(OpenAIChat::from_env_result().is_err());
         restore("OPENAI_API_KEY", old);
+    }
+}
+
+#[cfg(test)]
+mod tests_q3_q4 {
+    use super::*;
+
+    fn message(content: Option<&str>, reasoning: Option<&str>) -> OpenAIMessage {
+        OpenAIMessage {
+            role: "assistant".to_string(),
+            content: content.map(|s| s.to_string()),
+            reasoning_content: reasoning.map(|s| s.to_string()),
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn test_llm_result_keeps_content_when_non_empty() {
+        let msg = message(Some("Hello"), Some("hidden chain-of-thought"));
+        let result = OpenAIChat::llm_result_from_message(
+            &msg,
+            "gpt-test".to_string(),
+            Some(OpenAIUsage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                total_tokens: 30,
+            }),
+        );
+
+        assert_eq!(result.content, "Hello");
+        assert_eq!(
+            result.thinking_content.as_deref(),
+            Some("hidden chain-of-thought")
+        );
+        assert_eq!(result.model, "gpt-test");
+        let usage = result.token_usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 20);
+        assert_eq!(usage.total_tokens, 30);
+    }
+
+    #[test]
+    fn test_llm_result_reasoning_does_not_leak_into_content() {
+        // Q3: reasoning-only responses keep `content` empty — no fallback.
+        let msg = message(Some(""), Some("reasoning only"));
+        let result = OpenAIChat::llm_result_from_message(&msg, "gpt-test".to_string(), None);
+
+        assert_eq!(result.content, "");
+        assert_eq!(result.thinking_content.as_deref(), Some("reasoning only"));
+    }
+
+    #[test]
+    fn test_llm_result_empty_content_no_thinking() {
+        let msg = message(None, Some(""));
+        let result = OpenAIChat::llm_result_from_message(&msg, "gpt-test".to_string(), None);
+
+        assert_eq!(result.content, "");
+        assert!(result.thinking_content.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_stream_concatenates_tokens_in_order() {
+        // Q4: the aggregation helper produces the full content in order.
+        let stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>> =
+            Box::pin(futures_util::stream::iter(vec![
+                Ok("Hello".to_string()),
+                Ok(", ".to_string()),
+                Ok("world".to_string()),
+            ]));
+
+        let content = OpenAIChat::aggregate_stream(stream).await.unwrap();
+        assert_eq!(content, "Hello, world");
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_stream_stops_on_error() {
+        let stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>> =
+            Box::pin(futures_util::stream::iter(vec![
+                Ok("Hello".to_string()),
+                Err(OpenAIError::Api("boom".to_string())),
+                Ok("never".to_string()),
+            ]));
+
+        let err = OpenAIChat::aggregate_stream(stream).await.unwrap_err();
+        assert!(matches!(err, OpenAIError::Api(_)));
     }
 }
 

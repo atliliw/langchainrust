@@ -380,7 +380,7 @@ fn truncate_docs_by_tokens(docs: &[Document], max_tokens: Option<usize>) -> Vec<
             let mut used_tokens = 0usize;
 
             for doc in docs {
-                let doc_tokens = count_tokens(&doc.content);
+                let doc_tokens = count_tokens(&doc.content).unwrap_or(0);
                 if used_tokens + doc_tokens > budget && !result.is_empty() {
                     break;
                 }

@@ -146,6 +146,17 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 current_node = next_node;
             }
 
+            // Q3: the loop only exits without reaching END when the recursion
+            // limit was hit — report it instead of silently emitting `end`.
+            if current_node != END {
+                let _ = tx
+                    .send(Err(GraphError::RecursionLimitReached(
+                        graph.recursion_limit,
+                    )))
+                    .await;
+                return;
+            }
+
             let _ = tx.send(Ok(StreamEvent::end(state))).await;
         });
 
@@ -343,7 +354,12 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
         &self,
         targets: &[String],
         state: &S,
+        recursion_count: usize,
     ) -> GraphResult<Vec<(String, GraphInvocation<S>)>> {
+        // Q6: branches inherit the main path's recursion count so their depth is
+        // charged against the same shared `recursion_limit` budget. A branch that
+        // would exceed the limit returns `RecursionLimitReached` and aborts the
+        // whole fan-out instead of running unbounded.
         let futures: Vec<_> = targets
             .iter()
             .filter(|t| *t != END)
@@ -351,7 +367,9 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 let target = target.clone();
                 let state_clone = state.clone();
                 async move {
-                    let result = self.invoke_from_node(target.clone(), state_clone).await;
+                    let result = self
+                        .invoke_from_node_with_count(target.clone(), state_clone, recursion_count)
+                        .await;
                     result.map(|inv| (target, inv))
                 }
             })

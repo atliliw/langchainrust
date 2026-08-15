@@ -37,7 +37,9 @@ pub mod tracing;
 pub use base::{CallbackHandler, CallbackManager};
 #[cfg(feature = "opentelemetry")]
 pub use handlers::OtelHandler;
-pub use handlers::{FileCallbackHandler, LangSmithHandler, LogFormat, StdOutHandler};
+pub use handlers::{
+    FileCallbackHandler, GenericHandler, LangSmithHandler, LogFormat, StdOutHandler,
+};
 pub use langsmith_client::{LangSmithClient, LangSmithConfig, LangSmithError};
 pub use run_tree::{RunCreate, RunTree, RunUpdate};
 pub use run_type::RunType;

@@ -113,6 +113,27 @@ impl PineconeStore {
         Ok(result)
     }
 
+    /// 读取索引统计(真实 count 的唯一可靠来源)。
+    ///
+    /// Pinecone REST 提供 `describe_index_stats`,返回 `totalVectorCount`。
+    pub async fn describe_index_stats(&self) -> Result<PineconeIndexStats, String> {
+        let url = format!("{}/describe_index_stats", self.host);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Api-Key", &self.api_key)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "Pinecone describe_index_stats error: {}",
+                resp.status()
+            ));
+        }
+        resp.json().await.map_err(|e| e.to_string())
+    }
+
     /// Delete by IDs.
     pub async fn delete(&self, ids: &[String]) -> Result<(), String> {
         let url = format!("{}/vectors/delete", self.host);
@@ -243,9 +264,15 @@ impl VectorStore for PineconeStore {
     }
 
     async fn count(&self) -> usize {
-        // Pinecone HTTP API doesn't expose a simple count endpoint in the basic API.
-        // Return 0 as a placeholder; use the Pinecone dashboard for accurate counts.
-        0
+        // Q4: 真实现 —— 通过 describe_index_stats 读取 totalVectorCount,不再写死 0。
+        // trait 签名返回 usize,网络失败时退化为 0 并记录日志(不抛错)。
+        match self.describe_index_stats().await {
+            Ok(stats) => stats.total_vector_count,
+            Err(e) => {
+                log::warn!("Pinecone count 失败,按 0 处理: {}", e);
+                0
+            }
+        }
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
@@ -266,6 +293,16 @@ struct QueryMatch {
     #[allow(dead_code)]
     score: f64,
     metadata: Option<HashMap<String, String>>,
+}
+
+/// Pinecone `describe_index_stats` 响应(只需我们关心的字段)。
+///
+/// Q4: 提供给 [`PineconeStore::describe_index_stats`],供调用方读取真实向量总数,
+/// 也是 [`VectorStore::count`](crate::VectorStore::count) 的数据来源。
+#[derive(Deserialize)]
+pub struct PineconeIndexStats {
+    #[serde(default)]
+    pub total_vector_count: usize,
 }
 
 #[cfg(test)]

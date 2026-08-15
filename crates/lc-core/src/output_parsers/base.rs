@@ -36,13 +36,22 @@ pub trait BaseOutputParser<Output: Send + Sync + 'static>: Send + Sync {
     /// 将原始 LLM 输出文本解析为目标类型
     async fn parse(&self, text: &str) -> OutputParserResult<Output>;
 
-    /// 带重试的解析（默认实现：不重试）
-    async fn parse_with_retry(
-        &self,
-        text: &str,
-        _max_retries: usize,
-    ) -> OutputParserResult<Output> {
-        self.parse(text).await
+    /// 带重试的解析（默认实现：真正重试 `max_retries` 次）
+    ///
+    /// 对同一份文本反复调用 [`parse`](Self::parse)，最多尝试
+    /// `max_retries + 1` 次。重试同一份文本只对非确定性解析（例如内部
+    /// 依赖网络/外部服务的解析器）有意义；确定性解析器首次失败后必然
+    /// 重复失败，最终返回最后一次错误。需要基于失败原因修正输入的
+    /// 解析器应覆写此方法。
+    async fn parse_with_retry(&self, text: &str, max_retries: usize) -> OutputParserResult<Output> {
+        let mut last_err = None;
+        for _ in 0..=max_retries {
+            match self.parse(text).await {
+                Ok(output) => return Ok(output),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.expect("at least one parse attempt was made"))
     }
 
     /// 获取格式指令（用于提示 LLM 按指定格式输出）

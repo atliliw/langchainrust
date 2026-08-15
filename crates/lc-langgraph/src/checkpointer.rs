@@ -90,13 +90,13 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
 
 /// Thread-safe memory checkpointer
 pub struct ThreadSafeMemoryCheckpointer<S: StateSchema> {
-    checkpoints: std::sync::Mutex<HashMap<String, CheckpointData<S>>>,
+    checkpoints: Mutex<HashMap<String, CheckpointData<S>>>,
 }
 
 impl<S: StateSchema> ThreadSafeMemoryCheckpointer<S> {
     pub fn new() -> Self {
         Self {
-            checkpoints: std::sync::Mutex::new(HashMap::new()),
+            checkpoints: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -112,15 +112,12 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
     async fn save(&self, state: &S) -> GraphResult<String> {
         let data = CheckpointData::new(state.clone());
         let id = data.id.clone();
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone(), data);
+        self.checkpoints.lock().await.insert(id.clone(), data);
         Ok(id)
     }
 
     async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
-        let checkpoints = self.checkpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let checkpoints = self.checkpoints.lock().await;
         checkpoints
             .get(checkpoint_id)
             .map(|d| d.state.clone())
@@ -130,20 +127,11 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
     }
 
     async fn list(&self) -> GraphResult<Vec<String>> {
-        Ok(self
-            .checkpoints
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect())
+        Ok(self.checkpoints.lock().await.keys().cloned().collect())
     }
 
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(checkpoint_id);
+        self.checkpoints.lock().await.remove(checkpoint_id);
         Ok(())
     }
 }
@@ -190,11 +178,11 @@ impl<S: StateSchema> FileCheckpointer<S> {
     }
 }
 
-impl<S: StateSchema> Default for FileCheckpointer<S> {
-    fn default() -> Self {
-        Self::new(".checkpoints").expect("Failed to create default checkpoint directory")
-    }
-}
+// NOTE: `Default` is intentionally NOT implemented for `FileCheckpointer` (Q1).
+// The default constructor would have to create the `.checkpoints` directory, which
+// is I/O that can fail (read-only cwd, disk full, permissions) — `Default` cannot
+// report that failure, so it would have to panic. Use `FileCheckpointer::new(...)`
+// which returns a `GraphResult` and surfaces the error instead.
 
 #[async_trait]
 impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {

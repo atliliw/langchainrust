@@ -96,9 +96,15 @@ pub trait BaseChatModel: BaseLanguageModel<Vec<Message>, LLMResult> {
 
     /// Bind tool definitions for function calling.
     ///
-    /// Returns `None` by default if the provider does not support tool binding.
-    /// Providers that support function calling (OpenAI, Ollama) override this
-    /// to return a boxed chat model with the tools attached.
+    /// Returns `Some(model)` with the tools attached when the provider
+    /// supports tool calling; returns `None` when it does not. **The default
+    /// returns `None`, signalling a hard capability limit** — callers MUST
+    /// treat `None` as "this model cannot call tools" and branch accordingly
+    /// (e.g. fall back to text-only prompting). Providers that support
+    /// function calling (OpenAI, Ollama) override this.
+    ///
+    /// This is an explicit result, not a silent degrade: `None` is the honest
+    /// answer that tool-calling is unavailable on this model.
     fn bind_tools(
         &self,
         _tools: Vec<ToolDefinition>,

@@ -156,13 +156,26 @@ impl VectorStore for ChunkedVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        // Q2: 不再硬过滤 score > 0 —— 全负分语料下也应返回 top-k;
+        // 是否设阈值由调用方通过 similarity_search_with_min_score 显式决定。
+        self.similarity_search_with_min_score(query_embedding, k, None)
+            .await
+    }
+
+    async fn similarity_search_with_min_score(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        min_score: Option<f32>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let vectors = self.vectors.read().await;
 
+        // 计算所有向量的相似度,先按阈值过滤再取 top-k (Q2)
         let mut results: Vec<(String, f32)> = vectors
             .values()
             .filter_map(|entry| {
                 let score = cosine_similarity(query_embedding, &entry.embedding).unwrap_or(0.0);
-                if score > 0.0 {
+                if min_score.is_none_or(|t| score >= t) {
                     Some((entry.chunk_id.clone(), score))
                 } else {
                     None
@@ -301,6 +314,41 @@ mod tests {
         assert_eq!(parent_id, "parent_001");
         assert!(chunk_ids.len() > 1);
         assert_eq!(vector_store.vector_count().await, chunk_ids.len());
+    }
+
+    /// Q2: 全非正分语料下 similarity_search 仍返回 top-k(不再被 score>0 硬过滤清空),
+    /// 且可用 similarity_search_with_min_score 显式过滤。
+    #[tokio::test]
+    async fn test_negative_scores_not_dropped() {
+        let doc_store = Arc::new(ChunkedDocumentStore::new());
+        let vector_store = ChunkedVectorStore::new(doc_store.clone(), 2);
+
+        for (cid, v) in [
+            ("chunk_001", vec![0.0, 1.0]),
+            ("chunk_002", vec![-1.0, 0.0]),
+            ("chunk_003", vec![0.0, -1.0]),
+        ] {
+            vector_store
+                .add_chunk_vector(cid.to_string(), v)
+                .await
+                .unwrap();
+            doc_store
+                .add_document(Document::new(cid).with_id(cid))
+                .await
+                .unwrap();
+        }
+
+        let query = vec![1.0, 0.0];
+
+        let results = vector_store.similarity_search(&query, 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| r.score <= 0.0));
+
+        let filtered = vector_store
+            .similarity_search_with_min_score(&query, 3, Some(-0.5))
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 2);
     }
 
     #[tokio::test]

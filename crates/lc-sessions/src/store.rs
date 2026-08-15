@@ -11,6 +11,10 @@ pub enum SessionError {
     NotFound(String),
     /// 存储操作错误
     StoreError(String),
+    /// LLM 调用错误(Q1:LLM 失败不得伪装成存储错误)
+    Llm(String),
+    /// 记忆组件错误
+    Memory(String),
 }
 
 impl std::fmt::Display for SessionError {
@@ -18,6 +22,8 @@ impl std::fmt::Display for SessionError {
         match self {
             SessionError::NotFound(id) => write!(f, "Session 不存在: {}", id),
             SessionError::StoreError(msg) => write!(f, "Session 存储错误: {}", msg),
+            SessionError::Llm(msg) => write!(f, "LLM 调用错误: {}", msg),
+            SessionError::Memory(msg) => write!(f, "记忆组件错误: {}", msg),
         }
     }
 }

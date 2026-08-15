@@ -673,7 +673,7 @@ impl BaseChatModel for StreamingMockChatModel {
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
         let tokens = self.tokens.clone();
-        let stream = futures_util::stream::iter(tokens.into_iter().map(|t| Ok(t)));
+        let stream = futures_util::stream::iter(tokens.into_iter().map(Ok));
         Ok(Box::pin(stream))
     }
 }
@@ -683,39 +683,20 @@ impl BaseChatModel for StreamingMockChatModel {
 // =======================================================================
 
 /// A Person type that supports partial deserialization via serde(default).
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Default)]
 #[serde(default)]
 struct PartialPerson {
     name: String,
     age: u32,
 }
 
-impl Default for PartialPerson {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            age: 0,
-        }
-    }
-}
-
 /// A Country type that supports partial deserialization via serde(default).
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Default)]
 #[serde(default)]
 struct PartialCountry {
     name: String,
     capital: String,
     population: u64,
-}
-
-impl Default for PartialCountry {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            capital: String::new(),
-            population: 0,
-        }
-    }
 }
 
 // =======================================================================

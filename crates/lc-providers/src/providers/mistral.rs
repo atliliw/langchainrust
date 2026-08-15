@@ -22,6 +22,7 @@
 //! let result = llm.chat(messages, None).await?;
 //! ```
 
+use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -266,14 +267,17 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for MistralChat {
 
 #[async_trait]
 impl Runnable<Vec<Message>, LLMResult> for MistralChat {
-    type Error = OpenAIError;
+    type Error = ProviderError;
 
     async fn invoke(
         &self,
         input: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        self.chat(input, config).await
+        self.inner
+            .invoke(input, config)
+            .await
+            .map_err(ProviderError::Mistral)
     }
 
     async fn stream(
@@ -282,7 +286,13 @@ impl Runnable<Vec<Message>, LLMResult> for MistralChat {
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
-        self.inner.stream(input, config).await
+        use futures_util::StreamExt;
+        let stream = self
+            .inner
+            .stream(input, config)
+            .await
+            .map_err(ProviderError::Mistral)?;
+        Ok(Box::pin(stream.map(|r| r.map_err(ProviderError::Mistral))))
     }
 }
 
@@ -293,7 +303,10 @@ impl BaseChatModel for MistralChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, Self::Error> {
-        self.inner.chat(messages, config).await
+        self.inner
+            .chat(messages, config)
+            .await
+            .map_err(ProviderError::Mistral)
     }
 
     async fn stream_chat(
@@ -301,7 +314,22 @@ impl BaseChatModel for MistralChat {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        self.inner.stream_chat(messages, config).await
+        use futures_util::StreamExt;
+        let stream = self
+            .inner
+            .stream_chat(messages, config)
+            .await
+            .map_err(ProviderError::Mistral)?;
+        Ok(Box::pin(stream.map(|r| r.map_err(ProviderError::Mistral))))
+    }
+
+    fn bind_tools(
+        &self,
+        tools: Vec<ToolDefinition>,
+    ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+        // Expose the inherent tool-binding capability at the trait level so it
+        // survives being wrapped by `ChatModelWrapper` / `LLMClient` (Q1).
+        Some(Box::new(self.bind_tools(tools)))
     }
 }
 

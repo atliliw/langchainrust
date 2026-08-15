@@ -138,11 +138,126 @@ where
         &self,
         tools: Vec<ToolDefinition>,
     ) -> Option<Box<dyn BaseChatModel<Error = ProviderError> + Send + Sync>> {
-        // We cannot easily wrap the bound model since bind_tools returns
-        // a different type. Return None to indicate no tool binding support
-        // through the wrapper. Callers should bind tools before wrapping.
-        let _ = tools;
-        None
+        // Delegate to the inner model, then re-normalize the bound model's
+        // error to `ProviderError` so it fits the unified trait-object type
+        // (Q1). `bind_tools` returns a model with the same error type `L::Error`;
+        // `BoundModel` maps it via `Into<ProviderError>`.
+        self.inner.bind_tools(tools).map(|bound| {
+            Box::new(BoundModel { inner: bound })
+                as Box<dyn BaseChatModel<Error = ProviderError> + Send + Sync>
+        })
+    }
+}
+
+/// Adapter normalizing a boxed `BaseChatModel`'s error to `ProviderError`.
+///
+/// `BaseChatModel::bind_tools` returns `Box<dyn BaseChatModel<Error = Self::Error>>`,
+/// which cannot itself implement `BaseChatModel` (the orphan rule forbids
+/// implementing a foreign trait for `Box<dyn ...>`). This local adapter re-errors
+/// the box so it can be stored behind the unified
+/// `Box<dyn BaseChatModel<Error = ProviderError>>` (providers Q1).
+struct BoundModel<E> {
+    inner: Box<dyn BaseChatModel<Error = E> + Send + Sync>,
+}
+
+#[async_trait]
+impl<E> Runnable<Vec<Message>, LLMResult> for BoundModel<E>
+where
+    E: Into<ProviderError> + std::error::Error + Send + Sync + 'static,
+{
+    type Error = ProviderError;
+
+    async fn invoke(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, ProviderError> {
+        self.inner.invoke(input, config).await.map_err(Into::into)
+    }
+
+    async fn batch(
+        &self,
+        inputs: Vec<Vec<Message>>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Vec<LLMResult>, ProviderError> {
+        self.inner.batch(inputs, config).await.map_err(Into::into)
+    }
+
+    async fn stream(
+        &self,
+        input: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, ProviderError>> + Send>>, ProviderError>
+    {
+        let stream = self.inner.stream(input, config).await.map_err(Into::into)?;
+        Ok(Box::pin(stream.map(|r| r.map_err(Into::into))))
+    }
+}
+
+#[async_trait]
+impl<E> BaseLanguageModel<Vec<Message>, LLMResult> for BoundModel<E>
+where
+    E: Into<ProviderError> + std::error::Error + Send + Sync + 'static,
+{
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn get_num_tokens(&self, text: &str) -> usize {
+        self.inner.get_num_tokens(text)
+    }
+
+    fn temperature(&self) -> Option<f32> {
+        self.inner.temperature()
+    }
+
+    fn max_tokens(&self) -> Option<usize> {
+        self.inner.max_tokens()
+    }
+
+    // `with_temperature`/`with_max_tokens` are `Self: Sized` and unreachable on
+    // a trait object, so returning `self` is honest for this private adapter;
+    // sampling overrides flow through `RunnableConfig` (providers Q2).
+    fn with_temperature(self, _temp: f32) -> Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    fn with_max_tokens(self, _max: usize) -> Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+}
+
+#[async_trait]
+impl<E> BaseChatModel for BoundModel<E>
+where
+    E: Into<ProviderError> + std::error::Error + Send + Sync + 'static,
+{
+    async fn chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<LLMResult, ProviderError> {
+        self.inner.chat(messages, config).await.map_err(Into::into)
+    }
+
+    async fn stream_chat(
+        &self,
+        messages: Vec<Message>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>, ProviderError>
+    {
+        let stream = self
+            .inner
+            .stream_chat(messages, config)
+            .await
+            .map_err(Into::into)?;
+        Ok(Box::pin(stream.map(|r| r.map_err(Into::into))))
     }
 }
 

@@ -32,8 +32,12 @@ pub enum MultimodalError {
 
 /// Multimodal model trait — extends `BaseChatModel` with audio, speech, and image generation.
 ///
-/// Providers implement only the methods they support. Callers should check
-/// for `MultimodalError::Unsupported` when using optional capabilities.
+/// Providers implement only the methods they support. **The default
+/// implementation of every method returns an explicit
+/// `Err(MultimodalError::Unsupported(..))`** — this is a hard capability
+/// limit reported as an error, never a silent no-op or placeholder output.
+/// Callers MUST match on `MultimodalError::Unsupported` (or propagate via
+/// `?`) before assuming the operation produced meaningful content.
 ///
 /// # Example
 ///

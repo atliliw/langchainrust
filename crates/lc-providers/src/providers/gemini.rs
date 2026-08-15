@@ -700,11 +700,19 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
     async fn stream(
         &self,
         input: Vec<Message>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
         let model = self.config.model.clone();
-        let token_stream = self.stream_chat_internal(input).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_output_tokens = Some(m);
+        }
+        let token_stream = effective.stream_chat_internal(input).await?;
 
         // C1 fix: true streaming — emit one LLMResult per token,
         // matching OpenAI/Ollama/Anthropic behavior.
@@ -730,7 +738,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for GeminiChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text)
+        lc_core::token_counter::count_tokens(text).unwrap_or(0)
     }
 
     fn temperature(&self) -> Option<f32> {
@@ -790,7 +798,15 @@ impl BaseChatModel for GeminiChat {
             }
         }
 
-        let result = self.chat_internal(messages.clone()).await;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_output_tokens = Some(m);
+        }
+        let result = effective.chat_internal(messages.clone()).await;
 
         match result {
             Ok(response) => {
@@ -853,7 +869,15 @@ impl BaseChatModel for GeminiChat {
             }
         }
 
-        let stream = self.stream_chat_internal(messages).await?;
+        let (temp, max) = crate::sampling::sampling_overrides(&config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_output_tokens = Some(m);
+        }
+        let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
         let stream = stream.then(move |token_result| {
@@ -872,6 +896,15 @@ impl BaseChatModel for GeminiChat {
         });
 
         Ok(Box::pin(stream))
+    }
+
+    fn bind_tools(
+        &self,
+        tools: Vec<ToolDefinition>,
+    ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+        // Expose the inherent tool-binding capability at the trait level so it
+        // survives being wrapped by `ChatModelWrapper` / `LLMClient` (Q1).
+        Some(Box::new(self.bind_tools(tools)))
     }
 }
 

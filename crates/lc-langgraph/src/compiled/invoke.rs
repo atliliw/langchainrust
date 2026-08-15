@@ -24,7 +24,19 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
         }
 
-        while current_node != END && recursion_count < self.recursion_limit {
+        loop {
+            if current_node == END {
+                break;
+            }
+
+            // Q3: check the limit BEFORE executing a step. A `loop` with this
+            // guard means a graph that legitimately uses exactly `limit` steps
+            // and then reaches END is NOT misreported as exceeding the limit
+            // (the old `count >= limit` post-check fired at `count == limit`).
+            if recursion_count >= self.recursion_limit {
+                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            }
+
             if self.interrupt_before.contains(&current_node) {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
@@ -35,7 +47,11 @@ impl<S: StateSchema> CompiledGraph<S> {
                 recursion_count += 1;
                 let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
 
-                let branch_results = self.execute_parallel_branches(&targets, &state).await?;
+                // Q6: branches share the main-path recursion budget so the limit
+                // cannot be bypassed by fanning out into deep sub-executions.
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
                 for (name, inv) in branch_results {
                     parallel_branches.push(ParallelBranch {
                         name: name.clone(),
@@ -105,10 +121,6 @@ impl<S: StateSchema> CompiledGraph<S> {
             current_node = next_node;
         }
 
-        if recursion_count >= self.recursion_limit {
-            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
-        }
-
         Ok(GraphInvocation {
             final_state: state,
             steps,
@@ -130,7 +142,16 @@ impl<S: StateSchema> CompiledGraph<S> {
         let mut recursion_count = execution.recursion_count;
         let first_node = current_node.clone();
 
-        while current_node != END && recursion_count < self.recursion_limit {
+        loop {
+            if current_node == END {
+                break;
+            }
+
+            // Q3: check the limit before executing a step (same guard as `invoke`).
+            if recursion_count >= self.recursion_limit {
+                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            }
+
             if current_node != first_node && self.interrupt_before.contains(&current_node) {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
@@ -173,10 +194,6 @@ impl<S: StateSchema> CompiledGraph<S> {
             current_node = next_node;
         }
 
-        if recursion_count >= self.recursion_limit {
-            return Err(GraphError::RecursionLimitReached(self.recursion_limit));
-        }
-
         Ok(GraphInvocation {
             final_state: state,
             steps,
@@ -193,12 +210,35 @@ impl<S: StateSchema> CompiledGraph<S> {
         start_node: String,
         input: S,
     ) -> GraphResult<GraphInvocation<S>> {
+        self.invoke_from_node_with_count(start_node, input, 0).await
+    }
+
+    /// Like [`invoke_from_node`](Self::invoke_from_node), but continues from an
+    /// existing recursion count.
+    ///
+    /// Q3/Q6: this is the single enforcement point for the recursion limit on
+    /// the "start from an arbitrary node" path. Parallel FanOut branches call
+    /// this with the main path's current count so their depth stays visible to
+    /// the shared `recursion_limit` budget instead of restarting from zero.
+    pub(super) async fn invoke_from_node_with_count(
+        &self,
+        start_node: String,
+        input: S,
+        mut recursion_count: usize,
+    ) -> GraphResult<GraphInvocation<S>> {
         let mut state = input;
         let mut current_node = start_node;
         let mut steps: Vec<ExecutionStep> = Vec::new();
-        let mut recursion_count = 0;
 
-        while current_node != END && recursion_count < self.recursion_limit {
+        loop {
+            if current_node == END {
+                break;
+            }
+
+            if recursion_count >= self.recursion_limit {
+                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            }
+
             if self.interrupt_before.contains(&current_node) {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }

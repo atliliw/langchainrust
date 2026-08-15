@@ -115,33 +115,42 @@ impl LLMCache {
 
     /// 获取缓存结果
     ///
-    /// 如果发现过期条目，会立即删除（H36）。
+    /// 如果发现过期条目，会立即删除（H36）。命中时会刷新 `cached_at`，
+    /// 使缓存保持真 LRU 语义（Q7：命中后该条目成为最近使用）。
     pub async fn get(&self, key: &str) -> Option<CachedLLMResult> {
         if !self.config.enabled {
             return None;
         }
 
         let store = self.store.read().await;
-        if let Some(entry) = store.get(key) {
-            // 检查 TTL
-            if let Some(ttl) = self.config.ttl {
-                if entry.cached_at.elapsed() > ttl {
-                    // H36: 过期条目需要删除，先释放读锁再获取写锁
-                    drop(store);
-                    let mut store = self.store.write().await;
-                    // Double-check after acquiring write lock
-                    if let Some(entry) = store.get(key) {
-                        if entry.cached_at.elapsed() > ttl {
-                            store.remove(key);
-                        }
+        let entry = store.get(key)?;
+
+        // 检查 TTL
+        if let Some(ttl) = self.config.ttl {
+            if entry.cached_at.elapsed() > ttl {
+                // H36: 过期条目需要删除，先释放读锁再获取写锁
+                drop(store);
+                let mut store = self.store.write().await;
+                // Double-check after acquiring write lock
+                if let Some(entry) = store.get(key) {
+                    if entry.cached_at.elapsed() > ttl {
+                        store.remove(key);
                     }
-                    return None;
                 }
+                return None;
             }
-            Some(entry.clone())
-        } else {
-            None
         }
+
+        let result = entry.clone();
+
+        // Q7: 命中后刷新 LRU 时间戳。释放读锁后取写锁更新。
+        drop(store);
+        let mut store = self.store.write().await;
+        if let Some(entry) = store.get_mut(key) {
+            entry.cached_at = Instant::now();
+        }
+
+        Some(result)
     }
 
     /// 存入缓存结果
@@ -297,6 +306,26 @@ mod tests {
         assert_eq!(cache.len().await, 3);
         // a 应该被淘汰
         assert!(cache.get("a").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cache_get_refreshes_lru_order() {
+        // max_entries = 2: hit on "a" must make "a" the most-recent entry, so
+        // inserting "c" evicts "b" (the old LRU) instead of "a".
+        let config = CacheConfig::new().with_max_entries(2).no_ttl();
+        let cache = LLMCache::with_config(config);
+
+        cache.put("a".to_string(), make_result("1")).await;
+        cache.put("b".to_string(), make_result("2")).await;
+
+        // Hit "a" → refreshes its cached_at.
+        assert!(cache.get("a").await.is_some());
+
+        // Push past the cap: the LRU evicts "b", keeping "a".
+        cache.put("c".to_string(), make_result("3")).await;
+        assert!(cache.get("a").await.is_some());
+        assert!(cache.get("b").await.is_none());
+        assert!(cache.get("c").await.is_some());
     }
 
     #[tokio::test]

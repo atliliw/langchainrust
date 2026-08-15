@@ -25,7 +25,6 @@
 //! - `RunnableBranch<I, O>`: Conditional routing
 //! - `RunnableBinding<I, O>`: Config/kwargs binding
 //! - `LcelError`: Unified error type for pipelines
-//! - `StreamEvent`: Fine-grained pipeline events
 
 mod any;
 mod assign;
@@ -34,7 +33,6 @@ mod branch;
 mod cancellation;
 mod config;
 mod error;
-mod events;
 mod ext;
 mod fallback;
 mod lambda;
@@ -52,7 +50,6 @@ pub use branch::RunnableBranch;
 pub use cancellation::CancellationToken;
 pub use config::RunnableConfig;
 pub use error::LcelError;
-pub use events::LcelStreamEvent;
 pub use ext::RunnableExt;
 pub use fallback::RunnableWithFallbacks;
 pub use lambda::RunnableLambda;
