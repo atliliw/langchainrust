@@ -54,10 +54,7 @@ impl GuardrailRunner {
     /// 记录违规:写入有界共享日志 + (可选)异步审计持久化(P1-2/P1-7)。
     async fn record_violation(&mut self, violation: GuardrailViolation) {
         {
-            let mut violations = self
-                .violations
-                .lock()
-                .expect("guardrail violations mutex poisoned");
+            let mut violations = self.violations.lock().unwrap_or_else(|e| e.into_inner());
             violations.push(violation.clone());
             // 有界:丢弃最旧,保持固定上限。
             if violations.len() > MAX_VIOLATIONS {
@@ -191,7 +188,7 @@ impl GuardrailRunner {
     pub fn violations(&self) -> Vec<GuardrailViolation> {
         self.violations
             .lock()
-            .expect("guardrail violations mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
@@ -199,7 +196,7 @@ impl GuardrailRunner {
     pub fn clear_violations(&mut self) {
         self.violations
             .lock()
-            .expect("guardrail violations mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clear();
     }
 }

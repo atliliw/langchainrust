@@ -28,12 +28,14 @@ fn test_rag_prompt_building() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言，由Mozilla开发，注重安全和性能。")
-            .with_id("rust_intro"),
-        Document::new("Rust的核心特性包括所有权系统、借用检查和零成本抽象。")
-            .with_id("rust_features"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Rust是一门系统编程语言，由Mozilla开发，注重安全和性能。")
+                .with_id("rust_intro"),
+            Document::new("Rust的核心特性包括所有权系统、借用检查和零成本抽象。")
+                .with_id("rust_features"),
+        ])
+        .unwrap();
 
     let results = retriever.search("Rust语言特点", 3);
 
@@ -64,7 +66,7 @@ fn test_rag_pipeline_basic() {
             .with_id("ml_def"),
         Document::new("深度学习是机器学习的子集，使用多层神经网络进行学习。")
             .with_id("dl_def"),
-    ]);
+    ]).unwrap();
 
     let query = "什么是人工智能？";
     let results = retriever.search(query, 3);
@@ -85,11 +87,15 @@ fn test_rag_with_multiple_sources() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Python是一种高级编程语言，由Guido van Rossum创建。").with_id("python_intro"),
-        Document::new("Python广泛应用于数据科学、Web开发和自动化脚本。").with_id("python_usage"),
-        Document::new("Python的设计哲学强调代码可读性和简洁性。").with_id("python_philosophy"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Python是一种高级编程语言，由Guido van Rossum创建。")
+                .with_id("python_intro"),
+            Document::new("Python广泛应用于数据科学、Web开发和自动化脚本。")
+                .with_id("python_usage"),
+            Document::new("Python的设计哲学强调代码可读性和简洁性。").with_id("python_philosophy"),
+        ])
+        .unwrap();
 
     let query = "Python的应用领域有哪些？";
     let results = retriever.search(query, 3);
@@ -114,15 +120,17 @@ fn test_rag_context_window_limit() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::with_config(store, config);
 
-    retriever.add_document(
-        Document::new(
-            "这是一段很长的文档内容，包含了大量的信息。\
+    retriever
+        .add_document(
+            Document::new(
+                "这是一段很长的文档内容，包含了大量的信息。\
              我们需要测试RAG系统在处理长文档时的表现。\
              AutoMerging机制会将相关的片段合并成完整的上下文。\
              这样可以既保证精确匹配，又提供完整信息。",
+            )
+            .with_id("long_doc"),
         )
-        .with_id("long_doc"),
-    );
+        .unwrap();
 
     let results = retriever.search("RAG系统", 2);
 
@@ -141,7 +149,9 @@ fn test_rag_empty_context() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_document(Document::new("这是一个关于烹饪的文档。").with_id("cooking"));
+    retriever
+        .add_document(Document::new("这是一个关于烹饪的文档。").with_id("cooking"))
+        .unwrap();
 
     let query = "编程语言";
     let results = retriever.search(query, 3);
@@ -165,10 +175,12 @@ fn test_rag_persistence_workflow() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store.clone());
 
-    retriever.add_documents(vec![
-        Document::new("LangChain是一个用于构建LLM应用的框架。").with_id("lc_intro"),
-        Document::new("LangChain支持链式调用、记忆管理和检索增强生成。").with_id("lc_features"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("LangChain是一个用于构建LLM应用的框架。").with_id("lc_intro"),
+            Document::new("LangChain支持链式调用、记忆管理和检索增强生成。").with_id("lc_features"),
+        ])
+        .unwrap();
 
     let temp_file = NamedTempFile::new().expect("Failed to create temp file");
     retriever.save(temp_file.path()).expect("Failed to save");
@@ -192,11 +204,13 @@ fn test_rag_score_threshold_filter() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Go语言由Google开发，是一门静态类型的编译语言。").with_id("go_intro"),
-        Document::new("Rust语言注重内存安全，无垃圾回收。").with_id("rust_intro"),
-        Document::new("Python是动态类型语言，有垃圾回收。").with_id("python_intro"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Go语言由Google开发，是一门静态类型的编译语言。").with_id("go_intro"),
+            Document::new("Rust语言注重内存安全，无垃圾回收。").with_id("rust_intro"),
+            Document::new("Python是动态类型语言，有垃圾回收。").with_id("python_intro"),
+        ])
+        .unwrap();
 
     let results = retriever.search("Go Google", 5);
 
@@ -219,11 +233,13 @@ fn test_rag_context_ordering() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("第一点：Rust注重安全。").with_id("point1"),
-        Document::new("第二点：Rust性能优秀。").with_id("point2"),
-        Document::new("第三点：Rust无垃圾回收。").with_id("point3"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("第一点：Rust注重安全。").with_id("point1"),
+            Document::new("第二点：Rust性能优秀。").with_id("point2"),
+            Document::new("第三点：Rust无垃圾回收。").with_id("point3"),
+        ])
+        .unwrap();
 
     let results = retriever.search("Rust特点", 3);
 
@@ -246,12 +262,15 @@ fn test_rag_multi_turn_context() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("向量数据库用于存储和检索高维向量。").with_id("vector_db"),
-        Document::new("常见的向量数据库包括Pinecone、Milvus和Qdrant。").with_id("vector_examples"),
-        Document::new("向量检索使用相似度度量如余弦相似度或欧几里得距离。")
-            .with_id("vector_metrics"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("向量数据库用于存储和检索高维向量。").with_id("vector_db"),
+            Document::new("常见的向量数据库包括Pinecone、Milvus和Qdrant。")
+                .with_id("vector_examples"),
+            Document::new("向量检索使用相似度度量如余弦相似度或欧几里得距离。")
+                .with_id("vector_metrics"),
+        ])
+        .unwrap();
 
     let results1 = retriever.search("向量数据库", 2);
     let prompt1 = build_rag_prompt(

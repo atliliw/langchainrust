@@ -290,7 +290,6 @@ struct QueryResponse {
 #[derive(Deserialize)]
 struct QueryMatch {
     id: String,
-    #[allow(dead_code)]
     score: f64,
     metadata: Option<HashMap<String, String>>,
 }

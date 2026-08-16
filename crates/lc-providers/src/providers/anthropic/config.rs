@@ -110,16 +110,6 @@ impl AnthropicConfig {
         }
     }
 
-    /// Creates an AnthropicConfig from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates an AnthropicConfig from environment variables, returning a Result.
     ///
     /// Environment variables:

@@ -142,7 +142,10 @@ impl ManagedServer {
             }
         }
         *self.last_used.lock().await = Instant::now();
-        Ok(guard.as_ref().expect("刚写入 client").clone())
+        Ok(guard
+            .as_ref()
+            .ok_or_else(|| MCPError::new(-1, "client 未初始化".to_string()))?
+            .clone())
     }
 
     /// 健康探活(P2-5):`list_tools` 即探活,结果记入熔断器。

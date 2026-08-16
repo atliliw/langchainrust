@@ -175,7 +175,9 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         }
 
         let mut steps = self.steps.iter();
-        let first = steps.next().expect("steps is non-empty");
+        let Some(first) = steps.next() else {
+            return Ok(Box::pin(futures_util::stream::empty()));
+        };
 
         let input_boxed: Box<dyn Any + Send> = Box::new(input);
         let mut current_stream = first.stream_any(input_boxed, config.clone()).await?;

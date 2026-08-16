@@ -39,6 +39,3 @@ pub use runner::{EvalRunner, Report};
 
 #[cfg(test)]
 mod integration_tests;
-
-#[cfg(test)]
-mod real_llm_tests;

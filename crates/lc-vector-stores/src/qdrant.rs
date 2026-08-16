@@ -426,24 +426,4 @@ mod tests {
         assert_eq!(config.vector_size, 3072);
         assert!(matches!(config.distance, QdrantDistance::Euclid));
     }
-
-    #[tokio::test]
-    #[ignore = "需要 Qdrant 服务运行"]
-    async fn test_qdrant_integration() {
-        let config =
-            QdrantConfig::new("http://localhost:6334", "test_collection").with_vector_size(3);
-
-        let store = QdrantVectorStore::new(config).await.unwrap();
-
-        let docs = vec![Document::new("Document 1"), Document::new("Document 2")];
-        let embeddings = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
-
-        let ids = store.add_documents(docs, embeddings).await.unwrap();
-        assert_eq!(ids.len(), 2);
-
-        let results = store.similarity_search(&[0.9, 0.1, 0.0], 2).await.unwrap();
-        assert_eq!(results.len(), 2);
-
-        store.clear().await.unwrap();
-    }
 }

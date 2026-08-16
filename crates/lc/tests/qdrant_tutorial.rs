@@ -7,8 +7,6 @@
 
 #![cfg(feature = "qdrant-integration")]
 
-mod bm25;
-
 use langchainrust::embeddings::MockEmbeddings;
 use langchainrust::retrieval::{RetrieverTrait, SimilarityRetriever};
 use langchainrust::vector_stores::{

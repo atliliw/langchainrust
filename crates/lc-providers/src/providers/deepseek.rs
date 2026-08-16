@@ -57,16 +57,6 @@ impl DeepSeekConfig {
         }
     }
 
-    /// Creates a DeepSeekConfig from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates a DeepSeekConfig from environment variables, returning a Result.
     ///
     /// Environment variables:
@@ -153,27 +143,9 @@ impl DeepSeekChat {
         }
     }
 
-    /// Creates a DeepSeekChat from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates a DeepSeekChat from environment variables, returning a Result.
     pub fn from_env_result() -> Result<Self, String> {
         Ok(Self::new(DeepSeekConfig::from_env_result()?))
-    }
-
-    /// Creates a DeepSeekChat with a specific model.
-    #[deprecated(since = "0.7.0", note = "Use from_env_result().with_model() instead")]
-    #[allow(deprecated)]
-    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = DeepSeekConfig::from_env_result()?.with_model(model);
-        Ok(Self::new(config))
     }
 }
 

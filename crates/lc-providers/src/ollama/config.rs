@@ -71,20 +71,6 @@ impl OllamaConfig {
         }
     }
 
-    /// Creates an OllamaConfig from environment variables.
-    ///
-    /// Reads the following environment variables:
-    /// - `OLLAMA_BASE_URL`: The Ollama server URL (default: "http://localhost:11434/v1")
-    /// - `OLLAMA_MODEL`: The model name (default: empty)
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| Self::default())
-    }
-
     /// Creates an OllamaConfig from environment variables, returning a Result.
     ///
     /// Reads the following environment variables:

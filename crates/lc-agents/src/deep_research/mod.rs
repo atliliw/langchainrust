@@ -429,7 +429,6 @@ fn parse_gap_queries(
 ) -> Result<Vec<String>, ResearchError> {
     #[derive(serde::Deserialize)]
     struct GapMapping {
-        #[allow(dead_code)]
         gap: String,
         queries: Vec<String>,
     }
@@ -522,7 +521,7 @@ mod tests {
         }
 
         fn next_response(&self) -> String {
-            let mut guard = self.responses.lock().unwrap();
+            let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_empty() {
                 return r#"["follow-up query"]"#.to_string();
             }

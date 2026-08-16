@@ -29,7 +29,7 @@ async fn test_langsmith_connection() {
     let callbacks = Arc::new(CallbackManager::new().add_handler(handler));
 
     // 创建 LLM
-    let config = OpenAIConfig::from_env();
+    let config = OpenAIConfig::from_env_result().expect("需要设置 OPENAI_API_KEY 环境变量");
     println!("API Base URL: {}", config.base_url);
     println!("Model: {}", config.model);
 

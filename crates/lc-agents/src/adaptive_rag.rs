@@ -512,7 +512,7 @@ mod tests {
             _config: Option<RunnableConfig>,
         ) -> Result<LLMResult, Self::Error> {
             let content = {
-                let mut guard = self.responses.lock().unwrap();
+                let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.is_empty() {
                     "mock response".to_string()
                 } else {
@@ -562,7 +562,7 @@ mod tests {
             _config: Option<RunnableConfig>,
         ) -> Result<LLMResult, Self::Error> {
             let content = {
-                let mut guard = self.responses.lock().unwrap();
+                let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.is_empty() {
                     "mock response".to_string()
                 } else {
@@ -587,7 +587,7 @@ mod tests {
             Self::Error,
         > {
             let content = {
-                let mut guard = self.responses.lock().unwrap();
+                let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.is_empty() {
                     "mock response".to_string()
                 } else {

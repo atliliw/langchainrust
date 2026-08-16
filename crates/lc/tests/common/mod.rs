@@ -120,6 +120,15 @@ pub struct MongoTestConfig {
 
 #[cfg(feature = "mongodb-persistence")]
 impl MongoTestConfig {
+    /// 返回 MongoDB 测试配置;`MONGO_URI` 未设置时返回 `None`,
+    /// 调用方可据此跳过测试而不是 panic。
+    pub fn get_opt() -> Option<&'static Self> {
+        if MONGO_URI.is_empty() && std::env::var("MONGO_URI").is_err() {
+            return None;
+        }
+        Some(Self::get())
+    }
+
     pub fn get() -> &'static Self {
         MONGO_CONFIG.get_or_init(|| {
             let uri = if MONGO_URI.is_empty() {

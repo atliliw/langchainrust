@@ -78,18 +78,6 @@ impl GeminiConfig {
         }
     }
 
-    /// 从环境变量创建配置
-    ///
-    /// 读取 GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates a GeminiConfig from environment variables, returning a Result.
     ///
     /// Environment variables:
@@ -306,13 +294,6 @@ impl GeminiChat {
     #[allow(deprecated)]
     pub fn from_env_result() -> Result<Self, String> {
         Ok(Self::new(GeminiConfig::from_env_result()?))
-    }
-
-    #[deprecated(since = "0.7.0", note = "Use from_env_result().with_model() instead")]
-    #[allow(deprecated)]
-    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        let config = GeminiConfig::from_env_result()?.with_model(model);
-        Ok(Self::new(config))
     }
 
     /// Binds tool definitions for Gemini function calling.

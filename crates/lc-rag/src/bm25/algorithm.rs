@@ -104,29 +104,6 @@ pub fn bm25_score(
     score
 }
 
-/// 计算单个词在文档中的 BM25 分量
-///
-/// 用于调试和分析
-#[allow(dead_code)]
-pub fn bm25_term_score(
-    _term: &str,
-    tf: usize,
-    doc_length: usize,
-    avgdl: f64,
-    idf: f64,
-    params: &BM25Params,
-) -> f64 {
-    if tf == 0 || avgdl == 0.0 || idf == 0.0 {
-        return 0.0;
-    }
-
-    let dl_ratio = doc_length as f64 / avgdl;
-    let tf_component = (tf as f64 * (params.k1 + 1.0))
-        / (tf as f64 + params.k1 * (1.0 - params.b + params.b * dl_ratio));
-
-    idf * tf_component
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

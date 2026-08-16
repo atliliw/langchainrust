@@ -147,7 +147,6 @@ langchainrust = { version = "0.14.0", features = ["local-embeddings"] }      # L
 langchainrust = { version = "0.14.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 langchainrust = { version = "0.14.0", features = ["fastembed"] }            # FastEmbed embeddings
 langchainrust = { version = "0.14.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.14.0", features = ["native-computer"] }      # Native computer-operation mode (local)
 langchainrust = { version = "0.14.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
@@ -221,7 +220,7 @@ More examples in [中文使用指南](https://github.com/atliliw/langchainrust/b
 
 ## Examples
 
-The `crates/lc/examples/` directory provides 35 runnable examples covering core functionality (the LCEL pipeline example lives at `examples/lcel_pipe.rs`):
+The `crates/lc/examples/` directory provides 35 runnable examples covering core functionality (the LCEL pipeline example lives at `crates/lc/examples/lcel/lcel_pipe.rs`):
 
 | Category | Examples | Requires API Key |
 |----------|----------|-----------------|

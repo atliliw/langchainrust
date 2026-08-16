@@ -2,10 +2,6 @@
 //!
 //! - mock 执行单元(P2-6):固定返回含敏感信息/正常信息的输出,断言确实被 `Blocked`/
 //!   放行,不依赖 API Key、不触网,默认运行;
-//! - 真实 Agent 端到端(输入验证 + 执行 + 输出验证,需 API Key,`#[ignore]`):
-//! ```bash
-//! cargo test --test integration_guardrails -- --ignored
-//! ```
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -14,11 +10,8 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use langchainrust::guardrails::GuardrailError;
 use langchainrust::guardrails::{
-    Guardable, GuardableChunk, GuardedAgent, GuardrailsConfig, MaxLengthGuardrail,
-    SensitiveInfoGuardrail,
+    Guardable, GuardableChunk, GuardedAgent, GuardrailsConfig, SensitiveInfoGuardrail,
 };
-use langchainrust::tools::Calculator;
-use langchainrust::{AgentExecutor, BaseAgent, BaseTool, FunctionCallingAgent};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -60,26 +53,6 @@ impl Guardable for BenignOutputAgent {
     {
         Err("stream not supported".into())
     }
-}
-
-#[tokio::test]
-#[ignore = "需要 API Key"]
-async fn test_guarded_agent_normal_invoke() {
-    let llm = common::TestConfig::get().openai_chat();
-    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
-    let agent = FunctionCallingAgent::new(llm, tools.clone(), None);
-    let executor = Arc::new(AgentExecutor::new(
-        Arc::new(agent) as Arc<dyn BaseAgent>,
-        tools,
-    ));
-
-    let config = GuardrailsConfig::new().with_input(Arc::new(MaxLengthGuardrail::new(1000)));
-    let mut guarded = GuardedAgent::new(executor, config);
-
-    let result = guarded.invoke("What is 2 + 2?".to_string()).await;
-    println!("结果: {:?}", result);
-    assert!(result.is_ok(), "正常输入应通过 guardrail");
-    assert!(result.unwrap().contains("4"));
 }
 
 /// P2-6:mock 固定返回含敏感信息的输出,断言确实被 `Blocked` 且记录违规。

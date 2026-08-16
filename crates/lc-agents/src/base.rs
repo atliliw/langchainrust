@@ -857,7 +857,10 @@ impl AgentExecutor {
         let futures = actions.iter().map(|action| {
             let sem = sem.clone();
             async move {
-                let _permit = sem.acquire_owned().await.expect("semaphore closed");
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| AgentError::Other(format!("concurrency semaphore closed: {e}")))?;
                 self.execute_tool(action, root_run).await
             }
         });
@@ -1155,7 +1158,10 @@ async fn execute_tools_parallel_for_stream(
     let futures = actions.iter().map(|action| {
         let sem = sem.clone();
         async move {
-            let _permit = sem.acquire_owned().await.expect("semaphore closed");
+            let _permit = sem
+                .acquire_owned()
+                .await
+                .map_err(|e| AgentError::Other(format!("concurrency semaphore closed: {e}")))?;
             execute_tool_for_stream(tools, action, timeout).await
         }
     });
@@ -1696,7 +1702,7 @@ mod tests {
         }
 
         fn get_allowed_tools(&self) -> Option<Vec<&str>> {
-            Some(self.allowed.iter().copied().collect())
+            Some(self.allowed.to_vec())
         }
     }
 

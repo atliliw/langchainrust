@@ -23,7 +23,7 @@
 //! ```ignore
 //! use lc_a2a::{A2AClient, A2AMessage};
 //!
-//! let client = A2AClient::new("https://agent.example.com".to_string());
+//! let client = A2AClient::new("https://agent.example.com".to_string()).unwrap();
 //! let card = client.get_agent_card().await?;
 //! let task = client.send_task(A2AMessage::user("hello")).await?;
 //! ```
@@ -115,7 +115,11 @@ impl A2AClient {
     ///
     /// Uses a 30s per-request timeout and a 10s connect timeout. The client
     /// is safe to share and call concurrently; each request gets its own ID.
-    pub fn new(base_url: String) -> Self {
+    ///
+    /// Returns an error if the HTTP client cannot be built (e.g. the TLS
+    /// backend fails to initialize). For full configuration, use [`builder`]
+    /// (Self::builder) instead.
+    pub fn new(base_url: String) -> Result<Self, A2AError> {
         if !base_url.starts_with("https://") {
             log::warn!(
                 "A2A client connecting over non-HTTPS URL: {} (use TLS in production)",
@@ -126,8 +130,8 @@ impl A2AClient {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .expect("failed to build HTTP client");
-        Self::with_http_client(base_url, http)
+            .map_err(|e| A2AError::Http(format!("failed to build HTTP client: {e}")))?;
+        Ok(Self::with_http_client(base_url, http))
     }
 
     /// Create a client with a custom `reqwest::Client` (for timeouts, etc.).
@@ -1018,13 +1022,13 @@ mod tests {
 
     #[test]
     fn client_new_trims_trailing_slash() {
-        let client = A2AClient::new("http://localhost:8080/".to_string());
+        let client = A2AClient::new("http://localhost:8080/".to_string()).unwrap();
         assert_eq!(client.base_url, "http://localhost:8080");
     }
 
     #[test]
     fn client_alloc_id_increments() {
-        let client = A2AClient::new("http://localhost:8080".to_string());
+        let client = A2AClient::new("http://localhost:8080".to_string()).unwrap();
         assert_eq!(client.alloc_id(), 1);
         assert_eq!(client.alloc_id(), 2);
         assert_eq!(client.alloc_id(), 3);
@@ -1056,15 +1060,18 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |head, _body| {
-            seen_clone.lock().unwrap().push(head.to_string());
+            seen_clone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(head.to_string());
             serde_json::to_string(&AgentCard::new("agent", "desc", "http://localhost")).unwrap()
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let card = client.get_agent_card().await.unwrap();
         assert_eq!(card.name, "agent");
 
-        let lines = seen.lock().unwrap();
+        let lines = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             lines
                 .iter()
@@ -1097,7 +1104,7 @@ mod tests {
             }
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let result = client
             .send_task_and_wait(A2AMessage::user("hi"), Duration::from_secs(10))
             .await;
@@ -1125,7 +1132,7 @@ mod tests {
             }
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let result = client
             .send_task_and_wait(A2AMessage::user("hi"), Duration::from_secs(10))
             .await;
@@ -1149,7 +1156,7 @@ mod tests {
             .unwrap()
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let result = client
             .send_task_and_wait(A2AMessage::user("hi"), Duration::from_millis(1500))
             .await;
@@ -1161,7 +1168,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |head, _body| {
-            seen_clone.lock().unwrap().push(head.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(head.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
@@ -1175,7 +1182,7 @@ mod tests {
             .unwrap();
         let _ = client.send_task(A2AMessage::user("hi")).await;
 
-        let lines = seen.lock().unwrap();
+        let lines = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             lines.iter().any(|l| l
                 .to_ascii_lowercase()
@@ -1198,7 +1205,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_agent_card_invalid_url() {
-        let client = A2AClient::new("http://localhost:19999".to_string());
+        let client = A2AClient::new("http://localhost:19999".to_string()).unwrap();
         let result = client.get_agent_card().await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1209,28 +1216,28 @@ mod tests {
 
     #[tokio::test]
     async fn send_task_invalid_url() {
-        let client = A2AClient::new("http://localhost:19999".to_string());
+        let client = A2AClient::new("http://localhost:19999".to_string()).unwrap();
         let result = client.send_task(A2AMessage::user("hello")).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn get_task_invalid_url() {
-        let client = A2AClient::new("http://localhost:19999".to_string());
+        let client = A2AClient::new("http://localhost:19999".to_string()).unwrap();
         let result = client.get_task("task-123").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn cancel_task_invalid_url() {
-        let client = A2AClient::new("http://localhost:19999".to_string());
+        let client = A2AClient::new("http://localhost:19999".to_string()).unwrap();
         let result = client.cancel_task("task-123").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn post_request_invalid_url() {
-        let client = A2AClient::new("http://localhost:19999".to_string());
+        let client = A2AClient::new("http://localhost:19999".to_string()).unwrap();
         let req = A2ARequest::new(1, "test", None);
         let result = client.post_request(req).await;
         assert!(result.is_err());
@@ -1336,7 +1343,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |_head, body| {
-            seen_clone.lock().unwrap().push(body.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(body.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
@@ -1350,7 +1357,7 @@ mod tests {
             .unwrap();
         let _ = client.send_task(A2AMessage::user("hi")).await;
 
-        let bodies = seen.lock().unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert!(!bodies.is_empty());
         let parsed: A2ARequest = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(parsed.trace_id(), Some("trace-123"));
@@ -1363,7 +1370,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |head, _body| {
-            seen_clone.lock().unwrap().push(head.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(head.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
@@ -1380,7 +1387,7 @@ mod tests {
             .unwrap();
         let _ = client.send_task(A2AMessage::user("hi")).await;
 
-        let lines = seen.lock().unwrap();
+        let lines = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert!(!lines.is_empty());
         let head = &lines[0];
         assert!(
@@ -1395,7 +1402,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |head, _body| {
-            seen_clone.lock().unwrap().push(head.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(head.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
@@ -1404,10 +1411,10 @@ mod tests {
         })
         .await;
 
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let _ = client.send_task(A2AMessage::user("hi")).await;
 
-        let lines = seen.lock().unwrap();
+        let lines = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             !lines[0].to_ascii_lowercase().contains("traceparent:"),
             "no traceparent expected, got: {:?}",
@@ -1422,7 +1429,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |_head, body| {
-            seen_clone.lock().unwrap().push(body.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(body.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
@@ -1430,12 +1437,12 @@ mod tests {
             .unwrap()
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let _ = client
             .send_task_with_message_id(A2AMessage::user("hi"), "idem-1")
             .await;
 
-        let bodies = seen.lock().unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner());
         let parsed: A2ARequest = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(parsed.message_id(), Some("idem-1"));
     }
@@ -1462,7 +1469,7 @@ mod tests {
             }
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let result = client
             .send_task_and_wait(A2AMessage::user("hi"), Duration::from_secs(10))
             .await;
@@ -1480,7 +1487,7 @@ mod tests {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen_clone = seen.clone();
         let base = spawn_http_server(move |_head, body| {
-            seen_clone.lock().unwrap().push(body.to_string());
+            seen_clone.lock().unwrap_or_else(|e| e.into_inner()).push(body.to_string());
             serde_json::to_string(&A2AResponse::ok(
                 0,
                 json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "working"}}),
@@ -1488,12 +1495,12 @@ mod tests {
             .unwrap()
         })
         .await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let _ = client
             .resume_task("t1", A2AMessage::user("my name is alice"))
             .await;
 
-        let bodies = seen.lock().unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner());
         let parsed: A2ARequest = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(parsed.method, "tasks/send");
         let params = parsed.params.as_ref().unwrap();
@@ -1510,7 +1517,7 @@ mod tests {
             "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}",
         ])
         .await;
-        let client = A2AClient::new("http://localhost:1".to_string()); // URL unused by connect_sse
+        let client = A2AClient::new("http://localhost:1".to_string()).unwrap(); // URL unused by connect_sse
         let mut stream = client.connect_sse(&base).await.unwrap();
 
         let first = stream.next().await.expect("first event").unwrap();
@@ -1530,7 +1537,7 @@ mod tests {
             "event: artifact-update\ndata: {\"kind\":\"artifact-update\",\"id\":\"t1\",\"artifact\":{\"output\":\"hi\"}}",
         ])
         .await;
-        let client = A2AClient::new(base.clone());
+        let client = A2AClient::new(base.clone()).unwrap();
         let mut stream = client
             .send_task_streaming(&format!("{}/sse", base), A2AMessage::user("hi"))
             .await

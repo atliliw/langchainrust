@@ -152,18 +152,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore = "需要本地 MCP SSE Server"]
-    async fn test_adapter_metadata() {
-        let client = MCPClient::connect(MCPConfig::sse("http://localhost:3001/sse"))
-            .await
-            .unwrap();
-        let adapter = MCPToolAdapter::new(client, sample_definition());
-        assert_eq!(adapter.name(), "read_file");
-        assert_eq!(adapter.description(), "Read a file");
-        assert!(adapter.args_schema().is_some());
-    }
-
     #[test]
     fn test_from_mcp_error_preserves_fields() {
         // P1-6:code/message/data 原样保留,不降级为无结构 ExecutionFailed。

@@ -224,7 +224,7 @@ mod tests {
     fn tool_with_data() -> SQLTool {
         let tool = SQLTool::new(":memory:").unwrap();
         {
-            let conn = tool.conn.lock().unwrap();
+            let conn = tool.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute("CREATE TABLE users (id INTEGER, name TEXT)", [])
                 .unwrap();
             conn.execute("INSERT INTO users VALUES (1, 'Alice')", [])

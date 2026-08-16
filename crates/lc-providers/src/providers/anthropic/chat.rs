@@ -35,24 +35,9 @@ impl AnthropicChat {
         }
     }
 
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates an AnthropicChat from environment variables, returning a Result.
     pub fn from_env_result() -> Result<Self, String> {
         Ok(Self::new(AnthropicConfig::from_env_result()?))
-    }
-
-    #[deprecated(since = "0.7.0", note = "Use from_env_result().with_model() instead")]
-    #[allow(deprecated)]
-    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
-        Ok(Self::new(AnthropicConfig::from_env()?.with_model(model)))
     }
 
     /// Enables extended thinking with the given token budget.

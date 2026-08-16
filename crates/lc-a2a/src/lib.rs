@@ -34,7 +34,7 @@
 //! ```ignore
 //! use lc_a2a::{A2AClient, A2AMessage};
 //!
-//! let client = A2AClient::new("http://localhost:8080".to_string());
+//! let client = A2AClient::new("http://localhost:8080".to_string()).unwrap();
 //! let card = client.get_agent_card().await?;
 //! let task = client.send_task(A2AMessage::user("hello")).await?;
 //! ```

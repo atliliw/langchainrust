@@ -11,7 +11,8 @@
 //!     #[param(desc = "The mathematical expression to evaluate")]
 //!     expression: String,
 //! ) -> Result<f64, ToolError> {
-//!     meval::eval_str(&expression)
+//!     expression
+//!         .parse::<f64>()
 //!         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
 //! }
 //! ```
@@ -202,8 +203,6 @@ struct ParamInfo {
     name: Ident,
     ty: Type,
     desc: Option<String>,
-    #[allow(dead_code)]
-    is_option: bool,
 }
 
 /// Extract parameter info from the function signature.
@@ -222,8 +221,6 @@ fn extract_params(sig: &Signature) -> Result<Vec<ParamInfo>> {
                 _ => continue,
             };
 
-            let is_option = is_option_type(ty);
-
             // Extract #[param(desc = "...")] attribute
             let desc = extract_param_desc(attrs);
 
@@ -231,22 +228,11 @@ fn extract_params(sig: &Signature) -> Result<Vec<ParamInfo>> {
                 name,
                 ty: (*(*ty)).clone(),
                 desc,
-                is_option,
             });
         }
     }
 
     Ok(params)
-}
-
-/// Check if a type is `Option<T>`.
-fn is_option_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if type_path.path.segments.len() == 1 {
-            return type_path.path.segments[0].ident == "Option";
-        }
-    }
-    false
 }
 
 /// Extract `T` from `Result<T, E>`. Returns None if not a Result type.

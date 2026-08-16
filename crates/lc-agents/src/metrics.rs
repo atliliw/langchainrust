@@ -115,10 +115,15 @@ mod tests {
 
     #[test]
     fn test_log_summary_no_panic() {
-        let mut m = AgentMetrics::default();
-        m.trace_id = Some("trace-x".to_string());
+        let m = AgentMetrics {
+            trace_id: Some("trace-x".to_string()),
+            ..Default::default()
+        };
         m.log_summary();
-        m.total_tokens = Some(42);
+        let m = AgentMetrics {
+            total_tokens: Some(42),
+            ..Default::default()
+        };
         m.log_summary();
     }
 }

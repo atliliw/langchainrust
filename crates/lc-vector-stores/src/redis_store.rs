@@ -38,19 +38,17 @@ impl RedisStoreConfig {
 
 pub struct RedisDocumentStore {
     config: RedisStoreConfig,
-    #[allow(dead_code)]
-    client: redis::Client,
 }
 
 impl RedisDocumentStore {
     pub async fn new(config: RedisStoreConfig) -> Result<Self, VectorStoreError> {
         let client = redis::Client::open(config.url.as_str())
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-        // 验证连接
+        // 验证连接(客户端不保留,后续操作按需重连)
         let _ = client
             .get_connection()
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-        Ok(Self { config, client })
+        Ok(Self { config })
     }
 
     fn doc_key(&self, id: &str) -> String {
@@ -174,24 +172,6 @@ impl RedisDocumentStore {
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
     }
 
-    #[allow(dead_code)]
-    async fn sadd(&self, key: &str, member: &str) -> Result<(), VectorStoreError> {
-        let config = self.config.clone();
-        let (k, m) = (key.to_string(), member.to_string());
-        tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SADD")
-                .arg(&k)
-                .arg(&m)
-                .query::<()>(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
-        })
-        .await
-        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-    }
-
     async fn srem(&self, key: &str, member: &str) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
         let (k, m) = (key.to_string(), member.to_string());
@@ -235,21 +215,6 @@ impl RedisDocumentStore {
             redis::cmd("SCARD")
                 .arg(&key)
                 .query(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
-        })
-        .await
-        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-    }
-
-    #[allow(dead_code)]
-    async fn flushdb(&self) -> Result<(), VectorStoreError> {
-        let config = self.config.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("FLUSHDB")
-                .query::<()>(&mut conn)
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))
         })
         .await

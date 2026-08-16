@@ -39,7 +39,7 @@ fn load_documents_from_file(path: &str) -> Vec<Document> {
 fn test_bm25_english_programming_languages() {
     let documents = load_documents_from_file("tests/data/programming_languages_en.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 验证文档数量（7种编程语言）
@@ -63,7 +63,7 @@ fn test_bm25_english_programming_languages() {
 fn test_bm25_exact_keyword_match() {
     let documents = load_documents_from_file("tests/data/programming_languages_en.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 精确搜索 "garbage collection"
@@ -89,7 +89,7 @@ fn test_bm25_exact_keyword_match() {
 fn test_bm25_chinese_programming_languages() {
     let documents = load_documents_from_file("tests/data/programming_languages_zh.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 验证文档加载
@@ -111,7 +111,7 @@ fn test_bm25_chinese_programming_languages() {
 fn test_bm25_chinese_keywords() {
     let documents = load_documents_from_file("tests/data/programming_languages_zh.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "垃圾回收"
@@ -140,7 +140,7 @@ fn test_bm25_chinese_keywords() {
 fn test_bm25_chinese_short_documents() {
     let documents = load_documents_from_file("tests/data/programming_short_zh.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "机器学习"
@@ -175,7 +175,7 @@ fn test_bm25_chinese_short_documents() {
 fn test_bm25_langchainrust_docs() {
     let documents = load_documents_from_file("tests/data/langchainrust_docs.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "LangGraph"
@@ -205,7 +205,7 @@ fn test_bm25_langchainrust_docs() {
 fn test_bm25_framework_features() {
     let documents = load_documents_from_file("tests/data/langchainrust_docs.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "Human-in-the-loop"
@@ -238,7 +238,7 @@ fn test_bm25_framework_features() {
 fn test_bm25_algorithm_docs() {
     let documents = load_documents_from_file("tests/data/bm25_docs.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "IDF inverse document frequency"
@@ -266,7 +266,7 @@ fn test_bm25_algorithm_docs() {
 fn test_bm25_algorithm_principles() {
     let documents = load_documents_from_file("tests/data/bm25_docs.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(documents);
 
     // 搜索 "term frequency saturation"
@@ -308,7 +308,7 @@ fn test_bm25_multi_file_collection() {
         "tests/data/langchainrust_docs.txt",
     ));
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(all_documents);
 
     // 验证文档总数
@@ -330,7 +330,7 @@ fn test_bm25_document_length_effect() {
     let short_docs = load_documents_from_file("tests/data/programming_short_zh.txt");
     let long_docs = load_documents_from_file("tests/data/programming_languages_zh.txt");
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(short_docs);
     retriever.add_documents_sync(long_docs);
 
@@ -361,7 +361,7 @@ fn test_bm25_empty_file_handling() {
     // 创建空文档列表
     let empty_docs: Vec<Document> = Vec::new();
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(empty_docs);
 
     assert!(retriever.is_empty(), "空文档集合应返回 is_empty = true");
@@ -379,7 +379,7 @@ fn test_bm25_single_document() {
         "This is a single test document about Rust programming",
     )];
 
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
     retriever.add_documents_sync(single_doc);
 
     assert_eq!(retriever.len(), 1, "应有 1 个文档");

@@ -184,7 +184,7 @@ mod tests {
     async fn serve_exposes_agent_card() {
         let server = A2AServer::new(Arc::new(EchoChain));
         let (base, _handle) = spawn(server).await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let card = client.get_agent_card().await.unwrap();
         assert_eq!(card.name, "echo-chain");
     }
@@ -193,7 +193,7 @@ mod tests {
     async fn serve_dispatches_tasks_end_to_end() {
         let server = A2AServer::new(Arc::new(EchoChain));
         let (base, _handle) = spawn(server).await;
-        let client = A2AClient::new(base);
+        let client = A2AClient::new(base).unwrap();
         let result = client
             .send_task_and_wait(A2AMessage::user("hello"), Duration::from_secs(10))
             .await
@@ -205,7 +205,7 @@ mod tests {
     async fn serve_enforces_bearer_token() {
         let server = A2AServer::new(Arc::new(EchoChain)).with_auth_token("secret-token");
         let (base, _handle) = spawn(server).await;
-        let client = A2AClient::new(base.clone());
+        let client = A2AClient::new(base.clone()).unwrap();
 
         // No token -> rejected with a 401 API error.
         let err = client.send_task(A2AMessage::user("hi")).await.unwrap_err();
@@ -227,7 +227,7 @@ mod tests {
     async fn serve_streams_task_notifications() {
         let server = A2AServer::new(Arc::new(EchoChain)).with_streaming(64);
         let (base, _handle) = spawn(server).await;
-        let client = A2AClient::new(base.clone());
+        let client = A2AClient::new(base.clone()).unwrap();
 
         let mut stream = client
             .send_task_streaming(&format!("{base}/events"), A2AMessage::user("hi"))

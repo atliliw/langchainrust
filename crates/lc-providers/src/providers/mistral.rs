@@ -104,16 +104,6 @@ impl MistralConfig {
         })
     }
 
-    /// Creates a MistralConfig from environment variables.
-    #[deprecated(
-        since = "0.9.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Sets the model name.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
@@ -182,16 +172,6 @@ impl MistralChat {
     /// Creates a MistralChat from environment variables, returning a Result.
     pub fn from_env_result() -> Result<Self, String> {
         Ok(Self::new(MistralConfig::from_env_result()?))
-    }
-
-    /// Creates a MistralChat from environment variables.
-    #[deprecated(
-        since = "0.9.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
     }
 
     /// Delegate chat to inner OpenAIChat.

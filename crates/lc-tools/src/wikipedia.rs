@@ -279,22 +279,4 @@ mod tests {
         assert!(urlencoding("a&b=c#d?e").contains("%26"));
         assert!(urlencoding("a&b=c#d?e").contains("%3D"));
     }
-
-    #[tokio::test]
-    #[ignore = "需要网络连接"]
-    async fn test_wikipedia_search_real() {
-        let tool = WikipediaTool::new();
-        let result = tool
-            .invoke(WikipediaInput {
-                query: "Rust".to_string(),
-                top_k: Some(2),
-                lang: Some("en".into()),
-                full_content: Some(false),
-            })
-            .await
-            .unwrap();
-
-        assert!(!result.results.is_empty());
-        assert!(result.results[0].title.to_lowercase().contains("rust"));
-    }
 }

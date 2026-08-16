@@ -34,16 +34,6 @@ impl OpenAIChat {
         }
     }
 
-    /// Creates an OpenAIChat from environment variables.
-    #[deprecated(
-        since = "0.5.0",
-        note = "Use from_env_result() which returns Result<Self, OpenAIError>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::new(OpenAIConfig::from_env())
-    }
-
     /// Creates an OpenAIChat from environment variables, returning a Result.
     pub fn from_env_result() -> Result<Self, OpenAIError> {
         let config = OpenAIConfig::from_env_result()?;

@@ -2561,7 +2561,7 @@ let server = A2AServer::new(chain)
 ```rust
 use langchainrust::a2a::{A2AClient, A2AMessage};
 
-let client = A2AClient::new("http://remote-agent:8080".to_string());
+let client = A2AClient::new("http://remote-agent:8080".to_string()).unwrap();
 
 // Discover agent
 let card = client.get_agent_card().await?;
@@ -2641,9 +2641,6 @@ use std::sync::Arc;
 
 // Anthropic API mode (default)
 let tool = ComputerUseTool::new();
-
-// Or Native mode (requires feature computer-use-native)
-// let tool = ComputerUseTool::new_native();
 
 // Use as BaseTool
 let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];

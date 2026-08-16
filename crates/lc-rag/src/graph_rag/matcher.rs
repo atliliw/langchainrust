@@ -320,7 +320,7 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
     async fn get_entity_embedding(&self, entity_id: &str, entity_text: &str) -> Option<Vec<f32>> {
         // Check cache first
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(vec) = cache.get(entity_id) {
                 return Some(vec.clone());
             }
@@ -331,7 +331,7 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
             Ok(vec) => {
                 self.cache
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(entity_id.to_string(), vec.clone());
                 Some(vec)
             }

@@ -17,6 +17,7 @@
 
 mod calculator;
 mod datetime;
+mod expr_eval;
 pub mod extended;
 mod math;
 mod python_repl;

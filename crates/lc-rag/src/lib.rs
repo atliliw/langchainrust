@@ -39,10 +39,7 @@ pub use bm25::{
 
 #[allow(deprecated)]
 pub use chunked_hybrid::ChunkedHybridRetriever;
-#[allow(deprecated)]
-pub use hybrid::{
-    filter_by_score, reciprocal_rank_fusion, HybridRetriever, RetrievalSource, RetrievedDocument,
-};
+pub use hybrid::{filter_by_score, reciprocal_rank_fusion, RetrievalSource, RetrievedDocument};
 pub use unified_hybrid::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 
 pub use multi_query::{

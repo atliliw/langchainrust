@@ -128,7 +128,7 @@ fn bench_cosine_similarity(c: &mut Criterion) {
             &(&a, &b),
             |bencher, (va, vb)| {
                 bencher.iter(|| {
-                    black_box(cosine_similarity(black_box(va), black_box(vb)));
+                    black_box(cosine_similarity(black_box(va), black_box(vb)).unwrap());
                 });
             },
         );

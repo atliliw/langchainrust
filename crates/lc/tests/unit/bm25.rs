@@ -331,7 +331,7 @@ fn test_tokenizer_keep_stopwords() {
 /// - 结果排序
 #[test]
 fn test_bm25_retriever_basic_search() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     retriever.add_documents_sync(vec![
         Document::new("Rust is a systems programming language"),
@@ -356,7 +356,7 @@ fn test_bm25_retriever_basic_search() {
 /// 验证中文分词和检索功能
 #[test]
 fn test_bm25_retriever_chinese_search() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     retriever.add_documents_sync(vec![
         Document::new("Rust 是一门系统编程语言"),
@@ -379,7 +379,7 @@ fn test_bm25_retriever_chinese_search() {
 /// 空索引应返回空结果
 #[test]
 fn test_bm25_retriever_empty_index() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     let results = retriever.search("test query", 5);
     assert!(results.is_empty(), "空索引应返回空结果");
@@ -390,7 +390,7 @@ fn test_bm25_retriever_empty_index() {
 /// k1=2.0, b=0.5 自定义参数
 #[test]
 fn test_bm25_retriever_custom_parameters() {
-    let mut retriever = BM25Retriever::with_params(2.0, 0.5);
+    let retriever = BM25Retriever::with_params(2.0, 0.5);
 
     retriever.add_documents_sync(vec![
         Document::new("Rust programming"),
@@ -406,7 +406,7 @@ fn test_bm25_retriever_custom_parameters() {
 /// 查询词不存在于任何文档时返回空结果
 #[test]
 fn test_bm25_retriever_no_matching_documents() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     retriever.add_documents_sync(vec![
         Document::new("Rust programming language"),
@@ -423,7 +423,7 @@ fn test_bm25_retriever_no_matching_documents() {
 /// 验证评分排序正确（高分在前）
 #[test]
 fn test_bm25_retriever_score_ordering() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     retriever.add_documents_sync(vec![
         Document::new("Rust Rust Rust programming"), // 高词频
@@ -443,7 +443,7 @@ fn test_bm25_retriever_score_ordering() {
 /// clear() 方法应清空所有文档
 #[test]
 fn test_bm25_retriever_clear_index() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     retriever.add_documents_sync(vec![Document::new("Test document")]);
 
@@ -460,7 +460,7 @@ fn test_bm25_retriever_clear_index() {
 /// 长文档应有惩罚（由 b 参数控制）
 #[test]
 fn test_bm25_retriever_document_length_normalization() {
-    let mut retriever = BM25Retriever::new();
+    let retriever = BM25Retriever::new();
 
     // 短文档：关键词密度高
     retriever.add_documents_sync(vec![

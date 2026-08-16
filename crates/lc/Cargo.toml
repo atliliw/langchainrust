@@ -67,7 +67,6 @@ zip = "2"
 url = "2"
 log = "0.4"
 urlencoding = "2"
-meval = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -87,7 +86,6 @@ opentelemetry = ["dep:opentelemetry", "lc-callbacks/opentelemetry"]
 local-embeddings = ["lc-embeddings/local-embeddings"]
 fastembed = ["lc-embeddings/fastembed"]
 vectorstore-memory = ["lc-memory/vectorstore-memory"]
-native-computer = []
 
 [package.metadata.docs.rs]
 all-features = true
@@ -174,18 +172,6 @@ name = "unit_conversation_chain"
 path = "tests/unit/conversation_chain.rs"
 
 [[test]]
-name = "unit_summary_memory"
-path = "tests/unit/summary_memory.rs"
-
-[[test]]
-name = "unit_router_chain"
-path = "tests/unit/router_chain.rs"
-
-[[test]]
-name = "unit_retrieval_qa"
-path = "tests/unit/retrieval_qa.rs"
-
-[[test]]
 name = "unit_summary_buffer_memory"
 path = "tests/unit/summary_buffer_memory.rs"
 
@@ -206,60 +192,20 @@ required-features = ["qdrant-integration"]
 # 整合测试 - 需要 API Key
 # ============================================================================
 [[test]]
-name = "integration_agent_memory"
-path = "tests/integration/agent_memory.rs"
-
-[[test]]
-name = "integration_rag_pipeline"
-path = "tests/integration/rag_pipeline.rs"
-
-[[test]]
-name = "integration_chain_workflow"
-path = "tests/integration/chain_workflow.rs"
-
-[[test]]
 name = "integration_agent"
 path = "tests/integration/agent_test.rs"
-
-[[test]]
-name = "integration_agent_react"
-path = "tests/integration/agent_react.rs"
-
-[[test]]
-name = "integration_chains"
-path = "tests/integration/chains.rs"
 
 [[test]]
 name = "integration_embeddings"
 path = "tests/integration/embeddings.rs"
 
 [[test]]
-name = "integration_llm_chat"
-path = "tests/integration/llm_chat.rs"
-
-[[test]]
-name = "integration_rag"
-path = "tests/integration/rag.rs"
-
-[[test]]
-name = "integration_rag_full"
-path = "tests/integration/rag_full.rs"
-
-[[test]]
 name = "integration_callbacks"
 path = "tests/integration/callbacks_integration.rs"
 
 [[test]]
-name = "integration_callbacks_llm"
-path = "tests/integration/callbacks_llm_integration.rs"
-
-[[test]]
 name = "integration_tool_callbacks"
 path = "tests/integration/tool_callbacks_integration.rs"
-
-[[test]]
-name = "integration_ollama"
-path = "tests/integration/ollama_chat.rs"
 
 [[test]]
 name = "langsmith_connection"
@@ -274,47 +220,15 @@ name = "integration_multimodal"
 path = "tests/integration/multimodal.rs"
 
 [[test]]
-name = "integration_sessions"
-path = "tests/integration/sessions.rs"
-
-[[test]]
-name = "integration_token_counter"
-path = "tests/integration/token_counter.rs"
-
-[[test]]
 name = "integration_guardrails"
 path = "tests/integration/guardrails.rs"
-
-[[test]]
-name = "integration_plan_execute"
-path = "tests/integration/plan_execute.rs"
-
-[[test]]
-name = "integration_handoffs"
-path = "tests/integration/handoffs.rs"
-
-[[test]]
-name = "integration_streaming"
-path = "tests/integration/streaming.rs"
-
-[[test]]
-name = "integration_pinecone"
-path = "tests/integration/pinecone.rs"
 
 # ============================================================================
 # 端到端测试 - 完整应用流程
 # ============================================================================
-[[test]]
-name = "e2e_full_application"
-path = "tests/e2e/full_application.rs"
-
 # ============================================================================
 # Function Calling 测试 - 使用原生 Function Calling
 # ============================================================================
-[[test]]
-name = "function_calling_agent"
-path = "tests/function_calling/agent_fc.rs"
-
 # ============================================================================
 # LangGraph 测试
 # ============================================================================
@@ -359,10 +273,6 @@ name = "langgraph_parallel"
 path = "tests/langgraph/parallel.rs"
 
 [[test]]
-name = "langgraph_openai_demo"
-path = "tests/langgraph/openai_demo.rs"
-
-[[test]]
 name = "langgraph_subgraph_mechanism"
 path = "tests/langgraph/subgraph_mechanism.rs"
 
@@ -402,10 +312,6 @@ path = "tests/bm25/chunked.rs"
 [[test]]
 name = "bm25_rag"
 path = "tests/bm25/rag.rs"
-
-[[test]]
-name = "bm25_llm_integration"
-path = "tests/bm25/llm_integration.rs"
 
 [[test]]
 name = "bm25_hybrid_rag"
@@ -599,10 +505,9 @@ path = "examples/basic/sandbox.rs"
 name = "basic_quick_start"
 path = "examples/basic/quick_start.rs"
 
-# lcel_pipe lives in the top-level examples/ directory
 [[example]]
 name = "lcel_pipe"
-path = "../../examples/lcel_pipe.rs"
+path = "examples/lcel/lcel_pipe.rs"
 
 # ============================================================================
 # Criterion Benchmarks

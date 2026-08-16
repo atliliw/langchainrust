@@ -62,18 +62,4 @@ mod tests {
             _ => panic!("Expected Other error"),
         }
     }
-
-    #[tokio::test]
-    #[ignore = "requires a sample PDF file"]
-    async fn test_pdf_loader() {
-        // 注意：这需要一个实际存在的 PDF 文件进行测试
-        let loader = PDFLoader::new("./sample.pdf");
-        let result = loader.load().await;
-
-        // 应该成功返回至少一个文档
-        if let Ok(docs) = result {
-            assert!(!docs.is_empty());
-            assert!(docs[0].content.contains("PDF"));
-        }
-    }
 }

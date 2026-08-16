@@ -2562,7 +2562,7 @@ let server = A2AServer::new(chain)
 ```rust
 use langchainrust::a2a::{A2AClient, A2AMessage};
 
-let client = A2AClient::new("http://remote-agent:8080".to_string());
+let client = A2AClient::new("http://remote-agent:8080".to_string()).unwrap();
 
 // 发现智能体
 let card = client.get_agent_card().await?;
@@ -2642,9 +2642,6 @@ use std::sync::Arc;
 
 // Anthropic API 模式（默认）
 let tool = ComputerUseTool::new();
-
-// 或 Native 模式（需要 feature computer-use-native）
-// let tool = ComputerUseTool::new_native();
 
 // 作为 BaseTool 使用
 let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];

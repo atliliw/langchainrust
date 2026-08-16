@@ -14,7 +14,6 @@
 
 use langchainrust::core::batch::{BatchClient, BatchProvider, BatchRequest};
 use langchainrust::Message;
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

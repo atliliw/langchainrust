@@ -70,7 +70,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
             return Ok(Vec::new());
         }
         if sentences.len() == 1 {
-            return Ok(vec![sentences.into_iter().next().expect("已校验非空")]);
+            return Ok(vec![sentences.into_iter().next().unwrap_or_default()]);
         }
 
         // 批量嵌入

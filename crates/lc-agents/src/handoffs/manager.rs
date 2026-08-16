@@ -79,7 +79,7 @@ impl HandoffManager {
     ) -> Result<(), HandoffError> {
         self.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .agents
             .insert(name.into(), executor);
         Ok(())
@@ -87,7 +87,7 @@ impl HandoffManager {
 
     /// 设置主 Agent
     pub fn set_primary(&self, name: &str) -> Result<(), HandoffError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.agents.contains_key(name) {
             return Err(HandoffError::AgentNotFound(name.to_string()));
         }
@@ -98,7 +98,7 @@ impl HandoffManager {
     /// 执行交接:把任务交给目标 Agent
     pub async fn execute_handoff(&self, handoff: Handoff) -> Result<HandoffResult, HandoffError> {
         let executor = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
             // P1-7:交接深度上限
             if state.chain.len() >= self.max_handoff_depth {
@@ -132,13 +132,17 @@ impl HandoffManager {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
-                self.state.lock().unwrap().chain.pop();
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .chain
+                    .pop();
                 return Err(e);
             }
         };
 
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.chain.pop();
             let from = state
                 .chain
@@ -165,7 +169,7 @@ impl HandoffManager {
     /// 运行主 Agent
     pub async fn run(&self, input: String) -> Result<String, HandoffError> {
         let executor = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let primary = state
                 .primary
                 .clone()
@@ -184,18 +188,26 @@ impl HandoffManager {
             .invoke(input)
             .await
             .map_err(|e| HandoffError::ExecutionError(e.to_string()));
-        self.state.lock().unwrap().chain.clear();
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .chain
+            .clear();
         result
     }
 
     /// 获取交接历史
     pub fn history(&self) -> Vec<HandoffRecord> {
-        self.state.lock().unwrap().history.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .history
+            .clone()
     }
 
     /// 为每个注册的 Agent 生成 HandoffTool(供主 Agent 调用)
     pub fn handoff_tools(self: &Arc<Self>) -> Vec<Arc<dyn BaseTool>> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state
             .agents
             .keys()
@@ -478,7 +490,7 @@ mod tests {
             _intermediate_steps: &[AgentStep],
             inputs: &HashMap<String, String>,
         ) -> Result<AgentOutput, AgentError> {
-            *self.received.lock().unwrap() = inputs.get("input").cloned();
+            *self.received.lock().unwrap_or_else(|e| e.into_inner()) = inputs.get("input").cloned();
             Ok(AgentOutput::Finish(AgentFinish::new(
                 "done".to_string(),
                 String::new(),
@@ -512,7 +524,11 @@ mod tests {
         };
         manager.execute_handoff(handoff).await.unwrap();
 
-        let input = received.lock().unwrap().clone().unwrap();
+        let input = received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
         assert!(
             input.contains("此前对话要点A"),
             "目标应收到摘要,实际: {input}"
@@ -537,7 +553,11 @@ mod tests {
         };
         manager.execute_handoff(handoff).await.unwrap();
 
-        let input = received.lock().unwrap().clone().unwrap();
+        let input = received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
         assert_eq!(input, "只做这个");
     }
 
@@ -558,7 +578,11 @@ mod tests {
         };
         manager.execute_handoff(handoff).await.unwrap();
 
-        let input = received.lock().unwrap().clone().unwrap();
+        let input = received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
         assert_eq!(input, "taskY");
     }
 
@@ -575,7 +599,11 @@ mod tests {
         let json = r#"{"task": "写总结", "summary": "会议要点S"}"#;
         tool.run(json.to_string()).await.unwrap();
 
-        let input = received.lock().unwrap().clone().unwrap();
+        let input = received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
         assert!(
             input.contains("会议要点S"),
             "工具 JSON summary 应传到目标,实际: {input}"
@@ -595,7 +623,11 @@ mod tests {
         let tool = HandoffTool::new(manager, "writer".to_string());
         tool.run("纯文本任务".to_string()).await.unwrap();
 
-        let input = received.lock().unwrap().clone().unwrap();
+        let input = received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap();
         assert_eq!(input, "纯文本任务");
     }
 }

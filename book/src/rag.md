@@ -9,8 +9,8 @@ LangChainRust provides a full Retrieval-Augmented Generation stack: document loa
 | `RAGPipeline` | Pipeline | End-to-end chunk + embed + store + retrieve + generate |
 | `BM25Retriever` | Sparse | Classic BM25 keyword search with English + Chinese tokenization |
 | `ChunkedBM25Retriever` | Sparse | BM25 with parent-child auto-merging (LlamaIndex-style) |
-| `HybridRetriever` | Hybrid | BM25 + vector via Reciprocal Rank Fusion |
 | `UnifiedHybridIndex` | Hybrid | Dual-index with auto-splitting and detailed scores |
+| `reciprocal_rank_fusion` | Fusion | Combine BM25 + vector results via Reciprocal Rank Fusion |
 | `HyDERetriever` | Expansion | Generate hypothetical document, then retrieve with it |
 | `MultiQueryRetriever` | Expansion | Generate multiple query variants, merge results |
 | `RerankingExecutor` | Reranking | Post-retrieval scoring with `KeywordReranker` or `BM25Reranker` |
@@ -50,7 +50,7 @@ let result = rag.query_with_sources("What is Rust?").await?;
 
 ```rust
 use langchainrust::{
-    BM25Retriever, HybridRetriever, RerankingExecutor, KeywordReranker,
+    BM25Retriever, RerankingExecutor, KeywordReranker,
     reciprocal_rank_fusion,
 };
 
@@ -62,8 +62,7 @@ bm25.add_documents_sync(docs.clone());
 let vector_results: Vec<Document> = retriever.retrieve("query", 10).await?;
 
 // Fuse with Reciprocal Rank Fusion
-let hybrid = HybridRetriever::new().with_top_k(10, 10).with_rrf_k(60);
-let fused = hybrid.retrieve(bm25_results, vector_results);
+let fused = reciprocal_rank_fusion(bm25_results, vector_results, 60);
 
 // Rerank
 let executor = RerankingExecutor::new(Box::new(KeywordReranker::new()))

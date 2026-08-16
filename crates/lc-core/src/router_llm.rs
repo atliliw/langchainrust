@@ -127,30 +127,14 @@ impl RouterLLM {
         self
     }
 
-    /// Register a model. Its `model_name()` is used as the slot label.
+    /// Register a model.
     pub fn with_model<M>(mut self, model: M) -> Self
     where
         M: BaseChatModel + 'static,
         M::Error: std::error::Error + Send + Sync + 'static,
     {
-        let label = model.model_name().to_string();
         self.slots
-            .push(ModelSlot::new(label, Box::new(ModelAdapter(model)), None));
-        self
-    }
-
-    /// Register a model with an explicit slot label (useful when several
-    /// slots share the same underlying model name).
-    pub fn with_named_model<M>(mut self, name: impl Into<String>, model: M) -> Self
-    where
-        M: BaseChatModel + 'static,
-        M::Error: std::error::Error + Send + Sync + 'static,
-    {
-        self.slots.push(ModelSlot::new(
-            name.into(),
-            Box::new(ModelAdapter(model)),
-            None,
-        ));
+            .push(ModelSlot::new(Box::new(ModelAdapter(model)), None));
         self
     }
 
@@ -160,12 +144,8 @@ impl RouterLLM {
         M: BaseChatModel + 'static,
         M::Error: std::error::Error + Send + Sync + 'static,
     {
-        let label = model.model_name().to_string();
-        self.slots.push(ModelSlot::new(
-            label,
-            Box::new(ModelAdapter(model)),
-            Some(cost),
-        ));
+        self.slots
+            .push(ModelSlot::new(Box::new(ModelAdapter(model)), Some(cost)));
         self
     }
 
@@ -283,7 +263,11 @@ impl RouterLLM {
         }
         Err(RouterError::AllFailed {
             tried: order.len(),
-            last: last_err.expect("non-empty order guarantees at least one error"),
+            last: last_err.unwrap_or_else(|| {
+                Box::new(std::io::Error::other(
+                    "candidate order produced no attempts",
+                ))
+            }),
         })
     }
 
@@ -320,7 +304,11 @@ impl RouterLLM {
         }
         Err(RouterError::AllFailed {
             tried: order.len(),
-            last: last_err.expect("non-empty order guarantees at least one error"),
+            last: last_err.unwrap_or_else(|| {
+                Box::new(std::io::Error::other(
+                    "candidate order produced no attempts",
+                ))
+            }),
         })
     }
 }
@@ -452,8 +440,6 @@ where
 
 /// One registered model plus routing metadata.
 struct ModelSlot {
-    #[allow(dead_code)]
-    name: String,
     model: Box<dyn RoutedModel>,
     cost: Option<f64>,
     /// Exponential moving average latency in milliseconds.
@@ -461,9 +447,8 @@ struct ModelSlot {
 }
 
 impl ModelSlot {
-    fn new(name: String, model: Box<dyn RoutedModel>, cost: Option<f64>) -> Self {
+    fn new(model: Box<dyn RoutedModel>, cost: Option<f64>) -> Self {
         Self {
-            name,
             model,
             cost,
             latency_ms: Mutex::new(0.0),
@@ -492,7 +477,7 @@ mod tests {
 
     use super::*;
 
-    fn slot_at(name: &str, cost: Option<f64>, latency: f64) -> ModelSlot {
+    fn slot_at(cost: Option<f64>, latency: f64) -> ModelSlot {
         // A minimal stand-in model is not needed to test order derivation;
         // we only exercise `candidate_order` / `latency` logic. Build slots
         // with a no-op model via a tiny helper trait impl below.
@@ -515,8 +500,8 @@ mod tests {
                 Err(RouterError::Empty)
             }
         }
-        let s = ModelSlot::new(name.to_string(), Box::new(Noop), cost);
-        *s.latency_ms.lock().unwrap() = latency;
+        let s = ModelSlot::new(Box::new(Noop), cost);
+        *s.latency_ms.lock().unwrap_or_else(|e| e.into_inner()) = latency;
         s
     }
 
@@ -532,11 +517,7 @@ mod tests {
     #[test]
     fn candidate_order_fallback_is_registration_order() {
         let r = router_with(
-            vec![
-                slot_at("a", None, 0.0),
-                slot_at("b", None, 0.0),
-                slot_at("c", None, 0.0),
-            ],
+            vec![slot_at(None, 0.0), slot_at(None, 0.0), slot_at(None, 0.0)],
             RoutingStrategy::Fallback,
         );
         assert_eq!(r.candidate_order(""), vec![0, 1, 2]);
@@ -546,8 +527,8 @@ mod tests {
     fn candidate_order_lowest_cost_sorts_by_cost() {
         let r = router_with(
             vec![
-                slot_at("pricey", Some(10.0), 0.0), // idx 0
-                slot_at("cheap", Some(1.0), 0.0),   // idx 1
+                slot_at(Some(10.0), 0.0), // idx 0
+                slot_at(Some(1.0), 0.0),  // idx 1
             ],
             RoutingStrategy::LowestCost,
         );
@@ -558,8 +539,8 @@ mod tests {
     fn candidate_order_least_latency_sorts_by_latency() {
         let r = router_with(
             vec![
-                slot_at("slow", None, 80.0), // idx 0
-                slot_at("fast", None, 5.0),  // idx 1
+                slot_at(None, 80.0), // idx 0
+                slot_at(None, 5.0),  // idx 1
             ],
             RoutingStrategy::LeastLatency,
         );
@@ -569,7 +550,7 @@ mod tests {
     #[test]
     fn candidate_order_input_directed_puts_primary_first() {
         let r = router_with(
-            vec![slot_at("a", None, 0.0), slot_at("b", None, 0.0)],
+            vec![slot_at(None, 0.0), slot_at(None, 0.0)],
             RoutingStrategy::InputDirected(Arc::new(|s| if s.contains("x") { 1 } else { 0 })),
         );
         assert_eq!(r.candidate_order("hello"), vec![0, 1]);
@@ -579,7 +560,7 @@ mod tests {
     #[test]
     fn candidate_order_input_directed_invalid_index_falls_back() {
         let r = router_with(
-            vec![slot_at("a", None, 0.0), slot_at("b", None, 0.0)],
+            vec![slot_at(None, 0.0), slot_at(None, 0.0)],
             RoutingStrategy::InputDirected(Arc::new(|_| 99)),
         );
         assert_eq!(r.candidate_order("hi"), vec![0, 1]);
@@ -587,7 +568,7 @@ mod tests {
 
     #[test]
     fn update_latency_ema_blends_samples() {
-        let s = slot_at("m", None, 0.0);
+        let s = slot_at(None, 0.0);
         s.update_latency(100.0);
         assert_eq!(s.latency(), 100.0); // first sample replaces 0
         s.update_latency(100.0);

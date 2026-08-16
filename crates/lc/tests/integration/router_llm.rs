@@ -3,7 +3,7 @@
 //! 端到端验证 RouterLLM 的路由 + fallback 行为。
 
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 use langchainrust::{
     BaseChatModel, BaseLanguageModel, LLMResult, Message, RouterError, RouterLLM, RoutingStrategy,
     Runnable, RunnableConfig,

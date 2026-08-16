@@ -445,7 +445,11 @@ mod mongo_tests {
     /// 测试MongoDB持久化的保存和加载功能
     #[tokio::test]
     async fn test_mongo_persistence_save_load() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         let definition = GraphDefinition::new("entry".to_string())
@@ -472,7 +476,11 @@ mod mongo_tests {
     /// 测试MongoDB持久化的删除功能
     #[tokio::test]
     async fn test_mongo_persistence_delete() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
         let definition =
             GraphDefinition::new("entry".to_string()).with_id("mongo-test-del".to_string());
@@ -492,7 +500,11 @@ mod mongo_tests {
     /// 测试MongoDB持久化的列表功能
     #[tokio::test]
     async fn test_mongo_persistence_list() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         // 清理可能存在的旧测试数据
@@ -527,7 +539,11 @@ mod mongo_tests {
     /// 测试加载不存在的图时返回错误
     #[tokio::test]
     async fn test_mongo_persistence_not_found() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         // 加载不存在的图应该返回错误
@@ -538,7 +554,11 @@ mod mongo_tests {
     /// 测试MongoDB的更新操作 (upsert)
     #[tokio::test]
     async fn test_mongo_persistence_upsert() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         // 第一次保存
@@ -567,7 +587,11 @@ mod mongo_tests {
     /// 测试MongoDB持久化的并发保存
     #[tokio::test]
     async fn test_mongo_concurrent_saves() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = Arc::new(MongoPersistence::new(config).await.unwrap());
         let mut handles = vec![];
 
@@ -605,7 +629,11 @@ mod mongo_tests {
     /// 测试使用自定义配置创建MongoDB持久化实例
     #[tokio::test]
     async fn test_mongo_custom_config() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         // 验证连接信息
@@ -623,7 +651,11 @@ mod mongo_tests {
     /// 测试MongoDB持久化完整往返：编译图 -> 保存 -> 加载
     #[tokio::test]
     async fn test_mongo_persistence_roundtrip() {
-        let config = MongoTestConfig::get().to_mongo_config();
+        let Some(config) = MongoTestConfig::get_opt() else {
+            eprintln!("SKIP: MONGO_URI 未设置,跳过 MongoDB 测试");
+            return;
+        };
+        let config = config.to_mongo_config();
         let persistence = MongoPersistence::new(config).await.unwrap();
 
         // 构建简单图

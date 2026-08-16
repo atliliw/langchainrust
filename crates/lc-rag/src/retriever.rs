@@ -127,6 +127,7 @@ pub type Retriever = SimilarityRetriever;
 mod tests {
     use super::*;
     use crate::bm25::{AutoMergingConfig, BM25Retriever, ChunkedBM25Retriever};
+    #[allow(deprecated)]
     use crate::chunked_hybrid::ChunkedHybridRetriever;
     use crate::unified_hybrid::UnifiedHybridIndex;
     use lc_embeddings::MockEmbeddings;

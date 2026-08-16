@@ -41,16 +41,6 @@ impl QwenEmbeddingsConfig {
         }
     }
 
-    /// Creates a QwenEmbeddingsConfig from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| Self::default())
-    }
-
     /// Creates a QwenEmbeddingsConfig from environment variables, returning a Result.
     ///
     /// Environment variables:

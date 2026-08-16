@@ -280,8 +280,6 @@ struct Neo4jResponse {
 
 #[derive(Debug, Deserialize)]
 struct Neo4jResult {
-    #[allow(dead_code)]
-    columns: Vec<String>,
     data: Vec<Neo4jRow>,
 }
 

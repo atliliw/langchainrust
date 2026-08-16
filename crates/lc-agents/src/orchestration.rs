@@ -788,7 +788,10 @@ mod tests {
             task: Self::Input,
             _ctx: &RunContext,
         ) -> Result<Self::Output, AgentError> {
-            self.seen.lock().unwrap().push(task.clone());
+            self.seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(task.clone());
             Ok(format!("{}:{}", self.tag, task.objective))
         }
     }
@@ -929,7 +932,7 @@ mod tests {
             .with_allowed_tools(["web_search", "calculator"]);
         let out = orch.run_with_context(task, &ctx).await.unwrap();
         assert_eq!(out, "a:研究X\nb:研究X");
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(seen.len(), 2);
         for t in seen.iter() {
             assert_eq!(t.objective(), "研究X");
@@ -956,7 +959,7 @@ mod tests {
             .with_allowed_tools(["calc"]);
         let out = pipe.run_with_context(task, &ctx).await.unwrap();
         assert_eq!(out, "s:s:起点");
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].objective(), "起点");
         assert_eq!(seen[0].expected_output(), Some("要点"));
@@ -986,7 +989,10 @@ mod tests {
             task: Self::Input,
             _ctx: &RunContext,
         ) -> Result<Self::Output, AgentError> {
-            self.calls.lock().unwrap().push(task.clone());
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(task.clone());
             if self.first_try_good || task.objective.contains("修订") {
                 Ok("good answer".to_string())
             } else {
@@ -995,13 +1001,14 @@ mod tests {
         }
     }
 
-    /// mock worker 工厂:返回 worker trait 对象 + 记录的任务列表。
-    fn review_worker(
-        first_try_good: bool,
-    ) -> (
+    /// mock worker 工厂返回类型。
+    type ReviewWorkerPair = (
         Arc<dyn Orchestrator<Input = AgentTask, Output = String>>,
         Arc<Mutex<Vec<AgentTask>>>,
-    ) {
+    );
+
+    /// mock worker 工厂:返回 worker trait 对象 + 记录的任务列表。
+    fn review_worker(first_try_good: bool) -> ReviewWorkerPair {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let worker = Arc::new(ReviewWorker {
             calls: calls.clone(),
@@ -1065,7 +1072,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "good answer");
-        assert_eq!(calls.lock().unwrap().len(), 1, "达标后不应重做");
+        assert_eq!(
+            calls.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1,
+            "达标后不应重做"
+        );
     }
 
     /// P2-8: 首轮不达标,带着反馈重做后达标,任务级约束沿链保留。
@@ -1079,7 +1090,7 @@ mod tests {
             .with_allowed_tools(["calc"]);
         let out = orch.run_with_context(task, &ctx).await.unwrap();
         assert_eq!(out, "good answer");
-        let calls = calls.lock().unwrap();
+        let calls = calls.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(calls.len(), 2, "首轮不达标应重做一轮");
         assert_eq!(calls[0].objective(), "写报告");
         assert!(

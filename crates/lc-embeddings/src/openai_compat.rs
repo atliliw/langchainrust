@@ -73,17 +73,6 @@ impl<C: CompatConfigAccess + CompatSpec> OpenAICompatEmbeddings<C> {
         let config = C::from_env_result()?;
         Self::new(config).map_err(|e| e.to_string())
     }
-
-    /// Creates from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result()
-            .unwrap_or_else(|_| Self::new(C::default()).expect("from_env(): missing API key"))
-    }
 }
 
 #[async_trait]

@@ -51,7 +51,9 @@ pub trait BaseOutputParser<Output: Send + Sync + 'static>: Send + Sync {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err.expect("at least one parse attempt was made"))
+        Err(last_err.unwrap_or_else(|| {
+            OutputParserError::ParseError("parse_with_retry made no parse attempts".to_string())
+        }))
     }
 
     /// 获取格式指令（用于提示 LLM 按指定格式输出）

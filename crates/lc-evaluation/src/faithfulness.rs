@@ -246,7 +246,11 @@ mod tests {
             }
         }
         fn last_user_content(&self) -> String {
-            self.last_user.lock().unwrap().clone().unwrap_or_default()
+            self.last_user
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_default()
         }
     }
 
@@ -289,7 +293,8 @@ mod tests {
                 .iter()
                 .find(|m| m.message_type == MessageType::Human)
             {
-                *self.last_user.lock().unwrap() = Some(human.content.clone());
+                *self.last_user.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(human.content.clone());
             }
             Ok(LLMResult {
                 content: reply,

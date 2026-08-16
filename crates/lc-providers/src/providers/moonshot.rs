@@ -56,16 +56,6 @@ impl MoonshotConfig {
         }
     }
 
-    /// Creates a MoonshotConfig from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
-    }
-
     /// Creates a MoonshotConfig from environment variables, returning a Result.
     ///
     /// Environment variables:
@@ -148,15 +138,6 @@ impl MoonshotChat {
         Self {
             inner: OpenAIChat::new(config.into_openai_config()),
         }
-    }
-
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_result()
     }
 
     /// Creates a MoonshotChat from environment variables, returning a Result.

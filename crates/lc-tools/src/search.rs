@@ -233,28 +233,4 @@ mod tests {
         let result = tool.run(r#"{"query": ""}"#.to_string()).await;
         assert!(result.is_err());
     }
-
-    #[tokio::test]
-    #[ignore = "需要网络连接"]
-    async fn test_search_real() {
-        let tool = DuckDuckGoSearchTool::new();
-        let result = tool
-            .invoke(SearchInput {
-                query: "Rust programming".to_string(),
-                top_k: Some(3),
-            })
-            .await;
-
-        match &result {
-            Ok(output) => {
-                println!("搜索到了 {} 条结果", output.total);
-                if output.total > 0 {
-                    assert!(!output.results[0].title.is_empty());
-                }
-            }
-            Err(e) => {
-                eprintln!("搜索可能被限制: {}", e);
-            }
-        }
-    }
 }

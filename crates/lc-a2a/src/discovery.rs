@@ -52,7 +52,7 @@ impl AgentRegistry {
     /// Register an agent. Fails if the URL is already registered — use
     /// [`AgentRegistry::upsert`] to replace a card in place.
     pub fn register(&self, card: AgentCard) -> Result<(), RegistryError> {
-        let mut by_url = self.by_url.lock().expect("registry lock poisoned");
+        let mut by_url = self.by_url.lock().unwrap_or_else(|e| e.into_inner());
         if by_url.contains_key(&card.url) {
             return Err(RegistryError::AlreadyRegistered(card.url));
         }
@@ -64,7 +64,7 @@ impl AgentRegistry {
     pub fn upsert(&self, card: AgentCard) {
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(card.url.clone(), card);
     }
 
@@ -72,7 +72,7 @@ impl AgentRegistry {
     pub fn unregister(&self, url: &str) -> bool {
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(url)
             .is_some()
     }
@@ -81,7 +81,7 @@ impl AgentRegistry {
     pub fn lookup(&self, url: &str) -> Option<AgentCard> {
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(url)
             .cloned()
     }
@@ -90,7 +90,7 @@ impl AgentRegistry {
     pub fn agents(&self) -> Vec<AgentCard> {
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .cloned()
             .collect()
@@ -102,7 +102,7 @@ impl AgentRegistry {
         let q = query.to_lowercase();
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|card| card.skills.iter().any(|s| skill_matches(s, &q)))
             .cloned()
@@ -114,7 +114,7 @@ impl AgentRegistry {
     pub fn filter_data_class(&self, class: &str) -> Vec<AgentCard> {
         self.by_url
             .lock()
-            .expect("registry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|card| card.data_class.as_deref() == Some(class))
             .cloned()
@@ -123,7 +123,7 @@ impl AgentRegistry {
 
     /// How many agents are registered.
     pub fn len(&self) -> usize {
-        self.by_url.lock().expect("registry lock poisoned").len()
+        self.by_url.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Whether the registry is empty.
@@ -147,14 +147,14 @@ impl RegistryClient {
     ///
     /// The client disables proxy usage: registries are typically on a private
     /// network, and an environment proxy must not intercept catalog fetches.
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
+    pub fn new(base_url: impl Into<String>) -> Result<Self, RegistryError> {
+        Ok(Self {
             base_url: base_url.into(),
             http: reqwest::Client::builder()
                 .no_proxy()
                 .build()
-                .expect("reqwest client builds"),
-        }
+                .map_err(|e| RegistryError::Http(format!("failed to build HTTP client: {e}")))?,
+        })
     }
 
     /// Fetch the full catalog from the remote registry.
@@ -306,7 +306,7 @@ mod tests {
             }
         });
 
-        let client = RegistryClient::new(format!("http://{addr}"));
+        let client = RegistryClient::new(format!("http://{addr}")).unwrap();
         let catalog = client.fetch_catalog().await.unwrap();
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].url, "http://sum");

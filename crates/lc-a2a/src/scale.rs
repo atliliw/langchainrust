@@ -364,7 +364,7 @@ impl CircuitBreaker {
     /// `open_duration` has elapsed, then admits exactly one trial call and
     /// transitions to `HalfOpen`.
     pub fn allow_request(&self) -> bool {
-        let mut inner = self.inner.lock().expect("breaker lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.state == BreakerState::Open {
             let reopened = inner
                 .opened_at
@@ -380,7 +380,7 @@ impl CircuitBreaker {
 
     /// Record a successful call: resets the breaker to `Closed`.
     pub fn record_success(&self) {
-        let mut inner = self.inner.lock().expect("breaker lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.state = BreakerState::Closed;
         inner.consecutive_failures = 0;
         inner.opened_at = None;
@@ -388,7 +388,7 @@ impl CircuitBreaker {
 
     /// Record a failed call; trips `Open` once the threshold is reached.
     pub fn record_failure(&self) {
-        let mut inner = self.inner.lock().expect("breaker lock poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.consecutive_failures += 1;
         if inner.consecutive_failures >= self.config.failure_threshold {
             inner.state = BreakerState::Open;
@@ -398,7 +398,7 @@ impl CircuitBreaker {
 
     /// The current breaker state.
     pub fn state(&self) -> BreakerState {
-        self.inner.lock().expect("breaker lock poisoned").state
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).state
     }
 }
 

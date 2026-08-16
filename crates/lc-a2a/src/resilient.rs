@@ -530,7 +530,7 @@ mod tests {
         });
         let base = spawn_server(handler).await;
 
-        let client = ResilientA2AClient::new(A2AClient::new(base), fast_config());
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
         let task = client.send_task(A2AMessage::user("hi")).await.unwrap();
         assert_eq!(task.id, "task-retry");
         // Two transport failures + one success = three attempts on the primary.
@@ -547,7 +547,7 @@ mod tests {
         });
         let base = spawn_server(handler).await;
 
-        let client = ResilientA2AClient::new(A2AClient::new(base), fast_config());
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
         let err = client.send_task(A2AMessage::user("hi")).await.unwrap_err();
         assert!(matches!(err, A2AError::Api { code: -32000, .. }));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -572,8 +572,8 @@ mod tests {
             retry_base_delay: Duration::from_millis(5),
             ..fast_config()
         };
-        let client = ResilientA2AClient::new(A2AClient::new(primary_base), config)
-            .with_fallback(A2AClient::new(fallback_base));
+        let client = ResilientA2AClient::new(A2AClient::new(primary_base).unwrap(), config)
+            .with_fallback(A2AClient::new(fallback_base).unwrap());
 
         let task = client.send_task(A2AMessage::user("hi")).await.unwrap();
         assert_eq!(task.id, "from-fallback");
@@ -593,8 +593,8 @@ mod tests {
         });
         let fallback_base = spawn_server(fallback).await;
 
-        let client = ResilientA2AClient::new(A2AClient::new(primary_base), fast_config())
-            .with_fallback(A2AClient::new(fallback_base));
+        let client = ResilientA2AClient::new(A2AClient::new(primary_base).unwrap(), fast_config())
+            .with_fallback(A2AClient::new(fallback_base).unwrap());
 
         let err = client.send_task(A2AMessage::user("hi")).await.unwrap_err();
         assert!(matches!(err, A2AError::Parse(_)));
@@ -612,7 +612,7 @@ mod tests {
         });
         let base = spawn_server(handler).await;
 
-        let client = ResilientA2AClient::new(A2AClient::new(base), fast_config());
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
         let result = client
             .send_task_and_wait(A2AMessage::user("hi"), Duration::from_secs(5))
             .await
@@ -625,7 +625,7 @@ mod tests {
         let handler: Handler = Arc::new(|_path, _body| (200, working_task_response("t-stuck")));
         let base = spawn_server(handler).await;
 
-        let client = ResilientA2AClient::new(A2AClient::new(base), fast_config());
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
         let err = client
             .wait_for_task("t-stuck", Duration::from_millis(100))
             .await
@@ -653,7 +653,7 @@ mod tests {
             retry_base_delay: Duration::from_millis(5),
             ..fast_config()
         };
-        let client = ResilientA2AClient::new(A2AClient::new(base.clone()), config);
+        let client = ResilientA2AClient::new(A2AClient::new(base.clone()).unwrap(), config);
         let _stream = client.connect_sse(&format!("{base}/events")).await.unwrap();
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }

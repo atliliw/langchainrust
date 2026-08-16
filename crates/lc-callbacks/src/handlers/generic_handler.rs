@@ -207,14 +207,24 @@ mod tests {
         let ev_end = Arc::clone(&events);
 
         let handler = GenericHandler::new()
-            .with_run_start(move |r| ev_start.lock().unwrap().push(format!("start:{}", r.name)))
-            .with_run_end(move |r| ev_end.lock().unwrap().push(format!("end:{}", r.name)));
+            .with_run_start(move |r| {
+                ev_start
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("start:{}", r.name))
+            })
+            .with_run_end(move |r| {
+                ev_end
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("end:{}", r.name))
+            });
 
         let h = run("r1");
         handler.on_run_start(&h).await;
         handler.on_run_end(&h).await;
 
-        let got = events.lock().unwrap().clone();
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec!["start:r1".to_string(), "end:r1".to_string()]);
     }
 
@@ -223,12 +233,16 @@ mod tests {
         let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let events2 = Arc::clone(&events);
 
-        let handler = GenericHandler::new()
-            .with_run_error(move |_r, e| events2.lock().unwrap().push(format!("error:{e}")));
+        let handler = GenericHandler::new().with_run_error(move |_r, e| {
+            events2
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("error:{e}"))
+        });
 
         handler.on_run_error(&run("r1"), "boom").await;
 
-        let got = events.lock().unwrap().clone();
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec!["error:boom".to_string()]);
     }
 
@@ -238,13 +252,17 @@ mod tests {
         let events2 = Arc::clone(&events);
 
         // Only the generic layer is set: typed hooks must forward to it.
-        let handler = GenericHandler::new()
-            .with_run_start(move |r| events2.lock().unwrap().push(format!("start:{}", r.name)));
+        let handler = GenericHandler::new().with_run_start(move |r| {
+            events2
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("start:{}", r.name))
+        });
 
         let h = run("llm1");
         handler.on_llm_start(&h, &[]).await;
 
-        let got = events.lock().unwrap().clone();
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec!["start:llm1".to_string()]);
     }
 
@@ -255,14 +273,24 @@ mod tests {
         let ev_thinking = Arc::clone(&events);
 
         let handler = GenericHandler::new()
-            .with_llm_new_token(move |_r, t| ev_tokens.lock().unwrap().push(format!("tok:{t}")))
-            .with_llm_thinking(move |_r, t| ev_thinking.lock().unwrap().push(format!("think:{t}")));
+            .with_llm_new_token(move |_r, t| {
+                ev_tokens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("tok:{t}"))
+            })
+            .with_llm_thinking(move |_r, t| {
+                ev_thinking
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("think:{t}"))
+            });
 
         let h = run("llm1");
         handler.on_llm_new_token(&h, "hello").await;
         handler.on_llm_thinking(&h, "hmm").await;
 
-        let got = events.lock().unwrap().clone();
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(got, vec!["tok:hello".to_string(), "think:hmm".to_string()]);
     }
 
@@ -274,17 +302,23 @@ mod tests {
 
         let handler = GenericHandler::new()
             .with_tool_start(move |_r, name, input| {
-                ev_tool.lock().unwrap().push(format!("tool:{name}:{input}"))
+                ev_tool
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("tool:{name}:{input}"))
             })
             .with_retriever_start(move |_r, q| {
-                ev_retriever.lock().unwrap().push(format!("retriever:{q}"))
+                ev_retriever
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("retriever:{q}"))
             });
 
         let h = run("t1");
         handler.on_tool_start(&h, "search", "rust").await;
         handler.on_retriever_start(&h, "doc").await;
 
-        let got = events.lock().unwrap().clone();
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(
             got,
             vec!["tool:search:rust".to_string(), "retriever:doc".to_string()]

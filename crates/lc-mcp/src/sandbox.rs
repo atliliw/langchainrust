@@ -237,12 +237,17 @@ impl ServerSandbox {
 
     /// 全量审计日志(按时间先后)。
     pub fn audit_log(&self) -> Vec<AuditRecord> {
-        self.audit.lock().unwrap().iter().cloned().collect()
+        self.audit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// 清空审计日志。
     pub fn clear_audit(&self) {
-        self.audit.lock().unwrap().clear();
+        self.audit.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     fn record(&self, tool: &str, arguments: Value, allowed: bool, reason: Option<String>) {
@@ -254,7 +259,7 @@ impl ServerSandbox {
             reason,
             at: SystemTime::now(),
         };
-        let mut audit = self.audit.lock().unwrap();
+        let mut audit = self.audit.lock().unwrap_or_else(|e| e.into_inner());
         if audit.len() >= self.max_audit {
             audit.pop_front();
         }

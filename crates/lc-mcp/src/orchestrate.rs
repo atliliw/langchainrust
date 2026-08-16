@@ -243,7 +243,9 @@ impl ToolOrchestrator {
             done += 1;
             if let Some(deps) = dependents.get(id) {
                 for &dep in deps {
-                    let e = in_degree.get_mut(dep).expect("已校验的步骤必有入度");
+                    let e = in_degree
+                        .get_mut(dep)
+                        .ok_or_else(|| OrchestrateError::MissingStep(dep.to_string()))?;
                     *e -= 1;
                     if *e == 0 {
                         queue.push_back(dep);
@@ -270,7 +272,9 @@ fn resolve_template(
         Value::String(s) => {
             if let Some(rest) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}')) {
                 let mut parts = rest.split('.');
-                let id = parts.next().expect("模板非空");
+                let Some(id) = parts.next() else {
+                    return Err(OrchestrateError::MissingStep(rest.to_string()));
+                };
                 let cur = results
                     .get(id)
                     .ok_or_else(|| OrchestrateError::MissingStep(id.to_string()))?;

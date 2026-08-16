@@ -574,13 +574,13 @@ mod tests {
         let h = hits.clone();
         let handler: Handler = Arc::new(move |_path, body| {
             h.fetch_add(1, Ordering::SeqCst);
-            *cap.lock().unwrap() = body.to_string();
+            *cap.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             (200, downstream_ok_response())
         });
         let base = spawn_server(handler).await;
 
         let gw = FederationGateway::new("gw", CallPolicy::new().allow_caller_org("acme"))
-            .with_route("partner", A2AClient::new(base));
+            .with_route("partner", A2AClient::new(base).unwrap());
 
         let req = request()
             .with_owner("acme:alice")
@@ -593,7 +593,7 @@ mod tests {
 
         // The forwarded body must be minimized: trace + message id kept,
         // caller identity stripped.
-        let forwarded = captured.lock().unwrap().clone();
+        let forwarded = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
             forwarded.contains("trace_id"),
             "trace must survive forwarding"
@@ -619,7 +619,7 @@ mod tests {
         let base = spawn_server(handler).await;
 
         let gw = FederationGateway::new("gw", CallPolicy::new().allow_caller_org("acme"))
-            .with_route("partner", A2AClient::new(base));
+            .with_route("partner", A2AClient::new(base).unwrap());
 
         // Caller from an unlisted org.
         let req = request().with_owner("evil:user");

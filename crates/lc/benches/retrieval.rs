@@ -76,7 +76,7 @@ fn bench_bm25_index_building(c: &mut Criterion) {
     for size in [50, 200, 1000] {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| {
-                let mut retriever = BM25Retriever::new();
+                let retriever = BM25Retriever::new();
                 let docs = generate_english_documents(size);
                 retriever.add_documents_sync(black_box(docs));
             });
@@ -90,7 +90,7 @@ fn bench_bm25_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("bm25_search");
 
     for size in [50, 200, 1000] {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
         retriever.add_documents_sync(generate_english_documents(size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &_size| {
@@ -107,7 +107,7 @@ fn bench_bm25_chinese_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("bm25_chinese_search");
 
     for size in [50, 200, 500] {
-        let mut retriever = BM25Retriever::new();
+        let retriever = BM25Retriever::new();
         retriever.add_documents_sync(generate_chinese_documents(size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &_size| {

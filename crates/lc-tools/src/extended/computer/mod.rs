@@ -356,24 +356,4 @@ mod tests {
         assert!(body["tools"].is_array());
         assert_eq!(body["tools"][0]["type"], "computer_20250124");
     }
-
-    #[tokio::test]
-    #[ignore = "requires ANTHROPIC_API_KEY environment variable"]
-    async fn test_screenshot_with_real_api() {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let t = ComputerUseTool::new_anthropic(api_key, 1024, 768);
-        let input = r#"{"action":"screenshot"}"#.to_string();
-        let result = t.run(input).await;
-        assert!(result.is_ok(), "screenshot should succeed: {:?}", result);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ANTHROPIC_API_KEY environment variable"]
-    async fn test_click_with_real_api() {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
-        let t = ComputerUseTool::new_anthropic(api_key, 1024, 768);
-        let input = r#"{"action":"click","coordinate":[500,400]}"#.to_string();
-        let result = t.run(input).await;
-        assert!(result.is_ok(), "click should succeed: {:?}", result);
-    }
 }

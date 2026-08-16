@@ -68,16 +68,6 @@ impl OllamaChat {
         }
     }
 
-    /// Creates an OllamaChat from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| Self::with_config(OllamaConfig::default()))
-    }
-
     /// Creates an OllamaChat from environment variables, returning a Result.
     pub fn from_env_result() -> Result<Self, String> {
         let config = OllamaConfig::from_env_result()?;

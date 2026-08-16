@@ -101,19 +101,6 @@ impl OpenAIEmbeddings {
         }
     }
 
-    /// Creates OpenAIEmbeddings from environment variables.
-    #[deprecated(
-        since = "0.7.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    #[allow(deprecated)]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| {
-            Self::new(OpenAIEmbeddingsConfig::default())
-                .expect("from_env(): OPENAI_API_KEY is required")
-        })
-    }
-
     /// Creates OpenAIEmbeddings from environment variables, returning a Result.
     ///
     /// Environment variables:
@@ -660,26 +647,5 @@ mod tests {
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.model, "text-embedding-3-large");
         assert_eq!(config.base_url, "https://custom.api.com/v1");
-    }
-
-    #[tokio::test]
-    #[ignore = "requires real API call"]
-    async fn test_real_embedding() {
-        let config = OpenAIEmbeddingsConfig {
-            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
-            base_url:
-                "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-                    .to_string(),
-            model: "text-embedding-ada-002".to_string(),
-            batch_size: 2048,
-        };
-
-        let embeddings = OpenAIEmbeddings::new(config).unwrap();
-
-        let result = embeddings.embed_query("Hello, world!").await;
-        assert!(result.is_ok());
-
-        let embedding = result.unwrap();
-        assert_eq!(embedding.len(), 1536);
     }
 }

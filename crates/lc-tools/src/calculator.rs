@@ -1,7 +1,9 @@
 // lc-tools/src/calculator.rs
 //! Calculator tool
 //!
-//! A math expression calculator using the meval crate.
+//! A math expression calculator backed by the crate-internal
+//! [`crate::expr_eval`] evaluator (a dependency-free port of the `meval`
+//! expression language).
 
 use async_trait::async_trait;
 use lc_core::tools::{BaseTool, Tool, ToolError};
@@ -27,8 +29,9 @@ pub struct CalculatorOutput {
 
 /// Calculator tool
 ///
-/// Evaluates math expressions using the meval crate.
-/// Supports: basic arithmetic (+, -, *, /), power (^), functions (sin, cos, tan, sqrt, log, exp, abs), constants (pi, e).
+/// Evaluates math expressions. Supports: basic arithmetic (+, -, *, /, %),
+/// power (^), functions (sin, cos, tan, sqrt, log, exp, abs, …), and
+/// constants (pi, e).
 pub struct Calculator;
 
 impl Calculator {
@@ -101,17 +104,9 @@ Example: {\"expression\": \"2 + 3\"}"
 }
 
 impl Calculator {
-    /// Evaluate a math expression using meval
+    /// Evaluate a math expression
     fn evaluate_expression(expr: &str) -> Result<f64, ToolError> {
-        let expr = expr.trim();
-
-        // Try parsing as a plain number first
-        if let Ok(num) = expr.parse::<f64>() {
-            return Ok(num);
-        }
-
-        // Use meval to parse and evaluate
-        meval::eval_str(expr).map_err(|e| {
+        crate::expr_eval::eval(expr).map_err(|e| {
             ToolError::ExecutionFailed(format!("Failed to evaluate expression '{}': {}", expr, e))
         })
     }

@@ -13,7 +13,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.11"
+langchainrust = "0.14.0"
 tokio = { version = "1", features = ["full"] }
 ```
 

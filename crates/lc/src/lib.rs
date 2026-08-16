@@ -206,7 +206,7 @@ pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 // Retrieval
 #[allow(deprecated)]
 pub use retrieval::{
-    filter_by_score, reciprocal_rank_fusion, ChunkedHybridRetriever, HybridRetriever, RAGPipeline,
+    filter_by_score, reciprocal_rank_fusion, ChunkedHybridRetriever, RAGPipeline,
     RAGPipelineBuilder, RAGQueryResult, RagRunnable, RetrievalSource, RetrievedDocument,
 };
 pub use retrieval::{

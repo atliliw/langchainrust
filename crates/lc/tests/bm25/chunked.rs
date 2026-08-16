@@ -19,14 +19,18 @@ fn test_chunked_retriever_basic() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言，注重安全和性能。由Mozilla开发，于2010年首次发布。")
+    retriever
+        .add_documents(vec![
+            Document::new(
+                "Rust是一门系统编程语言，注重安全和性能。由Mozilla开发，于2010年首次发布。",
+            )
             .with_id("rust_doc"),
-        Document::new("Python是一门高级编程语言，适合数据科学、机器学习和Web开发。")
-            .with_id("python_doc"),
-        Document::new("JavaScript是一门脚本语言，主要用于前端开发和Node.js后端开发。")
-            .with_id("js_doc"),
-    ]);
+            Document::new("Python是一门高级编程语言，适合数据科学、机器学习和Web开发。")
+                .with_id("python_doc"),
+            Document::new("JavaScript是一门脚本语言，主要用于前端开发和Node.js后端开发。")
+                .with_id("js_doc"),
+        ])
+        .unwrap();
 
     println!("索引是否为空: {}", retriever.is_empty());
     println!("索引文档数量: {}", retriever.len());
@@ -39,12 +43,14 @@ fn test_chunked_retriever_search() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言，注重安全和性能。由Mozilla开发。")
-            .with_id("rust_doc"),
-        Document::new("Python是一门脚本语言，适合数据科学。").with_id("python_doc"),
-        Document::new("Go语言由Google开发，是一门并发编程语言。").with_id("go_doc"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Rust是一门系统编程语言，注重安全和性能。由Mozilla开发。")
+                .with_id("rust_doc"),
+            Document::new("Python是一门脚本语言，适合数据科学。").with_id("python_doc"),
+            Document::new("Go语言由Google开发，是一门并发编程语言。").with_id("go_doc"),
+        ])
+        .unwrap();
 
     let results = retriever.search("系统编程", 2);
 
@@ -67,12 +73,14 @@ fn test_chunked_retriever_chinese_search() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("机器学习是人工智能的一个分支，通过算法让计算机从数据中学习。")
-            .with_id("ml_doc"),
-        Document::new("深度学习使用神经网络进行特征学习和模式识别。").with_id("dl_doc"),
-        Document::new("自然语言处理让计算机理解和生成人类语言。").with_id("nlp_doc"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("机器学习是人工智能的一个分支，通过算法让计算机从数据中学习。")
+                .with_id("ml_doc"),
+            Document::new("深度学习使用神经网络进行特征学习和模式识别。").with_id("dl_doc"),
+            Document::new("自然语言处理让计算机理解和生成人类语言。").with_id("nlp_doc"),
+        ])
+        .unwrap();
 
     let results: Vec<ChunkedSearchResult> = retriever.search("机器学习算法", 3);
 
@@ -110,7 +118,7 @@ fn test_auto_merging_config() {
     )
     .with_id("test_doc");
 
-    retriever.add_document(doc);
+    retriever.add_document(doc).unwrap();
 
     println!("索引文档数量: {}", retriever.len());
 }
@@ -130,7 +138,7 @@ fn test_auto_merging_high_match_ratio() {
         "Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust Rust"
     ).with_id("rust_repeat");
 
-    retriever.add_document(long_doc);
+    retriever.add_document(long_doc).unwrap();
 
     let results: Vec<ChunkedSearchResult> = retriever.search("Rust", 1);
 
@@ -159,11 +167,15 @@ fn test_auto_merging_low_match_ratio() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::with_config(store, config);
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言。Python是一门脚本语言。JavaScript是一门前端语言。")
+    retriever
+        .add_documents(vec![
+            Document::new(
+                "Rust是一门系统编程语言。Python是一门脚本语言。JavaScript是一门前端语言。",
+            )
             .with_id("multi_lang"),
-        Document::new("Go是一门并发编程语言。").with_id("go_doc"),
-    ]);
+            Document::new("Go是一门并发编程语言。").with_id("go_doc"),
+        ])
+        .unwrap();
 
     let results: Vec<ChunkedSearchResult> = retriever.search("Rust", 2);
 
@@ -187,11 +199,13 @@ fn test_persistence_save_load() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store.clone());
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言，注重安全。").with_id("rust_doc"),
-        Document::new("Python适合数据科学和机器学习。").with_id("python_doc"),
-        Document::new("JavaScript用于Web前端开发。").with_id("js_doc"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Rust是一门系统编程语言，注重安全。").with_id("rust_doc"),
+            Document::new("Python适合数据科学和机器学习。").with_id("python_doc"),
+            Document::new("JavaScript用于Web前端开发。").with_id("js_doc"),
+        ])
+        .unwrap();
 
     let original_len = retriever.len();
 
@@ -225,10 +239,12 @@ fn test_persistence_with_search() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store.clone());
 
-    retriever.add_documents(vec![
-        Document::new("人工智能是计算机科学的一个分支。").with_id("ai_doc"),
-        Document::new("机器学习是人工智能的核心技术。").with_id("ml_doc"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("人工智能是计算机科学的一个分支。").with_id("ai_doc"),
+            Document::new("机器学习是人工智能的核心技术。").with_id("ml_doc"),
+        ])
+        .unwrap();
 
     let temp_file = NamedTempFile::new().expect("Failed to create temp file");
     retriever.save(temp_file.path()).expect("Failed to save");
@@ -253,7 +269,7 @@ fn test_get_parent_document() {
 
     let doc = Document::new("这是一个测试文档的内容。").with_id("test_doc");
 
-    retriever.add_document(doc);
+    retriever.add_document(doc).unwrap();
 
     let parent = retriever.get_parent_document("test_doc");
 
@@ -274,10 +290,12 @@ fn test_clear() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("文档一").with_id("doc1"),
-        Document::new("文档二").with_id("doc2"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("文档一").with_id("doc1"),
+            Document::new("文档二").with_id("doc2"),
+        ])
+        .unwrap();
 
     println!("清空前文档数: {}", retriever.len());
 
@@ -319,7 +337,7 @@ fn test_large_document_chunking() {
     )
     .with_id("large_doc");
 
-    retriever.add_document(large_doc);
+    retriever.add_document(large_doc).unwrap();
 
     println!("Leaf大小配置: 100");
     println!("索引文档数 (Leaf chunks): {}", retriever.len());
@@ -345,11 +363,13 @@ fn test_multiple_keywords_search() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_documents(vec![
-        Document::new("Rust是一门系统编程语言，注重安全和并发。").with_id("rust_doc"),
-        Document::new("Python是一门高级语言，适合数据科学。").with_id("python_doc"),
-        Document::new("Go是一门并发语言，由Google开发。").with_id("go_doc"),
-    ]);
+    retriever
+        .add_documents(vec![
+            Document::new("Rust是一门系统编程语言，注重安全和并发。").with_id("rust_doc"),
+            Document::new("Python是一门高级语言，适合数据科学。").with_id("python_doc"),
+            Document::new("Go是一门并发语言，由Google开发。").with_id("go_doc"),
+        ])
+        .unwrap();
 
     let results: Vec<ChunkedSearchResult> = retriever.search("系统编程 安全", 2);
 
@@ -372,7 +392,9 @@ fn test_search_result_properties() {
     let store = Arc::new(ChunkedDocumentStore::new());
     let mut retriever = ChunkedBM25Retriever::new(store);
 
-    retriever.add_document(Document::new("测试文档用于验证搜索结果的属性。").with_id("test_doc"));
+    retriever
+        .add_document(Document::new("测试文档用于验证搜索结果的属性。").with_id("test_doc"))
+        .unwrap();
 
     let results: Vec<ChunkedSearchResult> = retriever.search("测试", 1);
 

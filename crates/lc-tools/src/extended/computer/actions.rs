@@ -6,9 +6,6 @@
 
 use serde_json::Value;
 
-#[cfg(feature = "native-computer")]
-use std::time::Duration;
-
 use lc_core::tools::ToolError;
 
 use super::screen::ComputerUseTool;
@@ -22,9 +19,6 @@ use super::screen::ComputerUseTool;
 pub enum ComputerMode {
     /// Forward actions to the Anthropic computer-use API.
     AnthropicApi,
-    /// Local screenshot + input simulation (behind `native-computer` feature gate).
-    #[cfg(feature = "native-computer")]
-    Native,
 }
 
 // ---------------------------------------------------------------------------
@@ -247,74 +241,6 @@ impl ComputerUseTool {
             result: response_text,
             screenshot_base64,
         })
-    }
-
-    /// Execute an action in Native mode (placeholder).
-    #[cfg(feature = "native-computer")]
-    pub(super) async fn execute_native(
-        &self,
-        input: &ComputerUseInput,
-    ) -> Result<ComputerUseOutput, ToolError> {
-        self.validate_input(input)?;
-
-        match input.action.as_str() {
-            "screenshot" => Ok(ComputerUseOutput {
-                action: "screenshot".to_string(),
-                result: "Screenshot captured (native mode)".to_string(),
-                screenshot_base64: None,
-            }),
-            "click" => {
-                let coord = input.coordinate.as_deref().unwrap_or(&[0, 0]);
-                Ok(ComputerUseOutput {
-                    action: "click".to_string(),
-                    result: format!("Clicked at ({}, {}) (native mode)", coord[0], coord[1]),
-                    screenshot_base64: None,
-                })
-            }
-            "type" => Ok(ComputerUseOutput {
-                action: "type".to_string(),
-                result: format!(
-                    "Typed '{}' (native mode)",
-                    input.text.as_deref().unwrap_or("")
-                ),
-                screenshot_base64: None,
-            }),
-            "scroll" => {
-                let coord = input.coordinate.as_deref().unwrap_or(&[0, 0]);
-                Ok(ComputerUseOutput {
-                    action: "scroll".to_string(),
-                    result: format!(
-                        "Scrolled {} by {} at ({}, {}) (native mode)",
-                        input.direction.as_deref().unwrap_or("down"),
-                        input.amount.unwrap_or(3),
-                        coord[0],
-                        coord[1]
-                    ),
-                    screenshot_base64: None,
-                })
-            }
-            "key_press" => Ok(ComputerUseOutput {
-                action: "key_press".to_string(),
-                result: format!(
-                    "Pressed keys: {} (native mode)",
-                    input.keys.as_deref().unwrap_or(&[]).join("+")
-                ),
-                screenshot_base64: None,
-            }),
-            "wait" => {
-                let ms = input.duration_ms.unwrap_or(1000);
-                tokio::time::sleep(Duration::from_millis(ms)).await;
-                Ok(ComputerUseOutput {
-                    action: "wait".to_string(),
-                    result: format!("Waited {}ms (native mode)", ms),
-                    screenshot_base64: None,
-                })
-            }
-            other => Err(ToolError::InvalidInput(format!(
-                "Unknown action: {}",
-                other
-            ))),
-        }
     }
 
     /// Validate the input for the given action.

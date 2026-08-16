@@ -1,4 +1,4 @@
-// examples/lcel_pipe.rs
+// examples/lcel/lcel_pipe.rs
 //! LCEL Pipeline Example
 //!
 //! Demonstrates the LangChain Expression Language (LCEL) pipe composition

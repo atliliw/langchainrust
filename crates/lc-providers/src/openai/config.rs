@@ -49,20 +49,6 @@ impl OpenAIConfig {
         }
     }
 
-    /// Create configuration from environment variables
-    ///
-    /// Environment variables:
-    /// - `OPENAI_API_KEY`: API key (required)
-    /// - `OPENAI_BASE_URL`: API endpoint (optional, default: <https://api.openai.com/v1>)
-    /// - `OPENAI_MODEL`: Model name (optional, default: gpt-3.5-turbo)
-    #[deprecated(
-        since = "0.5.0",
-        note = "Use from_env_result() which returns Result<Self, String>"
-    )]
-    pub fn from_env() -> Self {
-        Self::from_env_result().unwrap_or_else(|_| Self::default())
-    }
-
     /// Create configuration from environment variables, returning Result
     ///
     /// Environment variables:

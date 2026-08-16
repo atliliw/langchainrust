@@ -2,8 +2,7 @@
 //!
 //! Supports actions: screenshot, click, type, scroll, key_press, wait.
 //! The `AnthropicApi` mode constructs tool-call payloads compatible with
-//! Anthropic's computer-use beta. The `Native` mode (feature-gated) is a
-//! placeholder for local screenshot + input simulation.
+//! Anthropic's computer-use beta.
 
 use std::time::Duration;
 
@@ -69,19 +68,6 @@ impl ComputerUseTool {
         self
     }
 
-    /// Create a new tool in `Native` mode (requires `native-computer` feature).
-    #[cfg(feature = "native-computer")]
-    pub fn new_native(display_width: u32, display_height: u32) -> Self {
-        Self {
-            mode: ComputerMode::Native,
-            api_key: String::new(),
-            base_url: String::new(),
-            display_width,
-            display_height,
-            client: reqwest::Client::new(),
-        }
-    }
-
     /// Return the current mode.
     pub fn mode(&self) -> &ComputerMode {
         &self.mode
@@ -144,8 +130,6 @@ impl ComputerUseTool {
     ) -> Result<ComputerUseOutput, ToolError> {
         match self.mode {
             ComputerMode::AnthropicApi => self.execute_anthropic(input).await,
-            #[cfg(feature = "native-computer")]
-            ComputerMode::Native => self.execute_native(input).await,
         }
     }
 }

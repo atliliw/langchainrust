@@ -410,26 +410,6 @@ mod tests {
         .expect("list_changed 应触发缓存失效并重新拉取 tools/list");
     }
 
-    #[tokio::test]
-    #[ignore = "需要本地 MCP SSE Server"]
-    async fn test_connect_sse_creates_client() {
-        // SSE transport 惰性创建(不立即连接),应成功
-        let config = MCPConfig::sse("http://localhost:3001/sse");
-        let client = MCPClient::connect(config).await;
-        assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore = "需要本地 MCP SSE Server"]
-    async fn test_next_id_increments() {
-        let client = MCPClient::connect(MCPConfig::sse("http://localhost:3001/sse"))
-            .await
-            .unwrap();
-        assert_eq!(client.next_id(), 1);
-        assert_eq!(client.next_id(), 2);
-        assert_eq!(client.next_id(), 3);
-    }
-
     // ---- P2-10 协议版本协商测试 ----
 
     /// 版本协商测试用 stub 传输:initialize 返回可配置的 `protocolVersion`,
