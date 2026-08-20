@@ -34,6 +34,7 @@ pub mod roots;
 pub mod sampling;
 pub mod sandbox;
 pub mod server;
+mod sse;
 pub mod stream;
 pub mod tenant;
 pub mod tool_adapter;

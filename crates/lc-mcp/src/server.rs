@@ -249,6 +249,28 @@ impl MCPServer {
         Ok(())
     }
 
+    /// 在已绑定的 TCP listener 上提供 MCP SSE 网络服务,返回客户端要连的 SSE 入口 URL。
+    ///
+    /// 这是"可部署的 MCP server"的入口:把本 server 暴露为 HTTP/SSE 服务,
+    /// 任何 MCP 客户端(`MCPClient::connect(MCPConfig::sse(...))` / Cursor /
+    /// Claude Desktop 等)都能连上来用注册的工具。SSE 帧格式与
+    /// `MCPClient`(SseTransport)客户端行为对齐。
+    ///
+    /// - `listener`:已绑定好地址的 `TcpListener`。本地联调绑 `127.0.0.1:0`,
+    ///   部署到远程服务器绑 `0.0.0.0:PORT`。
+    /// - `public_base`:客户端访问本服务器的基地址(如 `http://your-server-ip:8788`)。
+    ///   服务端发给客户端的 POST 地址由它拼出,部署在远程时必须是客户端真能访问的
+    ///   地址(不能用 `0.0.0.0`)。
+    ///
+    /// 启动后立即返回 SSE URL,接收循环在后台任务运行直到进程退出。
+    pub fn serve_sse(
+        self: Arc<Self>,
+        listener: tokio::net::TcpListener,
+        public_base: impl Into<String>,
+    ) -> String {
+        crate::sse::serve(self, listener, public_base.into())
+    }
+
     /// 处理服务器收到的通知(无 id 的消息)。
     ///
     /// P0-4: 对 MCP 标准通知显式分发处理,而不是直接丢弃:

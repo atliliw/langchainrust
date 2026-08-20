@@ -28,6 +28,9 @@ Thumbs.db
 # Test
 /coverage/
 
+# 功能测试目录(仅本地测试用,不进 git)
+/crates/lc/tests/
+
 # Documentation (internal only)
 /docs/internal/
 
