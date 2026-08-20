@@ -3,6 +3,7 @@ use futures_util::Stream;
 use std::pin::Pin;
 
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
 /// JSON 输出解析器
@@ -273,26 +274,26 @@ impl JsonOutputParser {
 }
 
 #[async_trait]
-impl Runnable<String, serde_json::Value> for JsonOutputParser {
+impl Runnable<LLMResult, serde_json::Value> for JsonOutputParser {
     type Error = OutputParserError;
 
     async fn invoke(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<serde_json::Value, Self::Error> {
-        self.parse(&input).await
+        self.parse(&input.content).await
     }
 
     async fn stream(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<
         Pin<Box<dyn Stream<Item = Result<serde_json::Value, Self::Error>> + Send>>,
         Self::Error,
     > {
-        let result = self.parse(&input).await?;
+        let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }
@@ -345,9 +346,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_parser_invoke_runnable() {
+        // Runnable 形态接收 LLMResult,取 content 字段解析
         let parser = JsonOutputParser::new();
         let result = parser
-            .invoke(r#"{"key": "value"}"#.to_string(), None)
+            .invoke(
+                LLMResult {
+                    content: r#"{"key": "value"}"#.to_string(),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(result["key"], "value");

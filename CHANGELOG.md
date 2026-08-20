@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-08-20
+
+### Added
+- **Parsers accept `LLMResult`** (`lc-core`): `StrOutputParser` / `JsonOutputParser` / `CommaSeparatedListOutputParser` / `StructuredOutputParser` / `TypedOutputParser` are now `Runnable<LLMResult, _>` — `invoke` reads `input.content` and delegates to the existing `parse(&str)` (unchanged), so any parser chains directly after any LLM with no `.content` glue
+- **`From<OutputParserError> for LcelError`** (`lc-core`): output-parser errors flow into the unified pipeline error, letting parsers sit at any non-first position in a `pipe()` chain
+- **`ChatPromptTemplate` is `Runnable<HashMap<String, String>, Vec<Message>>`** (`lc-prompts`): prompt templates enter LCEL chains as the first step (`prompt.pipe(llm)`); lc-prompts gains an lc-core dependency (cycle-checked)
+- **`RunnableWithMessageHistory`** (`lc-memory`): wraps "LLM + memory" as a single `Runnable<String, LLMResult>` — reads history → appends the user message → `llm.chat` → writes the exchange back, so multi-turn memory composes in one pipe
+- **`From<OpenAIError> for LcelError`** (`lc-providers`): native `OpenAIChat` pipes directly without wrapping in `LLMClient` (Qwen / DeepSeek already bridged via `ProviderError`)
+- **`lcel_compose` example** (`langchainrust`): one runnable program composing prompt + memory + LLM + parser + RAG in a single chain (`cargo run --example lcel_compose`)
+
 ## [0.14.0] - 2026-08-14
 
 ### Added

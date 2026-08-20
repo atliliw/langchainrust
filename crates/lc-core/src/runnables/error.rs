@@ -15,6 +15,7 @@
 //!
 //! The `Display` representation preserves enough information for debugging.
 
+use crate::output_parsers::OutputParserError;
 use std::fmt;
 
 /// Unified error type for LCEL pipelines.
@@ -80,6 +81,15 @@ impl From<std::convert::Infallible> for LcelError {
     }
 }
 
+// Allow output parser errors into `LcelError` so parsers can be the
+// second (or later) step of a `pipe()` chain — `R2::Error: Into<LcelError>`
+// is required by `RunnableExt::pipe`.
+impl From<OutputParserError> for LcelError {
+    fn from(e: OutputParserError) -> Self {
+        LcelError::OutputParser(e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +114,20 @@ mod tests {
     fn is_send_sync() {
         fn assert_send_sync<T: Send + Sync + 'static>() {}
         assert_send_sync::<LcelError>();
+    }
+
+    #[test]
+    fn from_output_parser_error() {
+        // 解析器错误可平滑进入 LcelError(不 panic),pipe 第二段才编译得过
+        let e = OutputParserError::JsonError("bad json".to_string());
+        let lcel: LcelError = e.into();
+        assert!(matches!(
+            lcel,
+            LcelError::OutputParser(ref msg) if msg.contains("bad json")
+        ));
+        assert_eq!(
+            lcel.to_string(),
+            "Output parser error: JSON error: bad json"
+        );
     }
 }

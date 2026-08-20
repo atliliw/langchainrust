@@ -1844,7 +1844,7 @@ BM25 is a classic keyword retrieval algorithm that scores relevance based on ter
 ```rust
 use langchainrust::{BM25Retriever, Document};
 
-let mut retriever = BM25Retriever::new();
+let retriever = BM25Retriever::new();
 
 retriever.add_documents_sync(vec![
     Document::new("Rust is a systems programming language"),
@@ -1919,7 +1919,9 @@ Where k=60, rank(d) is document rank in each result list.
 All-in-one hybrid retrieval: internally maintains both BM25 and vector indexes, auto-dual-indexes when adding documents, auto-dual-retrieves + RRF merges on query. No need to manually manage two indexes.
 
 ```rust
-use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
+use langchainrust::{
+    UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings, InMemoryVectorStore, VectorStore,
+};
 
 let config = HybridIndexConfig::new()
     .with_chunk_size(500)
@@ -1927,7 +1929,8 @@ let config = HybridIndexConfig::new()
     .with_rrf_k(60);
 
 let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
-let index = UnifiedHybridIndex::with_config(embeddings, 1536, config);
+let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
+let index = UnifiedHybridIndex::with_config(embeddings, vector_store, 1536, config);
 
 // Auto-build dual index
 index.add_document(Document::new("Document content")).await?;

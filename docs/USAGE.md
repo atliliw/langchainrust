@@ -1845,7 +1845,7 @@ BM25 是经典的关键词检索算法，根据词频和文档长度计算相关
 ```rust
 use langchainrust::{BM25Retriever, Document};
 
-let mut retriever = BM25Retriever::new();
+let retriever = BM25Retriever::new();
 
 retriever.add_documents_sync(vec![
     Document::new("Rust is a systems programming language"),
@@ -1920,7 +1920,9 @@ RRF_score(d) = Σ 1/(k + rank(d))
 一站式混合检索：内部同时维护 BM25 索引和向量索引，添加文档时自动双索引，查询时自动双检索 + RRF 合并。无需手动管理两个索引。
 
 ```rust
-use langchainrust::{UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings};
+use langchainrust::{
+    UnifiedHybridIndex, HybridIndexConfig, OpenAIEmbeddings, InMemoryVectorStore, VectorStore,
+};
 
 let config = HybridIndexConfig::new()
     .with_chunk_size(500)
@@ -1928,7 +1930,8 @@ let config = HybridIndexConfig::new()
     .with_rrf_k(60);
 
 let embeddings = Arc::new(OpenAIEmbeddings::new(api_key));
-let index = UnifiedHybridIndex::with_config(embeddings, 1536, config);
+let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
+let index = UnifiedHybridIndex::with_config(embeddings, vector_store, 1536, config);
 
 // 自动构建双索引
 index.add_document(Document::new("Document content")).await?;

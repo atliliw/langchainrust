@@ -3,18 +3,17 @@
 //!
 //! 统一管理 BM25 + 向量索引，自动分割文档，一次添加双索引。
 
-use lc_core::math::cosine_similarity;
 use lc_embeddings::Embeddings;
 use lc_vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait};
-use lc_vector_stores::{Document, SearchResult, VectorStoreError};
+use lc_vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
 
 use crate::bm25::{AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult};
-use crate::hybrid::{filter_by_score, reciprocal_rank_fusion, RetrievedDocument, RRF_K};
+use crate::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
 use crate::retriever::{RetrieverError, RetrieverTrait};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 pub struct HybridIndexConfig {
     pub chunk_size: usize,
@@ -84,29 +83,35 @@ pub struct HybridSearchResult {
     pub parent_id: Option<String>,
 }
 
-/// 向量索引条目（只存索引信息，内容回表 ChunkedDocumentStore）
-struct VectorEntry {
-    chunk_id: String,
-    embedding: Vec<f32>,
-    parent_id: String,
-}
-
 pub struct UnifiedHybridIndex {
     document_store: Arc<ChunkedDocumentStore>,
     bm25_retriever: Arc<Mutex<ChunkedBM25Retriever>>,
     embeddings: Arc<dyn Embeddings>,
+    /// P1-1: 向量索引收敛到 `VectorStore`(原自持 `Vec<VectorEntry>` 暴力遍历
+    /// 已删除),可复用 InMemoryVectorStore / Qdrant 等后端。
+    vector_store: Arc<dyn VectorStore>,
     pub config: HybridIndexConfig,
-    vector_index: Arc<RwLock<Vec<VectorEntry>>>,
 }
 
 impl UnifiedHybridIndex {
     /// Creates a new hybrid index with default configuration.
     ///
+    /// `vector_store` 是向量索引后端(P1-1 收敛到 `VectorStore`,如
+    /// `InMemoryVectorStore` / `QdrantVectorStore`)。
     /// `_vector_size` is retained for API compatibility (P1-7); the embedding
     /// dimension is derived from the `embeddings` backend itself, so it is no
     /// longer stored.
-    pub fn new(embeddings: Arc<dyn Embeddings>, _vector_size: usize) -> Self {
-        Self::with_config(embeddings, _vector_size, HybridIndexConfig::default())
+    pub fn new(
+        embeddings: Arc<dyn Embeddings>,
+        vector_store: Arc<dyn VectorStore>,
+        _vector_size: usize,
+    ) -> Self {
+        Self::with_config(
+            embeddings,
+            vector_store,
+            _vector_size,
+            HybridIndexConfig::default(),
+        )
     }
 
     pub fn document_store(&self) -> Arc<ChunkedDocumentStore> {
@@ -115,6 +120,7 @@ impl UnifiedHybridIndex {
 
     pub fn with_config(
         embeddings: Arc<dyn Embeddings>,
+        vector_store: Arc<dyn VectorStore>,
         _vector_size: usize,
         config: HybridIndexConfig,
     ) -> Self {
@@ -129,8 +135,8 @@ impl UnifiedHybridIndex {
             document_store,
             bm25_retriever: Arc::new(Mutex::new(bm25_retriever)),
             embeddings,
+            vector_store,
             config,
-            vector_index: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -154,6 +160,10 @@ impl UnifiedHybridIndex {
             .get_chunks_for_parent(&parent_id)
             .await?;
 
+        // P1-1: 每块建 BM25 索引 + 向量化,批量写入 vector_store。
+        // chunk 用唯一 chunk_id 入库(InMemory 后端按 id 覆盖,避免同 parent 多块撞 id)。
+        let mut chunk_docs = Vec::new();
+        let mut chunk_embeddings = Vec::new();
         for chunk in &chunks {
             {
                 let mut bm25 = self.bm25_retriever.lock().await;
@@ -170,14 +180,14 @@ impl UnifiedHybridIndex {
                 .await
                 .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
 
-            {
-                let mut vectors = self.vector_index.write().await;
-                vectors.push(VectorEntry {
-                    chunk_id: chunk.chunk_id.clone(),
-                    embedding,
-                    parent_id: chunk.parent_id.clone(),
-                });
-            }
+            chunk_docs.push(Document::new(chunk.content.clone()).with_id(chunk.chunk_id.clone()));
+            chunk_embeddings.push(embedding);
+        }
+
+        if !chunk_docs.is_empty() {
+            self.vector_store
+                .add_documents(chunk_docs, chunk_embeddings)
+                .await?;
         }
 
         Ok(parent_id)
@@ -318,29 +328,23 @@ impl UnifiedHybridIndex {
             .await
             .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
 
-        let vectors = self.vector_index.read().await;
-
-        let scored: Vec<(usize, f32)> = vectors
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                let score = cosine_similarity(&query_embedding, &entry.embedding).unwrap_or(0.0);
-                (idx, score)
-            })
-            .collect();
-
-        let mut scored = filter_by_score(scored, self.config.min_score);
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let top_k_indices: Vec<(usize, f32)> =
-            scored.into_iter().take(self.config.vector_k).collect();
+        // P1-1: 委托 vector_store.similarity_search_with_min_score —— "先按 min_score
+        // 过滤、再取 top-k" 语义,与旧自持向量索引的 filter_by_score 行为一致。
+        // 向量后端以 chunk_id 存文档,回表 document_store 取 parent_id 供 RRF 聚合。
+        let results = self
+            .vector_store
+            .similarity_search_with_min_score(
+                &query_embedding,
+                self.config.vector_k,
+                Some(self.config.min_score),
+            )
+            .await?;
 
         let mut docs = Vec::new();
-        for (idx, _score) in top_k_indices {
-            let entry = &vectors[idx];
-            if let Some(chunk) = self.document_store.get_chunk(&entry.chunk_id).await? {
-                docs.push(Document::new(chunk.content).with_id(entry.parent_id.clone()));
+        for r in results {
+            let chunk_id = r.document.id.as_deref().unwrap_or_default();
+            if let Some(chunk) = self.document_store.get_chunk(chunk_id).await? {
+                docs.push(Document::new(chunk.content).with_id(chunk.parent_id));
             }
         }
 
@@ -357,31 +361,23 @@ impl UnifiedHybridIndex {
             .await
             .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
 
-        let vectors = self.vector_index.read().await;
-
-        let scored: Vec<(usize, f32)> = vectors
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                let score = cosine_similarity(&query_embedding, &entry.embedding).unwrap_or(0.0);
-                (idx, score)
-            })
-            .collect();
-
-        let mut scored = filter_by_score(scored, self.config.min_score);
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let top_k_indices: Vec<(usize, f32)> =
-            scored.into_iter().take(self.config.vector_k).collect();
+        // P1-1: 同 vector_search,委托 vector_store 并带回 f32 分数。
+        let results = self
+            .vector_store
+            .similarity_search_with_min_score(
+                &query_embedding,
+                self.config.vector_k,
+                Some(self.config.min_score),
+            )
+            .await?;
 
         let mut docs = Vec::new();
-        for (idx, score) in top_k_indices {
-            let entry = &vectors[idx];
-            if let Some(chunk) = self.document_store.get_chunk(&entry.chunk_id).await? {
+        for r in results {
+            let chunk_id = r.document.id.as_deref().unwrap_or_default();
+            if let Some(chunk) = self.document_store.get_chunk(chunk_id).await? {
                 docs.push((
-                    Document::new(chunk.content).with_id(entry.parent_id.clone()),
-                    score,
+                    Document::new(chunk.content).with_id(chunk.parent_id),
+                    r.score,
                 ));
             }
         }
@@ -405,10 +401,7 @@ impl UnifiedHybridIndex {
             bm25.clear();
         }
 
-        {
-            let mut vectors = self.vector_index.write().await;
-            vectors.clear();
-        }
+        self.vector_store.clear().await?;
 
         Ok(())
     }

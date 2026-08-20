@@ -141,7 +141,8 @@ pub use language_models::{
 pub use memory::{
     BaseMemory, ChatMessageHistory, ContextWindow, ConversationBufferMemory,
     ConversationBufferWindowMemory, ConversationSummaryBufferMemory, ConversationSummaryMemory,
-    MemoryData, MemoryError, PersistenceConfig, PersistentMemory, Strategy,
+    MemoryData, MemoryError, PersistenceConfig, PersistentMemory, RunnableWithMessageHistory,
+    Strategy,
 };
 
 #[cfg(feature = "vectorstore-memory")]
@@ -204,14 +205,13 @@ pub use vector_stores::{QdrantConfig, QdrantVectorStore};
 pub use vector_stores::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 // Retrieval
-#[allow(deprecated)]
 pub use retrieval::{
-    filter_by_score, reciprocal_rank_fusion, ChunkedHybridRetriever, RAGPipeline,
-    RAGPipelineBuilder, RAGQueryResult, RagRunnable, RetrievalSource, RetrievedDocument,
+    filter_by_score, reciprocal_rank_fusion, RAGPipeline, RAGPipelineBuilder, RAGQueryResult,
+    RagRunnable, RetrievalSource, RetrievedDocument,
 };
 pub use retrieval::{
-    AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,
-    ChunkedSearchResult, Tokenizer,
+    AutoMergingConfig, BM25Params, BM25Retriever, ChunkedBM25Retriever, ChunkedSearchResult,
+    Tokenizer,
 };
 pub use retrieval::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,

@@ -1,6 +1,6 @@
 [package]
 name = "lc-prompts"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Prompt templates for langchainrust"
@@ -8,7 +8,9 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-schema = { path = "../lc-schema", version = "0.14.0" }
+lc-schema = { path = "../lc-schema", version = "0.15.0" }
+lc-core = { path = "../lc-core", version = "0.15.0" }
+async-trait = "0.1"
 
 [features]
 default = []

@@ -7,7 +7,6 @@
 
 pub mod adapter;
 pub mod bm25;
-pub mod chunked_hybrid;
 pub mod graph_rag;
 pub mod hybrid;
 pub mod hyde;
@@ -33,12 +32,10 @@ pub use semantic_splitter::SemanticSplitter;
 pub use splitter::{RecursiveCharacterSplitter, TextSplitter};
 
 pub use bm25::{
-    AutoMergingConfig, BM25Index, BM25Params, BM25Retriever, ChunkedBM25Retriever,
-    ChunkedSearchResult, Tokenizer,
+    AutoMergingConfig, BM25Params, BM25Retriever, ChunkedBM25Retriever, ChunkedSearchResult,
+    Tokenizer,
 };
 
-#[allow(deprecated)]
-pub use chunked_hybrid::ChunkedHybridRetriever;
 pub use hybrid::{filter_by_score, reciprocal_rank_fusion, RetrievalSource, RetrievedDocument};
 pub use unified_hybrid::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 

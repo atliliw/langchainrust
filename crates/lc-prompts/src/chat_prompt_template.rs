@@ -4,6 +4,8 @@
 use crate::template_parser::{
     format_template, parse_template, template_variables, TemplateSegment,
 };
+use async_trait::async_trait;
+use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
 use lc_schema::Message;
 use std::collections::HashMap;
 
@@ -95,6 +97,26 @@ impl ChatPromptTemplate {
     /// ```
     pub fn from_messages(messages: impl Into<Vec<Message>>) -> Self {
         Self::new(messages.into())
+    }
+}
+
+// Runnable 形态:让提示词进 LCEL 链,`prompt.pipe(llm)` 成立。
+// 接收 owned 变量表(HashMap<String, String>),转引用委托给 `format`。
+#[async_trait]
+impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
+    type Error = LcelError;
+
+    async fn invoke(
+        &self,
+        input: HashMap<String, String>,
+        _config: Option<RunnableConfig>,
+    ) -> Result<Vec<Message>, LcelError> {
+        // `format` 收 &HashMap<&str, &str>,这里从 owned map 转引用
+        let vars: HashMap<&str, &str> = input
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        self.format(&vars).map_err(LcelError::Chain)
     }
 }
 

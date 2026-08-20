@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
 /// 结构化输出解析器
@@ -84,26 +85,26 @@ impl BaseOutputParser<HashMap<String, String>> for StructuredOutputParser {
 }
 
 #[async_trait]
-impl Runnable<String, HashMap<String, String>> for StructuredOutputParser {
+impl Runnable<LLMResult, HashMap<String, String>> for StructuredOutputParser {
     type Error = OutputParserError;
 
     async fn invoke(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<HashMap<String, String>, Self::Error> {
-        self.parse(&input).await
+        self.parse(&input.content).await
     }
 
     async fn stream(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<
         Pin<Box<dyn Stream<Item = Result<HashMap<String, String>, Self::Error>> + Send>>,
         Self::Error,
     > {
-        let result = self.parse(&input).await?;
+        let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }
@@ -196,23 +197,23 @@ impl<T: DeserializeOwned> TypedOutputParser<T> {
 }
 
 #[async_trait]
-impl<T: DeserializeOwned + Send + Sync + 'static> Runnable<String, T> for TypedOutputParser<T> {
+impl<T: DeserializeOwned + Send + Sync + 'static> Runnable<LLMResult, T> for TypedOutputParser<T> {
     type Error = OutputParserError;
 
     async fn invoke(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<T, Self::Error> {
-        self.parse(&input).await
+        self.parse(&input.content).await
     }
 
     async fn stream(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<T, Self::Error>> + Send>>, Self::Error> {
-        let result = self.parse(&input).await?;
+        let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }

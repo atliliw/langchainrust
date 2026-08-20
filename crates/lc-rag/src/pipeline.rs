@@ -207,7 +207,7 @@ impl RAGPipelineBuilder {
     }
 
     /// 设置自定义检索器(任何实现了 `RetrieverTrait` 的类型,
-    /// 如 BM25、UnifiedHybridIndex、ChunkedHybridRetriever 等)
+    /// 如 BM25、UnifiedHybridIndex 等)
     ///
     /// P0-2: 显式检索器优先于 `.embeddings() + .vector_store()` 构建的
     /// 相似度检索器。

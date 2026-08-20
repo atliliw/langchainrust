@@ -3,6 +3,7 @@ use futures_util::Stream;
 use std::pin::Pin;
 
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
 /// 逗号分隔列表输出解析器
@@ -60,24 +61,24 @@ impl BaseOutputParser<Vec<String>> for CommaSeparatedListOutputParser {
 }
 
 #[async_trait]
-impl Runnable<String, Vec<String>> for CommaSeparatedListOutputParser {
+impl Runnable<LLMResult, Vec<String>> for CommaSeparatedListOutputParser {
     type Error = OutputParserError;
 
     async fn invoke(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<Vec<String>, Self::Error> {
-        self.parse(&input).await
+        self.parse(&input.content).await
     }
 
     async fn stream(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Vec<String>, Self::Error>> + Send>>, Self::Error>
     {
-        let result = self.parse(&input).await?;
+        let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }

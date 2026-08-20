@@ -1185,7 +1185,7 @@ retriever.add_documents(chunks).await?;
                     </div>
                     <pre><code><span class="kw">use</span> langchainrust::{BM25Retriever, Document};
 
-<span class="kw">let</span> <span class="kw">mut</span> retriever = BM25Retriever::new();
+<span class="kw">let</span> retriever = BM25Retriever::new();
 
 retriever.add_documents_sync(vec![
     Document::new(<span class="str">"Rust is a systems programming language"</span>),
@@ -1244,13 +1244,14 @@ retriever.add_documents_sync(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::{UnifiedHybridIndex, HybridIndexConfig};
+                    <pre><code><span class="kw">use</span> langchainrust::{UnifiedHybridIndex, HybridIndexConfig, InMemoryVectorStore, VectorStore};
 
 <span class="kw">let</span> config = HybridIndexConfig::new()
     .with_chunk_size(<span class="num">500</span>)
     .with_top_k(<span class="num">10</span>, <span class="num">10</span>);
 
-<span class="kw">let</span> index = UnifiedHybridIndex::with_config(embeddings, <span class="num">1536</span>, config);
+<span class="kw">let</span> vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
+<span class="kw">let</span> index = UnifiedHybridIndex::with_config(embeddings, vector_store, <span class="num">1536</span>, config);
 
 <span class="comment">// Auto-build BM25 + Vector dual index</span>
 index.add_document(Document::new(<span class="str">"Document content"</span>)).await?;

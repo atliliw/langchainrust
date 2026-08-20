@@ -38,8 +38,8 @@ pub enum RetrievalSource {
 
 /// 按最小分数过滤检索结果(P1-2)。
 ///
-/// 消除 `score > 0.0` 幽灵阈值在 `unified_hybrid` / `chunked_hybrid` /
-/// `graph_rag::matcher` 三处的重复实现。`min_score` 在**原始分数尺度**上比较:
+/// 消除 `score > 0.0` 幽灵阈值在 `unified_hybrid` / `graph_rag::matcher`
+/// 两处的重复实现。`min_score` 在**原始分数尺度**上比较:
 /// 默认 0.0 保持旧行为(只保留正相似度)。余弦相似度范围 [-1,1],
 /// 非归一化嵌入模型下相关文档的余弦可能为负,不同模型可自行调低阈值。
 pub fn filter_by_score<T, S: PartialOrd>(scored: Vec<(T, S)>, min_score: S) -> Vec<(T, S)> {

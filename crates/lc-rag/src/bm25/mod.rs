@@ -6,7 +6,6 @@
 
 mod algorithm;
 mod chunked;
-mod index;
 mod retriever;
 mod tokenizer;
 
@@ -15,7 +14,6 @@ pub use chunked::{
     AutoMergingConfig, ChunkedBM25Index, ChunkedBM25Retriever, ChunkedIndexData,
     ChunkedSearchResult,
 };
-pub use index::BM25Index;
 pub use lc_vector_stores::document_store::ChunkDocument;
 pub use retriever::BM25Retriever;
 pub use tokenizer::Tokenizer;

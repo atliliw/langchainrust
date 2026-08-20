@@ -3,12 +3,16 @@ use futures_util::Stream;
 use std::pin::Pin;
 
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
+use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
 /// 字符串输出解析器
 ///
 /// 最简单的解析器，直接将 LLM 输出作为字符串返回。
 /// 相当于 Python LangChain 的 `StrOutputParser`。
+///
+/// 作为 `Runnable` 时接收 `LLMResult`，取其 `content` 字段后原样返回，
+/// 使 `llm.pipe(StrOutputParser)` 成为 LCEL 链的尾段。
 ///
 /// # 示例
 /// ```ignore
@@ -40,23 +44,23 @@ impl BaseOutputParser<String> for StrOutputParser {
 }
 
 #[async_trait]
-impl Runnable<String, String> for StrOutputParser {
+impl Runnable<LLMResult, String> for StrOutputParser {
     type Error = OutputParserError;
 
     async fn invoke(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<String, Self::Error> {
-        self.parse(&input).await
+        self.parse(&input.content).await
     }
 
     async fn stream(
         &self,
-        input: String,
+        input: LLMResult,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        let result = self.parse(&input).await?;
+        let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
     }
