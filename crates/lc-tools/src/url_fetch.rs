@@ -8,7 +8,7 @@ use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ssrf::url_points_to_private_ip;
+use crate::ssrf::guarded_get;
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
 static SCRIPT_REGEX: std::sync::LazyLock<Regex> =
@@ -110,6 +110,8 @@ impl URLFetchTool {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("LangChainRust/0.1 (URL Fetch Tool)")
+                // SSRF: 禁用自动重定向,由 guarded_get 逐跳重查
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             allow_private_ips: false,
@@ -120,21 +122,6 @@ impl URLFetchTool {
     pub fn with_allow_private_ips(mut self, allow: bool) -> Self {
         self.allow_private_ips = allow;
         self
-    }
-
-    /// Check SSRF protection before making a request.
-    async fn check_ssrf(&self, url: &str) -> Result<(), ToolError> {
-        if self.allow_private_ips {
-            return Ok(());
-        }
-        if url_points_to_private_ip(url).await? {
-            return Err(ToolError::ExecutionFailed(
-                "Request to private/internal IP address is blocked by SSRF protection. \
-                 Call .with_allow_private_ips(true) to allow."
-                    .to_string(),
-            ));
-        }
-        Ok(())
     }
 
     /// 抓取网页内容
@@ -150,14 +137,8 @@ impl URLFetchTool {
             ));
         }
 
-        self.check_ssrf(url).await?;
-
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP 请求失败: {}", e)))?;
+        // SSRF: guarded_get 逐跳检查并手动跟随重定向(首跳与每一跳都会重查内网地址)
+        let response = guarded_get(&self.client, url, !self.allow_private_ips).await?;
 
         let status = response.status();
         if !status.is_success() {

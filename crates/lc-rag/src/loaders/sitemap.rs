@@ -108,7 +108,7 @@ impl DocumentLoader for SitemapLoader {
                     });
                 }
                 Err(e) => {
-                    eprintln!("警告: 爬取 {} 失败: {}", url, e);
+                    log::warn!("爬取 {} 失败(已从结果中跳过): {}", url, e);
                     continue;
                 }
             }

@@ -12,6 +12,14 @@ use uuid::Uuid;
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{Document, VectorStoreError};
 
+/// 解析 metadata 列;损坏时记日志并回退空映射,不再静默吞错。
+fn parse_metadata_or_default(raw: &str) -> std::collections::HashMap<String, String> {
+    serde_json::from_str(raw).unwrap_or_else(|e| {
+        log::warn!("SQLite 存储中 metadata 损坏,已回退为空映射: {}", e);
+        std::collections::HashMap::new()
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct SQLiteStoreConfig {
     pub db_path: String,
@@ -109,7 +117,7 @@ impl DocumentStore for SQLiteDocumentStore {
             Ok(Document {
                 id: Some(id),
                 content,
-                metadata: serde_json::from_str(&meta_str).unwrap_or_default(),
+                metadata: parse_metadata_or_default(&meta_str),
             })
         });
         match result {
@@ -207,10 +215,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                 parent_id: row.get(1)?,
                 content: row.get(2)?,
                 segment: row.get(3)?,
-                metadata: serde_json::from_str::<std::collections::HashMap<String, String>>(
-                    &row.get::<_, String>(4)?,
-                )
-                .unwrap_or_default(),
+                metadata: parse_metadata_or_default(&row.get::<_, String>(4)?),
             })
         });
         match result {
@@ -241,11 +246,21 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                     parent_id: row.get(1)?,
                     content: row.get(2)?,
                     segment: row.get(3)?,
-                    metadata: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                    metadata: parse_metadata_or_default(&row.get::<_, String>(4)?),
                 })
             })
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(chunk) => Some(chunk),
+                Err(e) => {
+                    // 不再静默丢行:记录到日志,暴露存储降级
+                    log::error!(
+                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        e
+                    );
+                    None
+                }
+            })
             .collect();
         Ok(chunks)
     }
@@ -290,11 +305,21 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                     parent_id: row.get(1)?,
                     content: row.get(2)?,
                     segment: row.get(3)?,
-                    metadata: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                    metadata: parse_metadata_or_default(&row.get::<_, String>(4)?),
                 })
             })
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(chunk) => Some(chunk),
+                Err(e) => {
+                    // 不再静默丢行:记录到日志,暴露存储降级
+                    log::error!(
+                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        e
+                    );
+                    None
+                }
+            })
             .collect();
         Ok(chunks)
     }
@@ -354,7 +379,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             Ok(Document {
                 id: Some(row.get(0)?),
                 content: row.get(1)?,
-                metadata: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default(),
+                metadata: parse_metadata_or_default(&row.get::<_, String>(2)?),
             })
         });
         match result {
@@ -377,7 +402,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                 parent_id: row.get(1)?,
                 content: row.get(2)?,
                 segment: row.get(3)?,
-                metadata: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                metadata: parse_metadata_or_default(&row.get::<_, String>(4)?),
             })
         });
         match result {
@@ -401,11 +426,21 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                     parent_id: row.get(1)?,
                     content: row.get(2)?,
                     segment: row.get(3)?,
-                    metadata: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default(),
+                    metadata: parse_metadata_or_default(&row.get::<_, String>(4)?),
                 })
             })
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(chunk) => Some(chunk),
+                Err(e) => {
+                    // 不再静默丢行:记录到日志,暴露存储降级
+                    log::error!(
+                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        e
+                    );
+                    None
+                }
+            })
             .collect();
         Ok(chunks)
     }

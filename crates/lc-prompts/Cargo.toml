@@ -16,5 +16,9 @@ async-trait = "0.1"
 default = []
 wasm = []
 
+[dev-dependencies]
+# Runnable 形态测试需要异步运行时(不影响 lib / wasm 构建)
+tokio = { version = "1.0", features = ["full"] }
+
 [package.metadata.docs.rs]
 all-features = true

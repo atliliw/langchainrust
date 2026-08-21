@@ -52,12 +52,22 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
         retriever.add_document(document)
     }
 
-    /// 批量添加文档(同步;单篇失败时跳过并 warn,保持原 `()` 签名)。
+    /// 批量添加文档(同步;单篇失败记 error 日志并在末尾汇总失败数,保持原 `()` 签名)。
     pub fn add_documents_sync(&self, documents: Vec<Document>) {
+        let total = documents.len();
+        let mut failed = 0usize;
         for doc in documents {
             if let Err(e) = self.add_document(doc) {
-                log::warn!("BM25Retriever::add_documents_sync: 跳过文档,入库失败: {e}");
+                failed += 1;
+                log::error!("BM25Retriever::add_documents_sync: 文档入库失败(将从检索结果中缺失): {e}");
             }
+        }
+        if failed > 0 {
+            log::warn!(
+                "BM25Retriever::add_documents_sync: {} 篇文档入库失败(共 {} 篇)",
+                failed,
+                total
+            );
         }
     }
 

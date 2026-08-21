@@ -4,6 +4,8 @@
 use crate::template_parser::{
     format_template, parse_template, template_variables, TemplateSegment,
 };
+use async_trait::async_trait;
+use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
 use std::collections::HashMap;
 
 /// 提示词模板
@@ -65,6 +67,27 @@ impl PromptTemplate {
 impl std::fmt::Display for PromptTemplate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.template)
+    }
+}
+
+// Runnable 形态:让提示词能进 LCEL 链,`prompt.pipe(...)` 成立。
+// 接收 owned 变量表(HashMap<String, String>),转引用委托给 `format`。
+// 与 `ChatPromptTemplate` 一致,错误走 `LcelError::Chain`。
+#[async_trait]
+impl Runnable<HashMap<String, String>, String> for PromptTemplate {
+    type Error = LcelError;
+
+    async fn invoke(
+        &self,
+        input: HashMap<String, String>,
+        _config: Option<RunnableConfig>,
+    ) -> Result<String, LcelError> {
+        // `format` 收 &HashMap<&str, &str>,这里从 owned map 转引用
+        let vars: HashMap<&str, &str> = input
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        self.format(&vars).map_err(LcelError::Chain)
     }
 }
 
@@ -130,5 +153,28 @@ mod tests {
 
         let result = template.format(&vars).unwrap();
         assert_eq!(result, "你好，小明！");
+    }
+
+    #[tokio::test]
+    async fn test_runnable_invoke() {
+        let template = PromptTemplate::new("你好，{name}！");
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), "小明".to_string());
+
+        let result = template.invoke(vars, None).await.unwrap();
+        assert_eq!(result, "你好，小明！");
+    }
+
+    #[tokio::test]
+    async fn test_runnable_pipe() {
+        use lc_core::runnables::{RunnableExt, RunnableLambda};
+
+        let template = PromptTemplate::new("你好，{name}！");
+        let chain = template.pipe(RunnableLambda::new_sync(|s: String| s.contains("小明")));
+
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), "小明".to_string());
+        let result = chain.invoke(vars, None).await.unwrap();
+        assert!(result);
     }
 }

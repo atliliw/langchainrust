@@ -140,11 +140,8 @@ impl DocumentLoader for WebScraperLoader {
                     if self.fail_on_error {
                         return Err(e);
                     }
-                    // 跳过失败页面,继续爬取其他
-                    eprintln!(
-                        "警告: 爬取 {} 失败 (第 {} 个失败): {}",
-                        url, failed_count, e
-                    );
+                    // 跳过失败页面,继续爬取其他(经日志门面暴露,便于宿主捕获)
+                    log::warn!("爬取 {} 失败 (第 {} 个失败): {}", url, failed_count, e);
                     continue;
                 }
             };
@@ -173,8 +170,8 @@ impl DocumentLoader for WebScraperLoader {
         }
 
         if failed_count > 0 {
-            eprintln!(
-                "警告: 爬取完成,共 {} 个页面失败,{} 个页面成功",
+            log::warn!(
+                "爬取完成,共 {} 个页面失败,{} 个页面成功",
                 failed_count,
                 documents.len()
             );

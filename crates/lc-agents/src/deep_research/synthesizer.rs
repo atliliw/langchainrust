@@ -122,7 +122,10 @@ fn format_sources(results: &[SearchResult], max_source_tokens: Option<usize>) ->
             let mut truncated_entries = Vec::new();
 
             for entry in &entries {
-                let entry_tokens = count_tokens(entry).unwrap_or(0);
+                let entry_tokens = count_tokens(entry).unwrap_or_else(|e| {
+                    log::warn!("token 计数失败,回退为按字节数估算: {e}");
+                    entry.len()
+                });
                 if used_tokens + entry_tokens > budget && !truncated_entries.is_empty() {
                     break;
                 }

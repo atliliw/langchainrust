@@ -313,6 +313,14 @@ fn format_template(template_str: &str, vars: &[(&str, &str)]) -> String {
         .unwrap_or_else(|_| template_str.to_string())
 }
 
+/// 计 token;编码器加载失败时按字节数高估(宁可略超预算,不静默按 0 算导致截断失效)。
+fn count_tokens_estimate(text: &str) -> usize {
+    count_tokens(text).unwrap_or_else(|e| {
+        log::warn!("token 计数失败,回退为按字节数估算: {e}");
+        text.len()
+    })
+}
+
 /// Truncates community summaries to fit within a token budget.
 ///
 /// Keeps summaries from the beginning (highest-priority, largest communities)
@@ -326,7 +334,7 @@ fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String
             let mut used_tokens = 0usize;
 
             for summary in summaries {
-                let summary_tokens = count_tokens(summary).unwrap_or(0);
+                let summary_tokens = count_tokens_estimate(summary);
                 if used_tokens + summary_tokens > budget {
                     break;
                 }
@@ -356,7 +364,7 @@ fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String
 fn truncate_prompt(prompt: &str, max_tokens: Option<usize>) -> String {
     match max_tokens {
         Some(budget) => {
-            let current_tokens = count_tokens(prompt).unwrap_or(0);
+            let current_tokens = count_tokens_estimate(prompt);
             if current_tokens <= budget {
                 return prompt.to_string();
             }

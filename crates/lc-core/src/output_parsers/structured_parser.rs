@@ -64,8 +64,11 @@ impl BaseOutputParser<HashMap<String, String>> for StructuredOutputParser {
             }
 
             if let Some(pos) = line.find(self.separator) {
+                // `pos` 是分隔符首字节的字节索引;多字节分隔符(如全角 `：`)时
+                // pos+1 会落在字符内部导致切片 panic,须按分隔符 UTF-8 宽度跳过
+                let sep_len = self.separator.len_utf8();
                 let key = line[..pos].trim().to_string();
-                let value = line[pos + 1..].trim().to_string();
+                let value = line[pos + sep_len..].trim().to_string();
 
                 if !key.is_empty() {
                     map.insert(key, value);
@@ -216,5 +219,43 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Runnable<LLMResult, T> for Typ
         let result = self.parse(&input.content).await?;
         let stream = futures_util::stream::once(async move { Ok(result) });
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_structured_parser_default_colon() {
+        let parser = StructuredOutputParser::new();
+        let map = parser.parse("姓名: 张三\n年龄: 28").await.unwrap();
+        assert_eq!(map.get("姓名").unwrap(), "张三");
+        assert_eq!(map.get("年龄").unwrap(), "28");
+    }
+
+    #[tokio::test]
+    async fn test_structured_parser_fullwidth_separator() {
+        // 全角冒号 3 字节:修复前按 pos+1 切片会切在字符内部 panic
+        let parser = StructuredOutputParser::with_separator('：');
+        let map = parser.parse("姓名：张三\n年龄：28").await.unwrap();
+        assert_eq!(map.get("姓名").unwrap(), "张三");
+        assert_eq!(map.get("年龄").unwrap(), "28");
+    }
+
+    #[tokio::test]
+    async fn test_structured_parser_runnable_invoke() {
+        let parser = StructuredOutputParser::new();
+        let map = parser
+            .invoke(
+                LLMResult {
+                    content: "状态: 成功".to_string(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(map.get("状态").unwrap(), "成功");
     }
 }

@@ -719,7 +719,11 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for GeminiChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text).unwrap_or(0)
+        lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
+            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            text.len()
+        })
     }
 
     fn temperature(&self) -> Option<f32> {

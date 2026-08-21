@@ -95,10 +95,14 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> RunnableWithFal
                                 ))
                             });
                         }
-                        Err(_) => continue,
+                        Err(e) => {
+                            log::warn!("fallback 调用失败(继续尝试下一个): {e}");
+                            continue;
+                        }
                     }
                 }
                 // All failed, return the primary's error
+                log::warn!("primary 与全部 fallback 均失败,返回 primary 的错误");
                 Err(primary_error)
             }
         }
@@ -157,9 +161,13 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
                             });
                             return Ok(Box::pin(output_stream));
                         }
-                        Err(_) => continue,
+                        Err(e) => {
+                            log::warn!("fallback 流式调用失败(继续尝试下一个): {e}");
+                            continue;
+                        }
                     }
                 }
+                log::warn!("primary 与全部 fallback 流式调用均失败,返回 primary 的错误");
                 Err(primary_error)
             }
         }

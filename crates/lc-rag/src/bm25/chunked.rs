@@ -569,10 +569,17 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 let mut leaf_chunks = Vec::new();
                 for (idx, _) in matched_leaves {
                     if let Some(chunk_id) = self.index.get_chunk_id(idx) {
-                        if let Some(chunk) =
-                            self.index.store().get_chunk(chunk_id).await.ok().flatten()
-                        {
-                            leaf_chunks.push(chunk);
+                        match self.index.store().get_chunk(chunk_id).await {
+                            Ok(Some(chunk)) => leaf_chunks.push(chunk),
+                            Ok(None) => {}
+                            Err(e) => {
+                                // 不再静默吞错:读失败记日志,该 chunk 从结果中缺失
+                                log::error!(
+                                    "检索时读取 chunk `{}` 文档失败(该 chunk 已从结果中缺失): {}",
+                                    chunk_id,
+                                    e
+                                );
+                            }
                         }
                     }
                 }

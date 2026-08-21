@@ -2341,6 +2341,7 @@ dependencies = [
  "async-trait",
  "lc-core",
  "lc-schema",
+ "tokio",
 ]
 
 [[package]]

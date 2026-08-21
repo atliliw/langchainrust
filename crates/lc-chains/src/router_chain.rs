@@ -654,9 +654,9 @@ impl<M: BaseChatModel + Send + Sync + 'static> LLMRouterChain<M> {
             }
             Err(e) => {
                 if let Some(default) = &self.default_chain {
-                    if self.verbose {
-                        println!("Routing failed: {}, using default Chain", e);
-                    }
+                    // 路由失败走默认链:不静默,记 error 日志说明原因,
+                    // 避免调用方把 fallback 答案当成路由选择的正确结果
+                    log::error!("路由失败,改用默认链(调用方可能得到与输入不匹配的答案): {e}");
                     default
                 } else {
                     return Err(e);

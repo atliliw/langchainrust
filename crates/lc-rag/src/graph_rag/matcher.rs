@@ -335,7 +335,15 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
                     .insert(entity_id.to_string(), vec.clone());
                 Some(vec)
             }
-            Err(_) => None,
+            Err(e) => {
+                // 实体嵌入失败:该实体从图匹配中排除,记日志暴露降级
+                log::warn!(
+                    "实体 `{}` 嵌入失败,已从图匹配中排除: {}",
+                    entity_id,
+                    e
+                );
+                None
+            }
         }
     }
 }

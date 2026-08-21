@@ -293,13 +293,21 @@ impl OllamaChat {
                     if event.is_done() {
                         return;
                     }
-                    if let Ok(Some(chunk)) = event.parse_openai_chunk() {
-                        if let Some(choice) = chunk.choices.first() {
-                            if let Some(content) = &choice.delta.content {
-                                if tx.send(Ok(content.clone())).await.is_err() {
-                                    return;
+                    // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
+                    // 避免流式回复因单条坏数据被截断却毫无提示
+                    match event.parse_openai_chunk() {
+                        Ok(Some(chunk)) => {
+                            if let Some(choice) = chunk.choices.first() {
+                                if let Some(content) = &choice.delta.content {
+                                    if tx.send(Ok(content.clone())).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            log::error!("解析流式 SSE chunk 失败(已跳过该 token): {}", e);
                         }
                     }
                 }
@@ -365,7 +373,11 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        lc_core::token_counter::count_tokens(text).unwrap_or(0)
+        lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
+            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            text.len()
+        })
     }
 
     fn temperature(&self) -> Option<f32> {

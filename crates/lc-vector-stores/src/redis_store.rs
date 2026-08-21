@@ -119,7 +119,14 @@ impl DocumentStore for RedisDocumentStore {
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
         let result = self.get_str(&self.doc_key(id)).await?;
         match result {
-            Some(json) => Ok(serde_json::from_str(&json).ok()),
+            Some(json) => match serde_json::from_str(&json) {
+                Ok(doc) => Ok(Some(doc)),
+                Err(e) => {
+                    // 键存在但载荷损坏/由旧 schema 写入,区别于真实 miss
+                    log::error!("文档 `{}` 存储载荷解析失败(可能损坏或 schema 变更): {}", id, e);
+                    Ok(None)
+                }
+            },
             None => Ok(None),
         }
     }
@@ -358,7 +365,17 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
 
     async fn get_chunk(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
         match self.get_str(&self.chunk_key(chunk_id)).await? {
-            Some(json) => Ok(serde_json::from_str(&json).ok()),
+            Some(json) => match serde_json::from_str(&json) {
+                Ok(chunk) => Ok(Some(chunk)),
+                Err(e) => {
+                    log::error!(
+                        "chunk `{}` 存储载荷解析失败(可能损坏或 schema 变更): {}",
+                        chunk_id,
+                        e
+                    );
+                    Ok(None)
+                }
+            },
             None => Ok(None),
         }
     }

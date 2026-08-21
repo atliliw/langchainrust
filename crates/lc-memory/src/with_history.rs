@@ -87,15 +87,15 @@ where
             .await
             .map_err(Into::into)?;
 
-        // 4. 写回记忆
+        // 4. 写回记忆:失败不丢弃模型答案(否则调用方拿 Err 重试会重复调 LLM),
+        //    记 warn 暴露记忆层降级
         {
             let mut memory = self.memory.lock().await;
             let inputs = HashMap::from([("input".to_string(), input)]);
             let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
-            memory
-                .save_context(&inputs, &outputs)
-                .await
-                .map_err(|e| LcelError::Chain(format!("save memory: {e}")))?;
+            if let Err(e) = memory.save_context(&inputs, &outputs).await {
+                log::warn!("记忆写回失败(模型答案仍照常返回): {e}");
+            }
         }
 
         Ok(result)

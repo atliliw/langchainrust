@@ -189,12 +189,18 @@ impl VectorStore for ChunkedVectorStore {
 
         let search_results: Vec<SearchResult> =
             future::join_all(top_k_ids.iter().map(|(chunk_id, score)| async move {
-                let doc = self
-                    .document_store
-                    .get_chunk_document(chunk_id)
-                    .await
-                    .ok()
-                    .flatten();
+                let doc = match self.document_store.get_chunk_document(chunk_id).await {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        // 不再静默吞错:读失败记日志,该 chunk 从 top-k 结果中缺失
+                        log::error!(
+                            "检索时读取 chunk `{}` 文档失败(该 chunk 已从结果中缺失): {}",
+                            chunk_id,
+                            e
+                        );
+                        None
+                    }
+                };
                 doc.map(|d| SearchResult {
                     document: d,
                     score: *score,

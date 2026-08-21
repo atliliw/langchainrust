@@ -758,7 +758,8 @@ impl AgentExecutor {
                 }
             }
 
-            // Max iterations reached
+            // Max iterations reached:返回占位结果,必须记日志以免把非答案当最终答案
+            log::warn!("Agent 达到最大迭代次数,流式返回占位结果(非真实最终答案)");
             let finish = agent.return_stopped_response(&intermediate_steps);
             let content = finish.output().unwrap_or("").to_string();
             let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
@@ -833,9 +834,12 @@ impl AgentExecutor {
             }
         }
 
-        if self.verbose {
-            log::info!("Max iterations reached: {}", self.max_iterations);
-        }
+        // 达到迭代上限返回占位串,不能只靠 verbose 可见:调用方无法区分真实答案与占位,
+        // 这里记 error 级日志显式暴露
+        log::warn!(
+            "Agent 达到最大迭代次数 {} 未返回最终答案,返回占位结果(非真实最终答案)",
+            self.max_iterations
+        );
 
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())

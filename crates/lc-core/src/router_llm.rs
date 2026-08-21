@@ -333,7 +333,11 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for RouterLLM {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        crate::token_counter::count_tokens(text).unwrap_or(0)
+        crate::token_counter::count_tokens(text).unwrap_or_else(|e| {
+            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            text.len()
+        })
     }
 
     fn with_temperature(self, _temp: f32) -> Self {

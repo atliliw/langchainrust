@@ -90,6 +90,14 @@ impl From<OutputParserError> for LcelError {
     }
 }
 
+// Allow tool errors into `LcelError` so tools can be a step of a `pipe()` chain
+// (e.g. `tool.pipe(...)`), mapping into the existing `Tool` variant.
+impl From<crate::tools::ToolError> for LcelError {
+    fn from(e: crate::tools::ToolError) -> Self {
+        LcelError::Tool(e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +137,18 @@ mod tests {
             lcel.to_string(),
             "Output parser error: JSON error: bad json"
         );
+    }
+
+    #[test]
+    fn from_tool_error() {
+        // 工具错误可平滑进入 LcelError(不 panic),`tool.pipe(...)` 才编译得过
+        use crate::tools::ToolError;
+        let e = ToolError::InvalidInput("bad input".to_string());
+        let lcel: LcelError = e.into();
+        assert!(matches!(
+            lcel,
+            LcelError::Tool(ref msg) if msg.contains("bad input")
+        ));
+        assert_eq!(lcel.to_string(), "Tool error: Invalid input: bad input");
     }
 }

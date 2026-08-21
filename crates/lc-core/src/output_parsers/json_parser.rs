@@ -80,6 +80,18 @@ impl Default for JsonOutputParser {
     }
 }
 
+/// 取字符串前 `max_chars` 个字符用于错误预览。
+///
+/// 不能用字节截断:多字节 UTF-8 字符会被切在字符中间导致切片 panic
+/// (非法 CJK JSON 的错误路径曾按字节 200 截断而崩溃)。
+fn preview_slice(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        // 第 max_chars 个字符的起始字节是安全边界,切到它即保留前 max_chars 个字符
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
 #[async_trait]
 impl BaseOutputParser<serde_json::Value> for JsonOutputParser {
     async fn parse(&self, text: &str) -> OutputParserResult<serde_json::Value> {
@@ -94,7 +106,7 @@ impl BaseOutputParser<serde_json::Value> for JsonOutputParser {
                     e.line(),
                     e.column(),
                     e,
-                    &json_str[..std::cmp::min(200, json_str.len())]
+                    preview_slice(json_str, 200)
                 ))
             })
         }
@@ -124,7 +136,7 @@ impl JsonOutputParser {
 
         Err(OutputParserError::JsonError(format!(
             "部分 JSON 解析失败：{}",
-            &text[..std::cmp::min(200, text.len())]
+            preview_slice(text, 200)
         )))
     }
 
@@ -367,5 +379,26 @@ mod tests {
         // 完整 JSON，partial 模式也应该能解析
         let result = parser.parse(r#"{"a": 1}"#).await.unwrap();
         assert_eq!(result["a"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_json_parser_invalid_cjk_over_200_bytes() {
+        // >200 字节的非法中文 JSON:错误路径若按字节 200 截断会切在多字节字符中间 panic,
+        // 修复后应返回 Err 而非崩溃
+        let parser = JsonOutputParser::new();
+        let long_cjk = "汉".repeat(200);
+        let bad = format!("{{\"名字\": {}", long_cjk);
+        let result = parser.parse(&bad).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_json_parser_partial_invalid_cjk_over_200_bytes() {
+        // partial 模式同样走错误预览截断,需同样不 panic
+        let parser = JsonOutputParser::new_partial();
+        let long_cjk = "汉".repeat(200);
+        let bad = format!("{{\"名字\": {}", long_cjk);
+        let result = parser.parse(&bad).await;
+        assert!(result.is_err());
     }
 }
