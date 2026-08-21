@@ -41,6 +41,8 @@ mod passthrough;
 mod runnable_trait;
 mod sequence;
 
+mod configurable;
+mod pick;
 mod retry;
 
 pub use any::{into_runnable_any, RunnableAny, RunnableAnyWrapper};
@@ -49,12 +51,14 @@ pub use binding::RunnableBinding;
 pub use branch::RunnableBranch;
 pub use cancellation::CancellationToken;
 pub use config::RunnableConfig;
+pub use configurable::{RunnableConfigurable, RunnableConfigurableFields};
 pub use error::LcelError;
 pub use ext::RunnableExt;
 pub use fallback::RunnableWithFallbacks;
 pub use lambda::RunnableLambda;
 pub use parallel::RunnableParallel;
 pub use passthrough::RunnablePassthrough;
+pub use pick::RunnablePick;
 pub use retry::{RetryConfig, RetryOn, RunnableRetry};
 pub use runnable_trait::Runnable;
 pub use sequence::RunnableSequence;

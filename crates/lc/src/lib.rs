@@ -110,10 +110,13 @@ pub use core::{
     RunnableBinding,
     RunnableBranch,
     RunnableConfig,
+    RunnableConfigurable,
+    RunnableConfigurableFields,
     RunnableExt,
     RunnableLambda,
     RunnableParallel,
     RunnablePassthrough,
+    RunnablePick,
     RunnableSequence,
     Tool,
     ToolCall,
@@ -142,7 +145,7 @@ pub use memory::{
     BaseMemory, ChatMessageHistory, ContextWindow, ConversationBufferMemory,
     ConversationBufferWindowMemory, ConversationSummaryBufferMemory, ConversationSummaryMemory,
     MemoryData, MemoryError, PersistenceConfig, PersistentMemory, RunnableWithMessageHistory,
-    Strategy,
+    SharedMemory, Strategy,
 };
 
 #[cfg(feature = "vectorstore-memory")]

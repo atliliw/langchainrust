@@ -45,7 +45,7 @@ pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;
 pub use window::ConversationBufferWindowMemory;
-pub use with_history::RunnableWithMessageHistory;
+pub use with_history::{RunnableWithMessageHistory, SharedMemory};
 
 #[cfg(feature = "vectorstore-memory")]
 pub use vectorstore_memory::VectorStoreRetrieverMemory;

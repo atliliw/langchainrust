@@ -100,6 +100,55 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
         results.into_iter().collect()
     }
 
+    /// Batch processing that returns results in *completion* order.
+    ///
+    /// Rust counterpart of Python LCEL's `batch_as_completed`: each input is
+    /// driven through the full chain via `invoke` independently, with
+    /// concurrency bounded by `config.max_concurrency` (defaults to all
+    /// inputs). The result is a `Vec<(usize, Output)>` ordered by *completion*
+    /// time, where the `usize` is the original index in `inputs`.
+    ///
+    /// Short-circuits on the first error (like `batch`): if any input fails,
+    /// the error is returned immediately and the remaining results are
+    /// dropped.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let results = chain.batch_as_completed(inputs, None).await?;
+    /// // 最快完成的那项在 results[0],其下标标识它在 inputs 里的位置
+    /// for (index, output) in results {
+    ///     println!("inputs[{index}] -> {output}");
+    /// }
+    /// ```
+    async fn batch_as_completed(
+        &self,
+        inputs: Vec<Input>,
+        config: Option<RunnableConfig>,
+    ) -> Result<Vec<(usize, Output)>, Self::Error> {
+        use futures_util::StreamExt;
+
+        let limit = config
+            .as_ref()
+            .and_then(|c| c.max_concurrency)
+            .unwrap_or(inputs.len())
+            .max(1);
+
+        let results = futures_util::stream::iter(inputs.into_iter().enumerate())
+            .map(|(index, input)| {
+                let config = config.clone();
+                async move {
+                    self.invoke(input, config).await.map(|output| (index, output))
+                }
+            })
+            .buffer_unordered(limit)
+            .collect::<Vec<Result<(usize, Output), _>>>()
+            .await;
+
+        // Short-circuit on the first error (in completion order).
+        results.into_iter().collect()
+    }
+
     /// Streaming output - for real-time responses (LLM, etc).
     ///
     /// Enables real-time stream processing of output,
@@ -303,6 +352,63 @@ mod tests {
     async fn test_default_batch_empty_input() {
         let runnable = TestRunnable;
         let results = runnable.batch(vec![], None).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    /// 带延迟的 Runnable:"slow" 明显慢于其他,用于验证完成顺序 ≠ 输入顺序。
+    struct Delayed;
+
+    #[async_trait]
+    impl Runnable<&'static str, usize> for Delayed {
+        type Error = std::convert::Infallible;
+
+        async fn invoke(
+            &self,
+            input: &'static str,
+            _config: Option<RunnableConfig>,
+        ) -> Result<usize, Self::Error> {
+            match input {
+                "slow" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                    Ok(10)
+                }
+                _ => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    Ok(1)
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_as_completed_returns_completion_order() {
+        let results = Delayed
+            .batch_as_completed(vec!["slow", "fast"], None)
+            .await
+            .unwrap();
+        // 快的那项先完成 → results[0] 的下标应是 1("fast")
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, 1, "完成最快的应带原始下标 1");
+        assert_eq!(results[0].1, 1);
+        assert_eq!(results[1].0, 0);
+        assert_eq!(results[1].1, 10);
+    }
+
+    #[tokio::test]
+    async fn test_batch_as_completed_respects_max_concurrency() {
+        let config = RunnableConfig::new().with_max_concurrency(1);
+        let results = Delayed
+            .batch_as_completed(vec!["fast", "slow"], Some(config))
+            .await
+            .unwrap();
+        // 并发上限 1 → 串行,完成顺序 = 输入顺序
+        assert_eq!(results, vec![(0, 1), (1, 10)]);
+    }
+
+    #[tokio::test]
+    async fn test_batch_as_completed_empty_input() {
+        let runnable = TestRunnable;
+        let results = runnable.batch_as_completed(vec![], None).await.unwrap();
         assert!(results.is_empty());
     }
 }

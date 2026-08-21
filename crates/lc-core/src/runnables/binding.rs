@@ -79,9 +79,20 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableBinding<I, O> {
     fn merged_config(&self, invocation_config: Option<RunnableConfig>) -> RunnableConfig {
         let mut base = self.config.clone();
 
-        // Add kwargs as metadata
+        // Bound kwargs: recognize the sampling overrides the providers already
+        // consume (`temperature` / `max_tokens`) so `llm.bind("temperature", 0.5)`
+        // actually changes sampling — matching Python's `.bind(**kwargs)` which
+        // merges into the model call. Other keys stay in metadata.
         for (key, value) in &self.kwargs {
-            base = base.with_metadata(key.clone(), value.clone());
+            match (key.as_str(), value) {
+                ("temperature", Value::Number(n)) if n.as_f64().is_some() => {
+                    base = base.with_temperature(n.as_f64().unwrap() as f32);
+                }
+                ("max_tokens", Value::Number(n)) if n.as_u64().is_some() => {
+                    base = base.with_max_tokens(n.as_u64().unwrap() as usize);
+                }
+                _ => base = base.with_metadata(key.clone(), value.clone()),
+            }
         }
 
         // Merge with invocation config
@@ -235,5 +246,49 @@ mod tests {
         let mut stream = binding.stream("hello".to_string(), None).await.unwrap();
         let result = stream.next().await.unwrap().unwrap();
         assert_eq!(result, "[stream] hello");
+    }
+
+    /// 探针:invoke 时把收到的 config.temperature / config.max_tokens 打出来。
+    struct ConfigProbe;
+
+    #[async_trait]
+    impl Runnable<(), String> for ConfigProbe {
+        type Error = std::convert::Infallible;
+
+        async fn invoke(
+            &self,
+            _input: (),
+            config: Option<RunnableConfig>,
+        ) -> Result<String, Self::Error> {
+            Ok(format!(
+                "temp={:?},max={:?}",
+                config.as_ref().and_then(|c| c.temperature),
+                config.as_ref().and_then(|c| c.max_tokens)
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn binding_temperature_kwarg_affects_sampling() {
+        // `llm.bind("temperature", 0.5)` 应真正改采样温度(进 typed config 字段),
+        // 而不是只进 metadata —— 对齐 Python `.bind(**kwargs)` 语义。
+        let binding = RunnableBinding::new(ConfigProbe).bind("temperature", Value::from(0.5));
+        let result = binding.invoke((), None).await.unwrap();
+        assert_eq!(result, "temp=Some(0.5),max=None");
+    }
+
+    #[tokio::test]
+    async fn binding_max_tokens_kwarg_affects_sampling() {
+        let binding = RunnableBinding::new(ConfigProbe).bind("max_tokens", Value::from(128));
+        let result = binding.invoke((), None).await.unwrap();
+        assert_eq!(result, "temp=None,max=Some(128)");
+    }
+
+    #[tokio::test]
+    async fn binding_unknown_kwarg_stays_in_metadata() {
+        let binding = RunnableBinding::new(ConfigProbe).bind("stop", Value::String("\n".to_string()));
+        let result = binding.invoke((), None).await.unwrap();
+        // stop 不识别为采样字段 → 只进 metadata,typed 字段不受影响
+        assert_eq!(result, "temp=None,max=None");
     }
 }

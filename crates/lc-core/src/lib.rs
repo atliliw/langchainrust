@@ -35,8 +35,9 @@ pub use output_parsers::{
 pub use runnables::{
     into_runnable_any, CancellationToken, LcelError, RetryConfig, RetryOn, Runnable, RunnableAny,
     RunnableAnyWrapper, RunnableAssign, RunnableBinding, RunnableBranch, RunnableConfig,
-    RunnableExt, RunnableLambda, RunnableParallel, RunnablePassthrough, RunnableRetry,
-    RunnableSequence, RunnableWithFallbacks,
+    RunnableConfigurable, RunnableConfigurableFields, RunnableExt, RunnableLambda,
+    RunnableParallel, RunnablePassthrough, RunnablePick, RunnableRetry, RunnableSequence,
+    RunnableWithFallbacks,
 };
 pub use structured_output::{
     stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,

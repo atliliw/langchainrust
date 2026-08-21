@@ -46,6 +46,14 @@ pub struct RunnableConfig {
     /// When set, takes precedence over the model's own configured max
     /// tokens (providers Q2).
     pub max_tokens: Option<usize>,
+
+    /// Configurable values — the Rust counterpart of Python LCEL's
+    /// `config["configurable"]`.
+    ///
+    /// Runtime selection keys live here: `configurable_alternatives` reads
+    /// its `which` key from this map, and `RunnableWithMessageHistory`
+    /// (session mode) reads `session_id` from it.
+    pub configurable: HashMap<String, Value>,
 }
 
 impl RunnableConfig {
@@ -108,6 +116,25 @@ impl RunnableConfig {
         self
     }
 
+    /// Sets a configurable value — the Rust counterpart of Python LCEL's
+    /// `config["configurable"][key] = value`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // 给 session 记忆选槽 / 给 configurable_alternatives 路由
+    /// let config = RunnableConfig::new().with_configurable("session_id", json!("s1"));
+    /// ```
+    pub fn with_configurable(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.configurable.insert(key.into(), value);
+        self
+    }
+
+    /// Reads a configurable value by key.
+    pub fn configurable_value(&self, key: &str) -> Option<&Value> {
+        self.configurable.get(key)
+    }
+
     /// Checks if cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
         self.cancellation_token
@@ -126,6 +153,9 @@ impl RunnableConfig {
 
         // Merge metadata (override)
         self.metadata.extend(other.metadata);
+
+        // Merge configurable values (override)
+        self.configurable.extend(other.configurable);
 
         // Override other fields
         if other.max_concurrency.is_some() {
@@ -157,5 +187,28 @@ impl RunnableConfig {
         }
 
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn configurable_roundtrip() {
+        let cfg = RunnableConfig::new().with_configurable("session_id", json!("s1"));
+        assert_eq!(cfg.configurable_value("session_id"), Some(&json!("s1")));
+        assert_eq!(cfg.configurable_value("missing"), None);
+    }
+
+    #[test]
+    fn configurable_merge_overrides() {
+        let base = RunnableConfig::new().with_configurable("which", json!("a"));
+        let other = RunnableConfig::new().with_configurable("which", json!("b"));
+        let merged = base.merge(other);
+        assert_eq!(merged.configurable_value("which"), Some(&json!("b")));
+        // 不存在的键不进 merge 结果
+        assert_eq!(merged.configurable_value("none"), None);
     }
 }

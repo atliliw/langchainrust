@@ -10,6 +10,7 @@
 //! ```
 
 use super::any::into_runnable_any;
+use super::configurable::{RunnableConfigurable, RunnableConfigurableFields};
 use super::error::LcelError;
 use super::fallback::RunnableWithFallbacks;
 use super::retry::{RetryConfig, RunnableRetry};
@@ -121,6 +122,58 @@ where
     {
         let runnable_any = into_runnable_any(self);
         RunnableRetry::new(runnable_any, retry_config)
+    }
+
+    /// Route between a default runnable and named alternatives at invoke time.
+    ///
+    /// Rust counterpart of Python LCEL's `Runnable.configurable_alternatives`.
+    /// The selector key `which` is read from `config.configurable`; the value
+    /// must name the `default_key` (→ this runnable) or one of the
+    /// `alternatives`. An unknown value falls back to this runnable.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let chain = llm.configurable_alternatives(
+    ///     "provider", "default",
+    ///     vec![("anthropic", anthropic_llm)],
+    /// );
+    /// // invoke(msgs, Some(RunnableConfig::new().with_configurable("provider", json!("anthropic"))))
+    /// ```
+    fn configurable_alternatives<K, R>(
+        self,
+        which: impl Into<String>,
+        default_key: impl Into<String>,
+        alternatives: Vec<(K, R)>,
+    ) -> RunnableConfigurable<Input, Output>
+    where
+        K: Into<String>,
+        R: Runnable<Input, Output> + Send + Sync + 'static,
+        R::Error: Into<LcelError>,
+    {
+        let mut configurable = RunnableConfigurable::new(self, which, default_key);
+        for (name, runnable) in alternatives {
+            configurable = configurable.with_alternative(name, runnable);
+        }
+        configurable
+    }
+
+    /// Override recognized config fields at invoke time from
+    /// `config.configurable` (Python's `Runnable.configurable_fields`).
+    ///
+    /// `temperature` / `max_tokens` in the configurable map are promoted to
+    /// the typed config fields the providers consume; other keys are merged
+    /// into `config.metadata`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let llm = llm.configurable_fields();
+    /// let config = RunnableConfig::new().with_configurable("temperature", json!(0.5));
+    /// llm.invoke(msgs, Some(config)).await?;   // 本次调用采样温度 0.5
+    /// ```
+    fn configurable_fields(self) -> RunnableConfigurableFields<Input, Output> {
+        RunnableConfigurableFields::new(self)
     }
 }
 
