@@ -39,12 +39,15 @@ use async_trait::async_trait;
 use lc_core::language_models::{BaseChatModel, LLMResult};
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
 use lc_schema::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// 记忆句柄:任意 `BaseMemory` 的共享可变引用。
 pub type SharedMemory = Arc<Mutex<Box<dyn BaseMemory>>>;
+
+/// Session 缓存默认上限:防异常/恶意 session_id 无限增长占满内存(M2a)。
+const DEFAULT_MAX_SESSIONS: usize = 100;
 
 /// 带记忆的 LLM 封装,作为单个 Runnable 参与 LCEL 组合。
 pub struct RunnableWithMessageHistory<L> {
@@ -59,10 +62,19 @@ enum HistoryMode {
     /// 按 `configurable.session_id` 分槽:factory 建新槽,缓存复用已建槽。
     Sessions {
         factory: Arc<dyn Fn(&str) -> SharedMemory + Send + Sync>,
-        cache: Mutex<HashMap<String, SharedMemory>>,
+        /// 槽缓存:同一 session 复用同一份记忆(其锁同时串行化同槽并发 invoke)。
+        cache: Mutex<SessionCache>,
+        /// 缓存上限:超过即淘汰最旧 session,防 session_id 无限增长的内存 DoS(M2a)。
+        max_sessions: usize,
         /// 仅用于 `memory()` 访问器的占位记忆(Sessions 模式下实际槽不唯一)。
         default: SharedMemory,
     },
+}
+
+/// Session 槽缓存:`slots` 按 session_id 取槽,`order` 记录插入顺序供上限淘汰。
+struct SessionCache {
+    slots: HashMap<String, SharedMemory>,
+    order: VecDeque<String>,
 }
 
 impl<L> RunnableWithMessageHistory<L> {
@@ -99,12 +111,25 @@ impl<L> RunnableWithMessageHistory<L> {
             llm: Arc::new(llm),
             mode: HistoryMode::Sessions {
                 factory: Arc::new(factory),
-                cache: Mutex::new(HashMap::new()),
+                cache: Mutex::new(SessionCache {
+                    slots: HashMap::new(),
+                    order: VecDeque::new(),
+                }),
+                max_sessions: DEFAULT_MAX_SESSIONS,
                 default: Arc::new(Mutex::new(Box::new(
                     ConversationBufferMemory::new(),
                 ))),
             },
         }
+    }
+
+    /// 设置 session 缓存上限(Sessions 模式)。超过上限后,新 session 会淘汰最旧
+    /// 的槽,防 session_id 无限增长的内存 DoS(M2a)。默认 [`DEFAULT_MAX_SESSIONS`]。
+    pub fn with_max_sessions(mut self, max: usize) -> Self {
+        if let HistoryMode::Sessions { max_sessions, .. } = &mut self.mode {
+            *max_sessions = max.max(1);
+        }
+        self
     }
 
     /// 暴露内部记忆句柄,便于读取已保存的历史(调试、展示、验证写回等)。
@@ -125,7 +150,12 @@ impl<L> RunnableWithMessageHistory<L> {
     ) -> Result<SharedMemory, LcelError> {
         match &self.mode {
             HistoryMode::Shared(m) => Ok(m.clone()),
-            HistoryMode::Sessions { factory, cache, .. } => {
+            HistoryMode::Sessions {
+                factory,
+                cache,
+                max_sessions,
+                ..
+            } => {
                 let session_id = config
                     .as_ref()
                     .and_then(|c| c.configurable_value("session_id"))
@@ -137,10 +167,21 @@ impl<L> RunnableWithMessageHistory<L> {
                         )
                     })?;
                 let mut cache = cache.lock().await;
-                Ok(cache
-                    .entry(session_id.to_string())
-                    .or_insert_with(|| factory(session_id))
-                    .clone())
+                if let Some(memory) = cache.slots.get(session_id) {
+                    return Ok(memory.clone());
+                }
+                // M2a: 缓存有上限,先淘汰最旧的 session,再建新槽。
+                if cache.slots.len() >= *max_sessions {
+                    if let Some(oldest) = cache.order.pop_front() {
+                        cache.slots.remove(&oldest);
+                    }
+                }
+                let memory = factory(session_id);
+                cache
+                    .slots
+                    .insert(session_id.to_string(), memory.clone());
+                cache.order.push_back(session_id.to_string());
+                Ok(memory)
             }
         }
     }
@@ -162,9 +203,13 @@ where
         // 0. 选定记忆槽(Sessions 模式读 configurable.session_id)
         let memory = self.select_memory(&config).await?;
 
-        // 1. 读记忆 → 转消息(锁在 LLM 调用前释放,不占着锁等网络)
+        // M2b: 整个「读记忆 → 调 LLM → 写回」持锁执行,串行化同一记忆槽的并发
+        // invoke。旧实现读后即放锁,两个并发 invoke 都读到旧历史、写回互相覆盖
+        // 丢历史。代价是同槽调用串行,但带记忆的对话本就应串行。
+        let mut memory = memory.lock().await;
+
+        // 1. 读记忆 → 转消息
         let mut messages = {
-            let memory = memory.lock().await;
             let vars = memory
                 .load_memory_variables(&HashMap::new())
                 .await
@@ -175,7 +220,7 @@ where
         // 2. 拼上用户输入
         messages.push(Message::human(&input));
 
-        // 3. 调 LLM
+        // 3. 调 LLM(持锁等待:同槽串行,避免并发丢历史)
         let result = self
             .llm
             .chat(messages, config)
@@ -184,13 +229,10 @@ where
 
         // 4. 写回记忆:失败不丢弃模型答案(否则调用方拿 Err 重试会重复调 LLM),
         //    记 warn 暴露记忆层降级
-        {
-            let mut memory = memory.lock().await;
-            let inputs = HashMap::from([("input".to_string(), input)]);
-            let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
-            if let Err(e) = memory.save_context(&inputs, &outputs).await {
-                log::warn!("记忆写回失败(模型答案仍照常返回): {e}");
-            }
+        let inputs = HashMap::from([("input".to_string(), input)]);
+        let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
+        if let Err(e) = memory.save_context(&inputs, &outputs).await {
+            log::warn!("记忆写回失败(模型答案仍照常返回): {e}");
         }
 
         Ok(result)
@@ -406,5 +448,181 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LcelError::Chain(_)));
+    }
+
+    /// 可阻塞的测试 LLM:第一次 chat 通知 `entered` 并阻塞在 `release`,用于在
+    /// 并发测试中制造「已持锁、模型调用中」的确定性窗口(M2b)。
+    struct BlockingChatModel {
+        seen: Arc<StdMutex<Vec<Vec<Message>>>>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        blocked: Arc<StdMutex<bool>>,
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for BlockingChatModel {
+        type Error = LcelError;
+
+        async fn invoke(
+            &self,
+            input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, LcelError> {
+            self.seen.lock().unwrap().push(input.clone());
+            let should_block = {
+                let mut blocked = self.blocked.lock().unwrap();
+                if !*blocked {
+                    *blocked = true;
+                    true
+                } else {
+                    false
+                }
+            };
+            self.entered.notify_one();
+            if should_block {
+                self.release.notified().await;
+            }
+            let last = input
+                .last()
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            Ok(LLMResult {
+                content: format!("reply to: {last}"),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for BlockingChatModel {
+        fn model_name(&self) -> &str {
+            "blocking-test-llm"
+        }
+
+        fn get_num_tokens(&self, text: &str) -> usize {
+            text.len()
+        }
+
+        fn with_temperature(self, _temp: f32) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+
+        fn with_max_tokens(self, _max: usize) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for BlockingChatModel {
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, LcelError> {
+            self.invoke(messages, config).await
+        }
+
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>,
+            LcelError,
+        > {
+            unimplemented!("stream_chat not needed for tests")
+        }
+    }
+
+    /// session 缓存有上限:超过后淘汰最旧 session,防 session_id 无限增长的内存 DoS(M2a)。
+    #[tokio::test]
+    async fn session_cache_evicts_oldest_when_over_capacity() {
+        // Arrange
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let llm = TestChatModel { seen: seen.clone() };
+        let pipe = RunnableWithMessageHistory::with_session_history(llm, session_factory)
+            .with_max_sessions(2);
+
+        let cfg_s1 = RunnableConfig::new().with_configurable("session_id", json!("s1"));
+        let cfg_s2 = RunnableConfig::new().with_configurable("session_id", json!("s2"));
+        let cfg_s3 = RunnableConfig::new().with_configurable("session_id", json!("s3"));
+
+        // Act s1、s2 占满缓存;s3 触发淘汰最旧的 s1。
+        pipe.invoke("s1-turn1".to_string(), Some(cfg_s1.clone()))
+            .await
+            .unwrap();
+        pipe.invoke("s2-turn1".to_string(), Some(cfg_s2))
+            .await
+            .unwrap();
+        pipe.invoke("s3-turn1".to_string(), Some(cfg_s3))
+            .await
+            .unwrap();
+        // s1 已被淘汰 → 重入 s1 是全新会话。
+        pipe.invoke("s1-turn2".to_string(), Some(cfg_s1))
+            .await
+            .unwrap();
+
+        // Assert
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls[3].len(),
+            1,
+            "M2a: s1 槽被淘汰后重入应为全新会话(无历史)"
+        );
+    }
+
+    /// 同一记忆槽的并发 invoke 必须串行化:读→LLM→写整段持锁,避免并发都读到
+    /// 旧历史、写回互相覆盖丢上下文(M2b)。
+    #[tokio::test]
+    async fn concurrent_same_session_invokes_do_not_lose_history() {
+        // Arrange
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocked = Arc::new(StdMutex::new(false));
+        let llm = BlockingChatModel {
+            seen: seen.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+            blocked,
+        };
+        let pipe = Arc::new(RunnableWithMessageHistory::new(
+            llm,
+            ConversationBufferMemory::new().with_return_messages(true),
+        ));
+
+        // Act 第一轮 invoke:进入模型调用后阻塞,期间必须持有记忆锁。
+        let p1 = pipe.clone();
+        let h1 = tokio::spawn(async move { p1.invoke("第一轮".to_string(), None).await });
+        entered.notified().await;
+
+        // 第二轮 invoke:若读→LLM→写没有整段持锁,此刻会读到空历史(丢上下文)。
+        let p2 = pipe.clone();
+        let h2 = tokio::spawn(async move { p2.invoke("第二轮".to_string(), None).await });
+
+        // 放行第一轮:写回后才释放锁,第二轮才能读到第一轮完整对话。
+        release.notify_one();
+        let r1 = h1.await.unwrap().unwrap();
+        let r2 = h2.await.unwrap().unwrap();
+        assert_eq!(r1.content, "reply to: 第一轮");
+        assert_eq!(r2.content, "reply to: 第二轮");
+
+        // Assert
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1].len(),
+            3,
+            "M2b: 第二轮应看到第一轮完整对话(user+ai+user),而非空历史"
+        );
+        assert_eq!(calls[1][0].content, "第一轮");
+        assert_eq!(calls[1][2].content, "第二轮");
     }
 }

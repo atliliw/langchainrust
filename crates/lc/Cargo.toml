@@ -73,6 +73,8 @@ tokio-test = "0.4"
 tempfile = "3.0"
 wiremock = "0.6"
 criterion = "0.5"
+# 只为测试/示例启用 lc-a2a 的 axum 服务器(serve/serve_on),不拖累下游 lib 用户
+lc-a2a = { path = "../lc-a2a", version = "0.15.0", features = ["axum"] }
 
 [features]
 default = []
@@ -242,6 +244,18 @@ path = "examples/lcel/lcel_pipe.rs"
 [[example]]
 name = "lcel_compose"
 path = "examples/lcel/lcel_compose.rs"
+
+[[example]]
+name = "a2a_http_server"
+path = "examples/a2a_http_server.rs"
+
+[[example]]
+name = "mcp_sse_server"
+path = "examples/mcp_sse_server.rs"
+
+[[example]]
+name = "mcp_stdio_server"
+path = "examples/mcp_stdio_server.rs"
 
 # ============================================================================
 # Criterion Benchmarks

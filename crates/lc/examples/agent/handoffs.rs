@@ -4,7 +4,7 @@
 //!
 //! # 运行
 //! ```bash
-//! cargo run --example handoffs
+//! cargo run --example agent_handoffs
 //! ```
 
 // Handoffs 示例仅展示用法说明，无需导入 LLM 类型
@@ -26,10 +26,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("- 销售顾问 → 产品专家 → 售后服务");
 
     println!("\nHandoffManager 使用方式:");
-    println!("  let manager = HandoffManager::new(primary_agent)");
-    println!("    .with_handoff(\"tech\", tech_agent)");
-    println!("    .with_handoff(\"docs\", docs_agent);");
-    println!("  let result = manager.run(\"帮我解决技术问题\").await?;");
+    println!("  let manager = HandoffManager::new();");
+    println!("  manager.register_agent(\"tech\", tech_executor)?;");
+    println!("  manager.register_agent(\"docs\", docs_executor)?;");
+    println!("  manager.set_primary(\"tech\")?;");
+    println!("  let handoff_tools = manager.handoff_tools();");
 
     println!("\n提示: 需要设置 OPENAI_API_KEY 才能进行真实调用。");
     Ok(())

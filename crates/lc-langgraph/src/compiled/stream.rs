@@ -44,7 +44,7 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
             }
 
             if let Some(ref checkpointer) = graph.checkpointer {
-                match checkpointer.lock().await.save(&state).await {
+                match checkpointer.lock().await.save(&state, 0).await {
                     Ok(_) => {}
                     Err(e) => {
                         let _ = tx.send(Err(e)).await;
@@ -120,7 +120,7 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
 
                 if graph.interrupt_after.contains(&current_node) {
                     if let Some(ref checkpointer) = graph.checkpointer {
-                        let _ = checkpointer.lock().await.save(&state).await;
+                        let _ = checkpointer.lock().await.save(&state, recursion_count).await;
                     }
                     let _ = tx
                         .send(Err(GraphError::ExecutionInterrupted(format!(
@@ -140,7 +140,7 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 };
 
                 if let Some(ref checkpointer) = graph.checkpointer {
-                    let _ = checkpointer.lock().await.save(&state).await;
+                    let _ = checkpointer.lock().await.save(&state, recursion_count).await;
                 }
 
                 current_node = next_node;

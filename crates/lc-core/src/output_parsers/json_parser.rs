@@ -5,6 +5,7 @@ use std::pin::Pin;
 use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
 use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
+use crate::structured_output::parser::PartialJsonParser;
 
 /// JSON 输出解析器
 ///
@@ -45,32 +46,17 @@ impl JsonOutputParser {
 
     /// 从文本中提取 JSON 字符串
     ///
-    /// 支持从 Markdown 代码块 ```json ... ``` 中提取 JSON。
+    /// 剥掉 Markdown 代码块 ```json ... ```、前导/尾随文本,返回真正的 JSON 值。
+    /// 比旧的 `find("```")` 匹配更稳:未闭合的围栏(只有开头没有结尾)也能正确剥离,
+    /// 且带围栏的完整 JSON 不会被误判为解析失败。
     fn extract_json_str<'a>(&self, text: &'a str) -> OutputParserResult<&'a str> {
-        let text = text.trim();
-
-        // 尝试从 ```json 代码块中提取
-        if let Some(start) = text.find("```json") {
-            let content = &text[start + 7..];
-            if let Some(end) = content.find("```") {
-                return Ok(content[..end].trim());
-            }
+        let json = PartialJsonParser::strip_markdown_fence(text);
+        if json.is_empty() {
+            // 没有 JSON 结构字符:交给调用方 serde 报错(避免返回空串被当成合法值)
+            Ok(text.trim())
+        } else {
+            Ok(json.trim())
         }
-
-        // 尝试从 ``` 代码块中提取
-        if let Some(start) = text.find("```") {
-            let content = &text[start + 3..];
-            let content = content.trim();
-            // 可能后面还跟了语言标识，跳过到换行
-            let skip_to_newline = content.find('\n').unwrap_or(0);
-            let content = &content[skip_to_newline..];
-            if let Some(end) = content.find("```") {
-                return Ok(content[..end].trim());
-            }
-        }
-
-        // 直接作为 JSON 解析
-        Ok(text)
     }
 }
 
@@ -340,6 +326,24 @@ mod tests {
         let result = parser.parse("[1, 2, 3]").await.unwrap();
         assert_eq!(result[0], 1);
         assert_eq!(result[2], 3);
+    }
+
+    #[tokio::test]
+    async fn test_json_parser_from_markdown_block_unclosed_fence() {
+        // H4: 只有开头 ```json 没有结尾 ```(模型输出被截断)也要能剥掉围栏解析
+        let parser = JsonOutputParser::new();
+        let input = "以下是结果：\n```json\n{\"status\": \"ok\"}";
+        let result = parser.parse(input).await.unwrap();
+        assert_eq!(result["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_json_parser_from_prose_prefix() {
+        // H4: 模型先输出一句"结果是:"再给 JSON,也要剥掉前导文本
+        let parser = JsonOutputParser::new();
+        let input = "结果是：\n{\"a\": 1}\n以上";
+        let result = parser.parse(input).await.unwrap();
+        assert_eq!(result["a"], 1);
     }
 
     #[tokio::test]

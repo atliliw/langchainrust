@@ -102,17 +102,20 @@ impl PartialJsonParser {
             self.buffer.push_str(&token[pos..]);
         }
 
+        // H4: 模型常把 JSON 包在 ```json ... ``` 围栏里(或先输出"结果是:"等
+        // 前导文本)。解析时先剥掉围栏/前导文本,只看真正的 JSON 值;否则带
+        // 围栏的合法 JSON 会被判为无法解析,流式结构化输出整条路径不可用。
+        let json = Self::strip_markdown_fence(&self.buffer);
+
         // Fast path: try full parse first
-        if let Ok(value) = serde_json::from_str::<Value>(&self.buffer) {
+        if let Ok(value) = serde_json::from_str::<Value>(json) {
             return Ok(value);
         }
 
         // Only attempt repair if we have at least opened a structure
-        if self.depth > 0
-            || self.buffer.trim().starts_with('{')
-            || self.buffer.trim().starts_with('[')
-        {
-            let repaired = Self::repair_partial_json(&self.buffer);
+        let trimmed = json.trim();
+        if self.depth > 0 || trimmed.starts_with('{') || trimmed.starts_with('[') {
+            let repaired = Self::repair_partial_json(json);
             if let Ok(value) = serde_json::from_str::<Value>(&repaired) {
                 return Ok(value);
             }
@@ -127,16 +130,19 @@ impl PartialJsonParser {
 
     /// Get the final complete value.
     ///
-    /// Call this when the stream has ended. It first tries to parse the full
-    /// buffer, then falls back to the repaired version.
+    /// Call this when the stream has ended. It first tries to parse the
+    /// fence-stripped buffer, then falls back to the repaired version.
     pub fn finalize(self) -> Result<Value, PartialJsonError> {
+        // H4: 同样先剥 ```json 围栏,否则带围栏的完整 JSON 会被误判为 Invalid。
+        let json = Self::strip_markdown_fence(&self.buffer);
+
         // Try full parse
-        if let Ok(value) = serde_json::from_str::<Value>(&self.buffer) {
+        if let Ok(value) = serde_json::from_str::<Value>(json) {
             return Ok(value);
         }
 
         // Try repaired
-        let repaired = Self::repair_partial_json(&self.buffer);
+        let repaired = Self::repair_partial_json(json);
         serde_json::from_str::<Value>(&repaired).map_err(|e| {
             PartialJsonError::Invalid(format!(
                 "Failed to parse final buffer ({} chars): {}. Buffer: {}",
@@ -160,6 +166,65 @@ impl PartialJsonParser {
     /// Current nesting depth of brackets/braces.
     pub fn depth(&self) -> usize {
         self.depth
+    }
+
+    /// Strip a markdown code fence and any leading/trailing non-JSON text,
+    /// returning the slice that holds the top-level JSON value.
+    ///
+    /// Streaming-safe: only reads what has been accumulated so far, so a
+    /// partially-delivered object still yields its partial JSON (e.g. while the
+    /// model is still emitting the closing brace).
+    ///
+    /// # Rules
+    ///
+    /// - Leading text up to the first `{` or `[` is dropped (covers a ```json
+    ///   fence line, "结果是:" prose, and whitespace).
+    /// - Trailing text after the top-level structure closes is dropped (covers
+    ///   the closing ``` fence).
+    /// - Returns `""` when no `{`/`[` has been seen yet (e.g. the buffer is
+    ///   still just "```json").
+    pub(crate) fn strip_markdown_fence(buffer: &str) -> &str {
+        let bytes = buffer.as_bytes();
+        // First byte that opens the top-level JSON value. `{`/`[` are ASCII, so
+        // this byte index is always a UTF-8 char boundary.
+        let start = match bytes.iter().position(|b| *b == b'{' || *b == b'[') {
+            Some(i) => i,
+            None => return "",
+        };
+
+        // Walk from `start` tracking string/escape state; the top-level value
+        // ends where depth returns to 0. Everything after it (the closing ```
+        // fence) is dropped. Multi-byte UTF-8 never matches the structural
+        // ASCII bytes below, so byte-wise scanning is safe.
+        let mut depth: i64 = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
+        let mut end = bytes.len();
+        let mut idx = start;
+        while idx < bytes.len() {
+            let b = bytes[idx];
+            if escape_next {
+                escape_next = false;
+            } else if b == b'\\' && in_string {
+                escape_next = true;
+            } else if b == b'"' {
+                in_string = !in_string;
+            } else if !in_string {
+                match b {
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = idx + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            idx += 1;
+        }
+        &buffer[start..end]
     }
 
     /// Repair a partial JSON string by closing unclosed structures and

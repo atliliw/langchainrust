@@ -72,9 +72,10 @@ impl<M: BaseChatModel> ContextWindow<M> {
     ///
     /// # Budget semantics (P1-4 契约)
     ///
-    /// **`Strategy::Truncate`**: System 消息恒保留且**不占预算**;若 System 消息
-    /// 自身超过 `max_tokens`,原样返回(结果可能超预算)。调用方不应假设 `fit`
-    /// 的返回结果一定在预算内。
+    /// **`Strategy::Truncate`**: System 消息恒保留且**不占预算**(M7);若 System
+    /// 消息自身超过 `max_tokens`,原样返回(结果可能超预算)。即使预算小到一条
+    /// 对话都放不下,也至少保留最新一条非 System 消息,不静默清空历史(H7)。
+    /// 调用方不应假设 `fit` 的返回结果一定在预算内。
     ///
     /// **`Strategy::Summarize`**: 摘要占位计入预算,但 LLM 实际产出的摘要 token
     /// 数未知——预算语义与 Truncate 不同,两者在 System 消息上口径不一致是有意为之,
@@ -109,6 +110,11 @@ impl<M: BaseChatModel> ContextWindow<M> {
     /// messages alone exceed `max_tokens`, they are returned as-is and the
     /// result may exceed the budget.
     ///
+    /// M7: system messages 不计入预算(base 从 0 起算),不再挤占可用上下文。
+    ///
+    /// H7: 即使预算小到一条对话都放不下,也至少保留最新一条非 System 消息,
+    /// 绝不静默丢光全部历史(结果可能超预算,契约允许)。
+    ///
     /// M10: Optimized from O(n^2) to O(n) by computing token counts
     /// incrementally instead of rebuilding and recounting the full candidate
     /// list on every iteration.
@@ -125,9 +131,9 @@ impl<M: BaseChatModel> ContextWindow<M> {
             }
         }
 
-        // Compute the base cost: system messages + conversation boundary overhead.
-        // count_messages includes a +2 boundary; we account for it once.
-        let base_tokens = self.counter.count_messages(&system_messages) as usize;
+        // M7: System 消息恒保留且**不占预算**,base 从 0 起算——旧实现把
+        // `count_messages(&system_messages)` 计入 base,挤占可用上下文。
+        let mut running_tokens: usize = 0;
 
         // Pre-compute per-message incremental cost.
         // For a single message, count_messages returns (4 + content_tokens + 2).
@@ -144,7 +150,6 @@ impl<M: BaseChatModel> ContextWindow<M> {
 
         // Walk from the end (newest) and accumulate until we exceed the budget.
         let mut kept: Vec<Message> = Vec::new();
-        let mut running_tokens = base_tokens;
 
         for (msg, cost) in other_messages
             .into_iter()
@@ -153,6 +158,10 @@ impl<M: BaseChatModel> ContextWindow<M> {
         {
             if running_tokens + cost <= self.max_tokens {
                 running_tokens += cost;
+                kept.push(msg);
+            } else if kept.is_empty() {
+                // H7: 预算连最新一条都放不下时,仍保留最新一条——结果可能超预算
+                // (契约允许),但绝不静默丢光全部对话历史。
                 kept.push(msg);
             } else {
                 // This message would push us over; stop adding more.
@@ -219,8 +228,11 @@ impl<M: BaseChatModel> ContextWindow<M> {
         // If we can't even fit the recent messages with a summary placeholder,
         // fall back to truncation for the recent portion.
         if keep_from_idx >= other_messages.len() {
-            // Nothing fits; truncate to just system messages.
-            return self.truncate(system_messages);
+            // H7: 预算小到连摘要占位都放不下时,退化为截断——截断保证至少保留
+            // 最新一条;旧实现 `truncate(system_messages)` 会静默丢光全部历史。
+            let mut all = system_messages;
+            all.extend(other_messages);
+            return self.truncate(all);
         }
 
         let to_summarize = &other_messages[..keep_from_idx];

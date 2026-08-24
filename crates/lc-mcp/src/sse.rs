@@ -137,18 +137,35 @@ async fn write_json_response(sock: &mut TcpStream, resp: &MCPResponse) {
     let _ = sock.write_all(out.as_bytes()).await;
 }
 
+/// HTTP 请求头上限:超过即断开(防 slowloris 无限累积内存)。
+const MAX_HEADER_SIZE: usize = 64 * 1024;
+/// HTTP body 上限:超过声明的 Content-Length 即拒绝。
+const MAX_BODY_SIZE: usize = 1024 * 1024;
+/// 单次读超时:客户端迟迟不发字节即断开。
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 读取一个 HTTP 请求,返回 (请求行, body)。
 ///
 /// 简化实现:先读到 `\r\n\r\n`,再按 `Content-Length` 读全 body。
+/// 带大小上限与读超时:恶意客户端只发少量字节不结束、或声明超大
+/// Content-Length 后慢速发送时,连接被断开而不是无限累积(DoS 防护)。
+/// 任一防护触发均返回空串,调用方不匹配 GET/POST 即自然关闭连接。
 async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
-        let n = sock.read(&mut tmp).await.unwrap_or(0);
+        let n = match tokio::time::timeout(READ_TIMEOUT, sock.read(&mut tmp)).await {
+            Ok(Ok(n)) => n,
+            // 读超时 / 读错误 → 断开
+            _ => return (String::new(), String::new()),
+        };
         if n == 0 {
-            break;
+            return (String::new(), String::new());
         }
         buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > MAX_HEADER_SIZE {
+            return (String::new(), String::new()); // 请求头超限
+        }
         if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             let header = String::from_utf8_lossy(&buf[..pos]).to_string();
             let content_length = header
@@ -159,12 +176,19 @@ async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
                         .map(|v| v.trim().parse::<usize>().unwrap_or(0))
                 })
                 .unwrap_or(0);
+            // 超大 body 声明直接拒绝
+            if content_length > MAX_BODY_SIZE {
+                return (String::new(), String::new());
+            }
             let body_start = pos + 4;
             let mut body: Vec<u8> = buf[body_start..].to_vec();
             while body.len() < content_length {
-                let n = sock.read(&mut tmp).await.unwrap_or(0);
+                let n = match tokio::time::timeout(READ_TIMEOUT, sock.read(&mut tmp)).await {
+                    Ok(Ok(n)) => n,
+                    _ => return (String::new(), String::new()),
+                };
                 if n == 0 {
-                    break;
+                    return (String::new(), String::new());
                 }
                 body.extend_from_slice(&tmp[..n]);
             }
@@ -173,7 +197,6 @@ async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
             return (first_line, body);
         }
     }
-    (String::new(), String::new())
 }
 
 /// 宽松入站消息:通知无 id
@@ -184,4 +207,46 @@ struct InboundMessage {
     method: String,
     #[serde(default)]
     params: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// 建一条 loopback 客户端/服务端连接对。
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, server) = tokio::join!(
+            TcpStream::connect(addr),
+            listener.accept(),
+        );
+        (client.unwrap(), server.unwrap().0)
+    }
+
+    #[tokio::test]
+    async fn oversized_header_is_rejected() {
+        let (mut client, mut server) = tcp_pair().await;
+        client.set_nodelay(true).unwrap();
+
+        // 发送超过 MAX_HEADER_SIZE 的请求头且不含 \r\n\r\n:
+        // read_http_request 应在缓冲超限时立即返回空,而不是无限累积。
+        let junk = vec![b'a'; MAX_HEADER_SIZE + 16];
+        let (write_res, read_res) =
+            tokio::join!(client.write_all(&junk), read_http_request(&mut server));
+        write_res.unwrap();
+        assert_eq!(read_res, (String::new(), String::new()));
+    }
+
+    #[tokio::test]
+    async fn normal_request_is_parsed() {
+        let (mut client, mut server) = tcp_pair().await;
+        client.set_nodelay(true).unwrap();
+
+        let req = b"POST /message HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+        let (write_res, read_res) = tokio::join!(client.write_all(req), read_http_request(&mut server));
+        write_res.unwrap();
+        assert_eq!(read_res, ("POST /message HTTP/1.1".to_string(), "{}".to_string()));
+    }
 }

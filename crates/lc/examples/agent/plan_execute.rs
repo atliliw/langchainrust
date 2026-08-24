@@ -27,9 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("- 需要使用多种工具的复合任务");
 
     println!("\n使用方式:");
-    println!("  let agent = PlanExecuteAgent::new(llm)");
-    println!("    .with_tool(Calculator::new())");
-    println!("    .with_tool(SimpleMathTool::new());");
+    println!("  let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];");
+    println!("  let agent = PlanExecuteAgent::new(llm, tools);");
     println!("  let result = agent.run(\"计算 (15 + 27) * 3\").await?;");
 
     println!("\n提示: 需要设置 OPENAI_API_KEY 才能进行真实调用。");

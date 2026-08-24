@@ -559,6 +559,70 @@ fn test_remove_trailing_commas() {
     assert_eq!(result, r#"{"a": 1, "b": 2}"#);
 }
 
+// H4: markdown 代码围栏处理 —— 模型把 JSON 包在 ```json ... ``` 里时,
+// 流式解析也必须能剥掉围栏出部分结果,而不是判成无法解析。
+#[test]
+fn test_partial_json_parser_fenced_complete() {
+    let mut parser = PartialJsonParser::new();
+    // 一次 push 进完整带围栏 JSON
+    let result = parser.push_and_parse("```json\n{\"name\": \"Alice\", \"age\": 30}\n```");
+    assert!(result.is_ok(), "带围栏的完整 JSON 应能解析: {:?}", result);
+    let value = result.unwrap();
+    assert_eq!(value["name"], "Alice");
+    assert_eq!(value["age"], 30);
+}
+
+#[test]
+fn test_partial_json_parser_fenced_incremental() {
+    let mut parser = PartialJsonParser::new();
+    // 按 token 流式到达:先来围栏行,再来 JSON 片段
+    parser.push_and_parse("```json\n").ok();
+    parser.push_and_parse(r#"{"name": "Ali"#).ok(); // 部分对象,修复应出 {"name":"Ali"}
+    let result = parser.push_and_parse(r#"ce", "age": 30}"#);
+    assert!(result.is_ok(), "围栏内增量 JSON 应能解析: {:?}", result);
+    let value = result.unwrap();
+    assert_eq!(value["name"], "Alice");
+    assert_eq!(value["age"], 30);
+
+    // 尾随围栏到达后,finalize 也应成功
+    parser.push_and_parse("\n```").ok();
+    let final_value = parser.finalize();
+    assert!(final_value.is_ok(), "带尾随围栏 finalize 应成功: {:?}", final_value);
+    assert_eq!(final_value.unwrap()["name"], "Alice");
+}
+
+#[test]
+fn test_partial_json_parser_fenced_finalize_unclosed_fence() {
+    // 只有开头的围栏、没有结尾围栏(模型中断或仍在输出):finalize 也要成功
+    let mut parser = PartialJsonParser::new();
+    parser.push_and_parse("```json\n{\"name\": \"Eve\", \"age\": 25}").ok();
+    let result = parser.finalize();
+    assert!(result.is_ok(), "未闭合围栏 finalize 应成功: {:?}", result);
+    let value = result.unwrap();
+    assert_eq!(value["name"], "Eve");
+}
+
+#[test]
+fn test_strip_markdown_fence() {
+    use super::parser::PartialJsonParser;
+    // 前导文本 + 围栏 + 尾随围栏
+    assert_eq!(
+        PartialJsonParser::strip_markdown_fence("结果是：\n```json\n{\"a\": 1}\n```"),
+        "{\"a\": 1}"
+    );
+    // 直接 JSON 原样返回
+    assert_eq!(PartialJsonParser::strip_markdown_fence("{\"a\": 1}"), "{\"a\": 1}");
+    // 数组
+    assert_eq!(PartialJsonParser::strip_markdown_fence("```\n[1, 2]\n```"), "[1, 2]");
+    // 还没出现结构字符(只有围栏行)
+    assert_eq!(PartialJsonParser::strip_markdown_fence("```json\n"), "");
+    // 字符串中的花括号不应被当成 JSON 起点
+    assert_eq!(
+        PartialJsonParser::strip_markdown_fence(r#"{"text": "a } b", "n": 1}"#),
+        r#"{"text": "a } b", "n": 1}"#
+    );
+}
+
 // =======================================================================
 // Streaming mock model
 // =======================================================================

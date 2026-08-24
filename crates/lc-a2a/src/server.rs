@@ -68,7 +68,7 @@
 //! let response = server.handle_a2a_request(request).await;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,7 +109,18 @@ pub struct A2AServer {
     /// Task persistence backend (P1-1).
     store: Arc<dyn TaskStore>,
     /// `message_id -> task_id` map for idempotent `tasks/send` (P1-6).
+    ///
+    /// A mapping whose value is the empty string marks a `message_id` claimed
+    /// by an in-flight request whose task has not been created yet; concurrent
+    /// retries with the same id see it and are rejected instead of double-executing.
     message_ids: Arc<RwLock<HashMap<String, String>>>,
+    /// Task ids currently being resumed by `tasks/send_continue`.
+    ///
+    /// Guards the read-check-write of the resume path so two concurrent
+    /// resumes of the same `input-required` task cannot both pass the state
+    /// check and spawn racing workers (P2-3). A `std::sync::Mutex` suffices:
+    /// the critical section is a short contains+insert with no awaits.
+    inflight_resumes: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Optional skill -> chain router (P2-4).
     skill_router: Option<Arc<dyn SkillRouter>>,
     /// Optional SSE event bus (P2-1).
@@ -140,6 +151,7 @@ impl A2AServer {
             card,
             store: Arc::new(InMemoryTaskStore::with_max_tasks(DEFAULT_MAX_TASKS)),
             message_ids: Arc::new(RwLock::new(HashMap::new())),
+            inflight_resumes: Arc::new(std::sync::Mutex::new(HashSet::new())),
             skill_router: None,
             event_bus: None,
             expected_token: None,
@@ -357,18 +369,36 @@ impl A2AServer {
 
         // P1-6: idempotent re-send — a repeated message_id returns the
         // already-created task instead of running the chain a second time.
+        // The reservation makes the check-then-act atomic: only the caller
+        // that wins the claim proceeds, so concurrent retries with the same
+        // message_id cannot both run the chain.
         let message_id = req.message_id().map(|s| s.to_string());
+        let mut reserved = false;
         if let Some(mid) = &message_id {
-            if let Some(existing_id) = self.message_ids.read().await.get(mid).cloned() {
-                if let Ok(Some(stored)) = self.store.get(&existing_id).await {
-                    if !self.caller_owns(&req, &stored.task) {
-                        return forbidden(req.id, "caller does not own the existing task");
+            match self.reserve_message_id(mid).await {
+                Ok(Some(existing_id)) => {
+                    match self.store.get(&existing_id).await {
+                        Ok(Some(stored)) => {
+                            if !self.caller_owns(&req, &stored.task) {
+                                return forbidden(req.id, "caller does not own the existing task");
+                            }
+                            return A2AResponse::ok(req.id, json!({ "task": stored.task }));
+                        }
+                        // Evicted between reserve and here: forget and treat
+                        // this as a fresh send.
+                        _ => self.abort_message_id(mid).await,
                     }
-                    return A2AResponse::ok(req.id, json!({ "task": stored.task }));
                 }
-                // The referenced task was evicted/expired: forget the mapping
-                // and treat this as a fresh send.
-                self.message_ids.write().await.remove(mid);
+                Ok(None) => reserved = true,
+                Err(()) => {
+                    return A2AResponse::from_error_data(
+                        req.id,
+                        A2AErrorData::new(
+                            -32000,
+                            "message_id is already being processed; retry",
+                        ),
+                    );
+                }
             }
         }
 
@@ -392,6 +422,11 @@ impl A2AServer {
             stored = stored.with_trace_id(trace_id);
         }
         if self.store.upsert(stored).await.is_err() {
+            if let Some(mid) = &message_id {
+                if reserved {
+                    self.abort_message_id(mid).await;
+                }
+            }
             return A2AResponse::from_error_data(
                 req.id,
                 A2AErrorData::internal_error("task store write failed"),
@@ -399,10 +434,9 @@ impl A2AServer {
         }
 
         if let Some(mid) = &message_id {
-            self.message_ids
-                .write()
-                .await
-                .insert(mid.clone(), task_id.clone());
+            if reserved {
+                self.finish_message_id(mid, &task_id).await;
+            }
         }
 
         // P2-4: route by skill if a router is configured.
@@ -435,18 +469,33 @@ impl A2AServer {
         message: A2AMessage,
         message_id: Option<String>,
     ) -> A2AResponse {
+        // H3: serialize resumes per task so two concurrent resumes of the same
+        // `input-required` task cannot both pass the state check and spawn
+        // racing workers. The guard releases the claim on every exit path.
+        let Some(_inflight) = self.begin_resume(&task_id) else {
+            return A2AResponse::from_error_data(
+                req.id,
+                A2AErrorData::new(-32000, "task is already being resumed; retry"),
+            );
+        };
+
         let mut stored = match self.store.get(&task_id).await {
             Ok(Some(s)) => s,
-            Ok(None) | Err(_) => return task_not_found(req.id, &task_id),
+            Ok(None) | Err(_) => {
+                self.release_resume_id(&message_id).await;
+                return task_not_found(req.id, &task_id);
+            }
         };
 
         // P1-4: ownership.
         if !self.caller_owns(&req, &stored.task) {
+            self.release_resume_id(&message_id).await;
             return forbidden(req.id, "caller does not own this task");
         }
 
         // P2-3: only an input-required task can be resumed with new input.
         if stored.task.status != TaskStatus::InputRequired {
+            self.release_resume_id(&message_id).await;
             return A2AResponse::from_error_data(
                 req.id,
                 A2AErrorData::new(
@@ -463,6 +512,7 @@ impl A2AServer {
         stored.touch();
         let task = stored.task.clone();
         if self.store.upsert(stored).await.is_err() {
+            self.release_resume_id(&message_id).await;
             return A2AResponse::from_error_data(
                 req.id,
                 A2AErrorData::internal_error("task store write failed"),
@@ -472,7 +522,7 @@ impl A2AServer {
         // P1-6: idempotency — a retried resume with the same message_id must
         // not append the message a second time.
         if let Some(mid) = message_id {
-            self.message_ids.write().await.insert(mid, task_id.clone());
+            self.finish_message_id(&mid, &task_id).await;
         }
 
         let store = self.store.clone();
@@ -581,8 +631,11 @@ impl A2AServer {
     /// Handle `tasks/list`: list stored tasks, optionally filtered by
     /// `owner` / `status` params (P1-1).
     ///
-    /// A caller that carries an `owner` identity and does not pass an explicit
-    /// `owner` param only sees its own tasks.
+    /// Ownership (P1-4) is enforced per task, like `tasks/get` / `tasks/cancel`:
+    /// a caller never sees tasks it does not own, and tasks without an owner
+    /// are open to any caller. A caller that carries an `owner` identity and
+    /// does not pass an explicit `owner` param additionally narrows the query
+    /// to its own tasks.
     async fn handle_tasks_list(&self, req: A2ARequest) -> A2AResponse {
         self.cleanup_expired_tasks().await;
 
@@ -607,7 +660,15 @@ impl A2AServer {
 
         match self.store.list(&filter).await {
             Ok(stored) => {
-                let tasks: Vec<&A2ATask> = stored.iter().map(|s| &s.task).collect();
+                // P1-4 ownership is enforced per task: `tasks/list` has no
+                // single task to check against, so filter the result set.
+                // Tasks without an owner remain open to any caller; owned
+                // tasks are only visible to a matching owner identity.
+                let tasks: Vec<&A2ATask> = stored
+                    .iter()
+                    .filter(|s| self.caller_owns(&req, &s.task))
+                    .map(|s| &s.task)
+                    .collect();
                 A2AResponse::ok(req.id, json!({ "tasks": tasks }))
             }
             Err(_) => A2AResponse::from_error_data(
@@ -665,6 +726,16 @@ impl A2AServer {
             .workflow_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // H2: a client-controlled `workflow_id` must not overwrite a task the
+        // caller does not own (P1-4). An existing task with this id is only
+        // re-runnable by its owner; anonymous callers may not clobber owned
+        // tasks, and may only create fresh ids.
+        if let Ok(Some(existing)) = self.store.get(&task_id).await {
+            if !self.caller_owns(&req, &existing.task) {
+                return forbidden(req.id, "caller does not own the existing task");
+            }
+        }
         let mut task = A2ATask::new(
             task_id.clone(),
             A2AMessage::user(format!(
@@ -726,7 +797,12 @@ impl A2AServer {
                 finalize.task.status = TaskStatus::Failed;
                 finalize.error = Some(format!("step `{step_id}` failed: {message}"));
                 let error = finalize.error.clone();
-                let _ = self.store.upsert(finalize.clone()).await;
+                if self.store.upsert(finalize.clone()).await.is_err() {
+                    return A2AResponse::from_error_data(
+                        req.id,
+                        A2AErrorData::internal_error("task store write failed"),
+                    );
+                }
                 publish_status(
                     &self.event_bus,
                     &task_id,
@@ -746,7 +822,12 @@ impl A2AServer {
                 finalize.task.status = TaskStatus::Completed;
                 finalize.result = Some(A2ATaskResult::new(aggregated));
                 finalize.error = None;
-                let _ = self.store.upsert(finalize.clone()).await;
+                if self.store.upsert(finalize.clone()).await.is_err() {
+                    return A2AResponse::from_error_data(
+                        req.id,
+                        A2AErrorData::internal_error("task store write failed"),
+                    );
+                }
                 publish_status(&self.event_bus, &task_id, TaskStatus::Completed, None);
                 publish_artifact(&self.event_bus, &task_id, finalize.result.clone().unwrap());
                 A2AResponse::ok(
@@ -785,6 +866,88 @@ impl A2AServer {
         self.chain.clone()
     }
 
+    /// Reserve a `message_id` for an idempotent `tasks/send` (P1-6).
+    ///
+    /// The reservation makes the check-then-act atomic: only the caller that
+    /// wins the claim may create the task, so two concurrent retries with the
+    /// same `message_id` cannot both run the chain.
+    ///
+    /// Returns:
+    /// - `Ok(Some(task_id))`: a prior send with this `message_id` completed
+    ///   and its task still exists.
+    /// - `Ok(None)`: this caller won the reservation; it must create the task
+    ///   and then call [`Self::finish_message_id`], or [`Self::abort_message_id`]
+    ///   if creation fails.
+    /// - `Err(())`: another request with the same `message_id` is being
+    ///   processed right now; the caller should return a retryable error.
+    async fn reserve_message_id(&self, mid: &str) -> Result<Option<String>, ()> {
+        // Read the current mapping under a short lock; never await inside it.
+        let mapped = { self.message_ids.read().await.get(mid).cloned() };
+        if let Some(task_id) = mapped {
+            if !task_id.is_empty() {
+                return match self.store.get(&task_id).await {
+                    Ok(Some(_)) => Ok(Some(task_id)),
+                    // Referenced task evicted/expired: reclaim the id.
+                    _ => self.claim_message_id(mid).await,
+                };
+            }
+            // In-flight reservation by another request.
+            return Err(());
+        }
+        self.claim_message_id(mid).await
+    }
+
+    /// Atomically claim `mid`, inserting an in-flight marker.
+    async fn claim_message_id(&self, mid: &str) -> Result<Option<String>, ()> {
+        let mut guard = self.message_ids.write().await;
+        match guard.get(mid).cloned() {
+            Some(task_id) if !task_id.is_empty() => Ok(Some(task_id)), // finished concurrently
+            Some(_) => Err(()),                                        // claimed concurrently
+            None => {
+                guard.insert(mid.to_string(), String::new());
+                Ok(None)
+            }
+        }
+    }
+
+    /// Record that a send carrying `mid` created task `task_id`.
+    async fn finish_message_id(&self, mid: &str, task_id: &str) {
+        self.message_ids
+            .write()
+            .await
+            .insert(mid.to_string(), task_id.to_string());
+    }
+
+    /// Release an unused `message_id` reservation (task creation failed).
+    async fn abort_message_id(&self, mid: &str) {
+        self.message_ids.write().await.remove(mid);
+    }
+
+    /// Release a `message_id` reservation held by a continuation that failed
+    /// before completing, so a retry can claim it again.
+    async fn release_resume_id(&self, message_id: &Option<String>) {
+        if let Some(mid) = message_id {
+            self.abort_message_id(mid).await;
+        }
+    }
+
+    /// Claim a task id for an in-flight resume (P2-3).
+    ///
+    /// Returns `None` if the task is already being resumed by another request.
+    /// The returned guard releases the claim on drop, covering every exit path
+    /// (early returns included).
+    fn begin_resume(&self, task_id: &str) -> Option<InflightResume> {
+        let mut guard = self.inflight_resumes.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.contains(task_id) {
+            return None;
+        }
+        guard.insert(task_id.to_string());
+        Some(InflightResume {
+            inner: self.inflight_resumes.clone(),
+            task_id: task_id.to_string(),
+        })
+    }
+
     /// Lazily expire tasks older than the configured TTL.
     ///
     /// Terminal tasks older than the TTL are removed to bound memory; live
@@ -794,6 +957,23 @@ impl A2AServer {
             return;
         };
         sweep_expired_tasks(&self.store, ttl).await;
+    }
+}
+
+/// RAII guard releasing an in-flight resume claim on drop.
+///
+/// Uses `std::sync::Mutex` so the release is synchronous and works from `Drop`
+/// (no await in drop); the critical section is a single set removal.
+struct InflightResume {
+    inner: Arc<std::sync::Mutex<HashSet<String>>>,
+    task_id: String,
+}
+
+impl Drop for InflightResume {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.remove(&self.task_id);
+        }
     }
 }
 
@@ -915,15 +1095,40 @@ fn is_input_required(e: &ChainError) -> bool {
 fn extract_message(params: &Value) -> A2AMessage {
     match params.get("message") {
         Some(msg_val) => serde_json::from_value(msg_val.clone()).unwrap_or_else(|_| {
+            let content = extract_content_text(msg_val.get("content"));
+            if content.is_empty() {
+                log::warn!(
+                    "tasks/send: message content is not a plain string and yielded no text; \
+                     role={:?} content={:?}",
+                    msg_val.get("role"),
+                    msg_val.get("content")
+                );
+            }
             A2AMessage::new(
-                "user",
-                msg_val
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(""),
+                msg_val.get("role").and_then(Value::as_str).unwrap_or("user"),
+                content,
             )
         }),
         None => A2AMessage::user(params.to_string()),
+    }
+}
+
+/// 从 message 的 `content` 里提取可读文本。
+///
+/// 兼容纯字符串 `"hi"` 与 A2A 2.0 结构化内容对象 `{"type":"text","text":"hi"}`:
+/// 对象优先取 `text` / `content` 字段;仍取不到时整体 JSON 序列化作为内容,
+/// 避免把结构化 content 静默当成空串。
+fn extract_content_text(content: Option<&Value>) -> String {
+    match content {
+        None => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(map)) => map
+            .get("text")
+            .or_else(|| map.get("content"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string(content.unwrap()).unwrap_or_default()),
+        Some(v) => serde_json::to_string(v).unwrap_or_default(),
     }
 }
 
@@ -1677,12 +1882,16 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["owner"], "alice");
 
-        // Anonymous listing sees everything (no owner filter requested).
+        // Anonymous listing sees only unowned tasks (ownership enforced per task).
+        let _c = server
+            .handle_a2a_request(A2ARequest::send_task(5, &A2AMessage::user("hi")))
+            .await;
         let resp = server
-            .handle_a2a_request(A2ARequest::new(4, "tasks/list", None))
+            .handle_a2a_request(A2ARequest::new(6, "tasks/list", None))
             .await;
         let tasks = resp.result.unwrap()["tasks"].as_array().unwrap().clone();
-        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].get("owner").is_none() || tasks[0]["owner"].is_null());
     }
 
     // ---- P2-2/P2-3: multi-turn continuation ----

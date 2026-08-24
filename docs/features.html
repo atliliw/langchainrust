@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.9.0 • 功能</div>
+            <div class="sidebar-subtitle">v0.15.0 • 功能</div>
         </div>
 
         <div class="sidebar-nav">
@@ -558,11 +558,12 @@
                 <div class="nav-section-title">高级功能</div>
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
                 <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan & Execute</a>
+                <a href="#unified-015" class="nav-item new">🧩 v0.15.0 统一能力</a>
                 <a href="#whats-new-050" class="nav-item new">✨ v0.5.0+ 新特性</a>
                 <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
                 <a href="#deep-research" class="nav-item new">🔬 Deep Research</a>
                 <a href="#router-llm" class="nav-item new">🔀 RouterLLM</a>
-                <a href="#mcp-full" class="nav-item new">🔌 MCP 全协议</a>
+                <a href="#mcp-full" class="nav-item new">🔌 MCP 原语</a>
                 <a href="#sandbox" class="nav-item new">🖥️ Code Sandbox</a>
                 <a href="#responses-api" class="nav-item new">📨 Responses API</a>
                 <a href="#extended-thinking" class="nav-item new">💭 Extended Thinking</a>
@@ -738,7 +739,7 @@
 <span class="kw">let</span> chain = LLMChain::new(llm, <span class="str">"Explain in one sentence: {topic}"</span>);
 
 <span class="kw">let</span> inputs = HashMap::from([
-    (<span class="str">"topic"</span>, Value::String(<span class="str">"Rust language"</span>.to_string()))
+    (<span class="str">"topic"</span>.to_string(), serde_json::json!(<span class="str">"Rust language"</span>))
 ]);
 
 <span class="kw">let</span> result = chain.invoke(inputs).await?;</code></pre>
@@ -766,7 +767,6 @@
     llm,
     retriever,
     memory,
-    <span class="kw">None</span>, <span class="comment">// optional custom prompt</span>
 );
 
 <span class="kw">let</span> result = chain.invoke(HashMap::from([
@@ -781,7 +781,7 @@
             <section class="module" id="lcel" style="animation-delay: 0.21s;">
                 <div class="module-header">
                     <span class="module-icon">⚡</span>
-                    <h2>LCEL <span class="badge new">v0.9.0</span></h2>
+                    <h2>LCEL <span class="badge new">v0.15.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -857,46 +857,46 @@
                     </tbody>
                 </table>
 
-                <h3>StuffDocumentChain</h3>
+                <h3>StuffDocumentsChain</h3>
 
                 <div class="code-block">
                     <div class="code-header">
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::chains::StuffDocumentChain;
+                    <pre><code><span class="kw">use</span> langchainrust::chains::StuffDocumentsChain;
 
-<span class="kw">let</span> chain = StuffDocumentChain::new(llm, <span class="kw">None</span>);
+<span class="kw">let</span> chain = StuffDocumentsChain::new(llm);
 
 <span class="kw">let</span> docs = vec![
     Document::new(<span class="str">"Rust is memory-safe without a garbage collector."</span>),
     Document::new(<span class="str">"It provides zero-cost abstractions."</span>),
 ];
 
-<span class="kw">let</span> result = chain.invoke(HashMap::from([
-    (<span class="str">"input_documents"</span>, docs),
-    (<span class="str">"question"</span>, <span class="str">"What are Rust's key features?"</span>),
-])).await?;</code></pre>
+<span class="kw">let</span> result = chain.invoke_with_documents(
+    docs,
+    <span class="str">"What are Rust's key features?"</span>,
+).await?;</code></pre>
                 </div>
 
-                <h3>RefineDocumentChain</h3>
+                <h3>RefineDocumentsChain</h3>
 
                 <div class="code-block">
                     <div class="code-header">
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::chains::RefineDocumentChain;
+                    <pre><code><span class="kw">use</span> langchainrust::chains::RefineDocumentsChain;
 
-<span class="kw">let</span> chain = RefineDocumentChain::new(llm, <span class="kw">None</span>, <span class="kw">None</span>);
+<span class="kw">let</span> chain = RefineDocumentsChain::new(llm);
 
-<span class="kw">let</span> result = chain.invoke(HashMap::from([
-    (<span class="str">"input_documents"</span>, docs),
-    (<span class="str">"question"</span>, <span class="str">"Summarize Rust features"</span>),
-])).await?;</code></pre>
+<span class="kw">let</span> result = chain.invoke_with_documents(
+    docs,
+    <span class="str">"Summarize Rust features"</span>,
+).await?;</code></pre>
                 </div>
 
-                <h3>MapReduceDocumentChain</h3>
+                <h3>MapReduceDocumentsChain</h3>
 
                 <div class="code-block">
                     <div class="code-header">
@@ -905,18 +905,15 @@
                     </div>
                     <pre><code><span class="kw">use</span> langchainrust::chains::MapReduceDocumentsChain;
 
-<span class="kw">let</span> chain = MapReduceDocumentsChain::new(
-    llm_map,  <span class="comment">// LLM for individual doc processing</span>
-    llm_reduce, <span class="comment">// LLM for combining results</span>
-    <span class="kw">None</span>, <span class="kw">None</span>,
-);
+<span class="kw">let</span> chain = MapReduceDocumentsChain::new(llm);
 
-<span class="kw">let</span> result = chain.invoke(HashMap::from([
-    (<span class="str">"input_documents"</span>, docs),
-])).await?;</code></pre>
+<span class="kw">let</span> result = chain.invoke_with_documents(
+    docs,
+    <span class="str">"Summarize the key points"</span>,
+).await?;</code></pre>
                 </div>
 
-                <h3>MapRerankDocumentChain</h3>
+                <h3>MapRerankDocumentsChain</h3>
 
                 <div class="code-block">
                     <div class="code-header">
@@ -925,11 +922,12 @@
                     </div>
                     <pre><code><span class="kw">use</span> langchainrust::chains::MapRerankDocumentsChain;
 
-<span class="kw">let</span> chain = MapRerankDocumentsChain::new(
-    llm,
-    <span class="kw">None</span>,  <span class="comment">// optional map prompt</span>
-    <span class="kw">None</span>,  <span class="comment">// optional rerank prompt</span>
-);
+<span class="kw">let</span> chain = MapRerankDocumentsChain::new(llm);
+
+<span class="kw">let</span> result = chain.invoke_with_documents(
+    docs,
+    <span class="str">"Rank and summarize the most relevant points"</span>,
+).await?;
 
 <span class="kw">let</span> result = chain.invoke(HashMap::from([
     (<span class="str">"input_documents"</span>, docs),
@@ -982,8 +980,8 @@
                     </div>
                     <pre><code><span class="kw">let</span> <span class="kw">mut</span> memory = ConversationBufferMemory::new();
 
-<span class="kw">let</span> inputs = HashMap::from([(<span class="str">"input"</span>, <span class="str">"My name is John"</span>)]);
-<span class="kw">let</span> outputs = HashMap::from([(<span class="str">"output"</span>, <span class="str">"Hello John!"</span>)]);
+<span class="kw">let</span> inputs = HashMap::from([(<span class="str">"input"</span>.to_string(), <span class="str">"My name is John"</span>.to_string())]);
+<span class="kw">let</span> outputs = HashMap::from([(<span class="str">"output"</span>.to_string(), <span class="str">"Hello John!"</span>.to_string())]);
 memory.save_context(&inputs, &outputs).await?;
 
 <span class="kw">let</span> vars = memory.load_memory_variables(&HashMap::new()).await?;
@@ -1019,7 +1017,7 @@ memory.save_context(&inputs, &outputs).await?;
                         <tr><td><code>SimpleMathTool</code></td><td>高级数学运算</td><td>operation, value</td></tr>
                         <tr><td><code>URLFetchTool</code></td><td>网页抓取</td><td>operation, url</td></tr>
                         <tr><td><code>WikipediaTool</code></td><td>维基百科知识查询</td><td>query</td></tr>
-                        <tr><td><code>DuckDuckGoSearch</code></td><td>通过 DuckDuckGo 搜索</td><td>query</td></tr>
+                        <tr><td><code>DuckDuckGoSearchTool</code></td><td>通过 DuckDuckGo 搜索</td><td>query</td></tr>
                         <tr><td><code>PythonREPLTool</code></td><td>执行 Python 代码</td><td>code</td></tr>
                     </tbody>
                 </table>
@@ -1037,26 +1035,26 @@ memory.save_context(&inputs, &outputs).await?;
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
                     <pre><code><span class="kw">use</span> langchainrust::tools::{
-    WikipediaTool, DuckDuckGoSearch, PythonREPLTool,
+    WikipediaTool, DuckDuckGoSearchTool, PythonREPLTool,
 };
 
 <span class="kw">let</span> tools: Vec<Arc<dyn BaseTool>> = vec![
     Arc::new(WikipediaTool::new()),
-    Arc::new(DuckDuckGoSearch::new()),
+    Arc::new(DuckDuckGoSearchTool::new()),
     Arc::new(PythonREPLTool::new()),
 ];
 
 <span class="comment">// Wikipedia: query knowledge</span>
 <span class="kw">let</span> wiki = WikipediaTool::new();
-<span class="kw">let</span> result = wiki.run(<span class="str">"Rust programming language"</span>).await?;
+<span class="kw">let</span> result = wiki.run(<span class="str">"Rust programming language"</span>.to_string()).await?;
 
 <span class="comment">// DuckDuckGo: web search</span>
-<span class="kw">let</span> search = DuckDuckGoSearch::new();
-<span class="kw">let</span> result = search.run(<span class="str">"latest Rust version 2024"</span>).await?;
+<span class="kw">let</span> search = DuckDuckGoSearchTool::new();
+<span class="kw">let</span> result = search.run(<span class="str">"latest Rust version 2024"</span>.to_string()).await?;
 
 <span class="comment">// PythonREPL: execute Python code</span>
 <span class="kw">let</span> python = PythonREPLTool::new();
-<span class="kw">let</span> result = python.run(<span class="str">"print(sum(range(100)))"</span>).await?;</code></pre>
+<span class="kw">let</span> result = python.run(<span class="str">"print(sum(range(100)))"</span>.to_string()).await?;</code></pre>
                 </div>
 
                 <h3>自定义工具</h3>
@@ -1138,7 +1136,7 @@ memory.save_context(&inputs, &outputs).await?;
 retriever.add_documents(chunks).await?;
 
 <span class="comment">// 4. Execute QA</span>
-<span class="kw">let</span> qa_chain = RetrievalQA::new(llm, retriever, <span class="num">3</span>);
+<span class="kw">let</span> qa_chain = RetrievalQA::new(llm, retriever);
 <span class="kw">let</span> result = qa_chain.invoke(inputs).await?;</code></pre>
                 </div>
 
@@ -1345,14 +1343,15 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::ChromaVectorStore;
-<span class="kw">use</span> langchainrust::embeddings::OpenAIEmbeddings;
+                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::{ChromaDBVectorStore, ChromaDBConfig};
 
 <span class="comment">// Create ChromaDB store</span>
-<span class="kw">let</span> store = ChromaVectorStore::new(
-    <span class="str">"http://localhost:8000"</span>,  <span class="comment">// ChromaDB server URL</span>
-    <span class="str">"my_collection"</span>,            <span class="comment">// collection name</span>
-    embeddings,
+<span class="kw">let</span> store = ChromaDBVectorStore::new(
+    ChromaDBConfig::new(
+        <span class="str">"http://localhost:8000"</span>,  <span class="comment">// ChromaDB server URL</span>
+        <span class="str">"my_collection"</span>,            <span class="comment">// collection name</span>
+        1536,                            <span class="comment">// vector dimension</span>
+    ),
 ).await?;
 
 <span class="comment">// Add documents with metadata</span>
@@ -1432,19 +1431,17 @@ store.add_documents(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::storage::RedisChunkedDocumentStore;
+                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::{RedisDocumentStore, RedisStoreConfig, DocumentStore};
 
-<span class="comment">// Cargo.toml: langchainrust = { features = ["redis-persistence"] }</span>
-<span class="kw">let</span> store = RedisChunkedDocumentStore::new(
-    <span class="str">"redis://127.0.0.1:6379"</span>
+<span class="comment">// Cargo.toml: langchainrust = { features = ["redis-storage"] }</span>
+<span class="kw">let</span> store = RedisDocumentStore::new(
+    RedisStoreConfig::new(<span class="str">"redis://127.0.0.1:6379"</span>)
 ).await?;
 
-<span class="kw">let</span> (parent_id, chunks) = store
-    .add_parent_document(doc, <span class="num">500</span>)
-    .await?;
+<span class="kw">let</span> id = store.add_document(doc).await?;
 
-<span class="comment">// Retrieve by parent</span>
-<span class="kw">let</span> parent = store.get_parent(&parent_id).await?;</code></pre>
+<span class="comment">// Retrieve by id</span>
+<span class="kw">let</span> doc = store.get_document(&id).await?;</code></pre>
                 </div>
 
                 <h3>SQLite 存储</h3>
@@ -1454,17 +1451,15 @@ store.add_documents(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::storage::SqliteChunkedDocumentStore;
+                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig, DocumentStore};
 
-<span class="comment">// Cargo.toml: langchainrust = { features = ["sqlite-persistence"] }</span>
-<span class="kw">let</span> store = SqliteChunkedDocumentStore::new(
-    <span class="str">"./data/chroma.db"</span>  <span class="comment">// local SQLite file</span>
+<span class="comment">// Cargo.toml: langchainrust = { features = ["sqlite-storage"] }</span>
+<span class="kw">let</span> store = SQLiteDocumentStore::new(
+    SQLiteStoreConfig::new(<span class="str">"./data/store.db"</span>)  <span class="comment">// local SQLite file</span>
 ).await?;
 
-<span class="comment">// Same ChunkedDocumentStoreTrait interface</span>
-<span class="kw">let</span> (parent_id, chunks) = store
-    .add_parent_document(doc, <span class="num">500</span>)
-    .await?;</code></pre>
+<span class="comment">// Same DocumentStore interface</span>
+<span class="kw">let</span> id = store.add_document(doc).await?;</code></pre>
                 </div>
 
                 <div class="callout info">
@@ -1534,7 +1529,7 @@ store.add_documents(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::prompts::FewShotPromptTemplate;
+                    <pre><code><span class="kw">use</span> langchainrust::prompts::{FewShotPromptTemplate, PromptTemplate};
 
 <span class="kw">let</span> examples = vec![
     HashMap::from([
@@ -1549,8 +1544,10 @@ store.add_documents(vec![
 
 <span class="kw">let</span> template = FewShotPromptTemplate::new(
     examples,
-    <span class="str">"Question: {question}\nAnswer: {answer}"</span>,  <span class="comment">// example format</span>
-    <span class="str">"Question: {input}"</span>,                          <span class="comment">// main prompt</span>
+    PromptTemplate::new(<span class="str">"Question: {question}\nAnswer: {answer}"</span>),  <span class="comment">// example prompt</span>
+    <span class="str">"Few-shot examples:"</span>,     <span class="comment">// prefix</span>
+    <span class="str">"Question: {input}"</span>,      <span class="comment">// suffix</span>
+    vec![<span class="str">"input"</span>.to_string()],   <span class="comment">// input variables</span>
 );
 
 <span class="kw">let</span> vars = HashMap::from([
@@ -1603,11 +1600,11 @@ store.add_documents(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::CommaSeparatedListOutputParser;
+                    <pre><code><span class="kw">use</span> langchainrust::CommaSeparatedListOutputParser;
 
 <span class="kw">let</span> parser = CommaSeparatedListOutputParser::new();
 
-<span class="kw">let</span> result = parser.parse(<span class="str">"apple, banana, cherry"</span>)?;
+<span class="kw">let</span> result = parser.parse(<span class="str">"apple, banana, cherry"</span>).await?;
 <span class="comment">// vec!["apple", "banana", "cherry"]</span></code></pre>
                 </div>
 
@@ -1618,7 +1615,7 @@ store.add_documents(vec![
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::StructuredOutputParser;
+                    <pre><code><span class="kw">use</span> langchainrust::StructuredOutputParser;
 <span class="kw">use</span> serde::Deserialize;
 
 <span class="kw">#derive</span>[Deserialize]
@@ -1631,7 +1628,7 @@ store.add_documents(vec![
 <span class="kw">let</span> parser = StructuredOutputParser::<Person>::new();
 
 <span class="kw">let</span> json = r#"{"name": "Alice", "age": 30, "city": "NYC"}"#;
-<span class="kw">let</span> person: Person = parser.parse(json)?;
+<span class="kw">let</span> person: Person = parser.parse(json).await?;
 println!(<span class="str">"{} is {} years old"</span>, person.name, person.age);</code></pre>
                 </div>
 
@@ -1642,18 +1639,20 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::output_parsers::CommaSeparatedListOutputParser;
+                    <pre><code><span class="kw">use</span> langchainrust::CommaSeparatedListOutputParser;
+<span class="kw">use</span> langchainrust::{PromptTemplate, RunnableExt};
 
-<span class="kw">let</span> parser = Arc::new(CommaSeparatedListOutputParser::new());
+<span class="kw">let</span> parser = CommaSeparatedListOutputParser::new();
 
-<span class="kw">let</span> chain = LLMChain::new(llm, <span class="str">"List 3 {topic}: "</span>)
-    .with_output_parser(parser);
+<span class="kw">let</span> chain = PromptTemplate::new(<span class="str">"List 3 {topic}: "</span>)
+    .pipe(llm)
+    .pipe(parser);
 
 <span class="kw">let</span> result = chain.invoke(HashMap::from([
     (<span class="str">"topic"</span>, <span class="str">"Rust frameworks"</span>),
 ])).await?;
 
-<span class="comment">// result["text"] is automatically parsed to Vec&lt;String&gt;</span></code></pre>
+<span class="comment">// result is automatically parsed to Vec&lt;String&gt;</span></code></pre>
                 </div>
 
                 <hr class="divider">
@@ -1695,7 +1694,7 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                     </div>
                     <pre><code><span class="comment">// DeepSeek (Cost-Effective)</span>
 <span class="kw">use</span> langchainrust::DeepSeekChat;
-<span class="kw">let</span> llm = DeepSeekChat::from_env();
+<span class="kw">let</span> llm = DeepSeekChat::from_env_result()?;
 
 <span class="comment">// Moonshot (Long Context)</span>
 <span class="kw">use</span> langchainrust::MoonshotChat;
@@ -1703,7 +1702,7 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
 
 <span class="comment">// Qwen</span>
 <span class="kw">use</span> langchainrust::QwenChat;
-<span class="kw">let</span> llm = QwenChat::from_env();
+<span class="kw">let</span> llm = QwenChat::from_env_result()?;
 
 <span class="comment">// Anthropic Claude</span>
 <span class="kw">use</span> langchainrust::{AnthropicChat, AnthropicConfig};
@@ -1765,9 +1764,9 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
 
                 <div class="card-grid">
                     <div class="feature-card"><h3>内存缓存</h3><p>进程内快速缓存，零依赖</p></div>
-                    <div class="feature-card"><h3>Redis 缓存</h3><p>跨进程分布式缓存</p></div>
                     <div class="feature-card"><h3>TTL 过期</h3><p>基于时间的缓存过期</p></div>
-                    <div class="feature-card"><h3>自动缓存旁路</h3><p>先查缓存，未命中再调用 LLM</p></div>
+                    <div class="feature-card"><h3>容量上限</h3><p>max_entries 限制条目数，防内存膨胀</p></div>
+                    <div class="feature-card"><h3>手动旁路</h3><p>build_key 判键、get/put 读写，接入自定义路径</p></div>
                 </div>
 
                 <h3>内存 LLM 缓存</h3>
@@ -1777,39 +1776,25 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::cache::InMemoryCache;
+                    <pre><code><span class="kw">use</span> langchainrust::core::cache::{CacheConfig, LLMCache};
+<span class="kw">use</span> std::time::Duration;
 
-<span class="comment">// Create cache and attach to LLM</span>
-<span class="kw">let</span> cache = Arc::new(InMemoryCache::new());
-llm.with_cache(cache);
+<span class="comment">// Configure the cache (TTL + entry cap)</span>
+<span class="kw">let</span> cache = LLMCache::with_config(
+    CacheConfig::new().with_ttl(Duration::from_secs(<span class="num">3600</span>))
+);
 
-<span class="comment">// First call hits the API</span>
-<span class="kw">let</span> result1 = llm.invoke(<span class="str">"What is Rust?"</span>).await?;
+<span class="comment">// LLMCache 是独立组件,手动接入调用路径:build_key 判键,get/put 读写</span>
+<span class="kw">let</span> messages = vec![Message::human(<span class="str">"What is Rust?"</span>)];
+<span class="kw">let</span> key = LLMCache::build_key(&messages, <span class="str">"gpt-4o"</span>)?;
 
-<span class="comment">// Second call with same input returns cached result</span>
-<span class="kw">let</span> result2 = llm.invoke(<span class="str">"What is Rust?"</span>).await?;
-<span class="comment">// Instant response, no API call</span></code></pre>
-                </div>
-
-                <h3>Redis LLM 缓存</h3>
-
-                <div class="code-block">
-                    <div class="code-header">
-                        <span class="code-lang">rust</span>
-                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
-                    </div>
-                    <pre><code><span class="kw">use</span> langchainrust::cache::RedisCache;
-
-<span class="comment">// Distributed cache across services</span>
-<span class="kw">let</span> cache = RedisCache::new(
-    <span class="str">"redis://127.0.0.1:6379"</span>,
-    <span class="kw">Some</span>(Duration::from_secs(<span class="num">3600</span>))  <span class="comment">// TTL: 1 hour</span>
-).await?;
-
-llm.with_cache(Arc::new(cache));
-
-<span class="comment">// Works across process restarts and multiple instances</span>
-<span class="kw">let</span> result = llm.invoke(<span class="str">"Explain Rust ownership"</span>).await?;</code></pre>
+<span class="kw">let</span> result = <span class="kw">if</span> <span class="kw">let</span> Some(hit) = cache.get(&key).await {
+    hit.result
+} <span class="kw">else</span> {
+    <span class="kw">let</span> fresh = llm.chat(messages, <span class="kw">None</span>).await?;
+    cache.put(key, fresh.clone()).await;
+    fresh
+};</code></pre>
                 </div>
 
                 <div class="callout success">
@@ -1817,7 +1802,7 @@ llm.with_cache(Arc::new(cache));
                     <ul>
                         <li><strong>确定性查询</strong>：相同输入始终需要相同输出时缓存效果最佳</li>
                         <li><strong>TTL 调优</strong>：根据数据新鲜度需求设置合适的 TTL</li>
-                        <li><strong>生产环境用 Redis</strong>：多实例部署时使用 Redis 缓存</li>
+                        <li><strong>容量上限</strong>：用 with_max_entries 限制条目，防止内存膨胀</li>
                     </ul>
                 </div>
 
@@ -1849,13 +1834,13 @@ llm.with_cache(Arc::new(cache));
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::langgraph::{StateGraph, START, END};
+                    <pre><code><span class="kw">use</span> langchainrust::langgraph::{GraphBuilder, StateUpdate, START, END};
 
 <span class="kw">let</span> graph = GraphBuilder::new()
-    .add_node(<span class="str">"analyze"</span>, |state| { Ok(()) })
+    .add_node_fn(<span class="str">"analyze"</span>, |state| Ok(StateUpdate::full(state.clone())))
     .add_edge(START, <span class="str">"analyze"</span>)
     .add_edge(<span class="str">"analyze"</span>, END)
-    .build();
+    .compile()?;
 
 <span class="kw">let</span> result = graph.invoke(state).await?;</code></pre>
                 </div>
@@ -1873,9 +1858,10 @@ llm.with_cache(Arc::new(cache));
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
                     <pre><code><span class="comment">// Add parallel nodes</span>
-graph.add_node(<span class="str">"task_a"</span>, |state| { /* ... */ });
-graph.add_node(<span class="str">"task_b"</span>, |state| { /* ... */ });
-graph.add_node(<span class="str">"task_c"</span>, |state| { /* ... */ });
+<span class="kw">let</span> <span class="kw">mut</span> graph = GraphBuilder::new().build();
+graph.add_node_fn(<span class="str">"task_a"</span>, |state| Ok(StateUpdate::full(state.clone())));
+graph.add_node_fn(<span class="str">"task_b"</span>, |state| Ok(StateUpdate::full(state.clone())));
+graph.add_node_fn(<span class="str">"task_c"</span>, |state| Ok(StateUpdate::full(state.clone())));
 
 <span class="comment">// Fan-Out</span>
 graph.add_edge(START, <span class="str">"dispatch"</span>);
@@ -1889,8 +1875,8 @@ graph.add_edge(<span class="str">"task_b"</span>, <span class="str">"merge"</spa
 graph.add_edge(<span class="str">"task_c"</span>, <span class="str">"merge"</span>);
 graph.add_edge(<span class="str">"merge"</span>, END);
 
-let compiled = graph.compile().with_parallel_execution(true);
-let result = compiled.invoke_parallel(state).await?;</code></pre>
+<span class="kw">let</span> compiled = graph.compile()?;
+<span class="kw">let</span> result = compiled.invoke_parallel(state).await?;</code></pre>
                 </div>
 
                 <h3>检查点（持久化）</h3>
@@ -2029,7 +2015,7 @@ graph.validate()?;
                 </div>
 
                 <div class="card">
-                    <p>v0.5.0 新增 12 项主要功能：高级 RAG（CorrectiveRAG、AdaptiveRAG、GraphRAG）、深度研究 Agent、RouterLLM、MCP 全协议、代码解释沙箱、OpenAI Responses API、Anthropic 扩展思考、流式结构化输出、批量 API 和分布式追踪。v0.5.2 修复了 GraphRAG、Deep Research、CRAG 和 DocumentStore 的关键问题。</p>
+                    <p>v0.5.0 新增 12 项主要功能：高级 RAG（CorrectiveRAG、AdaptiveRAG、GraphRAG）、深度研究 Agent、RouterLLM、MCP 原语、代码解释沙箱、OpenAI Responses API、Anthropic 扩展思考、流式结构化输出、批量 API 和分布式追踪。v0.5.2 修复了 GraphRAG、Deep Research、CRAG 和 DocumentStore 的关键问题。</p>
                     <p style="color: var(--accent-primary); margin-top: var(--gap-md);">核心价值： 生产级 Agentic RAG、模型路由、深度研究和可观测性。</p>
                 </div>
 
@@ -2039,13 +2025,13 @@ graph.validate()?;
                     <div class="feature-card"><h3>知识图谱 RAG</h3><p>知识图谱 + 社区检测 + 摘要</p></div>
                     <div class="feature-card"><h3>深度研究</h3><p>多轮深度研究 + 引用报告</p></div>
                     <div class="feature-card"><h3>模型路由</h3><p>5 种策略：Fallback/RoundRobin/Latency/Cost/Input</p></div>
-                    <div class="feature-card"><h3>MCP 全协议</h3><p>6 大原语：resources/prompts/completion/elicitation/roots/sampling</p></div>
-                    <div class="feature-card"><h3>代码沙箱</h3><p>LocalSandbox（子进程 + 超时 + 资源限制）</p></div>
-                    <div class="feature-card"><h3>Responses API</h3><p>/v1/responses，内置 web_search/file_search/code/computer</p></div>
-                    <div class="feature-card"><h3>扩展思考</h3><p>with_thinking(budget_tokens) + thinking_content 思考链</p></div>
-                    <div class="feature-card"><h3>流式结构化</h3><p>PartialJsonParser + stream_structured_output&lt;T&gt;</p></div>
-                    <div class="feature-card"><h3>批量 API</h3><p>BatchClient 统一 OpenAI/Anthropic，成本降 50%</p></div>
-                    <div class="feature-card"><h3>分布式追踪</h3><p>Tracer + SpanGuard (RAII)，InMemory/Console/OTel 后端</p></div>
+                    <div class="feature-card"><h3>MCP 原语</h3><p>已实现 initialize / tools/list / tools/call + 流式工具结果与取消；Resources 等原语类型已定义（见 v0.15 传输韧性）</p></div>
+                    <div class="feature-card" id="sandbox"><h3>代码沙箱</h3><p>LocalSandbox（子进程 + 超时 + 资源限制）</p></div>
+                    <div class="feature-card" id="responses-api"><h3>Responses API</h3><p>/v1/responses，内置 web_search/file_search/code/computer</p></div>
+                    <div class="feature-card" id="extended-thinking"><h3>扩展思考</h3><p>with_thinking(budget_tokens) + thinking_content 思考链</p></div>
+                    <div class="feature-card" id="streaming-structured"><h3>流式结构化</h3><p>PartialJsonParser + stream_structured_output&lt;T&gt;</p></div>
+                    <div class="feature-card" id="batch-api"><h3>批量 API</h3><p>BatchClient 统一 OpenAI/Anthropic，成本降 50%</p></div>
+                    <div class="feature-card" id="tracing"><h3>分布式追踪</h3><p>Tracer + SpanGuard (RAII)，InMemory/Console/OTel 后端</p></div>
                 </div>
 
                 <h3>CorrectiveRAG 示例</h3>
@@ -2080,8 +2066,10 @@ graph.validate()?;
 
 <span class="comment">// Cost-optimized routing</span>
 <span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LowestCost)
-    .with_model(<span class="str">"gpt-4"</span>, gpt4)
-    .with_model(<span class="str">"deepseek"</span>, deepseek);
+    .with_model(gpt4)
+    .with_model(deepseek)
+    .with_cost(gpt4, <span class="num">0.03</span>)
+    .with_cost(deepseek, <span class="num">0.001</span>);
 
 <span class="kw">let</span> result = router.chat(messages, <span class="kw">None</span>).await?;</code></pre>
                 </div>
@@ -2093,10 +2081,10 @@ graph.validate()?;
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::retrieval::graph_rag::{GraphRAG, GraphQueryMode};
+                    <pre><code><span class="kw">use</span> langchainrust::{GraphRAG, GraphQueryMode};
 
-<span class="kw">let</span> <span class="kw">mut</span> graph_rag = GraphRAG::new(llm);
-graph_rag.add_documents(docs).await?;
+<span class="kw">let</span> graph_rag = GraphRAG::new(llm);
+graph_rag.add_documents(&docs).await?;
 
 <span class="comment">// Global query (community-based)</span>
 <span class="kw">let</span> result = graph_rag.query(<span class="str">"What are the main themes?"</span>, GraphQueryMode::Global).await?;
@@ -2114,7 +2102,8 @@ graph_rag.add_documents(docs).await?;
                     </div>
                     <pre><code><span class="kw">use</span> langchainrust::agents::deep_research::DeepResearchAgent;
 
-<span class="kw">let</span> agent = DeepResearchAgent::new(llm, search_tool)
+<span class="kw">let</span> agent = DeepResearchAgent::new(llm)
+    .with_searcher(search_tool)
     .with_max_rounds(<span class="num">3</span>)
     .with_max_subtopics(<span class="num">5</span>);
 
@@ -2254,6 +2243,58 @@ println!(<span class="str">"{}"</span>, report.summary);
                 <hr class="divider">
             </section>
 
+            <!-- MCP -->
+            <section class="module" id="mcp-full" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🔌</span>
+                    <h2>MCP 原语</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>MCP</strong>（Model Context Protocol）把任意 MCP Server 的工具接入 Agent。`MCPClient` 连接 Stdio/SSE，自动把工具适配为 <code>BaseTool</code>；`MCPServer` 把本地工具暴露给 Claude Desktop / Cursor 等宿主。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>核心原语</h3><p>initialize / tools/list / tools/call + 流式工具结果（PartialContent）与取消</p></div>
+                    <div class="feature-card"><h3>传输韧性</h3><p>自动重连（0.5s→30s 指数退避）、ConnectionManager 连接池、CircuitBreaker 熔断</p></div>
+                    <div class="feature-card"><h3>命名空间 / 发现</h3><p>ToolNamespace 多 server 隔离、ToolDiscovery 批量发现、ToolSpec 超时策略</p></div>
+                    <div class="feature-card"><h3>安全</h3><p>SamplingGuard 采样递归防护（深度 + token 预算 + 超时）、ServerSandbox 参数与出站策略</p></div>
+                    <div class="feature-card"><h3>网关</h3><p>MCPGateway 聚合多 server 统一入口、TenantGateway 多租户、ToolOrchestrator DAG 编排</p></div>
+                </div>
+
+                <div class="callout">
+                    <div class="callout-title">⚠️ 诚实状态</div>
+                    <p><code>Resources</code> / <code>Prompts</code> / <code>Completion</code> / <code>Elicitation</code> / <code>Roots</code> 的类型已定义，但对应调用逻辑尚未实现，直接调用返回 <code>method_not_found</code>。当前可用原语为 initialize / tools/list / tools/call，外加流式工具结果与取消。</p>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.15.0 Unified -->
+            <section class="module" id="unified-015" style="animation-delay: 0.83s;">
+                <div class="module-header">
+                    <span class="module-icon">🧩</span>
+                    <h2>v0.15.0 统一能力 <span class="badge new">v0.15.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.15.0 把全框架核心能力统一成 <code>Runnable</code>：一条链跑通「提示词 + 记忆 + LLM + 解析器 + RAG」，不再需要手写胶水代码。四大变化：输出解析器输入统一为 <code>LLMResult</code>、<code>ChatPromptTemplate</code> 实现 <code>Runnable</code>、<code>RunnableWithMessageHistory</code> 封装「LLM+记忆」、原生 Provider 错误统一进 <code>LcelError</code>。完整五段组合示例见 <code>crates/lc/examples/lcel/lcel_compose.rs</code>。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>LCEL 统一组合</h3><p>prompt | llm | parser | memory | RAG 全部可 pipe</p></div>
+                    <div class="feature-card"><h3>RAGPipeline</h3><p>端到端「检索+生成」封装，builder 链式构造，query_with_sources 返回引用</p></div>
+                    <div class="feature-card"><h3>统一 trait 家族</h3><p>Embeddings / VectorStore（10 方法）/ BaseChatMemory 接口统一、可即插即换</p></div>
+                    <div class="feature-card"><h3>护栏增强</h3><p>类型分离的 Pass/Block/Modify、Guardable 包装任意执行单元、流式护栏、审计持久化</p></div>
+                    <div class="feature-card"><h3>MCP 传输韧性</h3><p>自动重连（0.5s→30s 退避）、ConnectionManager、CircuitBreaker、SamplingGuard、MCPGateway</p></div>
+                    <div class="feature-card"><h3>评估增强</h3><p>LLMAsJudge（0-10）、PairwiseJudge（成对竞技 + 位置偏差缓解）、Report 逐条容错</p></div>
+                    <div class="feature-card"><h3>多模态消息</h3><p>Message 携带 images/audio/files + ToolCall，MultimodalModel 三接口（默认 Unsupported 诚实报错）</p></div>
+                    <div class="feature-card"><h3>新 Provider</h3><p>Azure / Cohere / Mistral 加入，共 11 家，统一 LLMClient::from_env 自动发现</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
             <!-- v0.3.0 New Features -->
             <section class="module" id="whats-new-030" style="animation-delay: 0.84s;">
                 <div class="module-header">
@@ -2294,36 +2335,34 @@ println!(<span class="str">"{}"</span>, report.summary);
                     <p style="color: var(--accent-primary); margin-top: var(--gap-md);">核心价值：Retriever 提供上下文，Agent 基于上下文回答。</p>
                 </div>
 
-                <h3>with_retriever 用法</h3>
+                <h3>RetrievalQA 用法</h3>
 
                 <div class="code-block">
                     <div class="code-header">
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">复制</button>
                     </div>
-                    <pre><code><span class="kw">use</span> langchainrust::retrieval::{Document, SimilarityRetriever};
-<span class="kw">use</span> langchainrust::agent::ReActAgent;
+                    <pre><code><span class="kw">use</span> langchainrust::{RetrievalQA, SimilarityRetriever, Document};
 
 <span class="comment">// 1. Prepare documents</span>
 let docs = vec![
     Document::new(<span class="str">"Rust is a systems language..."</span>),
 ];
 
-<span class="comment">// 2. Create retriever</span>
-let retriever = SimilarityRetriever::new(store, embedding);
-retriever.add_documents(chunks).await?;
-
-<span class="comment">// 3. Create RAG Agent</span>
-let agent = ReActAgent::with_retriever(
-    llm,
-    tools,
-    memory,
-    retriever,
-    <span class="num">3</span>  <span class="comment">// top_k</span>
+<span class="comment">// 2. Create retriever(任一 RetrieverTrait 实现)</span>
+let retriever = SimilarityRetriever::new(
+    Arc::new(store),       <span class="comment">// Arc&lt;dyn VectorStore&gt;</span>
+    Arc::new(embedding),   <span class="comment">// Arc&lt;dyn Embeddings&gt;</span>
 );
+retriever.add_documents(docs.clone()).await?;
+
+<span class="comment">// 3. Create retrieval QA chain</span>
+let chain = RetrievalQA::new(llm, Arc::new(retriever));
 
 <span class="comment">// 4. Execute</span>
-let result = executor.run_with_details(<span class="str">"What is Rust?"</span>).await?;</code></pre>
+let result = chain.invoke(HashMap::from([
+    (<span class="str">"query"</span>.to_string(), serde_json::json!(<span class="str">"What is Rust?"</span>)),
+])).await?;</code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2367,20 +2406,23 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
 crates/
-├── lc/                  # Facade crate (package name: langchainrust)
+├── lc/                  # Facade crate (package name: langchainrust, v0.15.0)
 ├── lc-shared/           # 共享类型 (ToolCall, Document, TextSplitter)
-├── lc-schema/           # 数据结构 (Message, ImageContent)
+├── lc-schema/           # 数据结构 (Message 含多模态附件 / ToolCall, ImageContent, AudioContent, FileContent)
 ├── lc-core/             # 核心抽象
-│   ├── language_models/ # 基础 LLM trait
-│   ├── runnables/       # Runnable trait
+│   ├── language_models/ # 基础 LLM trait + MultimodalModel + 原生 Provider 错误收口
+│   ├── runnables/       # Runnable trait + Retry / CancellationToken / Config
 │   ├── router_llm/      # RouterLLM（5 种策略 + Fallback）
 │   ├── batch/           # BatchClient（OpenAI/Anthropic）
 │   ├── structured_output/ # with_structured_output + 流式
-│   └── tools/           # Tool trait + ToolDefinition
-├── lc-providers/        # LLM 实现
+│   ├── output_parsers/  # 5 个解析器（v0.15 起输入统一为 LLMResult）
+│   ├── judge.rs         # 结构化判定 structured_call + StructuredJudgeError
+│   └── tools/           # Tool trait + ToolDefinition + ToolRegistry
+├── lc-providers/        # LLM 实现（11 家，统一 LLMClient + ProviderError）
 │   ├── openai/          # OpenAI 客户端 + Responses API
 │   ├── anthropic/       # Claude（扩展思考）
 │   ├── gemini/          # Google Gemini 客户端
+│   ├── azure/ cohere/ mistral/   # v0.15 新增
 │   └── ...              # DeepSeek、Moonshot、Qwen、Ollama、Zhipu
 ├── lc-agents/           # Agent 框架
 │   ├── react/           # ReActAgent（文本解析）
@@ -2389,24 +2431,31 @@ crates/
 │   ├── crag/            # CorrectiveRAG（评分+重写+幻觉检测）
 │   ├── adaptive_rag/    # AdaptiveRAG（LLM 路由检索）
 │   └── deep_research/   # DeepResearchAgent（多轮 + 引用）
-├── lc-prompts/          # 提示词模板（含 FewShot）
-├── lc-memory/           # 对话记忆管理（Buffer、Window、Summary、ContextWindow）
-├── lc-chains/           # 链式操作（含文档处理链）
+├── lc-prompts/          # 提示词模板（含 FewShot、`{{` 转义、中文变量名）
+├── lc-memory/           # 对话记忆（Buffer、Window、Summary、ContextWindow）+ BaseChatMemory trait + MongoPersistentMemory
+├── lc-chains/           # 链式操作（含文档处理链、RouterChain、invoke_with_config）
 ├── lc-rag/              # RAG 组件
+│   ├── pipeline.rs      # 端到端 RAGPipeline / RAGPipelineBuilder（v0.15）
 │   ├── graph_rag/       # GraphRAG（知识图谱 + 社区）
 │   ├── bm25/            # BM25 关键词检索
 │   └── hybrid/          # 混合检索（BM25 + 向量，RRF）
-├── lc-embeddings/       # 文本嵌入（OpenAI、DeepSeek、Qwen、Local、Mock）
-├── lc-vector-stores/    # 向量存储（InMemory、Qdrant、MongoDB、ChromaDB、Redis、SQLite、PGVector、Pinecone、File）
-├── lc-tools/            # 内置工具 + 沙箱（Calculator、DateTime、HTTPTool、PythonREPL、CodeSandbox、ComputerUseTool）
-├── lc-mcp/              # MCP 客户端/服务端 + 6 大原语
-├── lc-a2a/              # Agent-to-Agent 协议
-├── lc-langgraph/        # LangGraph（StateGraph、Subgraph、并行、Checkpointer）
-├── lc-sessions/         # 会话管理
-├── lc-guardrails/       # 输入/输出安全护栏
-├── lc-evaluation/       # 10 个评估器，5 大类
-├── lc-callbacks/        # 回调 + 追踪（InMemory、Console、OTel）
-└── lc-a2a/              # Agent-to-Agent 协议</code></pre>
+├── lc-embeddings/       # 文本嵌入（OpenAI、DeepSeek、Qwen、Cohere、FastEmbed、BagOfWords、Local、Mock）+ 统一 Embeddings trait
+├── lc-vector-stores/    # 向量存储（12 后端：InMemory、ChromaDB、PGVector、Pinecone、LanceDB、Neo4j、Qdrant、File + DocumentStore 家族）统一 10 方法 VectorStore trait
+├── lc-tools/            # 内置工具 + 沙箱（Calculator、DateTime、HTTPTool、PythonREPL、CodeSandbox、ComputerUseTool）+ SSRF 防护
+├── lc-tools-derive/     # `#[tool]` 过程宏
+├── lc-mcp/              # MCP 客户端/服务端 + ConnectionManager / Gateway / SamplingGuard / CircuitBreaker
+│   ├── protocol.rs      # initialize / tools/list / tools/call（Resources 等原语仅类型已定义）
+│   ├── stream.rs        # PartialContent 流式工具结果 + 取消
+│   ├── connection_manager.rs / gateway.rs / tenant.rs / orchestrate.rs
+│   ├── health.rs        # ServerHealth / CircuitBreaker
+│   ├── sampling.rs      # SamplingGuard 采样保护
+│   └── sandbox.rs       # ServerSandbox（ParamRule / EgressPolicy）
+├── lc-a2a/              # Agent-to-Agent 协议（tasks/send、get、cancel + AgentCard）
+├── lc-langgraph/        # LangGraph（StateGraph、Reducer、GraphEdge、Checkpointer 家族、GraphPersistence、Subgraph、并行）
+├── lc-sessions/         # 会话管理（SessionStatus 生命周期 + 接入记忆）
+├── lc-guardrails/       # 输入/输出安全护栏（Guardable、流式护栏、审计持久化）
+├── lc-evaluation/       # 10 个评估器 + LLMAsJudge / PairwiseJudge
+└── lc-callbacks/        # 回调 + 追踪（InMemory、Console、OTel）</code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2444,11 +2493,11 @@ crates/
                     </thead>
                     <tbody>
                         <tr><td>LLMChain</td><td><code>new(llm, prompt_template)</code></td></tr>
-                        <tr><td>ConversationRetrievalChain</td><td><code>new(llm, retriever, memory, prompt)</code></td></tr>
-                        <tr><td>StuffDocumentChain</td><td><code>new(llm, prompt)</code></td></tr>
-                        <tr><td>RefineDocumentChain</td><td><code>new(llm, prompt, refine_prompt)</code></td></tr>
-                        <tr><td>MapReduceDocumentsChain</td><td><code>new(map_llm, reduce_llm, map_prompt, reduce_prompt)</code></td></tr>
-                        <tr><td>MapRerankDocumentsChain</td><td><code>new(llm, map_prompt, rerank_prompt)</code></td></tr>
+                        <tr><td>ConversationRetrievalChain</td><td><code>new(llm, retriever, memory)</code></td></tr>
+                        <tr><td>StuffDocumentsChain</td><td><code>new(llm)</code></td></tr>
+                        <tr><td>RefineDocumentsChain</td><td><code>new(llm)</code></td></tr>
+                        <tr><td>MapReduceDocumentsChain</td><td><code>new(llm)</code></td></tr>
+                        <tr><td>MapRerankDocumentsChain</td><td><code>new(llm)</code></td></tr>
                     </tbody>
                 </table>
 
@@ -2459,8 +2508,8 @@ crates/
                         <tr><th>方法</th><th>说明</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td><code>bind_tools(vec![ToolDef])</code></td><td>将工具附加到 LLM</td></tr>
-                        <tr><td><code>to_tool_definition(&tool)</code></td><td>将 BaseTool 转为 ToolDef</td></tr>
+                        <tr><td><code>bind_tools(vec![ToolDefinition])</code></td><td>将工具附加到 LLM</td></tr>
+                        <tr><td><code>to_tool_definition(&tool)</code></td><td>将 BaseTool 转为 ToolDefinition</td></tr>
                         <tr><td><code>ToolDefinition::from_type()</code></td><td>自动生成 JSON Schema</td></tr>
                         <tr><td><code>ToolCall::parse_arguments()</code></td><td>解析工具参数</td></tr>
                     </tbody>
@@ -2485,8 +2534,7 @@ crates/
                         <tr><th>缓存</th><th>后端</th></tr>
                     </thead>
                     <tbody>
-                        <tr><td>InMemoryCache</td><td>进程内内存</td></tr>
-                        <tr><td>RedisCache</td><td>Redis</td></tr>
+                        <tr><td>LLMCache</td><td>进程内内存(TTL + 容量上限)</td></tr>
                     </tbody>
                 </table>
 
@@ -2549,7 +2597,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API 文档</a>
                 </div>
-                <p class="copyright">LangChainRust v0.9.0 | MIT 许可证</p>
+                <p class="copyright">LangChainRust v0.15.0 | MIT 许可证</p>
             </footer>
         </div>
     </main>

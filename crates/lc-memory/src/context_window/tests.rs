@@ -424,6 +424,63 @@ async fn test_truncate_preserves_order() {
 }
 
 #[tokio::test]
+async fn test_truncate_system_does_not_consume_budget() {
+    // M7: system messages 不占预算。若计入预算(base = count(system)),
+    // 预算 10 连 system 本身(4+15+2=21)都放不下 → 历史被清空;
+    // 不计入后,最新一条对话(成本 5)应能留下。
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(10).unwrap().with_counter(char_counter());
+
+    let messages = make_messages(&[("system", "LongSystemPrompt"), ("human", "Q")]);
+
+    let result = cw.fit(messages).await.unwrap();
+    assert!(
+        result.iter().any(|m| m.content == "Q"),
+        "M7: system 不占预算,最新一条对话应保留"
+    );
+}
+
+#[tokio::test]
+async fn test_truncate_keeps_newest_when_budget_tiny() {
+    // H7: 预算小到一条对话都放不下时,至少保留最新一条,绝不静默丢光历史。
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(2).unwrap().with_counter(char_counter());
+
+    let messages = make_messages(&[
+        ("system", "S"),
+        ("human", "q1"),
+        ("ai", "a1"),
+        ("human", "q2"),
+    ]);
+
+    let result = cw.fit(messages).await.unwrap();
+    assert!(!result.is_empty());
+    assert!(
+        result.iter().any(|m| m.content == "q2"),
+        "H7: 预算再小也应保留最新一条对话"
+    );
+}
+
+#[tokio::test]
+async fn test_summarize_tiny_budget_keeps_recent() {
+    // H7: Summarize 无分区可容纳时退化为截断——截断保证保留最新消息,
+    // 而不是 `truncate(system_messages)` 那样静默清空全部历史。
+    let mock_llm = MockLLM::new(vec!["summary".to_string()]);
+    let cw: ContextWindow<MockLLM> =
+        ContextWindow::with_strategy(2, Strategy::summarize(mock_llm))
+            .unwrap()
+            .with_counter(char_counter());
+
+    let messages = make_messages(&[("system", "S"), ("human", "q1"), ("ai", "a1")]);
+
+    let result = cw.fit(messages).await.unwrap();
+    assert!(
+        result.iter().any(|m| m.content == "a1"),
+        "H7: Summarize 兜底截断应保留最新对话,而非只留 system"
+    );
+}
+
+#[tokio::test]
 async fn test_summarize_fallback_to_truncate() {
     // When the summary + recent messages still exceed the budget,
     // the method falls back to truncation.

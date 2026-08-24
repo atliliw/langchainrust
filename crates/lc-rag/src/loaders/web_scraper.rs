@@ -5,11 +5,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
+
+/// H8: 默认单次 HTTP 请求超时——目标站挂起时爬虫不会永久阻塞。
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // M9: Pre-compile regexes once instead of on every call.
 static HREF_RE: LazyLock<regex::Regex> =
@@ -31,6 +35,8 @@ pub struct WebScraperLoader {
     max_pages: usize,
     /// 是否在爬取失败时返回错误(默认 false,跳过失败页面)
     fail_on_error: bool,
+    /// H8: 单次 HTTP 请求超时,防目标站挂起导致爬虫永久阻塞
+    timeout: Duration,
 }
 
 impl WebScraperLoader {
@@ -41,6 +47,7 @@ impl WebScraperLoader {
             max_depth: 0,
             max_pages: 1,
             fail_on_error: false,
+            timeout: DEFAULT_HTTP_TIMEOUT,
         }
     }
 
@@ -59,6 +66,12 @@ impl WebScraperLoader {
     /// 设置爬取失败时是否返回错误(默认跳过失败页面)
     pub fn with_fail_on_error(mut self, fail: bool) -> Self {
         self.fail_on_error = fail;
+        self
+    }
+
+    /// 设置单次 HTTP 请求超时(H8,默认 30s)
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -103,8 +116,14 @@ impl WebScraperLoader {
     }
 
     /// 爬取单个页面
-    async fn fetch_page(url: &str) -> Result<(String, String), LoaderError> {
-        let response = reqwest::get(url)
+    async fn fetch_page(url: &str, timeout: Duration) -> Result<(String, String), LoaderError> {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| LoaderError::Other(format!("构建 HTTP 客户端失败: {}", e)))?;
+        let response = client
+            .get(url)
+            .send()
             .await
             .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
         let status = response.status();
@@ -133,7 +152,7 @@ impl DocumentLoader for WebScraperLoader {
             }
             visited.insert(url.clone());
 
-            let (fetched_url, html) = match Self::fetch_page(&url).await {
+            let (fetched_url, html) = match Self::fetch_page(&url, self.timeout).await {
                 Ok(r) => r,
                 Err(e) => {
                     failed_count += 1;

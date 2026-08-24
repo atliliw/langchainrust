@@ -133,30 +133,6 @@ impl InMemoryTaskStore {
             max_tasks,
         }
     }
-
-    /// Evict the least recently updated task (LRU), if we are at capacity.
-    ///
-    /// Only called when inserting a brand-new task id; returns `true` if a
-    /// task was evicted.
-    async fn evict_if_needed(&self, inserting_new: bool) -> bool {
-        let mut guard = self.inner.write().await;
-        if !inserting_new || guard.len() < self.max_tasks {
-            return false;
-        }
-        if guard.is_empty() {
-            return false;
-        }
-        // Oldest-by-updated wins the LRU slot.
-        let oldest_key = guard
-            .iter()
-            .min_by_key(|(_, t)| t.updated_at)
-            .map(|(k, _)| k.clone());
-        if let Some(key) = oldest_key {
-            guard.remove(&key);
-            return true;
-        }
-        false
-    }
 }
 
 impl Default for InMemoryTaskStore {
@@ -168,21 +144,22 @@ impl Default for InMemoryTaskStore {
 #[async_trait]
 impl TaskStore for InMemoryTaskStore {
     async fn upsert(&self, stored: StoredTask) -> Result<(), StoreError> {
-        let inserting_new = {
-            let guard = self.inner.read().await;
-            !guard.contains_key(&stored.task.id)
-        };
-        if inserting_new && self.max_tasks > 0 {
-            // Evict only when the store is full and this is a brand-new id.
-            let len = self.inner.read().await.len();
-            if len >= self.max_tasks {
-                self.evict_if_needed(true).await;
+        // Atomic section: capacity check, LRU eviction and insert share one
+        // write lock, so concurrent upserts cannot exceed `max_tasks` (the
+        // previous check-then-act released the lock between the steps).
+        let mut guard = self.inner.write().await;
+        let inserting_new = !guard.contains_key(&stored.task.id);
+        if inserting_new && self.max_tasks > 0 && guard.len() >= self.max_tasks {
+            // Oldest-by-updated wins the LRU slot.
+            let oldest_key = guard
+                .iter()
+                .min_by_key(|(_, t)| t.updated_at)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest_key {
+                guard.remove(&key);
             }
         }
-        self.inner
-            .write()
-            .await
-            .insert(stored.task.id.clone(), stored);
+        guard.insert(stored.task.id.clone(), stored);
         Ok(())
     }
 

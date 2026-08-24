@@ -3,6 +3,7 @@
 //! 解析 sitemap.xml,批量爬取页面内容。
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -15,6 +16,9 @@ use lc_vector_stores::Document;
 static LOC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap());
 
+/// H8: 默认单次 HTTP 请求超时——目标站挂起时不会永久阻塞。
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Sitemap 加载器
 ///
 /// 从 sitemap.xml URL 或内容加载页面,提取正文文本。
@@ -23,6 +27,8 @@ pub struct SitemapLoader {
     source: SitemapSource,
     /// 最大爬取页面数
     max_pages: usize,
+    /// H8: 单次 HTTP 请求超时,防目标站挂起导致爬虫永久阻塞
+    timeout: Duration,
 }
 
 /// sitemap 来源
@@ -39,6 +45,7 @@ impl SitemapLoader {
         Self {
             source: SitemapSource::Url(url.into()),
             max_pages: 100,
+            timeout: DEFAULT_HTTP_TIMEOUT,
         }
     }
 
@@ -47,12 +54,19 @@ impl SitemapLoader {
         Self {
             source: SitemapSource::Xml(xml.into()),
             max_pages: 100,
+            timeout: DEFAULT_HTTP_TIMEOUT,
         }
     }
 
     /// 设置最大爬取页面数
     pub fn with_max_pages(mut self, max: usize) -> Self {
         self.max_pages = max;
+        self
+    }
+
+    /// 设置单次 HTTP 请求超时(H8,默认 30s)
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -65,8 +79,14 @@ impl SitemapLoader {
     }
 
     /// 爬取单个页面
-    async fn fetch_page(url: &str) -> Result<String, LoaderError> {
-        let response = reqwest::get(url)
+    async fn fetch_page(url: &str, timeout: Duration) -> Result<String, LoaderError> {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| LoaderError::Other(format!("构建 HTTP 客户端失败: {}", e)))?;
+        let response = client
+            .get(url)
+            .send()
             .await
             .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
         let status = response.status();
@@ -85,7 +105,7 @@ impl DocumentLoader for SitemapLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
         // 获取 sitemap XML
         let xml = match &self.source {
-            SitemapSource::Url(url) => Self::fetch_page(url).await?,
+            SitemapSource::Url(url) => Self::fetch_page(url, self.timeout).await?,
             SitemapSource::Xml(content) => content.clone(),
         };
 
@@ -94,7 +114,7 @@ impl DocumentLoader for SitemapLoader {
         let mut documents = Vec::new();
 
         for url in urls.iter().take(self.max_pages) {
-            match Self::fetch_page(url).await {
+            match Self::fetch_page(url, self.timeout).await {
                 Ok(html) => {
                     let text = super::HTMLLoader::extract_text(&html);
                     let mut metadata = HashMap::new();

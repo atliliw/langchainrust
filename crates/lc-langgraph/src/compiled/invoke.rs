@@ -17,7 +17,7 @@ impl<S: StateSchema> CompiledGraph<S> {
         let mut recursion_count = 0;
 
         if let Some(ref checkpointer) = self.checkpointer {
-            let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            let checkpoint_id = checkpointer.lock().await.save(&state, 0).await?;
             steps.push(ExecutionStep::checkpoint(
                 checkpoint_id,
                 current_node.clone(),
@@ -74,7 +74,8 @@ impl<S: StateSchema> CompiledGraph<S> {
                 }
 
                 if let Some(ref checkpointer) = self.checkpointer {
-                    let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                    let checkpoint_id =
+                        checkpointer.lock().await.save(&state, recursion_count).await?;
                     steps.push(ExecutionStep::checkpoint(
                         checkpoint_id,
                         current_node.clone(),
@@ -114,7 +115,8 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                let checkpoint_id =
+                    checkpointer.lock().await.save(&state, recursion_count).await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 
@@ -187,7 +189,8 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                let checkpoint_id =
+                    checkpointer.lock().await.save(&state, recursion_count).await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 

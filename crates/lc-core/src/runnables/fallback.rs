@@ -186,27 +186,25 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         Ok(results)
     }
 
-    /// Transform: use invoke with fallback, wrap as stream.
+    /// Transform: 逐项调用 `invoke`(带 fallback),产出与输入等长的流。
     async fn transform(
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
-        // Default: buffer all input, take the last item, invoke with fallback
+        // M4: 旧实现只处理输入流最后一项,其余静默丢弃(与 batch 语义不一致)。
+        // 改为逐项 elementwise:缓冲输入后对每一项调用 invoke-with-fallback,
+        // 一一对应输出(与 trait 默认 transform 的缓冲模式一致,避免返回流借用 self)。
         let mut items = Vec::new();
         let mut input = input;
         while let Some(item) = input.next().await {
             items.push(item?);
         }
-
-        if let Some(last) = items.into_iter().last() {
-            let result = self.invoke(last, config).await?;
-            Ok(Box::pin(futures_util::stream::once(
-                async move { Ok(result) },
-            )))
-        } else {
-            Ok(Box::pin(futures_util::stream::empty()))
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            results.push(self.invoke(item, config.clone()).await);
         }
+        Ok(Box::pin(futures_util::stream::iter(results)))
     }
 }
 
@@ -326,9 +324,34 @@ mod tests {
         ])) as Pin<Box<dyn Stream<Item = Result<i32, LcelError>> + Send>>;
 
         let mut output = with_fallbacks.transform(input, None).await.unwrap();
-        // Default transform takes the last item and invokes: 3 * 2 = 6
-        let result = output.next().await.unwrap().unwrap();
-        assert_eq!(result, 6);
+        // M4: 逐项 elementwise 处理(与 batch 语义一致),而非只处理最后一项。
+        let mut results = Vec::new();
+        while let Some(item) = output.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(results, vec![2, 4, 6]);
+    }
+
+    #[tokio::test]
+    async fn transform_fallback_per_item() {
+        // M4: 逐项失败时按项走 fallback。
+        let primary = RunnableLambda::new_sync_fallible(|_x: i32| -> Result<i32, LcelError> {
+            Err(LcelError::Other("primary failed".to_string()))
+        });
+        let fallback = RunnableLambda::new_sync(|x: i32| x * 3);
+
+        let with_fallbacks = primary.with_fallbacks(vec![fallback]);
+        let input = Box::pin(futures_util::stream::iter(vec![
+            Ok(1i32),
+            Ok(2i32),
+        ])) as Pin<Box<dyn Stream<Item = Result<i32, LcelError>> + Send>>;
+
+        let mut output = with_fallbacks.transform(input, None).await.unwrap();
+        let mut results = Vec::new();
+        while let Some(item) = output.next().await {
+            results.push(item.unwrap());
+        }
+        assert_eq!(results, vec![3, 6]);
     }
 
     #[tokio::test]

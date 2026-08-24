@@ -21,7 +21,7 @@ impl<S: StateSchema> CompiledGraph<S> {
         let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
 
         if let Some(ref checkpointer) = self.checkpointer {
-            let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            let checkpoint_id = checkpointer.lock().await.save(&state, 0).await?;
             steps.push(ExecutionStep::checkpoint(
                 checkpoint_id,
                 current_node.clone(),
@@ -68,10 +68,9 @@ impl<S: StateSchema> CompiledGraph<S> {
                     state = self.merge_parallel_states(&parallel_branches)?;
                     current_node = merge_node;
                 } else {
-                    state = parallel_branches
-                        .last()
-                        .map(|b| b.final_state.clone())
-                        .unwrap_or(state);
+                    // H6: 与 invoke.rs 的主路径一致——所有分支结果经 reducer 合并,
+                    // 而不是只保留 `parallel_branches.last()` 一个分支、丢弃其余分支。
+                    state = self.merge_parallel_states(&parallel_branches)?;
                     current_node = END.to_string();
                 }
             } else {
@@ -129,7 +128,7 @@ impl<S: StateSchema> CompiledGraph<S> {
         let mut recursion_count = 0;
 
         if let Some(ref checkpointer) = self.checkpointer {
-            let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+            let checkpoint_id = checkpointer.lock().await.save(&state, 0).await?;
             steps.push(ExecutionStep::checkpoint(
                 checkpoint_id,
                 current_node.clone(),
@@ -201,7 +200,8 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id = checkpointer.lock().await.save(&state).await?;
+                let checkpoint_id =
+                    checkpointer.lock().await.save(&state, recursion_count).await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 

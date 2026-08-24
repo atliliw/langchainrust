@@ -141,8 +141,15 @@ impl DocumentStore for SQLiteDocumentStore {
 
     async fn count(&self) -> usize {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
-            .unwrap_or(0)
+        match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
+            Ok(count) => count,
+            // M3: trait 返回 usize 无法传播错误——不再静默吞错返回 0,
+            // 记 error 暴露存储故障,与文件内"不再静默丢行"的既有模式一致。
+            Err(e) => {
+                log::error!("SQLite count(documents) 查询失败,返回 0: {}", e);
+                0
+            }
+        }
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
@@ -283,14 +290,26 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
 
     async fn parent_count(&self) -> usize {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
-            .unwrap_or(0)
+        match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
+            Ok(count) => count,
+            // M3: 不静默吞错返回 0,记 error 暴露存储故障。
+            Err(e) => {
+                log::error!("SQLite parent_count 查询失败,返回 0: {}", e);
+                0
+            }
+        }
     }
 
     async fn chunk_count(&self) -> usize {
         let conn = self.conn.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
-            .unwrap_or(0)
+        match conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)) {
+            Ok(count) => count,
+            // M3: 不静默吞错返回 0,记 error 暴露存储故障。
+            Err(e) => {
+                log::error!("SQLite chunk_count 查询失败,返回 0: {}", e);
+                0
+            }
+        }
     }
 
     async fn get_all_chunks(&self) -> Result<Vec<ChunkDocument>, VectorStoreError> {

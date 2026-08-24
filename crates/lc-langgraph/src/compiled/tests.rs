@@ -1,6 +1,7 @@
 // crates/lc-langgraph/src/compiled/tests.rs
 //! Tests for CompiledGraph
 
+use crate::checkpointer::ThreadSafeMemoryCheckpointer;
 use crate::errors::GraphError;
 use crate::graph::{GraphBuilder, END, START};
 use crate::state::{AgentState, StateUpdate};
@@ -116,4 +117,50 @@ async fn test_stream_reports_recursion_limit_hit() {
 
     let err = events.unwrap_err();
     assert!(matches!(err, GraphError::RecursionLimitReached(1)));
+}
+
+#[tokio::test]
+async fn test_resume_preserves_recursion_budget() {
+    // M6: 中断后 resume 必须沿用中断前已消耗的递归预算,而不是清零重来。
+    // 否则反复 interrupt→resume 可以无限绕过 recursion_limit。
+    let compiled = chain_of(4)
+        .with_recursion_limit(3)
+        .with_interrupt_before(vec!["n3".to_string()])
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+
+    // 第一次运行:执行 n1、n2 后在 n3 前中断。
+    let err = compiled
+        .invoke(AgentState::new("x".to_string()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, GraphError::ExecutionInterrupted(ref node) if node == "n3"));
+
+    // 中断时已执行 2 步 → 最近 checkpoint 记录的递归预算应为 2。
+    let execution = compiled
+        .create_resume_execution("n3")
+        .await
+        .expect("中断后应能从最近 checkpoint 构造续跑上下文");
+    assert_eq!(execution.recursion_count, 2, "M6: 续跑必须沿用已消耗的递归预算");
+
+    // limit=3 且已消耗 2 → 续跑执行 n3 后即触顶,报 RecursionLimitReached。
+    // 若预算被错误清零,续跑会跑完 n3、n4 并"成功"——正是 M6 要堵住的洞。
+    let err = compiled.resume(execution).await.unwrap_err();
+    assert!(matches!(err, GraphError::RecursionLimitReached(3)));
+
+    // 预算充足时,同样的中断→续跑应当完整跑完剩余节点。
+    let compiled_ok = chain_of(4)
+        .with_recursion_limit(10)
+        .with_interrupt_before(vec!["n3".to_string()])
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    let _ = compiled_ok
+        .invoke(AgentState::new("x".to_string()))
+        .await
+        .unwrap_err();
+    let execution = compiled_ok
+        .create_resume_execution("n3")
+        .await
+        .expect("构造续跑上下文");
+    assert_eq!(execution.recursion_count, 2);
+    let result = compiled_ok.resume(execution).await.unwrap();
+    assert_eq!(result.recursion_count, 4, "续跑应完整执行 n3、n4");
 }
