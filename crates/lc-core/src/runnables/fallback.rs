@@ -191,7 +191,7 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send + '_>>, LcelError> {
         // M4: 旧实现只处理输入流最后一项,其余静默丢弃(与 batch 语义不一致)。
         // 改为逐项 elementwise:缓冲输入后对每一项调用 invoke-with-fallback,
         // 一一对应输出(与 trait 默认 transform 的缓冲模式一致,避免返回流借用 self)。

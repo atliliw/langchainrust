@@ -1,8 +1,9 @@
-//! 条件路由示例
+//! Conditional routing example
 //!
-//! 展示 LangGraph 条件边:根据输入长度路由到 short / long 节点(无需 API Key)。
+//! Shows a LangGraph conditional edge: route to the short / long node by input length
+//! (no API key required).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example langgraph_conditional_edge
 //! ```
@@ -17,12 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.add_node_fn("entry", |state| Ok(StateUpdate::full(state.clone())));
     graph.add_node_fn("short", |state| {
         let mut s = state.clone();
-        s.set_output("短路径".to_string());
+        s.set_output("short path".to_string());
         Ok(StateUpdate::full(s))
     });
     graph.add_node_fn("long", |state| {
         let mut s = state.clone();
-        s.set_output("长路径".to_string());
+        s.set_output("long path".to_string());
         Ok(StateUpdate::full(s))
     });
 
@@ -49,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for input in ["hi", "this is a very long input"] {
         let result = compiled.invoke(AgentState::new(input.to_string())).await?;
-        println!("输入 {:?} -> {:?}", input, result.final_state.output);
+        println!("input {:?} -> {:?}", input, result.final_state.output);
     }
     Ok(())
 }

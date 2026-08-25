@@ -10,11 +10,13 @@ use lc_core::runnables::RunnableConfig;
 use lc_core::tools::{BaseTool, ToolError};
 use lc_embeddings::{EmbeddingError, Embeddings};
 use lc_memory::{
-    ConversationBufferMemory, ConversationSummaryBufferMemory, VectorStoreRetrieverMemory,
+    BaseMemory, ConversationBufferMemory, ConversationSummaryBufferMemory,
+    VectorStoreRetrieverMemory,
 };
 use lc_tools::Calculator;
 use lc_vector_stores::InMemoryVectorStore;
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -72,6 +74,55 @@ async fn test_agent_executor_with_memory() {
     println!("Round 2: {}", result2);
 
     assert!(result2.contains("Zhang San"));
+}
+
+/// F7:Agent 出错时,上一轮对话仍落记忆——`invoke` 返回 Err 后,
+/// `memory.load_memory_variables` 仍含用户输入(错误文本作为上一轮输出
+/// 保留),下一轮上下文不断裂;且记忆保存失败不能覆盖 agent 的原始错误。
+#[tokio::test]
+async fn test_agent_executor_saves_memory_on_error() {
+    struct FailingAgent;
+
+    #[async_trait]
+    impl BaseAgent for FailingAgent {
+        async fn plan(
+            &self,
+            _intermediate_steps: &[AgentStep],
+            _inputs: &HashMap<String, String>,
+        ) -> Result<AgentOutput, AgentError> {
+            Err(AgentError::Other("deliberate failure".to_string()))
+        }
+    }
+
+    let memory = Arc::new(tokio::sync::Mutex::new(ConversationBufferMemory::new()));
+    let executor = AgentExecutor::new(Arc::new(FailingAgent), vec![]).with_memory(memory.clone());
+
+    // 该轮失败:invoke 必须返回 Err,且是 agent 的原始错误,不是记忆错误。
+    let err = executor
+        .invoke("doomed question".to_string())
+        .await
+        .expect_err("agent should fail");
+    assert!(
+        err.to_string().contains("deliberate failure"),
+        "original agent error should be preserved, got: {}",
+        err
+    );
+
+    // 出错后,上一轮的用户输入仍应写回记忆。
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), "doomed question".to_string());
+    let vars = memory
+        .lock()
+        .await
+        .load_memory_variables(&inputs)
+        .await
+        .unwrap();
+    let history = vars.get("history").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        history.contains("doomed question"),
+        "errored round should still be saved to memory, history: {}",
+        history
+    );
 }
 
 // ============ P2-7: Agent 记忆增强(向量库 + 摘要压缩) ============
@@ -365,6 +416,69 @@ async fn test_stream_fuses_tool_events_and_text() {
     assert!(matches!(events[1], AgentStreamEvent::ToolEnd { .. }));
     assert!(matches!(events[2], AgentStreamEvent::Text { .. }));
     assert!(matches!(events[3], AgentStreamEvent::FinalAnswer { .. }));
+}
+
+/// F3:覆写 `plan_stream` 的 agent(如文本 ReAct)在 executor::stream 里逐 token
+/// 收到 `Text` 事件;Finish 阶段只发 FinalAnswer 终态,不重复整段答案。
+struct TestStreamingAgent;
+
+#[async_trait]
+impl BaseAgent for TestStreamingAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+    ) -> Result<AgentOutput, AgentError> {
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            "hello world".to_string(),
+            String::new(),
+        )))
+    }
+
+    async fn plan_stream(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+    ) -> Result<AgentOutput, AgentError> {
+        // 模拟流式 chat:整段答案拆成 4 个 token 逐个转发。
+        for token in ["Hel", "lo", " wor", "ld"] {
+            on_token(token.to_string()).await;
+        }
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            "hello world".to_string(),
+            String::new(),
+        )))
+    }
+}
+
+#[tokio::test]
+async fn test_stream_emits_per_token_text_for_streaming_agent() {
+    use crate::streaming::AgentStreamEvent;
+    use futures_util::StreamExt;
+
+    let executor = AgentExecutor::new(Arc::new(TestStreamingAgent), vec![]);
+    let mut stream = executor.stream("hi".to_string());
+
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event.unwrap());
+    }
+
+    // 4 个逐 token Text + FinalAnswer = 5 个事件,且 FinalAnswer 不重复文本。
+    assert_eq!(events.len(), 5);
+    let texts: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentStreamEvent::Text { content } => Some(content),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["Hel", "lo", " wor", "ld"]);
+    match events.last() {
+        Some(AgentStreamEvent::FinalAnswer { content }) => assert_eq!(content, "hello world"),
+        other => panic!("expected FinalAnswer last, got {:?}", other),
+    }
 }
 
 /// P1-5: invoke 后 metrics 记录 llm_calls 与 duration。

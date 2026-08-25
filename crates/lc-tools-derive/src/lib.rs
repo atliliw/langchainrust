@@ -118,6 +118,15 @@ fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
         }
     };
 
+    // 3b. F5:函数返回 `Result<_, ToolError>` 时,`invoke` 直接透传原错误
+    // (参数错 / 业务错原样保留,不再统一压平成 `ExecutionFailed`);返回
+    // 其他错误类型时才包 `ExecutionFailed`。此为 breaking:错误语义变化。
+    let invoke_body = if return_type_is_tool_error(&func.sig.output) {
+        quote! { #func_name(#(#field_names),*) }
+    } else {
+        quote! { #func_name(#(#field_names),*).map_err(|e| ::lc_core::tools::ToolError::ExecutionFailed(e.to_string())) }
+    };
+
     // 4. Generate Input struct fields
     let input_fields = generate_input_fields(&params);
 
@@ -164,7 +173,7 @@ fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
 
             async fn invoke(&self, input: Self::Input) -> ::std::result::Result<Self::Output, ::lc_core::tools::ToolError> {
                 let #input_struct_name { #(#field_names),* } = input;
-                #func_name(#(#field_names),*).map_err(|e| ::lc_core::tools::ToolError::ExecutionFailed(e.to_string()))
+                #invoke_body
             }
         }
 
@@ -185,8 +194,11 @@ fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
                 let #input_struct_name { #(#field_names),* } = parsed;
                 let result = #func_name(#(#field_names),*)
                     .map_err(|e| ::lc_core::tools::ToolError::ExecutionFailed(e.to_string()))?;
-                Ok(::serde_json::to_string(&result)
-                    .unwrap_or_else(|_| format!("{:?}", result)))
+                // F5:序列化失败不再静默回退 Debug 文本(会把 Rust 内部结构喂给 LLM),
+                // 而是返回 ExecutionFailed 错误,让上层明确感知输出无法序列化。
+                let serialized = ::serde_json::to_string(&result)
+                    .map_err(|e| ::lc_core::tools::ToolError::ExecutionFailed(format!("Failed to serialize tool output: {}", e)))?;
+                Ok(serialized)
             }
 
             fn args_schema(&self) -> ::std::option::Option<::serde_json::Value> {
@@ -251,6 +263,47 @@ fn extract_result_ok(ty: &Type) -> Option<Type> {
         }
     }
     None
+}
+
+/// 判断函数返回类型是否为 `Result<_, ToolError>`(错误类型最后一个路径段为
+/// `ToolError`)。F5:宏据此决定 `invoke` 是否直接透传原错误。
+///
+/// 只能是语法级判断:任何以 `ToolError` 结尾的错误类型都被视为库的 `ToolError`。
+/// 常见写法均命中——裸 `ToolError`、`lc_core::tools::ToolError`、`tools::ToolError`
+/// 或用户 `use` 进来的别名;返回 `anyhow::Error` / `String` 等其他错误类型时不命中。
+fn return_type_is_tool_error(ret: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = ret else {
+        return false;
+    };
+    let Type::Path(type_path) = &**ty else {
+        return false;
+    };
+    let Some(seg) = type_path.path.segments.last() else {
+        return false;
+    };
+    if seg.ident != "Result" {
+        return false;
+    }
+    // 取出 `Result<_, E>` 的第二个泛型参数作为错误类型
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return false;
+    };
+    let mut generic = args.args.iter().filter_map(|a| match a {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
+    });
+    let _ok = generic.next();
+    let Some(err) = generic.next() else {
+        return false;
+    };
+    let Type::Path(err_path) = err else {
+        return false;
+    };
+    err_path
+        .path
+        .segments
+        .last()
+        .is_some_and(|s| s.ident == "ToolError")
 }
 
 /// Extract `desc` from `#[param(desc = "...")]`.

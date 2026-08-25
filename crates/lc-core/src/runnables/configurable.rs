@@ -177,7 +177,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send + '_>>, LcelError> {
         let target = self.resolve(&config);
         let any_input: Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>> =
             Box::pin(input.map(|result| result.map(|item| Box::new(item) as Box<dyn Any + Send>)));
@@ -324,7 +324,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send + '_>>, LcelError> {
         let effective = self.effective_config(&config);
         let any_input: Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>> =
             Box::pin(input.map(|result| result.map(|item| Box::new(item) as Box<dyn Any + Send>)));

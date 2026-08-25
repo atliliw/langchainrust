@@ -208,7 +208,7 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O> for Runn
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<O, LcelError>> + Send + '_>>, LcelError> {
         // Upcast input stream from I to Any
         let mut current_stream: Pin<
             Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>,

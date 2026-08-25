@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`RunnablePick` / `pluck`** (`lc-core`): keep selected keys — or pull one value — out of any runnable whose output is `HashMap<String, Value>` (Python `pick` / `pluck` counterpart). The composition is checked at compile time: a chain that does not produce a map simply won't compile
 - **LangGraph checkpoint improvements** (`lc-langgraph`): the checkpoint lifecycle is reworked and its documentation unified across `USAGE.md` / `USAGE_EN.md`
 - **3 new runnable examples + deployment guides** (`langchainrust`): `a2a_http_server`, `mcp_sse_server`, `mcp_stdio_server`, each with a matching `*-deployment.md` walkthrough
+- **`lc-testkit` — record/replay test harness** (new crate, #22): `RecordingProvider` wraps any `BaseChatModel`, records real request/response exchanges to JSONL; `ReplayProvider` replays them offline with zero network, so framework tests run without API keys. Ships a round-trip test and a real `LLMChain` replay test (`fixtures/llm_chain_f01.jsonl`)
+- **Agent human-approval gate** (`lc-agents`): `AgentExecutor::with_approval(Arc<dyn ApprovalHandler>)` pauses before tool execution; `ApprovalDecision::{Allow, Deny, Modify}` — `Deny` feeds the reason back as an observation (mirrors the `Skip` hook path), `Modify` rewrites the arguments before execution. Async (`approve(&self, ctx).await`), default off
+- **Agent budget gate** (`lc-agents`): `AgentExecutor::with_budget(BudgetConfig)` enforces hard limits on cumulative tool calls, LLM tokens, wall-clock duration and iterations; exceeding returns `AgentError::BudgetExceeded` with the precise `limit`/`actual`. Default off — zero behavior change when unset
 
 ### Changed
 - **Breaking — typed errors across the API surface**: ~78 public signatures switch from `Result<_, String>` to crate-specific `thiserror` errors (lc-providers / lc-embeddings / lc-callbacks / lc-core / lc-vector-stores / lc-agents / lc-prompts / lc-tools / lc-mcp / lc-rag), with `From` conversions bridging them into `LcelError`
@@ -30,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Production `unwrap` hardened** (workspace): a2a server, runnable binding / configurable paths, `json_parser`, and the docx loader no longer panic on unexpected data
 - **428 undocumented public items documented** (workspace): every crate builds clean under `missing_docs`
+- **LCEL default `transform` streams element-wise** (`lc-core`): the fallback `transform` no longer buffers the whole upstream stream before emitting — each input item runs its `stream` and is pushed downstream as it arrives, so `llm.pipe(parser)` emits progressively instead of waiting for the full answer (F1)
+- **MCP requests are timeout-bounded** (`lc-mcp`): every POST send and response-body read is wrapped in a 30s timeout; a server that accepts the connection but never replies now returns a clear error (then reconnect-and-retry) instead of hanging forever (F2)
+- **`AgentExecutor::stream` doc is honest about text granularity** (`lc-agents`): documents that `Text` events arrive per token only when the agent streams internally; otherwise the whole final answer arrives as a single `Text` event (F3)
+- **MCP SSE client accepts 202 + SSE-push servers** (`lc-mcp`): when a server answers POST with `202 Accepted` and pushes the JSON-RPC response over SSE, the client correlates it by request `id` and returns it; direct-response servers still work unchanged (F4)
+- **`#[tool]` no longer swallows serialization failures** (`lc-tools-derive`): `run()` returns `ExecutionFailed` instead of silently falling back to `Debug` text; and `invoke()` passes through `ToolError` unchanged instead of flattening it into `ExecutionFailed` (breaking) (F5)
+- **ReAct parser prefers Action, Final Answer takes last occurrence** (`lc-agents`): an Action wins even when "Final Answer:" appears in the thought text; the final answer is read from the last occurrence (F6)
+- **Errored rounds are still saved to agent memory** (`lc-agents`): when `invoke` fails, the user input + an error marker are written to memory, so the next round keeps context instead of losing the previous input (F7)
 
 ## [0.15.0] - 2026-08-20
 

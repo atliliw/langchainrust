@@ -424,6 +424,30 @@ mod tests {
         .expect("list_changed should invalidate cache and refetch tools/list");
     }
 
+    #[tokio::test]
+    async fn test_connect_list_and_call_tool_via_sse_push_responses() {
+        // F4 验收:服务器对 POST 回 202、JSON-RPC 响应经 SSE `event: message`
+        // 推送 → connect(initialize)/list_tools/call_tool 全部走通。POST body
+        // 恒为空,结果只能来自 SSE 推送,成功即证明按 id 关联的推送路径生效。
+        let server = start_fake_sse_server(PostMode::PushResponse).await;
+        let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
+            .await
+            .expect("connect (initialize) should succeed via SSE-pushed response");
+
+        let tools = client
+            .list_tools()
+            .await
+            .expect("list_tools should succeed via SSE-pushed response");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "echo");
+
+        let result = client
+            .call_tool("echo", json!({"msg": "hi"}))
+            .await
+            .expect("call_tool should succeed via SSE-pushed response");
+        assert!(!result.is_error, "server tool should not error");
+    }
+
     // ---- P2-10 协议版本协商测试 ----
 
     /// 版本协商测试用 stub 传输:initialize 返回可配置的 `protocolVersion`,

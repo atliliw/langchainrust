@@ -1,8 +1,8 @@
-//! BM25 关键词检索示例
+//! BM25 keyword search example
 //!
-//! 展示 ChunkedBM25Retriever 的关键词检索(无需 LLM / 向量库)。
+//! Shows ChunkedBM25Retriever keyword search (no LLM or vector store required).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example rag_bm25_search
 //! ```
@@ -19,16 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     retriever
         .add_documents(vec![
-            Document::new("Rust 是一门系统编程语言,由 Mozilla 开发,注重安全和性能。")
+            Document::new("Rust is a systems programming language developed by Mozilla, focused on safety and performance.")
                 .with_id("rust_intro"),
-            Document::new("Rust 的核心特性包括所有权系统、借用检查和零成本抽象。")
+            Document::new("Rust's core features include the ownership system, borrow checking, and zero-cost abstractions.")
                 .with_id("rust_features"),
-            Document::new("机器学习是 AI 的核心技术,使计算机从数据中学习。").with_id("ml_def"),
+            Document::new("Machine learning is the core technology of AI, letting computers learn from data.")
+                .with_id("ml_def"),
         ])
         .unwrap();
 
-    let results = retriever.search("Rust 语言特点", 3);
-    println!("检索结果(按相关度排序):");
+    let results = retriever.search("Rust language features", 3);
+    println!("Search results (sorted by relevance):");
     for (i, r) in results.iter().enumerate() {
         println!("  [{}] {}", i + 1, r.content());
     }

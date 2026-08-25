@@ -80,10 +80,11 @@ pub mod a2a;
 pub use agents::{
     parse_review_verdict, review_envelope, task_adapter, AdaptiveRAG, AdaptiveRAGError,
     AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError, AgentEventRunnable, AgentExecutor,
-    AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, BaseAgent,
-    CRAGError, CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn,
-    FunctionCallingAgent, HandoffManager, Orchestrator, OrchestratorRunnable, PlanExecuteAgent,
-    PlanExecuteError, PromptInjectionHook, RagDecision, ReActAgent, ResearchError, ResearchReport,
+    AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, AllowAll,
+    ApprovalDecision, ApprovalHandler, BaseAgent, BudgetConfig, BudgetExceeded, CRAGError,
+    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FunctionCallingAgent,
+    HandoffManager, Orchestrator, OrchestratorRunnable, PlanExecuteAgent, PlanExecuteError,
+    PromptInjectionHook, RagDecision, ReActAgent, ResearchError, ResearchReport,
     ReviewOrchestrator, ReviewVerdict, RunContext, SequentialPipeline,
     StreamingFunctionCallingAgent, TaskAdapter, TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk,
 };

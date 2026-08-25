@@ -5,6 +5,8 @@ use crate::types::{AgentFinish, AgentOutput, AgentStep};
 use async_trait::async_trait;
 use lc_core::language_models::TokenUsage;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 
 /// 每个 `AgentExecutor` 实例的缓存命名空间计数器。
@@ -34,6 +36,10 @@ pub enum AgentError {
     #[error("Max iterations reached")]
     MaxIterationsReached,
 
+    /// 预算超限(人审/预算门 §4.2)。调用方捕获后区分"预算截停"与"模型未收敛"。
+    #[error("Budget exceeded: {0:?}")]
+    BudgetExceeded(BudgetExceeded),
+
     /// Other error.
     #[error("Agent error: {0}")]
     Other(String),
@@ -59,6 +65,41 @@ pub trait BaseAgent: Send + Sync {
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
     ) -> Result<AgentOutput, AgentError>;
+
+    /// Plans the next action, streaming any model text through `on_token` as it
+    /// is produced.
+    ///
+    /// # Arguments
+    /// * `intermediate_steps` - History of executed steps.
+    /// * `inputs` - User input.
+    /// * `on_token` - Called with each chunk of model text as it becomes
+    ///   available, taking **ownership** of the chunk (so the returned future
+    ///   never borrows the token and stays `'static`). May be the whole answer
+    ///   in one call for non-streaming agents, or empty for agents that never
+    ///   emit free text (e.g. function-calling).
+    ///
+    /// # Returns
+    /// * `AgentOutput::Action` - Action to execute.
+    /// * `AgentOutput::Finish` - Final answer.
+    ///
+    /// The default implementation delegates to [`BaseAgent::plan`] and forwards
+    /// the whole final-answer text as a single chunk — behaviorally identical
+    /// to calling `plan()` directly. Streaming-capable agents (e.g. ReAct)
+    /// override this to emit per-token chunks from the model's streaming chat
+    /// API; callers must still call [`BaseAgent::plan`] for the non-streaming
+    /// path (e.g. `invoke`) so that path is unaffected.
+    async fn plan_stream(
+        &self,
+        intermediate_steps: &[AgentStep],
+        inputs: &HashMap<String, String>,
+        on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+    ) -> Result<AgentOutput, AgentError> {
+        let output = self.plan(intermediate_steps, inputs).await?;
+        if let AgentOutput::Finish(finish) = &output {
+            on_token(finish.output().unwrap_or("").to_string()).await;
+        }
+        Ok(output)
+    }
 
     /// Returns input keys.
     fn input_keys(&self) -> Vec<&str> {
@@ -97,10 +138,12 @@ const MAX_MAX_ITERATIONS: usize = 100;
 const DEFAULT_MAX_CONCURRENCY: usize = 8;
 
 mod agent_loop;
+mod budget;
 mod engine;
 mod hooks;
 #[cfg(test)]
 mod tests;
 mod tools;
 
+pub use budget::{BudgetConfig, BudgetExceeded};
 pub use engine::AgentExecutor;

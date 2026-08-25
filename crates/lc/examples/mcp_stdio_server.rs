@@ -1,25 +1,26 @@
-//! 示例:MCP Server —— stdio(pipe)传输。
+//! Example: MCP Server — stdio (pipe) transport.
 //!
-//! 展示如何把 langchainrust 的内置工具通过 [`MCPServer::serve_stdio`] 暴露为
-//! **本地管道** MCP 服务器:从 stdin 读 JSON-RPC 请求,处理后写回 stdout,
-//! 全程不经过网络。客户端(MCPClient / Claude Desktop / Cursor 等)用
-//! `MCPConfig::stdio(命令, 参数)` 启动本二进制,通过管道与之通信。
+//! Shows how to expose langchainrust's built-in tools as a **local-pipe** MCP server via
+//! [`MCPServer::serve_stdio`]: read JSON-RPC requests from stdin, process them, write the
+//! results back to stdout — never touching the network. Clients (MCPClient / Claude Desktop /
+//! Cursor, etc.) start this binary with `MCPConfig::stdio(command, args)` and talk to it
+//! over the pipe.
 //!
-//! # 构建
+//! # Build
 //!
 //! ```powershell
 //! cargo build --release -p langchainrust --example mcp_stdio_server
-//! # 产物:target/release/examples/mcp_stdio_server.exe
+//! # Artifact: target/release/examples/mcp_stdio_server.exe
 //! ```
 //!
-//! # 手动验证(直接向 stdin 写一行 JSON-RPC)
+//! # Manual verification (write one JSON-RPC line to stdin)
 //!
 //! ```powershell
 //! echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' | .\target\release\examples\mcp_stdio_server.exe
-//! # 会回一行 initialize 响应(capabilities/serverInfo)
+//! # it replies with an initialize response (capabilities/serverInfo)
 //! ```
 //!
-//! # 客户端接入(框架,走管道)
+//! # Client integration (framework, over the pipe)
 //!
 //! ```no_run
 //! use langchainrust::mcp::{MCPClient, MCPConfig};
@@ -30,7 +31,7 @@
 //! ))
 //! .await?;
 //! let tools = client.list_tools().await?;
-//! println!("管道连上,共 {} 个工具", tools.len());
+//! println!("connected over the pipe, {} tools", tools.len());
 //! # Ok(())
 //! # }
 //! ```
@@ -41,7 +42,7 @@ use langchainrust::{
 };
 use std::sync::Arc;
 
-/// 注册一组开箱即用的内置工具(与 `mcp_sse_server` 一致)。
+/// Registers a set of ready-to-use built-in tools (the same set as `mcp_sse_server`).
 fn build_server() -> MCPServer {
     MCPServer::new()
         .with_server_info("langchainrust-stdio-server", env!("CARGO_PKG_VERSION"))
@@ -57,8 +58,9 @@ fn build_server() -> MCPServer {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = build_server();
 
-    // 从 stdin 读 JSON-RPC 请求,处理后写回 stdout,循环直到 EOF。
-    // 客户端关闭管道(或本进程 stdin 到达 EOF)即退出。
+    // Read JSON-RPC requests from stdin, process them, write the results back to stdout,
+    // looping until EOF. Exits when the client closes the pipe (or this process's stdin
+    // reaches EOF).
     server.serve_stdio().await?;
     Ok(())
 }

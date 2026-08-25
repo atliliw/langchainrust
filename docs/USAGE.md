@@ -2063,6 +2063,50 @@ policy.set_risk("delete_file", ToolRisk::High);
 // 高风险工具调用会走审批,而非直接执行
 ```
 
+### Agent 人审门（ApprovalHandler） ✨ v0.16.0
+
+工具执行前异步审批：`Allow` 放行 / `Deny` 拒绝（理由作为 observation 喂回循环，不执行工具）/ `Modify` 改参后执行。默认关（`None` = 原样放行）。
+
+```rust
+use langchainrust::agents::hooks::ToolCallContext;
+use langchainrust::{ApprovalHandler, ApprovalDecision};
+use std::sync::Arc;
+
+struct MyApproval;
+
+#[async_trait::async_trait]
+impl ApprovalHandler for MyApproval {
+    async fn approve(&self, ctx: &ToolCallContext) -> ApprovalDecision {
+        if ctx.name == "delete_file" {
+            ApprovalDecision::Deny { reason: "manual review required".into() }
+        } else {
+            ApprovalDecision::Allow
+        }
+    }
+}
+
+let executor = executor.with_approval(Arc::new(MyApproval));
+```
+
+谁审批由调用方实现 trait（CLI 交互 / Webhook / 自动策略路由），框架只提供闸 + 参考实现 `AllowAll`。`approve(ctx).await` 是异步的——挂起后信号到即从同一行续跑，同进程 resume 天然成立。
+
+### Agent 预算门（BudgetConfig） ✨ v0.16.0
+
+给 Agent 循环设硬上限，超限返回 `AgentError::BudgetExceeded`（带精确 `limit` / `actual`）。默认关。
+
+```rust
+use langchainrust::BudgetConfig;
+use std::time::Duration;
+
+let executor = executor.with_budget(BudgetConfig {
+    max_tool_calls: Some(50),                          // 累计工具调用上限
+    max_tokens: Some(20_000),                          // 累计 LLM token 上限
+    max_duration: Some(Duration::from_secs(120)),      // 循环总时长
+    max_iterations: Some(10),                          // 覆盖/收紧默认迭代上限
+    ..Default::default()
+});
+```
+
 ## Plan-Execute Agent
 
 **解决什么问题**：普通单循环 Agent（`FunctionCallingAgent` / `ReActAgent`）适合"一步能想清楚"的任务——想一步、干一步、再看结果。但像"先调研、再写代码、最后解释要点"这类复杂多步骤任务，模型一步想不出完整方案，直接动手又容易走偏。Plan-Execute Agent 把大任务拆成"先规划 → 逐步执行 → 失败重规划"的循环：先用 LLM 把任务拆成若干可执行步骤，每步交给一个单循环 Agent 执行，某一步失败就重新规划（而不是硬着头皮继续），全部完成后总结出最终结果。适用于复杂、多步骤、允许中途调整计划的任务。
@@ -4179,6 +4223,27 @@ cargo test
 - 纯逻辑优先用单元测试覆盖，快且好定位；覆盖正反例，别只测正常路径。
 - 对外组合行为用集成测试覆盖；集成测试要有明确断言，不能只验证不 panic。
 - 写文档示例时让它能作为 doctest 运行——示例即测试，示例里示范的 API 必须真实存在。
+
+### 离线录播测试（lc-testkit） ✨ v0.16.0
+
+`lc-testkit` 是独立的录播测试 harness crate（不走 facade，作为 dev-dependency 引入）：`RecordingProvider` 包住任意 `BaseChatModel` 真调一次、把请求/响应逐行录成 JSONL；`ReplayProvider` 零网络、确定性地回放——没 key 的 CI 也能测链。
+
+```toml
+[dev-dependencies]
+lc-testkit = "0.16.0"
+```
+
+```rust
+// 录：真调一次，成功后写入 fixture 文件
+let recorded = RecordingProvider::new(real_llm, "fixtures/llm_chain_f01.jsonl")?;
+
+// 回放：零网络、FIFO、逐字节稳定
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?;
+let chain = LLMChain::new(llm, "用一句话回答:{question}");
+let result = chain.invoke(inputs).await?;
+```
+
+录制是旁路不是拦截：真调失败不写录播；写盘失败仅告警不阻断真实结果。内置 round-trip（录→回放逐字节一致）与真链回放测试。
 
 ---
 

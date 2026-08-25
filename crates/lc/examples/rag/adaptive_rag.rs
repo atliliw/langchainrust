@@ -1,16 +1,16 @@
-//! AdaptiveRAG 示例
+//! AdaptiveRAG example
 //!
-//! 展示 AdaptiveRAG 的自适应检索决策:
-//! NoRetrieval(闲聊) / SingleSearch(具体问题) / MultiQuery(复杂问题)。
+//! Shows AdaptiveRAG's adaptive retrieval decision:
+//! NoRetrieval (chitchat) / SingleSearch (specific question) / MultiQuery (complex question).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example rag_adaptive_rag
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
-//! - `OPENAI_BASE_URL`:API 基址(可选)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
+//! - `OPENAI_BASE_URL`: API base URL (optional)
 
 use langchainrust::embeddings::{Embeddings, MockEmbeddings};
 use langchainrust::retrieval::SimilarityRetriever;
@@ -20,8 +20,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 配置 LLM
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    // 1. Configure the LLM
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
@@ -31,15 +32,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    // 2. 准备检索器
+    // 2. Prepare the retriever
     let store = Arc::new(InMemoryVectorStore::new());
     let embeddings = Arc::new(MockEmbeddings::new(3));
 
     let docs = vec![
-        Document::new("Rust 是一门系统编程语言,注重安全和性能。"),
-        Document::new("Rust 的所有权系统避免了数据竞争和空指针。"),
-        Document::new("Tokio 是 Rust 最流行的异步运行时。"),
-        Document::new("async-std 是另一个 Rust 异步运行时,API 更接近标准库。"),
+        Document::new("Rust is a systems programming language, focused on safety and performance."),
+        Document::new("Rust's ownership system avoids data races and null pointers."),
+        Document::new("Tokio is the most popular async runtime for Rust."),
+        Document::new("async-std is another Rust async runtime with an API closer to the standard library."),
     ];
     let doc_texts: Vec<&str> = docs.iter().map(|d| d.content.as_str()).collect();
     let doc_embeddings = embeddings.embed_documents(&doc_texts).await?;
@@ -47,30 +48,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let retriever = SimilarityRetriever::new(store, embeddings);
 
-    // 3. 创建 AdaptiveRAG
+    // 3. Create the AdaptiveRAG
     let rag = AdaptiveRAG::new(llm, retriever)
         .with_retrieve_k(4)
         .with_multi_query_count(3);
 
-    // 4. 三种查询场景
-    // 场景 1: 闲聊 — LLM 判断不需要检索
-    let result = rag.invoke("你好,今天天气怎么样?").await?;
-    print_result("[NoRetrieval] 闲聊", &result);
+    // 4. Three query scenarios
+    // Scenario 1: chitchat — the LLM decides no retrieval is needed
+    let result = rag.invoke("Hi, how is the weather today?").await?;
+    print_result("[NoRetrieval] chitchat", &result);
 
-    // 场景 2: 具体问题 — 单次检索
-    let result = rag.invoke("Rust 的所有权系统是什么?").await?;
-    print_result("[SingleSearch] 具体问题", &result);
+    // Scenario 2: specific question — single retrieval
+    let result = rag.invoke("What is Rust's ownership system?").await?;
+    print_result("[SingleSearch] specific question", &result);
 
-    // 场景 3: 复杂问题 — 多角度检索
-    let result = rag.invoke("对比 Tokio 和 async-std 的调度模型").await?;
-    print_result("[MultiQuery] 复杂问题", &result);
+    // Scenario 3: complex question — multi-angle retrieval
+    let result = rag.invoke("Compare the scheduling models of Tokio and async-std").await?;
+    print_result("[MultiQuery] complex question", &result);
 
     Ok(())
 }
 
 fn print_result(label: &str, result: &langchainrust::AdaptiveRAGResult) {
     println!("\n{}", label);
-    println!("  决策: {}", result.decision);
-    println!("  回答: {}", result.answer);
-    println!("  来源文档数: {}", result.sources.len());
+    println!("  decision: {}", result.decision);
+    println!("  answer: {}", result.answer);
+    println!("  source document count: {}", result.sources.len());
 }

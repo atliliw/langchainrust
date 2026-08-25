@@ -1,39 +1,40 @@
-//! 示例 / 可部署的 MCP SSE 服务器。
+//! Example / deployable MCP SSE server.
 //!
-//! 把 langchainrust 的内置工具通过 `MCPServer::serve_sse` 暴露为网络 MCP server,
-//! 供 MCP 客户端(MCPClient / Cursor / Claude Desktop 等)调用。
+//! Exposes langchainrust's built-in tools as a networked MCP server via `MCPServer::serve_sse`,
+//! callable by MCP clients (MCPClient / Cursor / Claude Desktop, etc.).
 //!
-//! # 运行(本地联调)
+//! # Run (local testing)
 //!
 //! ```powershell
 //! cargo run -p langchainrust --example mcp_sse_server
 //! ```
 //!
-//! # 构建独立可执行文件(部署用)
+//! # Build a standalone executable (for deployment)
 //!
 //! ```powershell
 //! cargo build --release -p langchainrust --example mcp_sse_server
-//! # 产物:target/release/examples/mcp_sse_server.exe,拷到远程服务器即可运行
+//! # Artifact: target/release/examples/mcp_sse_server.exe, copy it to the remote server and run
 //! ```
 //!
-//! # 运行配置(环境变量,不写死在代码里)
+//! # Runtime configuration (environment variables, not hardcoded)
 //!
-//! | 变量 | 默认 | 说明 |
+//! | Variable | Default | Description |
 //! |---|---|---|
-//! | `MCP_SERVER_HOST` | `127.0.0.1` | 绑定地址(默认仅本机;远程访问需显式设为 `0.0.0.0`,且必须自行配置鉴权/网络白名单) |
-//! | `MCP_SERVER_PORT` | `8788` | 监听端口 |
-//! | `MCP_SERVER_PUBLIC_URL` | 见下 | 客户端访问本服务器的基地址 |
+//! | `MCP_SERVER_HOST` | `127.0.0.1` | Bind address (default local-only; for remote access set it explicitly to `0.0.0.0` and configure auth / network whitelist yourself) |
+//! | `MCP_SERVER_PORT` | `8788` | Listening port |
+//! | `MCP_SERVER_PUBLIC_URL` | see below | Base URL clients use to reach this server |
 //!
-//! 远程部署时**必须设置** `MCP_SERVER_PUBLIC_URL`,否则服务端发给客户端的
-//! POST 地址会写成 `0.0.0.0`,客户端连不上。本地联调可不设。
+//! For remote deployment you **must set** `MCP_SERVER_PUBLIC_URL`, otherwise the POST address
+//! the server sends to clients would be written as `0.0.0.0` and clients could not connect.
+//! Local testing can omit it.
 //!
 //! ```powershell
 //! $env:MCP_SERVER_PORT = "8788"
-//! $env:MCP_SERVER_PUBLIC_URL = "http://<你的服务器公网IP或域名>:8788"
+//! $env:MCP_SERVER_PUBLIC_URL = "http://<your-server-public-ip-or-domain>:8788"
 //! .\target\release\examples\mcp_sse_server.exe
 //! ```
 //!
-//! 启动后打印客户端连接入口:`http://<host>:<port>/sse`。
+//! On startup it prints the client connection endpoint: `http://<host>:<port>/sse`.
 
 use langchainrust::mcp::{MCPRequest, MCPServer};
 use langchainrust::{
@@ -42,10 +43,10 @@ use langchainrust::{
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-/// 注册一组开箱即用的内置工具。
+/// Registers a set of ready-to-use built-in tools.
 ///
-/// 刻意不注册 `PythonREPLTool`(远程可执行任意代码,有安全风险);
-/// 需要更多工具时在这里加 `with_tool`。
+/// Deliberately does not register `PythonREPLTool` (it can execute arbitrary code remotely,
+/// a security risk); add more tools here with `with_tool` when needed.
 fn build_server() -> MCPServer {
     MCPServer::new()
         .with_server_info("langchainrust-mcp-server", env!("CARGO_PKG_VERSION"))
@@ -59,46 +60,48 @@ fn build_server() -> MCPServer {
 
 #[tokio::main]
 async fn main() {
-    // 1. 读取配置(环境变量,带默认值)
-    // 默认仅绑定本机回环;该 server 无鉴权且挂载 url_fetch 等 SSRF 可达工具,
-    // 绑 0.0.0.0 会把内部网络和云元数据暴露给任何能到达该端口的人,须显式选择
+    // 1. Read the configuration (environment variables with defaults)
+    // Default binds to the local loopback only; this server has no auth and mounts
+    // SSRF-reachable tools like url_fetch. Binding 0.0.0.0 would expose your internal
+    // network and cloud metadata to anyone who can reach this port, so it must be
+    // an explicit choice.
     let host = std::env::var("MCP_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port: u16 = std::env::var("MCP_SERVER_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8788);
 
-    // 2. 绑定监听地址(默认 127.0.0.1 = 仅本机;0.0.0.0 = 所有网卡,须显式设置)
+    // 2. Bind the listen address (default 127.0.0.1 = local only; 0.0.0.0 = all interfaces, must be explicit)
     let listener = TcpListener::bind((host.as_str(), port))
         .await
         .unwrap_or_else(|e| {
-            eprintln!("绑定 {host}:{port} 失败: {e}");
+            eprintln!("failed to bind {host}:{port}: {e}");
             std::process::exit(1);
         });
     let bound = listener.local_addr().unwrap();
 
-    // 3. 客户端访问基地址:远程部署必须显式给出,否则 0.0.0.0 连不上
+    // 3. Base URL for clients: required for remote deployment, otherwise 0.0.0.0 cannot be reached
     let public_base = std::env::var("MCP_SERVER_PUBLIC_URL").unwrap_or_else(|_| {
-        eprintln!("⚠ 未设置 MCP_SERVER_PUBLIC_URL,远程部署时客户端将无法回连 POST 地址。");
-        eprintln!("  请设为: http://<服务器公网IP或域名>:<port>");
+        eprintln!("⚠ MCP_SERVER_PUBLIC_URL is not set; remote clients will be unable to reach the POST address.");
+        eprintln!("  set it to: http://<server-public-ip-or-domain>:<port>");
         format!("http://{bound}")
     });
 
-    // 4. 建 server、打印已注册工具、开服
+    // 4. Build the server, print the registered tools, and start serving
     let server = Arc::new(build_server());
     let names = registered_tool_names(&server).await;
-    println!("已注册 {} 个工具: {}", names.len(), names.join(", "));
+    println!("registered {} tools: {}", names.len(), names.join(", "));
 
     let sse_url = server.serve_sse(listener, public_base);
-    println!("MCP SSE server 已启动 ✅");
-    println!("客户端连接入口: {sse_url}");
-    println!("按 Ctrl+C 停止。");
+    println!("MCP SSE server started ✅");
+    println!("client connection endpoint: {sse_url}");
+    println!("press Ctrl+C to stop.");
 
-    // 5. 保持进程存活(接收循环在后台任务里运行)
+    // 5. Keep the process alive (the receive loop runs in a background task)
     std::future::pending::<()>().await;
 }
 
-/// 通过 tools/list 拉取实际注册的工具名(与客户端看到的一致)。
+/// Fetches the actually registered tool names via tools/list (what a client would see).
 async fn registered_tool_names(server: &MCPServer) -> Vec<String> {
     let resp = server
         .handle_request(MCPRequest::new(1, "tools/list", None))

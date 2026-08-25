@@ -705,6 +705,28 @@
                     </tbody>
                 </table>
 
+                <h3>Agent 控制门 <span class="badge new">v0.16.0</span></h3>
+
+                <p><code>ApprovalHandler</code>（人审门）与 <code>BudgetConfig</code>（预算门）是 <code>AgentExecutor</code> 的两道可选闸，默认全关，存量行为零变化。</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{AllowAll, ApprovalDecision, ApprovalHandler, BudgetConfig};
+
+<span class="comment">// 人审门:工具执行前异步审批(Allow / Deny / Modify)</span>
+<span class="kw">let</span> executor = executor.with_approval(Arc::new(MyApprovalHandler));
+
+<span class="comment">// 预算门:硬上限(工具调用 / token / 时长 / 迭代)</span>
+<span class="kw">let</span> executor = executor.with_budget(BudgetConfig {
+    max_tool_calls: <span class="kw">Some</span>(<span class="num">50</span>),
+    max_tokens: <span class="kw">Some</span>(<span class="num">20_000</span>),
+    ..Default::default()
+});</code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2428,7 +2450,9 @@ crates/
 │   ├── plan_execute/    # PlanExecuteAgent
 │   ├── crag/            # CorrectiveRAG（评分+重写+幻觉检测）
 │   ├── adaptive_rag/    # AdaptiveRAG（LLM 路由检索）
-│   └── deep_research/   # DeepResearchAgent（多轮 + 引用）
+│   ├── deep_research/   # DeepResearchAgent（多轮 + 引用）
+│   ├── executor/        # AgentExecutor 主循环 + 预算门 BudgetConfig（v0.16）
+│   └── approval.rs      # 人审门 ApprovalHandler（v0.16）
 ├── lc-prompts/          # 提示词模板（含 FewShot、`{{` 转义、中文变量名）
 ├── lc-memory/           # 对话记忆（Buffer、Window、Summary、ContextWindow）+ BaseChatMemory trait + MongoPersistentMemory
 ├── lc-chains/           # 链式操作（含文档处理链、RouterChain、invoke_with_config）
@@ -2449,6 +2473,7 @@ crates/
 │   ├── sampling.rs      # SamplingGuard 采样保护
 │   └── sandbox.rs       # ServerSandbox（ParamRule / EgressPolicy）
 ├── lc-a2a/              # Agent-to-Agent 协议（tasks/send、get、cancel + AgentCard）
+├── lc-testkit/          # 录播测试 harness（RecordingProvider / ReplayProvider）v0.16
 ├── lc-langgraph/        # LangGraph（StateGraph、Reducer、GraphEdge、Checkpointer 家族、GraphPersistence、Subgraph、并行）
 ├── lc-sessions/         # 会话管理（SessionStatus 生命周期 + 接入记忆）
 ├── lc-guardrails/       # 输入/输出安全护栏（Guardable、流式护栏、审计持久化）

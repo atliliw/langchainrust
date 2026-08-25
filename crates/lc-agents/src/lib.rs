@@ -26,6 +26,9 @@
 
 pub mod adapter;
 pub mod adaptive_rag;
+/// 人审门(§4.2):工具执行前的异步审批闸。调用方实现 [`ApprovalHandler`] 并
+/// 通过 [`AgentExecutor::with_approval`] 注入;默认关。
+pub mod approval;
 pub mod executor;
 /// Module alias preserving the historical `lc_agents::base` path.
 pub use executor as base;
@@ -52,11 +55,12 @@ pub mod types;
 
 pub use adapter::{AgentEventRunnable, AgentRunnable, OrchestratorRunnable};
 pub use adaptive_rag::{AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, RagDecision};
+pub use approval::{AllowAll, ApprovalDecision, ApprovalHandler};
 pub use builder::AgentBuilder;
 pub use cache::{MemoryCache, ResponseCache};
 pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
 pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
-pub use executor::{AgentError, AgentExecutor, BaseAgent};
+pub use executor::{AgentError, AgentExecutor, BaseAgent, BudgetConfig, BudgetExceeded};
 pub use function_calling::FunctionCallingAgent;
 pub use handoffs::HandoffManager;
 pub use hooks::{

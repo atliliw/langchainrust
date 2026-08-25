@@ -1,29 +1,29 @@
-//! OtelHandler 示例
+//! OtelHandler example
 //!
-//! 展示如何使用 OpenTelemetry callback 追踪 LLM 调用。
+//! Shows how to use OpenTelemetry callbacks to trace LLM calls.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example otel_tracing
 //! ```
 //!
-//! 注意: 需要 `opentelemetry` feature。
+//! Note: requires the `opentelemetry` feature.
 
 use langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== OpenTelemetry 追踪示例 ===\n");
+    println!("=== OpenTelemetry tracing example ===\n");
 
-    // OtelHandler 可以作为 callback 注入到 LLM 调用中
-    // 追踪每次调用的 token 用量、延迟等信息
-    // 并导出到 OpenTelemetry Collector(Jaeger/Zipkin 等)
+    // OtelHandler can be injected as a callback into LLM calls
+    // to trace per-call token usage, latency, and more,
+    // and export them to an OpenTelemetry Collector (Jaeger/Zipkin, etc.)
 
-    println!("OtelHandler 功能:");
-    println!("1. 追踪 LLM 调用延迟和 token 用量");
-    println!("2. 导出 span 到 OpenTelemetry Collector");
-    println!("3. 支持 Jaeger/Zipkin/Prometheus 等后端");
-    println!("\n使用方式:");
+    println!("OtelHandler features:");
+    println!("1. Traces LLM call latency and token usage");
+    println!("2. Exports spans to an OpenTelemetry Collector");
+    println!("3. Supports backends such as Jaeger/Zipkin/Prometheus");
+    println!("\nUsage:");
     println!("  let handler = OtelHandler::new();");
     println!("  llm.with_callback(handler).chat(messages, None).await?;");
 
@@ -31,13 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use langchainrust::OtelHandler;
         let _handler = OtelHandler::new();
-        println!("\n✅ opentelemetry feature 已启用,OtelHandler 可用");
+        println!("\n✅ opentelemetry feature is enabled, OtelHandler is available");
     }
 
     #[cfg(not(feature = "opentelemetry"))]
     {
-        println!("\n⚠️ opentelemetry feature 未启用");
-        println!("请使用 cargo run --example otel_tracing --features opentelemetry 运行");
+        println!("\n⚠️ opentelemetry feature is not enabled");
+        println!("run with: cargo run --example otel_tracing --features opentelemetry");
     }
 
     Ok(())

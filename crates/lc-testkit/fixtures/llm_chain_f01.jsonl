@@ -1,0 +1,1 @@
+{"messages":[{"content":"用一句话回答:什么是 Rust?","type":"human"}],"response":{"content":"Rust 是一门系统编程语言,注重安全、并发与性能。","model":"qwen3.5-ocr","token_usage":{"prompt_tokens":12,"completion_tokens":18,"total_tokens":30}}}

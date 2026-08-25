@@ -1,19 +1,26 @@
 //! SSE 传输:长连接 + 后台逐行流式读取,持续消费服务器推送事件。
 
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 use tokio::time::{timeout, Duration};
 use tokio_util::io::StreamReader;
 
 use super::{MCPEvent, MCPTransport, SSE_DISCOVER_TIMEOUT, SSE_HEARTBEAT};
 use crate::protocol::{MCPError, MCPRequest, MCPResponse};
 use crate::types::MCPConfig;
+
+/// MCP 单次请求总超时(POST 发送 + 读响应体)。
+///
+/// 服务器"连上了但吞响应不回复"时,在此时间后返回清晰错误并走现有的
+/// "失效缓存 → 重连 → 重试一次"路径,避免调用方永久挂起。
+const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// SSE transport for MCP.
 ///
@@ -24,6 +31,9 @@ pub struct SseTransport {
     sse_url: String,
     /// HTTP client.
     client: reqwest::Client,
+    /// 单次 POST 请求超时(发送 + 读响应体)。默认 [`MCP_REQUEST_TIMEOUT`];
+    /// 测试可用 [`SseTransport::with_request_timeout`] 缩短。
+    request_timeout: Duration,
     /// POST endpoint URL (for sending messages). Filled by the reader loop.
     ///
     /// P1-3: 用 `watch` 通道替代 `Mutex<Option<>>` —— `borrow()` 无锁读,
@@ -45,6 +55,11 @@ pub struct SseTransport {
     /// 读循环只启动一次。
     reader_started: Arc<AtomicBool>,
     event_tx: broadcast::Sender<MCPEvent>,
+    /// 挂起请求登记(F4):POST 发出后若服务器"先回 202、响应经 SSE 推送",
+    /// 后台读循环按 JSON-RPC `id` 关联到这里,用 oneshot 把推送的响应投递回
+    /// `post_request`。连接断开时清空登记,让等待方以"推送通道关闭"失败退出,
+    /// 走 `request` 的失效缓存 → 重连 → 重试路径。
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<MCPResponse>>>>,
 }
 
 impl SseTransport {
@@ -57,9 +72,17 @@ impl SseTransport {
         let (event_tx, _) = broadcast::channel(64);
         let (reconnect_signal, _) = watch::channel(0u64);
         let (post_url_tx, post_url_rx) = watch::channel(None);
+        // F2: client 只配 connect_timeout(只约束建连,不影响 SSE 长连接);
+        // 请求总超时按 POST 路径在 post_request / notify 里用 timeout 包裹,
+        // 避免总超时误杀长连接的 GET。
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| MCPError::new(-1, format!("failed to build HTTP client: {}", e)))?;
         Ok(Self {
             sse_url,
-            client: reqwest::Client::new(),
+            client,
+            request_timeout: MCP_REQUEST_TIMEOUT,
             post_url_tx,
             post_url_rx,
             connected: Arc::new(AtomicBool::new(false)),
@@ -67,7 +90,16 @@ impl SseTransport {
             reconnect_signal,
             reader_started: Arc::new(AtomicBool::new(false)),
             event_tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// 设置单次请求超时(默认 30s)。主要用于测试缩短超时窗口;
+    /// 仅测试构建存在,避免 `-D warnings` 下非测试构建报 dead-code。
+    #[cfg(test)]
+    pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     /// 确保后台读循环已启动(惰性、只启动一次)。
@@ -82,6 +114,7 @@ impl SseTransport {
         let closed = self.closed.clone();
         let reconnect_signal = self.reconnect_signal.clone();
         let event_tx = self.event_tx.clone();
+        let pending = self.pending.clone();
 
         tokio::spawn(async move {
             while !closed.load(Ordering::SeqCst) {
@@ -139,6 +172,19 @@ impl SseTransport {
                                     if let Some((evt, data)) = parse_sse_line(&l, &mut current_event) {
                                         if evt == "endpoint" {
                                             let _ = post_url.send(Some(data));
+                                        } else if evt == "message" {
+                                            // F4:SSE 推送的 JSON-RPC 响应,按 `id` 投递给挂起的 POST。
+                                            if let Ok(resp) = serde_json::from_str::<MCPResponse>(&data) {
+                                                if let Some(id) = resp.id {
+                                                    if let Some(tx) = pending.lock().unwrap().remove(&id) {
+                                                        let _ = tx.send(resp);
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                            // 无匹配挂起请求 → 当作普通消息事件广播。
+                                            let params = serde_json::from_str::<serde_json::Value>(&data).ok();
+                                            let _ = event_tx.send(MCPEvent::Message { method: evt, params });
                                         } else if !data.is_empty() {
                                             let params = serde_json::from_str::<serde_json::Value>(&data).ok();
                                             let _ = event_tx.send(MCPEvent::Message { method: evt, params });
@@ -168,6 +214,11 @@ impl SseTransport {
                         }
                     }
                 }
+
+                // F4:连接断开,清空挂起登记——等待中的请求收不到推送,
+                // 对应 oneshot 被 drop,以"推送通道关闭"失败退出,由
+                // `request` 走"失效缓存 → 重连 → 重试一次"路径。
+                pending.lock().unwrap().clear();
 
                 // 断开后稍等再重连,避免忙循环
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -206,19 +257,59 @@ impl SseTransport {
         });
     }
 
-    /// 发送一次 POST 请求并解析 MCP 响应(直接 JSON 或 SSE `data:` 行)。
+    /// 发送一次 POST 请求并解析 MCP 响应。
+    ///
+    /// 先按 JSON-RPC `id` 登记挂起请求(F4):若服务器"先回 202、响应经 SSE
+    /// 推送",后台读循环会把推送的响应投递到这个 oneshot;POST 直接回 JSON
+    /// 时这个登记在收尾阶段移除,不留泄漏。无论成败都清登记,多个请求并发
+    /// 时互不干扰。
     async fn post_request(
         &self,
         post_url: &str,
         body: &serde_json::Value,
     ) -> Result<MCPResponse, MCPError> {
-        let resp = self
-            .client
-            .post(post_url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| MCPError::new(-1, format!("HTTP POST failed: {}", e)))?;
+        let req_id = body.get("id").and_then(serde_json::Value::as_u64);
+        let (pending_tx, pending_rx) = oneshot::channel();
+        if let Some(id) = req_id {
+            self.pending.lock().unwrap().insert(id, pending_tx);
+        }
+
+        let result = self.post_and_wait(post_url, body, pending_rx).await;
+
+        // 收尾清理:读循环可能已 remove(把 tx 拿走投递),此时 remove 返回
+        // None 无害;迟到的推送因登记已空而自然被忽略。
+        if let Some(id) = req_id {
+            self.pending.lock().unwrap().remove(&id);
+        }
+        result
+    }
+
+    /// POST 并等待响应(由 [`SseTransport::post_request`] 调用,便于收尾清理)。
+    ///
+    /// 解析顺序:先试 POST 响应体直接解析(兼容自家与直接响应型服务器);
+    /// 解析不到则等 SSE 长连接按 `id` 推送的响应(F4,202 + 推送型服务器)。
+    ///
+    /// F2:发送与读响应体均受 `request_timeout` 约束——服务器吞响应不回复时,
+    /// 返回带"timed out"的错误,而不是永久挂起。超时错误走 `request` 里现有的
+    /// "失效缓存 → 重连 → 重试一次"路径。
+    async fn post_and_wait(
+        &self,
+        post_url: &str,
+        body: &serde_json::Value,
+        pending_rx: oneshot::Receiver<MCPResponse>,
+    ) -> Result<MCPResponse, MCPError> {
+        let resp = timeout(
+            self.request_timeout,
+            self.client.post(post_url).json(body).send(),
+        )
+        .await
+        .map_err(|_| {
+            MCPError::new(
+                -1,
+                format!("HTTP POST timed out after {:?}", self.request_timeout),
+            )
+        })?
+        .map_err(|e| MCPError::new(-1, format!("HTTP POST failed: {}", e)))?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -227,18 +318,26 @@ impl SseTransport {
 
         // The server may respond directly or send the response via SSE.
         // For compatibility, try parsing the direct response first.
-        let body = resp
-            .text()
+        let body = timeout(self.request_timeout, resp.text())
             .await
+            .map_err(|_| {
+                MCPError::new(
+                    -1,
+                    format!(
+                        "Reading MCP response timed out after {:?}",
+                        self.request_timeout
+                    ),
+                )
+            })?
             .map_err(|e| MCPError::new(-1, format!("Failed to read response: {}", e)))?;
 
-        // Try parsing as MCPResponse
+        // Try parsing as MCPResponse (direct-response servers).
         if let Ok(mcp_resp) = serde_json::from_str::<MCPResponse>(&body) {
             return Ok(mcp_resp);
         }
 
-        // If not a direct response, try SSE event format
-        // Parse SSE "data:" lines and extract JSON
+        // If not a direct response, try SSE `data:` lines inside the POST body
+        // (some servers put the response there).
         for line in body.lines() {
             if let Some(data) = line.strip_prefix("data:") {
                 let trimmed = data.trim();
@@ -250,10 +349,21 @@ impl SseTransport {
             }
         }
 
-        Err(MCPError::new(
-            -1,
-            format!("Could not parse MCP response from: {}", body),
-        ))
+        // F4:POST 已发出(可能回了 202 Accepted / 空 body),响应经 SSE 长连接
+        // 推送——等后台读循环按 `id` 投递。若连接断开,读循环清空登记表,
+        // 本端的 oneshot 被 drop(RecvError)→ 以清晰错误返回,由 request 重连重试。
+        timeout(self.request_timeout, pending_rx)
+            .await
+            .map_err(|_| {
+                MCPError::new(
+                    -1,
+                    format!(
+                        "waiting for SSE-pushed response timed out after {:?}",
+                        self.request_timeout
+                    ),
+                )
+            })?
+            .map_err(|_| MCPError::new(-1, "SSE connection closed before response was pushed"))
     }
 }
 
@@ -332,12 +442,21 @@ impl MCPTransport for SseTransport {
                 obj.insert("params".to_string(), p);
             }
         }
-        self.client
-            .post(&post_url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| MCPError::new(-1, format!("Failed to send notification: {}", e)))?;
+        timeout(
+            self.request_timeout,
+            self.client.post(&post_url).json(&payload).send(),
+        )
+        .await
+        .map_err(|_| {
+            MCPError::new(
+                -1,
+                format!(
+                    "Sending notification timed out after {:?}",
+                    self.request_timeout
+                ),
+            )
+        })?
+        .map_err(|e| MCPError::new(-1, format!("Failed to send notification: {}", e)))?;
         Ok(())
     }
 

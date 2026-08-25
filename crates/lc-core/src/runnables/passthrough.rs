@@ -79,7 +79,7 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, I> for RunnablePassthrough<I>
         &self,
         input: Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send>>, LcelError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<I, LcelError>> + Send + '_>>, LcelError> {
         Ok(input)
     }
 }

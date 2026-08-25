@@ -3,15 +3,18 @@
 //!
 //! 与 `executor.rs`(结构体 + 构建器 + invoke/stream 入口)、`plan.rs`(缓存规划)配合。
 
+use super::budget::BudgetExceeded;
 use super::engine::AgentExecutor;
 use super::tools::run_tool_with_timeout;
 use super::AgentError;
+use crate::approval::ApprovalDecision;
 use crate::hooks::{ToolCallAction, ToolCallContext, ToolResultContext};
 use crate::metrics::AgentMetrics;
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{RunTree, RunType};
 use serde_json::json;
 use std::collections::HashMap;
+use std::time::Instant;
 
 impl AgentExecutor {
     /// Runs the agent loop.
@@ -24,7 +27,15 @@ impl AgentExecutor {
         root_run: &mut RunTree,
         metrics: &mut AgentMetrics,
     ) -> Result<String, AgentError> {
+        // 预算门(§4.2):循环起表,供 max_duration / max_iterations 检查。
+        let loop_start = Instant::now();
+
         for iteration in 0..self.max_iterations {
+            // 预算门:迭代级(迭代次数 + 总时长)。默认关(None 时立即返回 None)。
+            if let Some(err) = self.budget_iteration_gate(iteration, loop_start) {
+                return Err(err);
+            }
+
             if self.verbose {
                 log::info!("=== Iteration {} ===", iteration + 1);
             }
@@ -32,6 +43,11 @@ impl AgentExecutor {
             let output = self
                 .plan_cached(&intermediate_steps, &inputs, metrics)
                 .await?;
+
+            // 预算门:LLM 调用后累计 token,超限硬停。
+            if let Some(err) = self.budget_token_gate(metrics) {
+                return Err(err);
+            }
 
             match output {
                 AgentOutput::Finish(finish) => {
@@ -45,6 +61,11 @@ impl AgentExecutor {
                     metrics.tool_calls += 1;
                     if self.verbose {
                         log::info!("Action: {}({})", action.tool, action.tool_input);
+                    }
+
+                    // 预算门:工具调用前检查累计次数与总时长。
+                    if let Some(err) = self.budget_tool_gate(metrics, loop_start) {
+                        return Err(err);
                     }
 
                     let observation = self.execute_tool(&action, root_run).await?;
@@ -63,6 +84,11 @@ impl AgentExecutor {
                         for action in &actions {
                             log::info!("  - {}({})", action.tool, action.tool_input);
                         }
+                    }
+
+                    // 预算门:工具调用前检查累计次数与总时长。
+                    if let Some(err) = self.budget_tool_gate(metrics, loop_start) {
+                        return Err(err);
                     }
 
                     let observations = self.execute_tools_parallel(&actions, root_run).await?;
@@ -89,6 +115,73 @@ impl AgentExecutor {
 
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())
+    }
+
+    /// 预算门(§4.2):迭代级检查(迭代次数 + 总时长)。超限 → 返回错误。
+    ///
+    /// `max_iterations` 取 `min(self.max_iterations, budget.max_iterations)`
+    /// 作为有效上限 —— budget 比默认更紧时超出即硬停;比默认更松时由
+    /// `self.max_iterations` 兜底,不改变原有占位返回路径。
+    fn budget_iteration_gate(&self, iteration: usize, loop_start: Instant) -> Option<AgentError> {
+        let budget = self.budget.as_ref()?;
+        if let Some(limit) = budget.max_iterations {
+            let effective = limit.min(self.max_iterations);
+            if iteration >= effective {
+                return Some(AgentError::BudgetExceeded(BudgetExceeded::Iterations {
+                    limit: effective,
+                }));
+            }
+        }
+        if let Some(limit) = budget.max_duration {
+            let elapsed = loop_start.elapsed();
+            if elapsed >= limit {
+                return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
+                    limit,
+                    elapsed,
+                }));
+            }
+        }
+        None
+    }
+
+    /// 预算门(§4.2):LLM 调用后累计 token 检查。agent 不上报 token 时不生效。
+    fn budget_token_gate(&self, metrics: &AgentMetrics) -> Option<AgentError> {
+        let budget = self.budget.as_ref()?;
+        let limit = budget.max_tokens?;
+        let actual = metrics.total_tokens.unwrap_or(0);
+        if actual >= limit {
+            return Some(AgentError::BudgetExceeded(BudgetExceeded::Tokens {
+                limit,
+                actual,
+            }));
+        }
+        None
+    }
+
+    /// 预算门(§4.2):工具调用前检查累计次数与总时长。
+    ///
+    /// `metrics.tool_calls` 已先自增,故用 `> limit` 判定 —— 允许恰好 `limit`
+    /// 次工具执行,第 `limit + 1` 次触发硬停。
+    fn budget_tool_gate(&self, metrics: &AgentMetrics, loop_start: Instant) -> Option<AgentError> {
+        let budget = self.budget.as_ref()?;
+        if let Some(limit) = budget.max_tool_calls {
+            if metrics.tool_calls > limit {
+                return Some(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
+                    limit,
+                    actual: metrics.tool_calls,
+                }));
+            }
+        }
+        if let Some(limit) = budget.max_duration {
+            let elapsed = loop_start.elapsed();
+            if elapsed >= limit {
+                return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
+                    limit,
+                    elapsed,
+                }));
+            }
+        }
+        None
     }
 
     /// Executes multiple tools in parallel.
@@ -176,6 +269,33 @@ impl AgentExecutor {
                 }
                 ToolCallAction::Skip => {
                     return Ok("[Skipped by hook]".to_string());
+                }
+            }
+        }
+
+        // 人审门(§4.2):同步 hook 之后、实际执行之前。默认关(None = 原样放行)。
+        // `Deny` 与 `ToolCallAction::Skip` 同构 —— 以 observation 喂回循环,
+        // 不执行工具也不中断运行,下一轮 plan 看到拒绝观察后自行调整。
+        if let Some(handler) = &self.approval {
+            match handler.approve(&tool_ctx).await {
+                ApprovalDecision::Allow => {}
+                ApprovalDecision::Deny { reason } => {
+                    log::info!(
+                        target: "lc_agents::approval",
+                        "tool_call denied by approval handler name={} reason={}",
+                        tool_ctx.name,
+                        reason
+                    );
+                    return Ok(format!("[DENIED by approval: {reason}]"));
+                }
+                ApprovalDecision::Modify { arguments, note } => {
+                    log::info!(
+                        target: "lc_agents::approval",
+                        "tool_call arguments modified by approval handler name={} note={}",
+                        tool_ctx.name,
+                        note
+                    );
+                    tool_ctx.arguments = arguments;
                 }
             }
         }

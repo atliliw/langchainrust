@@ -1,36 +1,36 @@
-//! Plan-Execute Agent 示例
+//! Plan-Execute Agent example
 //!
-//! 展示如何使用 PlanExecuteAgent 进行规划-执行-重规划循环。
+//! Shows how to use PlanExecuteAgent for a plan-execute-replan loop.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example agent_plan_execute
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Plan-Execute Agent 示例 ===\n");
+    println!("=== Plan-Execute Agent example ===\n");
 
-    // Plan-Execute Agent 工作流程:
-    println!("Plan-Execute Agent 流程:");
-    println!("1. 规划: LLM 分析任务,生成执行计划");
-    println!("2. 执行: 按计划逐步执行,调用工具");
-    println!("3. 重规划: 根据执行结果,可能调整计划");
-    println!("4. 完成: 所有步骤执行完毕,返回最终结果");
+    // Plan-Execute Agent workflow:
+    println!("Plan-Execute Agent flow:");
+    println!("1. Plan: the LLM analyzes the task and generates an execution plan");
+    println!("2. Execute: each step runs in order, calling tools as needed");
+    println!("3. Replan: based on the results, the plan may be adjusted");
+    println!("4. Done: when all steps are complete, return the final result");
 
-    println!("\n适用场景:");
-    println!("- 复杂的多步骤任务");
-    println!("- 需要根据中间结果调整策略的任务");
-    println!("- 需要使用多种工具的复合任务");
+    println!("\nUse cases:");
+    println!("- Complex multi-step tasks");
+    println!("- Tasks that need to adjust the strategy based on intermediate results");
+    println!("- Composite tasks that need multiple tools");
 
-    println!("\n使用方式:");
+    println!("\nUsage:");
     println!("  let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];");
     println!("  let agent = PlanExecuteAgent::new(llm, tools);");
-    println!("  let result = agent.run(\"计算 (15 + 27) * 3\").await?;");
+    println!("  let result = agent.run(\"Compute (15 + 27) * 3\").await?;");
 
-    println!("\n提示: 需要设置 OPENAI_API_KEY 才能进行真实调用。");
+    println!("\nNote: set the OPENAI_API_KEY environment variable to make real calls.");
     Ok(())
 }

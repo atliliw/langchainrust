@@ -1,15 +1,15 @@
-//! CorrectiveRAG 示例
+//! CorrectiveRAG example
 //!
-//! 展示 CorrectiveRAGAgent 的检索-评分-纠错-幻觉检测流程。
+//! Shows CorrectiveRAGAgent's retrieve → grade → correct → hallucination-check flow.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example rag_corrective_rag
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
-//! - `OPENAI_BASE_URL`:API 基址(可选)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
+//! - `OPENAI_BASE_URL`: API base URL (optional)
 
 use langchainrust::embeddings::{Embeddings, MockEmbeddings};
 use langchainrust::retrieval::SimilarityRetriever;
@@ -20,8 +20,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 配置 LLM
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    // 1. Configure the LLM
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
@@ -31,15 +32,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    // 2. 准备检索器（InMemoryVectorStore + MockEmbeddings,演示用）
+    // 2. Prepare the retriever (InMemoryVectorStore + MockEmbeddings, for demo purposes)
     let store = Arc::new(InMemoryVectorStore::new());
     let embeddings = Arc::new(MockEmbeddings::new(3));
 
-    // 先添加文档到向量存储
+    // Add documents to the vector store first
     let docs = vec![
-        Document::new("Rust 是一门系统编程语言,由 Mozilla 开发,注重安全和性能。"),
-        Document::new("Rust 的核心特性包括所有权系统、借用检查和零成本抽象。"),
-        Document::new("Rust 的包管理器叫 Cargo,支持依赖管理和构建自动化。"),
+        Document::new("Rust is a systems programming language developed by Mozilla, focused on safety and performance."),
+        Document::new("Rust's core features include the ownership system, borrow checking, and zero-cost abstractions."),
+        Document::new("Rust's package manager is called Cargo; it supports dependency management and build automation."),
     ];
     let doc_texts: Vec<&str> = docs.iter().map(|d| d.content.as_str()).collect();
     let doc_embeddings = embeddings.embed_documents(&doc_texts).await?;
@@ -47,20 +48,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let retriever = SimilarityRetriever::new(store, embeddings);
 
-    // 3. 创建 CRAG Agent
+    // 3. Create the CRAG Agent
     let agent = CorrectiveRAGAgent::new(llm, retriever)
-        .with_grade_threshold(0.5) // 文档评分低于 0.5 触发纠错
-        .with_web_fallback(Box::new(DuckDuckGoSearchTool::new())) // 可选:Web 搜索 fallback
-        .with_hallucination_check(true); // 可选:幻觉检测
+        .with_grade_threshold(0.5) // documents scored below 0.5 trigger a correction
+        .with_web_fallback(Box::new(DuckDuckGoSearchTool::new())) // optional: web search fallback
+        .with_hallucination_check(true); // optional: hallucination check
 
-    // 4. 查询
-    let result = agent.invoke("Rust 语言有哪些核心特性?").await?;
+    // 4. Query
+    let result = agent.invoke("What are the core features of Rust?").await?;
 
-    println!("回答: {}", result.answer);
-    println!("是否基于文档: {}", result.grounded);
-    println!("来源文档数: {}", result.sources.len());
+    println!("Answer: {}", result.answer);
+    println!("Grounded in documents: {}", result.grounded);
+    println!("Source document count: {}", result.sources.len());
     for (i, score) in result.grade_scores.iter().enumerate() {
-        println!("  文档[{}] 评分: {:.2}", i, score);
+        println!("  document[{}] score: {:.2}", i, score);
     }
 
     Ok(())

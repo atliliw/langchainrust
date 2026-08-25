@@ -20,6 +20,11 @@ pub enum PostMode {
     Quiet,
     /// 第一次 POST 返回 500(P1-1 缓存失效重试用)。
     FailFirstPost,
+    /// 收到 POST 后吞掉请求、不回 body(F2 请求超时兜底测试用)。
+    HangPost,
+    /// 对 POST 回 `202 Accepted`,JSON-RPC 响应经 SSE `event: message` 推送
+    /// (F4:202 + SSE 推送型服务器的互操作用)。
+    PushResponse,
     /// `tools/call` 返回 `is_error=true` 内容(P1-6 用)。
     ToolError,
     /// `tools/call` 延迟 `Duration` 后响应(per-tool 超时测试用,无 progress)。
@@ -95,6 +100,11 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
     let tools_list_count = Arc::new(AtomicUsize::new(0));
     let call_seen = Arc::new(AtomicBool::new(false));
 
+    // F4:POST 侧把 JSON-RPC 响应投给 SSE 长连接推送(broadcast 多接收者,
+    // 每个 GET 连接各订阅一份;响应经 `event: message` 推送)。
+    let (push_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+    let push_tx_clone = push_tx.clone();
+
     let post_count_clone = post_count.clone();
     let tools_list_count_clone = tools_list_count.clone();
     let call_seen_clone = call_seen.clone();
@@ -107,6 +117,7 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
             let post_count = post_count_clone.clone();
             let tools_list_count = tools_list_count_clone.clone();
             let call_seen = call_seen_clone.clone();
+            let push_tx = push_tx_clone.clone();
             tokio::spawn(async move {
                 let (first_line, body) = read_http_request(&mut sock).await;
                 if first_line.starts_with("GET ") {
@@ -129,49 +140,66 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                     } else {
                         300
                     };
+                    // F4:先订阅推送通道、再发 endpoint 事件——客户端 discover 到
+                    // endpoint 后才发 POST,故订阅必然发生在推送之前,推送不丢失。
+                    let mut push_rx = push_tx.subscribe();
                     let mut partial_seq = 0u64;
+                    let mut heartbeat = tokio::time::interval(Duration::from_millis(heartbeat_ms));
                     loop {
-                        if sock.write_all(b": keep-alive\n\n").await.is_err() {
-                            break;
-                        }
-                        if mode == PostMode::NotifyChanged
-                            && sock
-                                .write_all(b"event: notifications/tools/list_changed\ndata: {}\n\n")
-                                .await
-                                .is_err()
-                        {
-                            break;
-                        }
-                        if matches!(mode, PostMode::ProgressSlowCall(_))
-                            && sock
-                                .write_all(
-                                    b"event: notifications/progress\ndata: {\"progress\":0.5}\n\n",
-                                )
-                                .await
-                                .is_err()
-                        {
-                            break;
-                        }
-                        // P2-9:首次 tools/call 后开始推流,共 3 段(seq 0/1/2,末段 final)。
-                        if mode == PostMode::StreamingCall
-                            && call_seen.load(Ordering::SeqCst)
-                            && partial_seq < 3
-                        {
-                            let payload = serde_json::json!({
-                                "tool": "echo",
-                                "seq": partial_seq,
-                                "progress": (partial_seq as f32 + 1.0) / 3.0,
-                                "content": { "type": "text", "text": format!("chunk{}", partial_seq) },
-                                "final": partial_seq == 2,
-                            });
-                            let chunk =
-                                format!("event: notifications/tool_partial\ndata: {}\n\n", payload);
-                            if sock.write_all(chunk.as_bytes()).await.is_err() {
-                                break;
+                        tokio::select! {
+                            _ = heartbeat.tick() => {
+                                if sock.write_all(b": keep-alive\n\n").await.is_err() {
+                                    break;
+                                }
+                                if mode == PostMode::NotifyChanged
+                                    && sock
+                                        .write_all(b"event: notifications/tools/list_changed\ndata: {}\n\n")
+                                        .await
+                                        .is_err()
+                                {
+                                    break;
+                                }
+                                if matches!(mode, PostMode::ProgressSlowCall(_))
+                                    && sock
+                                        .write_all(
+                                            b"event: notifications/progress\ndata: {\"progress\":0.5}\n\n",
+                                        )
+                                        .await
+                                        .is_err()
+                                {
+                                    break;
+                                }
+                                // P2-9:首次 tools/call 后开始推流,共 3 段(seq 0/1/2,末段 final)。
+                                if mode == PostMode::StreamingCall
+                                    && call_seen.load(Ordering::SeqCst)
+                                    && partial_seq < 3
+                                {
+                                    let payload = serde_json::json!({
+                                        "tool": "echo",
+                                        "seq": partial_seq,
+                                        "progress": (partial_seq as f32 + 1.0) / 3.0,
+                                        "content": { "type": "text", "text": format!("chunk{}", partial_seq) },
+                                        "final": partial_seq == 2,
+                                    });
+                                    let chunk =
+                                        format!("event: notifications/tool_partial\ndata: {}\n\n", payload);
+                                    if sock.write_all(chunk.as_bytes()).await.is_err() {
+                                        break;
+                                    }
+                                    partial_seq += 1;
+                                }
                             }
-                            partial_seq += 1;
+                            pushed = push_rx.recv() => {
+                                // F4:POST 侧经广播投递的 JSON-RPC 响应 → SSE 推送。
+                                // Lagged / 无发送者等 `Err` 忽略,继续心跳即可。
+                                if let Ok(data) = pushed {
+                                    let chunk = format!("event: message\ndata: {}\n\n", data);
+                                    if sock.write_all(chunk.as_bytes()).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
                         }
-                        tokio::time::sleep(Duration::from_millis(heartbeat_ms)).await;
                     }
                 } else if first_line.starts_with("POST ") {
                     let count = post_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -181,6 +209,12 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                                 b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
                             )
                             .await;
+                        return;
+                    }
+                    // F2:吞掉请求不回 body——保持连接但永远不写任何字节,
+                    // 让 SseTransport 的 request_timeout 触发超时错误。
+                    if mode == PostMode::HangPost {
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
                         return;
                     }
                     let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -246,13 +280,21 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                         _ => serde_json::json!({ "ok": true }),
                     };
                     let resp = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
-                    let resp_body = resp.to_string();
-                    let out = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        resp_body.len(),
-                        resp_body
-                    );
-                    let _ = sock.write_all(out.as_bytes()).await;
+                    if mode == PostMode::PushResponse {
+                        // F4:先经 SSE 长连接推送 JSON-RPC 响应,再回 202 Accepted。
+                        let _ = push_tx.send(resp.to_string());
+                        let _ = sock
+                            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                    } else {
+                        let resp_body = resp.to_string();
+                        let out = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = sock.write_all(out.as_bytes()).await;
+                    }
                 }
             });
         }

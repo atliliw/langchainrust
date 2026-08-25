@@ -2206,6 +2206,7 @@ dependencies = [
 name = "lc-core"
 version = "0.16.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "chrono",
  "futures-util",
@@ -2433,6 +2434,24 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "lc-testkit"
+version = "0.16.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "lc-chains",
+ "lc-core",
+ "lc-providers",
+ "lc-schema",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

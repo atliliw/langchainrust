@@ -83,6 +83,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Handoffs** | Multi-agent handoff with `max_handoff_depth` (default 10) to stop A↔B ping-pong. |
 | **Orchestrators** | `FanOutFanIn` (parallel fan-out + aggregate), `SequentialPipeline` (serial), `OrchestratorRunnable` for LCEL integration. |
 | **Agent Hooks** | Approval (`on_before_tool_call` allow/reject/skip), `PromptInjectionHook`, `TokenBudgetHook`, `ContentFilterHook`, logging. |
+| **Agent Gates (v0.16)** | Async human-approval gate — `.with_approval()` (Allow / Deny / Modify; Deny feeds the reason back as an observation, Modify rewrites the arguments). Budget gate — `.with_budget()` with hard caps on tool calls / tokens / wall-clock duration / iterations, exceeding returns `AgentError::BudgetExceeded`. Both default off. |
 | **Streaming** | Token-level streaming via `StreamingFunctionCallingAgent` + `AgentStreamEvent`; tool-level events via `AgentExecutor::stream`. |
 | **Tool Policies** | `ToolPolicy` / `ToolRisk` risk classification for tool access control. |
 
@@ -116,6 +117,7 @@ The framework is engineered around a few hard rules that come out of its own des
 |-----------|-------------|
 | **MCP** | Model Context Protocol client + server over **Stdio and SSE**. All 6 MCP primitives — **Resources / Prompts / Completion / Elicitation / Roots / Sampling** — implemented on both client and server sides. |
 | **MCP resilience** | Auto-reconnect (subprocess crash → exponential backoff respawn + re-handshake + tool refresh), SSE heartbeat read-timeout (30s), tool-list cache with TTL + `list_changed` invalidation, `watch`-channel POST-URL re-discovery. |
+| **MCP interop** | SSE client accepts both direct-response servers (POST returns JSON) and **202 + SSE-push** servers (POST returns `202 Accepted`, the JSON-RPC response arrives later over SSE and is correlated by request `id`). |
 | **MCP tool adapter** | `MCPToolAdapter` implements `BaseTool` — MCP tools mix seamlessly with local tools in any agent; structured errors keep `{code, data}`; multi-type content (image/resource) preserved. |
 | **MCP at scale** | Connection management, tool namespaces + conflict policy, static+dynamic tool discovery, per-tool timeout + progress, health checks + circuit breaker, per-server sandbox, sampling recursion guard, **MCP Gateway** (registry / pool / rate-limit / audit), multi-tenant isolation, protocol version negotiation. |
 | **A2A** | Agent-to-Agent protocol: `AgentCard` discovery (`/.well-known/agent-card.json`), `A2ATask` / `TaskStatus` lifecycle (submitted → working → completed/failed), `send` / `get` / `cancel`, JSON-RPC over HTTP. `A2AServer` (task persistence) exposes a `BaseChain` as a network agent; `A2AClient` with bearer-token auth. |
@@ -157,7 +159,7 @@ The framework is engineered around a few hard rules that come out of its own des
 
 ## Architecture
 
-langchainrust is a **21-crate workspace** with a single facade crate `langchainrust` (in `crates/lc`) that re-exports the public API. Layers depend downward — `lc-shared` / `lc-schema` sit at the bottom and are depended on by everyone, which is exactly how the circular-dependency problem is solved.
+langchainrust is a **22-crate workspace** with a single facade crate `langchainrust` (in `crates/lc`) that re-exports the public API. Layers depend downward — `lc-shared` / `lc-schema` sit at the bottom and are depended on by everyone, which is exactly how the circular-dependency problem is solved.
 
 ```
                       ┌─────────────────────────────────────┐
@@ -195,7 +197,7 @@ langchainrust is a **21-crate workspace** with a single facade crate `langchainr
 | **lc-embeddings** | `Embeddings` trait + 7 providers, retries, concurrency, normalization. |
 | **lc-chains** | `BaseChain` + 9 chains, `ChainRunnable` bridge into LCEL. |
 | **lc-langgraph** | `StateGraph`, conditional/FanOut/FanIn edges, `Reducer`s, `Checkpointer` (memory/file), `GraphPersistence`, `Subgraph`, dynamic injection. |
-| **lc-agents** | ReAct / FunctionCalling / PlanExecute / CRAG / AdaptiveRAG / DeepResearch / Handoffs / Orchestrators / Hooks. |
+| **lc-agents** | ReAct / FunctionCalling / PlanExecute / CRAG / AdaptiveRAG / DeepResearch / Handoffs / Orchestrators / Hooks + human-approval gate (`ApprovalHandler`) / budget gate (`BudgetConfig`). |
 | **lc-memory** | Buffer/Window/Summary/SummaryBuffer memories, `ContextWindow`, `MongoPersistentMemory`. |
 | **lc-sessions** | `SessionManager` + `SessionStore` multi-turn lifecycle. |
 | **lc-rag** | `RetrieverTrait` (Similarity/BM25/UnifiedHybrid), `RAGPipeline`, MultiQuery/HyDE/Reranking, GraphRAG. |
@@ -205,6 +207,7 @@ langchainrust is a **21-crate workspace** with a single facade crate `langchainr
 | **lc-evaluation** | Rule evaluators + LLM judges, `EvalRunner` + `Report`. |
 | **lc-guardrails** | Input/output guardrails, `Guardable`, streaming guardrails, audit sinks. |
 | **lc-callbacks** | `CallbackHandler`/`CallbackManager` + StdOut/File/LangSmith/OTel + `Tracer`/`SpanGuard`. |
+| **lc-testkit** | Record/replay test harness: `RecordingProvider` records real LLM exchanges to JSONL, `ReplayProvider` replays them offline with zero network — framework tests run without API keys. |
 
 ---
 

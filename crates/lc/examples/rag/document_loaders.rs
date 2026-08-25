@@ -1,11 +1,11 @@
-//! 文档加载器示例
+//! Document loader example
 //!
-//! 展示 TextLoader 加载文本文件并解析 metadata(无需 API Key)。
+//! Shows TextLoader loading a text file and parsing its metadata (no API key required).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example rag_document_loaders
-//! # 或指定文件
+//! # or specify a file
 //! cargo run --example rag_document_loaders -- README.md
 //! ```
 
@@ -20,11 +20,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let loader = TextLoader::new(PathBuf::from(path));
     let docs = loader.load().await?;
 
-    println!("加载 {} 个文档", docs.len());
+    println!("Loaded {} documents", docs.len());
     for (i, doc) in docs.iter().enumerate() {
         let preview: String = doc.content.chars().take(200).collect();
-        println!("--- 文档 {} ---", i + 1);
-        println!("内容预览: {}", preview);
+        println!("--- document {} ---", i + 1);
+        println!("Content preview: {}", preview);
         println!("metadata: {:?}", doc.metadata);
     }
     Ok(())

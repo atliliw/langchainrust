@@ -21,5 +21,6 @@ members = [
     "crates/lc-evaluation",
     "crates/lc-guardrails",
     "crates/lc-a2a",
+    "crates/lc-testkit",
 ]
 resolver = "2"

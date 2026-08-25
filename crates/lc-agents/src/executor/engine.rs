@@ -1,12 +1,14 @@
-// lc-agents/src/executor/executor.rs
+// lc-agents/src/executor/engine.rs
 //! `AgentExecutor` — the execution loop (plan -> act -> observe).
 
+use super::budget::BudgetConfig;
 use super::hooks::{run_after_completion_hooks, run_before_completion_hooks};
 use super::tools::{execute_tool_for_stream, execute_tools_parallel_for_stream};
 use super::{
     AgentError, BaseAgent, CACHE_NS, DEFAULT_MAX_CONCURRENCY, MAX_MAX_ITERATIONS,
     MIN_MAX_ITERATIONS,
 };
+use crate::approval::ApprovalHandler;
 use crate::cache::ResponseCache;
 use crate::hooks::{AgentHook, HookError};
 use crate::metrics::AgentMetrics;
@@ -20,6 +22,7 @@ use lc_core::tools::BaseTool;
 use lc_memory::BaseMemory;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -72,6 +75,11 @@ pub struct AgentExecutor {
 
     /// 工具权限策略(权限分级 + 沙箱门禁,P2-9)。`None` = 不校验。
     pub(crate) tool_policy: Option<ToolPolicy>,
+
+    /// 人审门(§4.2):工具执行前的异步审批。`None` = 不拦截(默认关)。
+    pub(crate) approval: Option<Arc<dyn ApprovalHandler>>,
+    /// 预算门(§4.2):硬上限。`None` = 不限(默认关)。
+    pub(crate) budget: Option<BudgetConfig>,
 }
 
 impl AgentExecutor {
@@ -92,6 +100,8 @@ impl AgentExecutor {
             response_cache: None,
             cache_namespace: format!("exec-{}", CACHE_NS.fetch_add(1, Ordering::SeqCst)),
             tool_policy: None,
+            approval: None,
+            budget: None,
         }
     }
 
@@ -159,6 +169,47 @@ impl AgentExecutor {
     /// ```
     pub fn with_tool_policy(mut self, policy: ToolPolicy) -> Self {
         self.tool_policy = Some(policy);
+        self
+    }
+
+    /// 人审门(§4.2):工具执行前的异步审批。
+    ///
+    /// 默认 `None` = 不拦截,存量行为不变。审批决定(调用方实现
+    /// [`ApprovalHandler`]):
+    /// - [`ApprovalDecision::Allow`][]:原样执行;
+    /// - [`ApprovalDecision::Deny`][]:跳过该工具,把理由作为 observation 喂回
+    ///   循环,下一轮重新 plan;
+    /// - [`ApprovalDecision::Modify`][]:用新参数替换后执行。
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let executor = AgentExecutor::new(agent, tools)
+    ///     .with_approval(Arc::new(AllowAll));
+    /// ```
+    pub fn with_approval(mut self, handler: Arc<dyn ApprovalHandler>) -> Self {
+        self.approval = Some(handler);
+        self
+    }
+
+    /// 预算门(§4.2):硬上限,任一上限触发即返回
+    /// [`AgentError::BudgetExceeded`],本次 `invoke` / `stream` 立即终止。
+    ///
+    /// 调用方可捕获该错误区分"预算截停"与"模型未收敛"。默认 `None` = 不限。
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let budget = BudgetConfig {
+    ///     max_tool_calls: Some(3),
+    ///     max_tokens: Some(10_000),
+    ///     max_duration: Some(Duration::from_secs(60)),
+    ///     max_iterations: Some(5),
+    /// };
+    /// let executor = AgentExecutor::new(agent, tools).with_budget(budget);
+    /// ```
+    pub fn with_budget(mut self, budget: BudgetConfig) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -371,16 +422,31 @@ impl AgentExecutor {
             .await;
 
         if let Some(memory) = &self.memory {
-            if let Ok(ref output) = result {
-                let mut outputs = HashMap::new();
-                outputs.insert("output".to_string(), output.clone());
+            match &result {
+                Ok(output) => {
+                    let mut outputs = HashMap::new();
+                    outputs.insert("output".to_string(), output.clone());
 
-                memory
-                    .lock()
-                    .await
-                    .save_context(&inputs, &outputs)
-                    .await
-                    .map_err(|e| AgentError::Other(format!("Failed to save memory: {}", e)))?;
+                    memory
+                        .lock()
+                        .await
+                        .save_context(&inputs, &outputs)
+                        .await
+                        .map_err(|e| AgentError::Other(format!("Failed to save memory: {}", e)))?;
+                }
+                // F7:出错这一轮同样是对话的一部分——把用户输入 + 错误信息写回
+                // 记忆,否则下一轮上下文断裂(用户上一条输入整个丢失)。错误文本
+                // 作为 `output` 保存,满足 `save_context` 要求 input/output
+                // 双 key 的契约。保存失败只告警,不覆盖原始错误。
+                Err(e) => {
+                    let mut outputs = HashMap::new();
+                    outputs.insert("output".to_string(), format!("[error] {}", e));
+
+                    if let Err(save_err) = memory.lock().await.save_context(&inputs, &outputs).await
+                    {
+                        log::warn!("failed to save errored round to memory: {}", save_err);
+                    }
+                }
             }
         }
 
@@ -467,6 +533,8 @@ impl AgentExecutor {
             response_cache: self.response_cache.clone(),
             cache_namespace: self.cache_namespace.clone(),
             tool_policy: self.tool_policy.clone(),
+            approval: self.approval.clone(),
+            budget: self.budget.clone(),
         };
 
         merged_executor.invoke_inner(input, trace_id).await
@@ -476,6 +544,20 @@ impl AgentExecutor {
     ///
     /// Each step of the agent loop (tool calls, observations, final answer)
     /// is emitted as an `AgentStreamEvent` as soon as it occurs.
+    ///
+    /// # `Text` event granularity (F3, 诚实化)
+    ///
+    /// `Text` events carry model text, but their granularity depends on the
+    /// agent's [`BaseAgent::plan_stream`] implementation:
+    ///
+    /// * **Text ReAct agents** stream from the model's chat API, so `Text`
+    ///   events arrive **per token** — concat them as they come for a live
+    ///   word-stream.
+    /// * **Other agents** (function-calling, plan-and-execute, …) use the
+    ///   non-streaming default, so the whole final answer arrives as a single
+    ///   `Text` event immediately before `FinalAnswer`.
+    ///
+    /// `ToolStart`/`ToolEnd` events are always emitted per tool call.
     ///
     /// # Example
     ///
@@ -533,15 +615,35 @@ impl AgentExecutor {
                         .await;
                     return;
                 }
-                let output = match agent.plan(&intermediate_steps, &inputs).await {
-                    Ok(o) => o,
-                    Err(e) => {
-                        let _ = tx
-                            .send(Ok(AgentStreamEvent::Error {
-                                message: e.to_string(),
-                            }))
-                            .await;
-                        return;
+                // F3:流式规划——agent 内部把模型文本逐 token 经 on_token 转发
+                // 为 Text 事件。ReAct 走 `stream_chat` 得到真正的逐字流;其它 agent
+                // 走 `plan_stream` 默认实现(整段答案作为单个 Text 事件),行为与旧
+                // 路径一致。
+                let output = {
+                    // 不能 shadow 外层 tx:闭包 move 会把它带走,后面的
+                    // ToolStart/FinalAnswer 就再也用不了外层 tx 了。
+                    let send_tx = tx.clone();
+                    // 回调接收自有 String(F3):async 块直接拥有 token,不再借用
+                    // 入参,故 future 是 'static,可用 `as` 强转成 trait object。
+                    let mut on_token = move |token: String| {
+                        let tx = send_tx.clone();
+                        Box::pin(async move {
+                            let _ = tx.send(Ok(AgentStreamEvent::Text { content: token })).await;
+                        }) as Pin<Box<dyn Future<Output = ()> + Send>>
+                    };
+                    match agent
+                        .plan_stream(&intermediate_steps, &inputs, &mut on_token)
+                        .await
+                    {
+                        Ok(o) => o,
+                        Err(e) => {
+                            let _ = tx
+                                .send(Ok(AgentStreamEvent::Error {
+                                    message: e.to_string(),
+                                }))
+                                .await;
+                            return;
+                        }
                     }
                 };
                 let usage = agent.last_token_usage();
@@ -551,15 +653,8 @@ impl AgentExecutor {
                 match output {
                     AgentOutput::Finish(finish) => {
                         let content = finish.output().unwrap_or("").to_string();
-                        // P1-8 流式融合:先发 Text 事件承载模型文本,再发 FinalAnswer 终态,
-                        // 使流内既有工具事件(ToolStart/ToolEnd)又有文本 token。
-                        // 非流式 `plan()` 一次性返回整段答案,故 Text 为单个事件;
-                        // 流式 agent 则逐 token 发出 Text。
-                        let _ = tx
-                            .send(Ok(AgentStreamEvent::Text {
-                                content: content.clone(),
-                            }))
-                            .await;
+                        // P1-8 流式融合:模型文本已由 plan_stream 经 on_token 逐段发出
+                        // (Text 事件),这里只发 FinalAnswer 终态,不重复整段答案。
                         let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
                         return;
                     }

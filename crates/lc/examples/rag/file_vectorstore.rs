@@ -1,8 +1,8 @@
-//! FileVectorStore 示例
+//! FileVectorStore example
 //!
-//! 展示如何使用 FileVectorStore 进行向量持久化存储。
+//! Shows how to use FileVectorStore for persistent vector storage.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example file_vectorstore
 //! ```
@@ -12,21 +12,21 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== FileVectorStore 示例 ===\n");
+    println!("=== FileVectorStore example ===\n");
 
     let path = PathBuf::from("./example_vectors.json");
     let dim = 4;
 
-    // 创建文件向量存储
+    // Create a file-backed vector store
     let store = FileVectorStore::new(path.clone(), dim).await?;
-    println!("创建 FileVectorStore: {:?}", path);
-    println!("向量维度: {}", store.dimension());
+    println!("Created FileVectorStore: {:?}", path);
+    println!("Vector dimension: {}", store.dimension());
 
-    // 添加文档
+    // Add documents
     let docs = vec![
-        Document::new("Rust 注重安全和性能").with_id("rust"),
-        Document::new("Python 适合快速开发").with_id("python"),
-        Document::new("Go 适合并发服务").with_id("go"),
+        Document::new("Rust focuses on safety and performance").with_id("rust"),
+        Document::new("Python is great for rapid development").with_id("python"),
+        Document::new("Go is good for concurrent services").with_id("go"),
     ];
 
     let _embeddings = MockEmbeddings::new(dim);
@@ -37,26 +37,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let ids = store.add_documents(docs, emb).await?;
-    println!("添加了 {} 个文档: {:?}", ids.len(), ids);
-    println!("当前文档数: {}", store.count().await);
+    println!("Added {} documents: {:?}", ids.len(), ids);
+    println!("Current document count: {}", store.count().await);
 
-    // 语义搜索
-    let query = vec![0.9, 0.1, 0.0, 0.0]; // 接近 Rust
+    // Semantic search
+    let query = vec![0.9, 0.1, 0.0, 0.0]; // close to "Rust"
     let results = store.similarity_search(&query, 2).await?;
-    println!("\n搜索 Top 2:");
+    println!("\nTop 2 search results:");
     for r in &results {
         println!("  [{:.3}] {}", r.score, r.document.content);
     }
 
-    // 持久化验证
-    println!("\n文件已自动持久化到磁盘。");
-    println!("重启后创建新 FileVectorStore(path, dim) 即可加载已有数据。");
+    // Persistence check
+    println!("\nThe file is automatically persisted to disk.");
+    println!("After a restart, create a new FileVectorStore(path, dim) to load the existing data.");
 
-    // 清理
+    // Cleanup
     store.clear().await?;
-    println!("\n已清空存储。");
+    println!("\nStorage cleared.");
 
-    // 删除示例文件
+    // Delete the example file
     let _ = std::fs::remove_file(&path);
 
     Ok(())

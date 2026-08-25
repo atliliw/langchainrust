@@ -49,6 +49,8 @@ pub enum ProviderError {
     Mistral(OpenAIError),
     /// Configuration error (missing/malformed environment variables, etc.).
     Config(String),
+    /// Testkit harness error (recording/replay failures from `lc-testkit`).
+    Testkit(String),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -68,6 +70,7 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Zhipu(e) => write!(f, "Zhipu error: {e}"),
             ProviderError::Mistral(e) => write!(f, "Mistral error: {e}"),
             ProviderError::Config(msg) => write!(f, "Configuration error: {msg}"),
+            ProviderError::Testkit(msg) => write!(f, "Testkit error: {msg}"),
         }
     }
 }
@@ -89,6 +92,7 @@ impl std::error::Error for ProviderError {
             ProviderError::Zhipu(e) => Some(e),
             ProviderError::Mistral(e) => Some(e),
             ProviderError::Config(_) => None,
+            ProviderError::Testkit(_) => None,
         }
     }
 }
@@ -133,6 +137,15 @@ impl From<AzureOpenAIError> for ProviderError {
 impl From<CohereError> for ProviderError {
     fn from(e: CohereError) -> Self {
         ProviderError::Cohere(e)
+    }
+}
+
+/// Allow testkit harness errors (recording/replay) to surface through the
+/// provider error chain. `lc-testkit` is an external crate and cannot
+/// construct `#[non_exhaustive]` variants, so this is the sole entry point.
+impl From<String> for ProviderError {
+    fn from(msg: String) -> Self {
+        ProviderError::Testkit(msg)
     }
 }
 

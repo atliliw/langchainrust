@@ -1,16 +1,16 @@
-//! 流式输出示例
+//! Streaming output example
 //!
-//! 展示如何使用 `stream_chat` 逐 token 输出响应,
-//! 适合聊天界面实时显示。
+//! Shows how to emit a response token-by-token with `stream_chat`,
+//! suitable for real-time display in a chat UI.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example basic_streaming
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
-//! - `OPENAI_BASE_URL`:API 基址(可选)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
+//! - `OPENAI_BASE_URL`: API base URL (optional)
 
 use futures_util::StreamExt;
 use langchainrust::schema::Message;
@@ -18,7 +18,8 @@ use langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
@@ -31,8 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let messages = vec![
-        Message::system("你是一个 helpful assistant。"),
-        Message::human("从 1 数到 5。"),
+        Message::system("You are a helpful assistant."),
+        Message::human("Count from 1 to 5."),
     ];
 
     let mut stream = llm.stream_chat(messages, None).await?;

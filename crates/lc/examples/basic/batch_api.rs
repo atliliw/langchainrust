@@ -1,41 +1,46 @@
-//! Batch API 示例
+//! Batch API example
 //!
-//! 展示 BatchClient 的批量推理流程:提交 → 轮询 → 取结果。
-//! 适合离线评估、批量翻译/摘要,成本降 50%。
+//! Demonstrates the BatchClient batch inference flow: submit → poll → fetch results.
+//! Suitable for offline evaluation and batch translation/summarization (~50% cost saving).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example basic_batch_api
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
-//! - `OPENAI_BASE_URL`:API 基址(可选)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
+//! - `OPENAI_BASE_URL`: API base URL (optional)
 
 use langchainrust::core::batch::{BatchClient, BatchProvider, BatchRequest};
 use langchainrust::Message;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
-    // 1. 创建 Batch 客户端
+    // 1. Create the batch client
     let client = BatchClient::new(BatchProvider::OpenAI, &api_key).with_base_url(&base_url);
 
-    // 2. 准备批量请求
+    // 2. Prepare the batch requests
     let requests = vec![
         BatchRequest {
             custom_id: "translate-1".into(),
-            messages: vec![Message::human("将以下英文翻译为中文: Hello, World!")],
+            messages: vec![Message::human(
+                "Translate the following English into Chinese: Hello, World!",
+            )],
             model: "gpt-4o-mini".into(),
             temperature: Some(0.3),
             max_tokens: None,
         },
         BatchRequest {
             custom_id: "translate-2".into(),
-            messages: vec![Message::human("将以下英文翻译为中文: Rust is awesome!")],
+            messages: vec![Message::human(
+                "Translate the following English into Chinese: Rust is awesome!",
+            )],
             model: "gpt-4o-mini".into(),
             temperature: Some(0.3),
             max_tokens: None,
@@ -43,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         BatchRequest {
             custom_id: "summarize-1".into(),
             messages: vec![Message::human(
-                "用一句话总结: Rust 是一门系统编程语言,注重内存安全和并发性能。",
+                "Summarize in one sentence: Rust is a systems programming language focused on memory safety and concurrent performance.",
             )],
             model: "gpt-4o-mini".into(),
             temperature: Some(0.3),
@@ -51,20 +56,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
-    println!("提交 {} 个批量请求...", requests.len());
+    println!("Submitting {} batch requests...", requests.len());
 
-    // 3. 提交并等待结果（自动轮询,每 5 秒检查一次,最多等 5 分钟）
+    // 3. Submit and wait (auto-poll every 5s, up to 5 minutes)
     let results = client.submit_and_wait(requests, 5_000, 300_000).await?;
 
-    // 4. 输出结果
-    println!("\n=== 批量结果 ===");
+    // 4. Print the results
+    println!("\n=== Batch results ===");
     for result in &results {
         match &result.result {
             Ok(llm_result) => {
                 println!("[{}] {}", result.custom_id, llm_result.content);
             }
             Err(e) => {
-                println!("[{}] 错误: {}", result.custom_id, e);
+                println!("[{}] error: {}", result.custom_id, e);
             }
         }
     }

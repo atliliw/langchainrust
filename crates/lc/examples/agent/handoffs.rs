@@ -1,37 +1,37 @@
-//! Handoffs 示例
+//! Handoffs example
 //!
-//! 展示如何使用 HandoffManager 在多个 Agent 之间切换。
+//! Shows how to use HandoffManager to switch between multiple agents.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example agent_handoffs
 //! ```
 
-// Handoffs 示例仅展示用法说明，无需导入 LLM 类型
+// This example only shows the usage guide; it does not need to import any LLM type
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Handoffs 示例 ===\n");
+    println!("=== Handoffs example ===\n");
 
-    // Handoffs 允许在多个专业 Agent 之间切换
-    println!("Handoffs 工作流程:");
-    println!("1. 主 Agent 接收用户请求");
-    println!("2. 判断需要哪种专业技能");
-    println!("3. 将对话交接给专业 Agent");
-    println!("4. 专业 Agent 处理完成后可交接回主 Agent");
+    // Handoffs let you switch between multiple specialized agents
+    println!("Handoffs workflow:");
+    println!("1. The main agent receives the user's request");
+    println!("2. It decides which specialization is needed");
+    println!("3. It hands the conversation off to the specialized agent");
+    println!("4. The specialized agent can hand control back to the main agent when done");
 
-    println!("\n示例场景:");
-    println!("- 客服 Agent → 技术支持 Agent → 回到客服");
-    println!("- 通用助手 → 代码专家 → 文档专家");
-    println!("- 销售顾问 → 产品专家 → 售后服务");
+    println!("\nExample scenarios:");
+    println!("- Support agent → Technical support agent → back to support");
+    println!("- General assistant → Code expert → Documentation expert");
+    println!("- Sales advisor → Product expert → After-sales service");
 
-    println!("\nHandoffManager 使用方式:");
+    println!("\nHandoffManager usage:");
     println!("  let manager = HandoffManager::new();");
     println!("  manager.register_agent(\"tech\", tech_executor)?;");
     println!("  manager.register_agent(\"docs\", docs_executor)?;");
     println!("  manager.set_primary(\"tech\")?;");
     println!("  let handoff_tools = manager.handoff_tools();");
 
-    println!("\n提示: 需要设置 OPENAI_API_KEY 才能进行真实调用。");
+    println!("\nNote: set the OPENAI_API_KEY environment variable to make real calls.");
     Ok(())
 }

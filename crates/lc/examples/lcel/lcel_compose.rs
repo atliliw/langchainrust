@@ -1,30 +1,30 @@
-//! LCEL 组合体验示例 —— 提示词 + 记忆 + LLM + 解析器 + RAG 一条链
+//! LCEL composition example — prompt + memory + LLM + parser + RAG in one chain
 //!
-//! v0.15.0 目标:全框架所有功能都能 `pipe` 成一条链。本示例把五个能力
-//! 放进一个可运行程序,展示统一组合体验:
+//! v0.15.0 goal: every framework feature can be `pipe`d into a single chain. This example
+//! puts five capabilities into one runnable program to show the unified composition experience:
 //!
-//! 1. **提示词** `ChatPromptTemplate` —— Runnable 化后直接进链
-//! 2. **记忆** `RunnableWithMessageHistory` —— "LLM + 记忆"整体作为一个 Runnable
-//! 3. **LLM** 原生 `OpenAIChat` —— 不再套 `LLMClient`,直接 `pipe`
-//! 4. **解析器** `StrOutputParser` —— 接住 `LLMResult`,自动取 `content`
-//! 5. **RAG** `RagRunnable` —— 检索增强生成作为链的一段
+//! 1. **Prompt** `ChatPromptTemplate` — a Runnable, goes straight into the chain
+//! 2. **Memory** `RunnableWithMessageHistory` — "LLM + memory" as one Runnable
+//! 3. **LLM** native `OpenAIChat` — no `LLMClient` wrapper, `pipe` it directly
+//! 4. **Parser** `StrOutputParser` — catches the `LLMResult`, automatically takes `content`
+//! 5. **RAG** `RagRunnable` — retrieval-augmented generation as one segment of the chain
 //!
-//! # 运行
+//! # Run
 //!
 //! ```bash
 //! cargo run --example lcel_compose
 //! ```
 //!
-//! # 环境变量
+//! # Environment variables
 //!
-//! | 变量 | 说明 |
+//! | Variable | Description |
 //! |---|---|
-//! | `OPENAI_API_KEY` | API 密钥(必需) |
-//! | `OPENAI_BASE_URL` | API 基址(可选,默认 OpenAI 官方) |
-//! | `TEST_CHAT_MODEL` | 模型名(可选,默认 gpt-4o-mini) |
+//! | `OPENAI_API_KEY` | API key (required) |
+//! | `OPENAI_BASE_URL` | API base URL (optional, defaults to the official OpenAI endpoint) |
+//! | `TEST_CHAT_MODEL` | Model name (optional, defaults to gpt-4o-mini) |
 //!
-//! RAG 段用 BM25 做本地关键词检索(不依赖向量库/网络),只有最后的
-//! 回答生成走 LLM,方便在没有向量服务的环境里跑通整条链。
+//! The RAG segment uses BM25 local keyword search (no vector store / network), so only the
+//! final answer generation calls the LLM — the whole chain runs even without a vector service.
 
 use langchainrust::{
     BM25Retriever, ChatPromptTemplate, ConversationBufferMemory, Document, Message, OpenAIChat,
@@ -36,8 +36,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // === 0. 真实 LLM(原生 OpenAIChat,可直接 pipe) ===
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    // === 0. A real LLM (native OpenAIChat, can be piped directly) ===
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = std::env::var("TEST_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
@@ -48,10 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    // === 1. 提示词 + LLM + 解析器(P0 核心链) ===
-    // 链条类型: Runnable<HashMap<String, String>, String>
+    // === 1. Prompt + LLM + parser (P0 core chain) ===
+    // Chain type: Runnable<HashMap<String, String>, String>
     let prompt = ChatPromptTemplate::from_messages([
-        Message::system("你是一个简洁的 Rust 助手,只输出结论,不要多余文字。"),
+        Message::system("You are a concise Rust assistant. Output only the conclusion, no extra text."),
         Message::human("{question}"),
     ]);
     let qa_chain = prompt.pipe(llm.clone()).pipe(StrOutputParser::new());
@@ -59,34 +60,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut vars = HashMap::new();
     vars.insert(
         "question".to_string(),
-        "一句话说明什么是 Rust 语言".to_string(),
+        "Explain in one sentence what the Rust language is".to_string(),
     );
     let answer = qa_chain.invoke(vars, None).await?;
-    println!("[1] 提示词+LLM+解析器\n     {answer}\n");
+    println!("[1] Prompt+LLM+Parser\n     {answer}\n");
 
-    // === 2. 记忆 + LLM + 解析器(多轮对话链) ===
-    // 链条类型: Runnable<String, String>
-    // 读记忆 → 拼用户输入 → LLM → 写回,全部封装在 RunnableWithMessageHistory 里。
+    // === 2. Memory + LLM + parser (multi-turn chat chain) ===
+    // Chain type: Runnable<String, String>
+    // Read memory → append user input → LLM → write back, all wrapped inside
+    // RunnableWithMessageHistory.
     let memory = ConversationBufferMemory::new().with_return_messages(true);
     let chat_chain =
         RunnableWithMessageHistory::new(llm.clone(), memory).pipe(StrOutputParser::new());
 
     let r1 = chat_chain
-        .invoke("我叫小明,请记住我。".to_string(), None)
+        .invoke("My name is Xiao Ming, please remember me.".to_string(), None)
         .await?;
-    let r2 = chat_chain.invoke("我叫什么名字?".to_string(), None).await?;
-    println!("[2] 记忆+LLM+解析器(多轮)\n     第一轮: {r1}\n     第二轮: {r2}\n");
+    let r2 = chat_chain.invoke("What is my name?".to_string(), None).await?;
+    println!("[2] Memory+LLM+Parser (multi-turn)\n     turn 1: {r1}\n     turn 2: {r2}\n");
 
-    // === 3. RAG 链(BM25 本地检索 + LLM 生成) ===
-    // 链条类型: Runnable<String, String>
-    // BM25 检索不依赖向量库,只有回答生成走 LLM。
+    // === 3. RAG chain (BM25 local retrieval + LLM generation) ===
+    // Chain type: Runnable<String, String>
+    // BM25 retrieval needs no vector store; only answer generation calls the LLM.
     let retriever = BM25Retriever::new();
     retriever.add_documents_sync(vec![
-        Document::new("Rust 是一门系统编程语言,由 Mozilla 开发,注重安全和性能。")
+        Document::new("Rust is a systems programming language developed by Mozilla, focused on safety and performance.")
             .with_id("rust_intro"),
-        Document::new("Rust 的核心特性包括所有权系统、借用检查和零成本抽象。")
+        Document::new("Rust's core features include the ownership system, borrow checking, and zero-cost abstractions.")
             .with_id("rust_features"),
-        Document::new("LCEL(表达式语言)用 .pipe() 把提示词、模型、解析器串成一条链。")
+        Document::new("LCEL (expression language) uses .pipe() to string prompts, models, and parsers into one chain.")
             .with_id("lcel_intro"),
     ]);
 
@@ -98,10 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rag_chain = RagRunnable::new(Arc::new(pipeline));
 
     let answer = rag_chain
-        .invoke("Rust 有哪些核心特性?".to_string(), None)
+        .invoke("What are Rust's core features?".to_string(), None)
         .await?;
-    println!("[3] RAG 链\n     {answer}\n");
+    println!("[3] RAG chain\n     {answer}\n");
 
-    println!("=== lcel_compose 全链完成 ✅ ===");
+    println!("=== lcel_compose full chain complete ✅ ===");
     Ok(())
 }

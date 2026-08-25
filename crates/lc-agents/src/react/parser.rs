@@ -43,19 +43,21 @@ impl ReActOutputParser {
     /// * `text` - LLM 的输出文本
     ///
     /// # 返回
-    /// * `AgentOutput::Action` - 需要执行动作
-    /// * `AgentOutput::Finish` - 最终答案
+    /// * `AgentOutput::Action` - 需要执行动作(有 Action 优先于 Final Answer)
+    /// * `AgentOutput::Finish` - 最终答案(取最后一次出现之后的内容)
     pub fn parse(&self, text: &str) -> Result<AgentOutput, AgentError> {
         let text = text.trim();
 
-        // 检查是否包含 Final Answer
-        if text.contains(self.final_answer_marker) {
-            return self.parse_final_answer(text);
-        }
-
-        // 尝试解析 Action
+        // F6:先试 Action——有 Action 就以 Action 为准。模型可能在 Thought 里
+        // 提到"Final Answer:"字样(解释格式 / 举例),但随后真正要调工具;
+        // 旧逻辑先 `contains` 命中即判收尾,会跳过后面的 Action。
         if let Some(action) = self.parse_action(text)? {
             return Ok(AgentOutput::Action(action));
+        }
+
+        // 无 Action 再看 Final Answer,取最后一次出现之后的内容。
+        if text.contains(self.final_answer_marker) {
+            return self.parse_final_answer(text);
         }
 
         // 无法解析
@@ -82,7 +84,9 @@ impl ReActOutputParser {
             ));
         }
 
-        let answer = parts[1].trim().to_string();
+        // F6:取最后一次出现之后的内容,而不是第一处(模型可能在中间多次
+        // 引用该字样;真正的答案在最后)。
+        let answer = parts.last().unwrap_or(&"").trim().to_string();
 
         Ok(AgentOutput::Finish(AgentFinish::new(
             answer,
@@ -213,5 +217,42 @@ Action Input: 北京"#;
 
         let result = parser.parse(text);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_action_preferred_when_final_answer_mentioned_in_thought() {
+        // F6:Thought 里出现"Final Answer:"字样(解释格式)但随后确有 Action
+        // → 必须解析为 Action,而不是误判收尾。
+        let parser = ReActOutputParser::new();
+
+        let text = r#"Thought: 用户要算数,不能用 Final Answer: 直接回答,需要调工具
+Action: calculator
+Action Input: {"expression": "2 + 3"}"#;
+
+        let result = parser.parse(text).unwrap();
+
+        match result {
+            AgentOutput::Action(action) => assert_eq!(action.tool, "calculator"),
+            _ => panic!("期望 Action,而不是被 'Final Answer:' 字样误判收尾"),
+        }
+    }
+
+    #[test]
+    fn test_final_answer_takes_last_occurrence() {
+        // F6:多次出现 Final Answer → 取最后一次出现之后的内容。
+        let parser = ReActOutputParser::new();
+
+        let text = r#"Thought: 先给个草稿
+Final Answer: 草稿答案
+Final Answer: 正式答案是 42"#;
+
+        let result = parser.parse(text).unwrap();
+
+        match result {
+            AgentOutput::Finish(finish) => {
+                assert_eq!(finish.output(), Some("正式答案是 42"));
+            }
+            _ => panic!("期望 Finish"),
+        }
     }
 }

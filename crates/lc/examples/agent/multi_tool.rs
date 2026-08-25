@@ -1,14 +1,15 @@
-//! 多工具 Agent 示例
+//! Multi-tool Agent example
 //!
-//! 展示 Agent 携带多个工具(Calculator / DateTime / Math),自动选择调用。
+//! Shows an Agent carrying multiple tools (Calculator / DateTime / Math)
+//! and choosing which one to call automatically.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example agent_multi_tool
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
 
 use langchainrust::tools::{Calculator, DateTimeTool, SimpleMathTool};
 use langchainrust::{
@@ -18,7 +19,8 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
@@ -41,6 +43,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = executor
         .invoke("Calculate 15 * 4 and tell me the current time".to_string())
         .await?;
-    println!("结果: {}", result);
+    println!("Result: {}", result);
     Ok(())
 }

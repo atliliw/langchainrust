@@ -1,8 +1,8 @@
-//! VectorStore Memory 示例
+//! VectorStore Memory example
 //!
-//! 展示如何使用 VectorStoreRetrieverMemory 进行语义检索历史记忆。
+//! Shows how to use VectorStoreRetrieverMemory for semantically retrieving past memories.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example vectorstore_memory
 //! ```
@@ -12,17 +12,18 @@ use langchainrust::{Embeddings, InMemoryVectorStore, MockEmbeddings, VectorStore
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== VectorStore Memory 示例 ===\n");
+    println!("=== VectorStore Memory example ===\n");
 
-    // 创建内存向量存储
+    // Create an in-memory vector store
     let store = InMemoryVectorStore::new();
     let embeddings = MockEmbeddings::new(4);
 
-    // 添加文档到向量存储
+    // Add documents to the vector store
     let docs = vec![
-        Document::new("Rust 是一种系统编程语言,注重安全和性能").with_id("1"),
-        Document::new("Python 是一种脚本语言,适合快速开发").with_id("2"),
-        Document::new("LangChain 是构建 LLM 应用的框架").with_id("3"),
+        Document::new("Rust is a systems programming language, focused on safety and performance")
+            .with_id("1"),
+        Document::new("Python is a scripting language, great for rapid development").with_id("2"),
+        Document::new("LangChain is a framework for building LLM applications").with_id("3"),
     ];
 
     let mut emb_vecs = Vec::new();
@@ -31,17 +32,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         emb_vecs.push(emb);
     }
     let ids = store.add_documents(docs, emb_vecs).await?;
-    println!("添加了 {} 个文档: {:?}", ids.len(), ids);
+    println!("Added {} documents: {:?}", ids.len(), ids);
 
-    // 语义搜索
-    let query_emb = embeddings.embed_query("编程语言").await?;
+    // Semantic search
+    let query_emb = embeddings.embed_query("programming language").await?;
     let results = store.similarity_search(&query_emb, 2).await?;
-    println!("\n搜索 '编程语言' Top 2:");
+    println!("\nTop 2 search results for 'programming language':");
     for r in &results {
         println!("  [{:.3}] {}", r.score, r.document.content);
     }
 
-    println!("\nVectorStoreRetrieverMemory 使用向量存储保存对话历史,");
-    println!("通过语义相似度检索相关记忆,实现长期记忆的智能召回。");
+    println!("\nVectorStoreRetrieverMemory stores conversation history in a vector store,");
+    println!("retrieving relevant memories by semantic similarity for smart long-term recall.");
     Ok(())
 }

@@ -705,6 +705,28 @@
                     </tbody>
                 </table>
 
+                <h3>Agent Gates <span class="badge new">v0.16.0</span></h3>
+
+                <p><code>ApprovalHandler</code> (human approval) and <code>BudgetConfig</code> (budget) are two optional gates on <code>AgentExecutor</code>, both off by default — zero behavior change for existing code.</p>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{AllowAll, ApprovalDecision, ApprovalHandler, BudgetConfig};
+
+<span class="comment">// Human-approval gate: async review before tool execution (Allow / Deny / Modify)</span>
+<span class="kw">let</span> executor = executor.with_approval(Arc::new(MyApprovalHandler));
+
+<span class="comment">// Budget gate: hard caps (tool calls / tokens / duration / iterations)</span>
+<span class="kw">let</span> executor = executor.with_budget(BudgetConfig {
+    max_tool_calls: <span class="kw">Some</span>(<span class="num">50</span>),
+    max_tokens: <span class="kw">Some</span>(<span class="num">20_000</span>),
+    ..Default::default()
+});</code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2423,7 +2445,9 @@ crates/
 │   ├── plan_execute/    # PlanExecuteAgent
 │   ├── crag/            # CorrectiveRAG (grade+rewrite+hallucination)
 │   ├── adaptive_rag/    # AdaptiveRAG (LLM-routed retrieval)
-│   └── deep_research/   # DeepResearchAgent (multi-round + citations)
+│   ├── deep_research/   # DeepResearchAgent (multi-round + citations)
+│   ├── executor/        # AgentExecutor main loop + BudgetConfig gate (v0.16)
+│   └── approval.rs      # ApprovalHandler human-approval gate (v0.16)
 ├── lc-prompts/          # Prompt templates (incl. FewShot, `{{` escaping, Chinese var names)
 ├── lc-memory/           # Conversation memory (Buffer, Window, Summary, ContextWindow) + BaseChatMemory trait + MongoPersistentMemory
 ├── lc-chains/           # Chain ops (incl. document chains, RouterChain, invoke_with_config)
@@ -2444,6 +2468,7 @@ crates/
 │   ├── sampling.rs      # SamplingGuard sampling protection
 │   └── sandbox.rs       # ServerSandbox (ParamRule / EgressPolicy)
 ├── lc-a2a/              # Agent-to-Agent protocol (tasks/send, get, cancel + AgentCard)
+├── lc-testkit/          # Record/replay test harness (RecordingProvider / ReplayProvider) v0.16
 ├── lc-langgraph/        # LangGraph (StateGraph, Reducer, GraphEdge, Checkpointer family, GraphPersistence, Subgraph, parallel)
 ├── lc-sessions/         # Session management (SessionStatus lifecycle + memory integration)
 ├── lc-guardrails/       # Input/output safety guardrails (Guardable, streaming guardrails, audit persistence)

@@ -1,8 +1,8 @@
-//! Buffer 记忆示例
+//! Buffer memory example
 //!
-//! 展示 ConversationBufferMemory 保存多轮对话历史(无需 API Key)。
+//! Shows ConversationBufferMemory storing a multi-turn conversation (no API key required).
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example memory_buffer_memory
 //! ```
@@ -16,13 +16,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = ConversationBufferMemory::new();
 
     for i in 1..=3 {
-        let inputs = HashMap::from([("input".to_string(), format!("问题{}", i))]);
-        let outputs = HashMap::from([("output".to_string(), format!("答案{}", i))]);
+        let inputs = HashMap::from([("input".to_string(), format!("question {}", i))]);
+        let outputs = HashMap::from([("output".to_string(), format!("answer {}", i))]);
         memory.save_context(&inputs, &outputs).await?;
-        println!("第 {} 轮已保存,共 {} 条消息", i, memory.chat_memory().len());
+        println!(
+            "round {} saved, {} messages in total",
+            i,
+            memory.chat_memory().len()
+        );
     }
 
     let loaded = memory.load_memory_variables(&HashMap::new()).await?;
-    println!("\n加载的历史:\n{}", loaded.get("history").unwrap());
+    println!("\nLoaded history:\n{}", loaded.get("history").unwrap());
     Ok(())
 }

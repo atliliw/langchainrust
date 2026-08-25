@@ -1,18 +1,18 @@
-//! Quick Start — 3 行代码创建 Agent
+//! Quick Start — create an Agent in 3 lines of code
 //!
-//! 演示 langchainrust v0.7.2 的新 API：
-//! - `LLMClient::from_env()` — 零配置自动检测 Provider
-//! - `AgentBuilder` — 流畅 Builder 创建 Agent
-//! - `FunctionCallingAgent` — 现在支持任何 LLM Provider
+//! Demonstrates the new langchainrust v0.7.2 API:
+//! - `LLMClient::from_env()` — zero-config provider auto-detection
+//! - `AgentBuilder` — fluent builder for creating Agents
+//! - `FunctionCallingAgent` — now supports any LLM provider
 //!
-//! # 运行方式
+//! # How to run
 //!
 //! ```bash
-//! # 自动检测（设置任意一个环境变量）
+//! # Auto-detection (set any one environment variable)
 //! export OPENAI_API_KEY="sk-..."
 //! cargo run --example quick_start
 //!
-//! # 或显式指定 Provider
+//! # Or specify a provider explicitly
 //! export ANTHROPIC_API_KEY="sk-..."
 //! cargo run --example quick_start
 //! ```
@@ -23,15 +23,15 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================
-    // 方式 1: LLMClient::from_env() — 自动检测
+    // Method 1: LLMClient::from_env() — auto-detect
     // ========================================
-    println!("=== 方式 1: LLMClient::from_env() ===");
+    println!("=== Method 1: LLMClient::from_env() ===");
 
     match LLMClient::from_env() {
         Ok(llm) => {
-            println!("✓ 检测到 LLM Provider: {}", llm.model_name());
+            println!("✓ Detected LLM provider: {}", llm.model_name());
 
-            // 用 AgentBuilder 创建 Agent — 3 行代码
+            // Create an Agent with AgentBuilder — 3 lines of code
             let agent = AgentBuilder::new()
                 .llm_from_arc(llm.into_inner())
                 .system("You are a helpful assistant. Answer concisely.")
@@ -40,11 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, vec![]);
 
             let result = executor.invoke("What is 2+2?".into()).await?;
-            println!("回答: {}", result);
+            println!("Answer: {}", result);
         }
         Err(e) => {
-            println!("✗ 未检测到 LLM Provider: {}", e);
-            println!("  请设置以下环境变量之一:");
+            println!("✗ No LLM provider detected: {}", e);
+            println!("  Set one of the following environment variables:");
             println!("  - OPENAI_API_KEY");
             println!("  - ANTHROPIC_API_KEY");
             println!("  - OLLAMA_BASE_URL");
@@ -52,11 +52,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ========================================
-    // 方式 2: 显式指定 Provider
+    // Method 2: specify a provider explicitly
     // ========================================
-    println!("\n=== 方式 2: 显式指定 Provider ===");
+    println!("\n=== Method 2: explicit provider ===");
 
-    // 用 OpenAI
+    // Use OpenAI
     let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
     if !openai_key.is_empty() {
         use langchainrust::OpenAIConfig;
@@ -70,15 +70,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?;
 
         println!(
-            "✓ OpenAI Agent 创建成功: {}",
+            "✓ OpenAI Agent created: {}",
             agent.system_prompt().unwrap_or("none")
         );
     }
 
     // ========================================
-    // 方式 3: 从环境读配置，再覆盖参数
+    // Method 3: read config from env, then override
     // ========================================
-    println!("\n=== 方式 3: from_env_result() + 覆盖参数 ===");
+    println!("\n=== Method 3: from_env_result() + override ===");
 
     if !openai_key.is_empty() {
         use langchainrust::OpenAIConfig;
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config = OpenAIConfig::from_env_result()?.with_model("gpt-4o-mini");
         let llm = LLMClient::openai(config);
 
-        println!("✓ 模型: {}", llm.model_name());
+        println!("✓ Model: {}", llm.model_name());
     }
 
     println!("\n=== Done ===");

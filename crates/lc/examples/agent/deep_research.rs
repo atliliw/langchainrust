@@ -1,24 +1,25 @@
-//! Deep Research Agent 示例
+//! Deep Research Agent example
 //!
-//! 展示 DeepResearchAgent 的多轮深度研究:
-//! 拆子课题 → 搜索 → 综合 → 发现缺口 → 再搜 → 带引用报告。
+//! Shows multi-round deep research with DeepResearchAgent:
+//! split into subtopics → search → synthesize → find gaps → search again → cited report.
 //!
-//! # 运行
+//! # Run
 //! ```bash
 //! cargo run --example agent_deep_research
 //! ```
 //!
-//! # 环境变量
-//! - `OPENAI_API_KEY`:OpenAI API 密钥(必需)
-//! - `OPENAI_BASE_URL`:API 基址(可选)
+//! # Environment variables
+//! - `OPENAI_API_KEY`: OpenAI API key (required)
+//! - `OPENAI_BASE_URL`: API base URL (optional)
 
 use langchainrust::tools::DuckDuckGoSearchTool;
 use langchainrust::{DeepResearchAgent, OpenAIChat, OpenAIConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 配置 LLM
-    let api_key = std::env::var("OPENAI_API_KEY").expect("请设置 OPENAI_API_KEY 环境变量");
+    // 1. Configure the LLM
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("please set the OPENAI_API_KEY environment variable");
     let base_url = std::env::var("OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
@@ -28,22 +29,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    // 2. 创建 Deep Research Agent
+    // 2. Create the Deep Research Agent
     let agent = DeepResearchAgent::new(llm)
         .with_searcher(Box::new(DuckDuckGoSearchTool::new()))
-        .with_max_rounds(3) // 最多 3 轮搜索
-        .with_max_subtopics(5); // 最多拆 5 个子课题
+        .with_max_rounds(3) // at most 3 search rounds
+        .with_max_subtopics(5); // at most 5 subtopics
 
-    // 3. 执行深度研究
+    // 3. Run the deep research
     let report = agent
-        .research("Rust 异步运行时对比: tokio vs async-std vs smol")
+        .research("Rust async runtime comparison: tokio vs async-std vs smol")
         .await?;
 
-    // 4. 输出报告
-    println!("=== 深度研究报告 ===\n");
+    // 4. Print the report
+    println!("=== Deep Research Report ===\n");
     println!("{}", report.markdown);
 
-    println!("\n--- 引用 ---");
+    println!("\n--- Citations ---");
     for citation in &report.citations {
         println!(
             "[{}] {} {}",
@@ -58,9 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {}", citation.snippet);
     }
 
-    println!("\n--- 统计 ---");
-    println!("子课题: {:?}", report.subtopics);
-    println!("研究轮数: {}", report.rounds_completed);
+    println!("\n--- Statistics ---");
+    println!("Subtopics: {:?}", report.subtopics);
+    println!("Research rounds: {}", report.rounds_completed);
 
     Ok(())
 }

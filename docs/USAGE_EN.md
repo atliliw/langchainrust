@@ -2052,6 +2052,50 @@ policy.set_risk("delete_file", ToolRisk::High);
 // High-risk tool calls go through approval instead of executing directly
 ```
 
+### Agent Approval Gate (ApprovalHandler) ✨ v0.16.0
+
+Async approval before tool execution: `Allow` / `Deny` (the reason feeds back as an observation, the tool does not run) / `Modify` (rewrite the arguments). Off by default (`None` = pass through).
+
+```rust
+use langchainrust::agents::hooks::ToolCallContext;
+use langchainrust::{ApprovalHandler, ApprovalDecision};
+use std::sync::Arc;
+
+struct MyApproval;
+
+#[async_trait::async_trait]
+impl ApprovalHandler for MyApproval {
+    async fn approve(&self, ctx: &ToolCallContext) -> ApprovalDecision {
+        if ctx.name == "delete_file" {
+            ApprovalDecision::Deny { reason: "manual review required".into() }
+        } else {
+            ApprovalDecision::Allow
+        }
+    }
+}
+
+let executor = executor.with_approval(Arc::new(MyApproval));
+```
+
+Who approves is up to the caller (CLI prompt / webhook / automated policy routing); the framework only provides the gate plus a reference `AllowAll` implementation. `approve(ctx).await` is async — once suspended, resuming from the same line when the signal arrives gives in-process resume for free.
+
+### Agent Budget Gate (BudgetConfig) ✨ v0.16.0
+
+Hard limits on the agent loop; exceeding any returns `AgentError::BudgetExceeded` (with exact `limit` / `actual`). Off by default.
+
+```rust
+use langchainrust::BudgetConfig;
+use std::time::Duration;
+
+let executor = executor.with_budget(BudgetConfig {
+    max_tool_calls: Some(50),                          // cumulative tool-call cap
+    max_tokens: Some(20_000),                          // cumulative LLM token cap
+    max_duration: Some(Duration::from_secs(120)),      // loop wall-clock cap
+    max_iterations: Some(10),                          // tighten/override default iteration cap
+    ..Default::default()
+});
+```
+
 ## Plan-Execute Agent
 
 A plain single-loop Agent (`FunctionCallingAgent` / `ReActAgent`) suits tasks that can be thought through in one step — think, act, observe the result. But for complex multi-step tasks like "research first, then write code, then explain key points", the model cannot produce a complete plan in a single step, and diving straight in tends to go off track. The Plan-Execute Agent breaks a big task into a "plan first → execute step by step → re-plan on failure" loop: it first uses an LLM to decompose the task into executable steps, hands each step to a single-loop Agent, re-plans when a step fails (instead of stubbornly continuing), and finally summarizes the result once all steps complete. Suited for complex, multi-step tasks that allow mid-course plan adjustments.
@@ -4160,6 +4204,27 @@ cargo test
 - Cover pure logic with unit tests first — fast and easy to localize; cover positive and negative cases, don't only test the happy path.
 - Cover external composition behavior with integration tests; integration tests need explicit assertions, not just "no panic."
 - When writing doc examples, make them runnable as doctests — examples are tests, and the APIs shown in examples must really exist.
+
+### Offline Record/Replay Testing (lc-testkit) ✨ v0.16.0
+
+`lc-testkit` is a standalone record/replay test-harness crate (not re-exported through the facade; add it as a dev-dependency). `RecordingProvider` wraps any `BaseChatModel`, calls it once for real, and appends each request/response exchange to a JSONL file; `ReplayProvider` replays them offline and deterministically — keyless CI can still test chains.
+
+```toml
+[dev-dependencies]
+lc-testkit = "0.16.0"
+```
+
+```rust
+// Record: one real call, written to a fixture file on success
+let recorded = RecordingProvider::new(real_llm, "fixtures/llm_chain_f01.jsonl")?;
+
+// Replay: zero network, FIFO, byte-stable
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?;
+let chain = LLMChain::new(llm, "Answer in one sentence: {question}");
+let result = chain.invoke(inputs).await?;
+```
+
+Recording is a side-channel, not an interceptor: a failed real call writes nothing; a failed disk write only warns and never blocks the real result. Round-trip (record → replay byte-identical) and a real-chain replay test ship with the crate.
 
 ---
 

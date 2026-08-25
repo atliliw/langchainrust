@@ -8,11 +8,14 @@ use super::parser::ReActOutputParser;
 use super::prompt::{build_react_prompt, format_scratchpad};
 use crate::{AgentError, AgentOutput, AgentStep, BaseAgent};
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::language_models::{BaseChatModel, TokenUsage};
 use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
 use lc_schema::Message;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// ReAct Agent
@@ -178,6 +181,55 @@ impl BaseAgent for ReActAgent {
 
         // 解析输出
         self.parser.parse(&result.content)
+    }
+
+    /// 流式规划(F3):逐 token 转发模型输出,累积为完整文本后解析。
+    ///
+    /// `plan()` 走非流式 `chat`(带重试、记录 token 用量);这里走 `stream_chat`
+    /// 把每个 chunk 经 `on_token` 实时转发为 `Text` 事件,同时累积成完整文本
+    /// 供 Action / Final Answer 解析。
+    ///
+    /// 权衡:流式 `stream_chat` 只回传文本字符串,拿不到 token 用量——流式路径
+    /// 的 metrics 用量由非流式 `invoke` 路径补齐。`stream_chat` 立即可用即失败
+    /// (如 provider 未实现流式)时回退到非流式 `plan()`,保证 agent 循环不中断。
+    async fn plan_stream(
+        &self,
+        intermediate_steps: &[AgentStep],
+        inputs: &HashMap<String, String>,
+        on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+    ) -> Result<AgentOutput, AgentError> {
+        let input = inputs
+            .get("input")
+            .ok_or_else(|| AgentError::Other("Missing input parameter 'input'".to_string()))?;
+        let history = inputs.get("history").map(|s| s.as_str());
+        let prompt_text = self.build_prompt(input, intermediate_steps, history);
+        let messages = vec![Message::human(prompt_text)];
+
+        let mut stream = match self.llm.stream_chat(messages, None).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!(
+                    "stream_chat unavailable ({}), falling back to non-streaming plan",
+                    e
+                );
+                let output = self.plan(intermediate_steps, inputs).await?;
+                if let AgentOutput::Finish(finish) = &output {
+                    on_token(finish.output().unwrap_or("").to_string()).await;
+                }
+                return Ok(output);
+            }
+        };
+
+        // 逐 token:先实时转发(clone 出自有 String),再拼进完整文本。
+        // 解析只在流结束后进行,因此一个 ReAct 步骤的 Action / Final Answer
+        // 判定不受影响。
+        let mut full = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| AgentError::Other(format!("LLM stream error: {}", e)))?;
+            on_token(chunk.clone()).await;
+            full.push_str(&chunk);
+        }
+        self.parser.parse(&full)
     }
 
     /// 获取允许的工具列表

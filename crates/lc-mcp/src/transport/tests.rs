@@ -129,6 +129,55 @@ async fn test_sse_request_retries_after_post_failure() {
     );
 }
 
+#[tokio::test]
+async fn test_sse_request_accepts_202_and_reads_response_via_sse_push() {
+    // F4:服务器对 POST 回 202 Accepted、JSON-RPC 响应经 SSE `event: message`
+    // 推送 → request 必须按 `id` 关联到推送并返回结果(与直接响应型服务器
+    // 互操作)。PushResponse 模式下 POST body 恒为空,结果只能来自 SSE 推送,
+    // 因此成功返回即证明推送关联路径走通。
+    let server =
+        crate::test_support::start_fake_sse_server(crate::test_support::PostMode::PushResponse)
+            .await;
+    let config = MCPConfig::sse(&server.sse_url);
+    let transport = SseTransport::new(&config).unwrap();
+    wait_connected(&transport).await;
+
+    // 用未知方法(测试服务器对未识别方法回 {"ok": true}),与既有用例一致。
+    let req = MCPRequest::new(1, "ping", None);
+    let result = timeout(Duration::from_secs(10), transport.request(req)).await;
+    let resp = result
+        .expect("request must not hang forever (10s guard)")
+        .expect("request should succeed via SSE-pushed response");
+    assert!(!resp.is_error());
+    assert_eq!(resp.result, Some(serde_json::json!({ "ok": true })));
+}
+
+#[tokio::test]
+async fn test_sse_request_times_out_when_server_hangs() {
+    // F2:服务器"连上了但吞 POST 不回 body"→ 请求必须在 request_timeout
+    // 内返回带 "timed out" 的错误,绝不永久挂起。
+    let server =
+        crate::test_support::start_fake_sse_server(crate::test_support::PostMode::HangPost).await;
+    let config = MCPConfig::sse(&server.sse_url);
+    // 测试缩短超时窗口到 300ms,否则真等 30s。
+    let transport = SseTransport::new(&config)
+        .unwrap()
+        .with_request_timeout(Duration::from_millis(300));
+    wait_connected(&transport).await;
+
+    let req = MCPRequest::new(1, "ping", None);
+    // 外层 10s 兜底:若超时机制失效,这里 fail 报错而不是把测试挂死。
+    let result = timeout(Duration::from_secs(10), transport.request(req)).await;
+    let err = result
+        .expect("request must not hang forever (10s guard)")
+        .expect_err("request should time out when server never responds");
+    assert!(
+        err.to_string().contains("timed out"),
+        "expected 'timed out' in error, got: {}",
+        err
+    );
+}
+
 /// P2-6: 进程内传输 + 真实 `MCPServer` 打通 Client↔Server 协议链路。
 ///
 /// 走 `MCPClient::with_transport`(握手) → `list_tools` → `call_tool`,

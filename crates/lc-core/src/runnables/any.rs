@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use std::any::Any;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Type-erased Runnable with unified `LcelError`.
 ///
@@ -70,7 +71,11 @@ where
     O: Send + Sync + 'static,
     R: super::Runnable<I, O>,
 {
-    inner: R,
+    // `Arc` so that a lazy `transform_any` stream can own a clone of the inner
+    // runnable and keep calling `stream` per item **after** `transform_any`
+    // has returned — no `&self` borrow in the returned stream (which would
+    // otherwise force a `+ '_` lifetime through every caller).
+    inner: Arc<R>,
     _marker: std::marker::PhantomData<(I, O)>,
 }
 
@@ -83,7 +88,7 @@ where
     /// Create a new wrapper.
     pub fn new(runnable: R) -> Self {
         Self {
-            inner: runnable,
+            inner: Arc::new(runnable),
             _marker: std::marker::PhantomData,
         }
     }
@@ -151,43 +156,69 @@ where
         // because the error types don't match (LcelError vs `R::Error` and
         // `R::Error: From<LcelError>` does not hold for e.g. `Infallible`).
         //
-        // Instead we drive each input item through `self.inner.stream(item, ..)`
-        // and concatenate the per-item streams in order. This is the LangChain
-        // default `transform` semantics: a step that overrides `stream` (e.g. an
-        // LLM) yields a real token stream per item, while a step using the
-        // default `stream` (single-element) degrades to elementwise `invoke`.
+        // Instead we drive each input item through `inner.stream(item, ..)`
+        // **lazily**: as soon as an input item arrives it is immediately run
+        // through `stream` and its output yielded, before pulling the next input
+        // item. This matches `Runnable::transform` default semantics — a step
+        // that overrides `stream` (e.g. an LLM) yields a real token stream per
+        // item, while a step using the default `stream` (single-element) degrades
+        // to elementwise `invoke`. Downstream receives output incrementally
+        // instead of waiting for the whole input stream, and an infinite/long-lived
+        // upstream never accumulates unboundedly in memory.
+        //
+        // The stream owns a cloned `Arc` of the inner runnable, so it can keep
+        // calling `stream` per item **after** this method returns — no `&self`
+        // borrow escapes into the returned `'static` stream.
+        //
+        // Note: `?` is not usable inside `async_stream::stream!`, so errors are
+        // yielded and the stream terminates after them.
         use futures_util::StreamExt;
 
-        let mut items = Vec::new();
-        let mut input = input;
-        while let Some(item) = input.next().await {
-            let boxed = item?;
-            let typed = boxed.downcast::<I>().map_err(|_| {
-                LcelError::TypeMismatch(format!(
-                    "transform_any input: expected {}",
-                    std::any::type_name::<I>()
-                ))
-            })?;
-            items.push(*typed);
-        }
-
-        let mut per_item_streams = Vec::with_capacity(items.len());
-        for item in items {
-            let stream = self
-                .inner
-                .stream(item, config.clone())
-                .await
-                .map_err(Into::into)?;
-            let any_stream = stream.map(|result| {
-                result
-                    .map(|output| Box::new(output) as Box<dyn Any + Send>)
-                    .map_err(Into::into)
-            });
-            per_item_streams.push(any_stream);
-        }
-
-        let flattened = futures_util::stream::iter(per_item_streams).flatten();
-        Ok(Box::pin(flattened))
+        let inner = Arc::clone(&self.inner);
+        let config = config.clone();
+        let out = async_stream::stream! {
+            let mut input = input;
+            loop {
+                let boxed = match input.next().await {
+                    Some(item) => item,
+                    None => return,
+                };
+                let boxed = match boxed {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                };
+                let typed = match boxed.downcast::<I>() {
+                    Ok(t) => *t,
+                    Err(_) => {
+                        yield Err(LcelError::TypeMismatch(format!(
+                            "transform_any input: expected {}",
+                            std::any::type_name::<I>()
+                        )));
+                        return;
+                    }
+                };
+                // 驱动当前元素经过 `stream`,把输出全部放出去后再拉下一个输入。
+                let item_stream = match inner.stream(typed, config.clone()).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        yield Err(e.into());
+                        return;
+                    }
+                };
+                let mut any_stream = item_stream.map(|result| {
+                    result
+                        .map(|output| Box::new(output) as Box<dyn Any + Send>)
+                        .map_err(Into::into)
+                });
+                while let Some(res) = any_stream.next().await {
+                    yield res;
+                }
+            }
+        };
+        Ok(Box::pin(out))
     }
 
     async fn batch_any(
@@ -300,5 +331,38 @@ mod tests {
         let result = boxed.invoke_any(input, None).await.unwrap();
         let output: i32 = *result.downcast::<i32>().unwrap();
         assert_eq!(output, 6);
+    }
+
+    /// `transform_any` 必须惰性:下游收到第一条输出时,上游流尚未产完。
+    /// 这是 `llm.pipe(parser)` 这类链能"边生成边输出"的关键。
+    #[tokio::test]
+    async fn transform_any_is_lazy_incremental() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let produced_last = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&produced_last);
+
+        let src = async_stream::stream! {
+            yield Ok::<Box<dyn Any + Send>, LcelError>(Box::new(1i32));
+            yield Ok::<Box<dyn Any + Send>, LcelError>(Box::new(2i32));
+            yield Ok::<Box<dyn Any + Send>, LcelError>(Box::new(3i32));
+            flag.store(true, Ordering::SeqCst);
+        };
+        let input_stream = Box::pin(src)
+            as Pin<Box<dyn Stream<Item = Result<Box<dyn Any + Send>, LcelError>> + Send>>;
+
+        let wrapper = RunnableAnyWrapper::new(AddOne);
+        let mut output = wrapper.transform_any(input_stream, None).await.unwrap();
+
+        let first = output.next().await.unwrap().unwrap();
+        let v: i32 = *first.downcast::<i32>().unwrap();
+        assert_eq!(v, 2);
+        assert!(
+            !produced_last.load(Ordering::SeqCst),
+            "transform_any 不应在上游流结束前就攒齐整条输入"
+        );
+
+        while output.next().await.is_some() {}
+        assert!(produced_last.load(Ordering::SeqCst));
     }
 }

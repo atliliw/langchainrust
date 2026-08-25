@@ -185,12 +185,16 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
     /// pipeline streaming without buffering intermediate results.
     ///
     /// # Default Implementation
-    /// Drives each input item through `stream` and concatenates the per-item
-    /// streams in order — the LangChain default `transform` semantics. A step
-    /// that overrides `stream` (e.g. an LLM) yields a real token stream per
-    /// item; a step using the default `stream` maps elementwise via `invoke`.
-    /// Components that want aggregation (e.g. incremental parsers) should
-    /// override this method.
+    /// Drives each input item through `stream` **lazily**: as soon as an input
+    /// item arrives it is immediately run through `stream` and its output
+    /// yielded, before pulling the next input item. This is the LangChain
+    /// default `transform` semantics — downstream receives output incrementally
+    /// instead of waiting for the entire input stream to finish, and an
+    /// infinite/long-lived upstream never accumulates unboundedly in memory.
+    /// A step that overrides `stream` (e.g. an LLM) yields a real token stream
+    /// per item; a step using the default `stream` maps elementwise via
+    /// `invoke`. Components that want aggregation (e.g. incremental parsers)
+    /// should override this method.
     ///
     /// # Arguments
     /// * `input` - Input stream to transform.
@@ -202,25 +206,42 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
         &self,
         input: Pin<Box<dyn Stream<Item = Result<Input, Self::Error>> + Send>>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Output, Self::Error>> + Send + '_>>, Self::Error>
+    {
+        // Note: the `+ '_` on the returned `dyn Stream` allows the default lazy
+        // implementation to borrow `&self` across the stream's lifetime. Existing
+        // implementations that return `'static` streams remain valid (they simply
+        // outlive the required bound).
         use futures_util::StreamExt;
 
-        // Buffer the input items, then run each one through `stream` and
-        // concatenate the per-item streams (elementwise semantics).
-        let mut items = Vec::new();
-        let mut input = input;
-        while let Some(item) = input.next().await {
-            items.push(item?);
-        }
-
-        let mut per_item_streams = Vec::with_capacity(items.len());
-        for item in items {
-            let stream = self.stream(item, config.clone()).await?;
-            per_item_streams.push(stream);
-        }
-
-        let flattened = futures_util::stream::iter(per_item_streams).flatten();
-        Ok(Box::pin(flattened))
+        let config = config.clone();
+        let stream = async_stream::stream! {
+            let mut input = input;
+            loop {
+                let item = match input.next().await {
+                    Some(Ok(item)) => item,
+                    Some(Err(e)) => {
+                        yield Err(e);
+                        return;
+                    }
+                    None => return,
+                };
+                // Run the current item through `stream` and drain it to the
+                // output before pulling the next input item (lazy elementwise).
+                let inner = match self.stream(item, config.clone()).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                };
+                futures_util::pin_mut!(inner);
+                while let Some(res) = inner.next().await {
+                    yield res;
+                }
+            }
+        };
+        Ok(Box::pin(stream))
     }
 }
 
@@ -412,5 +433,41 @@ mod tests {
         let runnable = TestRunnable;
         let results = runnable.batch_as_completed(vec![], None).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    /// 默认 `transform` 必须惰性:下游收到第一条输出时,上游流尚未产完。
+    /// 若仍按旧的"攒齐整条流"实现,本测试会在 `assert!(!produced_last..)` 处失败。
+    #[tokio::test]
+    async fn default_transform_is_lazy_incremental() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let produced_last = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&produced_last);
+
+        // 上游:产出 3 条,产完最后一条才置位 flag。
+        let src = async_stream::stream! {
+            yield Ok("first".to_string());
+            yield Ok("second".to_string());
+            yield Ok("third".to_string());
+            flag.store(true, Ordering::SeqCst);
+        };
+        let input_stream = Box::pin(src)
+            as Pin<Box<dyn Stream<Item = Result<String, std::convert::Infallible>> + Send>>;
+
+        let runnable = TestRunnable;
+        let mut output_stream = runnable.transform(input_stream, None).await.unwrap();
+
+        // 首条输出到达时,上游尚未产完(惰性逐条拼接,而非攒齐整条流)。
+        let first = output_stream.next().await.unwrap().unwrap();
+        assert_eq!(first, "processed: first");
+        assert!(
+            !produced_last.load(Ordering::SeqCst),
+            "transform 不应在上游流结束前就攒齐整条输入"
+        );
+
+        // 消费剩余全部,此时上游 flag 应已置位(输出序列完整、无丢失)。
+        while output_stream.next().await.is_some() {}
+        assert!(produced_last.load(Ordering::SeqCst));
     }
 }

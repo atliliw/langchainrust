@@ -1,0 +1,24 @@
+[package]
+name = "lc-testkit"
+version = "0.16.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Testing harness for langchainrust — record real LLM exchanges and replay them offline"
+repository = "https://github.com/atliliw/langchainrust"
+rust-version = "1.82"
+
+[dependencies]
+lc-core = { path = "../lc-core", version = "0.16.0" }
+lc-schema = { path = "../lc-schema", version = "0.16.0" }
+lc-providers = { path = "../lc-providers", version = "0.16.0" }
+async-trait = "0.1"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+log = "0.4"
+
+[dev-dependencies]
+lc-chains = { path = "../lc-chains", version = "0.16.0" }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
