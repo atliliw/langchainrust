@@ -56,12 +56,12 @@ impl PineconeStore {
         &self,
         docs: &[Document],
         embeddings: &dyn Embeddings,
-    ) -> Result<(), String> {
+    ) -> Result<(), VectorStoreError> {
         let texts: Vec<&str> = docs.iter().map(|d| d.content.as_str()).collect();
         let vectors = embeddings
             .embed_documents(&texts)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
         let body = Self::build_upsert_body(docs, &vectors);
         let url = format!("{}/vectors/upsert", self.host);
         let resp = self
@@ -71,15 +71,22 @@ impl PineconeStore {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone upsert error: {}", resp.status()));
+            return Err(VectorStoreError::ConnectionError(format!(
+                "Pinecone upsert error: {}",
+                resp.status()
+            )));
         }
         Ok(())
     }
 
     /// Query similar documents.
-    pub async fn query(&self, query_vec: Vec<f32>, top_k: usize) -> Result<Vec<Document>, String> {
+    pub async fn query(
+        &self,
+        query_vec: Vec<f32>,
+        top_k: usize,
+    ) -> Result<Vec<Document>, VectorStoreError> {
         let body = Self::build_query_body(&query_vec, top_k);
         let url = format!("{}/query", self.host);
         let resp = self
@@ -89,11 +96,17 @@ impl PineconeStore {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone query error: {}", resp.status()));
+            return Err(VectorStoreError::ConnectionError(format!(
+                "Pinecone query error: {}",
+                resp.status()
+            )));
         }
-        let query_resp: QueryResponse = resp.json().await.map_err(|e| e.to_string())?;
+        let query_resp: QueryResponse = resp
+            .json()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let result = query_resp
             .matches
             .into_iter()
@@ -101,8 +114,9 @@ impl PineconeStore {
                 let content = m
                     .metadata
                     .as_ref()
-                    .and_then(|md| md.get("content").cloned())
-                    .unwrap_or_default();
+                    .and_then(|md| md.get("content").and_then(|v| v.as_str()))
+                    .unwrap_or_default()
+                    .to_string();
                 Document {
                     content,
                     metadata: m.metadata.unwrap_or_default(),
@@ -116,7 +130,7 @@ impl PineconeStore {
     /// 读取索引统计(真实 count 的唯一可靠来源)。
     ///
     /// Pinecone REST 提供 `describe_index_stats`,返回 `totalVectorCount`。
-    pub async fn describe_index_stats(&self) -> Result<PineconeIndexStats, String> {
+    pub async fn describe_index_stats(&self) -> Result<PineconeIndexStats, VectorStoreError> {
         let url = format!("{}/describe_index_stats", self.host);
         let resp = self
             .client
@@ -124,18 +138,20 @@ impl PineconeStore {
             .header("Api-Key", &self.api_key)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(format!(
+            return Err(VectorStoreError::ConnectionError(format!(
                 "Pinecone describe_index_stats error: {}",
                 resp.status()
-            ));
+            )));
         }
-        resp.json().await.map_err(|e| e.to_string())
+        resp.json()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))
     }
 
     /// Delete by IDs.
-    pub async fn delete(&self, ids: &[String]) -> Result<(), String> {
+    pub async fn delete(&self, ids: &[String]) -> Result<(), VectorStoreError> {
         let url = format!("{}/vectors/delete", self.host);
         let body = serde_json::json!({ "ids": ids });
         let resp = self
@@ -145,9 +161,12 @@ impl PineconeStore {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(format!("Pinecone delete error: {}", resp.status()));
+            return Err(VectorStoreError::ConnectionError(format!(
+                "Pinecone delete error: {}",
+                resp.status()
+            )));
         }
         Ok(())
     }
@@ -226,8 +245,9 @@ impl VectorStore for PineconeStore {
                 let content = m
                     .metadata
                     .as_ref()
-                    .and_then(|md| md.get("content").cloned())
-                    .unwrap_or_default();
+                    .and_then(|md| md.get("content").and_then(|v| v.as_str()))
+                    .unwrap_or_default()
+                    .to_string();
                 let doc = Document {
                     content,
                     metadata: m.metadata.unwrap_or_default(),
@@ -258,9 +278,7 @@ impl VectorStore for PineconeStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        self.delete(&[id.to_string()])
-            .await
-            .map_err(VectorStoreError::StorageError)
+        self.delete(&[id.to_string()]).await
     }
 
     async fn count(&self) -> usize {
@@ -269,7 +287,7 @@ impl VectorStore for PineconeStore {
         match self.describe_index_stats().await {
             Ok(stats) => stats.total_vector_count,
             Err(e) => {
-                log::warn!("Pinecone count 失败,按 0 处理: {}", e);
+                log::warn!("Pinecone count failed, treating as 0: {}", e);
                 0
             }
         }
@@ -291,7 +309,7 @@ struct QueryResponse {
 struct QueryMatch {
     id: String,
     score: f64,
-    metadata: Option<HashMap<String, String>>,
+    metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// Pinecone `describe_index_stats` 响应(只需我们关心的字段)。
@@ -300,6 +318,7 @@ struct QueryMatch {
 /// 也是 [`VectorStore::count`](crate::VectorStore::count) 的数据来源。
 #[derive(Deserialize)]
 pub struct PineconeIndexStats {
+    /// 索引中的总向量数
     #[serde(default)]
     pub total_vector_count: usize,
 }

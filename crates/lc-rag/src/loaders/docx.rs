@@ -39,7 +39,7 @@ impl DocxLoader {
     fn extract_text_from_bytes(data: &[u8]) -> Result<String, LoaderError> {
         let reader = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(reader)
-            .map_err(|e| LoaderError::Other(format!("DOCX 不是有效 ZIP: {}", e)))?;
+            .map_err(|e| LoaderError::Other(format!("DOCX is not a valid ZIP: {}", e)))?;
 
         // 读取 word/document.xml
         let mut xml_content = String::new();
@@ -47,10 +47,11 @@ impl DocxLoader {
         for i in 0..archive.len() {
             let mut file = archive
                 .by_index(i)
-                .map_err(|e| LoaderError::Other(format!("读取 ZIP 条目失败: {}", e)))?;
+                .map_err(|e| LoaderError::Other(format!("failed to read ZIP entry: {}", e)))?;
             if file.name() == "word/document.xml" {
-                file.read_to_string(&mut xml_content)
-                    .map_err(|e| LoaderError::Other(format!("读取 document.xml 失败: {}", e)))?;
+                file.read_to_string(&mut xml_content).map_err(|e| {
+                    LoaderError::Other(format!("failed to read document.xml: {}", e))
+                })?;
                 found = true;
                 break;
             }
@@ -58,7 +59,7 @@ impl DocxLoader {
 
         if !found {
             return Err(LoaderError::Other(
-                "DOCX 中未找到 word/document.xml".to_string(),
+                "word/document.xml not found in DOCX".to_string(),
             ));
         }
 
@@ -73,7 +74,9 @@ impl DocxLoader {
         let mut last_end = 0;
 
         for cap in WT_REGEX.captures_iter(xml) {
-            let m = cap.get(1).unwrap();
+            let Some(m) = cap.get(1) else {
+                continue;
+            };
             // 检查这个 <w:t> 之前是否有 </w:p>(新段落)
             let before = &xml[last_end..m.start()];
             if PARA_REGEX.is_match(before) && !result.is_empty() {
@@ -101,14 +104,14 @@ impl DocumentLoader for DocxLoader {
             move || std::fs::read(&path)
         })
         .await
-        .map_err(|e| LoaderError::Other(format!("读取文件失败: {}", e)))?
+        .map_err(|e| LoaderError::Other(format!("failed to read file: {}", e)))?
         .map_err(LoaderError::IoError)?;
 
         let text = Self::extract_text_from_bytes(&data)?;
 
         let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), "docx".to_string());
-        metadata.insert("source".to_string(), self.path.clone());
+        metadata.insert("format".to_string(), "docx".to_string().into());
+        metadata.insert("source".to_string(), self.path.clone().into());
 
         Ok(vec![Document {
             content: text,

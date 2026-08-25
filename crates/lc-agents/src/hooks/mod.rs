@@ -35,6 +35,7 @@ use std::collections::HashMap;
 
 /// Error type for hook operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HookError {
     /// The hook rejected the operation.
     #[error("Hook rejected: {0}")]
@@ -51,9 +52,15 @@ pub enum CompletionAction {
     /// Allow the completion to proceed.
     Continue,
     /// Modify the messages before the LLM call.
-    Modify { messages: Vec<Message> },
+    Modify {
+        /// The replacement messages to send to the LLM.
+        messages: Vec<Message>,
+    },
     /// Reject the LLM call entirely.
-    Reject { reason: String },
+    Reject {
+        /// The reason for the rejection.
+        reason: String,
+    },
 }
 
 /// Action to take for a tool call.
@@ -62,9 +69,17 @@ pub enum ToolCallAction {
     /// Allow the tool call to proceed.
     Continue,
     /// Modify the tool call parameters.
-    Modify { name: String, arguments: Value },
+    Modify {
+        /// The tool name.
+        name: String,
+        /// The modified tool call arguments.
+        arguments: Value,
+    },
     /// Reject the tool call.
-    Reject { reason: String },
+    Reject {
+        /// The reason for the rejection.
+        reason: String,
+    },
     /// Skip this tool call (don't execute, don't error).
     Skip,
 }

@@ -29,6 +29,7 @@ pub struct StateGraph<S: StateSchema> {
 }
 
 impl<S: StateSchema + 'static> StateGraph<S> {
+    /// Create a new empty state graph.
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
@@ -40,12 +41,14 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         }
     }
 
+    /// Add a node to the graph.
     pub fn add_node<N: GraphNode<S> + 'static>(&mut self, node: N) -> &mut Self {
         let name = node.name().to_string();
         self.nodes.insert(name, Arc::new(node));
         self
     }
 
+    /// Add a synchronous function node to the graph.
     pub fn add_node_fn<F>(&mut self, name: impl Into<String>, func: F) -> &mut Self
     where
         F: Fn(&S) -> Result<StateUpdate<S>, GraphError> + Send + Sync + 'static,
@@ -56,6 +59,7 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Add an async function node to the graph.
     pub fn add_async_node<F>(&mut self, name: impl Into<String>, func: F) -> &mut Self
     where
         F: AsyncFn<S> + 'static,
@@ -66,6 +70,7 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Add a subgraph node with input/output mappers.
     pub fn add_subgraph<SubS: StateSchema + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -79,6 +84,7 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Add a subgraph node that shares the same state type.
     pub fn add_subgraph_same_state(
         &mut self,
         name: impl Into<String>,
@@ -90,12 +96,14 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Add a fixed edge between two nodes.
     pub fn add_edge(&mut self, source: impl Into<String>, target: impl Into<String>) -> &mut Self {
         let edge = GraphEdge::fixed(source, target);
         self.edges.push(edge);
         self
     }
 
+    /// Add a conditional edge routed by a named router.
     pub fn add_conditional_edges(
         &mut self,
         source: impl Into<String>,
@@ -108,18 +116,21 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Add a FanOut edge for parallel execution.
     pub fn add_fan_out(&mut self, source: impl Into<String>, targets: Vec<String>) -> &mut Self {
         let edge = GraphEdge::fan_out(source, targets);
         self.edges.push(edge);
         self
     }
 
+    /// Add a FanIn edge joining multiple sources into one target.
     pub fn add_fan_in(&mut self, sources: Vec<String>, target: impl Into<String>) -> &mut Self {
         let edge = GraphEdge::fan_in(sources, target);
         self.edges.push(edge);
         self
     }
 
+    /// Register a conditional routing function by name.
     pub fn set_conditional_router<R: ConditionalEdge<S> + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -130,11 +141,13 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Set the entry point node for the graph.
     pub fn set_entry_point(&mut self, node: impl Into<String>) -> &mut Self {
         self.entry_point = Some(node.into());
         self
     }
 
+    /// Register a reducer for a specific state field.
     pub fn set_reducer(
         &mut self,
         field: impl Into<String>,
@@ -144,6 +157,7 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         self
     }
 
+    /// Compile the graph into an executable `CompiledGraph`.
     pub fn compile(&self) -> GraphResult<CompiledGraph<S>> {
         if self.nodes.is_empty() {
             return Err(GraphError::ValidationError(
@@ -203,17 +217,20 @@ pub struct GraphBuilder<S: StateSchema> {
 }
 
 impl<S: StateSchema + 'static> GraphBuilder<S> {
+    /// Create a new empty graph builder.
     pub fn new() -> Self {
         Self {
             graph: StateGraph::new(),
         }
     }
 
+    /// Add a node to the graph.
     pub fn add_node<N: GraphNode<S> + 'static>(mut self, node: N) -> Self {
         self.graph.add_node(node);
         self
     }
 
+    /// Add a synchronous function node to the graph.
     pub fn add_node_fn<F>(mut self, name: impl Into<String>, func: F) -> Self
     where
         F: Fn(&S) -> Result<StateUpdate<S>, GraphError> + Send + Sync + 'static,
@@ -222,6 +239,7 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    /// Add an async function node to the graph.
     pub fn add_async_node<F>(mut self, name: impl Into<String>, func: F) -> Self
     where
         F: AsyncFn<S> + 'static,
@@ -230,6 +248,7 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    /// Add a subgraph node with input/output mappers.
     pub fn add_subgraph<SubS: StateSchema + 'static>(
         mut self,
         name: impl Into<String>,
@@ -242,6 +261,7 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    /// Add a subgraph node that shares the same state type.
     pub fn add_subgraph_same_state(
         mut self,
         name: impl Into<String>,
@@ -251,11 +271,13 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    /// Add a fixed edge between two nodes.
     pub fn add_edge(mut self, source: impl Into<String>, target: impl Into<String>) -> Self {
         self.graph.add_edge(source, target);
         self
     }
 
+    /// Add a conditional edge routed by a named router.
     pub fn add_conditional_edges(
         mut self,
         source: impl Into<String>,
@@ -268,25 +290,30 @@ impl<S: StateSchema + 'static> GraphBuilder<S> {
         self
     }
 
+    /// Add a FanOut edge for parallel execution.
     pub fn add_fan_out(mut self, source: impl Into<String>, targets: Vec<String>) -> Self {
         self.graph.add_fan_out(source, targets);
         self
     }
 
+    /// Add a FanIn edge joining multiple sources into one target.
     pub fn add_fan_in(mut self, sources: Vec<String>, target: impl Into<String>) -> Self {
         self.graph.add_fan_in(sources, target);
         self
     }
 
+    /// Set the entry point node for the graph.
     pub fn set_entry_point(mut self, node: impl Into<String>) -> Self {
         self.graph.set_entry_point(node);
         self
     }
 
+    /// Compile the graph into an executable `CompiledGraph`.
     pub fn compile(self) -> GraphResult<CompiledGraph<S>> {
         self.graph.compile()
     }
 
+    /// Build and return the underlying `StateGraph`.
     pub fn build(self) -> StateGraph<S> {
         self.graph
     }

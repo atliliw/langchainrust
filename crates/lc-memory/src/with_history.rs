@@ -116,9 +116,7 @@ impl<L> RunnableWithMessageHistory<L> {
                     order: VecDeque::new(),
                 }),
                 max_sessions: DEFAULT_MAX_SESSIONS,
-                default: Arc::new(Mutex::new(Box::new(
-                    ConversationBufferMemory::new(),
-                ))),
+                default: Arc::new(Mutex::new(Box::new(ConversationBufferMemory::new()))),
             },
         }
     }
@@ -162,7 +160,7 @@ impl<L> RunnableWithMessageHistory<L> {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
                         LcelError::Chain(
-                            "RunnableWithMessageHistory(session mode) 缺少 configurable.session_id"
+                            "RunnableWithMessageHistory (session mode) is missing configurable.session_id"
                                 .to_string(),
                         )
                     })?;
@@ -177,9 +175,7 @@ impl<L> RunnableWithMessageHistory<L> {
                     }
                 }
                 let memory = factory(session_id);
-                cache
-                    .slots
-                    .insert(session_id.to_string(), memory.clone());
+                cache.slots.insert(session_id.to_string(), memory.clone());
                 cache.order.push_back(session_id.to_string());
                 Ok(memory)
             }
@@ -221,18 +217,14 @@ where
         messages.push(Message::human(&input));
 
         // 3. 调 LLM(持锁等待:同槽串行,避免并发丢历史)
-        let result = self
-            .llm
-            .chat(messages, config)
-            .await
-            .map_err(Into::into)?;
+        let result = self.llm.chat(messages, config).await.map_err(Into::into)?;
 
         // 4. 写回记忆:失败不丢弃模型答案(否则调用方拿 Err 重试会重复调 LLM),
         //    记 warn 暴露记忆层降级
         let inputs = HashMap::from([("input".to_string(), input)]);
         let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
         if let Err(e) = memory.save_context(&inputs, &outputs).await {
-            log::warn!("记忆写回失败(模型答案仍照常返回): {e}");
+            log::warn!("memory save failed (model answer still returned): {e}");
         }
 
         Ok(result)
@@ -265,10 +257,7 @@ mod tests {
             _config: Option<RunnableConfig>,
         ) -> Result<LLMResult, LcelError> {
             self.seen.lock().unwrap().push(input.clone());
-            let last = input
-                .last()
-                .map(|m| m.content.clone())
-                .unwrap_or_default();
+            let last = input.last().map(|m| m.content.clone()).unwrap_or_default();
             Ok(LLMResult {
                 content: format!("reply to: {last}"),
                 ..Default::default()
@@ -315,21 +304,18 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>,
-            LcelError,
-        > {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>, LcelError>
+        {
             unimplemented!("stream_chat not needed for tests")
         }
     }
 
     /// session 回调:每次建一个空的 Buffer 记忆(return_messages = true)。
-    fn session_factory(
-        _session_id: &str,
-    ) -> SharedMemory {
-        Arc::new(Mutex::new(Box::new(
-            ConversationBufferMemory::new().with_return_messages(true),
-        ) as Box<dyn BaseMemory>))
+    fn session_factory(_session_id: &str) -> SharedMemory {
+        Arc::new(Mutex::new(
+            Box::new(ConversationBufferMemory::new().with_return_messages(true))
+                as Box<dyn BaseMemory>,
+        ))
     }
 
     /// 读记忆 → LLM → 写回:第二轮调用时,LLM 应看到第一轮的完整对话。
@@ -352,7 +338,7 @@ mod tests {
 
         // Assert
         let calls = seen.lock().unwrap();
-        assert_eq!(calls.len(), 2, "应调用模型两次");
+        assert_eq!(calls.len(), 2, "model should be called twice");
         // 第一轮:只有用户消息
         assert_eq!(calls[0].len(), 1);
         assert_eq!(calls[0][0].content, "我叫什么名字");
@@ -395,9 +381,15 @@ mod tests {
         let cfg = RunnableConfig::new().with_configurable("session_id", json!("s1"));
 
         // Act 同一 session 两轮
-        let r1 = pipe.invoke("我叫什么名字".to_string(), Some(cfg.clone())).await.unwrap();
+        let r1 = pipe
+            .invoke("我叫什么名字".to_string(), Some(cfg.clone()))
+            .await
+            .unwrap();
         assert_eq!(r1.content, "reply to: 我叫什么名字");
-        let r2 = pipe.invoke("再问一次".to_string(), Some(cfg)).await.unwrap();
+        let r2 = pipe
+            .invoke("再问一次".to_string(), Some(cfg))
+            .await
+            .unwrap();
         assert_eq!(r2.content, "reply to: 再问一次");
 
         // Assert 第二轮看到第一轮完整对话(user + ai + user)
@@ -419,15 +411,21 @@ mod tests {
         let cfg_s2 = RunnableConfig::new().with_configurable("session_id", json!("s2"));
 
         // Act s1 两轮 + s2 一轮
-        pipe.invoke("我是 s1".to_string(), Some(cfg_s1.clone())).await.unwrap();
-        pipe.invoke("还在 s1".to_string(), Some(cfg_s1)).await.unwrap();
-        pipe.invoke("我是 s2".to_string(), Some(cfg_s2)).await.unwrap();
+        pipe.invoke("我是 s1".to_string(), Some(cfg_s1.clone()))
+            .await
+            .unwrap();
+        pipe.invoke("还在 s1".to_string(), Some(cfg_s1))
+            .await
+            .unwrap();
+        pipe.invoke("我是 s2".to_string(), Some(cfg_s2))
+            .await
+            .unwrap();
 
         // Assert s2 第一轮无历史(1 条),s1 第二轮有历史(3 条)
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[1].len(), 3, "s1 第二轮应看到历史");
-        assert_eq!(calls[2].len(), 1, "s2 第一轮应无历史");
+        assert_eq!(calls[1].len(), 3, "s1 second turn should see history");
+        assert_eq!(calls[2].len(), 1, "s2 first turn should have no history");
     }
 
     /// session 模式:缺失 configurable.session_id → LcelError::Chain。
@@ -482,10 +480,7 @@ mod tests {
             if should_block {
                 self.release.notified().await;
             }
-            let last = input
-                .last()
-                .map(|m| m.content.clone())
-                .unwrap_or_default();
+            let last = input.last().map(|m| m.content.clone()).unwrap_or_default();
             Ok(LLMResult {
                 content: format!("reply to: {last}"),
                 ..Default::default()
@@ -532,10 +527,8 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>,
-            LcelError,
-        > {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>, LcelError>
+        {
             unimplemented!("stream_chat not needed for tests")
         }
     }
@@ -574,7 +567,7 @@ mod tests {
         assert_eq!(
             calls[3].len(),
             1,
-            "M2a: s1 槽被淘汰后重入应为全新会话(无历史)"
+            "M2a: re-entering s1 after eviction should be a fresh session (no history)"
         );
     }
 
@@ -620,7 +613,7 @@ mod tests {
         assert_eq!(
             calls[1].len(),
             3,
-            "M2b: 第二轮应看到第一轮完整对话(user+ai+user),而非空历史"
+            "M2b: second turn should see the full first-turn conversation (user+ai+user), not empty history"
         );
         assert_eq!(calls[1][0].content, "第一轮");
         assert_eq!(calls[1][2].content, "第二轮");

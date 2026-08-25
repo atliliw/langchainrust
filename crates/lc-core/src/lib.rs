@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-core/src/lib.rs
 //! Core abstractions for LangChainRust.
 //!
@@ -44,8 +45,8 @@ pub use structured_output::{
     StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
 };
 pub use tools::{
-    BaseTool, FunctionCall, FunctionDefinition, StructuredOutput, Tool, ToolCall, ToolCallResult,
-    ToolDefinition, ToolError, ToolRegistry,
+    BaseTool, FunctionCall, FunctionDefinition, StructuredOutput, Tool, ToolCall, ToolCallBuilder,
+    ToolCallResult, ToolDefinition, ToolError, ToolRegistry,
 };
 
 /// Unified error type for the lc-core crate.
@@ -53,6 +54,7 @@ pub use tools::{
 /// Aggregates all core-specific error types so the `?` operator works
 /// seamlessly across core module boundaries.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CoreError {
     /// Tool execution error.
     #[error("Tool error: {0}")]
@@ -86,6 +88,10 @@ pub enum CoreError {
     #[error("Math error: {0}")]
     Math(#[from] math::MathError),
 
+    /// Token counting error.
+    #[error("Token counting error: {0}")]
+    TokenCount(#[from] token_counter::TokenCounterError),
+
     /// Any other error (e.g., from providers that haven't been extracted yet).
     #[error("{0}")]
     Other(String),
@@ -116,6 +122,7 @@ impl From<CoreError> for runnables::LcelError {
             CoreError::PartialJson(_) => runnables::LcelError::Other(err.to_string()),
             CoreError::OutputParser(_) => runnables::LcelError::OutputParser(err.to_string()),
             CoreError::Math(_) => runnables::LcelError::Other(err.to_string()),
+            CoreError::TokenCount(_) => runnables::LcelError::Other(err.to_string()),
             CoreError::Other(_) => runnables::LcelError::Other(err.to_string()),
         }
     }

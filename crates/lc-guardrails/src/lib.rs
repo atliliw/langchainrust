@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Guardrails 安全护栏
 //!
 //! 提供输入/输出验证,保护生产环境的 Agent:防恶意输入、防敏感信息泄露。

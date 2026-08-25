@@ -17,6 +17,7 @@ pub struct ContainsKeyword {
 }
 
 impl ContainsKeyword {
+    /// 创建关键词包含评测器。
     pub fn new(keywords: Vec<String>) -> Self {
         Self {
             keywords,
@@ -86,6 +87,7 @@ pub struct RegexMatch {
 }
 
 impl RegexMatch {
+    /// 创建正则匹配评测器(正则非法返回 `ParseError`)。
     pub fn new(pattern: &str) -> Result<Self, EvalError> {
         Ok(Self {
             pattern: Regex::new(pattern).map_err(|e| EvalError::ParseError(e.to_string()))?,
@@ -129,6 +131,7 @@ impl Default for LengthCheck {
 }
 
 impl LengthCheck {
+    /// 创建长度检查评测器(默认不限长度)。
     pub fn new() -> Self {
         Self {
             min: None,

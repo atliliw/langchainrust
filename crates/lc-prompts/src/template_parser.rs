@@ -12,6 +12,7 @@
 //! Templates are parsed once into [`TemplateSegment`]s; `format` then walks the
 //! segments instead of re-scanning with a regex on every call.
 
+use crate::error::PromptsError;
 use std::collections::HashMap;
 
 /// A parsed segment of a prompt template.
@@ -99,14 +100,14 @@ pub fn format_template(
     template: &str,
     segments: &[TemplateSegment],
     variables: &HashMap<&str, &str>,
-) -> Result<String, String> {
+) -> Result<String, PromptsError> {
     let mut result = String::with_capacity(template.len());
     for seg in segments {
         match seg {
             TemplateSegment::Text(t) => result.push_str(t),
             TemplateSegment::Variable(name) => match variables.get(name.as_str()) {
                 Some(v) => result.push_str(v),
-                None => return Err(format!("Missing variable: {}", name)),
+                None => return Err(PromptsError::MissingVariable(name.clone())),
             },
         }
     }
@@ -205,6 +206,6 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("x", "X");
         let err = format_template("{x} {missing}", &segments, &vars).unwrap_err();
-        assert!(err.contains("missing"));
+        assert!(err.to_string().contains("missing"));
     }
 }

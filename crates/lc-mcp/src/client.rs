@@ -72,7 +72,12 @@ impl MCPClient {
         // Wrap the entire connect + initialize flow in a timeout
         timeout(MCP_CONNECT_TIMEOUT, Self::connect_inner(config, policy))
             .await
-            .map_err(|_| MCPError::new(-1, "MCP 连接超时: 30 秒内未完成握手"))?
+            .map_err(|_| {
+                MCPError::new(
+                    -1,
+                    "MCP connect timeout: handshake not completed within 30 seconds",
+                )
+            })?
     }
 
     async fn connect_inner(config: MCPConfig, policy: VersionPolicy) -> Result<Self, MCPError> {
@@ -164,7 +169,7 @@ impl MCPClient {
                 VersionPolicy::Reject => {
                     return Err(MCPError::new(
                         -32600,
-                        format!("不支持的 MCP 协议版本: {server_version}"),
+                        format!("unsupported MCP protocol version: {server_version}"),
                     ));
                 }
             }
@@ -209,7 +214,10 @@ impl MCPClient {
             Ok(r) => r.into_result(),
             Err(e) if e.is_connection_lost() => {
                 // P0-2: 连接断开 → 重连 + 重新握手 + 刷新工具缓存 + 重试一次
-                log::warn!("MCP 连接断开,重连并重新握手后重试 {}", req.method);
+                log::warn!(
+                    "MCP connection lost, reconnecting and re-handshaking before retry for {}",
+                    req.method
+                );
                 self.reconnect_and_retry(req).await
             }
             Err(e) => Err(e),
@@ -255,7 +263,7 @@ impl MCPClient {
                     Ok(MCPEvent::Message { method, .. })
                         if method == "notifications/tools/list_changed" =>
                     {
-                        log::info!("收到 tools/list_changed,失效工具缓存");
+                        log::info!("received tools/list_changed, invalidating tool cache");
                         client.invalidate_tools_cache().await;
                     }
                     Ok(MCPEvent::Disconnected) => {
@@ -278,9 +286,9 @@ impl MCPClient {
         let result = self.send_request("tools/list", None).await?;
         let tools_value = result
             .get("tools")
-            .ok_or_else(|| MCPError::new(-1, "tools/list 响应缺少 'tools' 字段"))?;
+            .ok_or_else(|| MCPError::new(-1, "tools/list response missing 'tools' field"))?;
         let tools: Vec<MCPToolDefinition> = serde_json::from_value(tools_value.clone())
-            .map_err(|e| MCPError::new(-1, format!("解析工具列表失败: {}", e)))?;
+            .map_err(|e| MCPError::new(-1, format!("failed to parse tool list: {}", e)))?;
         *self.inner.tools.lock().await = tools.clone();
         // P1-8: 记录拉取时间,供 as_tools 判断缓存是否新鲜。
         *self.inner.tools_fetched_at.lock().await = Some(Instant::now());
@@ -292,7 +300,7 @@ impl MCPClient {
         let params = json!({"name": name, "arguments": arguments});
         let result = self.send_request("tools/call", Some(params)).await?;
         serde_json::from_value(result)
-            .map_err(|e| MCPError::new(-1, format!("解析工具结果失败: {}", e)))
+            .map_err(|e| MCPError::new(-1, format!("failed to parse tool result: {}", e)))
     }
 
     /// 关闭连接
@@ -369,18 +377,21 @@ mod tests {
         let server = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
 
-        let tools = client.as_tools().await.expect("首次拉取应成功");
+        let tools = client
+            .as_tools()
+            .await
+            .expect("initial fetch should succeed");
         assert_eq!(tools.len(), 1);
         assert_eq!(server.tools_list_count.load(Ordering::SeqCst), 1);
 
-        let tools2 = client.as_tools().await.expect("缓存命中应成功");
+        let tools2 = client.as_tools().await.expect("cache hit should succeed");
         assert_eq!(tools2.len(), 1);
         assert_eq!(
             server.tools_list_count.load(Ordering::SeqCst),
             1,
-            "TTL 内缓存命中,不应再次调用 tools/list"
+            "cache hit within TTL, tools/list should not be called again"
         );
     }
 
@@ -391,9 +402,12 @@ mod tests {
         let server = start_fake_sse_server(PostMode::NotifyChanged).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
 
-        let tools = client.as_tools().await.expect("首次拉取应成功");
+        let tools = client
+            .as_tools()
+            .await
+            .expect("initial fetch should succeed");
         assert_eq!(tools.len(), 1);
 
         timeout(Duration::from_secs(5), async {
@@ -407,7 +421,7 @@ mod tests {
             }
         })
         .await
-        .expect("list_changed 应触发缓存失效并重新拉取 tools/list");
+        .expect("list_changed should invalidate cache and refetch tools/list");
     }
 
     // ---- P2-10 协议版本协商测试 ----
@@ -467,10 +481,12 @@ mod tests {
             VersionPolicy::Degrade,
         )
         .await
-        .expect("支持的版本应握手成功");
+        .expect("supported version should handshake successfully");
 
-        let info = client.protocol_info().expect("握手后应有协商结果");
-        assert!(info.supported, "2024-11-05 应在支持列表内");
+        let info = client
+            .protocol_info()
+            .expect("negotiation result should be available after handshake");
+        assert!(info.supported, "2024-11-05 should be in the supported list");
         assert_eq!(info.negotiated, MCP_VERSION);
         assert_eq!(info.server_version, MCP_VERSION);
         assert_eq!(client.protocol_version().as_deref(), Some(MCP_VERSION));
@@ -486,12 +502,20 @@ mod tests {
             VersionPolicy::Degrade,
         )
         .await
-        .expect("降级策略应容忍未知版本");
+        .expect("degrade policy should tolerate unknown version");
 
-        let info = client.protocol_info().expect("握手后应有协商结果");
-        assert!(!info.supported, "2099-01-01 不在支持列表内");
+        let info = client
+            .protocol_info()
+            .expect("negotiation result should be available after handshake");
+        assert!(
+            !info.supported,
+            "2099-01-01 should not be in the supported list"
+        );
         assert_eq!(info.server_version, "2099-01-01");
-        assert_eq!(info.negotiated, MCP_VERSION, "降级后锁定本实现版本");
+        assert_eq!(
+            info.negotiated, MCP_VERSION,
+            "should lock to this implementation version after degrade"
+        );
         assert_eq!(client.protocol_version().as_deref(), Some(MCP_VERSION));
     }
 
@@ -506,11 +530,11 @@ mod tests {
         )
         .await
         .err()
-        .expect("拒绝策略应对未知版本报错");
+        .expect("reject policy should error on unknown version");
 
         assert!(
-            err.to_string().contains("不支持的 MCP 协议版本"),
-            "错误信息应说明版本不受支持: {err}"
+            err.to_string().contains("unsupported MCP protocol version"),
+            "error message should state the version is unsupported: {err}"
         );
     }
 }

@@ -15,12 +15,13 @@ use crate::tools::ToolDefinition;
 /// 由调用方映射到自己的错误域(如 `EvalError::PredictorError` /
 /// `EvalError::ParseError`)。
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StructuredJudgeError {
     /// 底层 LLM 调用失败(网络 / 限流 / 返回异常)。
-    #[error("LLM 调用失败: {0}")]
+    #[error("LLM call failed: {0}")]
     Call(String),
     /// 工具调用参数无法按目标类型反序列化,或 tool_calls 为空。
-    #[error("结构化解析失败: {0}")]
+    #[error("structured parse failed: {0}")]
     Parse(String),
 }
 
@@ -53,20 +54,25 @@ where
         match result.tool_calls {
             Some(calls) => {
                 let call = calls.first().ok_or_else(|| {
-                    StructuredJudgeError::Parse("裁判返回的 tool_calls 为空".to_string())
+                    StructuredJudgeError::Parse("judge returned empty tool_calls".to_string())
                 })?;
                 let parsed = call.parse_arguments::<T>().map_err(|e| {
-                    StructuredJudgeError::Parse(format!("裁判结构化参数解析失败: {}", e))
+                    StructuredJudgeError::Parse(format!(
+                        "failed to parse judge structured arguments: {}",
+                        e
+                    ))
                 })?;
                 Ok(parsed)
             }
             None => {
-                log::warn!("裁判模型绑定了工具但返回纯文本,回落文本解析");
+                log::warn!(
+                    "judge model bound tools but returned plain text; falling back to text parsing"
+                );
                 text_fallback(&result.content)
             }
         }
     } else {
-        log::warn!("裁判模型不支持 bind_tools,回落文本解析");
+        log::warn!("judge model does not support bind_tools; falling back to text parsing");
         let result = judge
             .chat(messages, None)
             .await
@@ -210,7 +216,7 @@ mod tests {
             mock_tool(),
             messages,
             |_raw: &str| -> Result<MockArgs, StructuredJudgeError> {
-                Err(StructuredJudgeError::Parse("解析失败".into()))
+                Err(StructuredJudgeError::Parse("parse failed".into()))
             },
         )
         .await

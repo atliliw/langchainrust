@@ -96,9 +96,13 @@ mod tests {
         let body = serde_json::json!({"model": "m", "input": ["a", "b"]});
 
         let resp = post_json_with_retry(&client, &base_url, "test-key", &body, &cfg()).await;
-        assert!(resp.is_ok(), "429 后应重试成功: {:?}", resp.err());
+        assert!(
+            resp.is_ok(),
+            "should retry successfully after 429: {:?}",
+            resp.err()
+        );
         assert_eq!(resp.unwrap().status().as_u16(), 200);
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
     #[tokio::test]
@@ -124,9 +128,9 @@ mod tests {
         };
 
         let resp = post_json_with_retry(&client, &base_url, "test-key", &body, &retry).await;
-        assert!(resp.is_ok(), "重试耗尽后应返回最后响应而非传输错误");
+        assert!(resp.is_ok(), "after retries are exhausted, should return the last response rather than a transport error");
         assert_eq!(resp.unwrap().status().as_u16(), 429);
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
     #[tokio::test]
@@ -141,7 +145,7 @@ mod tests {
         assert_eq!(
             requests.load(Ordering::SeqCst),
             1,
-            "4xx 是永久性失败,不应重试"
+            "4xx is a permanent failure, should not be retried"
         );
     }
 

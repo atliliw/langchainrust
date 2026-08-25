@@ -3,14 +3,15 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Default initial processing prompt template.
 pub(crate) const DEFAULT_REFINE_INITIAL_PROMPT: &str =
@@ -42,8 +43,8 @@ Refined answer:";
 ///
 /// Iteratively refines the answer document by document.
 /// Generates an initial answer from the first document, then refines with each subsequent document.
-pub struct RefineDocumentsChain<M: BaseChatModel> {
-    llm: M,
+pub struct RefineDocumentsChain {
+    llm: BoxedChatModel,
     initial_prompt_template: String,
     refine_prompt_template: String,
     document_variable_name: String,
@@ -53,10 +54,15 @@ pub struct RefineDocumentsChain<M: BaseChatModel> {
     verbose: bool,
 }
 
-impl<M: BaseChatModel> RefineDocumentsChain<M> {
-    pub fn new(llm: M) -> Self {
+impl RefineDocumentsChain {
+    /// Create a new [`RefineDocumentsChain`] with the given LLM.
+    pub fn new<L>(llm: L) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             initial_prompt_template: DEFAULT_REFINE_INITIAL_PROMPT.to_string(),
             refine_prompt_template: DEFAULT_REFINE_PROMPT.to_string(),
             document_variable_name: "context".to_string(),
@@ -67,47 +73,56 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
         }
     }
 
+    /// Set the initial prompt template used for the first document.
     pub fn with_initial_prompt(mut self, template: impl Into<String>) -> Self {
         self.initial_prompt_template = template.into();
         self
     }
 
+    /// Set the refine prompt template used for subsequent documents.
     pub fn with_refine_prompt(mut self, template: impl Into<String>) -> Self {
         self.refine_prompt_template = template.into();
         self
     }
 
+    /// Set the document variable name used in the prompts.
     pub fn with_document_variable(mut self, name: impl Into<String>) -> Self {
         self.document_variable_name = name.into();
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
+    /// Build the initial prompt from the first document's content and input.
     pub fn build_initial_prompt(&self, context: &str, input: &str) -> String {
         self.initial_prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
             .replace("{input}", input)
     }
 
+    /// Build the refine prompt from the new context, input, and existing answer.
     pub fn build_refine_prompt(&self, context: &str, input: &str, existing_answer: &str) -> String {
         self.refine_prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
@@ -120,10 +135,7 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<String, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
                 "Document list is empty".to_string(),
@@ -183,10 +195,7 @@ impl<M: BaseChatModel> RefineDocumentsChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for RefineDocumentsChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for RefineDocumentsChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -337,15 +346,6 @@ mod tests {
 
     /// Mock chat model that counts `invoke`/`stream_chat` calls so the P2-4
     /// single-document fix (no second LLM call) is provable.
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
-
     struct CountingLLM {
         invokes: Arc<AtomicUsize>,
         streams: Arc<AtomicUsize>,
@@ -353,7 +353,7 @@ mod tests {
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for CountingLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             _input: Vec<Message>,

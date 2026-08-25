@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 
 /// Error types for tolerant JSON parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum JsonRepairError {
     /// The raw text could not be repaired into valid JSON.
     #[error("JSON repair failed: {0}")]
@@ -19,7 +20,10 @@ pub enum JsonRepairError {
 
     /// The repaired JSON could not be deserialized into the target type.
     #[error("Deserialization failed: {details}")]
-    DeserializationFailed { details: String },
+    DeserializationFailed {
+        /// Details of the deserialization failure.
+        details: String,
+    },
 }
 
 /// Parses LLM JSON output with automatic repair of common errors.

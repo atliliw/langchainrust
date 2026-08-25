@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use lc_shared::document::Document;
 use regex::Regex;
@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Default Map + Rerank prompt template.
 pub(crate) const DEFAULT_MAP_RERANK_PROMPT: &str = "Answer the question based on the following document, and provide a relevance score (0-100, higher is more relevant).
@@ -31,8 +32,8 @@ Answer: <your answer>";
 ///
 /// First calls LLM independently for each document to generate an answer and score,
 /// then ranks by relevance score and returns the highest-scoring answer.
-pub struct MapRerankDocumentsChain<M: BaseChatModel> {
-    llm: M,
+pub struct MapRerankDocumentsChain {
+    llm: BoxedChatModel,
     map_prompt_template: String,
     document_variable_name: String,
     input_key: String,
@@ -96,10 +97,15 @@ pub fn extract_score(text: &str) -> Option<(u32, String)> {
     None
 }
 
-impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
-    pub fn new(llm: M) -> Self {
+impl MapRerankDocumentsChain {
+    /// Create a new [`MapRerankDocumentsChain`] with the given LLM.
+    pub fn new<L>(llm: L) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             map_prompt_template: DEFAULT_MAP_RERANK_PROMPT.to_string(),
             document_variable_name: "context".to_string(),
             input_key: "input".to_string(),
@@ -111,31 +117,37 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         }
     }
 
+    /// Set the map-phase prompt template.
     pub fn with_map_prompt(mut self, template: impl Into<String>) -> Self {
         self.map_prompt_template = template.into();
         self
     }
 
+    /// Set the document variable name used in the map prompt.
     pub fn with_document_variable(mut self, name: impl Into<String>) -> Self {
         self.document_variable_name = name.into();
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
@@ -168,10 +180,7 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         doc: &Document,
         input: &str,
         index: usize,
-    ) -> Result<Option<(u32, String)>, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<Option<(u32, String)>, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
             println!("\n--- Map document {} ---", index + 1);
@@ -227,10 +236,7 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         doc: &Document,
         input: &str,
         index: usize,
-    ) -> Result<Option<(u32, String)>, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<Option<(u32, String)>, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
             println!("\n--- Map document {} (stream) ---", index + 1);
@@ -261,10 +267,7 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<Vec<(u32, String)>, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<Vec<(u32, String)>, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
                 "Document list is empty".to_string(),
@@ -318,10 +321,7 @@ impl<M: BaseChatModel> MapRerankDocumentsChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapRerankDocumentsChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for MapRerankDocumentsChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -425,20 +425,11 @@ mod tests {
     use std::pin::Pin;
 
     /// Mock chat model whose stream returns a fixed scored answer per document.
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
-
     struct MockLLM;
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for MockLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             _input: Vec<Message>,

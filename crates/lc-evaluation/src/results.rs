@@ -12,6 +12,7 @@ use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
 
 use super::criteria::{EvalError, Evaluator, Score};
 
+/// 精确匹配评测器:预测与参考答案 trim 后完全一致得 1.0,否则 0.0。
 pub struct ExactMatch;
 
 #[async_trait]
@@ -32,6 +33,7 @@ impl Evaluator for ExactMatch {
     }
 }
 
+/// 字符串距离评测器:基于 Levenshtein 编辑距离归一化打分。
 pub struct StringDistance;
 
 impl StringDistance {
@@ -81,11 +83,13 @@ impl Evaluator for StringDistance {
     }
 }
 
+/// 嵌入相似度评测器:用预测与参考答案的嵌入向量余弦相似度打分。
 pub struct EmbeddingSimilarity<E: Embeddings> {
     embeddings: E,
 }
 
 impl<E: Embeddings> EmbeddingSimilarity<E> {
+    /// 创建嵌入相似度评测器。
     pub fn new(embeddings: E) -> Self {
         Self { embeddings }
     }
@@ -120,6 +124,7 @@ impl<E: Embeddings> Evaluator for EmbeddingSimilarity<E> {
     }
 }
 
+/// LLM 裁判评测器:让 LLM 按评分标准对预测打分(0 到 `max_score`)。
 pub struct LLMAsJudge<M: BaseChatModel> {
     judge: M,
     rubric: String,
@@ -132,6 +137,7 @@ const DEFAULT_RUBRIC: &str = "\
 清晰性:表达是否清晰、无歧义、无冗余。";
 
 impl<M: BaseChatModel> LLMAsJudge<M> {
+    /// 创建使用默认评分标准与 10 分制的 LLM 裁判评测器。
     pub fn new(judge: M) -> Self {
         Self {
             judge,
@@ -139,10 +145,12 @@ impl<M: BaseChatModel> LLMAsJudge<M> {
             max_score: 10,
         }
     }
+    /// 设置自定义评分标准(builder 风格)。
     pub fn with_rubric(mut self, rubric: impl Into<String>) -> Self {
         self.rubric = rubric.into();
         self
     }
+    /// 设置最高分(最小为 1)。
     pub fn with_max_score(mut self, max_score: u8) -> Self {
         self.max_score = max_score.max(1);
         self
@@ -209,7 +217,7 @@ impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
             structured_call(&self.judge, score_tool(self.max_score), messages, |raw| {
                 let norm = parse_score(raw, self.max_score).ok_or_else(|| {
                     StructuredJudgeError::Parse(format!(
-                        "无法从裁判回复解析分数: {}",
+                        "failed to parse score from judge reply: {}",
                         truncate(raw, 200)
                     ))
                 })?;

@@ -38,18 +38,23 @@ use std::time::Instant;
 /// Aggregates heterogeneous provider errors behind `Box<dyn Error>` so a
 /// single router can mix providers whose native error types differ.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RouterError {
     /// No models were configured on the router.
     Empty,
     /// Every candidate model was tried and all failed.
     /// `tried` is the number of models attempted; `last` is the final error.
     AllFailed {
+        /// The number of models attempted.
         tried: usize,
+        /// The final error from the last attempted model.
         last: Box<dyn std::error::Error + Send + Sync>,
     },
     /// A single model failed (wrapped when propagating from an adapter).
     Model {
+        /// The name of the model that failed.
         model: String,
+        /// The underlying provider error.
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 }
@@ -335,7 +340,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for RouterLLM {
     fn get_num_tokens(&self, text: &str) -> usize {
         crate::token_counter::count_tokens(text).unwrap_or_else(|e| {
             // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
-            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            log::warn!("token counting failed, falling back to byte-length estimate: {e}");
             text.len()
         })
     }

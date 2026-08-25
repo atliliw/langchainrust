@@ -6,9 +6,9 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
 use lc_memory::{BaseMemory, ConversationBufferMemory};
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_rag::retriever::RetrieverTrait;
 use lc_schema::{Message, MessageType};
 use lc_shared::document::Document;
@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// ConversationRetrievalChain
 ///
@@ -27,8 +28,8 @@ use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 /// 3. Combines history + context + question
 /// 4. LLM generates answer
 /// 5. Saves to conversation memory
-pub struct ConversationRetrievalChain<M: BaseChatModel> {
-    llm: M,
+pub struct ConversationRetrievalChain {
+    llm: BoxedChatModel,
     retriever: Arc<dyn RetrieverTrait>,
     memory: Arc<Mutex<dyn BaseMemory>>,
 
@@ -43,12 +44,18 @@ pub struct ConversationRetrievalChain<M: BaseChatModel> {
     source_document_key: String,
 }
 
-impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
-    pub fn new(
-        llm: M,
+impl ConversationRetrievalChain {
+    /// Create a new [`ConversationRetrievalChain`] with the given LLM,
+    /// retriever, and conversation buffer memory.
+    pub fn new<L>(
+        llm: L,
         retriever: Arc<dyn RetrieverTrait>,
         memory: ConversationBufferMemory,
-    ) -> Self {
+    ) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         // Align the memory's input/output keys with this chain's defaults
         // ("query"/"result"). `save_context` addresses the memory by these keys,
         // so without alignment persistence silently fails with `Missing input
@@ -67,13 +74,17 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
 
     /// Create from any [`BaseMemory`] implementation (window / summary /
     /// vector-store / persistent), mirroring `ConversationChain::from_memory`.
-    pub fn from_memory(
-        llm: M,
+    pub fn from_memory<L>(
+        llm: L,
         retriever: Arc<dyn RetrieverTrait>,
         memory: Arc<Mutex<dyn BaseMemory>>,
-    ) -> Self {
+    ) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             retriever,
             memory,
             system_prompt: None,
@@ -87,45 +98,54 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
         }
     }
 
+    /// Set the system prompt.
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set the number of documents to retrieve.
     pub fn with_k(mut self, k: usize) -> Self {
         self.k = k;
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
+    /// Set whether to return the source documents with the answer.
     pub fn with_return_source_documents(mut self, return_source: bool) -> Self {
         self.return_source_documents = return_source;
         self
     }
 
+    /// Get the memory reference.
     pub fn memory(&self) -> &Arc<Mutex<dyn BaseMemory>> {
         &self.memory
     }
 
+    /// Clear the conversation memory.
     pub async fn clear_memory(&self) -> Result<(), ChainError> {
         let mut memory = self.memory.lock().await;
         memory
@@ -226,10 +246,7 @@ impl<M: BaseChatModel + 'static> ConversationRetrievalChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for ConversationRetrievalChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for ConversationRetrievalChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -471,20 +488,11 @@ mod tests {
     }
 
     /// Mock chat model with a deterministic token stream.
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
-
     struct MockLLM;
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for MockLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             _input: Vec<Message>,

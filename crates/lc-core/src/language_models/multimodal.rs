@@ -12,6 +12,7 @@ use super::BaseChatModel;
 
 /// Errors from multimodal operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MultimodalError {
     /// The provider does not support this operation.
     #[error("Unsupported multimodal operation: {0}")]

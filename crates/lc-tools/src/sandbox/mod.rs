@@ -26,8 +26,11 @@ use lc_core::tools::{BaseTool, ToolError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
+    /// Python.
     Python,
+    /// JavaScript.
     JavaScript,
+    /// Rust.
     Rust,
 }
 
@@ -56,6 +59,7 @@ pub struct RunResult {
 
 /// Errors that can occur during sandbox execution.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SandboxError {
     /// Execution exceeded the configured time limit.
     #[error("execution timeout after {0}ms")]

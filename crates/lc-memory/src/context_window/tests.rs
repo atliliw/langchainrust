@@ -443,8 +443,7 @@ async fn test_truncate_system_does_not_consume_budget() {
 #[tokio::test]
 async fn test_truncate_keeps_newest_when_budget_tiny() {
     // H7: 预算小到一条对话都放不下时,至少保留最新一条,绝不静默丢光历史。
-    let cw: ContextWindow<OpenAIChat> =
-        ContextWindow::new(2).unwrap().with_counter(char_counter());
+    let cw: ContextWindow<OpenAIChat> = ContextWindow::new(2).unwrap().with_counter(char_counter());
 
     let messages = make_messages(&[
         ("system", "S"),
@@ -466,10 +465,9 @@ async fn test_summarize_tiny_budget_keeps_recent() {
     // H7: Summarize 无分区可容纳时退化为截断——截断保证保留最新消息,
     // 而不是 `truncate(system_messages)` 那样静默清空全部历史。
     let mock_llm = MockLLM::new(vec!["summary".to_string()]);
-    let cw: ContextWindow<MockLLM> =
-        ContextWindow::with_strategy(2, Strategy::summarize(mock_llm))
-            .unwrap()
-            .with_counter(char_counter());
+    let cw: ContextWindow<MockLLM> = ContextWindow::with_strategy(2, Strategy::summarize(mock_llm))
+        .unwrap()
+        .with_counter(char_counter());
 
     let messages = make_messages(&[("system", "S"), ("human", "q1"), ("ai", "a1")]);
 

@@ -10,6 +10,7 @@ use crate::END;
 use std::collections::HashMap;
 
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Run the graph from its entry point with the given input state.
     pub async fn invoke(&self, input: S) -> GraphResult<GraphInvocation<S>> {
         let mut state = input;
         let mut current_node = self.entry_point.clone();
@@ -74,8 +75,11 @@ impl<S: StateSchema> CompiledGraph<S> {
                 }
 
                 if let Some(ref checkpointer) = self.checkpointer {
-                    let checkpoint_id =
-                        checkpointer.lock().await.save(&state, recursion_count).await?;
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
                     steps.push(ExecutionStep::checkpoint(
                         checkpoint_id,
                         current_node.clone(),
@@ -115,8 +119,11 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id =
-                    checkpointer.lock().await.save(&state, recursion_count).await?;
+                let checkpoint_id = checkpointer
+                    .lock()
+                    .await
+                    .save(&state, recursion_count)
+                    .await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 
@@ -130,6 +137,7 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
+    /// Continue execution from a saved [`GraphExecution`] (e.g. after an interrupt).
     pub async fn invoke_with_execution(
         &self,
         execution: GraphExecution<S>,
@@ -189,8 +197,11 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id =
-                    checkpointer.lock().await.save(&state, recursion_count).await?;
+                let checkpoint_id = checkpointer
+                    .lock()
+                    .await
+                    .save(&state, recursion_count)
+                    .await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 
@@ -204,10 +215,12 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
+    /// Resume execution from the given execution context.
     pub async fn resume(&self, execution: GraphExecution<S>) -> GraphResult<GraphInvocation<S>> {
         self.invoke_with_execution(execution).await
     }
 
+    /// Run the graph starting from the given node with the given input state.
     pub async fn invoke_from_node(
         &self,
         start_node: String,

@@ -7,6 +7,7 @@ use lc_schema::Message;
 use serde_json::{json, Value};
 
 use super::plan::Plan;
+use crate::AgentError;
 
 use std::sync::Arc;
 
@@ -42,12 +43,13 @@ pub struct Planner {
 }
 
 impl Planner {
+    /// 创建新的规划器。
     pub fn new(llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>) -> Self {
         Self { llm }
     }
 
     /// 生成执行计划
-    pub async fn plan(&self, objective: &str) -> Result<Plan, String> {
+    pub async fn plan(&self, objective: &str) -> Result<Plan, AgentError> {
         let prompt = format!(
             "为以下目标制定执行计划,输出 JSON 字符串数组,每项是一个步骤描述。\n\
              目标: {}\n\
@@ -67,7 +69,7 @@ impl Planner {
             &crate::retry::RetryConfig::default(),
         )
         .await
-        .map_err(|e| format!("LLM 错误: {:?}", e))?;
+        .map_err(|e| AgentError::Other(format!("LLM error: {:?}", e)))?;
         let content = match &structured.tool_args {
             Some(args) => steps_to_json_string(args),
             None => structured.content,
@@ -81,7 +83,7 @@ impl Planner {
         objective: &str,
         failed_step: &str,
         reason: &str,
-    ) -> Result<Plan, String> {
+    ) -> Result<Plan, AgentError> {
         let prompt = format!(
             "原目标: {}\n之前步骤 '{}' 失败: {}\n请重新制定完整计划。输出 JSON 字符串数组 [\"步骤\", ...],只输出 JSON。",
             objective, failed_step, reason
@@ -98,7 +100,7 @@ impl Planner {
             &crate::retry::RetryConfig::default(),
         )
         .await
-        .map_err(|e| format!("LLM 错误: {:?}", e))?;
+        .map_err(|e| AgentError::Other(format!("LLM error: {:?}", e)))?;
         let content = match &structured.tool_args {
             Some(args) => steps_to_json_string(args),
             None => structured.content,
@@ -106,10 +108,14 @@ impl Planner {
         self.parse_plan(objective, &content)
     }
 
-    fn parse_plan(&self, objective: &str, content: &str) -> Result<Plan, String> {
+    fn parse_plan(&self, objective: &str, content: &str) -> Result<Plan, AgentError> {
         let json_str = extract_json_array(content);
-        let descs: Vec<String> = serde_json::from_str(&json_str)
-            .map_err(|e| format!("解析计划失败: {} | 原文: {}", e, content))?;
+        let descs: Vec<String> = serde_json::from_str(&json_str).map_err(|e| {
+            AgentError::OutputParsingError(format!(
+                "failed to parse plan: {} | raw: {}",
+                e, content
+            ))
+        })?;
         Ok(Plan::from_descriptions(objective, descs))
     }
 }

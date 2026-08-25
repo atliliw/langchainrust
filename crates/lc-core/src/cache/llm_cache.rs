@@ -10,6 +10,15 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+/// Error type for the LLM cache.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CacheError {
+    /// Failed to serialize the cache key.
+    #[error("cache key serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
 /// 缓存的 LLM 结果，包含过期时间
 #[derive(Debug, Clone)]
 pub struct CachedLLMResult {
@@ -41,6 +50,7 @@ impl Default for CacheConfig {
 }
 
 impl CacheConfig {
+    /// 使用默认配置创建缓存配置。
     pub fn new() -> Self {
         Self::default()
     }
@@ -91,10 +101,12 @@ pub struct LLMCache {
 }
 
 impl LLMCache {
+    /// 创建使用默认配置的缓存。
     pub fn new() -> Self {
         Self::with_config(CacheConfig::default())
     }
 
+    /// 使用指定配置创建缓存。
     pub fn with_config(config: CacheConfig) -> Self {
         Self {
             config,
@@ -107,9 +119,8 @@ impl LLMCache {
     /// 将消息列表序列化为 JSON 字符串作为键。
     /// 包含 model 名称以确保不同模型的调用不互相影响。
     /// 如果序列化失败，返回错误而非回退到空字符串（M34）。
-    pub fn build_key(messages: &[Message], model: &str) -> Result<String, String> {
-        let serialized = serde_json::to_string(messages)
-            .map_err(|e| format!("cache key serialization failed: {}", e))?;
+    pub fn build_key(messages: &[Message], model: &str) -> Result<String, CacheError> {
+        let serialized = serde_json::to_string(messages).map_err(CacheError::Serialization)?;
         Ok(format!("{}:{}", model, serialized))
     }
 
@@ -154,7 +165,7 @@ impl LLMCache {
     }
 
     /// 存入缓存结果
-    pub async fn put(&self, key: String, result: LLMResult) {
+    pub async fn put(&self, key: impl Into<String>, result: LLMResult) {
         if !self.config.enabled {
             return;
         }
@@ -174,7 +185,7 @@ impl LLMCache {
         }
 
         store.insert(
-            key,
+            key.into(),
             CachedLLMResult {
                 result,
                 cached_at: Instant::now(),

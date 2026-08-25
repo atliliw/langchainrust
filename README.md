@@ -24,7 +24,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Structured output over text parsing** | Models that support `tool_calls` go through structured output (JSON schema / function calling). Regex-parsing model output is the last resort, not the default — it is the most common source of silent fragility. |
 | **Production hardening first** | Tool execution has timeouts, LLM calls retry with exponential backoff, agent loops are capped (`max_iterations` clamped to `[1, 100]`), parallel actions are concurrency-limited, and `CancellationToken` propagates through every runnable. Eliminate the deterministic failure paths before adding features. |
 | **Type system enforces safety** | Security properties live in types, not comments. Guardrails split `InputGuardrailResult` / `OutputGuardrailResult` so "Modify only applies to output" is enforced at compile time. |
-| **Composition first** | Everything can be `pipe`d. Since v0.15.0, prompts, memory, native providers, parsers and RAG are all `Runnable` — `prompt.pipe(llm).pipe(parser)` compiles and runs. |
+| **Composition first** | Everything can be `pipe`d. Since v0.16.0, prompts, memory, native providers, parsers and RAG are all `Runnable` — `prompt.pipe(llm).pipe(parser)` compiles and runs. |
 | **Honest implementations** | No fake backends. Empty-shell sandboxes (Wasm/E2B) were deleted; unsupported operations (e.g. Pinecone fetch-by-ID) return explicit `StorageError`s instead of pretending to work. |
 
 ---
@@ -212,20 +212,20 @@ langchainrust is a **21-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.15.0"
+langchainrust = "0.16.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.15.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.15.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.15.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.15.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.15.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.15.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.15.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
-langchainrust = { version = "0.15.0", features = ["fastembed"] }            # FastEmbed embeddings
-langchainrust = { version = "0.15.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.15.0", features = ["experimental"] }         # Experimental features
+langchainrust = { version = "0.16.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.16.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.16.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.16.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.16.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.16.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.16.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.16.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.16.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.16.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

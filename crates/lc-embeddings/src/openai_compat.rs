@@ -11,8 +11,11 @@ use serde::Deserialize;
 
 /// 访问 provider 配置字段的抽象——DeepSeek/Qwen 的 config 结构体字段名相同。
 pub trait CompatConfigAccess {
+    /// 返回 API key
     fn api_key(&self) -> &str;
+    /// 返回 Base URL
     fn base_url(&self) -> &str;
+    /// 返回模型名
     fn model(&self) -> &str;
 }
 
@@ -28,7 +31,7 @@ pub trait CompatSpec: CompatConfigAccess + Sized + Default {
     /// 给定模型的向量维度；未知模型必须报错（P1-2），不得回落默认值撒谎。
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError>;
     /// 从环境变量构造 config（复用各 config 已实现的 from_env_result）。
-    fn from_env_result() -> Result<Self, String>;
+    fn from_env_result() -> Result<Self, EmbeddingError>;
 }
 
 /// 通用 OpenAI 兼容 embedding 客户端（P1-5）。
@@ -69,9 +72,9 @@ impl<C: CompatConfigAccess + CompatSpec> OpenAICompatEmbeddings<C> {
     }
 
     /// Creates from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
         let config = C::from_env_result()?;
-        Self::new(config).map_err(|e| e.to_string())
+        Self::new(config)
     }
 }
 

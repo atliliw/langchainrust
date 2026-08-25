@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 use super::counter::{TokenCounter, TrackerTokenUsage};
 use super::tiktoken::TiktokenCounter;
+use super::TokenCounterError;
 
 /// 带 Token 统计的 LLM 包装器
 ///
@@ -21,6 +22,7 @@ pub struct TokenTrackingLLM<L: BaseChatModel> {
 }
 
 impl<L: BaseChatModel> TokenTrackingLLM<L> {
+    /// 用自定义计数器包装 LLM。
     pub fn new(llm: L, counter: Arc<dyn TokenCounter>) -> Self {
         Self {
             llm,
@@ -30,7 +32,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
     }
 
     /// 用 Tiktoken(cl100k_base)计数器包装
-    pub fn for_openai(llm: L) -> Result<Self, String> {
+    pub fn for_openai(llm: L) -> Result<Self, TokenCounterError> {
         let counter = TiktokenCounter::new()?;
         Ok(Self::new(llm, Arc::new(counter)))
     }
@@ -79,11 +81,14 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
 
 /// 模型定价(每 1K token 价格,美元)
 pub struct ModelPricing {
+    /// 每 1K prompt token 价格(美元)
     pub prompt_price_per_1k: f64,
+    /// 每 1K completion token 价格(美元)
     pub completion_price_per_1k: f64,
 }
 
 impl ModelPricing {
+    /// 创建自定义模型定价。
     pub fn new(prompt: f64, completion: f64) -> Self {
         Self {
             prompt_price_per_1k: prompt,

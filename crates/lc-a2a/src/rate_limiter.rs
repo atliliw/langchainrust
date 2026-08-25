@@ -18,6 +18,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 /// Error returned when a request is not admitted by the rate limiter.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RateLimitError {
     /// The per-window request budget has been exhausted.
     #[error("request rate limit exceeded")]

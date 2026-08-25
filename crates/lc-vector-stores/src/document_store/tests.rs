@@ -75,7 +75,10 @@ async fn test_chunk_to_document() {
 
     assert_eq!(doc.id, Some("chunk_001".to_string()));
     assert_eq!(doc.content, "Chunk内容");
-    assert_eq!(doc.metadata.get("source"), Some(&"test".to_string()));
+    assert_eq!(
+        doc.metadata.get("source"),
+        Some(&serde_json::Value::String("test".to_string()))
+    );
 }
 
 #[tokio::test]

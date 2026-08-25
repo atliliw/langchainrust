@@ -20,7 +20,7 @@ struct MongoParentDoc {
     #[serde(rename = "_id")]
     id: String,
     content: String,
-    metadata: HashMap<String, String>,
+    metadata: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +30,7 @@ struct MongoChunkDoc {
     parent_id: String,
     content: String,
     segment: i32,
-    metadata: HashMap<String, String>,
+    metadata: HashMap<String, serde_json::Value>,
 }
 
 impl From<MongoParentDoc> for Document {
@@ -83,9 +83,13 @@ impl From<ChunkDocument> for MongoChunkDoc {
 /// MongoDB 存储配置
 #[derive(Debug, Clone)]
 pub struct MongoStoreConfig {
+    /// MongoDB 连接地址
     pub uri: String,
+    /// 数据库名称
     pub database: String,
+    /// 父文档集合名称
     pub parent_collection: String,
+    /// 分块集合名称
     pub chunk_collection: String,
 }
 
@@ -101,6 +105,7 @@ impl Default for MongoStoreConfig {
 }
 
 impl MongoStoreConfig {
+    /// 使用连接地址和数据库名创建配置,集合名使用默认值。
     pub fn new(uri: impl Into<String>, database: impl Into<String>) -> Self {
         Self {
             uri: uri.into(),
@@ -110,6 +115,7 @@ impl MongoStoreConfig {
         }
     }
 
+    /// 设置父文档集合和分块集合的名称。
     pub fn with_collections(mut self, parent: impl Into<String>, chunk: impl Into<String>) -> Self {
         self.parent_collection = parent.into();
         self.chunk_collection = chunk.into();
@@ -125,6 +131,7 @@ pub struct MongoChunkedDocumentStore {
 }
 
 impl MongoChunkedDocumentStore {
+    /// 根据配置连接 MongoDB 并创建存储实例。
     pub async fn new(config: MongoStoreConfig) -> Result<Self, VectorStoreError> {
         let client_options = ClientOptions::parse(&config.uri)
             .await
@@ -144,6 +151,7 @@ impl MongoChunkedDocumentStore {
         })
     }
 
+    /// 在分块集合上创建 `parent_id` 索引以加速查询。
     pub async fn create_indexes(&self) -> Result<(), VectorStoreError> {
         self.chunk_collection
             .create_index(
@@ -158,6 +166,7 @@ impl MongoChunkedDocumentStore {
         Ok(())
     }
 
+    /// 返回底层 MongoDB 客户端引用。
     pub fn client(&self) -> &Client {
         &self.client
     }

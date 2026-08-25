@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 /// 检索器错误类型
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RetrieverError {
     /// 向量存储错误
     StoreError(VectorStoreError),
@@ -24,9 +25,9 @@ pub enum RetrieverError {
 impl std::fmt::Display for RetrieverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RetrieverError::StoreError(e) => write!(f, "存储错误: {}", e),
-            RetrieverError::EmbeddingError(msg) => write!(f, "嵌入错误: {}", msg),
-            RetrieverError::NoResults => write!(f, "没有找到相关文档"),
+            RetrieverError::StoreError(e) => write!(f, "storage error: {}", e),
+            RetrieverError::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
+            RetrieverError::NoResults => write!(f, "no relevant documents found"),
         }
     }
 }
@@ -148,8 +149,11 @@ mod tests {
         // UnifiedHybridIndex 作为 trait object
         let embeddings = Arc::new(MockEmbeddings::new(128));
         let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
-        let unified: Arc<dyn RetrieverTrait> =
-            Arc::new(UnifiedHybridIndex::new(embeddings.clone(), vector_store, 128));
+        let unified: Arc<dyn RetrieverTrait> = Arc::new(UnifiedHybridIndex::new(
+            embeddings.clone(),
+            vector_store,
+            128,
+        ));
         unified
             .add_documents(vec![Document::new(
                 "Rust is a systems programming language",

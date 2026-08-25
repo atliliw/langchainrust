@@ -29,6 +29,7 @@ fn doc_content_hash(content: &str) -> String {
 
 /// MultiQueryRetriever 错误类型
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum MultiQueryError {
     /// LLM 错误
     LLMError(String),
@@ -43,9 +44,9 @@ pub enum MultiQueryError {
 impl std::fmt::Display for MultiQueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MultiQueryError::LLMError(msg) => write!(f, "LLM 错误: {}", msg),
-            MultiQueryError::RetrieverError(msg) => write!(f, "检索错误: {}", msg),
-            MultiQueryError::ParseError(msg) => write!(f, "解析错误: {}", msg),
+            MultiQueryError::LLMError(msg) => write!(f, "LLM error: {}", msg),
+            MultiQueryError::RetrieverError(msg) => write!(f, "Retriever error: {}", msg),
+            MultiQueryError::ParseError(msg) => write!(f, "Parse error: {}", msg),
         }
     }
 }
@@ -79,27 +80,32 @@ impl Default for MultiQueryConfig {
 }
 
 impl MultiQueryConfig {
+    /// 创建使用默认配置的 `MultiQueryConfig`
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置生成的查询数量
     pub fn with_num_queries(mut self, n: usize) -> Self {
         self.num_queries = n;
         self
     }
 
+    /// 设置每个查询返回的文档数
     pub fn with_k_per_query(mut self, k: usize) -> Self {
         self.k_per_query = k;
         self
     }
 
+    /// 设置最终返回的文档数
     pub fn with_final_k(mut self, k: usize) -> Self {
         self.final_k = k;
         self
     }
 
-    pub fn with_prompt(mut self, prompt: String) -> Self {
-        self.prompt_template = prompt;
+    /// 设置查询生成 prompt
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt_template = prompt.into();
         self
     }
 }
@@ -157,21 +163,25 @@ impl MultiQueryRetriever {
         }
     }
 
+    /// 设置 MultiQuery 配置
     pub fn with_config(mut self, config: MultiQueryConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// 设置生成的查询数量
     pub fn with_num_queries(mut self, n: usize) -> Self {
         self.config.num_queries = n;
         self
     }
 
+    /// 设置每个查询返回的文档数
     pub fn with_k_per_query(mut self, k: usize) -> Self {
         self.config.k_per_query = k;
         self
     }
 
+    /// 设置最终返回的文档数
     pub fn with_final_k(mut self, k: usize) -> Self {
         self.config.final_k = k;
         self
@@ -196,7 +206,7 @@ impl MultiQueryRetriever {
                 vec![Message::human(&current_prompt)],
             )
             .await
-            .map_err(MultiQueryError::LLMError)?;
+            .map_err(|e| MultiQueryError::LLMError(e.to_string()))?;
 
             // 优先 tool_calls:查询字符串数组
             if let Some(args) = &result.tool_args {
@@ -224,10 +234,11 @@ impl MultiQueryRetriever {
         }
 
         Err(MultiQueryError::ParseError(
-            "LLM 未生成有效的查询变体".to_string(),
+            "LLM did not generate valid query variants".to_string(),
         ))
     }
 
+    /// 生成多个查询变体并分别检索，合并去重后返回最终文档
     pub async fn retrieve_multi(&self, query: &str) -> Result<Vec<Document>, MultiQueryError> {
         let queries = self.generate_queries(query).await?;
 
@@ -275,6 +286,7 @@ impl MultiQueryRetriever {
         Ok(final_docs)
     }
 
+    /// 生成多个查询变体并分别检索，合并去重后返回带分数的结果
     pub async fn retrieve_multi_with_scores(
         &self,
         query: &str,
@@ -333,6 +345,7 @@ impl MultiQueryRetriever {
         Ok(final_results)
     }
 
+    /// 获取 LLM 生成的查询变体（不执行检索）
     pub async fn get_generated_queries(&self, query: &str) -> Result<Vec<String>, MultiQueryError> {
         self.generate_queries(query).await
     }
@@ -396,12 +409,14 @@ pub struct StaticQueryGenerator {
 }
 
 impl StaticQueryGenerator {
+    /// 创建空的静态查询生成器
     pub fn new() -> Self {
         Self {
             expansions: Vec::new(),
         }
     }
 
+    /// 添加同义词扩展规则
     pub fn with_synonym_expansion(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
         self.expansions.push(Box::new(move |query: &str| {
             let mut expanded = Vec::new();
@@ -417,6 +432,7 @@ impl StaticQueryGenerator {
         self
     }
 
+    /// 添加前缀扩展规则
     pub fn with_prefix_expansion(mut self, prefixes: Vec<String>) -> Self {
         self.expansions.push(Box::new(move |query: &str| {
             prefixes
@@ -427,6 +443,7 @@ impl StaticQueryGenerator {
         self
     }
 
+    /// 应用所有扩展规则生成查询变体
     pub fn generate(&self, query: &str) -> Vec<String> {
         self.expansions
             .iter()
@@ -498,7 +515,7 @@ mod tests {
     fn test_queries_tool_schema() {
         let tool = queries_tool();
         assert_eq!(tool.function.name, "generate_queries");
-        let params = tool.function.parameters.expect("parameters 应存在");
+        let params = tool.function.parameters.expect("parameters should exist");
         assert_eq!(params["properties"]["queries"]["type"], "array");
     }
 
@@ -506,7 +523,7 @@ mod tests {
     #[test]
     fn test_parse_queries() {
         let args = json!({ "queries": ["数据库连接失败怎么办", "DB 连接错误排查"] });
-        let queries = parse_queries(&args).expect("应解析成功");
+        let queries = parse_queries(&args).expect("should parse successfully");
         assert_eq!(queries.len(), 2);
         assert_eq!(queries[0], "数据库连接失败怎么办");
     }

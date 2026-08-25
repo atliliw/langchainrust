@@ -75,6 +75,7 @@ pub struct FunctionDefinition {
 }
 
 impl FunctionDefinition {
+    /// Creates a new function definition with the given name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -84,11 +85,13 @@ impl FunctionDefinition {
         }
     }
 
+    /// Sets the function description (builder style).
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
+    /// Sets the parameters JSON schema (builder style).
     pub fn with_parameters(mut self, parameters: serde_json::Value) -> Self {
         self.parameters = Some(parameters);
         self
@@ -96,7 +99,7 @@ impl FunctionDefinition {
 }
 
 // Re-export shared tool call types from lc-shared
-pub use lc_shared::tools::{FunctionCall, ToolCall, ToolCallResult};
+pub use lc_shared::tools::{FunctionCall, ToolCall, ToolCallBuilder, ToolCallResult};
 
 #[cfg(test)]
 mod tests {
@@ -131,11 +134,10 @@ mod tool_call_tests {
 
     #[test]
     fn test_tool_call() {
-        let call = ToolCall::new(
-            "call_123",
-            "calculator",
-            json!({"expression": "2 + 3"}).to_string(),
-        );
+        let call = ToolCall::builder("call_123")
+            .name("calculator")
+            .arguments(json!({"expression": "2 + 3"}).to_string())
+            .build();
 
         assert_eq!(call.id, "call_123");
         assert_eq!(call.name(), "calculator");

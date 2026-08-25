@@ -8,16 +8,19 @@ use std::collections::HashMap;
 
 /// Reranking 错误类型
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RerankingError {
+    /// 评分计算错误
     ScoringError(String),
+    /// 输入无效错误
     InvalidInput(String),
 }
 
 impl std::fmt::Display for RerankingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RerankingError::ScoringError(msg) => write!(f, "评分错误: {}", msg),
-            RerankingError::InvalidInput(msg) => write!(f, "输入无效: {}", msg),
+            RerankingError::ScoringError(msg) => write!(f, "scoring error: {}", msg),
+            RerankingError::InvalidInput(msg) => write!(f, "invalid input: {}", msg),
         }
     }
 }
@@ -47,20 +50,24 @@ impl Default for RerankingConfig {
 }
 
 impl RerankingConfig {
+    /// 创建使用默认配置的 `RerankingConfig`
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置最终返回的文档数量
     pub fn with_top_n(mut self, n: usize) -> Self {
         self.top_n = n;
         self
     }
 
+    /// 设置最小分数阈值
     pub fn with_min_score(mut self, score: f32) -> Self {
         self.min_score = Some(score);
         self
     }
 
+    /// 设置是否保留原始分数
     pub fn with_preserve_original_score(mut self, preserve: bool) -> Self {
         self.preserve_original_score = preserve;
         self
@@ -69,6 +76,7 @@ impl RerankingConfig {
 
 /// Reranking 评分器 trait
 pub trait Reranker: Send + Sync {
+    /// 对给定文档列表评分，返回与文档一一对应的分数数组
     fn score(&self, query: &str, documents: &[Document]) -> Result<Vec<f32>, RerankingError>;
 }
 
@@ -79,12 +87,14 @@ pub struct KeywordReranker {
 }
 
 impl KeywordReranker {
+    /// 创建默认的关键词 Reranker
     pub fn new() -> Self {
         Self {
             keyword_weights: HashMap::new(),
         }
     }
 
+    /// 设置关键词权重映射
     pub fn with_keyword_weights(mut self, weights: HashMap<String, f32>) -> Self {
         self.keyword_weights = weights;
         self
@@ -146,6 +156,7 @@ pub struct RerankingExecutor {
 }
 
 impl RerankingExecutor {
+    /// 创建 Reranker 执行器
     pub fn new(reranker: Box<dyn Reranker>) -> Self {
         Self {
             reranker,
@@ -153,26 +164,31 @@ impl RerankingExecutor {
         }
     }
 
+    /// 设置 Reranking 配置
     pub fn with_config(mut self, config: RerankingConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// 设置最终返回的文档数量
     pub fn with_top_n(mut self, n: usize) -> Self {
         self.config.top_n = n;
         self
     }
 
+    /// 设置最小分数阈值
     pub fn with_min_score(mut self, score: f32) -> Self {
         self.config.min_score = Some(score);
         self
     }
 
+    /// 设置是否保留原始分数
     pub fn with_preserve_original_score(mut self, preserve: bool) -> Self {
         self.config.preserve_original_score = preserve;
         self
     }
 
+    /// 对检索结果进行重排序，返回重排后的带分数结果
     pub fn rerank(
         &self,
         query: &str,
@@ -234,6 +250,7 @@ impl RerankingExecutor {
         Ok(reranked)
     }
 
+    /// 对文档列表直接评分并重排序，返回带分数的结果
     pub fn rerank_documents(
         &self,
         query: &str,
@@ -277,10 +294,12 @@ pub struct BM25Reranker {
 }
 
 impl BM25Reranker {
+    /// 创建默认参数的 BM25 Reranker
     pub fn new() -> Self {
         Self { k1: 1.5, b: 0.75 }
     }
 
+    /// 设置 BM25 参数 k1 和 b
     pub fn with_params(mut self, k1: f32, b: f32) -> Self {
         self.k1 = k1;
         self.b = b;

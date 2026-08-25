@@ -112,7 +112,7 @@ impl RAGPipeline {
             .llm
             .chat(messages, None)
             .await
-            .map_err(|e| RetrieverError::EmbeddingError(format!("LLM 调用失败: {}", e)))?;
+            .map_err(|e| RetrieverError::EmbeddingError(format!("LLM call failed: {}", e)))?;
 
         Ok(RAGQueryResult {
             answer: llm_result.content,
@@ -372,10 +372,10 @@ mod tests {
             .llm(OpenAIChat::new(config))
             .retriever(BM25Retriever::new())
             .build()
-            .expect("build 应成功");
+            .expect("build should succeed");
 
         rag.index_documents(vec![Document::new("Rust is a systems language")])
             .await
-            .expect("index_documents 应委托给 BM25 检索器成功");
+            .expect("index_documents should delegate to BM25 retriever successfully");
     }
 }

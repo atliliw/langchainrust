@@ -59,12 +59,14 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
         for doc in documents {
             if let Err(e) = self.add_document(doc) {
                 failed += 1;
-                log::error!("BM25Retriever::add_documents_sync: 文档入库失败(将从检索结果中缺失): {e}");
+                log::error!(
+                    "BM25Retriever::add_documents_sync: failed to add document (it will be missing from retrieval results): {e}"
+                );
             }
         }
         if failed > 0 {
             log::warn!(
-                "BM25Retriever::add_documents_sync: {} 篇文档入库失败(共 {} 篇)",
+                "BM25Retriever::add_documents_sync: failed to add {} of {} documents",
                 failed,
                 total
             );
@@ -93,6 +95,7 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
             .len()
     }
 
+    /// 检索器是否为空（尚未索引任何文档）。
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

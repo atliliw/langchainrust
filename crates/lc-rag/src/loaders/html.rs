@@ -62,15 +62,15 @@ impl HTMLLoader {
     async fn fetch_html(url: &str) -> Result<String, LoaderError> {
         let response = reqwest::get(url)
             .await
-            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败: {}", e)))?;
+            .map_err(|e| LoaderError::Other(format!("HTTP request failed: {}", e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!("HTTP 错误: {}", status)));
+            return Err(LoaderError::Other(format!("HTTP error: {}", status)));
         }
         response
             .text()
             .await
-            .map_err(|e| LoaderError::Other(format!("读取响应失败: {}", e)))
+            .map_err(|e| LoaderError::Other(format!("failed to read response: {}", e)))
     }
 }
 
@@ -83,15 +83,15 @@ impl DocumentLoader for HTMLLoader {
             Self::fetch_html(url).await?
         } else {
             return Err(LoaderError::Other(
-                "HTMLLoader 未设置 html 或 url".to_string(),
+                "HTMLLoader has neither html nor url set".to_string(),
             ));
         };
 
         let text = Self::extract_text(&html);
         let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), "html".to_string());
+        metadata.insert("format".to_string(), "html".to_string().into());
         if let Some(ref url) = self.url {
-            metadata.insert("source".to_string(), url.clone());
+            metadata.insert("source".to_string(), url.clone().into());
         }
         Ok(vec![Document {
             content: text,
@@ -142,7 +142,10 @@ mod tests {
         let docs = loader.load().await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].content, "test");
-        assert_eq!(docs[0].metadata.get("format"), Some(&"html".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("format"),
+            Some(&serde_json::Value::String("html".to_string()))
+        );
     }
 
     #[tokio::test]

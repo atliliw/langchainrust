@@ -141,23 +141,35 @@ impl RunTree {
 /// Simplified run structure for API requests
 #[derive(Debug, Serialize)]
 pub struct RunCreate {
+    /// Run ID.
     pub id: String,
+    /// Run name.
     pub name: String,
+    /// Run type as a string.
     pub run_type: String,
+    /// Inputs for the run.
     pub inputs: serde_json::Value,
+    /// Outputs of the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<serde_json::Value>,
+    /// Error message, if the run failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// ID of the parent run, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Start time as an RFC 3339 timestamp.
     pub start_time: String,
+    /// End time as an RFC 3339 timestamp, if the run finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_time: Option<String>,
+    /// Session/project name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    /// Tags attached to the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Arbitrary metadata for the run.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -184,10 +196,13 @@ impl From<&RunTree> for RunCreate {
 /// Run update structure for PATCH requests
 #[derive(Debug, Serialize)]
 pub struct RunUpdate {
+    /// Updated outputs of the run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<serde_json::Value>,
+    /// Updated error message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Updated end time as an RFC 3339 timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_time: Option<String>,
 }

@@ -16,18 +16,22 @@ use std::sync::Arc;
 
 /// HyDE 错误类型
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HyDEError {
+    /// LLM 调用错误
     LLMError(String),
+    /// 向量化错误
     EmbeddingError(String),
+    /// 基础检索器错误
     RetrieverError(String),
 }
 
 impl std::fmt::Display for HyDEError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HyDEError::LLMError(msg) => write!(f, "LLM 错误: {}", msg),
-            HyDEError::EmbeddingError(msg) => write!(f, "Embedding 错误: {}", msg),
-            HyDEError::RetrieverError(msg) => write!(f, "检索错误: {}", msg),
+            HyDEError::LLMError(msg) => write!(f, "LLM error: {}", msg),
+            HyDEError::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
+            HyDEError::RetrieverError(msg) => write!(f, "retrieval error: {}", msg),
         }
     }
 }
@@ -57,20 +61,24 @@ impl Default for HyDEConfig {
 }
 
 impl HyDEConfig {
+    /// 创建使用默认配置的 `HyDEConfig`
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置检索文档数量
     pub fn with_k(mut self, k: usize) -> Self {
         self.k = k;
         self
     }
 
-    pub fn with_prompt(mut self, prompt: String) -> Self {
-        self.prompt_template = prompt;
+    /// 设置假设文档生成的 prompt 模板
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt_template = prompt.into();
         self
     }
 
+    /// 设置是否包含原始查询结果
     pub fn with_include_original_query(mut self, include: bool) -> Self {
         self.include_original_query = include;
         self
@@ -129,16 +137,19 @@ impl HyDERetriever {
         }
     }
 
+    /// 设置 HyDE 配置
     pub fn with_config(mut self, config: HyDEConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// 设置检索文档数量
     pub fn with_k(mut self, k: usize) -> Self {
         self.config.k = k;
         self
     }
 
+    /// 设置是否包含原始查询结果
     pub fn with_include_original_query(mut self, include: bool) -> Self {
         self.config.include_original_query = include;
         self
@@ -163,6 +174,7 @@ impl HyDERetriever {
         Ok(response.content)
     }
 
+    /// 用 HyDE 流程检索文档：先生成假设文档，再检索并去重合并结果
     pub async fn retrieve(&self, query: &str) -> Result<Vec<Document>, HyDEError> {
         let hyde_doc = self.generate_hypothetical_document(query).await?;
 
@@ -197,6 +209,7 @@ impl HyDERetriever {
         Ok(all_docs)
     }
 
+    /// 带分数检索文档（HyDE 流程）
     pub async fn retrieve_with_scores(&self, query: &str) -> Result<Vec<SearchResult>, HyDEError> {
         let hyde_doc = self.generate_hypothetical_document(query).await?;
 
@@ -237,6 +250,7 @@ impl HyDERetriever {
         Ok(all_results)
     }
 
+    /// 获取 LLM 生成的假设文档（不执行检索）
     pub async fn get_hypothetical_document(&self, query: &str) -> Result<String, HyDEError> {
         self.generate_hypothetical_document(query).await
     }

@@ -5,6 +5,7 @@ use tiktoken_rs::CoreBPE;
 use lc_schema::Message;
 
 use super::counter::TokenCounter;
+use super::TokenCounterError;
 
 /// Tiktoken 计数器(使用 cl100k_base,适用于 GPT-3.5 / 4 / 4o)
 pub struct TiktokenCounter {
@@ -12,9 +13,10 @@ pub struct TiktokenCounter {
 }
 
 impl TiktokenCounter {
-    pub fn new() -> Result<Self, String> {
-        let encoder =
-            tiktoken_rs::cl100k_base().map_err(|e| format!("加载 tiktoken 失败: {}", e))?;
+    /// 创建 Tiktoken 计数器(加载 cl100k_base BPE 编码器)。
+    pub fn new() -> Result<Self, TokenCounterError> {
+        let encoder = tiktoken_rs::cl100k_base()
+            .map_err(|e| TokenCounterError::EncoderLoad(e.to_string()))?;
         Ok(Self { encoder })
     }
 }

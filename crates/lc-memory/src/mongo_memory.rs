@@ -120,6 +120,8 @@ pub struct MongoPersistentMemory<M: BaseChatModel> {
 }
 
 impl<M: BaseChatModel> MongoPersistentMemory<M> {
+    /// Creates a new MongoDB-backed persistent memory connected to the given
+    /// database and collection, using `llm` and `token_limit` for the summary buffer.
     pub async fn new(
         mongo_uri: &str,
         database_name: &str,
@@ -150,6 +152,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
         })
     }
 
+    /// Replaces the persistence config, keeping its token limit in sync with the inner memory.
     pub async fn with_config(mut self, config: PersistenceConfig) -> Self {
         // P1-3: config 的 token_limit 落到 inner 的预算,不再出现"config 改了 inner 没变"。
         self.inner.get_mut().set_max_token_limit(config.token_limit);
@@ -161,6 +164,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
         self.database.collection(&self.collection_name)
     }
 
+    /// Creates a unique index on `session_id` to prevent duplicate documents.
     pub async fn create_indexes(&self) -> Result<(), MemoryError> {
         let collection = self.collection();
 
@@ -185,6 +189,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
         Ok(())
     }
 
+    /// Returns the current session ID, if any.
     pub async fn get_session_id(&self) -> Option<String> {
         self.session_id
             .read()
@@ -192,8 +197,9 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
             .clone()
     }
 
-    pub async fn set_session_id_async(&self, session_id: String) {
-        *self.session_id.write().unwrap_or_else(|e| e.into_inner()) = Some(session_id);
+    /// Sets the session ID used for subsequent persistence operations.
+    pub async fn set_session_id_async(&self, session_id: impl Into<String>) {
+        *self.session_id.write().unwrap_or_else(|e| e.into_inner()) = Some(session_id.into());
     }
 
     async fn do_load_from_store(&self, session_id: &str) -> Result<(), MemoryError> {
@@ -302,7 +308,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
         }
 
         Err(MemoryError::SaveError(format!(
-            "MongoDB 乐观锁冲突: 会话 {} 在 {} 次重试内持续被并发写入",
+            "MongoDB optimistic lock conflict: session {} kept being concurrently written within {} retries",
             session_id, MAX_ATTEMPTS
         )))
     }

@@ -14,13 +14,21 @@ pub use tracker::{ModelPricing, TokenTrackingLLM};
 use std::sync::LazyLock;
 use tiktoken_rs::CoreBPE;
 
+/// Error type for token counting.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum TokenCounterError {
+    /// Failed to load the tiktoken encoder (e.g. the vendored BPE file is missing).
+    #[error("failed to load tiktoken encoder: {0}")]
+    EncoderLoad(String),
+}
+
 /// Global cached tiktoken encoder (cl100k_base, for GPT-3.5/4/4o).
 ///
 /// Holds a `Result` so encoder-load failure surfaces as a `count_tokens`
 /// error instead of a process-wide `expect` panic on first use (Q9).
-static GLOBAL_ENCODER: LazyLock<Result<CoreBPE, String>> = LazyLock::new(|| {
-    tiktoken_rs::cl100k_base()
-        .map_err(|e| format!("Failed to load tiktoken cl100k_base encoder: {e}"))
+static GLOBAL_ENCODER: LazyLock<Result<CoreBPE, TokenCounterError>> = LazyLock::new(|| {
+    tiktoken_rs::cl100k_base().map_err(|e| TokenCounterError::EncoderLoad(e.to_string()))
 });
 
 /// Count tokens in text using the global tiktoken encoder.
@@ -38,7 +46,7 @@ static GLOBAL_ENCODER: LazyLock<Result<CoreBPE, String>> = LazyLock::new(|| {
 /// let n = count_tokens("Hello, world!").unwrap();
 /// assert!(n > 0);
 /// ```
-pub fn count_tokens(text: &str) -> Result<usize, String> {
-    let encoder = GLOBAL_ENCODER.as_ref().map_err(|e| e.clone())?;
+pub fn count_tokens(text: &str) -> Result<usize, TokenCounterError> {
+    let encoder = GLOBAL_ENCODER.as_ref().map_err(Clone::clone)?;
     Ok(encoder.encode_with_special_tokens(text).len())
 }

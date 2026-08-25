@@ -17,6 +17,7 @@ use crate::protocol::{AgentCard, AgentSkill};
 
 /// Errors raised by the discovery components.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RegistryError {
     /// The agent is not in the registry.
     #[error("agent `{0}` is not registered")]

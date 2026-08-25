@@ -85,12 +85,14 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableBinding<I, O> {
         // merges into the model call. Other keys stay in metadata.
         for (key, value) in &self.kwargs {
             match (key.as_str(), value) {
-                ("temperature", Value::Number(n)) if n.as_f64().is_some() => {
-                    base = base.with_temperature(n.as_f64().unwrap() as f32);
-                }
-                ("max_tokens", Value::Number(n)) if n.as_u64().is_some() => {
-                    base = base.with_max_tokens(n.as_u64().unwrap() as usize);
-                }
+                ("temperature", Value::Number(n)) => match n.as_f64() {
+                    Some(f) => base = base.with_temperature(f as f32),
+                    None => base = base.with_metadata(key.clone(), value.clone()),
+                },
+                ("max_tokens", Value::Number(n)) => match n.as_u64() {
+                    Some(u) => base = base.with_max_tokens(u as usize),
+                    None => base = base.with_metadata(key.clone(), value.clone()),
+                },
                 _ => base = base.with_metadata(key.clone(), value.clone()),
             }
         }
@@ -286,7 +288,8 @@ mod tests {
 
     #[tokio::test]
     async fn binding_unknown_kwarg_stays_in_metadata() {
-        let binding = RunnableBinding::new(ConfigProbe).bind("stop", Value::String("\n".to_string()));
+        let binding =
+            RunnableBinding::new(ConfigProbe).bind("stop", Value::String("\n".to_string()));
         let result = binding.invoke((), None).await.unwrap();
         // stop 不识别为采样字段 → 只进 metadata,typed 字段不受影响
         assert_eq!(result, "temp=None,max=None");

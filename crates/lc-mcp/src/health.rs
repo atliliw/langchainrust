@@ -38,6 +38,7 @@ pub enum HealthStatus {
 /// `failures` 为连续失败次数,`max_failures` 为触发 Down 的阈值。
 #[derive(Debug, Clone)]
 pub struct ServerHealth {
+    /// 当前健康状态。
     pub status: HealthStatus,
     /// 连续失败次数(探活 + 建连失败累计)。
     pub failures: u32,
@@ -242,7 +243,10 @@ mod tests {
         cb.record_failure();
         // 达阈值 → Open,退避期内拒绝。
         assert_eq!(cb.state(), BreakerState::Open);
-        assert!(!cb.allow_request(), "熔断期应拒绝请求");
+        assert!(
+            !cb.allow_request(),
+            "should reject requests while circuit is open"
+        );
     }
 
     /// 指数退避:每档翻倍,上限 30s。
@@ -281,7 +285,11 @@ mod tests {
     fn test_circuit_breaker_max_failures_min_one() {
         let mut cb = CircuitBreaker::new(0);
         cb.record_failure();
-        assert_eq!(cb.state(), BreakerState::Open, "max_failures 至少为 1");
+        assert_eq!(
+            cb.state(),
+            BreakerState::Open,
+            "max_failures must be at least 1"
+        );
     }
 
     /// 探活:对假 SSE Server 执行 list_tools 成功。
@@ -290,7 +298,9 @@ mod tests {
         let server = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
-        probe_health(&client).await.expect("list_tools 探活应成功");
+            .expect("connecting to fake SSE server should succeed");
+        probe_health(&client)
+            .await
+            .expect("list_tools probe should succeed");
     }
 }

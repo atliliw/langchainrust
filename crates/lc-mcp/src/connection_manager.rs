@@ -119,7 +119,10 @@ impl ManagedServer {
             if !breaker.allow_request() {
                 return Err(MCPError::new(
                     -1,
-                    format!("MCP server '{}' 熔断中,退避期拒绝连接", self.spec.name),
+                    format!(
+                        "MCP server '{}' is circuit-broken, refusing connections during backoff",
+                        self.spec.name
+                    ),
                 ));
             }
         }
@@ -127,7 +130,7 @@ impl ManagedServer {
         if guard.is_none() {
             log::debug!(
                 target: "lc_mcp::connection_manager",
-                "server '{}' 首次使用,惰性启动连接",
+                "server '{}' first use, lazily starting connection",
                 self.spec.name
             );
             match MCPClient::connect(self.spec.config.clone()).await {
@@ -144,7 +147,7 @@ impl ManagedServer {
         *self.last_used.lock().await = Instant::now();
         Ok(guard
             .as_ref()
-            .ok_or_else(|| MCPError::new(-1, "client 未初始化".to_string()))?
+            .ok_or_else(|| MCPError::new(-1, "client not initialized".to_string()))?
             .clone())
     }
 
@@ -254,7 +257,7 @@ impl ConnectionManager {
         if map.contains_key(&spec.name) {
             return Err(MCPError::new(
                 -1,
-                format!("MCP server '{}' 已注册", spec.name),
+                format!("MCP server '{}' is already registered", spec.name),
             ));
         }
         log::debug!(
@@ -273,7 +276,7 @@ impl ConnectionManager {
         let map = self.servers.read().await;
         let server = map
             .get(name)
-            .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' 未注册")))?;
+            .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' is not registered")))?;
         server.client().await
     }
 
@@ -322,7 +325,7 @@ impl ConnectionManager {
         let map = self.servers.read().await;
         let server = map
             .get(name)
-            .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' 未注册")))?;
+            .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' is not registered")))?;
         let _ = server.probe().await; // 触发一次探活,内部记录熔断
         let status = server.status().await;
         let failures = server.breaker.lock().await.failures();
@@ -408,12 +411,18 @@ mod tests {
         let manager = ConnectionManager::new();
         // 命令必然不存在——若 register 就 spawn,这里会失败。
         let spec = ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]));
-        manager.register(spec).await.expect("register 不应建连");
+        manager
+            .register(spec)
+            .await
+            .expect("register should not spawn a connection");
         assert_eq!(manager.len().await, 1);
 
         // 首次 client() 才真正尝试 spawn → 命令不存在 → Err。
         let result = manager.client("bad").await;
-        assert!(result.is_err(), "惰性建连应因命令不存在而失败");
+        assert!(
+            result.is_err(),
+            "lazy connect should fail because the command does not exist"
+        );
     }
 
     /// 重复注册同名 Server 报错。
@@ -421,9 +430,12 @@ mod tests {
     async fn test_register_duplicate_rejected() {
         let manager = ConnectionManager::new();
         let spec = ServerSpec::new("dup", MCPConfig::sse("http://localhost:1/sse"));
-        manager.register(spec.clone()).await.expect("首次登记成功");
+        manager
+            .register(spec.clone())
+            .await
+            .expect("first register should succeed");
         let err = manager.register(spec).await.unwrap_err();
-        assert!(err.to_string().contains("已注册"), "{}", err);
+        assert!(err.to_string().contains("already registered"), "{}", err);
     }
 
     /// 未注册的 Server 取客户端报错。
@@ -432,8 +444,8 @@ mod tests {
         let manager = ConnectionManager::new();
         let result = manager.client("ghost").await;
         match result {
-            Err(e) => assert!(e.to_string().contains("未注册"), "{}", e),
-            Ok(_) => panic!("未知 server 应报错"),
+            Err(e) => assert!(e.to_string().contains("not registered"), "{}", e),
+            Ok(_) => panic!("unknown server should error"),
         }
     }
 
@@ -448,7 +460,7 @@ mod tests {
                     .with_max_idle(Duration::ZERO),
             )
             .await
-            .expect("登记 idle server");
+            .expect("register idle server");
         manager
             .register(
                 ServerSpec::new("sticky", MCPConfig::sse("http://localhost:1/sse"))
@@ -456,13 +468,17 @@ mod tests {
                     .with_max_idle(Duration::ZERO),
             )
             .await
-            .expect("登记 keep_alive server");
+            .expect("register keep_alive server");
 
         // idle 未建连,close 为无操作,但仍按"空闲超阈值"计入回收。
         let reaped = manager.reap_idle().await;
-        assert_eq!(reaped, 1, "非 keep_alive 的 idle 应被回收");
+        assert_eq!(reaped, 1, "non keep_alive idle server should be reaped");
         // keep_alive 豁免,不被回收。
-        assert_eq!(manager.len().await, 2, "注册表不受回收影响");
+        assert_eq!(
+            manager.len().await,
+            2,
+            "registry should be unaffected by reaping"
+        );
     }
 
     /// release 幂等:未建连的 Server release 不报错。
@@ -475,12 +491,15 @@ mod tests {
                 MCPConfig::sse("http://localhost:1/sse"),
             ))
             .await
-            .expect("登记成功");
-        manager.release("x").await.expect("未建连 release 无操作");
+            .expect("register should succeed");
+        manager
+            .release("x")
+            .await
+            .expect("release without connection should be a no-op");
         manager
             .release("missing")
             .await
-            .expect("未知 server release 无操作");
+            .expect("release of unknown server should be a no-op");
     }
 
     /// 注册表容量与注销。
@@ -492,7 +511,10 @@ mod tests {
             manager.register(spec).await.unwrap();
         }
         assert_eq!(manager.len().await, 3);
-        manager.unregister("s1").await.expect("注销成功");
+        manager
+            .unregister("s1")
+            .await
+            .expect("unregister should succeed");
         assert_eq!(manager.len().await, 2);
         assert!(!manager.is_empty().await);
     }
@@ -510,15 +532,25 @@ mod tests {
                     .with_max_failures(2),
             )
             .await
-            .expect("登记成功");
+            .expect("register should succeed");
 
-        let h1 = manager.health("bad").await.expect("健康探活不报错");
-        assert_eq!(h1.status, HealthStatus::Degraded, "1 次失败 → Degraded");
+        let h1 = manager
+            .health("bad")
+            .await
+            .expect("health probe should not error");
+        assert_eq!(h1.status, HealthStatus::Degraded, "1 failure -> Degraded");
         assert_eq!(h1.failures, 1);
-        assert!(h1.last_check.is_some(), "探活应记录时间");
+        assert!(h1.last_check.is_some(), "probe should record the time");
 
-        let h2 = manager.health("bad").await.expect("健康探活不报错");
-        assert_eq!(h2.status, HealthStatus::Down, "2 次连续失败 → Down");
+        let h2 = manager
+            .health("bad")
+            .await
+            .expect("health probe should not error");
+        assert_eq!(
+            h2.status,
+            HealthStatus::Down,
+            "2 consecutive failures -> Down"
+        );
         assert_eq!(h2.failures, 2);
     }
 
@@ -532,14 +564,21 @@ mod tests {
                     .with_max_failures(1),
             )
             .await
-            .expect("登记成功");
+            .expect("register should succeed");
 
         // 一次失败即熔断。
-        let health = manager.health("bad").await.expect("健康探活不报错");
+        let health = manager
+            .health("bad")
+            .await
+            .expect("health probe should not error");
         assert_eq!(health.status, HealthStatus::Down);
 
-        let err = manager.client("bad").await.err().expect("熔断期应报错");
-        assert!(err.to_string().contains("熔断"), "{}", err);
+        let err = manager
+            .client("bad")
+            .await
+            .err()
+            .expect("should error while circuit is open");
+        assert!(err.to_string().contains("circuit"), "{}", err);
     }
 
     /// 摘除熔断的 Server(P2-5):健康的不受影响,熔断的被移除并返回其名。
@@ -553,22 +592,36 @@ mod tests {
                 MCPConfig::stdio("no_such_cmd_xyz", vec![]),
             ))
             .await
-            .expect("登记 ok");
+            .expect("register ok");
         manager
             .register(
                 ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]))
                     .with_max_failures(1),
             )
             .await
-            .expect("登记 bad");
+            .expect("register bad");
 
-        manager.health("bad").await.expect("触发熔断");
+        manager
+            .health("bad")
+            .await
+            .expect("should trigger circuit breaker");
         assert_eq!(manager.len().await, 2);
 
         let removed = manager.reap_unhealthy().await;
-        assert_eq!(removed, vec!["bad".to_string()], "应摘除熔断的 bad");
-        assert_eq!(manager.len().await, 1, "bad 已从注册表移除");
-        assert!(manager.health("ok").await.is_ok(), "ok 不受影响");
+        assert_eq!(
+            removed,
+            vec!["bad".to_string()],
+            "should reap the circuit-broken bad"
+        );
+        assert_eq!(
+            manager.len().await,
+            1,
+            "bad should be removed from the registry"
+        );
+        assert!(
+            manager.health("ok").await.is_ok(),
+            "ok should be unaffected"
+        );
     }
 
     /// 未注册的 Server 健康探活报错。
@@ -576,6 +629,6 @@ mod tests {
     async fn test_health_unknown_server_errors() {
         let manager = ConnectionManager::new();
         let err = manager.health("ghost").await.unwrap_err();
-        assert!(err.to_string().contains("未注册"), "{}", err);
+        assert!(err.to_string().contains("not registered"), "{}", err);
     }
 }

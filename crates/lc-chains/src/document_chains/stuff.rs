@@ -3,14 +3,15 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Default Stuff prompt template.
 pub(crate) const DEFAULT_STUFF_PROMPT: &str =
@@ -27,8 +28,8 @@ Answer:";
 ///
 /// Stuffs all documents into a single prompt for LLM processing.
 /// Suitable when the total document content fits within the LLM context window.
-pub struct StuffDocumentsChain<M: BaseChatModel> {
-    llm: M,
+pub struct StuffDocumentsChain {
+    llm: BoxedChatModel,
     prompt_template: String,
     document_variable_name: String,
     input_key: String,
@@ -39,10 +40,15 @@ pub struct StuffDocumentsChain<M: BaseChatModel> {
     max_doc_length: Option<usize>,
 }
 
-impl<M: BaseChatModel> StuffDocumentsChain<M> {
-    pub fn new(llm: M) -> Self {
+impl StuffDocumentsChain {
+    /// Create a new [`StuffDocumentsChain`] with the given LLM.
+    pub fn new<L>(llm: L) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             prompt_template: DEFAULT_STUFF_PROMPT.to_string(),
             document_variable_name: "context".to_string(),
             input_key: "input".to_string(),
@@ -53,36 +59,43 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
         }
     }
 
+    /// Set the prompt template.
     pub fn with_prompt_template(mut self, template: impl Into<String>) -> Self {
         self.prompt_template = template.into();
         self
     }
 
+    /// Set the document variable name used in the prompt.
     pub fn with_document_variable(mut self, name: impl Into<String>) -> Self {
         self.document_variable_name = name.into();
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
+    /// Set the maximum character count per document (documents are truncated if exceeded).
     pub fn with_max_doc_length(mut self, max: usize) -> Self {
         self.max_doc_length = Some(max);
         self
@@ -117,10 +130,7 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<String, ChainError> {
         // P2-7: same loud empty-documents guard as map_reduce/refine/map_rerank —
         // without it the LLM would be called with an empty context and fabricate
         // an answer that has no reference information at all.
@@ -163,10 +173,7 @@ impl<M: BaseChatModel> StuffDocumentsChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for StuffDocumentsChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for StuffDocumentsChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -265,15 +272,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
-
     /// Counting chat model that records `invoke` calls so the P2-7 typed entry
     /// is provable: non-empty documents reach the LLM exactly once, and empty
     /// documents never reach it at all.
@@ -283,7 +281,7 @@ mod tests {
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for CountingLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             _input: Vec<Message>,

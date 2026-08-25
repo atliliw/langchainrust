@@ -16,9 +16,11 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
     /// Insert a new checkpoint, recording how much of the recursion budget had
     /// been consumed by the run at that point (M6).
     async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String>;
+    /// Load the state saved under the given checkpoint id.
     async fn load(&self, checkpoint_id: &str) -> GraphResult<S>;
     /// List checkpoint ids, ordered from oldest to most recent (H5).
     async fn list(&self) -> GraphResult<Vec<String>>;
+    /// Delete the checkpoint with the given id.
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()>;
     /// State and recursion budget of the most recently saved checkpoint.
     async fn last(&self) -> GraphResult<Option<(S, usize)>>;
@@ -28,9 +30,13 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "S: StateSchema")]
 pub struct CheckpointData<S: StateSchema> {
+    /// Unique identifier of the checkpoint.
     pub id: String,
+    /// The state snapshot stored in the checkpoint.
     pub state: S,
+    /// Unix timestamp (seconds) when the checkpoint was created.
     pub timestamp: i64,
+    /// Arbitrary metadata associated with the checkpoint.
     pub metadata: HashMap<String, serde_json::Value>,
     /// Monotonic sequence number assigned by the checkpointer on save. Breaks
     /// ties between checkpoints saved within the same `timestamp` second, so
@@ -45,6 +51,7 @@ pub struct CheckpointData<S: StateSchema> {
 }
 
 impl<S: StateSchema> CheckpointData<S> {
+    /// Create a new checkpoint for the given state.
     pub fn new(state: S) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -73,6 +80,7 @@ pub struct MemoryCheckpointer<S: StateSchema> {
 }
 
 impl<S: StateSchema> MemoryCheckpointer<S> {
+    /// Create a new empty in-memory checkpointer.
     pub fn new() -> Self {
         Self {
             checkpoints: Mutex::new(HashMap::new()),
@@ -141,6 +149,7 @@ pub struct ThreadSafeMemoryCheckpointer<S: StateSchema> {
 }
 
 impl<S: StateSchema> ThreadSafeMemoryCheckpointer<S> {
+    /// Create a new empty thread-safe memory checkpointer.
     pub fn new() -> Self {
         Self {
             checkpoints: Mutex::new(HashMap::new()),
@@ -208,6 +217,7 @@ pub struct FileCheckpointer<S: StateSchema> {
 }
 
 impl<S: StateSchema> FileCheckpointer<S> {
+    /// Create a file-based checkpointer that persists checkpoints under the given directory.
     pub fn new(directory: impl Into<std::path::PathBuf>) -> GraphResult<Self> {
         let dir = directory.into();
         if !dir.exists() {
@@ -256,15 +266,15 @@ impl<S: StateSchema> FileCheckpointer<S> {
         {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "json") {
-                let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from)
-                else {
+                let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) else {
                     continue;
                 };
                 let json = tokio::fs::read_to_string(&path)
                     .await
                     .map_err(|e| GraphError::CheckpointError(format!("Read error: {}", e)))?;
-                let data: CheckpointData<S> = serde_json::from_str(&json)
-                    .map_err(|e| GraphError::CheckpointError(format!("Deserialize error: {}", e)))?;
+                let data: CheckpointData<S> = serde_json::from_str(&json).map_err(|e| {
+                    GraphError::CheckpointError(format!("Deserialize error: {}", e))
+                })?;
                 items.push((data.timestamp, data.seq, id));
             }
         }

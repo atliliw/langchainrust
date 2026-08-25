@@ -3,9 +3,13 @@
 
 /// Errors that can occur when interacting with the Anthropic API.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AnthropicError {
+    /// HTTP request error.
     Http(String),
+    /// API returned an error.
     Api(String),
+    /// Response parsing error.
     Parse(String),
 }
 

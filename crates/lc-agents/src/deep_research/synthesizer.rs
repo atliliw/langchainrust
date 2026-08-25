@@ -123,7 +123,7 @@ fn format_sources(results: &[SearchResult], max_source_tokens: Option<usize>) ->
 
             for entry in &entries {
                 let entry_tokens = count_tokens(entry).unwrap_or_else(|e| {
-                    log::warn!("token 计数失败,回退为按字节数估算: {e}");
+                    log::warn!("token counting failed, falling back to byte-length estimate: {e}");
                     entry.len()
                 });
                 if used_tokens + entry_tokens > budget && !truncated_entries.is_empty() {

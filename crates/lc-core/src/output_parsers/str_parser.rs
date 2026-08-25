@@ -25,6 +25,7 @@ use crate::runnables::{Runnable, RunnableConfig};
 pub struct StrOutputParser;
 
 impl StrOutputParser {
+    /// 创建字符串输出解析器。
     pub fn new() -> Self {
         Self
     }

@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use crate::{CallbackHandler, LangSmithClient, LangSmithConfig, RunTree};
+use crate::{CallbackHandler, LangSmithClient, LangSmithConfig, LangSmithError, RunTree};
 use lc_schema::Message;
 
 /// LangSmith callback handler
@@ -16,6 +16,7 @@ pub struct LangSmithHandler {
 }
 
 impl LangSmithHandler {
+    /// Creates a new handler with the given LangSmith configuration.
     pub fn new(config: LangSmithConfig) -> Self {
         Self {
             client: Arc::new(LangSmithClient::new(config)),
@@ -23,11 +24,13 @@ impl LangSmithHandler {
         }
     }
 
-    pub fn from_env() -> Result<Self, String> {
+    /// Creates a handler from environment variables.
+    pub fn from_env() -> Result<Self, LangSmithError> {
         let config = LangSmithConfig::from_env()?;
         Ok(Self::new(config))
     }
 
+    /// Enables or disables asynchronous mode for sending traces.
     pub fn with_async_mode(mut self, async_mode: bool) -> Self {
         self.async_mode = async_mode;
         self
@@ -46,11 +49,11 @@ impl CallbackHandler for LangSmithHandler {
             let client = Arc::clone(&self.client);
             tokio::spawn(async move {
                 if let Err(e) = client.create_run(&run).await {
-                    eprintln!("[LangSmith] create_run 失败: {}", e);
+                    eprintln!("[LangSmith] create_run failed: {}", e);
                 }
             });
         } else if let Err(e) = self.client.create_run(run).await {
-            eprintln!("[LangSmith] create_run 失败: {}", e);
+            eprintln!("[LangSmith] create_run failed: {}", e);
         }
     }
 
@@ -64,11 +67,11 @@ impl CallbackHandler for LangSmithHandler {
             let client = Arc::clone(&self.client);
             tokio::spawn(async move {
                 if let Err(e) = client.update_run(&run).await {
-                    eprintln!("[LangSmith] update_run 失败: {}", e);
+                    eprintln!("[LangSmith] update_run failed: {}", e);
                 }
             });
         } else if let Err(e) = self.client.update_run(run).await {
-            eprintln!("[LangSmith] update_run 失败: {}", e);
+            eprintln!("[LangSmith] update_run failed: {}", e);
         }
     }
 

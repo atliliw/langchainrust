@@ -50,6 +50,7 @@ pub struct DuckDuckGoSearchTool {
 }
 
 impl DuckDuckGoSearchTool {
+    /// 创建 DuckDuckGo 搜索工具。
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -74,7 +75,9 @@ impl Tool for DuckDuckGoSearchTool {
 
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
         if input.query.trim().is_empty() {
-            return Err(ToolError::InvalidInput("搜索查询不能为空".to_string()));
+            return Err(ToolError::InvalidInput(
+                "search query must not be empty".to_string(),
+            ));
         }
 
         let top_k = input.top_k.unwrap_or(5);
@@ -88,12 +91,11 @@ impl Tool for DuckDuckGoSearchTool {
             .get(&url)
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("搜索请求失败: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("search request failed: {}", e)))?;
 
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {}", e)))?;
+        let body: serde_json::Value = response.json().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to parse search results: {}", e))
+        })?;
 
         let abstract_text = body["AbstractText"]
             .as_str()
@@ -184,7 +186,7 @@ impl BaseTool for DuckDuckGoSearchTool {
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let parsed: SearchInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
 
         let output = self.invoke(parsed).await?;
 

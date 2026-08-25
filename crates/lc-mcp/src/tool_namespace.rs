@@ -86,14 +86,20 @@ impl ToolNamespace {
         for tool in tools {
             let full_name = Self::qualify(server, &tool.name);
             if self.index.contains_key(&full_name) {
-                return Err(MCPError::new(-1, format!("tool '{full_name}' 重复注册")));
+                return Err(MCPError::new(
+                    -1,
+                    format!("tool '{full_name}' is already registered"),
+                ));
             }
             if conflict == ToolConflict::Reject
                 && self.index.values().any(|(_, orig)| orig == &tool.name)
             {
                 return Err(MCPError::new(
                     -1,
-                    format!("tool '{}' 与其他 Server 冲突,拒绝注册", tool.name),
+                    format!(
+                        "tool '{}' conflicts with another server, refusing registration",
+                        tool.name
+                    ),
                 ));
             }
             self.index
@@ -184,8 +190,12 @@ mod tests {
         let err = ns
             .register("server_b", [tool("read")], ToolConflict::Reject)
             .unwrap_err();
-        assert!(err.to_string().contains("冲突"), "{}", err);
-        assert_eq!(ns.len(), 1, "冲突工具不应计入注册表");
+        assert!(err.to_string().contains("conflicts"), "{}", err);
+        assert_eq!(
+            ns.len(),
+            1,
+            "conflicting tool should not be counted in the registry"
+        );
     }
 
     /// Reject 策略:不同名工具正常共存。
@@ -212,7 +222,7 @@ mod tests {
         let err = ns
             .register("s", [tool("a")], ToolConflict::Prefix)
             .unwrap_err();
-        assert!(err.to_string().contains("重复"), "{}", err);
+        assert!(err.to_string().contains("already registered"), "{}", err);
         assert_eq!(ns.len(), 1);
     }
 
@@ -239,7 +249,7 @@ mod tests {
         let fake = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&fake.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
 
         let adapter = MCPToolAdapter::namespaced(client, "server_a", tool("echo"));
         // BaseTool::name() → 对外名带命名空间前缀。
@@ -252,7 +262,7 @@ mod tests {
         let out = adapter.run("{}".into()).await;
         assert!(
             matches!(out.as_deref(), Ok("echo")),
-            "应携带原始工具名调用,而非带前缀的对外名,实际: {:?}",
+            "should call with the raw tool name, not the prefixed full name, actual: {:?}",
             out.as_deref()
         );
     }
@@ -263,7 +273,7 @@ mod tests {
         let fake = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&fake.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
 
         let adapter = MCPToolAdapter::new(client, tool("echo"));
         assert_eq!(adapter.name(), "echo");

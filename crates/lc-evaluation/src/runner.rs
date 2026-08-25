@@ -59,6 +59,7 @@ pub struct EvalRunner {
 }
 
 impl EvalRunner {
+    /// 创建批量运行器(仅含单点评测器)。
     pub fn new(evaluators: Vec<Box<dyn Evaluator>>) -> Self {
         Self {
             evaluators,
@@ -178,7 +179,7 @@ impl EvalRunner {
         for ev in evaluators {
             if !seen.insert(ev.name()) {
                 log::warn!(
-                    "EvalRunner: 存在重名评测器 '{}',报告数据会被覆盖",
+                    "EvalRunner: duplicate evaluator name '{}', report data will be overwritten",
                     ev.name()
                 );
             }
@@ -186,7 +187,7 @@ impl EvalRunner {
         for ev in pairwise {
             if !seen.insert(ev.name()) {
                 log::warn!(
-                    "EvalRunner: 存在重名评测器 '{}',报告数据会被覆盖",
+                    "EvalRunner: duplicate evaluator name '{}', report data will be overwritten",
                     ev.name()
                 );
             }

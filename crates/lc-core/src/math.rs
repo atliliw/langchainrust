@@ -3,6 +3,7 @@
 
 /// Error type for math operations.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum MathError {
     /// The input vectors have different lengths.
     #[error("vector length mismatch: {0} vs {1}")]

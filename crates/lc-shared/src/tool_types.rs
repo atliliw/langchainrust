@@ -25,7 +25,12 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    /// Create a new tool call
+    /// Create a new tool call.
+    ///
+    /// The three positional arguments are easy to swap (id/name/arguments);
+    /// prefer [`ToolCall::builder`] for call sites that construct calls from
+    /// untrusted or variable input.
+    #[deprecated(note = "use ToolCall::builder(id).name(..).arguments(..).build() instead")]
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -39,6 +44,11 @@ impl ToolCall {
                 arguments: arguments.into(),
             },
         }
+    }
+
+    /// Create a builder for a [`ToolCall`].
+    pub fn builder(id: impl Into<String>) -> ToolCallBuilder {
+        ToolCallBuilder::new(id)
     }
 
     /// Get the function name
@@ -58,6 +68,63 @@ impl ToolCall {
     /// repaired before deserialization (see [`crate::json_repair`]).
     pub fn parse_arguments<T: DeserializeOwned>(&self) -> Result<T, JsonRepairError> {
         parse_tolerant_json(&self.function.arguments)
+    }
+}
+
+/// Builder for constructing a [`ToolCall`] field by field.
+///
+/// Replaces the error-prone 3-positional-argument [`ToolCall::new`].
+///
+/// ```
+/// use lc_shared::ToolCall;
+///
+/// let call = ToolCall::builder("call_1")
+///     .name("get_weather")
+///     .arguments(r#"{"city":"beijing"}"#)
+///     .build();
+///
+/// assert_eq!(call.id, "call_1");
+/// assert_eq!(call.name(), "get_weather");
+/// ```
+#[derive(Debug, Clone)]
+pub struct ToolCallBuilder {
+    id: String,
+    tool_type: String,
+    function: FunctionCall,
+}
+
+impl ToolCallBuilder {
+    /// Start building a tool call with its id.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            tool_type: "function".to_string(),
+            function: FunctionCall {
+                name: String::new(),
+                arguments: String::new(),
+            },
+        }
+    }
+
+    /// Set the function name.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.function.name = name.into();
+        self
+    }
+
+    /// Set the JSON-encoded function arguments.
+    pub fn arguments(mut self, arguments: impl Into<String>) -> Self {
+        self.function.arguments = arguments.into();
+        self
+    }
+
+    /// Consume the builder and produce the [`ToolCall`].
+    pub fn build(self) -> ToolCall {
+        ToolCall {
+            id: self.id,
+            tool_type: self.tool_type,
+            function: self.function,
+        }
     }
 }
 
@@ -103,11 +170,10 @@ mod tests {
 
     #[test]
     fn test_tool_call() {
-        let call = ToolCall::new(
-            "call_123",
-            "calculator",
-            json!({"expression": "2 + 3"}).to_string(),
-        );
+        let call = ToolCall::builder("call_123")
+            .name("calculator")
+            .arguments(json!({"expression": "2 + 3"}).to_string())
+            .build();
 
         assert_eq!(call.id, "call_123");
         assert_eq!(call.name(), "calculator");
@@ -119,11 +185,10 @@ mod tests {
     #[test]
     fn test_parse_arguments_tolerates_messy_llm_json() {
         // LLM-generated arguments with trailing comma + trailing garbage
-        let call = ToolCall::new(
-            "call_456",
-            "weather",
-            r#"{"city": "beijing", "unit": "celsius",} plus extra text"#,
-        );
+        let call = ToolCall::builder("call_456")
+            .name("weather")
+            .arguments(r#"{"city": "beijing", "unit": "celsius",} plus extra text"#)
+            .build();
 
         let args: HashMap<String, String> = call.parse_arguments().unwrap();
         assert_eq!(args.get("city").unwrap(), "beijing");

@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 /// 根目录描述(来自 `roots/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Root {
+    /// 根目录 URI
     pub uri: String,
+    /// 根目录的可选名称
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -16,6 +18,7 @@ pub struct Root {
 /// `roots/list` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListRootsResult {
+    /// 根目录列表
     pub roots: Vec<Root>,
 }
 

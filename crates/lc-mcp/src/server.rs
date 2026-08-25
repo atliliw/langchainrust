@@ -144,7 +144,7 @@ impl MCPServer {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
                     result: None,
-                    error: Some(MCPError::invalid_params("缺少 name 参数")),
+                    error: Some(MCPError::invalid_params("missing name parameter")),
                 }
             }
         };
@@ -178,7 +178,7 @@ impl MCPServer {
                 jsonrpc: "2.0".to_string(),
                 id: Some(req.id),
                 result: None,
-                error: Some(MCPError::invalid_params(format!("未知工具: {}", name))),
+                error: Some(MCPError::invalid_params(format!("unknown tool: {}", name))),
             },
         }
     }
@@ -196,7 +196,7 @@ impl MCPServer {
             let n = reader
                 .read_line(&mut line)
                 .await
-                .map_err(|e| MCPError::new(-1, format!("读 stdin 失败: {}", e)))?;
+                .map_err(|e| MCPError::new(-1, format!("failed to read stdin: {}", e)))?;
             if n == 0 {
                 break; // EOF
             }
@@ -215,10 +215,13 @@ impl MCPServer {
                         jsonrpc: "2.0".to_string(),
                         id: None,
                         result: None,
-                        error: Some(MCPError::invalid_params(format!("解析请求失败: {}", e))),
+                        error: Some(MCPError::invalid_params(format!(
+                            "failed to parse request: {}",
+                            e
+                        ))),
                     };
                     let json = serde_json::to_string(&resp)
-                        .map_err(|e| MCPError::new(-1, format!("序列化失败: {}", e)))?;
+                        .map_err(|e| MCPError::new(-1, format!("serialization failed: {}", e)))?;
                     let _ = write_line(&mut stdout, &json).await;
                     continue;
                 }
@@ -241,10 +244,10 @@ impl MCPServer {
             };
             let resp = self.handle_request(req).await;
             let json = serde_json::to_string(&resp)
-                .map_err(|e| MCPError::new(-1, format!("序列化失败: {}", e)))?;
+                .map_err(|e| MCPError::new(-1, format!("serialization failed: {}", e)))?;
             write_line(&mut stdout, &json)
                 .await
-                .map_err(|e| MCPError::new(-1, format!("写 stdout 失败: {}", e)))?;
+                .map_err(|e| MCPError::new(-1, format!("failed to write stdout: {}", e)))?;
         }
         Ok(())
     }
@@ -285,20 +288,20 @@ impl MCPServer {
         match method {
             "notifications/cancelled" => {
                 // 携带 requestId,指向要取消的请求
-                log::info!("MCP 收到 cancelled 通知: {:?}", params);
+                log::info!("MCP received cancelled notification: {:?}", params);
             }
             "notifications/progress" => {
                 // 携带 token + progress/estimatedTotal
-                log::info!("MCP 收到 progress 通知: {:?}", params);
+                log::info!("MCP received progress notification: {:?}", params);
             }
             "notifications/roots/list_changed" => {
-                log::info!("MCP 收到 roots/list_changed 通知: {:?}", params);
+                log::info!("MCP received roots/list_changed notification: {:?}", params);
             }
             "notifications/initialized" => {
-                log::debug!("MCP 收到 initialized 通知");
+                log::debug!("MCP received initialized notification");
             }
             _ => {
-                log::debug!("忽略未知通知: {}", method);
+                log::debug!("ignoring unknown notification: {}", method);
             }
         }
     }
@@ -402,7 +405,7 @@ mod tests {
         assert_eq!(
             version.as_deref(),
             Some(MCP_VERSION),
-            "未知版本应降级到当前实现版本"
+            "unknown version should degrade to the current implementation version"
         );
     }
 

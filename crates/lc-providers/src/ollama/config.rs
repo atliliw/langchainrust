@@ -7,6 +7,8 @@
 use lc_core::tools::ToolDefinition;
 use std::env;
 
+use crate::ProviderError;
+
 /// Configuration for Ollama chat model.
 ///
 /// This struct holds all configuration options for connecting to an Ollama server
@@ -76,7 +78,7 @@ impl OllamaConfig {
     /// Reads the following environment variables:
     /// - `OLLAMA_BASE_URL`: The Ollama server URL (default: "http://localhost:11434/v1")
     /// - `OLLAMA_MODEL`: The model name (default: empty)
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         let base_url =
             env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
         let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| String::new());

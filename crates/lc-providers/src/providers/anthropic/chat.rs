@@ -19,6 +19,7 @@ use super::types::{
     AnthropicContentBlock, AnthropicImageSource, AnthropicMessage, AnthropicMessageContent,
     AnthropicResponse, AnthropicStreamEvent, AnthropicStreamToken,
 };
+use crate::ProviderError;
 
 /// Anthropic Claude chat client.
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub struct AnthropicChat {
 }
 
 impl AnthropicChat {
+    /// Creates a new Anthropic chat client with the given configuration.
     pub fn new(config: AnthropicConfig) -> Self {
         Self {
             config,
@@ -36,7 +38,7 @@ impl AnthropicChat {
     }
 
     /// Creates an AnthropicChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(AnthropicConfig::from_env_result()?))
     }
 
@@ -350,7 +352,12 @@ impl AnthropicChat {
                     let id = block.id.clone().unwrap_or_default();
                     let name = block.name.clone().unwrap_or_default();
                     let input = block.input.clone().unwrap_or(json!({}));
-                    tool_calls.push(lc_core::tools::ToolCall::new(id, name, input.to_string()));
+                    tool_calls.push(
+                        lc_core::tools::ToolCall::builder(id)
+                            .name(name)
+                            .arguments(input.to_string())
+                            .build(),
+                    );
                 }
                 _ => {
                     if !block.text.is_empty() {

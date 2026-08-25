@@ -171,6 +171,7 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
+    /// Convert the graph into a portable [`GraphDefinition`].
     pub fn to_definition(&self) -> GraphDefinition {
         let mut definition = GraphDefinition::new(self.entry_point.clone())
             .with_recursion_limit(self.recursion_limit);

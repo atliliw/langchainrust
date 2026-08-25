@@ -47,11 +47,15 @@ impl LanceDBConfig {
     }
 
     /// Creates config from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
-        let uri = std::env::var("LANCEDB_URI")
-            .map_err(|_| "LANCEDB_URI environment variable not set".to_string())?;
-        let table_name = std::env::var("LANCEDB_TABLE_NAME")
-            .map_err(|_| "LANCEDB_TABLE_NAME environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, VectorStoreError> {
+        let uri = std::env::var("LANCEDB_URI").map_err(|_| {
+            VectorStoreError::ConfigError("LANCEDB_URI environment variable not set".to_string())
+        })?;
+        let table_name = std::env::var("LANCEDB_TABLE_NAME").map_err(|_| {
+            VectorStoreError::ConfigError(
+                "LANCEDB_TABLE_NAME environment variable not set".to_string(),
+            )
+        })?;
         let api_key = std::env::var("LANCEDB_API_KEY").ok();
         let region = std::env::var("LANCEDB_REGION").ok();
         Ok(Self {
@@ -101,7 +105,7 @@ impl LanceDBVectorStore {
     }
 
     /// Creates from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, VectorStoreError> {
         Ok(Self::new(LanceDBConfig::from_env_result()?))
     }
 
@@ -134,10 +138,10 @@ struct LanceDBDocument {
     vector: Vec<f32>,
     content: String,
     #[serde(default, skip_serializing_if = "hash_map_is_empty")]
-    metadata: std::collections::HashMap<String, String>,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
 }
 
-fn hash_map_is_empty(map: &std::collections::HashMap<String, String>) -> bool {
+fn hash_map_is_empty(map: &std::collections::HashMap<String, serde_json::Value>) -> bool {
     map.is_empty()
 }
 
@@ -153,7 +157,7 @@ struct LanceDBSearchItem {
     vector: Vec<f32>,
     content: String,
     #[serde(default)]
-    metadata: std::collections::HashMap<String, String>,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
     #[serde(default)]
     score: Option<f32>,
 }

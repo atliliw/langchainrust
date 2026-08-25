@@ -9,7 +9,9 @@ use serde_json::Value;
 /// `elicitation/create` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationRequest {
+    /// 展示给用户的消息文本
     pub message: String,
+    /// 期望用户填写的可选 JSON Schema 表单
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
 }
@@ -17,7 +19,9 @@ pub struct ElicitationRequest {
 /// `elicitation/create` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationResponse {
+    /// 用户做出的响应动作
     pub action: ElicitationAction,
+    /// 用户提交的响应内容(可选)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Value>,
 }
@@ -26,8 +30,11 @@ pub struct ElicitationResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ElicitationAction {
+    /// 用户接受请求
     Accept,
+    /// 用户拒绝请求
     Decline,
+    /// 用户取消请求
     Cancel,
 }
 

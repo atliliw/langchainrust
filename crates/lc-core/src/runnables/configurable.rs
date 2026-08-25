@@ -85,7 +85,8 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableConfigurable<I,
         R: Runnable<I, O> + 'static,
         R::Error: Into<LcelError>,
     {
-        self.alternatives.push((name.into(), into_runnable_any(runnable)));
+        self.alternatives
+            .push((name.into(), into_runnable_any(runnable)));
         self
     }
 
@@ -115,7 +116,9 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
 
     async fn invoke(&self, input: I, config: Option<RunnableConfig>) -> Result<O, LcelError> {
         let target = self.resolve(&config);
-        let boxed = target.invoke_any(Box::new(input) as Box<dyn Any + Send>, config).await?;
+        let boxed = target
+            .invoke_any(Box::new(input) as Box<dyn Any + Send>, config)
+            .await?;
         boxed.downcast::<O>().map(|b| *b).map_err(|_| {
             LcelError::TypeMismatch(format!(
                 "configurable invoke downcast: expected {}",
@@ -235,12 +238,14 @@ impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableConfigurableFie
         let configurables = effective.configurable.clone();
         for (key, value) in configurables {
             match (key.as_str(), &value) {
-                ("temperature", Value::Number(n)) if n.as_f64().is_some() => {
-                    effective = effective.with_temperature(n.as_f64().unwrap() as f32);
-                }
-                ("max_tokens", Value::Number(n)) if n.as_u64().is_some() => {
-                    effective = effective.with_max_tokens(n.as_u64().unwrap() as usize);
-                }
+                ("temperature", Value::Number(n)) => match n.as_f64() {
+                    Some(f) => effective = effective.with_temperature(f as f32),
+                    None => effective = effective.with_metadata(key.to_string(), value.clone()),
+                },
+                ("max_tokens", Value::Number(n)) => match n.as_u64() {
+                    Some(u) => effective = effective.with_max_tokens(u as usize),
+                    None => effective = effective.with_metadata(key.to_string(), value.clone()),
+                },
                 (k, v) => effective = effective.with_metadata(k.to_string(), v.clone()),
             }
         }
@@ -351,10 +356,16 @@ mod tests {
             .configurable_alternatives(
                 "which",
                 "default",
-                vec![("alt", RunnableLambda::new_sync(|s: String| format!("alt:{s}")))],
+                vec![(
+                    "alt",
+                    RunnableLambda::new_sync(|s: String| format!("alt:{s}")),
+                )],
             );
         let cfg = RunnableConfig::new().with_configurable("which", serde_json::json!("alt"));
-        assert_eq!(chain.invoke("x".to_string(), Some(cfg)).await.unwrap(), "alt:x");
+        assert_eq!(
+            chain.invoke("x".to_string(), Some(cfg)).await.unwrap(),
+            "alt:x"
+        );
     }
 
     #[tokio::test]
@@ -369,12 +380,21 @@ mod tests {
                 )],
             );
         // 无 config / 无 which 键 → default
-        assert_eq!(chain.invoke("x".to_string(), None).await.unwrap(), "default:x");
+        assert_eq!(
+            chain.invoke("x".to_string(), None).await.unwrap(),
+            "default:x"
+        );
         let cfg = RunnableConfig::new().with_configurable("which", serde_json::json!("default"));
-        assert_eq!(chain.invoke("x".to_string(), Some(cfg)).await.unwrap(), "default:x");
+        assert_eq!(
+            chain.invoke("x".to_string(), Some(cfg)).await.unwrap(),
+            "default:x"
+        );
         // 未知值 → default
         let cfg = RunnableConfig::new().with_configurable("which", serde_json::json!("nope"));
-        assert_eq!(chain.invoke("x".to_string(), Some(cfg)).await.unwrap(), "default:x");
+        assert_eq!(
+            chain.invoke("x".to_string(), Some(cfg)).await.unwrap(),
+            "default:x"
+        );
     }
 
     /// 探针:Runnable<(), String>,invoke 时把收到的 config.temperature 打出来
@@ -401,7 +421,10 @@ mod tests {
         let wrapped = RunnableConfigurableFields::<(), String>::new(TemperatureProbe);
         let cfg = RunnableConfig::new().with_configurable("temperature", serde_json::json!(0.5));
         let out = wrapped.invoke((), Some(cfg)).await.unwrap();
-        assert_eq!(out, "temp=Some(0.5)", "temperature 应被提升为 typed config 字段");
+        assert_eq!(
+            out, "temp=Some(0.5)",
+            "temperature 应被提升为 typed config 字段"
+        );
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@ pub struct HTTPTool {
 }
 
 impl HTTPTool {
+    /// Creates an HTTP tool with a 30s timeout and SSRF protection enabled.
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -28,6 +29,7 @@ impl HTTPTool {
         }
     }
 
+    /// Creates an HTTP tool with a custom timeout (SSRF protection enabled).
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -60,6 +62,7 @@ impl HTTPTool {
         Ok(())
     }
 
+    /// Sends a GET request, following redirects with SSRF checks per hop.
     pub async fn get(&self, url: &str) -> Result<String, ToolError> {
         // SSRF: guarded_get 逐跳检查并手动跟随重定向
         guarded_get(&self.client, url, !self.allow_private_ips)
@@ -69,6 +72,7 @@ impl HTTPTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     }
 
+    /// Sends a POST request with a JSON body (single-hop SSRF check).
     pub async fn post(&self, url: &str, body: Value) -> Result<String, ToolError> {
         // POST 已禁用自动重定向(3xx 原样返回),单跳 SSRF 检查即可
         self.check_ssrf(url).await?;

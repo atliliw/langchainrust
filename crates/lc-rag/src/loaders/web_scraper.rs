@@ -120,20 +120,23 @@ impl WebScraperLoader {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .map_err(|e| LoaderError::Other(format!("构建 HTTP 客户端失败: {}", e)))?;
+            .map_err(|e| LoaderError::Other(format!("failed to build HTTP client: {}", e)))?;
         let response = client
             .get(url)
             .send()
             .await
-            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
+            .map_err(|e| LoaderError::Other(format!("HTTP request failed {}: {}", url, e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!("HTTP 错误 {}: {}", url, status)));
+            return Err(LoaderError::Other(format!(
+                "HTTP error {}: {}",
+                url, status
+            )));
         }
         let html = response
             .text()
             .await
-            .map_err(|e| LoaderError::Other(format!("读取响应失败 {}: {}", url, e)))?;
+            .map_err(|e| LoaderError::Other(format!("failed to read response {}: {}", url, e)))?;
         Ok((url.to_string(), html))
     }
 }
@@ -160,7 +163,7 @@ impl DocumentLoader for WebScraperLoader {
                         return Err(e);
                     }
                     // 跳过失败页面,继续爬取其他(经日志门面暴露,便于宿主捕获)
-                    log::warn!("爬取 {} 失败 (第 {} 个失败): {}", url, failed_count, e);
+                    log::warn!("Failed to crawl {} (failure #{}): {}", url, failed_count, e);
                     continue;
                 }
             };
@@ -168,8 +171,8 @@ impl DocumentLoader for WebScraperLoader {
             let text = Self::extract_text(&html);
 
             let mut metadata = HashMap::new();
-            metadata.insert("format".to_string(), "html".to_string());
-            metadata.insert("source".to_string(), fetched_url.clone());
+            metadata.insert("format".to_string(), "html".to_string().into());
+            metadata.insert("source".to_string(), fetched_url.clone().into());
 
             documents.push(Document {
                 content: text,
@@ -190,7 +193,7 @@ impl DocumentLoader for WebScraperLoader {
 
         if failed_count > 0 {
             log::warn!(
-                "爬取完成,共 {} 个页面失败,{} 个页面成功",
+                "Crawling finished: {} pages failed, {} pages succeeded",
                 failed_count,
                 documents.len()
             );

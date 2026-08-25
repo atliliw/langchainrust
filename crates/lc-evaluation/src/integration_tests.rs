@@ -241,7 +241,7 @@ async fn test_runner_per_item_predict_failure() {
     impl Predictor for FlakyPredictor {
         async fn predict(&self, input: &str) -> Result<String, EvalError> {
             if input == "bad" {
-                Err(EvalError::PredictorError("predict 挂了".into()))
+                Err(EvalError::PredictorError("predict failed".into()))
             } else {
                 Ok("ok".into())
             }
@@ -266,7 +266,7 @@ async fn test_runner_evaluator_failure_is_tolerated() {
     #[async_trait]
     impl Evaluator for FailingEvaluator {
         async fn eval(&self, _i: &str, _p: &str, _r: &str) -> Result<Score, EvalError> {
-            Err(EvalError::PredictorError("judge 挂了".into()))
+            Err(EvalError::PredictorError("judge failed".into()))
         }
         fn name(&self) -> &str {
             "failing"

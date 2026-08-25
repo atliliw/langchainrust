@@ -6,6 +6,7 @@
 use lc_vector_stores::Document;
 use std::collections::HashMap;
 
+/// RRF 融合算法中的 k 参数（默认 60）。
 pub const RRF_K: usize = 60;
 
 /// Generate a stable document ID from content hash to avoid collisions (H46).
@@ -23,16 +24,22 @@ fn doc_content_hash(doc: &Document) -> String {
 /// 检索结果（带分数）
 #[derive(Debug, Clone)]
 pub struct RetrievedDocument {
+    /// 文档内容
     pub document: Document,
+    /// 融合后的分数
     pub score: f64,
+    /// 检索来源（BM25 / 向量 / 混合）
     pub source: RetrievalSource,
 }
 
 /// 检索来源
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RetrievalSource {
+    /// 来自 BM25 关键词检索
     BM25,
+    /// 来自向量语义检索
     Vector,
+    /// 来自 RRF 融合结果
     Hybrid,
 }
 

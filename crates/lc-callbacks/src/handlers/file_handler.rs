@@ -6,12 +6,17 @@ use tokio::sync::Mutex;
 use crate::{CallbackHandler, RunTree};
 use lc_schema::Message;
 
+/// Log output format.
 pub enum LogFormat {
+    /// Plain text output.
     Plain,
+    /// Pretty-printed JSON output.
     Json,
+    /// Newline-delimited JSON output.
     JsonLines,
 }
 
+/// A callback handler that writes run events to a log file.
 pub struct FileCallbackHandler {
     file: Mutex<tokio::fs::File>,
     path: PathBuf,
@@ -19,6 +24,7 @@ pub struct FileCallbackHandler {
 }
 
 impl FileCallbackHandler {
+    /// Creates a new handler that appends logs to the file at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Result<Self, std::io::Error> {
         let path = path.into();
         // Open synchronously for construction, then convert to tokio::fs::File
@@ -34,6 +40,7 @@ impl FileCallbackHandler {
         })
     }
 
+    /// Sets the log output format.
     pub fn with_format(mut self, format: LogFormat) -> Self {
         self.format = format;
         self

@@ -20,6 +20,9 @@ Thumbs.db
 # Build
 *.pdb
 
+# 本机构建配置(含同步目录外 target-dir 绝对路径),只对本机生效,不进 CI
+/.cargo/config.toml
+
 # Environment
 .env
 .env.local

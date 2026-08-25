@@ -35,23 +35,30 @@ use tokio::sync::RwLock;
 
 /// GraphRAG error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GraphRAGError {
+    /// An error from the underlying LLM call.
     #[error("LLM error: {0}")]
     LLMError(String),
 
+    /// An error during entity/relation extraction.
     #[error("Extraction error: {0}")]
     ExtractionError(String),
 
+    /// An error during query execution.
     #[error("Query error: {0}")]
     QueryError(String),
 
+    /// An error during community detection or summarization.
     #[error("Community error: {0}")]
     CommunityError(String),
 }
 
 /// Configuration for GraphRAG.
 pub struct GraphRAGConfig {
+    /// Maximum number of entities to extract per document.
     pub max_entities_per_doc: usize,
+    /// Maximum number of relations to extract per document.
     pub max_relations_per_doc: usize,
     /// 社区大小分桶数(P1-3)。
     ///
@@ -79,15 +86,18 @@ impl Default for GraphRAGConfig {
 }
 
 impl GraphRAGConfig {
+    /// Creates a `GraphRAGConfig` with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the maximum number of entities to extract per document.
     pub fn with_max_entities_per_doc(mut self, n: usize) -> Self {
         self.max_entities_per_doc = n;
         self
     }
 
+    /// Sets the maximum number of relations to extract per document.
     pub fn with_max_relations_per_doc(mut self, n: usize) -> Self {
         self.max_relations_per_doc = n;
         self

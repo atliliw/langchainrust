@@ -55,17 +55,18 @@ impl FileVectorStore {
     /// * `dimension` - 向量维度(用于校验,已有文件时以文件为准)
     pub async fn new(path: PathBuf, dimension: usize) -> Result<Self, VectorStoreError> {
         let data = if path.exists() {
-            let content = tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|e| VectorStoreError::StorageError(format!("读取文件失败: {}", e)))?;
-            serde_json::from_str::<FileStoreData>(&content)
-                .map_err(|e| VectorStoreError::StorageError(format!("解析文件失败: {}", e)))?
+            let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to read file: {}", e))
+            })?;
+            serde_json::from_str::<FileStoreData>(&content).map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to parse file: {}", e))
+            })?
         } else {
             // 确保父目录存在
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
                     tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                        VectorStoreError::StorageError(format!("创建目录失败: {}", e))
+                        VectorStoreError::StorageError(format!("failed to create directory: {}", e))
                     })?;
                 }
             }
@@ -88,15 +89,15 @@ impl FileVectorStore {
     /// 持久化当前数据到磁盘
     async fn persist(data: &FileStoreData, path: &PathBuf) -> Result<(), VectorStoreError> {
         let json = serde_json::to_string(data)
-            .map_err(|e| VectorStoreError::StorageError(format!("序列化失败: {}", e)))?;
+            .map_err(|e| VectorStoreError::StorageError(format!("failed to serialize: {}", e)))?;
         // 先写临时文件,再 rename,避免写一半断电损坏
         let tmp_path = path.with_extension("json.tmp");
-        tokio::fs::write(&tmp_path, &json)
-            .await
-            .map_err(|e| VectorStoreError::StorageError(format!("写入临时文件失败: {}", e)))?;
+        tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
+            VectorStoreError::StorageError(format!("failed to write temporary file: {}", e))
+        })?;
         tokio::fs::rename(&tmp_path, path)
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("重命名文件失败: {}", e)))?;
+            .map_err(|e| VectorStoreError::StorageError(format!("failed to rename file: {}", e)))?;
         Ok(())
     }
 
@@ -120,7 +121,7 @@ impl VectorStore for FileVectorStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "文档数量和嵌入向量数量不匹配".to_string(),
+                "document count and embedding count mismatch".to_string(),
             ));
         }
 
@@ -131,7 +132,7 @@ impl VectorStore for FileVectorStore {
             // 校验维度
             if !embedding.is_empty() && embedding.len() != data.dimension {
                 return Err(VectorStoreError::StorageError(format!(
-                    "嵌入维度 {} 与存储维度 {} 不匹配",
+                    "embedding dimension {} does not match storage dimension {}",
                     embedding.len(),
                     data.dimension
                 )));

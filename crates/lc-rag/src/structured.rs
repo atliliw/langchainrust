@@ -23,15 +23,22 @@ pub(crate) struct StructuredChatResult {
     pub tool_args: Option<Value>,
 }
 
+/// 结构化调用错误。
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StructuredError {
+    #[error("{0}")]
+    Msg(String),
+}
+
 /// 绑定 `tool` 后调用 LLM,优先结构化输出;不支持绑定则普通文本调用。
 ///
 /// 只发一次请求:模型返回 tool_calls 就提取参数,否则把 `content` 交给
-/// 调用方做文本解析。错误统一 stringify(调用方各自映射到自身错误类型)。
+/// 调用方做文本解析。错误统一包成 `StructuredError::Msg`(调用方各自映射到自身错误类型)。
 pub(crate) async fn chat_structured<M>(
     llm: &M,
     tool: Option<ToolDefinition>,
     messages: Vec<Message>,
-) -> Result<StructuredChatResult, String>
+) -> Result<StructuredChatResult, StructuredError>
 where
     M: BaseChatModel + ?Sized,
 {
@@ -40,10 +47,16 @@ where
             Some(bound) => bound
                 .chat(messages, None)
                 .await
-                .map_err(|e| e.to_string())?,
-            None => llm.chat(messages, None).await.map_err(|e| e.to_string())?,
+                .map_err(|e| StructuredError::Msg(e.to_string()))?,
+            None => llm
+                .chat(messages, None)
+                .await
+                .map_err(|e| StructuredError::Msg(e.to_string()))?,
         },
-        None => llm.chat(messages, None).await.map_err(|e| e.to_string())?,
+        None => llm
+            .chat(messages, None)
+            .await
+            .map_err(|e| StructuredError::Msg(e.to_string()))?,
     };
     Ok(extract_structured(&result))
 }
@@ -86,11 +99,10 @@ mod tests {
             content: String::new(),
             model: "mock".to_string(),
             token_usage: None,
-            tool_calls: Some(vec![ToolCall::new(
-                "call_1",
-                "extract_entities_relations",
-                r#"{"entities": [], "relations": []}"#.to_string(),
-            )]),
+            tool_calls: Some(vec![ToolCall::builder("call_1")
+                .name("extract_entities_relations")
+                .arguments(r#"{"entities": [], "relations": []}"#.to_string())
+                .build()]),
             thinking_content: None,
         };
         let structured = extract_structured(&result);
@@ -104,7 +116,10 @@ mod tests {
             content: "fallback text".to_string(),
             model: "mock".to_string(),
             token_usage: None,
-            tool_calls: Some(vec![ToolCall::new("call_2", "f", "not-json".to_string())]),
+            tool_calls: Some(vec![ToolCall::builder("call_2")
+                .name("f")
+                .arguments("not-json".to_string())
+                .build()]),
             thinking_content: None,
         };
         let structured = extract_structured(&result);

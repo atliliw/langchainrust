@@ -52,10 +52,15 @@ pub const MISTRAL_MODELS: [&str; 6] = [
 /// Mistral AI configuration.
 #[derive(Debug, Clone)]
 pub struct MistralConfig {
+    /// Mistral API key.
     pub api_key: String,
+    /// Base URL of the Mistral API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
 }
 
@@ -86,9 +91,10 @@ impl MistralConfig {
     /// - `MISTRAL_API_KEY`: API key (required)
     /// - `MISTRAL_BASE_URL`: API endpoint (optional)
     /// - `MISTRAL_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("MISTRAL_API_KEY")
-            .map_err(|_| "MISTRAL_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("MISTRAL_API_KEY").map_err(|_| {
+            ProviderError::Config("MISTRAL_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url =
             env::var("MISTRAL_BASE_URL").unwrap_or_else(|_| MISTRAL_BASE_URL.to_string());
@@ -170,7 +176,7 @@ impl MistralChat {
     }
 
     /// Creates a MistralChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(MistralConfig::from_env_result()?))
     }
 
@@ -369,7 +375,7 @@ mod tests {
         std::env::remove_var("MISTRAL_API_KEY");
         let result = MistralConfig::from_env_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("MISTRAL_API_KEY"));
+        assert!(result.unwrap_err().to_string().contains("MISTRAL_API_KEY"));
         restore("MISTRAL_API_KEY", old);
     }
 

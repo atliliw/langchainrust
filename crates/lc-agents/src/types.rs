@@ -31,10 +31,16 @@ pub struct AgentAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolInput {
     /// String input
-    String { value: String },
+    String {
+        /// The string value.
+        value: String,
+    },
 
     /// JSON object input
-    Object { value: serde_json::Value },
+    Object {
+        /// The JSON object value.
+        value: serde_json::Value,
+    },
 }
 
 impl Default for ToolInput {
@@ -92,10 +98,16 @@ pub struct AgentFinish {
 
 impl AgentFinish {
     /// Create a new AgentFinish
-    pub fn new(output: String, log: String) -> Self {
+    pub fn new(output: impl Into<String>, log: impl Into<String>) -> Self {
         let mut return_values = HashMap::new();
-        return_values.insert("output".to_string(), serde_json::Value::String(output));
-        Self { return_values, log }
+        return_values.insert(
+            "output".to_string(),
+            serde_json::Value::String(output.into()),
+        );
+        Self {
+            return_values,
+            log: log.into(),
+        }
     }
 
     /// Get the output value
@@ -118,10 +130,10 @@ pub struct AgentStep {
 
 impl AgentStep {
     /// Create a new AgentStep
-    pub fn new(action: AgentAction, observation: String) -> Self {
+    pub fn new(action: AgentAction, observation: impl Into<String>) -> Self {
         Self {
             action,
-            observation,
+            observation: observation.into(),
         }
     }
 }

@@ -11,6 +11,7 @@ pub struct SSEParser {
 }
 
 impl SSEParser {
+    /// 创建新的 SSE 解析器
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -103,25 +104,37 @@ impl SSEEvent {
 /// OpenAI 流式响应块
 #[derive(Debug, Deserialize)]
 pub struct OpenAIStreamChunk {
+    /// 块 ID
     pub id: String,
+    /// 对象类型
     pub object: String,
+    /// 创建时间戳
     pub created: i64,
+    /// 模型名称
     pub model: String,
+    /// 流式选择列表
     pub choices: Vec<StreamChoice>,
 }
 
+/// 流式响应中的选择项
 #[derive(Debug, Deserialize)]
 pub struct StreamChoice {
+    /// 选择索引
     pub index: i32,
+    /// 增量内容
     pub delta: Delta,
+    /// 结束原因
     #[serde(default)]
     pub finish_reason: Option<String>,
 }
 
+/// 流式增量内容
 #[derive(Debug, Deserialize)]
 pub struct Delta {
+    /// 角色
     #[serde(default)]
     pub role: Option<String>,
+    /// 内容
     #[serde(default)]
     pub content: Option<String>,
 }

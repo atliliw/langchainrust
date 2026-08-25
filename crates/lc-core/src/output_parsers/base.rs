@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 /// 输出解析器的统一错误类型
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum OutputParserError {
     /// 解析失败：输入格式不符合预期
     #[error("Parse error: {0}")]

@@ -92,6 +92,7 @@ pub trait Tool: Send + Sync {
 
 /// Tool error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolError {
     /// Input validation error.
     #[error("Invalid input: {0}")]
@@ -115,8 +116,11 @@ pub enum ToolError {
     /// 参数错误等场景。
     #[error("MCP error [{code}]: {message}")]
     McpError {
+        /// MCP 错误码
         code: i32,
+        /// MCP 错误消息
         message: String,
+        /// 附加错误数据(可选)
         data: Option<Value>,
     },
 }

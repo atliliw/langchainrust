@@ -6,14 +6,19 @@ use serde::{Deserialize, Serialize};
 
 /// 评测错误
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EvalError {
-    #[error("IO 错误: {0}")]
+    /// 底层 IO 错误(如文件读取失败)。
+    #[error("IO error: {0}")]
     IoError(String),
-    #[error("解析错误: {0}")]
+    /// 数据解析错误(如 JSON/JSONL 解析失败)。
+    #[error("parse error: {0}")]
     ParseError(String),
-    #[error("嵌入错误: {0}")]
+    /// 嵌入(embedding)计算错误。
+    #[error("embedding error: {0}")]
     EmbeddingError(String),
-    #[error("预测错误: {0}")]
+    /// 预测器(predictor)执行错误。
+    #[error("prediction error: {0}")]
     PredictorError(String),
 }
 
@@ -24,6 +29,9 @@ impl From<lc_core::judge::StructuredJudgeError> for EvalError {
         match e {
             lc_core::judge::StructuredJudgeError::Call(s) => EvalError::PredictorError(s),
             lc_core::judge::StructuredJudgeError::Parse(s) => EvalError::ParseError(s),
+            // `StructuredJudgeError` is `#[non_exhaustive]`; forward any future
+            // variants to the generic predictor-error slot.
+            _ => EvalError::PredictorError(e.to_string()),
         }
     }
 }
@@ -31,7 +39,9 @@ impl From<lc_core::judge::StructuredJudgeError> for EvalError {
 /// 评测分数(0.0–1.0,1.0 为最佳)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Score {
+    /// 分数值(0.0–1.0)
     pub value: f64,
+    /// 可选的分数标签
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -44,7 +54,7 @@ impl Score {
     /// 正无穷交给 `clamp` 收敛到边界)。
     pub fn new(value: f64) -> Self {
         let value = if value.is_nan() {
-            log::warn!("Score::new 收到 NaN,按 0.0 处理");
+            log::warn!("Score::new received NaN, treating as 0.0");
             0.0
         } else {
             value
@@ -55,6 +65,7 @@ impl Score {
         }
     }
 
+    /// 附加分数标签(builder 风格)。
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -64,11 +75,14 @@ impl Score {
 /// 评测样例
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Example {
+    /// 评测输入
     pub input: String,
+    /// 参考答案
     pub reference: String,
 }
 
 impl Example {
+    /// 构造评测样例。
     pub fn new(input: impl Into<String>, reference: impl Into<String>) -> Self {
         Self {
             input: input.into(),
@@ -80,10 +94,12 @@ impl Example {
 /// 数据集
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dataset {
+    /// 数据集中的评测样例列表
     pub examples: Vec<Example>,
 }
 
 impl Dataset {
+    /// 构造数据集。
     pub fn new(examples: Vec<Example>) -> Self {
         Self { examples }
     }
@@ -102,16 +118,18 @@ impl Dataset {
                 continue;
             }
             let ex: Example = serde_json::from_str(line)
-                .map_err(|e| EvalError::ParseError(format!("第 {} 行: {}", i + 1, e)))?;
+                .map_err(|e| EvalError::ParseError(format!("line {}: {}", i + 1, e)))?;
             examples.push(ex);
         }
         Ok(Self { examples })
     }
 
+    /// 返回样例数量。
     pub fn len(&self) -> usize {
         self.examples.len()
     }
 
+    /// 数据集是否为空。
     pub fn is_empty(&self) -> bool {
         self.examples.is_empty()
     }
@@ -149,6 +167,7 @@ pub trait PairwiseEvaluator: Send + Sync {
 /// 预测器 trait(待评测的对象:LLMChain / Agent 等)
 #[async_trait]
 pub trait Predictor: Send + Sync {
+    /// 对单条输入进行预测,返回文本结果。
     async fn predict(&self, input: &str) -> Result<String, EvalError>;
 }
 

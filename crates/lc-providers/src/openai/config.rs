@@ -4,20 +4,34 @@
 use lc_core::tools::ToolDefinition;
 use std::env;
 
+use crate::ProviderError;
+
 /// OpenAI configuration
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
+    /// OpenAI API key.
     pub api_key: String,
+    /// Base URL of the OpenAI-compatible API endpoint.
     pub base_url: String,
+    /// Model name to use for chat completions.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+    /// Nucleus sampling probability mass.
     pub top_p: Option<f32>,
+    /// Frequency penalty applied to repeated tokens.
     pub frequency_penalty: Option<f32>,
+    /// Presence penalty applied to already-seen tokens.
     pub presence_penalty: Option<f32>,
+    /// Whether to stream responses.
     pub streaming: bool,
+    /// Organization ID for the API request.
     pub organization: Option<String>,
+    /// Tool definitions for function calling.
     pub tools: Option<Vec<ToolDefinition>>,
+    /// Tool choice strategy (e.g. "auto" or a function name).
     pub tool_choice: Option<String>,
 }
 
@@ -55,9 +69,10 @@ impl OpenAIConfig {
     /// - `OPENAI_API_KEY`: API key (required)
     /// - `OPENAI_BASE_URL`: API endpoint (optional, default: <https://api.openai.com/v1>)
     /// - `OPENAI_MODEL`: Model name (optional, default: gpt-3.5-turbo)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("OPENAI_API_KEY")
-            .map_err(|_| "OPENAI_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("OPENAI_API_KEY").map_err(|_| {
+            ProviderError::Config("OPENAI_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url =
             env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
@@ -108,11 +123,13 @@ impl OpenAIConfig {
         self
     }
 
+    /// Set tool definitions for function calling.
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.tools = Some(tools);
         self
     }
 
+    /// Set tool choice strategy.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());
         self
@@ -159,7 +176,7 @@ mod tests {
         env::remove_var("OPENAI_API_KEY");
         let result = OpenAIConfig::from_env_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("OPENAI_API_KEY"));
+        assert!(result.unwrap_err().to_string().contains("OPENAI_API_KEY"));
         restore("OPENAI_API_KEY", old);
     }
 

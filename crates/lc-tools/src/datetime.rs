@@ -56,21 +56,21 @@ impl DateTimeTool {
             return Local
                 .from_local_datetime(&dt)
                 .single()
-                .ok_or_else(|| ToolError::ExecutionFailed("无效的日期时间".to_string()));
+                .ok_or_else(|| ToolError::ExecutionFailed("invalid datetime".to_string()));
         }
 
         if let Ok(date) = NaiveDate::parse_from_str(dt_str, "%Y-%m-%d") {
             let dt = date
                 .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| ToolError::ExecutionFailed("无效的日期".to_string()))?;
+                .ok_or_else(|| ToolError::ExecutionFailed("invalid date".to_string()))?;
             return Local
                 .from_local_datetime(&dt)
                 .single()
-                .ok_or_else(|| ToolError::ExecutionFailed("无效的日期时间".to_string()));
+                .ok_or_else(|| ToolError::ExecutionFailed("invalid datetime".to_string()));
         }
 
         Err(ToolError::ExecutionFailed(format!(
-            "无法解析日期时间: {}，请使用格式 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS",
+            "failed to parse datetime: {}, use format YYYY-MM-DD or YYYY-MM-DD HH:MM:SS",
             dt_str
         )))
     }
@@ -136,14 +136,14 @@ impl DateTimeTool {
 
                 dt.with_year(year)
                     .and_then(|d| d.with_month(month))
-                    .ok_or_else(|| ToolError::ExecutionFailed("月份计算失败".to_string()))?
+                    .ok_or_else(|| ToolError::ExecutionFailed("month calculation failed".to_string()))?
             }
             "years" => dt
                 .with_year(dt.year() + value as i32)
-                .ok_or_else(|| ToolError::ExecutionFailed("年份计算失败".to_string()))?,
+                .ok_or_else(|| ToolError::ExecutionFailed("year calculation failed".to_string()))?,
             _ => {
                 return Err(ToolError::ExecutionFailed(format!(
-                "不支持的时间单位: {}，请使用: seconds, minutes, hours, days, weeks, months, years",
+                "unsupported time unit: {}, use: seconds, minutes, hours, days, weeks, months, years",
                 unit
             )))
             }
@@ -251,51 +251,67 @@ impl Tool for DateTimeTool {
             "now" => Ok(self.get_now()),
             "format" => {
                 let dt = input.datetime.ok_or_else(|| {
-                    ToolError::InvalidInput("format 操作需要 datetime 参数".to_string())
+                    ToolError::InvalidInput(
+                        "format operation requires a datetime parameter".to_string(),
+                    )
                 })?;
                 self.format_datetime(&dt)
             }
             "add" => {
                 let dt = input.datetime.ok_or_else(|| {
-                    ToolError::InvalidInput("add 操作需要 datetime 参数".to_string())
+                    ToolError::InvalidInput(
+                        "add operation requires a datetime parameter".to_string(),
+                    )
                 })?;
                 let value = input.value.ok_or_else(|| {
-                    ToolError::InvalidInput("add 操作需要 value 参数".to_string())
+                    ToolError::InvalidInput("add operation requires a value parameter".to_string())
                 })?;
-                let unit = input
-                    .unit
-                    .ok_or_else(|| ToolError::InvalidInput("add 操作需要 unit 参数".to_string()))?;
+                let unit = input.unit.ok_or_else(|| {
+                    ToolError::InvalidInput("add operation requires a unit parameter".to_string())
+                })?;
                 self.add_time(&dt, value, &unit)
             }
             "subtract" => {
                 let dt = input.datetime.ok_or_else(|| {
-                    ToolError::InvalidInput("subtract 操作需要 datetime 参数".to_string())
+                    ToolError::InvalidInput(
+                        "subtract operation requires a datetime parameter".to_string(),
+                    )
                 })?;
                 let value = input.value.ok_or_else(|| {
-                    ToolError::InvalidInput("subtract 操作需要 value 参数".to_string())
+                    ToolError::InvalidInput(
+                        "subtract operation requires a value parameter".to_string(),
+                    )
                 })?;
                 let unit = input.unit.ok_or_else(|| {
-                    ToolError::InvalidInput("subtract 操作需要 unit 参数".to_string())
+                    ToolError::InvalidInput(
+                        "subtract operation requires a unit parameter".to_string(),
+                    )
                 })?;
                 self.subtract_time(&dt, value, &unit)
             }
             "weekday" => {
                 let dt = input.datetime.ok_or_else(|| {
-                    ToolError::InvalidInput("weekday 操作需要 datetime 参数".to_string())
+                    ToolError::InvalidInput(
+                        "weekday operation requires a datetime parameter".to_string(),
+                    )
                 })?;
                 self.get_weekday(&dt)
             }
             "diff" => {
                 let dt1 = input.datetime.ok_or_else(|| {
-                    ToolError::InvalidInput("diff 操作需要 datetime 参数".to_string())
+                    ToolError::InvalidInput(
+                        "diff operation requires a datetime parameter".to_string(),
+                    )
                 })?;
                 let dt2 = input.target.ok_or_else(|| {
-                    ToolError::InvalidInput("diff 操作需要 target 参数".to_string())
+                    ToolError::InvalidInput(
+                        "diff operation requires a target parameter".to_string(),
+                    )
                 })?;
                 self.diff_time(&dt1, &dt2)
             }
             _ => Err(ToolError::InvalidInput(format!(
-                "不支持的操作: {}，请使用: now, format, add, subtract, weekday, diff",
+                "unsupported operation: {}, use: now, format, add, subtract, weekday, diff",
                 input.operation
             ))),
         }
@@ -328,7 +344,7 @@ impl BaseTool for DateTimeTool {
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let parsed: DateTimeInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
 
         let output = self.invoke(parsed).await?;
 

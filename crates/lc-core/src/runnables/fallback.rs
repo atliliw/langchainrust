@@ -96,13 +96,13 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> RunnableWithFal
                             });
                         }
                         Err(e) => {
-                            log::warn!("fallback 调用失败(继续尝试下一个): {e}");
+                            log::warn!("fallback invocation failed (trying next): {e}");
                             continue;
                         }
                     }
                 }
                 // All failed, return the primary's error
-                log::warn!("primary 与全部 fallback 均失败,返回 primary 的错误");
+                log::warn!("primary and all fallbacks failed; returning primary's error");
                 Err(primary_error)
             }
         }
@@ -162,12 +162,12 @@ impl<I: Clone + Send + Sync + 'static, O: Send + Sync + 'static> Runnable<I, O>
                             return Ok(Box::pin(output_stream));
                         }
                         Err(e) => {
-                            log::warn!("fallback 流式调用失败(继续尝试下一个): {e}");
+                            log::warn!("fallback stream failed (trying next): {e}");
                             continue;
                         }
                     }
                 }
-                log::warn!("primary 与全部 fallback 流式调用均失败,返回 primary 的错误");
+                log::warn!("primary and all fallback streams failed; returning primary's error");
                 Err(primary_error)
             }
         }
@@ -341,10 +341,8 @@ mod tests {
         let fallback = RunnableLambda::new_sync(|x: i32| x * 3);
 
         let with_fallbacks = primary.with_fallbacks(vec![fallback]);
-        let input = Box::pin(futures_util::stream::iter(vec![
-            Ok(1i32),
-            Ok(2i32),
-        ])) as Pin<Box<dyn Stream<Item = Result<i32, LcelError>> + Send>>;
+        let input = Box::pin(futures_util::stream::iter(vec![Ok(1i32), Ok(2i32)]))
+            as Pin<Box<dyn Stream<Item = Result<i32, LcelError>> + Send>>;
 
         let mut output = with_fallbacks.transform(input, None).await.unwrap();
         let mut results = Vec::new();

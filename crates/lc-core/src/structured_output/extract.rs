@@ -13,6 +13,7 @@ use lc_schema::Message;
 
 /// Errors that can occur during structured output extraction.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum StructuredOutputError {
     /// The provided JSON schema is invalid or malformed.
     #[error("Schema error: {0}")]

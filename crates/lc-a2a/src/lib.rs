@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! A2A (Agent-to-Agent) protocol support.
 //!
 //! This module implements the A2A protocol for inter-agent communication.

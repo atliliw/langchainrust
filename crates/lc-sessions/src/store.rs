@@ -6,6 +6,7 @@ use super::session::Session;
 
 /// Session 错误
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SessionError {
     /// Session 不存在
     NotFound(String),
@@ -20,10 +21,10 @@ pub enum SessionError {
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionError::NotFound(id) => write!(f, "Session 不存在: {}", id),
-            SessionError::StoreError(msg) => write!(f, "Session 存储错误: {}", msg),
-            SessionError::Llm(msg) => write!(f, "LLM 调用错误: {}", msg),
-            SessionError::Memory(msg) => write!(f, "记忆组件错误: {}", msg),
+            SessionError::NotFound(id) => write!(f, "session not found: {}", id),
+            SessionError::StoreError(msg) => write!(f, "session storage error: {}", msg),
+            SessionError::Llm(msg) => write!(f, "LLM call error: {}", msg),
+            SessionError::Memory(msg) => write!(f, "memory component error: {}", msg),
         }
     }
 }

@@ -27,9 +27,10 @@ pub struct LangSmithConfig {
 
 impl LangSmithConfig {
     /// Create config from environment variables
-    pub fn from_env() -> Result<Self, String> {
-        let api_key = env::var("LANGSMITH_API_KEY")
-            .map_err(|_| "LANGSMITH_API_KEY environment variable not set")?;
+    pub fn from_env() -> Result<Self, LangSmithError> {
+        let api_key = env::var("LANGSMITH_API_KEY").map_err(|_| {
+            LangSmithError::Config("LANGSMITH_API_KEY environment variable not set".to_string())
+        })?;
 
         let tracing_enabled = env::var("LANGSMITH_TRACING")
             .map(|v| v == "true")
@@ -104,7 +105,7 @@ impl LangSmithClient {
     }
 
     /// Create client from environment variables
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_env() -> Result<Self, LangSmithError> {
         let config = LangSmithConfig::from_env()?;
         Ok(Self::new(config))
     }
@@ -191,9 +192,13 @@ impl LangSmithClient {
 
 /// LangSmith error type
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LangSmithError {
+    /// HTTP request error.
     Http(String),
+    /// API returned an error.
     Api(String),
+    /// Configuration error.
     Config(String),
 }
 

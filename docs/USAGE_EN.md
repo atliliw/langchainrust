@@ -609,7 +609,10 @@ let msg = Message::human_with_file("Read this file", FileContent::from_url("file
 
 // AI initiates tool calls
 let msg = Message::ai_with_tool_calls("", vec![
-    ToolCall::new("call_1", "calculator", r#"{"expression":"25+17"}"#),
+    ToolCall::builder("call_1")
+        .name("calculator")
+        .arguments(r#"{"expression":"25+17"}"#)
+        .build(),
 ]);
 ```
 

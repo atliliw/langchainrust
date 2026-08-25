@@ -587,7 +587,11 @@ fn test_partial_json_parser_fenced_incremental() {
     // 尾随围栏到达后,finalize 也应成功
     parser.push_and_parse("\n```").ok();
     let final_value = parser.finalize();
-    assert!(final_value.is_ok(), "带尾随围栏 finalize 应成功: {:?}", final_value);
+    assert!(
+        final_value.is_ok(),
+        "带尾随围栏 finalize 应成功: {:?}",
+        final_value
+    );
     assert_eq!(final_value.unwrap()["name"], "Alice");
 }
 
@@ -595,7 +599,9 @@ fn test_partial_json_parser_fenced_incremental() {
 fn test_partial_json_parser_fenced_finalize_unclosed_fence() {
     // 只有开头的围栏、没有结尾围栏(模型中断或仍在输出):finalize 也要成功
     let mut parser = PartialJsonParser::new();
-    parser.push_and_parse("```json\n{\"name\": \"Eve\", \"age\": 25}").ok();
+    parser
+        .push_and_parse("```json\n{\"name\": \"Eve\", \"age\": 25}")
+        .ok();
     let result = parser.finalize();
     assert!(result.is_ok(), "未闭合围栏 finalize 应成功: {:?}", result);
     let value = result.unwrap();
@@ -611,9 +617,15 @@ fn test_strip_markdown_fence() {
         "{\"a\": 1}"
     );
     // 直接 JSON 原样返回
-    assert_eq!(PartialJsonParser::strip_markdown_fence("{\"a\": 1}"), "{\"a\": 1}");
+    assert_eq!(
+        PartialJsonParser::strip_markdown_fence("{\"a\": 1}"),
+        "{\"a\": 1}"
+    );
     // 数组
-    assert_eq!(PartialJsonParser::strip_markdown_fence("```\n[1, 2]\n```"), "[1, 2]");
+    assert_eq!(
+        PartialJsonParser::strip_markdown_fence("```\n[1, 2]\n```"),
+        "[1, 2]"
+    );
     // 还没出现结构字符(只有围栏行)
     assert_eq!(PartialJsonParser::strip_markdown_fence("```json\n"), "");
     // 字符串中的花括号不应被当成 JSON 起点

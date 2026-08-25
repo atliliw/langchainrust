@@ -7,7 +7,9 @@ use std::collections::HashMap;
 /// MCP 工具定义(来自 `tools/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolDefinition {
+    /// 工具名称
     pub name: String,
+    /// 工具描述
     #[serde(default)]
     pub description: String,
     /// 工具参数的 JSON Schema
@@ -18,7 +20,9 @@ pub struct MCPToolDefinition {
 /// MCP 工具调用结果(来自 `tools/call`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolResult {
+    /// 工具返回的内容列表
     pub content: Vec<MCPContent>,
+    /// 是否为错误结果
     #[serde(default)]
     pub is_error: bool,
 }
@@ -27,12 +31,28 @@ pub struct MCPToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MCPContent {
+    /// 文本内容
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// 文本数据
+        text: String,
+    },
+    /// 图片内容
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        /// 图片数据(base64 编码)
+        data: String,
+        /// 图片 MIME 类型
+        mime_type: String,
+    },
+    /// 资源引用内容
     #[serde(rename = "resource")]
-    Resource { uri: String, name: String },
+    Resource {
+        /// 资源 URI
+        uri: String,
+        /// 资源名称
+        name: String,
+    },
 }
 
 impl MCPContent {
@@ -79,12 +99,18 @@ impl MCPToolResult {
 pub enum MCPConfig {
     /// Stdio 传输:启动子进程,通过 stdin/stdout 通信
     Stdio {
+        /// 要启动的命令
         command: String,
+        /// 命令行参数
         args: Vec<String>,
+        /// 子进程环境变量
         env: HashMap<String, String>,
     },
     /// SSE 传输:HTTP Server-Sent Events
-    Sse { url: String },
+    Sse {
+        /// SSE 端点 URL
+        url: String,
+    },
 }
 
 impl MCPConfig {
@@ -228,7 +254,7 @@ mod tests {
         if let MCPConfig::Stdio { env, .. } = config {
             assert_eq!(env.get("API_KEY"), Some(&"secret".to_string()));
         } else {
-            panic!("应为 Stdio");
+            panic!("expected Stdio");
         }
     }
 }

@@ -94,20 +94,24 @@ impl Default for PersistenceConfig {
 }
 
 impl PersistenceConfig {
+    /// Create a persistence configuration with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set whether memory is auto-saved after each `save_context` call.
     pub fn with_auto_save(mut self, auto_save: bool) -> Self {
         self.auto_save = auto_save;
         self
     }
 
+    /// Set whether memory is auto-loaded on first access.
     pub fn with_auto_load(mut self, auto_load: bool) -> Self {
         self.auto_load = auto_load;
         self
     }
 
+    /// Set the token limit for summary buffer memory.
     pub fn with_token_limit(mut self, token_limit: usize) -> Self {
         self.token_limit = token_limit;
         self
@@ -142,10 +146,11 @@ pub struct MemoryData {
 }
 
 impl MemoryData {
-    pub fn new(session_id: String) -> Self {
+    /// Create a new empty memory data for the given session.
+    pub fn new(session_id: impl Into<String>) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
-            session_id,
+            session_id: session_id.into(),
             messages: Vec::new(),
             summary: None,
             metadata: std::collections::HashMap::new(),
@@ -155,25 +160,29 @@ impl MemoryData {
         }
     }
 
+    /// Set the chat messages and update the timestamp.
     pub fn with_messages(mut self, messages: Vec<lc_schema::Message>) -> Self {
         self.messages = messages;
         self.updated_at = chrono::Utc::now().to_rfc3339();
         self
     }
 
-    pub fn with_summary(mut self, summary: String) -> Self {
-        self.summary = Some(summary);
+    /// Set the current summary and update the timestamp.
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = Some(summary.into());
         self.updated_at = chrono::Utc::now().to_rfc3339();
         self
     }
 
+    /// Append a message to the stored history.
     pub fn add_message(&mut self, message: lc_schema::Message) {
         self.messages.push(message);
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 
-    pub fn set_summary(&mut self, summary: String) {
-        self.summary = Some(summary);
+    /// Replace the stored summary.
+    pub fn set_summary(&mut self, summary: impl Into<String>) {
+        self.summary = Some(summary.into());
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 }

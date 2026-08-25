@@ -84,7 +84,7 @@ pub async fn call_tool_with_timeout(
             return Err(MCPError::new(
                 -1,
                 format!(
-                    "工具 '{name}' 调用超过硬上限 {:?},终止(progress 未豁免)",
+                    "tool '{name}' call exceeded hard cap {:?}, aborting (progress did not exempt)",
                     spec.max_timeout
                 ),
             ));
@@ -94,7 +94,7 @@ pub async fn call_tool_with_timeout(
             return Err(MCPError::new(
                 -1,
                 format!(
-                    "工具 '{name}' 调用超时:{} 内无响应且无 progress",
+                    "tool '{name}' call timed out: no response and no progress within {} ms",
                     spec.default_timeout.as_millis()
                 ),
             ));
@@ -141,10 +141,10 @@ mod tests {
         let server = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let spec = ToolSpec::new("echo", Duration::from_secs(5));
         let r = call_tool_with_timeout(&client, "echo", json!({}), &spec).await;
-        assert!(r.is_ok(), "快速工具应立即返回");
+        assert!(r.is_ok(), "fast tool should return immediately");
     }
 
     /// 无 progress:默认超时到点即终止(不等慢服务器的最终响应)。
@@ -153,13 +153,13 @@ mod tests {
         let server = start_fake_sse_server(PostMode::SlowCall(Duration::from_secs(5))).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let spec = ToolSpec::new("echo", Duration::from_millis(100))
             .with_max_timeout(Duration::from_secs(2));
         let err = call_tool_with_timeout(&client, "echo", json!({}), &spec)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("超时"), "{}", err);
+        assert!(err.to_string().contains("timed out"), "{}", err);
     }
 
     /// progress 持续重置计时器:慢工具(默认超时内完不成)最终正常完成。
@@ -169,11 +169,14 @@ mod tests {
             start_fake_sse_server(PostMode::ProgressSlowCall(Duration::from_millis(900))).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let spec = ToolSpec::new("echo", Duration::from_millis(400))
             .with_max_timeout(Duration::from_secs(3));
         let r = call_tool_with_timeout(&client, "echo", json!({}), &spec).await;
-        assert!(r.is_ok(), "progress 应持续重置计时器并最终完成");
+        assert!(
+            r.is_ok(),
+            "progress should keep resetting the timer and eventually complete"
+        );
     }
 
     /// 硬上限:即使 progress 一直刷新,总时长到硬上限仍终止(防"半死不活")。
@@ -183,13 +186,13 @@ mod tests {
             start_fake_sse_server(PostMode::ProgressSlowCall(Duration::from_millis(800))).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let spec = ToolSpec::new("echo", Duration::from_millis(300))
             .with_max_timeout(Duration::from_millis(400));
         let err = call_tool_with_timeout(&client, "echo", json!({}), &spec)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("硬上限"), "{}", err);
+        assert!(err.to_string().contains("hard cap"), "{}", err);
     }
 
     #[test]

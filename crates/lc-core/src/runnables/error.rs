@@ -23,6 +23,7 @@ use std::fmt;
 /// All `Runnable` components that participate in LCEL composition
 /// must have an `Error` type that implements `Into<LcelError>`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum LcelError {
     /// Error from an LLM provider (OpenAI, Anthropic, Gemini, Ollama, etc.).
     Provider(String),

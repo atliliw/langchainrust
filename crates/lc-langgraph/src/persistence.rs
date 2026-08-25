@@ -32,25 +32,33 @@ pub trait GraphPersistence: Send + Sync {
 
 /// Persistence error types
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PersistenceError {
+    /// The requested graph was not found.
     #[error("Graph '{0}' not found")]
     NotFound(String),
 
+    /// Failed to serialize a graph definition.
     #[error("Serialization error: {0}")]
     SerializationError(String),
 
+    /// Failed to deserialize a graph definition.
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
 
+    /// An I/O error occurred while accessing storage.
     #[error("IO error: {0}")]
     IoError(String),
 
+    /// The graph definition is invalid.
     #[error("Invalid graph definition: {0}")]
     InvalidDefinition(String),
 
+    /// A MongoDB operation failed.
     #[error("MongoDB error: {0}")]
     MongoError(String),
 
+    /// Failed to connect to the persistence backend.
     #[error("Connection error: {0}")]
     ConnectionError(String),
 }
@@ -91,12 +99,12 @@ pub struct GraphDefinition {
 
 impl GraphDefinition {
     /// Create a new graph definition with the given entry point
-    pub fn new(entry_point: String) -> Self {
+    pub fn new(entry_point: impl Into<String>) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
             name: None,
-            entry_point,
+            entry_point: entry_point.into(),
             nodes: Vec::new(),
             edges: Vec::new(),
             routers: Vec::new(),
@@ -108,14 +116,14 @@ impl GraphDefinition {
     }
 
     /// Set a custom ID
-    pub fn with_id(mut self, id: String) -> Self {
-        self.id = id;
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
         self
     }
 
     /// Set a human-readable name
-    pub fn with_name(mut self, name: String) -> Self {
-        self.name = Some(name);
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -160,9 +168,13 @@ pub struct NodeDefinition {
 /// NodeType - Type of node execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NodeType {
+    /// Synchronous node.
     Sync,
+    /// Asynchronous node.
     Async,
+    /// A subgraph node.
     Subgraph,
+    /// A custom node type.
     Custom,
 }
 
@@ -196,11 +208,11 @@ pub struct EdgeDefinition {
 
 impl EdgeDefinition {
     /// Create a fixed edge
-    pub fn fixed(source: String, target: String) -> Self {
+    pub fn fixed(source: impl Into<String>, target: impl Into<String>) -> Self {
         Self {
             edge_type: EdgeType::Fixed,
-            source,
-            target: Some(target),
+            source: source.into(),
+            target: Some(target.into()),
             targets: None,
             router_name: None,
             conditional_targets: None,
@@ -211,17 +223,17 @@ impl EdgeDefinition {
 
     /// Create a conditional edge
     pub fn conditional(
-        source: String,
-        router_name: String,
+        source: impl Into<String>,
+        router_name: impl Into<String>,
         targets: HashMap<String, String>,
         default_target: Option<String>,
     ) -> Self {
         Self {
             edge_type: EdgeType::Conditional,
-            source,
+            source: source.into(),
             target: None,
             targets: None,
-            router_name: Some(router_name),
+            router_name: Some(router_name.into()),
             conditional_targets: Some(targets),
             default_target,
             sources: None,
@@ -229,10 +241,10 @@ impl EdgeDefinition {
     }
 
     /// Create a fan-out edge (parallel execution)
-    pub fn fan_out(source: String, targets: Vec<String>) -> Self {
+    pub fn fan_out(source: impl Into<String>, targets: Vec<String>) -> Self {
         Self {
             edge_type: EdgeType::FanOut,
-            source,
+            source: source.into(),
             target: None,
             targets: Some(targets),
             router_name: None,
@@ -243,11 +255,11 @@ impl EdgeDefinition {
     }
 
     /// Create a fan-in edge (merge from parallel branches)
-    pub fn fan_in(sources: Vec<String>, target: String) -> Self {
+    pub fn fan_in(sources: Vec<String>, target: impl Into<String>) -> Self {
         Self {
             edge_type: EdgeType::FanIn,
             source: "__fan_in__".to_string(),
-            target: Some(target),
+            target: Some(target.into()),
             targets: None,
             router_name: None,
             conditional_targets: None,
@@ -489,11 +501,15 @@ mod mongo_impl {
 
     impl MongoConfig {
         /// 创建新的MongoDB配置
-        pub fn new(uri: String, database: String, collection: String) -> Self {
+        pub fn new(
+            uri: impl Into<String>,
+            database: impl Into<String>,
+            collection: impl Into<String>,
+        ) -> Self {
             Self {
-                uri,
-                database,
-                collection,
+                uri: uri.into(),
+                database: database.into(),
+                collection: collection.into(),
             }
         }
 

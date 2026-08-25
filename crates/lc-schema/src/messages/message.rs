@@ -14,15 +14,23 @@ use super::image::ImageContent;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageType {
+    /// 系统消息
     System,
+    /// 人类（用户）消息
     Human,
+    /// AI（助手）消息
     AI,
-    Tool { tool_call_id: String },
+    /// 工具结果消息，携带对应的 tool_call_id
+    Tool {
+        /// 关联的工具调用 ID
+        tool_call_id: String,
+    },
 }
 
 /// Complete message structure for chat interactions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// 消息文本内容
     pub content: String,
 
     /// 图片内容(多模态 vision)
@@ -37,18 +45,23 @@ pub struct Message {
     #[serde(default)]
     pub files: Vec<FileContent>,
 
+    /// 消息类型
     #[serde(rename = "type")]
     pub message_type: MessageType,
 
+    /// 消息名称（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
+    /// 附加关键字参数
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub additional_kwargs: HashMap<String, Value>,
 
+    /// 消息 ID（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
+    /// 工具调用列表（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -342,7 +355,10 @@ mod tests {
     fn test_has_tool_calls_empty_and_present() {
         let with_calls = Message::ai_with_tool_calls(
             "call tool",
-            vec![ToolCall::new("call_1", "weather", r#"{"city":"beijing"}"#)],
+            vec![ToolCall::builder("call_1")
+                .name("weather")
+                .arguments(r#"{"city":"beijing"}"#)
+                .build()],
         );
         assert!(with_calls.has_tool_calls());
         assert_eq!(with_calls.get_tool_calls().unwrap().len(), 1);

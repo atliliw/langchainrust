@@ -18,7 +18,9 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 /// 流式输出块:单次吐出的文本 + 是否结尾。
 #[derive(Debug)]
 pub struct GuardableChunk {
+    /// 单次吐出的文本
     pub token: String,
+    /// 是否为结尾块
     pub is_final: bool,
 }
 
@@ -188,7 +190,7 @@ impl GuardedAgent {
                 GuardrailError::Blocked { reason, .. } => GuardrailError::Blocked {
                     reason,
                     partial: Some(input),
-                    suggestion: Some("请调整输入后重试".to_string()),
+                    suggestion: Some("please adjust your input and retry".to_string()),
                 },
                 other => other,
             });
@@ -205,7 +207,8 @@ impl GuardedAgent {
             OutputValidation::Blocked { reason, partial } => Err(GuardrailError::from_blocked(
                 reason,
                 partial,
-                "输出被安全护栏拦截,请调整请求后重试或省略敏感内容".to_string(),
+                "output was blocked by a safety guardrail; please adjust your request and retry, or omit sensitive content"
+                    .to_string(),
             )),
         }
     }
@@ -262,9 +265,12 @@ impl GuardedAgent {
                     ChunkAction::Block => {
                         let partial = tail.lock().await.clone();
                         return Err(GuardrailError::Blocked {
-                            reason: "流式输出被护栏拦截".to_string(),
+                            reason: "streaming output was blocked by a guardrail".to_string(),
                             partial: Some(partial),
-                            suggestion: Some("输出被安全护栏拦截,请调整请求后重试".to_string()),
+                            suggestion: Some(
+                                "output was blocked by a safety guardrail; please adjust your request and retry"
+                                    .to_string(),
+                            ),
                         });
                     }
                 };
@@ -298,7 +304,8 @@ impl GuardedAgent {
                 OutputValidation::Blocked { reason, partial } => Err(GuardrailError::from_blocked(
                     reason,
                     partial,
-                    "完整输出复查未通过,请调整请求后重试或省略敏感内容".to_string(),
+                    "final output re-check failed; please adjust your request and retry, or omit sensitive content"
+                        .to_string(),
                 )),
             }
         });

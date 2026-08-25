@@ -142,6 +142,7 @@ pub struct PythonREPLTool {
 }
 
 impl PythonREPLTool {
+    /// 创建 Python 代码执行工具(默认禁用执行)。
     pub fn new() -> Self {
         Self {
             python_path: Self::find_python(),

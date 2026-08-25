@@ -338,7 +338,7 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
             Err(e) => {
                 // 实体嵌入失败:该实体从图匹配中排除,记日志暴露降级
                 log::warn!(
-                    "实体 `{}` 嵌入失败,已从图匹配中排除: {}",
+                    "entity `{}` embedding failed; excluded from graph matching: {}",
                     entity_id,
                     e
                 );
@@ -405,6 +405,14 @@ impl<E: Embeddings + 'static> EmbeddingMatcher<E> {
                         return Err(GraphRAGError::QueryError(format!(
                             "EmbeddingMatcher: vector dimension mismatch {} vs {} (embedding model changed?)",
                             a, b
+                        )));
+                    }
+                    // `MathError` is `#[non_exhaustive]`; treat any other
+                    // similarity failure as a query error.
+                    Err(other) => {
+                        return Err(GraphRAGError::QueryError(format!(
+                            "EmbeddingMatcher: similarity computation failed: {}",
+                            other
                         )));
                     }
                 }

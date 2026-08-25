@@ -18,5 +18,5 @@ pub use registry::ToolRegistry;
 pub use structured::StructuredTool;
 pub use structured_output::StructuredOutput;
 pub use tool_definition::{
-    FunctionCall, FunctionDefinition, ToolCall, ToolCallResult, ToolDefinition,
+    FunctionCall, FunctionDefinition, ToolCall, ToolCallBuilder, ToolCallResult, ToolDefinition,
 };

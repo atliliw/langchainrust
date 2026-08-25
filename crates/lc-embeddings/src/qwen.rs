@@ -17,8 +17,11 @@ pub const QWEN_EMBED_MODEL: &str = "text-embedding-v1";
 /// Configuration for Qwen embeddings API.
 #[derive(Debug, Clone)]
 pub struct QwenEmbeddingsConfig {
+    /// Qwen API key.
     pub api_key: String,
+    /// Base URL for the Qwen (DashScope) embeddings API.
     pub base_url: String,
+    /// Embedding model name.
     pub model: String,
 }
 
@@ -47,9 +50,10 @@ impl QwenEmbeddingsConfig {
     /// - `QWEN_API_KEY`: API key (required)
     /// - `QWEN_BASE_URL`: API endpoint (optional)
     /// - `QWEN_EMBED_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = std::env::var("QWEN_API_KEY")
-            .map_err(|_| "QWEN_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
+        let api_key = std::env::var("QWEN_API_KEY").map_err(|_| {
+            EmbeddingError::Config("QWEN_API_KEY environment variable not set".to_string())
+        })?;
         let base_url = std::env::var("QWEN_BASE_URL").unwrap_or_else(|_| QWEN_BASE_URL.to_string());
         let model =
             std::env::var("QWEN_EMBED_MODEL").unwrap_or_else(|_| QWEN_EMBED_MODEL.to_string());
@@ -95,7 +99,7 @@ impl CompatSpec for QwenEmbeddingsConfig {
             )))
         }
     }
-    fn from_env_result() -> Result<Self, String> {
+    fn from_env_result() -> Result<Self, EmbeddingError> {
         Self::from_env_result()
     }
 }
@@ -128,7 +132,7 @@ mod tests {
         let result = embeddings.embed_documents(&["a", "b"]).await;
         assert!(
             matches!(result, Err(EmbeddingError::EmptyVectorInBatch)),
-            "少返回应报 EmptyVectorInBatch，实际: {:?}",
+            "truncated response should report EmptyVectorInBatch, got: {:?}",
             result
         );
     }
@@ -191,7 +195,7 @@ mod tests {
         env::remove_var("QWEN_API_KEY");
         let result = QwenEmbeddingsConfig::from_env_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("QWEN_API_KEY"));
+        assert!(result.unwrap_err().to_string().contains("QWEN_API_KEY"));
         restore("QWEN_API_KEY", old);
     }
 

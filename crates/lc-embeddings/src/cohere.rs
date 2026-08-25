@@ -42,9 +42,13 @@ impl CohereEmbedInputType {
 /// Cohere embedding configuration.
 #[derive(Debug, Clone)]
 pub struct CohereEmbeddingsConfig {
+    /// Cohere API key.
     pub api_key: String,
+    /// Base URL for the Cohere embeddings API.
     pub base_url: String,
+    /// Embedding model name.
     pub model: String,
+    /// Input type for the embedding request.
     pub input_type: CohereEmbedInputType,
 }
 
@@ -69,9 +73,10 @@ impl CohereEmbeddingsConfig {
     }
 
     /// Creates config from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = std::env::var("COHERE_API_KEY")
-            .map_err(|_| "COHERE_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
+        let api_key = std::env::var("COHERE_API_KEY").map_err(|_| {
+            EmbeddingError::Config("COHERE_API_KEY environment variable not set".to_string())
+        })?;
         let base_url =
             std::env::var("COHERE_BASE_URL").unwrap_or_else(|_| COHERE_EMBED_BASE_URL.to_string());
         let model =
@@ -155,9 +160,9 @@ impl CohereEmbeddings {
     }
 
     /// Creates from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
         let config = CohereEmbeddingsConfig::from_env_result()?;
-        Self::new(config).map_err(|e| e.to_string())
+        Self::new(config)
     }
 }
 
@@ -315,12 +320,12 @@ mod tests {
         let v = embeddings
             .embed_query("hello")
             .await
-            .expect("429 两次后应重试成功");
+            .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
         // P2-8: 返回向量应已归一化。
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
     /// P0-1: Cohere 一次性返回全部文本,少返回必须显式报 `BatchMismatch`,
@@ -345,7 +350,7 @@ mod tests {
                     actual: 1
                 })
             ),
-            "少返回应报 BatchMismatch，实际: {:?}",
+            "truncated response should report BatchMismatch, got: {:?}",
             result
         );
     }

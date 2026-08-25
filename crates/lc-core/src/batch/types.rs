@@ -30,31 +30,44 @@ pub struct BatchId(pub String);
 /// Status of a batch job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatchStatus {
+    /// The batch is still being processed.
     InProgress,
+    /// The batch completed successfully.
     Completed,
+    /// The batch failed.
     Failed,
+    /// The batch expired before completion.
     Expired,
+    /// The batch was cancelled.
     Cancelled,
 }
 
 /// Result for a single request in a completed batch.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Not `Serialize`/`Deserialize`: the per-request error is the typed
+/// [`BatchError`], which does not carry a JSON round-trip contract. Parsing
+/// of the provider JSONL response happens on the internal `*ResultLine` types
+/// in this module; `BatchResult` is built programmatically.
+#[derive(Debug)]
 pub struct BatchResult {
     /// Matches the `custom_id` from the original [`BatchRequest`].
     pub custom_id: String,
-    /// The LLM response on success, or an error message on failure.
-    pub result: Result<LLMResult, String>,
+    /// The LLM response on success, or a typed error on failure.
+    pub result: Result<LLMResult, BatchError>,
 }
 
 /// Batch provider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchProvider {
+    /// OpenAI batch API.
     OpenAI,
+    /// Anthropic batch API.
     Anthropic,
 }
 
 /// Error type for batch operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BatchError {
     /// HTTP transport error.
     #[error("HTTP error: {0}")]

@@ -29,10 +29,15 @@ pub const DEEPSEEK_MODELS: [&str; 4] = [
 /// DeepSeek 配置
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
+    /// DeepSeek API key.
     pub api_key: String,
+    /// Base URL of the DeepSeek API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
 }
 
@@ -63,9 +68,10 @@ impl DeepSeekConfig {
     /// - `DEEPSEEK_API_KEY`: API key (required)
     /// - `DEEPSEEK_BASE_URL`: API endpoint (optional)
     /// - `DEEPSEEK_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("DEEPSEEK_API_KEY")
-            .map_err(|_| "DEEPSEEK_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("DEEPSEEK_API_KEY").map_err(|_| {
+            ProviderError::Config("DEEPSEEK_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url =
             env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEEPSEEK_BASE_URL.to_string());
@@ -144,7 +150,7 @@ impl DeepSeekChat {
     }
 
     /// Creates a DeepSeekChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(DeepSeekConfig::from_env_result()?))
     }
 }

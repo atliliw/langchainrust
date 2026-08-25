@@ -7,29 +7,37 @@ use serde::{Deserialize, Serialize};
 /// 补全引用类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRef {
+    /// 引用类型(`ref/prompt` 或 `ref/resource`)
     #[serde(rename = "type")]
     pub ref_type: String,
+    /// 被补全对象的 URI
     pub uri: String,
 }
 
 /// 补全请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionArgument {
+    /// 参数名
     pub name: String,
+    /// 当前参数值(用于提供补全建议)
     pub value: String,
 }
 
 /// `completion/complete` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
+    /// 被补全的引用
     pub reference: CompletionRef,
+    /// 补全参数
     pub argument: CompletionArgument,
 }
 
 /// 补全值
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionValue {
+    /// 补全建议的显示标签
     pub label: String,
+    /// 补全建议的可选描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -37,9 +45,12 @@ pub struct CompletionValue {
 /// `completion/complete` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionResult {
+    /// 补全建议列表
     pub values: Vec<CompletionValue>,
+    /// 可选的总补全数量
     #[serde(default)]
     pub total: Option<usize>,
+    /// 是否还有更多补全建议
     #[serde(rename = "hasMore", default)]
     pub has_more: bool,
 }

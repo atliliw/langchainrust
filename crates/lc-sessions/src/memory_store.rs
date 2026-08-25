@@ -14,6 +14,7 @@ pub struct MemorySessionStore {
 }
 
 impl MemorySessionStore {
+    /// 创建新的内存会话存储
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),

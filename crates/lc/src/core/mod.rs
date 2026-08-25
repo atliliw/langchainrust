@@ -12,6 +12,7 @@ pub use language_models_wrapper::{wrap_chat_model, wrap_provider_model, ChatMode
 
 // Re-export into language_models namespace so existing code
 // using `crate::core::language_models::wrap_chat_model` still works
+/// Language models — re-exports from `lc_core::language_models` plus the wrapper types.
 pub mod language_models {
     pub use crate::core::language_models_wrapper::{
         wrap_chat_model, wrap_provider_model, ChatModelWrapper,

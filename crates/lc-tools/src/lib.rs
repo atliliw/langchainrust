@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-tools/src/lib.rs
 //! Built-in tools for langchainrust.
 //!

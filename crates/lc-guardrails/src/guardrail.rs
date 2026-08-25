@@ -13,13 +13,18 @@ pub enum InputGuardrailResult {
     /// 通过
     Pass,
     /// 拦截
-    Block { reason: String },
+    Block {
+        /// 拦截原因
+        reason: String,
+    },
 }
 
 impl InputGuardrailResult {
+    /// 是否通过。
     pub fn is_pass(&self) -> bool {
         matches!(self, InputGuardrailResult::Pass)
     }
+    /// 是否被拦截。
     pub fn is_block(&self) -> bool {
         matches!(self, InputGuardrailResult::Block { .. })
     }
@@ -33,18 +38,27 @@ pub enum OutputGuardrailResult {
     /// 通过
     Pass,
     /// 拦截
-    Block { reason: String },
+    Block {
+        /// 拦截原因
+        reason: String,
+    },
     /// 修改后通过(仅输出侧)
-    Modify { new_value: String },
+    Modify {
+        /// 修改后的新值
+        new_value: String,
+    },
 }
 
 impl OutputGuardrailResult {
+    /// 是否通过。
     pub fn is_pass(&self) -> bool {
         matches!(self, OutputGuardrailResult::Pass)
     }
+    /// 是否被拦截。
     pub fn is_block(&self) -> bool {
         matches!(self, OutputGuardrailResult::Block { .. })
     }
+    /// 是否被修改后放行。
     pub fn is_modify(&self) -> bool {
         matches!(self, OutputGuardrailResult::Modify { .. })
     }
@@ -55,7 +69,9 @@ impl OutputGuardrailResult {
 /// 返回 [`InputGuardrailResult`](没有 `Modify` 变体),输入侧天然无法改写。
 #[async_trait]
 pub trait InputGuardrail: Send + Sync {
+    /// 护栏名称。
     fn name(&self) -> &str;
+    /// 验证输入并返回结果。
     async fn validate(&self, input: &str) -> InputGuardrailResult;
 }
 
@@ -64,7 +80,9 @@ pub trait InputGuardrail: Send + Sync {
 /// 返回 [`OutputGuardrailResult`](含 `Modify` 变体),是改写的唯一合法入口。
 #[async_trait]
 pub trait OutputGuardrail: Send + Sync {
+    /// 护栏名称。
     fn name(&self) -> &str;
+    /// 验证输出并返回结果。
     async fn validate(&self, output: &str) -> OutputGuardrailResult;
 }
 
@@ -88,6 +106,7 @@ pub enum ChunkAction {
 /// 完整输出后的二次复查由 [`OutputGuardrail`] 承担(`GuardrailRunner::validate_output`)。
 #[async_trait]
 pub trait StreamingOutputGuardrail: Send + Sync {
+    /// 护栏名称。
     fn name(&self) -> &str;
     /// 增量检查一个 chunk(可能是 `tail + chunk` 的组合串)。
     async fn validate_chunk(&self, chunk: &str) -> ChunkAction;
@@ -96,12 +115,15 @@ pub trait StreamingOutputGuardrail: Send + Sync {
 /// Guardrails 配置
 #[derive(Clone)]
 pub struct GuardrailsConfig {
+    /// 输入护栏列表
     pub input_guardrails: Vec<Arc<dyn InputGuardrail>>,
+    /// 输出护栏列表
     pub output_guardrails: Vec<Arc<dyn OutputGuardrail>>,
     /// 流式护栏:流式输出时逐块增量检查(P1-4)。
     pub streaming_guardrails: Vec<Arc<dyn StreamingOutputGuardrail>>,
     /// 审计持久化 sink(P1-7)。
     pub audit_sink: Option<Arc<dyn crate::audit::AuditSink>>,
+    /// 是否快速失败(遇到第一个拦截即停止)
     pub fail_fast: bool,
 }
 
@@ -118,15 +140,18 @@ impl Default for GuardrailsConfig {
 }
 
 impl GuardrailsConfig {
+    /// 创建默认配置。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 添加一个输入护栏。
     pub fn with_input(mut self, g: Arc<dyn InputGuardrail>) -> Self {
         self.input_guardrails.push(g);
         self
     }
 
+    /// 添加一个输出护栏。
     pub fn with_output(mut self, g: Arc<dyn OutputGuardrail>) -> Self {
         self.output_guardrails.push(g);
         self
@@ -144,6 +169,7 @@ impl GuardrailsConfig {
         self
     }
 
+    /// 设置是否快速失败。
     pub fn fail_fast(mut self, v: bool) -> Self {
         self.fail_fast = v;
         self
@@ -155,6 +181,7 @@ impl GuardrailsConfig {
 /// `Blocked` 携带拦截原因 + 已处理部分 + 面向用户的建议(P1-1/P1-6),
 /// 让上层能给用户"被拦截"而非"系统错误"的反馈。
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum GuardrailError {
     /// 被 Guardrail 拦截
     Blocked {
@@ -167,6 +194,8 @@ pub enum GuardrailError {
     },
     /// Agent 执行错误
     AgentError(String),
+    /// 敏感泄露裁判错误(P2-3):LLM 裁判无法作出判定时返回。
+    Judge(String),
 }
 
 impl GuardrailError {
@@ -188,16 +217,17 @@ impl std::fmt::Display for GuardrailError {
                 partial,
                 suggestion,
             } => {
-                write!(f, "Guardrail 拦截: {}", reason)?;
+                write!(f, "guardrail blocked: {}", reason)?;
                 if let Some(p) = partial {
-                    write!(f, " (已处理部分: {})", p)?;
+                    write!(f, " (partial handled: {})", p)?;
                 }
                 if let Some(s) = suggestion {
-                    write!(f, " 建议: {}", s)?;
+                    write!(f, " suggestion: {}", s)?;
                 }
                 Ok(())
             }
-            GuardrailError::AgentError(msg) => write!(f, "Agent 执行错误: {}", msg),
+            GuardrailError::AgentError(msg) => write!(f, "agent execution error: {}", msg),
+            GuardrailError::Judge(msg) => write!(f, "Sensitive judge error: {}", msg),
         }
     }
 }

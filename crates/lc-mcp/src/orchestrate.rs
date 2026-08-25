@@ -70,6 +70,7 @@ impl ToolStep {
 
 /// 工具编排的错误类别(P2-10)。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OrchestrateError {
     /// `depends_on` 引用了未定义的步骤 id。
     UnknownStep(String),
@@ -92,16 +93,32 @@ pub enum OrchestrateError {
 impl fmt::Display for OrchestrateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OrchestrateError::UnknownStep(id) => write!(f, "工具编排引用了未定义的步骤: {id}"),
-            OrchestrateError::DuplicateId(id) => write!(f, "工具编排步骤 id 重复: {id}"),
-            OrchestrateError::Cycle => write!(f, "工具编排存在循环依赖"),
-            OrchestrateError::Deadlock => write!(f, "工具编排未收敛:存在互相等待的步骤"),
-            OrchestrateError::MissingStep(id) => write!(f, "参数模板引用了未执行的步骤: {id}"),
-            OrchestrateError::MissingField(id, field) => {
-                write!(f, "参数模板字段缺失: 步骤 {id} 无字段 {field}")
+            OrchestrateError::UnknownStep(id) => {
+                write!(f, "orchestration references an undefined step: {id}")
             }
-            OrchestrateError::Tool(msg) => write!(f, "编排内工具调用失败: {msg}"),
-            OrchestrateError::SemaphoreClosed => write!(f, "编排并发闸门已关闭"),
+            OrchestrateError::DuplicateId(id) => {
+                write!(f, "orchestration step id is duplicated: {id}")
+            }
+            OrchestrateError::Cycle => write!(f, "orchestration has a circular dependency"),
+            OrchestrateError::Deadlock => write!(
+                f,
+                "orchestration did not converge: steps waiting on each other"
+            ),
+            OrchestrateError::MissingStep(id) => {
+                write!(f, "parameter template references an unexecuted step: {id}")
+            }
+            OrchestrateError::MissingField(id, field) => {
+                write!(
+                    f,
+                    "parameter template field missing: step {id} has no field {field}"
+                )
+            }
+            OrchestrateError::Tool(msg) => {
+                write!(f, "tool call failed inside orchestration: {msg}")
+            }
+            OrchestrateError::SemaphoreClosed => {
+                write!(f, "orchestration concurrency gate is closed")
+            }
         }
     }
 }
@@ -357,7 +374,10 @@ mod tests {
 
         let results = orch.execute(&ScriptedCaller).await.unwrap();
         assert_eq!(results["a"]["sum"], 3);
-        assert_eq!(results["b"]["sum"], 7, "${{a.sum}} 应代入 a 的结果 3");
+        assert_eq!(
+            results["b"]["sum"], 7,
+            "${{a.sum}} should be substituted with a's result 3"
+        );
     }
 
     /// 并行依赖:x、y 互不依赖并行跑完,z 汇总两者。
@@ -373,7 +393,7 @@ mod tests {
             );
 
         let results = orch.execute(&ScriptedCaller).await.unwrap();
-        assert_eq!(results["z"]["sum"], 10, "x.sum=5 与 y.sum=5 应求和");
+        assert_eq!(results["z"]["sum"], 10, "x.sum=5 and y.sum=5 should sum");
     }
 
     /// 整结果引用:参数就是 `${id}`,替换为前序步骤的完整输出对象。
@@ -384,7 +404,11 @@ mod tests {
             .add_step(ToolStep::new("t", "echo", json!("${s}")).after("s"));
 
         let results = orch.execute(&ScriptedCaller).await.unwrap();
-        assert_eq!(results["t"], json!({ "text": "HI" }), "整结果应被代入");
+        assert_eq!(
+            results["t"],
+            json!({ "text": "HI" }),
+            "whole result should be substituted"
+        );
     }
 
     /// 环检测:a → b → a,执行前报 Cycle。
@@ -461,10 +485,10 @@ mod tests {
             max_observed: AtomicUsize::new(0),
         };
         let results = orch.execute(&caller).await.unwrap();
-        assert_eq!(results.len(), 6, "全部步骤应完成");
+        assert_eq!(results.len(), 6, "all steps should complete");
         assert!(
             caller.max_observed.load(Ordering::SeqCst) <= 2,
-            "同时执行数不得超过并发上限,实际 {}",
+            "concurrent executions must not exceed the concurrency cap, actual {}",
             caller.max_observed.load(Ordering::SeqCst)
         );
     }

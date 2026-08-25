@@ -3,7 +3,6 @@
 
 use super::client::BatchClient;
 use super::types::*;
-use crate::language_models::LLMResult;
 use lc_schema::Message;
 
 #[test]
@@ -244,25 +243,16 @@ fn anthropic_batch_response_deserialize() {
 }
 
 #[test]
-fn batch_result_serialization() {
-    let ok_result = BatchResult {
-        custom_id: "r1".into(),
-        result: Ok(LLMResult {
-            content: "Hello".into(),
-            model: "gpt-4o".into(),
-            token_usage: None,
-            tool_calls: None,
-            thinking_content: None,
-        }),
-    };
-    let json = serde_json::to_string(&ok_result).unwrap();
-    assert!(json.contains("r1"));
-    assert!(json.contains("Hello"));
-
+fn batch_result_typed_error() {
+    // B1: `BatchResult.result` carries a typed `BatchError`, not a String.
     let err_result = BatchResult {
         custom_id: "r2".into(),
-        result: Err("failed".into()),
+        result: Err(BatchError::Api("failed".to_string())),
     };
-    let json = serde_json::to_string(&err_result).unwrap();
-    assert!(json.contains("failed"));
+    assert!(err_result.result.is_err());
+    assert!(err_result
+        .result
+        .unwrap_err()
+        .to_string()
+        .contains("failed"));
 }

@@ -86,11 +86,10 @@ mod tests {
             content: String::new(),
             model: "mock".to_string(),
             token_usage: None,
-            tool_calls: Some(vec![ToolCall::new(
-                "call_1",
-                "generate_plan",
-                r#"{"steps": ["a", "b"]}"#.to_string(),
-            )]),
+            tool_calls: Some(vec![ToolCall::builder("call_1")
+                .name("generate_plan")
+                .arguments(r#"{"steps": ["a", "b"]}"#.to_string())
+                .build()]),
             thinking_content: None,
         };
         let structured = extract_structured(&result);
@@ -106,7 +105,10 @@ mod tests {
             content: "fallback text".to_string(),
             model: "mock".to_string(),
             token_usage: None,
-            tool_calls: Some(vec![ToolCall::new("call_2", "f", "not-json".to_string())]),
+            tool_calls: Some(vec![ToolCall::builder("call_2")
+                .name("f")
+                .arguments("not-json".to_string())
+                .build()]),
             thinking_content: None,
         };
         let structured = extract_structured(&result);

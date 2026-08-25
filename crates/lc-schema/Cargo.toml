@@ -1,6 +1,6 @@
 [package]
 name = "lc-schema"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Schema types for langchainrust — Message, MessageType, ImageContent, AudioContent, FileContent"
@@ -8,7 +8,7 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-shared = { path = "../lc-shared", version = "0.15.0" }
+lc-shared = { path = "../lc-shared", version = "0.16.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

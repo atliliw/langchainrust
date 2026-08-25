@@ -53,6 +53,7 @@ pub struct MCPToolAdapter {
 }
 
 impl MCPToolAdapter {
+    /// 基于原始工具名创建适配器(不进行命名空间化)。
     pub fn new(client: MCPClient, definition: MCPToolDefinition) -> Self {
         let display_name = definition.name.clone();
         Self {
@@ -170,7 +171,7 @@ mod tests {
                 assert_eq!(message, "timeout");
                 assert_eq!(data, Some(json!({"k": 1})));
             }
-            other => panic!("应为 McpError, 实际: {:?}", other),
+            other => panic!("expected McpError, actual: {:?}", other),
         }
     }
 
@@ -219,7 +220,7 @@ mod tests {
         let server = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let sandbox = Arc::new(ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
             field: "path".to_string(),
             prefix: "file:///tmp/".to_string(),
@@ -230,7 +231,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, ToolError::InvalidInput(ref m) if m.contains("最小权限")),
+            matches!(err, ToolError::InvalidInput(ref m) if m.contains("least-privilege")),
             "{}",
             err
         );
@@ -242,7 +243,7 @@ mod tests {
         let server = start_fake_sse_server(PostMode::Quiet).await;
         let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let sandbox = Arc::new(ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
             field: "path".to_string(),
             prefix: "file:///tmp/".to_string(),
@@ -253,7 +254,7 @@ mod tests {
             .await;
         assert!(
             matches!(out.as_deref(), Ok("read_file")),
-            "放行后应到达 Server 并回显工具名, 实际: {:?}",
+            "should reach the server and echo the tool name after allow, actual: {:?}",
             out.as_deref()
         );
     }

@@ -60,6 +60,7 @@ pub struct MaxLengthGuardrail {
 }
 
 impl MaxLengthGuardrail {
+    /// 创建一个最大长度限制的输入护栏。
     pub fn new(max: usize) -> Self {
         Self { max }
     }
@@ -74,7 +75,7 @@ impl InputGuardrail for MaxLengthGuardrail {
     async fn validate(&self, input: &str) -> InputGuardrailResult {
         if input.chars().count() > self.max {
             InputGuardrailResult::Block {
-                reason: format!("输入超过 {} 字符", self.max),
+                reason: format!("input exceeds {} characters", self.max),
             }
         } else {
             InputGuardrailResult::Pass
@@ -88,6 +89,7 @@ pub struct ForbiddenWordsGuardrail {
 }
 
 impl ForbiddenWordsGuardrail {
+    /// 创建一个检查禁用词的输入护栏。
     pub fn new(words: Vec<String>) -> Self {
         Self { words }
     }
@@ -104,7 +106,7 @@ impl InputGuardrail for ForbiddenWordsGuardrail {
         for w in &self.words {
             if lower.contains(&w.to_lowercase()) {
                 return InputGuardrailResult::Block {
-                    reason: format!("输入包含禁用词: {}", w),
+                    reason: format!("input contains forbidden word: {}", w),
                 };
             }
         }
@@ -128,6 +130,7 @@ pub struct SensitiveInfoGuardrail {
 }
 
 impl SensitiveInfoGuardrail {
+    /// 创建敏感信息检测护栏(默认含 api_key / credential 低误报关键词)。
     pub fn new() -> Self {
         Self {
             // password/密码/token/secret 移到高误报提及词(仅 warn),不再默认 Block。
@@ -136,6 +139,7 @@ impl SensitiveInfoGuardrail {
         }
     }
 
+    /// 追加自定义低误报关键词(任何出现即拦截)。
     pub fn with_keywords(mut self, k: Vec<String>) -> Self {
         self.keywords.extend(k);
         self
@@ -187,12 +191,15 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
         // 1) 低误报具体模式 → 直接 Block,无需裁判。
         if OPENAI_KEY_RE.is_match(output) {
             return OutputGuardrailResult::Block {
-                reason: format!("输出匹配敏感模式: {}", OPENAI_KEY_RE.as_str()),
+                reason: format!(
+                    "output matches sensitive pattern: {}",
+                    OPENAI_KEY_RE.as_str()
+                ),
             };
         }
         if EMAIL_RE.is_match(output) {
             return OutputGuardrailResult::Block {
-                reason: format!("输出匹配敏感模式: {}", EMAIL_RE.as_str()),
+                reason: format!("output matches sensitive pattern: {}", EMAIL_RE.as_str()),
             };
         }
         // Credit card: match pattern then validate with Luhn
@@ -200,7 +207,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
             let digits: String = cap[0].chars().filter(|c| c.is_ascii_digit()).collect();
             if Self::luhn_check(&digits) {
                 return OutputGuardrailResult::Block {
-                    reason: "输出包含信用卡号".to_string(),
+                    reason: "output contains a credit card number".to_string(),
                 };
             }
         }
@@ -210,7 +217,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
         for kw in &self.keywords {
             if lower.contains(&kw.to_lowercase()) {
                 return OutputGuardrailResult::Block {
-                    reason: format!("输出包含敏感关键词: {}", kw),
+                    reason: format!("output contains sensitive keyword: {}", kw),
                 };
             }
         }
@@ -223,19 +230,22 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
                 Some(judge) => match judge.judge(output).await {
                     Ok(true) => {
                         return OutputGuardrailResult::Block {
-                            reason: format!("LLM 裁判判定输出疑似泄露敏感信息(关键词: {})", kw),
+                            reason: format!(
+                                "LLM judge determined the output likely leaks sensitive information (keyword: {})",
+                                kw
+                            ),
                         };
                     }
                     Ok(false) => {
                         log::info!(
-                            "SensitiveInfo: 关键词 {:?} 经 LLM 裁判判定为正常提及,放行",
+                            "SensitiveInfo: keywords {:?} judged as normal mention by LLM, passing",
                             kw
                         );
                     }
                     Err(e) => {
                         // 裁判失败不误杀:回落到无裁判的 warn-only 行为(宁可放行并留日志)。
                         log::warn!(
-                            "SensitiveInfo: LLM 裁判调用失败({}),关键词 {:?} 按 warn-only 处理",
+                            "SensitiveInfo: LLM judge call failed ({}), keywords {:?} handled as warn-only",
                             e,
                             kw
                         );
@@ -243,7 +253,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
                 },
                 None => {
                     log::warn!(
-                        "SensitiveInfo: 输出以赋值形式提及敏感关键词 {:?},疑似泄露,建议人工复核",
+                        "SensitiveInfo: output mentions sensitive keywords {:?} in an assignment-like form, possible leak, manual review recommended",
                         kw
                     );
                 }
@@ -260,6 +270,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Arc;
 
+    use crate::guardrail::GuardrailError;
     use crate::judge::SensitiveJudge;
 
     /// 固定返回泄露/不泄露的 mock 裁判(P2-3)。
@@ -271,7 +282,7 @@ mod tests {
         fn name(&self) -> &str {
             "mock"
         }
-        async fn judge(&self, _text: &str) -> Result<bool, String> {
+        async fn judge(&self, _text: &str) -> Result<bool, GuardrailError> {
             Ok(self.leak)
         }
     }

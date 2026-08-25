@@ -27,8 +27,11 @@
 //! let spans = backend.spans();
 //! ```
 
+/// Backend implementations for persisting/processing trace spans.
 pub mod backend;
+/// Span types and the span tree.
 pub mod span;
+/// The tracer, span guards, and span-stack helpers.
 pub mod tracer;
 
 #[cfg(test)]

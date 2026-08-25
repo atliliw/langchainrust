@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use super::OllamaConfig;
 use crate::openai::sse::SSEParser;
+use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
 use lc_core::runnables::Runnable;
@@ -69,7 +70,7 @@ impl OllamaChat {
     }
 
     /// Creates an OllamaChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         let config = OllamaConfig::from_env_result()?;
         Ok(Self::with_config(config))
     }
@@ -307,7 +308,10 @@ impl OllamaChat {
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            log::error!("解析流式 SSE chunk 失败(已跳过该 token): {}", e);
+                            log::error!(
+                                "Failed to parse streaming SSE chunk (skipping this token): {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -375,7 +379,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OllamaChat {
     fn get_num_tokens(&self, text: &str) -> usize {
         lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
             // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
-            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            log::warn!("Token counting failed, falling back to byte-length estimation: {e}");
             text.len()
         })
     }
@@ -549,10 +553,15 @@ impl BaseChatModel for OllamaChat {
     }
 }
 
+/// Errors that can occur when interacting with the Ollama chat API.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OllamaError {
+    /// HTTP request error.
     Http(String),
+    /// API returned an error.
     Api(String),
+    /// Response parsing error.
     Parse(String),
 }
 
@@ -609,6 +618,7 @@ struct OllamaUsage {
     total_tokens: usize,
 }
 
+/// Structured output wrapper for Ollama chat models, parsing chat responses into a typed value.
 pub struct OllamaStructuredOutput<T: DeserializeOwned + JsonSchema> {
     config: OllamaConfig,
     client: reqwest::Client,
@@ -616,6 +626,7 @@ pub struct OllamaStructuredOutput<T: DeserializeOwned + JsonSchema> {
 }
 
 impl<T: DeserializeOwned + JsonSchema> OllamaStructuredOutput<T> {
+    /// Invokes the chat API and parses the response into the structured type `T`.
     pub async fn invoke(&self, messages: Vec<Message>) -> Result<T, OllamaError> {
         let chat = OllamaChat {
             config: self.config.clone(),

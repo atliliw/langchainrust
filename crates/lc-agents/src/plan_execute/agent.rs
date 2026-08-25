@@ -12,6 +12,7 @@ use super::planner::Planner;
 
 /// Plan-Execute Agent 错误类型
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PlanExecuteError {
     /// 规划失败
     #[error("Planning failed: {0}")]
@@ -21,7 +22,12 @@ pub enum PlanExecuteError {
     StepExecutionError(String),
     /// 达到最大重规划次数
     #[error("Max replans reached: step [{step}] failed: {reason}")]
-    MaxReplansReached { step: String, reason: String },
+    MaxReplansReached {
+        /// 失败的步骤
+        step: String,
+        /// 失败原因
+        reason: String,
+    },
     /// 计划未完成
     #[error("Plan incomplete after all replans")]
     PlanIncomplete,
@@ -79,6 +85,7 @@ impl PlanExecuteAgent {
         }
     }
 
+    /// 设置最大重规划次数。
     pub fn with_max_replans(mut self, n: usize) -> Self {
         self.max_replans = n;
         self
@@ -103,7 +110,7 @@ impl PlanExecuteAgent {
         let mut plan = planner
             .plan(objective)
             .await
-            .map_err(PlanExecuteError::PlanningError)?;
+            .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
 
         for replan_count in 0..=self.max_replans {
             let pending_ids: Vec<usize> = plan
@@ -136,7 +143,7 @@ impl PlanExecuteAgent {
                             plan = planner
                                 .replan(objective, &step_desc, &error_msg)
                                 .await
-                                .map_err(PlanExecuteError::PlanningError)?;
+                                .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
                             failed = true;
                             break;
                         } else {

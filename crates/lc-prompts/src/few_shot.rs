@@ -3,6 +3,7 @@
 //!
 //! 提供在 prompt 中嵌入示例的能力，帮助 LLM 理解期望的输出格式。
 
+use crate::error::PromptsError;
 use crate::PromptTemplate;
 use std::collections::HashMap;
 
@@ -45,6 +46,7 @@ pub struct LengthBasedExampleSelector {
 }
 
 impl LengthBasedExampleSelector {
+    /// 创建基于长度示例选择器
     pub fn new(examples: Vec<HashMap<String, String>>) -> Self {
         Self {
             examples,
@@ -52,6 +54,7 @@ impl LengthBasedExampleSelector {
         }
     }
 
+    /// 设置最大文本长度（字符数）
     pub fn with_max_length(mut self, max: usize) -> Self {
         self.max_length = max;
         self
@@ -172,6 +175,7 @@ pub struct FewShotPromptTemplate {
 
 impl FewShotPromptTemplate {
     #[allow(clippy::too_many_arguments)]
+    /// 创建 FewShotPromptTemplate
     pub fn new(
         examples: Vec<HashMap<String, String>>,
         example_prompt: PromptTemplate,
@@ -215,11 +219,11 @@ impl FewShotPromptTemplate {
     }
 
     /// 格式化完整的 prompt
-    pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<String, String> {
+    pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<String, PromptsError> {
         // 验证所有输入变量都有值
         for var in &self.input_variables {
             if !variables.contains_key(var.as_str()) {
-                return Err(format!("缺少输入变量: {}", var));
+                return Err(PromptsError::MissingVariable(var.clone()));
             }
         }
 
@@ -241,7 +245,7 @@ impl FewShotPromptTemplate {
             };
 
         // 格式化每个示例
-        let example_texts: Result<Vec<String>, String> = selected_examples
+        let example_texts: Result<Vec<String>, PromptsError> = selected_examples
             .iter()
             .map(|example| {
                 let example_vars: HashMap<&str, &str> = example
@@ -346,7 +350,7 @@ mod tests {
 
         let result = few_shot.format(&vars);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("extra"));
+        assert!(result.unwrap_err().to_string().contains("extra"));
     }
 
     #[test]
@@ -365,7 +369,7 @@ mod tests {
 
         let result = few_shot.format(&vars);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("answer"));
+        assert!(result.unwrap_err().to_string().contains("answer"));
     }
 
     #[test]

@@ -60,14 +60,14 @@ impl ReActOutputParser {
 
         // 无法解析
         Err(AgentError::OutputParsingError(format!(
-            "无法解析输出。请使用以下格式:\n\
-             Thought: 你的思考\n\
-             Action: 工具名称\n\
-             Action Input: 工具输入\n\n\
-             或\n\n\
-             Thought: 你的思考\n\
-             Final Answer: 最终答案\n\n\
-             实际输出: {}",
+            "failed to parse output. Use one of the following formats:\n\
+             Thought: <your reasoning>\n\
+             Action: <tool name>\n\
+             Action Input: <tool input>\n\n\
+             or\n\n\
+             Thought: <your reasoning>\n\
+             Final Answer: <final answer>\n\n\
+             Actual output: {}",
             text
         )))
     }
@@ -78,7 +78,7 @@ impl ReActOutputParser {
 
         if parts.len() < 2 {
             return Err(AgentError::OutputParsingError(
-                "Final Answer 后缺少内容".to_string(),
+                "missing content after Final Answer".to_string(),
             ));
         }
 
@@ -96,12 +96,14 @@ impl ReActOutputParser {
             let tool = caps
                 .get(1)
                 .map(|m| m.as_str().trim().to_string())
-                .ok_or_else(|| AgentError::OutputParsingError("缺少 Action".to_string()))?;
+                .ok_or_else(|| AgentError::OutputParsingError("missing Action".to_string()))?;
 
             let tool_input_str = caps
                 .get(2)
                 .map(|m| m.as_str().trim().to_string())
-                .ok_or_else(|| AgentError::OutputParsingError("缺少 Action Input".to_string()))?;
+                .ok_or_else(|| {
+                    AgentError::OutputParsingError("missing Action Input".to_string())
+                })?;
 
             // 解析工具输入
             let tool_input = self.parse_tool_input(&tool_input_str);

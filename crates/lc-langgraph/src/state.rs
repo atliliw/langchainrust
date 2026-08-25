@@ -69,8 +69,8 @@ impl<S: StateSchema> StateUpdate<S> {
     }
 
     /// Add metadata entry
-    pub fn add_metadata(&mut self, key: String, value: serde_json::Value) {
-        self.metadata.insert(key, value);
+    pub fn add_metadata(&mut self, key: impl Into<String>, value: serde_json::Value) {
+        self.metadata.insert(key.into(), value);
     }
 }
 
@@ -97,7 +97,9 @@ impl<S: StateSchema> Reducer<S> for ReplaceReducer {
 /// This reducer appends new items to vector fields in the state.
 /// Useful for message history, steps history, etc.
 pub struct AppendReducer<S: StateSchema, T: Clone + Send + Sync> {
+    /// Function that reads the vector field from a state.
     pub field_accessor: fn(&S) -> &[T],
+    /// Function that writes the merged vector back into a state.
     pub field_mutator: fn(&mut S, Vec<T>),
 }
 
@@ -162,7 +164,8 @@ impl StateSchema for AgentState {}
 
 impl AgentState {
     /// Create new agent state with input
-    pub fn new(input: String) -> Self {
+    pub fn new(input: impl Into<String>) -> Self {
+        let input = input.into();
         let msg = MessageEntry::human(input.clone());
         Self {
             input,
@@ -183,44 +186,50 @@ impl AgentState {
     }
 
     /// Set output
-    pub fn set_output(&mut self, output: String) {
-        self.output = Some(output);
+    pub fn set_output(&mut self, output: impl Into<String>) {
+        self.output = Some(output.into());
     }
 }
 
 /// Message entry for agent state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEntry {
+    /// Role of the message sender.
     pub role: MessageRole,
+    /// Text content of the message.
     pub content: String,
 }
 
 impl MessageEntry {
-    pub fn human(content: String) -> Self {
+    /// Create a human message entry.
+    pub fn human(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Human,
-            content,
+            content: content.into(),
         }
     }
 
-    pub fn ai(content: String) -> Self {
+    /// Create an AI message entry.
+    pub fn ai(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::AI,
-            content,
+            content: content.into(),
         }
     }
 
-    pub fn system(content: String) -> Self {
+    /// Create a system message entry.
+    pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::System,
-            content,
+            content: content.into(),
         }
     }
 
-    pub fn tool(content: String) -> Self {
+    /// Create a tool message entry.
+    pub fn tool(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Tool,
-            content,
+            content: content.into(),
         }
     }
 }
@@ -228,24 +237,31 @@ impl MessageEntry {
 /// Message role types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageRole {
+    /// System message.
     System,
+    /// Human message.
     Human,
+    /// AI assistant message.
     AI,
+    /// Tool result message.
     Tool,
 }
 
 /// Step entry for intermediate execution steps
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepEntry {
+    /// Action that was taken.
     pub action: String,
+    /// Observation or result of the action.
     pub observation: String,
 }
 
 impl StepEntry {
-    pub fn new(action: String, observation: String) -> Self {
+    /// Create a new step entry.
+    pub fn new(action: impl Into<String>, observation: impl Into<String>) -> Self {
         Self {
-            action,
-            observation,
+            action: action.into(),
+            observation: observation.into(),
         }
     }
 }

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 /// Memory error type
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MemoryError {
     /// Load error
     #[error("Failed to load memory: {0}")]

@@ -17,12 +17,17 @@ pub enum BuiltinTool {
     /// Web search via OpenAI.
     WebSearch,
     /// File search over vector stores.
-    FileSearch { vector_store_ids: Vec<String> },
+    FileSearch {
+        /// IDs of the vector stores to search.
+        vector_store_ids: Vec<String>,
+    },
     /// Code interpreter sandbox.
     CodeInterpreter,
     /// Computer use (GUI automation).
     ComputerUse {
+        /// Display width for GUI automation.
         display_width: Option<u32>,
+        /// Display height for GUI automation.
         display_height: Option<u32>,
     },
 }
@@ -156,6 +161,7 @@ impl ResponsesConfig {
 
 /// Errors produced by the Responses API model.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResponsesError {
     /// HTTP transport error.
     Http(String),

@@ -5,14 +5,15 @@ use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Default Map processing prompt template.
 pub(crate) const DEFAULT_MAP_PROMPT: &str = "Answer the user's question based on the following document content. Provide a concise answer based on the document content.
@@ -39,8 +40,8 @@ Final consolidated answer:";
 /// Processes documents in two steps:
 /// 1. Map: Calls LLM independently for each document to generate an answer
 /// 2. Reduce: Merges all independent answers into a final answer
-pub struct MapReduceDocumentsChain<M: BaseChatModel> {
-    llm: M,
+pub struct MapReduceDocumentsChain {
+    llm: BoxedChatModel,
     map_prompt_template: String,
     reduce_prompt_template: String,
     document_variable_name: String,
@@ -52,10 +53,15 @@ pub struct MapReduceDocumentsChain<M: BaseChatModel> {
     map_concurrency: Option<usize>,
 }
 
-impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
-    pub fn new(llm: M) -> Self {
+impl MapReduceDocumentsChain {
+    /// Create a new [`MapReduceDocumentsChain`] with the given LLM.
+    pub fn new<L>(llm: L) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             map_prompt_template: DEFAULT_MAP_PROMPT.to_string(),
             reduce_prompt_template: DEFAULT_REDUCE_PROMPT.to_string(),
             document_variable_name: "context".to_string(),
@@ -67,36 +73,43 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         }
     }
 
+    /// Set the map-phase prompt template.
     pub fn with_map_prompt(mut self, template: impl Into<String>) -> Self {
         self.map_prompt_template = template.into();
         self
     }
 
+    /// Set the reduce-phase prompt template.
     pub fn with_reduce_prompt(mut self, template: impl Into<String>) -> Self {
         self.reduce_prompt_template = template.into();
         self
     }
 
+    /// Set the document variable name used in the map prompt.
     pub fn with_document_variable(mut self, name: impl Into<String>) -> Self {
         self.document_variable_name = name.into();
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
@@ -112,12 +125,14 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         self
     }
 
+    /// Build the map-phase prompt by substituting the document content and input.
     pub fn build_map_prompt(&self, context: &str, input: &str) -> String {
         self.map_prompt_template
             .replace(&format!("{{{}}}", self.document_variable_name), context)
             .replace("{input}", input)
     }
 
+    /// Build the reduce-phase prompt from the per-document summaries and input.
     pub fn build_reduce_prompt(&self, summaries: &[String], input: &str) -> String {
         let summaries_text = summaries
             .iter()
@@ -137,10 +152,7 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         doc: &Document,
         input: &str,
         index: usize,
-    ) -> Result<String, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<String, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
 
         if self.verbose {
@@ -169,10 +181,7 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         &self,
         documents: &[Document],
         input: &str,
-    ) -> Result<Vec<String>, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<Vec<String>, ChainError> {
         // Materialize the per-document futures first: a `.map()` closure
         // returning an async-fn future cannot express the higher-ranked
         // `for<'a> FnMut((usize, &'a Document))` that `buffer_unordered`
@@ -198,10 +207,7 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
         &self,
         documents: Vec<Document>,
         input: &str,
-    ) -> Result<String, ChainError>
-    where
-        <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-    {
+    ) -> Result<String, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
                 "Document list is empty".to_string(),
@@ -249,10 +255,7 @@ impl<M: BaseChatModel> MapReduceDocumentsChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for MapReduceDocumentsChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for MapReduceDocumentsChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key, "documents"]
     }
@@ -345,20 +348,12 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
+    use lc_core::language_models::LLMResult;
     use lc_core::runnables::RunnableConfig;
     use lc_core::{BaseLanguageModel, Runnable};
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
 
     /// Tracking chat model that counts `invoke` calls and records the maximum
     /// number of in-flight invokes, so the map phase's parallelism and the
@@ -382,7 +377,7 @@ mod tests {
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for TrackingLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             input: Vec<Message>,

@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-rag/src/lib.rs
 //! RAG (Retrieval-Augmented Generation) module for LangChainRust.
 //!

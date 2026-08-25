@@ -71,6 +71,7 @@ pub struct ConversationSummaryBufferMemory<M: BaseChatModel> {
 }
 
 impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
+    /// 使用给定的 LLM 与 token 预算创建新的摘要缓冲记忆。
     pub fn new(llm: M, max_token_limit: usize) -> Self {
         Self {
             llm,
@@ -87,26 +88,31 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         }
     }
 
+    /// 设置输入 key,`save_context` 用它从 inputs 中取出用户输入。
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// 设置输出 key,`save_context` 用它从 outputs 中取出 AI 输出。
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// 设置记忆 key,加载的历史将暴露在该 key 下。
     pub fn with_memory_key(mut self, key: impl Into<String>) -> Self {
         self.memory_key = key.into();
         self
     }
 
+    /// 设置用于生成摘要的提示词模板。
     pub fn with_summary_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.summary_prompt = prompt.into();
         self
     }
 
+    /// 设置加载的历史是否以消息列表(而非文本)形式返回。
     pub fn with_return_messages(mut self, return_messages: bool) -> Self {
         self.return_messages = return_messages;
         self
@@ -122,8 +128,8 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
     }
 
     /// P1-3: 从持久化存储回灌摘要状态,保证续写会话摘要链连续。
-    pub fn set_summary(&mut self, summary: String) {
-        self.buffer = summary;
+    pub fn set_summary(&mut self, summary: impl Into<String>) {
+        self.buffer = summary.into();
     }
 
     /// P1-3: 设置 token 预算(持久化 config 的单一来源)。
@@ -131,18 +137,22 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         self.max_token_limit = max_token_limit;
     }
 
+    /// 返回底层聊天消息历史的不可变引用。
     pub fn chat_memory(&self) -> &ChatMessageHistory {
         &self.chat_memory
     }
 
+    /// 返回底层聊天消息历史的可变引用。
     pub fn chat_memory_mut(&mut self) -> &mut ChatMessageHistory {
         &mut self.chat_memory
     }
 
+    /// 返回当前配置的 token 预算。
     pub fn max_token_limit(&self) -> usize {
         self.max_token_limit
     }
 
+    /// 返回当前的摘要缓冲内容。
     pub async fn buffer(&self) -> String {
         self.buffer.clone()
     }
@@ -347,7 +357,7 @@ where
                         Err(e) => {
                             self.last_summary_error = Some(e.to_string());
                             log::warn!(
-                                "ConversationSummaryBufferMemory 摘要失败,保留旧摘要与原始消息待下轮重试: {}",
+                                "ConversationSummaryBufferMemory summarization failed, keeping old summary and original messages for next retry: {}",
                                 e
                             );
                         }

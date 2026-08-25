@@ -42,7 +42,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "文档数量和嵌入向量数量不匹配".to_string(),
+                "document count and embedding count mismatch".to_string(),
             ));
         }
 

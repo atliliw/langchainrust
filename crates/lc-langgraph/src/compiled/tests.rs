@@ -136,11 +136,13 @@ async fn test_resume_preserves_recursion_budget() {
     assert!(matches!(err, GraphError::ExecutionInterrupted(ref node) if node == "n3"));
 
     // 中断时已执行 2 步 → 最近 checkpoint 记录的递归预算应为 2。
-    let execution = compiled
-        .create_resume_execution("n3")
-        .await
-        .expect("中断后应能从最近 checkpoint 构造续跑上下文");
-    assert_eq!(execution.recursion_count, 2, "M6: 续跑必须沿用已消耗的递归预算");
+    let execution = compiled.create_resume_execution("n3").await.expect(
+        "should be able to build a resume execution from the latest checkpoint after interruption",
+    );
+    assert_eq!(
+        execution.recursion_count, 2,
+        "M6: resume must carry over the already-consumed recursion budget"
+    );
 
     // limit=3 且已消耗 2 → 续跑执行 n3 后即触顶,报 RecursionLimitReached。
     // 若预算被错误清零,续跑会跑完 n3、n4 并"成功"——正是 M6 要堵住的洞。
@@ -159,8 +161,11 @@ async fn test_resume_preserves_recursion_budget() {
     let execution = compiled_ok
         .create_resume_execution("n3")
         .await
-        .expect("构造续跑上下文");
+        .expect("build resume execution context");
     assert_eq!(execution.recursion_count, 2);
     let result = compiled_ok.resume(execution).await.unwrap();
-    assert_eq!(result.recursion_count, 4, "续跑应完整执行 n3、n4");
+    assert_eq!(
+        result.recursion_count, 4,
+        "resume should fully execute n3, n4"
+    );
 }

@@ -15,10 +15,12 @@ pub struct StdOutHandler {
 }
 
 impl StdOutHandler {
+    /// Creates a new stdout handler with verbose output enabled.
     pub fn new() -> Self {
         Self { verbose: true }
     }
 
+    /// Sets whether verbose output is enabled.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self

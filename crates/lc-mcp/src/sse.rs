@@ -218,10 +218,7 @@ mod tests {
     async fn tcp_pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let (client, server) = tokio::join!(
-            TcpStream::connect(addr),
-            listener.accept(),
-        );
+        let (client, server) = tokio::join!(TcpStream::connect(addr), listener.accept(),);
         (client.unwrap(), server.unwrap().0)
     }
 
@@ -245,8 +242,12 @@ mod tests {
         client.set_nodelay(true).unwrap();
 
         let req = b"POST /message HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
-        let (write_res, read_res) = tokio::join!(client.write_all(req), read_http_request(&mut server));
+        let (write_res, read_res) =
+            tokio::join!(client.write_all(req), read_http_request(&mut server));
         write_res.unwrap();
-        assert_eq!(read_res, ("POST /message HTTP/1.1".to_string(), "{}".to_string()));
+        assert_eq!(
+            read_res,
+            ("POST /message HTTP/1.1".to_string(), "{}".to_string())
+        );
     }
 }

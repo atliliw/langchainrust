@@ -107,9 +107,10 @@ impl OpenAIEmbeddings {
     /// - `OPENAI_API_KEY`: API key (required)
     /// - `OPENAI_BASE_URL`: API endpoint (optional)
     /// - `OPENAI_EMBED_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| "OPENAI_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            EmbeddingError::Config("OPENAI_API_KEY environment variable not set".to_string())
+        })?;
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let model = std::env::var("OPENAI_EMBED_MODEL")
@@ -120,7 +121,6 @@ impl OpenAIEmbeddings {
             model,
             batch_size: 2048,
         })
-        .map_err(|e| e.to_string())
     }
 }
 
@@ -344,7 +344,7 @@ mod tests_env {
         env::remove_var("OPENAI_API_KEY");
         let result = OpenAIEmbeddings::from_env_result();
         match result {
-            Err(msg) => assert!(msg.contains("OPENAI_API_KEY")),
+            Err(msg) => assert!(msg.to_string().contains("OPENAI_API_KEY")),
             Ok(_) => panic!("expected error when OPENAI_API_KEY is missing"),
         }
         restore("OPENAI_API_KEY", old);
@@ -408,7 +408,7 @@ mod tests {
         let results = embeddings
             .embed_documents(&texts)
             .await
-            .expect("正常批量应成功");
+            .expect("batch embedding should succeed");
         assert_eq!(results.len(), 5);
         for (i, text) in texts.iter().enumerate() {
             // stub 返回 [sum, 1.0];P2-8 归一化后与逐条归一化的期望值一致,
@@ -416,7 +416,7 @@ mod tests {
             let raw = text.bytes().map(|b| b as f32).sum::<f32>();
             let mut expected = vec![raw, 1.0];
             crate::l2_normalize(&mut expected);
-            assert_eq!(results[i], expected, "文本 #{} 错位", i);
+            assert_eq!(results[i], expected, "text #{} out of alignment", i);
         }
     }
 
@@ -435,7 +435,7 @@ mod tests {
         let result = embeddings.embed_documents(&["a", "b"]).await;
         assert!(
             matches!(result, Err(EmbeddingError::EmptyVectorInBatch)),
-            "少返回应报 EmptyVectorInBatch，实际: {:?}",
+            "truncated response should report EmptyVectorInBatch, got: {:?}",
             result
         );
     }
@@ -455,7 +455,7 @@ mod tests {
         let result = embeddings.embed_documents(&["a", "b"]).await;
         assert!(
             matches!(result, Err(EmbeddingError::BatchMismatch { .. })),
-            "index 超界应报 BatchMismatch，实际: {:?}",
+            "out-of-range index should report BatchMismatch, got: {:?}",
             result
         );
     }
@@ -478,12 +478,12 @@ mod tests {
         let v = embeddings
             .embed_query("hello")
             .await
-            .expect("429 两次后应重试成功");
+            .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
         // P2-8: 返回向量应已归一化。
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
     /// P2-5: `embed_documents` 的每个 chunk 同样走重试——429 后成功。
@@ -504,12 +504,12 @@ mod tests {
         let results = embeddings
             .embed_documents(&["a", "b"])
             .await
-            .expect("429 后应重试成功");
+            .expect("should retry successfully after 429");
         assert_eq!(results.len(), 2);
         assert_eq!(
             requests.load(Ordering::SeqCst),
             3,
-            "单 chunk：1 次初始 + 2 次重试"
+            "single chunk: 1 initial + 2 retries"
         );
     }
 
@@ -618,16 +618,16 @@ mod tests {
         let results = embeddings
             .embed_documents(&["a", "b", "c", "d", "e"])
             .await
-            .expect("并发批量应成功");
+            .expect("concurrent batch should succeed");
         assert_eq!(results.len(), 5);
         let peak = max_in_flight.load(Ordering::SeqCst);
         assert!(
             peak >= 2,
-            "多 chunk 应并发执行（最大在途 = {peak}），而非串行"
+            "multiple chunks should run concurrently (max in-flight = {peak}), not serially"
         );
         assert!(
             peak <= super::MAX_CONCURRENT_CHUNKS,
-            "并发度不能超过 MAX_CONCURRENT_CHUNKS（实际 {peak}）"
+            "concurrency must not exceed MAX_CONCURRENT_CHUNKS (actual {peak})"
         );
     }
 

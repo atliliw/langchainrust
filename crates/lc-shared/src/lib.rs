@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-shared/src/lib.rs
 //! Shared types for the langchainrust workspace.
 //!
@@ -13,16 +14,19 @@
 //! - **Splitter types** (`TextSplitter`, `RecursiveCharacterSplitter`):
 //!   needed by both `lc-vector-stores` and `lc-rag`.
 
+/// Document types: `Document`, `VectorDocument`, `SearchResult`, `ChunkDocument`.
 pub mod document {
     pub use crate::document_types::{ChunkDocument, Document, SearchResult, VectorDocument};
 }
 
+/// Splitter types: `TextSplitter`, `RecursiveCharacterSplitter`.
 pub mod splitter {
     pub use crate::splitter_types::{RecursiveCharacterSplitter, TextSplitter};
 }
 
+/// Tool types: `ToolCall`, `FunctionCall`, `ToolCallResult`.
 pub mod tools {
-    pub use crate::tool_types::{FunctionCall, ToolCall, ToolCallResult};
+    pub use crate::tool_types::{FunctionCall, ToolCall, ToolCallBuilder, ToolCallResult};
 }
 
 // Tolerant JSON repair — sinks the LLM-JSON repair pipeline from lc-core so
@@ -34,7 +38,7 @@ pub mod json_repair;
 pub use document_types::{ChunkDocument, Document, SearchResult, VectorDocument};
 pub use json_repair::{parse_tolerant_json, repair_json, JsonRepairError};
 pub use splitter_types::{RecursiveCharacterSplitter, TextSplitter};
-pub use tool_types::{FunctionCall, ToolCall, ToolCallResult};
+pub use tool_types::{FunctionCall, ToolCall, ToolCallBuilder, ToolCallResult};
 
 mod document_types;
 mod splitter_types;

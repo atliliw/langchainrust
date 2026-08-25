@@ -208,49 +208,61 @@ impl ResponsesModel {
                     }
                 }
                 ResponsesOutputItem::WebSearchCall(call) => {
-                    tool_calls.push(ToolCall::new(
-                        &call.id,
-                        "web_search",
-                        json!({
-                            "query": call.query,
-                            "status": &call.status,
-                        })
-                        .to_string(),
-                    ));
+                    tool_calls.push(
+                        ToolCall::builder(&call.id)
+                            .name("web_search")
+                            .arguments(
+                                json!({
+                                    "query": call.query,
+                                    "status": &call.status,
+                                })
+                                .to_string(),
+                            )
+                            .build(),
+                    );
                 }
                 ResponsesOutputItem::FileSearchCall(call) => {
-                    tool_calls.push(ToolCall::new(
-                        &call.id,
-                        "file_search",
-                        json!({
-                            "query": call.query,
-                            "status": &call.status,
-                        })
-                        .to_string(),
-                    ));
+                    tool_calls.push(
+                        ToolCall::builder(&call.id)
+                            .name("file_search")
+                            .arguments(
+                                json!({
+                                    "query": call.query,
+                                    "status": &call.status,
+                                })
+                                .to_string(),
+                            )
+                            .build(),
+                    );
                 }
                 ResponsesOutputItem::CodeInterpreterCall(call) => {
-                    tool_calls.push(ToolCall::new(
-                        &call.id,
-                        "code_interpreter",
-                        json!({
-                            "code": call.code,
-                            "results": call.results,
-                            "status": call.status,
-                        })
-                        .to_string(),
-                    ));
+                    tool_calls.push(
+                        ToolCall::builder(&call.id)
+                            .name("code_interpreter")
+                            .arguments(
+                                json!({
+                                    "code": call.code,
+                                    "results": call.results,
+                                    "status": call.status,
+                                })
+                                .to_string(),
+                            )
+                            .build(),
+                    );
                 }
                 ResponsesOutputItem::ComputerCall(call) => {
-                    tool_calls.push(ToolCall::new(
-                        &call.id,
-                        "computer_use",
-                        json!({
-                            "action": call.action,
-                            "status": call.status,
-                        })
-                        .to_string(),
-                    ));
+                    tool_calls.push(
+                        ToolCall::builder(&call.id)
+                            .name("computer_use")
+                            .arguments(
+                                json!({
+                                    "action": call.action,
+                                    "status": call.status,
+                                })
+                                .to_string(),
+                            )
+                            .build(),
+                    );
                 }
             }
         }
@@ -431,7 +443,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for ResponsesModel {
     fn get_num_tokens(&self, text: &str) -> usize {
         lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
             // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
-            log::warn!("token 计数失败,回退为按字节数估算: {e}");
+            log::warn!("Token counting failed, falling back to byte-length estimation: {e}");
             text.len()
         })
     }

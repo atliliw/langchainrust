@@ -1,6 +1,7 @@
 // crates/lc-prompts/src/chat_prompt_template.rs
 //! 聊天消息模板
 
+use crate::error::PromptsError;
 use crate::template_parser::{
     format_template, parse_template, template_variables, TemplateSegment,
 };
@@ -53,13 +54,14 @@ impl ChatPromptTemplate {
     ///
     /// # 错误
     /// 如果任何消息中有变量但 `variables` 中没有提供对应的值，返回错误
-    pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, String> {
+    pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, PromptsError> {
         self.messages
             .iter()
             .zip(&self.segments)
             .map(|(msg, segments)| {
-                let content = format_template(&msg.content, segments, variables)
-                    .map_err(|e| format!("{e} in message {msg:?}"))?;
+                let content = format_template(&msg.content, segments, variables).map_err(|e| {
+                    PromptsError::MissingVariable(format!("{e} in message {msg:?}"))
+                })?;
                 let mut formatted = msg.clone();
                 formatted.content = content;
                 Ok(formatted)
@@ -116,7 +118,8 @@ impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        self.format(&vars).map_err(LcelError::Chain)
+        self.format(&vars)
+            .map_err(|e| LcelError::Chain(e.to_string()))
     }
 }
 
@@ -198,7 +201,7 @@ mod tests {
 
         let result = template.format(&vars);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("day"));
+        assert!(result.unwrap_err().to_string().contains("day"));
     }
 
     #[test]

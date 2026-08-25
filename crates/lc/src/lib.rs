@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // crates/lc/src/lib.rs
 //! LangChain Rust - A LangChain-compatible framework for building LLM applications.
 //!
@@ -120,6 +121,7 @@ pub use core::{
     RunnableSequence,
     Tool,
     ToolCall,
+    ToolCallBuilder,
     ToolCallResult,
     ToolDefinition,
     ToolError,

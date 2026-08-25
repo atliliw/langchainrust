@@ -16,8 +16,11 @@ use super::{EvalError, PairwiseEvaluator, Score};
 /// 成对比较结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
+    /// A 回答更优
     AWins,
+    /// B 回答更优
     BWins,
+    /// 平局
     Tie,
 }
 
@@ -44,6 +47,7 @@ const DEFAULT_PAIRWISE_RUBRIC: &str = "\
 清晰性:表达是否清晰、简洁。";
 
 impl<M: BaseChatModel> PairwiseJudge<M> {
+    /// 创建使用默认评分标准的成对比较评测器。
     pub fn new(judge: M) -> Self {
         Self {
             judge,
@@ -51,6 +55,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
         }
     }
 
+    /// 设置自定义评分标准(builder 风格)。
     pub fn with_rubric(mut self, rubric: impl Into<String>) -> Self {
         self.rubric = rubric.into();
         self
@@ -88,7 +93,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
         let args: PickArgs = structured_call(&self.judge, pick_tool(), messages, |raw| {
             let pick = parse_pick(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
-                    "无法从裁判回复解析胜负: {}",
+                    "failed to parse winner from judge reply: {}",
                     truncate(raw, 200)
                 ))
             })?;
@@ -166,7 +171,7 @@ fn str_to_pick(verdict: &str) -> Result<Pick, EvalError> {
         "b" => Ok(Pick::Second),
         "tie" => Ok(Pick::Tie),
         other => Err(EvalError::ParseError(format!(
-            "裁判返回了非法 verdict: {}",
+            "judge returned invalid verdict: {}",
             other
         ))),
     }

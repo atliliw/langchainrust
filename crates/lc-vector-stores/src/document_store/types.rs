@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use lc_shared::document::Document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 
 // Re-export ChunkDocument from lc-shared for backward compatibility
 // (used by sibling modules via `super::types::ChunkDocument`)
@@ -120,22 +119,6 @@ pub trait ChunkedDocumentStoreTrait: Send + Sync {
 
     /// 清空所有数据
     async fn clear(&self) -> Result<(), VectorStoreError>;
-
-    /// 持久化存储（可选实现）
-    async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        Err(VectorStoreError::StorageError(
-            "save not implemented for this store".to_string(),
-        ))
-    }
-
-    async fn load(_path: impl AsRef<Path> + Send) -> Result<Self, VectorStoreError>
-    where
-        Self: Sized,
-    {
-        Err(VectorStoreError::StorageError(
-            "load not implemented for this store".to_string(),
-        ))
-    }
 
     // ========================================================================
     // Blocking 方法（同步版本，用于 BM25 等同步检索场景）

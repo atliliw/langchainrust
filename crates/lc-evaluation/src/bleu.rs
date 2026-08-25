@@ -24,6 +24,7 @@ impl Default for Bleu {
 }
 
 impl Bleu {
+    /// 创建默认 BLEU-4 评测器。
     pub fn new() -> Self {
         Self {
             max_n: 4,
@@ -63,7 +64,7 @@ impl Bleu {
         assert_eq!(
             predictions.len(),
             references.len(),
-            "predictions 与 references 样例数不一致"
+            "predictions and references sample counts do not match"
         );
         if predictions.is_empty() {
             return 0.0;

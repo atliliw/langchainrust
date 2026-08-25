@@ -234,6 +234,7 @@ fn extract_numeric_score(text: &str) -> Option<f64> {
 
 /// Grading error types.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GraderError {
     /// LLM invocation failed.
     #[error("LLM error during grading: {0}")]

@@ -81,46 +81,56 @@ impl<S: StateSchema> CompiledGraph<S> {
         self.conditional_routers.insert(name, router);
     }
 
+    /// Attach a checkpointer to this graph for state persistence.
     pub fn with_checkpointer<C: Checkpointer<S> + 'static>(mut self, checkpointer: C) -> Self {
         self.checkpointer = Some(Arc::new(Mutex::new(checkpointer)));
         self
     }
 
+    /// Set the maximum recursion depth before execution aborts.
     pub fn with_recursion_limit(mut self, limit: usize) -> Self {
         self.recursion_limit = limit;
         self
     }
 
+    /// Set the node names before which execution should be interrupted.
     pub fn with_interrupt_before(mut self, nodes: Vec<String>) -> Self {
         self.interrupt_before = nodes;
         self
     }
 
+    /// Set the node names after which execution should be interrupted.
     pub fn with_interrupt_after(mut self, nodes: Vec<String>) -> Self {
         self.interrupt_after = nodes;
         self
     }
 
+    /// Return the names of all static nodes registered in the graph.
     pub fn node_names(&self) -> Vec<String> {
         self.nodes.keys().cloned().collect()
     }
 
+    /// Return the graph's fixed edges.
     pub fn get_edges(&self) -> &[GraphEdge] {
         &self.edges
     }
 
+    /// Return the entry point node name.
     pub fn entry_point(&self) -> &str {
         &self.entry_point
     }
 
+    /// Return the configured recursion limit.
     pub fn recursion_limit(&self) -> usize {
         self.recursion_limit
     }
 
+    /// Return the nodes that interrupt execution before running.
     pub fn interrupt_before(&self) -> &[String] {
         &self.interrupt_before
     }
 
+    /// Return the nodes that interrupt execution after running.
     pub fn interrupt_after(&self) -> &[String] {
         &self.interrupt_after
     }
@@ -174,11 +184,11 @@ impl<S: StateSchema> CompiledGraph<S> {
     }
 
     /// Submit a new task for dynamic planning mid-execution
-    pub fn submit_task(&self, description: String) {
+    pub fn submit_task(&self, description: impl Into<String>) {
         if let Ok(mut inbox) = self.task_inbox.try_lock() {
             inbox.push(DynamicTask {
                 id: uuid::Uuid::new_v4().to_string(),
-                description,
+                description: description.into(),
             });
         }
     }

@@ -69,15 +69,21 @@ impl Neo4jConfig {
     }
 
     /// Creates config from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
-        let uri = std::env::var("NEO4J_URI")
-            .map_err(|_| "NEO4J_URI environment variable not set".to_string())?;
-        let username = std::env::var("NEO4J_USERNAME")
-            .map_err(|_| "NEO4J_USERNAME environment variable not set".to_string())?;
-        let password = std::env::var("NEO4J_PASSWORD")
-            .map_err(|_| "NEO4J_PASSWORD environment variable not set".to_string())?;
-        let index_name = std::env::var("NEO4J_VECTOR_INDEX_NAME")
-            .map_err(|_| "NEO4J_VECTOR_INDEX_NAME environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, VectorStoreError> {
+        let uri = std::env::var("NEO4J_URI").map_err(|_| {
+            VectorStoreError::ConfigError("NEO4J_URI environment variable not set".to_string())
+        })?;
+        let username = std::env::var("NEO4J_USERNAME").map_err(|_| {
+            VectorStoreError::ConfigError("NEO4J_USERNAME environment variable not set".to_string())
+        })?;
+        let password = std::env::var("NEO4J_PASSWORD").map_err(|_| {
+            VectorStoreError::ConfigError("NEO4J_PASSWORD environment variable not set".to_string())
+        })?;
+        let index_name = std::env::var("NEO4J_VECTOR_INDEX_NAME").map_err(|_| {
+            VectorStoreError::ConfigError(
+                "NEO4J_VECTOR_INDEX_NAME environment variable not set".to_string(),
+            )
+        })?;
         let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
         Ok(Self {
             uri,
@@ -158,7 +164,7 @@ impl Neo4jVectorStore {
     }
 
     /// Creates from environment variables.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, VectorStoreError> {
         Ok(Self::new(Neo4jConfig::from_env_result()?))
     }
 

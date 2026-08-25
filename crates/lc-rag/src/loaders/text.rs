@@ -57,7 +57,7 @@ impl DocumentLoader for TextLoader {
         // 验证文件存在
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
-                "文本文件不存在: {}",
+                "text file does not exist: {}",
                 self.path.display()
             )));
         }
@@ -106,7 +106,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            LoaderError::Other(msg) => assert!(msg.contains("不存在")),
+            LoaderError::Other(msg) => assert!(msg.contains("does not exist")),
             _ => panic!("Expected Other error"),
         }
     }
@@ -123,7 +123,10 @@ mod tests {
         let docs = result.unwrap();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains("Hello, World!"));
-        assert_eq!(docs[0].metadata.get("format"), Some(&"text".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("format"),
+            Some(&serde_json::Value::String("text".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -140,7 +143,10 @@ mod tests {
         let docs = result.unwrap();
         assert_eq!(docs.len(), 3);
         assert_eq!(docs[0].content, "Line 1");
-        assert_eq!(docs[0].metadata.get("line_number"), Some(&"1".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("line_number"),
+            Some(&serde_json::Value::String("1".to_string()))
+        );
     }
 
     #[tokio::test]

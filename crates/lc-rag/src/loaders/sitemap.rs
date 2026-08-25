@@ -83,20 +83,23 @@ impl SitemapLoader {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .map_err(|e| LoaderError::Other(format!("构建 HTTP 客户端失败: {}", e)))?;
+            .map_err(|e| LoaderError::Other(format!("failed to build HTTP client: {}", e)))?;
         let response = client
             .get(url)
             .send()
             .await
-            .map_err(|e| LoaderError::Other(format!("HTTP 请求失败 {}: {}", url, e)))?;
+            .map_err(|e| LoaderError::Other(format!("HTTP request failed {}: {}", url, e)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(LoaderError::Other(format!("HTTP 错误 {}: {}", url, status)));
+            return Err(LoaderError::Other(format!(
+                "HTTP error {}: {}",
+                url, status
+            )));
         }
         response
             .text()
             .await
-            .map_err(|e| LoaderError::Other(format!("读取响应失败 {}: {}", url, e)))
+            .map_err(|e| LoaderError::Other(format!("failed to read response {}: {}", url, e)))
     }
 }
 
@@ -118,8 +121,8 @@ impl DocumentLoader for SitemapLoader {
                 Ok(html) => {
                     let text = super::HTMLLoader::extract_text(&html);
                     let mut metadata = HashMap::new();
-                    metadata.insert("format".to_string(), "html".to_string());
-                    metadata.insert("source".to_string(), url.clone());
+                    metadata.insert("format".to_string(), "html".to_string().into());
+                    metadata.insert("source".to_string(), url.clone().into());
 
                     documents.push(Document {
                         content: text,
@@ -128,7 +131,7 @@ impl DocumentLoader for SitemapLoader {
                     });
                 }
                 Err(e) => {
-                    log::warn!("爬取 {} 失败(已从结果中跳过): {}", url, e);
+                    log::warn!("Failed to crawl {} (skipped from results): {}", url, e);
                     continue;
                 }
             }

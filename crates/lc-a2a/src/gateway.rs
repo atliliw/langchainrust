@@ -26,6 +26,7 @@ use crate::A2AError;
 
 /// Errors raised by the federation gateway.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GatewayError {
     /// The caller's org is not on the allow-list.
     #[error("caller org '{0}' is not allowed by federation policy")]
@@ -35,7 +36,12 @@ pub enum GatewayError {
     SkillNotAllowed(String),
     /// The inbound request body exceeds the configured limit.
     #[error("request payload of {actual} bytes exceeds the {max} byte limit")]
-    PayloadTooLarge { actual: usize, max: usize },
+    PayloadTooLarge {
+        /// Actual request payload size in bytes.
+        actual: usize,
+        /// Maximum allowed payload size in bytes.
+        max: usize,
+    },
     /// The request carried no caller identity, so it cannot be authorized.
     #[error("request does not carry a caller identity")]
     MissingCaller,

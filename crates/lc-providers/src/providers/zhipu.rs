@@ -29,10 +29,15 @@ pub const ZHIPU_MODELS: [&str; 4] = [
 /// Zhipu 配置
 #[derive(Debug, Clone)]
 pub struct ZhipuConfig {
+    /// Zhipu API key.
     pub api_key: String,
+    /// Base URL of the Zhipu (BigModel) API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
 }
 
@@ -63,9 +68,10 @@ impl ZhipuConfig {
     /// - `ZHIPU_API_KEY`: API key (required)
     /// - `ZHIPU_BASE_URL`: API endpoint (optional)
     /// - `ZHIPU_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("ZHIPU_API_KEY")
-            .map_err(|_| "ZHIPU_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("ZHIPU_API_KEY").map_err(|_| {
+            ProviderError::Config("ZHIPU_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url = env::var("ZHIPU_BASE_URL").unwrap_or_else(|_| ZHIPU_BASE_URL.to_string());
 
@@ -91,11 +97,13 @@ impl ZhipuConfig {
         self
     }
 
+    /// Sets the sampling temperature.
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
+    /// Sets the maximum number of tokens to generate.
     pub fn with_max_tokens(mut self, max: usize) -> Self {
         self.max_tokens = Some(max);
         self
@@ -141,12 +149,12 @@ impl ZhipuChat {
     }
 
     /// Creates a ZhipuChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(ZhipuConfig::from_env_result()?))
     }
 
     /// Creates a ZhipuChat with a specific model.
-    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
+    pub fn with_model(model: impl Into<String>) -> Result<Self, ProviderError> {
         let config = ZhipuConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
     }

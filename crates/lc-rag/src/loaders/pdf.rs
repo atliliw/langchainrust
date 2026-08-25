@@ -29,14 +29,14 @@ impl DocumentLoader for PDFLoader {
         // 验证文件存在
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
-                "PDF 文件不存在: {}",
+                "PDF file does not exist: {}",
                 self.path.display()
             )));
         }
 
         // 使用 pdf_extract 库提取文本
         let text = pdf_extract::extract_text(&self.path)
-            .map_err(|e| LoaderError::PdfError(format!("PDF 解析失败: {}", e)))?;
+            .map_err(|e| LoaderError::PdfError(format!("PDF parse failed: {}", e)))?;
 
         // 创建文档对象，包含元数据
         let mut document = Document::new(text);
@@ -58,7 +58,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            LoaderError::Other(msg) => assert!(msg.contains("不存在")),
+            LoaderError::Other(msg) => assert!(msg.contains("does not exist")),
             _ => panic!("Expected Other error"),
         }
     }

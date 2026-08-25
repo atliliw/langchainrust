@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-embeddings/src/lib.rs
 //! Embedding model implementations for LangChainRust.
 //!
@@ -43,6 +44,7 @@ use async_trait::async_trait;
 
 /// Embedding error type
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmbeddingError {
     /// HTTP request error
     #[error("HTTP error: {0}")]
@@ -69,7 +71,12 @@ pub enum EmbeddingError {
     ///
     /// P0-1: 拒绝静默错数据——绝不把缺失向量当成"不相似"。
     #[error("Embedding batch mismatch: expected {expected} vectors, got position {actual}")]
-    BatchMismatch { expected: usize, actual: usize },
+    BatchMismatch {
+        /// 期望返回的向量数量
+        expected: usize,
+        /// 出现错位的位置索引
+        actual: usize,
+    },
 
     /// 批量 embedding 中某条文本未取到向量（服务端返回量 < 请求量）。
     ///

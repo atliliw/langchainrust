@@ -9,6 +9,8 @@ use crate::state::StateSchema;
 use crate::{END, START};
 
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Validate the graph structure: node references, duplicate edges,
+    /// unreachable nodes, and cycles with no path to `END`.
     pub fn validate(&self) -> GraphResult<()> {
         for edge in &self.edges {
             match edge {

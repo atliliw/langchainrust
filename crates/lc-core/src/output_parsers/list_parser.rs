@@ -25,6 +25,7 @@ use crate::runnables::{Runnable, RunnableConfig};
 pub struct CommaSeparatedListOutputParser;
 
 impl CommaSeparatedListOutputParser {
+    /// 创建逗号分隔列表输出解析器。
     pub fn new() -> Self {
         Self
     }

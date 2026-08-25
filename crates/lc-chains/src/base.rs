@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 /// Chain error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChainError {
     /// Missing input.
     #[error("Missing input: {0}")]

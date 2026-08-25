@@ -49,6 +49,7 @@ pub struct WikipediaTool {
 }
 
 impl WikipediaTool {
+    /// 创建 Wikipedia 搜索工具。
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -79,17 +80,14 @@ impl WikipediaTool {
             lang, urlencoding(query), top_k
         );
 
-        let response = self
-            .client
-            .get(&search_url)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Wikipedia 搜索失败: {}", e)))?;
+        let response =
+            self.client.get(&search_url).send().await.map_err(|e| {
+                ToolError::ExecutionFailed(format!("Wikipedia search failed: {}", e))
+            })?;
 
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {}", e)))?;
+        let body: serde_json::Value = response.json().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to parse search results: {}", e))
+        })?;
 
         let search_results = body["query"]["search"]
             .as_array()
@@ -129,17 +127,13 @@ impl WikipediaTool {
             lang, urlencoding(title)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("获取页面内容失败: {}", e)))?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to fetch page content: {}", e))
+        })?;
 
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("解析页面内容失败: {}", e)))?;
+        let body: serde_json::Value = response.json().await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to parse page content: {}", e))
+        })?;
 
         let pages = body["query"]["pages"]
             .as_object()
@@ -156,7 +150,9 @@ impl WikipediaTool {
             }
         }
 
-        Err(ToolError::ExecutionFailed("未找到页面内容".to_string()))
+        Err(ToolError::ExecutionFailed(
+            "page content not found".to_string(),
+        ))
     }
 }
 
@@ -187,7 +183,9 @@ impl Tool for WikipediaTool {
         let full = input.full_content.unwrap_or(false);
 
         if input.query.trim().is_empty() {
-            return Err(ToolError::InvalidInput("查询不能为空".to_string()));
+            return Err(ToolError::InvalidInput(
+                "query must not be empty".to_string(),
+            ));
         }
 
         let mut output = self.search(&input.query, top_k, lang).await?;
@@ -226,7 +224,7 @@ impl BaseTool for WikipediaTool {
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let parsed: WikipediaInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
 
         let output = self.invoke(parsed).await?;
 

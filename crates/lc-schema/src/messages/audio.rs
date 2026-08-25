@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// such as speech-to-text (Whisper) and text-to-speech (TTS).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioContent {
+    /// Audio URL or base64 data URI.
     pub url: String,
 }
 

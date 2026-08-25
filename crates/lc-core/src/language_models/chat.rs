@@ -14,14 +14,19 @@ use std::pin::Pin;
 /// LLM result containing response content and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LLMResult {
+    /// The generated response content.
     #[serde(default)]
     pub content: String,
+    /// The model identifier that produced the result.
     #[serde(default)]
     pub model: String,
+    /// Token usage statistics, if reported.
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    /// Tool calls requested by the model, if any.
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Model reasoning/thinking content, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_content: Option<String>,
 }

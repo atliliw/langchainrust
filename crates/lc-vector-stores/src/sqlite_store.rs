@@ -4,7 +4,6 @@
 use async_trait::async_trait;
 use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
 use rusqlite::Connection;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -13,15 +12,20 @@ use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentSt
 use crate::{Document, VectorStoreError};
 
 /// 解析 metadata 列;损坏时记日志并回退空映射,不再静默吞错。
-fn parse_metadata_or_default(raw: &str) -> std::collections::HashMap<String, String> {
+fn parse_metadata_or_default(raw: &str) -> std::collections::HashMap<String, serde_json::Value> {
     serde_json::from_str(raw).unwrap_or_else(|e| {
-        log::warn!("SQLite 存储中 metadata 损坏,已回退为空映射: {}", e);
+        log::warn!(
+            "SQLite metadata in store is corrupted, falling back to empty map: {}",
+            e
+        );
         std::collections::HashMap::new()
     })
 }
 
+/// SQLite 文档存储配置
 #[derive(Debug, Clone)]
 pub struct SQLiteStoreConfig {
+    /// SQLite 数据库文件路径
     pub db_path: String,
 }
 
@@ -34,6 +38,7 @@ impl Default for SQLiteStoreConfig {
 }
 
 impl SQLiteStoreConfig {
+    /// 使用数据库文件路径创建配置。
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             db_path: path.into(),
@@ -41,11 +46,13 @@ impl SQLiteStoreConfig {
     }
 }
 
+/// SQLite 文档存储实现
 pub struct SQLiteDocumentStore {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl SQLiteDocumentStore {
+    /// 打开 SQLite 数据库并创建所需表与索引。
     pub fn new(config: SQLiteStoreConfig) -> Result<Self, VectorStoreError> {
         let conn = Connection::open(&config.db_path)
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -66,6 +73,14 @@ impl SQLiteDocumentStore {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// 显式触发落盘。
+    ///
+    /// C3: 原 `ChunkedDocumentStoreTrait::save` 假默认方法已从 trait 删除;SQLite
+    /// 每次写入即自动持久化,本方法为兼容性 no-op(与 Redis 的 `save_to_disk` 对齐)。
+    pub async fn save(&self) -> Result<(), VectorStoreError> {
+        Ok(())
     }
 }
 
@@ -146,7 +161,7 @@ impl DocumentStore for SQLiteDocumentStore {
             // M3: trait 返回 usize 无法传播错误——不再静默吞错返回 0,
             // 记 error 暴露存储故障,与文件内"不再静默丢行"的既有模式一致。
             Err(e) => {
-                log::error!("SQLite count(documents) 查询失败,返回 0: {}", e);
+                log::error!("SQLite count(documents) query failed, returning 0: {}", e);
                 0
             }
         }
@@ -262,7 +277,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                 Err(e) => {
                     // 不再静默丢行:记录到日志,暴露存储降级
                     log::error!(
-                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e
                     );
                     None
@@ -294,7 +309,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             Ok(count) => count,
             // M3: 不静默吞错返回 0,记 error 暴露存储故障。
             Err(e) => {
-                log::error!("SQLite parent_count 查询失败,返回 0: {}", e);
+                log::error!("SQLite parent_count query failed, returning 0: {}", e);
                 0
             }
         }
@@ -306,7 +321,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             Ok(count) => count,
             // M3: 不静默吞错返回 0,记 error 暴露存储故障。
             Err(e) => {
-                log::error!("SQLite chunk_count 查询失败,返回 0: {}", e);
+                log::error!("SQLite chunk_count query failed, returning 0: {}", e);
                 0
             }
         }
@@ -333,7 +348,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                 Err(e) => {
                     // 不再静默丢行:记录到日志,暴露存储降级
                     log::error!(
-                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e
                     );
                     None
@@ -348,10 +363,6 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         conn.execute_batch("DELETE FROM chunks; DELETE FROM documents;")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         Ok(())
-    }
-
-    async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        Ok(()) // SQLite auto-saves
     }
 
     // Blocking methods
@@ -454,7 +465,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
                 Err(e) => {
                     // 不再静默丢行:记录到日志,暴露存储降级
                     log::error!(
-                        "SQLite 存储中一行数据反序列化失败(已从查询结果中缺失): {}",
+                        "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e
                     );
                     None

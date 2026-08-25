@@ -105,6 +105,7 @@ pub struct URLFetchTool {
 }
 
 impl URLFetchTool {
+    /// 创建网页抓取工具(默认启用 SSRF 防护)。
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -133,7 +134,7 @@ impl URLFetchTool {
     ) -> Result<URLFetchOutput, ToolError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(ToolError::InvalidInput(
-                "URL 必须以 http:// 或 https:// 开头".to_string(),
+                "URL must start with http:// or https://".to_string(),
             ));
         }
 
@@ -143,9 +144,9 @@ impl URLFetchTool {
         let status = response.status();
         if !status.is_success() {
             return Err(ToolError::ExecutionFailed(format!(
-                "HTTP 错误: {} - {}",
+                "HTTP error: {} - {}",
                 status.as_u16(),
-                status.canonical_reason().unwrap_or("未知")
+                status.canonical_reason().unwrap_or("unknown")
             )));
         }
 
@@ -171,7 +172,7 @@ impl URLFetchTool {
         let content = response
             .text()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("读取响应失败: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("failed to read response: {}", e)))?;
 
         let max_len = max_length.unwrap_or(50000);
         let content_len = content.len();
@@ -330,7 +331,7 @@ impl Tool for URLFetchTool {
             "extract_images" => self.extract_images(&input.url).await,
             "metadata" => self.extract_metadata(&input.url).await,
             _ => Err(ToolError::InvalidInput(
-                format!("不支持的操作: {}，请使用: fetch, extract_text, extract_links, extract_images, metadata", input.operation)
+                format!("unsupported operation: {}, use: fetch, extract_text, extract_links, extract_images, metadata", input.operation)
             )),
         }
     }
@@ -365,7 +366,7 @@ impl BaseTool for URLFetchTool {
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let parsed: URLFetchInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
 
         let output = self.invoke(parsed).await?;
 

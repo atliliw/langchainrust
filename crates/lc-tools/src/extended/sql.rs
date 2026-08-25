@@ -22,6 +22,7 @@ pub struct SQLTool {
 }
 
 impl SQLTool {
+    /// Creates a new SQL tool over the SQLite database at `path`.
     pub fn new(path: &str) -> Result<Self, ToolError> {
         let conn = rusqlite::Connection::open(path)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
@@ -31,6 +32,7 @@ impl SQLTool {
         })
     }
 
+    /// Restricts queries to the given whitelist of table names.
     pub fn with_allowed_tables(mut self, tables: Vec<String>) -> Self {
         self.allowed_tables = tables;
         self

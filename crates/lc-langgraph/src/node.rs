@@ -57,6 +57,7 @@ pub type AsyncNodeFn<S> =
 
 /// AsyncFn trait for simpler async node creation
 pub trait AsyncFn<S: StateSchema>: Send + Sync {
+    /// Call the async function with the given state.
     fn call(&self, state: &S) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>>;
 }
 
@@ -78,6 +79,7 @@ pub struct AsyncNode<S: StateSchema, F: AsyncFn<S>> {
 }
 
 impl<S: StateSchema, F: AsyncFn<S>> AsyncNode<S, F> {
+    /// Create a new async node with the given name and function.
     pub fn new(name: impl Into<String>, func: F) -> Self {
         Self {
             name: name.into(),
@@ -190,18 +192,21 @@ pub struct SentinelNode {
 }
 
 impl SentinelNode {
+    /// Create a sentinel node for the `START` marker.
     pub fn start() -> Self {
         Self {
             name: crate::START.to_string(),
         }
     }
 
+    /// Create a sentinel node for the `END` marker.
     pub fn end() -> Self {
         Self {
             name: crate::END.to_string(),
         }
     }
 
+    /// Create a custom-named sentinel node.
     pub fn custom(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }

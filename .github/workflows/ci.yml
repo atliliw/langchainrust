@@ -105,6 +105,51 @@ jobs:
         env:
           OPENAI_API_KEY: test-key
 
+  # ==================== MSRV 检查 ====================
+  # MSRV = 1.82(见 rust-toolchain.toml 与各 crate 的 rust-version 字段)。
+  # 已由上面 test 矩阵的 `rust: "1.82"` 行(ubuntu-latest)覆盖:该行即 MSRV 门禁,
+  # 保证 1.82 下编译 + 全部测试通过。不另起 job,避免 1.82 重复编译。
+
+  # ==================== semver 检查 ====================
+  # 对比每个 crate 最近一次发布(registry 上的 0.15.x)与当前源码的公开 API 差异。
+  # 0.x 序列里 0.15→0.16 允许破坏性 minor;本门禁确保破坏都在计划内、
+  # 非预期的破坏(baseline 分析结果)会以编译错误的形式暴露出来。
+  semver:
+    name: SemVer Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+
+      - name: Run semver checks
+        run: cargo semver-checks --workspace --all-features
+
+  # ==================== WASM 兼容检查 ====================
+  # 目前只有数据模型层(lc-shared / lc-schema)对 wasm32-unknown-unknown 干净
+  # (依赖仅 serde/serde_json/thiserror/async-trait)。lc-core 等含无条件原生依赖
+  # (tokio full / reqwest / tiktoken-rs / uuid-v4→getrandom),wasm 适配未落地,
+  # 详见 docs/internal/v0.16.0/EXECUTION_PLAN.md 验证清单的 wasm 项说明。
+  wasm:
+    name: WASM Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Check wasm compatibility
+        run: cargo check --target wasm32-unknown-unknown -p lc-schema -p lc-shared
+
   # ==================== 文档检查 ====================
   docs:
     name: Documentation
@@ -150,6 +195,9 @@ jobs:
         run: cargo audit
 
   # ==================== 覆盖率报告 ====================
+  # 使用 cargo-llvm-cov 测量行覆盖率并设 80% 门禁(fail-under-lines 80)。
+  # 注意:本机 windows-gnu 工具链缺 profiler_builtins(`rustc -C instrument-coverage`
+  # 报 E0463),无法本地测量覆盖率;此门禁依赖 Linux CI 的完整工具链执行。
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
@@ -159,18 +207,32 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - name: Generate coverage
-        run: cargo tarpaulin --verbose --timeout 120 --out Xml
+        run: cargo llvm-cov --workspace --fail-under-lines 80 --lcov --output-path lcov.info
         env:
           OPENAI_API_KEY: test-key
 
       - name: Upload coverage to codecov
         uses: codecov/codecov-action@v4
         with:
+          files: lcov.info
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

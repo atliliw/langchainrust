@@ -25,9 +25,13 @@ use std::sync::Arc;
 /// AutoMerging 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoMergingConfig {
+    /// 合并阈值：同一 Parent 下命中 Leaf 占比达到该比例时合并为 Parent 文档
     pub merge_threshold: f32,
+    /// Leaf chunk 的大小（字符数）
     pub leaf_chunk_size: usize,
+    /// Parent chunk 的大小（字符数）
     pub parent_chunk_size: usize,
+    /// 每个 Parent 下期望的 Leaf 数量
     pub leaves_per_parent: usize,
 }
 
@@ -43,20 +47,24 @@ impl Default for AutoMergingConfig {
 }
 
 impl AutoMergingConfig {
+    /// 创建使用默认配置的 `AutoMergingConfig`
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置合并阈值
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.merge_threshold = threshold;
         self
     }
 
+    /// 设置 Leaf chunk 大小
     pub fn with_leaf_size(mut self, size: usize) -> Self {
         self.leaf_chunk_size = size;
         self
     }
 
+    /// 设置 Parent chunk 大小
     pub fn with_parent_size(mut self, size: usize) -> Self {
         self.parent_chunk_size = size;
         self
@@ -66,14 +74,20 @@ impl AutoMergingConfig {
 /// AutoMerging 搜索结果
 #[derive(Debug, Clone)]
 pub struct ChunkedSearchResult {
+    /// 合并得到的 Parent 文档（若未触发合并则为 `None`）
     pub merged_parent: Option<Document>,
+    /// 命中的 Leaf chunks
     pub leaf_chunks: Vec<ChunkDocument>,
+    /// 该结果的 BM25 评分
     pub score: f32,
+    /// 命中的查询词项
     pub matched_terms: Vec<String>,
+    /// 所属 Parent 的 id
     pub parent_id: String,
 }
 
 impl ChunkedSearchResult {
+    /// 返回合并结果的内容：优先返回 Parent 内容，否则拼接所有 Leaf 内容
     pub fn content(&self) -> String {
         if let Some(parent) = &self.merged_parent {
             parent.content.clone()
@@ -86,6 +100,7 @@ impl ChunkedSearchResult {
         }
     }
 
+    /// 是否触发了 AutoMerging 合并
     pub fn is_merged(&self) -> bool {
         self.merged_parent.is_some()
     }
@@ -116,14 +131,23 @@ impl From<BM25ParamsData> for BM25Params {
 /// 可序列化的索引数据（不含内容，内容在ChunkedDocumentStore中）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkedIndexData {
+    /// chunk 的 id 列表
     pub chunk_id_list: Vec<String>,
+    /// 每个 chunk 的词频表
     pub chunk_term_freqs: Vec<HashMap<String, usize>>,
+    /// 倒排索引：词项 -> (chunk 下标, 词频) 列表
     pub term_index: HashMap<String, Vec<(usize, usize)>>,
+    /// Parent id -> 该 Parent 下 Leaf chunk 下标列表
     pub parent_to_leaves: HashMap<String, Vec<usize>>,
+    /// 每个 chunk 的文档长度
     pub doc_lengths: Vec<usize>,
+    /// 平均文档长度
     pub avgdl: f64,
+    /// 文档数量
     pub n_docs: usize,
+    /// BM25 参数
     pub params: BM25ParamsData,
+    /// AutoMerging 配置
     pub config: AutoMergingConfig,
 }
 
@@ -131,6 +155,7 @@ pub struct ChunkedIndexData {
 // ChunkedBM25Index 索引结构
 // ============================================================================
 
+/// 支持 Parent-Child 结构的 BM25 倒排索引
 pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = lc_vector_stores::ChunkedDocumentStore> {
     store: Arc<S>,
     chunk_id_list: Vec<String>,
@@ -147,10 +172,12 @@ pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = lc_vector_stores::Chu
 }
 
 impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
+    /// 使用默认配置创建索引
     pub fn new(store: Arc<S>) -> Self {
         Self::with_config(store, AutoMergingConfig::default())
     }
 
+    /// 使用指定配置创建索引
     pub fn with_config(store: Arc<S>, config: AutoMergingConfig) -> Self {
         Self {
             store,
@@ -168,6 +195,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         }
     }
 
+    /// 使用指定 BM25 参数创建索引
     pub fn with_params(store: Arc<S>, params: BM25Params) -> Self {
         let mut index = Self::new(store);
         index.params = params;
@@ -175,8 +203,15 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
     }
 
     /// 添加chunk索引（内容已在store中）
-    pub fn add_chunk_index(&mut self, chunk_id: String, parent_id: String, content: &str) {
+    pub fn add_chunk_index(
+        &mut self,
+        chunk_id: impl Into<String>,
+        parent_id: impl Into<String>,
+        content: &str,
+    ) {
         let chunk_idx = self.n_docs;
+        let chunk_id = chunk_id.into();
+        let parent_id = parent_id.into();
 
         let terms = self.tokenizer.tokenize(content);
         let term_freq = self.compute_term_freq(&terms);
@@ -241,10 +276,12 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         idf
     }
 
+    /// 按 chunk 下标获取 chunk id
     pub fn get_chunk_id(&self, chunk_idx: usize) -> Option<&String> {
         self.chunk_id_list.get(chunk_idx)
     }
 
+    /// 获取指定 Parent 下的所有 chunk id
     pub fn get_chunk_ids_for_parent(&self, parent_id: &str) -> Vec<&String> {
         self.parent_to_leaves
             .get(parent_id)
@@ -257,18 +294,22 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
             .unwrap_or_default()
     }
 
+    /// 返回 AutoMerging 配置
     pub fn config(&self) -> &AutoMergingConfig {
         &self.config
     }
 
+    /// 返回已索引的文档数量
     pub fn n_docs(&self) -> usize {
         self.n_docs
     }
 
+    /// 返回底层文档存储
     pub fn store(&self) -> &Arc<S> {
         &self.store
     }
 
+    /// 清空索引数据
     pub fn clear(&mut self) {
         self.chunk_id_list.clear();
         self.chunk_term_freqs.clear();
@@ -291,6 +332,7 @@ impl Default for ChunkedBM25Index<lc_vector_stores::ChunkedDocumentStore> {
 // ChunkedBM25Retriever 检索器
 // ============================================================================
 
+/// 基于 AutoMerging 的 BM25 检索器
 pub struct ChunkedBM25Retriever<
     S: ChunkedDocumentStoreTrait = lc_vector_stores::ChunkedDocumentStore,
 > {
@@ -298,36 +340,48 @@ pub struct ChunkedBM25Retriever<
 }
 
 impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
+    /// 使用默认配置创建检索器
     pub fn new(store: Arc<S>) -> Self {
         Self {
             index: ChunkedBM25Index::new(store),
         }
     }
 
+    /// 使用指定配置创建检索器
     pub fn with_config(store: Arc<S>, config: AutoMergingConfig) -> Self {
         Self {
             index: ChunkedBM25Index::with_config(store, config),
         }
     }
 
+    /// 使用指定的 k1、b 参数创建检索器
     pub fn with_params(store: Arc<S>, k1: f64, b: f64) -> Self {
         Self {
             index: ChunkedBM25Index::with_params(store, BM25Params::with_values(k1, b)),
         }
     }
 
+    /// 返回底层文档存储
     pub fn store(&self) -> &Arc<S> {
         self.index.store()
     }
 
-    pub fn add_chunk_index(&mut self, chunk_id: String, parent_id: String, content: &str) {
+    /// 添加单个 chunk 索引（内容已存储在 store 中）
+    pub fn add_chunk_index(
+        &mut self,
+        chunk_id: impl Into<String>,
+        parent_id: impl Into<String>,
+        content: &str,
+    ) {
         self.index.add_chunk_index(chunk_id, parent_id, content);
     }
 
+    /// 批量添加 chunk 索引
     pub fn add_chunk_indexes(&mut self, chunks: Vec<(String, String, String)>) {
         self.index.add_chunk_indexes(chunks);
     }
 
+    /// 以同步方式添加文档：自动拆分 Parent/Leaf 并建立索引
     pub fn add_document(&mut self, document: Document) -> Result<(), VectorStoreError> {
         let parent_id = document
             .id
@@ -357,6 +411,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         Ok(())
     }
 
+    /// 以异步方式添加文档：自动拆分 Parent/Leaf 并建立索引
     pub async fn add_document_async(&mut self, document: Document) -> Result<(), VectorStoreError> {
         let parent_id = document
             .id
@@ -384,6 +439,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         Ok(())
     }
 
+    /// 批量以同步方式添加文档
     pub fn add_documents(&mut self, documents: Vec<Document>) -> Result<(), VectorStoreError> {
         for doc in documents {
             self.add_document(doc)?;
@@ -391,6 +447,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         Ok(())
     }
 
+    /// 批量以异步方式添加文档
     pub async fn add_documents_async(
         &mut self,
         documents: Vec<Document>,
@@ -401,6 +458,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         Ok(())
     }
 
+    /// 同步执行 BM25 检索，返回前 k 个 AutoMerging 结果
     pub fn search(&mut self, query: &str, k: usize) -> Vec<ChunkedSearchResult> {
         if self.index.n_docs == 0 {
             return Vec::new();
@@ -427,6 +485,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.auto_merge_sync(top_chunks, k)
     }
 
+    /// 异步执行 BM25 检索，返回前 k 个 AutoMerging 结果
     pub async fn search_async(&mut self, query: &str, k: usize) -> Vec<ChunkedSearchResult> {
         if self.index.n_docs == 0 {
             return Vec::new();
@@ -575,7 +634,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                             Err(e) => {
                                 // 不再静默吞错:读失败记日志,该 chunk 从结果中缺失
                                 log::error!(
-                                    "检索时读取 chunk `{}` 文档失败(该 chunk 已从结果中缺失): {}",
+                                    "failed to read chunk `{}` during retrieval (chunk missing from results): {}",
                                     chunk_id,
                                     e
                                 );
@@ -651,6 +710,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         stats
     }
 
+    /// 按 Parent id 获取父文档
     pub fn get_parent_document(&self, parent_id: &str) -> Option<Document> {
         self.index
             .store()
@@ -659,23 +719,28 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
             .flatten()
     }
 
+    /// 返回索引中的文档数量
     pub fn len(&self) -> usize {
         self.index.n_docs()
     }
 
+    /// 索引是否为空
     pub fn is_empty(&self) -> bool {
         self.index.n_docs() == 0
     }
 
+    /// 清空索引
     pub fn clear(&mut self) {
         self.index.clear();
     }
 
+    /// 返回 AutoMerging 配置
     pub fn config(&self) -> &AutoMergingConfig {
         self.index.config()
     }
 
     // 持久化方法
+    /// 将索引数据序列化为 Bincode 并保存到指定路径
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Box<dyn std::error::Error>> {
         let data = ChunkedIndexData {
             chunk_id_list: self.index.chunk_id_list.clone(),
@@ -695,6 +760,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
 }
 
 impl ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
+    /// 从指定路径加载 Bincode 序列化的索引数据
     pub fn load(
         store: Arc<lc_vector_stores::ChunkedDocumentStore>,
         path: impl AsRef<Path>,

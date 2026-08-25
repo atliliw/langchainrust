@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.15.0 • 功能</div>
+            <div class="sidebar-subtitle">v0.16.0 • 功能</div>
         </div>
 
         <div class="sidebar-nav">
@@ -1356,10 +1356,8 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 
 <span class="comment">// Add documents with metadata</span>
 store.add_documents(vec![
-    Document::with_metadata(
-        <span class="str">"Rust is a systems language"</span>,
-        HashMap::from([(<span class="str">"source"</span>, <span class="str">"wiki"</span>)])
-    ),
+    Document::new(<span class="str">"Rust is a systems language"</span>)
+        .with_metadata(<span class="str">"source"</span>, <span class="str">"wiki"</span>)
 ]).await?;
 
 <span class="comment">// Similarity search</span>
@@ -2406,7 +2404,7 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
 crates/
-├── lc/                  # Facade crate (package name: langchainrust, v0.15.0)
+├── lc/                  # Facade crate (package name: langchainrust, v0.16.0)
 ├── lc-shared/           # 共享类型 (ToolCall, Document, TextSplitter)
 ├── lc-schema/           # 数据结构 (Message 含多模态附件 / ToolCall, ImageContent, AudioContent, FileContent)
 ├── lc-core/             # 核心抽象
@@ -2597,7 +2595,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API 文档</a>
                 </div>
-                <p class="copyright">LangChainRust v0.15.0 | MIT 许可证</p>
+                <p class="copyright">LangChainRust v0.16.0 | MIT 许可证</p>
             </footer>
         </div>
     </main>

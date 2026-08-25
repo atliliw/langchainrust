@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-memory/src/lib.rs
 //! Memory system for conversation history management.
 //!

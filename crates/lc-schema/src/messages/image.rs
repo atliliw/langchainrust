@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// 由各 provider 在序列化时转换。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageContent {
+    /// 图片 URL 或 base64 data URI
     pub url: String,
 }
 

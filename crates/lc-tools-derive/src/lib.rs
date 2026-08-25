@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-tools-derive/src/lib.rs
 //! Procedural macro for deriving BaseTool implementations from functions.
 //!

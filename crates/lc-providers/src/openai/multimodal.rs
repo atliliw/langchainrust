@@ -37,11 +37,17 @@ struct DallEResponse {
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TtsVoice {
+    /// The "alloy" voice.
     Alloy,
+    /// The "echo" voice.
     Echo,
+    /// The "fable" voice.
     Fable,
+    /// The "onyx" voice.
     Onyx,
+    /// The "nova" voice.
     Nova,
+    /// The "shimmer" voice.
     Shimmer,
 }
 
@@ -62,14 +68,19 @@ impl TtsVoice {
 /// DALL-E image size options.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub enum DallEImageSize {
+    /// 256x256 image size.
     #[serde(rename = "256x256")]
     S256,
+    /// 512x512 image size.
     #[serde(rename = "512x512")]
     S512,
+    /// 1024x1024 image size.
     #[serde(rename = "1024x1024")]
     S1024,
+    /// 1792x1024 image size.
     #[serde(rename = "1792x1024")]
     S1792x1024,
+    /// 1024x1792 image size.
     #[serde(rename = "1024x1792")]
     S1024x1792,
 }

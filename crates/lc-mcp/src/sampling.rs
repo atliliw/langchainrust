@@ -12,16 +12,28 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SamplingContent {
+    /// 文本内容
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// 文本数据
+        text: String,
+    },
+    /// 图片内容
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        /// 图片数据(base64 编码)
+        data: String,
+        /// 图片 MIME 类型
+        mime_type: String,
+    },
 }
 
 /// 采样消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingMessage {
+    /// 消息角色
     pub role: SamplingRole,
+    /// 消息内容
     pub content: SamplingContent,
 }
 
@@ -29,22 +41,28 @@ pub struct SamplingMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SamplingRole {
+    /// 用户角色
     User,
+    /// 助手角色
     Assistant,
 }
 
 /// 模型偏好提示
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPreferences {
+    /// 成本优先级(0~1)
     #[serde(rename = "costPriority", skip_serializing_if = "Option::is_none")]
     pub cost_priority: Option<f64>,
+    /// 速度优先级(0~1)
     #[serde(rename = "speedPriority", skip_serializing_if = "Option::is_none")]
     pub speed_priority: Option<f64>,
+    /// 智能优先级(0~1)
     #[serde(
         rename = "intelligencePriority",
         skip_serializing_if = "Option::is_none"
     )]
     pub intelligence_priority: Option<f64>,
+    /// 模型提示列表(可选)
     #[serde(rename = "hints", skip_serializing_if = "Option::is_none")]
     pub hints: Option<Vec<ModelHint>>,
 }
@@ -52,6 +70,7 @@ pub struct ModelPreferences {
 /// 模型提示
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelHint {
+    /// 建议使用的模型名称(可选)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -59,19 +78,27 @@ pub struct ModelHint {
 /// `sampling/createMessage` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingRequest {
+    /// 采样消息列表
     pub messages: Vec<SamplingMessage>,
+    /// 允许生成的最大 token 数
     #[serde(rename = "maxTokens")]
     pub max_tokens: usize,
+    /// 可选的系统提示词
     #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// 可选的模型偏好
     #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<ModelPreferences>,
+    /// 可选的采样温度
     #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    /// 可选的停止序列
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    /// 可选的上下文包含策略(参考 MCP 规范)
     #[serde(rename = "includeContext", skip_serializing_if = "Option::is_none")]
     pub include_context: Option<Value>,
+    /// 可选的附加元数据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
@@ -79,22 +106,34 @@ pub struct SamplingRequest {
 /// `sampling/createMessage` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingResult {
+    /// 生成消息的角色
     pub role: SamplingRole,
+    /// 生成的消息内容
     pub content: SamplingContent,
+    /// 使用的模型名称(可选)
     #[serde(rename = "model", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 停止原因(可选)
     #[serde(rename = "stopReason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
 }
 
 /// Sampling 递归防护错误(P2-7)。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SamplingGuardError {
     /// 嵌套深度超过 `max_depth`(默认 3)。
-    TooDeep { depth: usize, max_depth: usize },
+    TooDeep {
+        /// 当前嵌套深度
+        depth: usize,
+        /// 允许的最大嵌套深度
+        max_depth: usize,
+    },
     /// 整条采样链累计 token 超过总预算。
     TokenBudgetExceeded {
+        /// 已累计使用的 token 数
         tokens_used: usize,
+        /// 总 token 预算
         total_budget: usize,
     },
     /// 整条采样链超过总时长(超时)。
@@ -105,16 +144,21 @@ impl std::fmt::Display for SamplingGuardError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SamplingGuardError::TooDeep { depth, max_depth } => {
-                write!(f, "Sampling 递归深度 {depth} 超过上限 {max_depth}")
+                write!(
+                    f,
+                    "Sampling recursion depth {depth} exceeds limit {max_depth}"
+                )
             }
             SamplingGuardError::TokenBudgetExceeded {
                 tokens_used,
                 total_budget,
             } => write!(
                 f,
-                "Sampling 累计 token {tokens_used} 超过总预算 {total_budget}"
+                "Sampling cumulative tokens {tokens_used} exceed total budget {total_budget}"
             ),
-            SamplingGuardError::Timeout => write!(f, "Sampling 超过总时长上限(超时)"),
+            SamplingGuardError::Timeout => {
+                write!(f, "Sampling exceeds the total duration limit (timeout)")
+            }
         }
     }
 }
@@ -379,9 +423,9 @@ mod tests {
     #[test]
     fn test_guard_limits_depth() {
         let guard = SamplingGuard::new(3, 1000);
-        let _l1 = guard.enter(10).expect("第一层进入成功");
-        let _l2 = guard.enter(10).expect("第二层进入成功");
-        let _l3 = guard.enter(10).expect("第三层进入成功");
+        let _l1 = guard.enter(10).expect("first level enter should succeed");
+        let _l2 = guard.enter(10).expect("second level enter should succeed");
+        let _l3 = guard.enter(10).expect("third level enter should succeed");
         assert_eq!(guard.depth(), 3);
         let err = guard.enter(10).unwrap_err();
         assert_eq!(
@@ -390,29 +434,35 @@ mod tests {
                 depth: 4,
                 max_depth: 3
             },
-            "第 4 层应拒绝"
+            "4th level should be rejected"
         );
-        assert_eq!(guard.depth(), 3, "被拒的进入不应占用深度");
+        assert_eq!(
+            guard.depth(),
+            3,
+            "a rejected enter should not consume depth"
+        );
     }
 
     /// Lease Drop 释放深度:并行/顺序的兄弟采样仍可进入。
     #[test]
     fn test_lease_drop_releases_depth() {
         let guard = SamplingGuard::new(1, 1000);
-        let lease = guard.enter(10).expect("第一层进入成功");
+        let lease = guard.enter(10).expect("first level enter should succeed");
         assert_eq!(guard.depth(), 1);
         drop(lease);
-        assert_eq!(guard.depth(), 0, "Drop 后深度应释放");
-        guard.enter(10).expect("释放后可再次进入");
+        assert_eq!(guard.depth(), 0, "depth should be released after Drop");
+        guard
+            .enter(10)
+            .expect("should be able to enter again after release");
     }
 
     /// 总 token 预算:整条链按每次请求的 max_tokens 累计,超预算拒绝。
     #[test]
     fn test_token_budget_accumulates() {
         let guard = SamplingGuard::new(5, 30);
-        guard.enter(20).expect("20 token 在预算内");
+        guard.enter(20).expect("20 tokens within budget");
         assert_eq!(guard.tokens_used(), 20);
-        guard.enter(10).expect("累计 30,恰在预算内");
+        guard.enter(10).expect("cumulative 30, exactly at budget");
         assert_eq!(guard.tokens_used(), 30);
         let err = guard.enter(1).unwrap_err();
         assert_eq!(
@@ -422,7 +472,11 @@ mod tests {
                 total_budget: 30
             }
         );
-        assert_eq!(guard.tokens_used(), 30, "被拒的进入不应占用预算");
+        assert_eq!(
+            guard.tokens_used(),
+            30,
+            "a rejected enter should not consume budget"
+        );
     }
 
     /// 超时:整条链超过总时长后拒绝新采样。
@@ -442,14 +496,14 @@ mod tests {
             max_depth: 3
         }
         .to_string()
-        .contains("深度"));
+        .contains("depth"));
         assert!(SamplingGuardError::TokenBudgetExceeded {
             tokens_used: 40,
             total_budget: 30
         }
         .to_string()
-        .contains("预算"));
-        assert!(SamplingGuardError::Timeout.to_string().contains("超时"));
+        .contains("budget"));
+        assert!(SamplingGuardError::Timeout.to_string().contains("timeout"));
     }
 
     /// 充足预算下,释放后可反复进入(深度不泄漏)。
@@ -457,10 +511,12 @@ mod tests {
     fn test_reenter_after_completion() {
         let guard = SamplingGuard::new(3, 1000);
         for _ in 0..5 {
-            let lease = guard.enter(10).expect("释放后应可再次进入");
-            assert_eq!(guard.depth(), 1, "持有 lease 期间占用一层");
+            let lease = guard
+                .enter(10)
+                .expect("should be able to enter again after release");
+            assert_eq!(guard.depth(), 1, "holding a lease consumes one level");
             drop(lease);
         }
-        assert_eq!(guard.depth(), 0, "所有 lease 均已释放");
+        assert_eq!(guard.depth(), 0, "all leases are released");
     }
 }

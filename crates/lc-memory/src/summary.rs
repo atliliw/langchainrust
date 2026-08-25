@@ -287,7 +287,7 @@ where
                 self.pending_lines.push_str(&new_lines);
                 self.last_summary_error = Some(e.to_string());
                 log::warn!(
-                    "ConversationSummaryMemory 摘要失败,保留旧摘要待下轮重试: {}",
+                    "ConversationSummaryMemory summarization failed, keeping old summary for next retry: {}",
                     e
                 );
                 return Ok(());

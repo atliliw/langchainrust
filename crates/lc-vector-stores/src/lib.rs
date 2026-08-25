@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-vector-stores/src/lib.rs
 //! Vector store implementations.
 //!
@@ -56,7 +57,6 @@ pub use redis_store::{RedisDocumentStore, RedisStoreConfig};
 pub use sqlite_store::{SQLiteDocumentStore, SQLiteStoreConfig};
 
 use async_trait::async_trait;
-use std::error::Error;
 
 // Re-export shared document types from lc-shared
 pub use lc_shared::document::{ChunkDocument, Document, SearchResult, VectorDocument};
@@ -65,33 +65,29 @@ pub use lc_shared::document::{ChunkDocument, Document, SearchResult, VectorDocum
 pub use lc_core::math::cosine_similarity;
 
 /// Vector store error types.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VectorStoreError {
     /// Document not found.
+    #[error("Document not found: {0}")]
     DocumentNotFound(String),
 
     /// Embedding error.
+    #[error("Embedding error: {0}")]
     EmbeddingError(String),
 
     /// Storage error.
+    #[error("Storage error: {0}")]
     StorageError(String),
 
     /// Connection error (for remote vector databases).
+    #[error("Connection error: {0}")]
     ConnectionError(String),
-}
 
-impl std::fmt::Display for VectorStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VectorStoreError::DocumentNotFound(id) => write!(f, "Document not found: {}", id),
-            VectorStoreError::EmbeddingError(msg) => write!(f, "Embedding error: {}", msg),
-            VectorStoreError::StorageError(msg) => write!(f, "Storage error: {}", msg),
-            VectorStoreError::ConnectionError(msg) => write!(f, "Connection error: {}", msg),
-        }
-    }
+    /// Configuration error (e.g. missing environment variables, invalid settings).
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
 }
-
-impl Error for VectorStoreError {}
 
 /// Vector store trait.
 #[async_trait]
@@ -146,7 +142,8 @@ pub trait VectorStore: Send + Sync {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let Some(embeddings) = self.embed_query() else {
             return Err(VectorStoreError::EmbeddingError(
-                "该向量存储未配置嵌入器,无法自动向量化查询文本;请改用 similarity_search 直接传入查询向量"
+                "this vector store has no embedder configured; cannot auto-vectorize the query \
+                 text; call similarity_search with a query vector instead"
                     .to_string(),
             ));
         };
@@ -214,7 +211,10 @@ mod tests {
             .with_id("doc-1");
 
         assert_eq!(doc.content, "Hello, world!");
-        assert_eq!(doc.metadata.get("source"), Some(&"test".to_string()));
+        assert_eq!(
+            doc.metadata.get("source"),
+            Some(&serde_json::Value::String("test".to_string()))
+        );
         assert_eq!(doc.id, Some("doc-1".to_string()));
     }
 

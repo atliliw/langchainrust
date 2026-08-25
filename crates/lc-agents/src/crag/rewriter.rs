@@ -9,6 +9,7 @@ use lc_schema::Message;
 
 /// Query rewriting error types.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RewriterError {
     /// LLM invocation failed.
     #[error("LLM error during query rewriting: {0}")]

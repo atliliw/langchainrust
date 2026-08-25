@@ -91,12 +91,16 @@ mod char_ratio_tests {
 /// 这里不使用 `TokenUsage` 别名，避免与 `language_models::TokenUsage` 混淆。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TrackerTokenUsage {
+    /// 累计的 prompt token 数
     pub prompt_tokens: usize,
+    /// 累计的 completion token 数
     pub completion_tokens: usize,
+    /// 累计的 total token 数(prompt + completion)
     pub total_tokens: usize,
 }
 
 impl TrackerTokenUsage {
+    /// 创建空的用量统计(全零)。
     pub fn new() -> Self {
         Self::default()
     }
@@ -108,6 +112,7 @@ impl TrackerTokenUsage {
         self.total_tokens = self.prompt_tokens + self.completion_tokens;
     }
 
+    /// 重置用量统计为全零。
     pub fn reset(&mut self) {
         *self = Self::default();
     }

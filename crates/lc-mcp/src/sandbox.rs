@@ -25,56 +25,74 @@ use std::time::SystemTime;
 pub enum ParamRule {
     /// 字符串参数必须以指定前缀开头(最小权限前缀白名单,
     /// 如文件 Server 只允许 `file:///tmp/`)。
-    Prefix { field: String, prefix: String },
+    Prefix {
+        /// 目标参数字段名
+        field: String,
+        /// 要求的前缀
+        prefix: String,
+    },
     /// 字符串参数必须落在允许集合内(枚举白名单)。
-    Enum { field: String, allowed: Vec<String> },
+    Enum {
+        /// 目标参数字段名
+        field: String,
+        /// 允许的取值集合
+        allowed: Vec<String>,
+    },
     /// 字符串参数禁止包含指定子串(如路径穿越 `..`、危险命令)。
     RejectContains {
+        /// 目标参数字段名
         field: String,
+        /// 禁止出现的子串列表
         forbidden: Vec<String>,
     },
 }
 
 impl ParamRule {
     /// 对一次工具调用参数校验;返回违规原因。
-    fn check(&self, arguments: &Value) -> Result<(), String> {
+    fn check(&self, arguments: &Value) -> Result<(), ParamRuleError> {
         let obj = match arguments {
             Value::Object(m) => m,
             // 非对象参数(无字段可校验):fail-closed,拦截以保最小权限。
-            _ => return Err("参数必须是 JSON 对象才能做最小权限校验".to_string()),
+            _ => {
+                return Err(ParamRuleError::Violation(
+                    "arguments must be a JSON object to perform least-privilege validation"
+                        .to_string(),
+                ))
+            }
         };
         match self {
             ParamRule::Prefix { field, prefix } => {
-                let v = obj
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("缺少字符串参数 '{field}'"))?;
+                let v = obj.get(field).and_then(Value::as_str).ok_or_else(|| {
+                    ParamRuleError::Violation(format!("missing string parameter '{field}'"))
+                })?;
                 if v.starts_with(prefix) {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "参数 '{field}' 的值 '{v}' 未以最小权限前缀 '{prefix}' 开头"
-                    ))
+                    Err(ParamRuleError::Violation(format!(
+                        "value '{v}' of parameter '{field}' does not start with the required least-privilege prefix '{prefix}'"
+                    )))
                 }
             }
             ParamRule::Enum { field, allowed } => {
-                let v = obj
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("缺少字符串参数 '{field}'"))?;
+                let v = obj.get(field).and_then(Value::as_str).ok_or_else(|| {
+                    ParamRuleError::Violation(format!("missing string parameter '{field}'"))
+                })?;
                 if allowed.iter().any(|a| a == v) {
                     Ok(())
                 } else {
-                    Err(format!("参数 '{field}' 的值 '{v}' 不在允许集合内"))
+                    Err(ParamRuleError::Violation(format!(
+                        "value '{v}' of parameter '{field}' is not in the allowed set"
+                    )))
                 }
             }
             ParamRule::RejectContains { field, forbidden } => {
-                let v = obj
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("缺少字符串参数 '{field}'"))?;
+                let v = obj.get(field).and_then(Value::as_str).ok_or_else(|| {
+                    ParamRuleError::Violation(format!("missing string parameter '{field}'"))
+                })?;
                 if let Some(bad) = forbidden.iter().find(|b| v.contains(b.as_str())) {
-                    Err(format!("参数 '{field}' 包含被禁止的子串 '{bad}'"))
+                    Err(ParamRuleError::Violation(format!(
+                        "parameter '{field}' contains a forbidden substring '{bad}'"
+                    )))
                 } else {
                     Ok(())
                 }
@@ -82,6 +100,24 @@ impl ParamRule {
         }
     }
 }
+
+/// 参数级最小权限校验错误(P2-6)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParamRuleError {
+    /// 违反参数规则的具体原因。
+    Violation(String),
+}
+
+impl std::fmt::Display for ParamRuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParamRuleError::Violation(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ParamRuleError {}
 
 /// 网络层出站白名单(P2-6):该 Server 允许访问的主机。
 ///
@@ -104,6 +140,7 @@ impl EgressPolicy {
         self
     }
 
+    /// 白名单是否为空(为空表示禁止一切出站)。
     pub fn is_empty(&self) -> bool {
         self.allowed.is_empty()
     }
@@ -138,10 +175,12 @@ pub struct AuditRecord {
 /// 沙箱拦截错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxError {
+    /// 拦截原因描述
     pub reason: String,
 }
 
 impl SandboxError {
+    /// 构造沙箱拦截错误。
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
@@ -215,7 +254,8 @@ impl ServerSandbox {
     /// 校验一次工具调用(参数级最小权限),放行记 Allowed、拦截记 Blocked。
     pub fn check_call(&self, tool: &str, arguments: &Value) -> Result<(), SandboxError> {
         for rule in self.param_rules.iter() {
-            if let Err(reason) = rule.check(arguments) {
+            if let Err(e) = rule.check(arguments) {
+                let reason = e.to_string();
                 self.record(tool, arguments.clone(), false, Some(reason.clone()));
                 return Err(SandboxError::new(reason));
             }
@@ -227,7 +267,7 @@ impl ServerSandbox {
     /// 校验出站目标是否在白名单内(网络层)。
     pub fn check_egress(&self, tool: &str, host: &str) -> Result<(), SandboxError> {
         if !self.egress.allows(host) {
-            let reason = format!("出站目标 '{host}' 不在白名单内");
+            let reason = format!("egress target '{host}' is not in the allowlist");
             self.record(tool, Value::Null, false, Some(reason.clone()));
             return Err(SandboxError::new(reason));
         }
@@ -281,14 +321,22 @@ mod tests {
         });
         sandbox
             .check_call("read_file", &json!({ "path": "file:///tmp/a.txt" }))
-            .expect("tmp 前缀应放行");
+            .expect("tmp prefix should be allowed");
         let err = sandbox
             .check_call("read_file", &json!({ "path": "file:///etc/passwd" }))
             .unwrap_err();
-        assert!(err.to_string().contains("未以最小权限前缀"), "{}", err);
+        assert!(
+            err.to_string().contains("least-privilege prefix"),
+            "{}",
+            err
+        );
         // 缺字段 fail-closed。
         let err = sandbox.check_call("read_file", &json!({})).unwrap_err();
-        assert!(err.to_string().contains("缺少字符串参数"), "{}", err);
+        assert!(
+            err.to_string().contains("missing string parameter"),
+            "{}",
+            err
+        );
     }
 
     /// 枚举白名单:只允许声明的值。
@@ -300,11 +348,15 @@ mod tests {
         });
         sandbox
             .check_call("parse", &json!({ "format": "json" }))
-            .expect("json 应在允许集合内");
+            .expect("json should be in the allowed set");
         let err = sandbox
             .check_call("parse", &json!({ "format": "xml" }))
             .unwrap_err();
-        assert!(err.to_string().contains("不在允许集合内"), "{}", err);
+        assert!(
+            err.to_string().contains("not in the allowed set"),
+            "{}",
+            err
+        );
     }
 
     /// 拒绝路径穿越子串。
@@ -316,11 +368,11 @@ mod tests {
         });
         sandbox
             .check_call("read_file", &json!({ "path": "/tmp/a.txt" }))
-            .expect("正常路径应放行");
+            .expect("normal path should be allowed");
         let err = sandbox
             .check_call("read_file", &json!({ "path": "/tmp/../etc/passwd" }))
             .unwrap_err();
-        assert!(err.to_string().contains("禁止的子串"), "{}", err);
+        assert!(err.to_string().contains("forbidden substring"), "{}", err);
     }
 
     /// 非对象参数 fail-closed。
@@ -331,7 +383,7 @@ mod tests {
             prefix: "/tmp/".to_string(),
         });
         let err = sandbox.check_call("t", &json!("hello")).unwrap_err();
-        assert!(err.to_string().contains("必须是 JSON 对象"), "{}", err);
+        assert!(err.to_string().contains("must be a JSON object"), "{}", err);
     }
 
     /// 出站白名单:精确匹配 + 子域放行 + 空策略全禁。
@@ -339,13 +391,19 @@ mod tests {
     fn test_egress_whitelist() {
         let policy = EgressPolicy::new().allow("example.com");
         assert!(policy.allows("example.com"));
-        assert!(policy.allows("api.example.com"), "子域应放行");
+        assert!(
+            policy.allows("api.example.com"),
+            "subdomain should be allowed"
+        );
         assert!(!policy.allows("example.org"));
-        assert!(!policy.allows("evil-example.com"), "不得误放形似子域");
+        assert!(
+            !policy.allows("evil-example.com"),
+            "must not allow a similar-looking subdomain"
+        );
         assert!(EgressPolicy::new().is_empty());
         assert!(
             !EgressPolicy::new().allows("anything.example"),
-            "空白名单全禁"
+            "empty allowlist blocks all"
         );
     }
 
@@ -355,15 +413,15 @@ mod tests {
         let sandbox = ServerSandbox::new("fetch").allow_host("example.com");
         sandbox
             .check_egress("http_get", "example.com")
-            .expect("白名单内应放行");
+            .expect("host in allowlist should be allowed");
         let err = sandbox.check_egress("http_get", "evil.com").unwrap_err();
-        assert!(err.to_string().contains("白名单"), "{}", err);
+        assert!(err.to_string().contains("allowlist"), "{}", err);
 
         let log = sandbox.audit_log();
-        assert_eq!(log.len(), 2, "放行 + 拦截各记一条");
-        assert!(log[0].allowed, "第一条放行");
-        assert!(!log[1].allowed, "第二条拦截");
-        assert!(log[1].reason.as_deref().unwrap().contains("白名单"));
+        assert_eq!(log.len(), 2, "one record for allow and one for block");
+        assert!(log[0].allowed, "first record is allowed");
+        assert!(!log[1].allowed, "second record is blocked");
+        assert!(log[1].reason.as_deref().unwrap().contains("allowlist"));
         assert_eq!(log[1].server, "fetch");
         assert_eq!(log[1].tool, "http_get");
     }
@@ -377,12 +435,19 @@ mod tests {
         });
         sandbox
             .check_call("read_file", &json!({ "path": "file:///tmp/a.txt" }))
-            .expect("应放行");
+            .expect("should be allowed");
         let _ = sandbox.check_call("read_file", &json!({ "path": "file:///etc/passwd" }));
         let log = sandbox.audit_log();
-        assert_eq!(log.len(), 2, "放行与拦截均全量记录");
+        assert_eq!(
+            log.len(),
+            2,
+            "both allow and block calls are fully recorded"
+        );
         assert!(log[0].allowed);
-        assert!(log[0].arguments.get("path").is_some(), "审计保留全量参数");
+        assert!(
+            log[0].arguments.get("path").is_some(),
+            "audit keeps full arguments"
+        );
         assert!(!log[1].allowed);
         assert!(log[1].reason.is_some());
     }
@@ -394,7 +459,7 @@ mod tests {
         for i in 0..3 {
             sandbox
                 .check_call("t", &json!({ "n": i }))
-                .expect("无规则恒放行");
+                .expect("no rules should always allow");
         }
         let log = sandbox.audit_log();
         assert_eq!(log.len(), 2);
@@ -407,7 +472,9 @@ mod tests {
     fn test_clone_shares_audit() {
         let sandbox = ServerSandbox::new("fs");
         let clone = sandbox.clone();
-        sandbox.check_call("t", &json!({})).expect("放行");
-        assert_eq!(clone.audit_log().len(), 1, "克隆体共享审计日志");
+        sandbox
+            .check_call("t", &json!({}))
+            .expect("should be allowed");
+        assert_eq!(clone.audit_log().len(), 1, "clone shares the audit log");
     }
 }

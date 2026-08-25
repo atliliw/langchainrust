@@ -29,25 +29,26 @@ use lc_vector_stores::Document;
 
 /// 文档加载器错误类型
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoaderError {
     /// IO 错误
-    #[error("IO 错误: {0}")]
+    #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
     /// CSV 解析错误
-    #[error("CSV 解析错误: {0}")]
+    #[error("CSV parse error: {0}")]
     CsvError(String),
 
     /// PDF 解析错误
-    #[error("PDF 解析错误: {0}")]
+    #[error("PDF parse error: {0}")]
     PdfError(String),
 
     /// JSON 解析错误
-    #[error("JSON 解析错误: {0}")]
+    #[error("JSON parse error: {0}")]
     JsonError(String),
 
     /// 未知错误
-    #[error("未知错误: {0}")]
+    #[error("unknown error: {0}")]
     Other(String),
 }
 

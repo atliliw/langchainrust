@@ -9,6 +9,8 @@ use lc_chains::{ChainRunnable, LLMChain, RouterChain, SequentialChain};
 use lc_core::language_models::LLMResult;
 use lc_core::runnables::{Runnable, RunnableConfig};
 use lc_core::{BaseChatModel, BaseLanguageModel};
+use lc_providers::openai::OpenAIError;
+use lc_providers::ProviderError;
 use lc_schema::Message;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -203,20 +205,11 @@ impl BaseChain for NamedChain {
 }
 
 /// Minimal chat model mock for LLMChain callback tests.
-#[derive(Debug)]
-struct MockChatError(String);
-impl std::fmt::Display for MockChatError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-impl std::error::Error for MockChatError {}
-
 struct MockChatModel;
 
 #[async_trait]
 impl Runnable<Vec<Message>, LLMResult> for MockChatModel {
-    type Error = MockChatError;
+    type Error = ProviderError;
     async fn invoke(
         &self,
         _input: Vec<Message>,
@@ -268,7 +261,9 @@ impl BaseChatModel for MockChatModel {
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        Err(MockChatError("stream not supported".into()))
+        Err(ProviderError::OpenAI(OpenAIError::Api(
+            "stream not supported".to_string(),
+        )))
     }
 }
 

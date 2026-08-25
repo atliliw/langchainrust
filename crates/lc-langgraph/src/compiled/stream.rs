@@ -120,7 +120,11 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
 
                 if graph.interrupt_after.contains(&current_node) {
                     if let Some(ref checkpointer) = graph.checkpointer {
-                        let _ = checkpointer.lock().await.save(&state, recursion_count).await;
+                        let _ = checkpointer
+                            .lock()
+                            .await
+                            .save(&state, recursion_count)
+                            .await;
                     }
                     let _ = tx
                         .send(Err(GraphError::ExecutionInterrupted(format!(
@@ -140,7 +144,11 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 };
 
                 if let Some(ref checkpointer) = graph.checkpointer {
-                    let _ = checkpointer.lock().await.save(&state, recursion_count).await;
+                    let _ = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await;
                 }
 
                 current_node = next_node;

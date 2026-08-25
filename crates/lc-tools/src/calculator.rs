@@ -35,6 +35,7 @@ pub struct CalculatorOutput {
 pub struct Calculator;
 
 impl Calculator {
+    /// Creates a new calculator tool.
     pub fn new() -> Self {
         Self
     }

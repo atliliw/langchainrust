@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! MCP (Model Context Protocol) 支持
 //!
 //! MCP 是 Anthropic 推出的工具协议标准,已成行业事实标准。
@@ -60,7 +61,9 @@ pub use sampling::{
     ModelHint, ModelPreferences, SamplingContent, SamplingGuard, SamplingGuardError, SamplingLease,
     SamplingMessage, SamplingRequest, SamplingResult, SamplingRole,
 };
-pub use sandbox::{AuditRecord, EgressPolicy, ParamRule, SandboxError, ServerSandbox};
+pub use sandbox::{
+    AuditRecord, EgressPolicy, ParamRule, ParamRuleError, SandboxError, ServerSandbox,
+};
 pub use server::MCPServer;
 pub use stream::{PartialContent, ToolStream, ToolStreamError};
 pub use tenant::TenantGateway;

@@ -138,7 +138,9 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
             .map(|(index, input)| {
                 let config = config.clone();
                 async move {
-                    self.invoke(input, config).await.map(|output| (index, output))
+                    self.invoke(input, config)
+                        .await
+                        .map(|output| (index, output))
                 }
             })
             .buffer_unordered(limit)

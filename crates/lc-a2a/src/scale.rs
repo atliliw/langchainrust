@@ -26,16 +26,27 @@ use crate::protocol::{AgentCard, AgentSkill};
 
 /// Errors raised by the scale-guard components.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ScaleError {
     /// A delegation chain exceeded the configured hop limit.
     #[error("delegation would exceed the {max} hop limit at hop {hops}")]
-    HopLimitExceeded { hops: usize, max: usize },
+    HopLimitExceeded {
+        /// The delegation depth at which the limit was hit.
+        hops: usize,
+        /// The configured maximum delegation depth.
+        max: usize,
+    },
     /// A worker tried to delegate (Worker↔Worker fan-out is forbidden).
     #[error("worker agents may not delegate to other agents")]
     WorkerToWorker,
     /// Linking a task edge would create a cycle in the global task graph.
     #[error("task delegation {parent} -> {child} would create a cycle")]
-    CycleDetected { parent: String, child: String },
+    CycleDetected {
+        /// The parent task attempting the delegation.
+        parent: String,
+        /// The child task that would create the cycle.
+        child: String,
+    },
 }
 
 /// An indexed skill and the agent that offers it (P2-9).

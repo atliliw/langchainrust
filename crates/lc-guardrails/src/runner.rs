@@ -14,8 +14,11 @@ const MAX_VIOLATIONS: usize = 1000;
 /// 单次 Guardrail 违规(P1-7:可序列化,供审计持久化)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailViolation {
+    /// 触发的护栏名称
     pub guardrail_name: String,
+    /// 违规阶段(input / output / stream)
     pub stage: String,
+    /// 违规原因
     pub reason: String,
 }
 
@@ -29,7 +32,12 @@ pub enum OutputValidation {
     /// 全部通过,`value` 为最终值(可能被多个 `Modify` 改写)。
     Passed(String),
     /// 被拦截,`partial` 为拦截前的已处理输出。
-    Blocked { reason: String, partial: String },
+    Blocked {
+        /// 拦截原因
+        reason: String,
+        /// 拦截前已处理的部分输出
+        partial: String,
+    },
 }
 
 /// Guardrail 执行器:按配置依次执行 input / output / streaming guardrails。
@@ -44,6 +52,7 @@ pub struct GuardrailRunner {
 }
 
 impl GuardrailRunner {
+    /// 用指定配置创建执行器。
     pub fn new(config: GuardrailsConfig) -> Self {
         Self {
             config,

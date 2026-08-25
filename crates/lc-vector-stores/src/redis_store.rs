@@ -3,14 +3,16 @@
 
 use async_trait::async_trait;
 use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
-use std::path::Path;
 
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{Document, VectorStoreError};
 
+/// Redis 文档存储配置
 #[derive(Debug, Clone)]
 pub struct RedisStoreConfig {
+    /// Redis 连接地址
     pub url: String,
+    /// 键前缀
     pub key_prefix: String,
 }
 
@@ -24,23 +26,27 @@ impl Default for RedisStoreConfig {
 }
 
 impl RedisStoreConfig {
+    /// 使用连接地址创建配置,键前缀取默认值。
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             ..Default::default()
         }
     }
+    /// 设置键前缀。
     pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.key_prefix = prefix.into();
         self
     }
 }
 
+/// Redis 文档存储实现
 pub struct RedisDocumentStore {
     config: RedisStoreConfig,
 }
 
 impl RedisDocumentStore {
+    /// 根据配置连接 Redis 并验证连接可用,创建存储实例。
     pub async fn new(config: RedisStoreConfig) -> Result<Self, VectorStoreError> {
         let client = redis::Client::open(config.url.as_str())
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
@@ -123,7 +129,11 @@ impl DocumentStore for RedisDocumentStore {
                 Ok(doc) => Ok(Some(doc)),
                 Err(e) => {
                     // 键存在但载荷损坏/由旧 schema 写入,区别于真实 miss
-                    log::error!("文档 `{}` 存储载荷解析失败(可能损坏或 schema 变更): {}", id, e);
+                    log::error!(
+                        "failed to parse stored payload for document `{}` (corrupted or written by an older schema): {}",
+                        id,
+                        e
+                    );
                     Ok(None)
                 }
             },
@@ -267,6 +277,24 @@ impl RedisDocumentStore {
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
     }
+
+    /// 将 Redis 数据集持久化到磁盘 (RDB 快照,`SAVE` 命令)。
+    ///
+    /// C3: 原 `ChunkedDocumentStoreTrait::save` 为假默认方法,已从 trait 删除;
+    /// Redis 的持久化语义是整库 RDB 快照,与文件路径无关,故改为无参固有方法。
+    pub async fn save_to_disk(&self) -> Result<(), VectorStoreError> {
+        let config = self.config.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
+            let mut conn = redis::Client::open(config.url.as_str())
+                .and_then(|c| c.get_connection())
+                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+            redis::cmd("SAVE")
+                .query::<()>(&mut conn)
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+        })
+        .await
+        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
+    }
 }
 
 #[async_trait]
@@ -369,7 +397,7 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
                 Ok(chunk) => Ok(Some(chunk)),
                 Err(e) => {
                     log::error!(
-                        "chunk `{}` 存储载荷解析失败(可能损坏或 schema 变更): {}",
+                        "failed to parse stored payload for chunk `{}` (corrupted or written by an older schema): {}",
                         chunk_id,
                         e
                     );
@@ -447,20 +475,6 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
     async fn clear(&self) -> Result<(), VectorStoreError> {
         // M29: use SCAN + DEL with prefix instead of FLUSHDB to avoid wiping other keys
         self.clear_with_prefix().await
-    }
-
-    async fn save(&self, _path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        let config = self.config.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SAVE")
-                .query::<()>(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
-        })
-        .await
-        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
     }
 
     fn add_parent_document_blocking(

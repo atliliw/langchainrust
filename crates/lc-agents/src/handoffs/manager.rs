@@ -53,6 +53,7 @@ fn build_handoff_input(handoff: &Handoff) -> String {
 }
 
 impl HandoffManager {
+    /// 创建新的 HandoffManager。
     pub fn new() -> Self {
         Self {
             state: Mutex::new(HandoffState {
@@ -173,7 +174,7 @@ impl HandoffManager {
             let primary = state
                 .primary
                 .clone()
-                .ok_or_else(|| HandoffError::AgentNotFound("未设置 primary".to_string()))?;
+                .ok_or_else(|| HandoffError::AgentNotFound("primary not set".to_string()))?;
             let executor = state
                 .agents
                 .get(&primary)
@@ -231,7 +232,9 @@ pub struct HandoffTool {
 }
 
 impl HandoffTool {
-    pub fn new(manager: Arc<HandoffManager>, target_agent: String) -> Self {
+    /// 创建一个指向指定目标 Agent 的交接工具。
+    pub fn new(manager: Arc<HandoffManager>, target_agent: impl Into<String>) -> Self {
+        let target_agent = target_agent.into();
         let name = format!("handoff_to_{}", target_agent);
         let description = format!("将任务交接给 {} agent", target_agent);
         Self {
@@ -438,8 +441,8 @@ mod tests {
 
         let err = manager.run("start".to_string()).await.unwrap_err();
         assert!(
-            err.to_string().contains("交接环"),
-            "应返回环检测错误,实际: {}",
+            err.to_string().contains("handoff cycle"),
+            "should return a cycle-detection error, got: {}",
             err
         );
     }
@@ -472,8 +475,8 @@ mod tests {
 
         let err = manager.run("start".to_string()).await.unwrap_err();
         assert!(
-            err.to_string().contains("深度"),
-            "应返回深度超限错误,实际: {}",
+            err.to_string().contains("handoff depth"),
+            "should return a depth-exceeded error, got: {}",
             err
         );
     }

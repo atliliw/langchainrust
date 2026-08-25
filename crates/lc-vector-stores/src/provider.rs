@@ -21,7 +21,12 @@ pub enum VectorStoreType {
     },
 
     /// Qdrant 向量数据库，适用于生产环境
-    Qdrant { url: String, collection: String },
+    Qdrant {
+        /// Qdrant 服务地址
+        url: String,
+        /// 集合名称
+        collection: String,
+    },
 }
 
 /// 向量存储提供者
@@ -68,7 +73,7 @@ impl VectorStoreProvider {
             // Q3: 未启用 feature 时显式报错,拒绝静默降级到内存存储 ——
             // 生产代码若以为在写 Qdrant 实际写进内存,进程重启数据即丢。
             Err(VectorStoreError::ConnectionError(format!(
-                "Qdrant 存储需要启用 'qdrant-integration' feature (url={url}, collection={collection});拒绝静默降级为 InMemory,请在 Cargo.toml 开启该 feature"
+                "Qdrant store requires the 'qdrant-integration' feature (url={url}, collection={collection}); refusing to silently fall back to InMemory, enable the feature in Cargo.toml"
             )))
         }
     }
@@ -86,18 +91,21 @@ impl Default for VectorStoreBuilder {
 }
 
 impl VectorStoreBuilder {
+    /// 创建默认的内存存储构建器
     pub fn new() -> Self {
         Self {
             store_type: VectorStoreType::InMemory,
         }
     }
 
+    /// 创建内存存储构建器
     pub fn in_memory() -> Self {
         Self {
             store_type: VectorStoreType::InMemory,
         }
     }
 
+    /// 创建文件持久化存储构建器
     pub fn file_backed(path: impl Into<String>, dimension: usize) -> Self {
         Self {
             store_type: VectorStoreType::FileBacked {
@@ -107,6 +115,7 @@ impl VectorStoreBuilder {
         }
     }
 
+    /// 创建 Qdrant 存储构建器
     pub fn qdrant(url: impl Into<String>, collection: impl Into<String>) -> Self {
         Self {
             store_type: VectorStoreType::Qdrant {
@@ -116,6 +125,7 @@ impl VectorStoreBuilder {
         }
     }
 
+    /// 构建向量存储实例
     pub async fn build(self) -> Result<Arc<dyn VectorStore>, VectorStoreError> {
         VectorStoreProvider::create(self.store_type).await
     }

@@ -55,6 +55,7 @@ impl PartialContent {
 
 /// 流式订阅的错误类别(P2-9)。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToolStreamError {
     /// 广播缓冲区积压导致丢帧(推送太快,消费不及)。
     Lagged,
@@ -65,8 +66,11 @@ pub enum ToolStreamError {
 impl fmt::Display for ToolStreamError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ToolStreamError::Lagged => write!(f, "工具流丢帧:推送过快,增量片段积压被丢弃"),
-            ToolStreamError::Timeout => write!(f, "工具流超时:限期内未收到 final 片段"),
+            ToolStreamError::Lagged => write!(
+                f,
+                "tool stream lagged: chunks were pushed too fast and buffered increments were dropped"
+            ),
+            ToolStreamError::Timeout => write!(f, "tool stream timed out: no final chunk received within the deadline"),
         }
     }
 }
@@ -198,7 +202,8 @@ mod tests {
             is_final: true,
         };
         let json = serde_json::to_value(&c).unwrap();
-        let parsed = parse_partial_notification(Some(json)).expect("应能解析回原值");
+        let parsed = parse_partial_notification(Some(json))
+            .expect("should parse back to the original value");
         assert_eq!(parsed.tool, "read_file");
         assert_eq!(parsed.seq, 2);
         assert_eq!(parsed.render_text(), "第二段");
@@ -224,7 +229,7 @@ mod tests {
         let client =
             MCPClient::with_transport(Box::new(crate::InMemoryTransport::new(server.clone())))
                 .await
-                .expect("in-memory 连接应成功");
+                .expect("in-memory connection should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
         // 先推一个"其他工具"的片段:应被过滤,collect 不受影响。
@@ -235,12 +240,16 @@ mod tests {
         let chunks = stream
             .collect(Duration::from_secs(2))
             .await
-            .expect("应收到增量");
-        assert_eq!(chunks.len(), 2, "其他工具的片段应被过滤");
+            .expect("should receive increments");
+        assert_eq!(
+            chunks.len(),
+            2,
+            "chunks from other tools should be filtered"
+        );
         assert_eq!(chunks[0].render_text(), "第一段");
         assert_eq!(chunks[0].progress, Some(1.0));
         assert!(!chunks[0].is_final);
-        assert!(chunks[1].is_final, "collect 应以 final 片段收尾");
+        assert!(chunks[1].is_final, "collect should end with a final chunk");
     }
 
     /// 多类型内容(P1-7):片段携带图片内容时,render_text 以占位描述代表。
@@ -250,7 +259,7 @@ mod tests {
         let client =
             MCPClient::with_transport(Box::new(crate::InMemoryTransport::new(server.clone())))
                 .await
-                .expect("in-memory 连接应成功");
+                .expect("in-memory connection should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
         server.publish_partial(PartialContent {
@@ -266,7 +275,7 @@ mod tests {
         let chunks = stream
             .collect(Duration::from_secs(2))
             .await
-            .expect("应收到增量");
+            .expect("should receive increments");
         assert_eq!(chunks.len(), 1);
         assert!(
             chunks[0].render_text().contains("[image: image/png"),
@@ -282,7 +291,7 @@ mod tests {
         let client =
             MCPClient::with_transport(Box::new(crate::InMemoryTransport::new(server.clone())))
                 .await
-                .expect("in-memory 连接应成功");
+                .expect("in-memory connection should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
         // 只推非 final 片段,永远等不到收尾 → 超时。
@@ -290,7 +299,7 @@ mod tests {
         let err = stream
             .collect(Duration::from_millis(100))
             .await
-            .expect_err("应超时");
+            .expect_err("should time out");
         assert_eq!(err, ToolStreamError::Timeout);
     }
 
@@ -301,24 +310,24 @@ mod tests {
         let fake = crate::test_support::start_fake_sse_server(PostMode::StreamingCall).await;
         let client = MCPClient::connect(MCPConfig::sse(&fake.sse_url))
             .await
-            .expect("连接假 SSE 服务器应成功");
+            .expect("connecting to fake SSE server should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
         // call_seen 门控:触发服务器开始沿 SSE 推流(见 test_support)。
         let out = client
             .call_tool("echo", serde_json::json!({"msg": "hi"}))
             .await;
-        assert!(out.is_ok(), "普通调用仍应成功");
+        assert!(out.is_ok(), "normal call should still succeed");
 
         let chunks = stream
             .collect(Duration::from_secs(5))
             .await
-            .expect("应收到流式增量");
+            .expect("should receive streaming increments");
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].render_text(), "chunk0");
         assert_eq!(chunks[0].progress, Some(1.0 / 3.0));
         assert_eq!(chunks[1].render_text(), "chunk1");
         assert_eq!(chunks[2].render_text(), "chunk2");
-        assert!(chunks[2].is_final, "最后一个片段应标记 final");
+        assert!(chunks[2].is_final, "last chunk should be marked final");
     }
 }

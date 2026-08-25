@@ -38,32 +38,45 @@ impl EdgeTarget {
 /// - Conditional: Routes based on state via a routing function
 #[derive(Debug, Clone)]
 pub enum GraphEdge {
+    /// Fixed edge: always transitions to a specific target node.
     Fixed {
+        /// Source node name.
         source: String,
+        /// Target node name.
         target: String,
     },
 
+    /// Conditional edge: routes to a target based on state via a routing function.
     Conditional {
+        /// Source node name.
         source: String,
+        /// Name of the routing function used to select a target.
         router_name: String,
+        /// Route key → target node name mapping.
         targets: HashMap<String, String>,
+        /// Target used when no route key matches.
         default_target: Option<String>,
     },
 
     /// FanOut edge: one source → multiple targets (parallel execution)
     FanOut {
+        /// Source node name.
         source: String,
+        /// Target nodes to execute in parallel.
         targets: Vec<String>,
     },
 
     /// FanIn edge: multiple sources → one target (join point)
     FanIn {
+        /// Source nodes that join at this point.
         sources: Vec<String>,
+        /// Single target node after the join.
         target: String,
     },
 }
 
 impl GraphEdge {
+    /// Create a fixed edge from source to target.
     pub fn fixed(source: impl Into<String>, target: impl Into<String>) -> Self {
         Self::Fixed {
             source: source.into(),
@@ -71,6 +84,7 @@ impl GraphEdge {
         }
     }
 
+    /// Create a conditional edge routed by a named routing function.
     pub fn conditional<R, T>(
         source: impl Into<String>,
         router_name: impl Into<String>,
@@ -92,6 +106,7 @@ impl GraphEdge {
         }
     }
 
+    /// Create a FanOut edge with multiple parallel targets.
     pub fn fan_out(source: impl Into<String>, targets: Vec<String>) -> Self {
         Self::FanOut {
             source: source.into(),
@@ -99,6 +114,7 @@ impl GraphEdge {
         }
     }
 
+    /// Create a FanIn edge joining multiple sources into one target.
     pub fn fan_in(sources: Vec<String>, target: impl Into<String>) -> Self {
         Self::FanIn {
             sources,
@@ -106,6 +122,7 @@ impl GraphEdge {
         }
     }
 
+    /// Return the source node name (for FanIn returns `"__fanin__"`).
     pub fn source(&self) -> &str {
         match self {
             Self::Fixed { source, .. } => source,
@@ -115,6 +132,7 @@ impl GraphEdge {
         }
     }
 
+    /// Return the fixed target node, if this edge has one.
     pub fn fixed_target(&self) -> Option<&str> {
         match self {
             Self::Fixed { target, .. } => Some(target),
@@ -124,6 +142,7 @@ impl GraphEdge {
         }
     }
 
+    /// Return the FanOut targets, if this is a FanOut edge.
     pub fn fan_out_targets(&self) -> Option<&Vec<String>> {
         match self {
             Self::FanOut { targets, .. } => Some(targets),
@@ -131,6 +150,7 @@ impl GraphEdge {
         }
     }
 
+    /// Return the FanIn sources, if this is a FanIn edge.
     pub fn fan_in_sources(&self) -> Option<&Vec<String>> {
         match self {
             Self::FanIn { sources, .. } => Some(sources),
@@ -161,6 +181,7 @@ impl<S: StateSchema, F> FunctionRouter<S, F>
 where
     F: Fn(&S) -> String + Send + Sync,
 {
+    /// Create a function-based conditional router.
     pub fn new(func: F) -> Self {
         Self {
             func,
@@ -190,6 +211,7 @@ where
     F: Fn(&S) -> Fut + Send + Sync,
     Fut: std::future::Future<Output = Result<String, GraphError>> + Send,
 {
+    /// Create an async function-based conditional router.
     pub fn new(func: F) -> Self {
         Self {
             func,
@@ -211,7 +233,9 @@ where
 
 /// Common routing keys
 pub const ROUTE_CONTINUE: &str = "continue";
+/// Routing key meaning "end execution".
 pub const ROUTE_END: &str = "end";
+/// Routing key meaning "error occurred".
 pub const ROUTE_ERROR: &str = "error";
 
 #[cfg(test)]

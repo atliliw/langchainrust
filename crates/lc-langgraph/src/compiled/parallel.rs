@@ -13,6 +13,7 @@ use crate::END;
 use std::collections::HashMap;
 
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Run the graph while capturing parallel fan-out branches into a [`ParallelInvocation`].
     pub async fn invoke_parallel(&self, input: S) -> GraphResult<ParallelInvocation<S>> {
         let mut state = input;
         let mut current_node = self.entry_point.clone();
@@ -200,8 +201,11 @@ impl<S: StateSchema> CompiledGraph<S> {
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
-                let checkpoint_id =
-                    checkpointer.lock().await.save(&state, recursion_count).await?;
+                let checkpoint_id = checkpointer
+                    .lock()
+                    .await
+                    .save(&state, recursion_count)
+                    .await?;
                 steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
             }
 

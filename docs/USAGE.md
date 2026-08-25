@@ -607,7 +607,10 @@ let msg = Message::human_with_file("读取这个文件", FileContent::from_url("
 
 // AI 发起工具调用
 let msg = Message::ai_with_tool_calls("", vec![
-    ToolCall::new("call_1", "calculator", r#"{"expression":"25+17"}"#),
+    ToolCall::builder("call_1")
+        .name("calculator")
+        .arguments(r#"{"expression":"25+17"}"#)
+        .build(),
 ]);
 ```
 

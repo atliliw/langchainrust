@@ -60,20 +60,20 @@ impl ConversationBufferMemory {
     }
 
     /// Set input key name
-    pub fn with_input_key(mut self, key: String) -> Self {
-        self.input_key = key;
+    pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
+        self.input_key = key.into();
         self
     }
 
     /// Set output key name
-    pub fn with_output_key(mut self, key: String) -> Self {
-        self.output_key = key;
+    pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
+        self.output_key = key.into();
         self
     }
 
     /// Set memory variable name
-    pub fn with_memory_key(mut self, key: String) -> Self {
-        self.memory_key = key;
+    pub fn with_memory_key(mut self, key: impl Into<String>) -> Self {
+        self.memory_key = key.into();
         self
     }
 

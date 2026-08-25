@@ -39,7 +39,7 @@ impl DocumentLoader for CSVLoader {
         // 验证文件存在
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
-                "CSV 文件不存在: {}",
+                "CSV file does not exist: {}",
                 self.path.display()
             )));
         }
@@ -98,7 +98,7 @@ impl DocumentLoader for CSVLoader {
             } else {
                 // 如果内容列不存在，返回错误
                 return Err(LoaderError::CsvError(format!(
-                    "内容列 '{}' 在 CSV 文件中不存在",
+                    "content column '{}' does not exist in CSV file",
                     self.content_column
                 )));
             }
@@ -133,7 +133,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            LoaderError::CsvError(msg) => assert!(msg.contains("不存在")),
+            LoaderError::CsvError(msg) => assert!(msg.contains("does not exist")),
             _ => panic!("Expected CsvError"),
         }
     }
@@ -158,17 +158,25 @@ mod tests {
             assert!(doc.content.contains("This is the content"));
             assert_eq!(
                 doc.metadata.get("title"),
-                Some(&"Example Title".to_string())
+                Some(&serde_json::Value::String("Example Title".to_string()))
             );
-            assert_eq!(doc.metadata.get("author"), Some(&"John Doe".to_string()));
+            assert_eq!(
+                doc.metadata.get("author"),
+                Some(&serde_json::Value::String("John Doe".to_string()))
+            );
             assert_eq!(
                 doc.metadata.get("content"),
-                Some(&"This is the content".to_string())
+                Some(&serde_json::Value::String(
+                    "This is the content".to_string()
+                ))
             );
-            assert_eq!(doc.metadata.get("format"), Some(&"csv".to_string()));
+            assert_eq!(
+                doc.metadata.get("format"),
+                Some(&serde_json::Value::String("csv".to_string()))
+            );
             assert_eq!(
                 doc.metadata.get("content_column"),
-                Some(&"content".to_string())
+                Some(&serde_json::Value::String("content".to_string()))
             );
         }
     }

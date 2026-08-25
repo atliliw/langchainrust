@@ -381,7 +381,7 @@ fn truncate_docs_by_tokens(docs: &[Document], max_tokens: Option<usize>) -> Vec<
 
             for doc in docs {
                 let doc_tokens = count_tokens(&doc.content).unwrap_or_else(|e| {
-                    log::warn!("token 计数失败,回退为按字节数估算: {e}");
+                    log::warn!("token counting failed, falling back to byte-length estimate: {e}");
                     doc.content.len()
                 });
                 if used_tokens + doc_tokens > budget && !result.is_empty() {

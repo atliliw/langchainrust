@@ -59,7 +59,7 @@ impl SimpleMathTool {
     fn sqrt(&self, value: f64) -> Result<MathOutput, ToolError> {
         if value < 0.0 {
             return Err(ToolError::InvalidInput(
-                "平方根操作要求非负数值".to_string(),
+                "square root requires a non-negative number".to_string(),
             ));
         }
         let result = value.sqrt();
@@ -73,7 +73,7 @@ impl SimpleMathTool {
     fn log(&self, value: f64, base: f64) -> Result<MathOutput, ToolError> {
         if value <= 0.0 || base <= 0.0 || base == 1.0 {
             return Err(ToolError::InvalidInput(
-                "对数操作要求正数值且底数不为1".to_string(),
+                "logarithm requires positive values and a base other than 1".to_string(),
             ));
         }
         let result = value.log(base);
@@ -87,7 +87,7 @@ impl SimpleMathTool {
     fn ln(&self, value: f64) -> Result<MathOutput, ToolError> {
         if value <= 0.0 {
             return Err(ToolError::InvalidInput(
-                "自然对数操作要求正数值".to_string(),
+                "natural logarithm requires a positive number".to_string(),
             ));
         }
         let result = value.ln();
@@ -136,22 +136,24 @@ impl SimpleMathTool {
 
     fn factorial(&self, value: f64) -> Result<MathOutput, ToolError> {
         if value < 0.0 {
-            return Err(ToolError::InvalidInput("阶乘操作要求非负整数".to_string()));
+            return Err(ToolError::InvalidInput(
+                "factorial requires a non-negative integer".to_string(),
+            ));
         }
         if value.is_nan() {
             return Err(ToolError::InvalidInput(
-                "阶乘操作要求有效数值，不接受 NaN".to_string(),
+                "factorial requires a valid number, NaN is not allowed".to_string(),
             ));
         }
         if value != value.floor() {
             return Err(ToolError::InvalidInput(
-                "阶乘操作要求整数，不接受小数".to_string(),
+                "factorial requires an integer, not a decimal".to_string(),
             ));
         }
         let n = value as u64;
         if n > 20 {
             return Err(ToolError::InvalidInput(
-                "阶乘值过大，最大支持20".to_string(),
+                "factorial value too large, maximum supported is 20".to_string(),
             ));
         }
         let result = self.compute_factorial(n);
@@ -173,7 +175,7 @@ impl SimpleMathTool {
     fn mod_op(&self, a: f64, b: f64) -> Result<MathOutput, ToolError> {
         if b == 0.0 {
             return Err(ToolError::InvalidInput(
-                "取模运算的除数不能为零".to_string(),
+                "modulo divisor must not be zero".to_string(),
             ));
         }
         let result = a % b;
@@ -189,7 +191,9 @@ impl SimpleMathTool {
         let b_int = b as i64;
 
         if a_int < 0 || b_int < 0 {
-            return Err(ToolError::InvalidInput("GCD 操作要求正整数".to_string()));
+            return Err(ToolError::InvalidInput(
+                "GCD operation requires positive integers".to_string(),
+            ));
         }
 
         let result = self.compute_gcd(a_int.abs(), b_int.abs());
@@ -213,13 +217,15 @@ impl SimpleMathTool {
         let b_int = b as i64;
 
         if a_int <= 0 || b_int <= 0 {
-            return Err(ToolError::InvalidInput("LCM 操作要求正整数".to_string()));
+            return Err(ToolError::InvalidInput(
+                "LCM operation requires positive integers".to_string(),
+            ));
         }
 
         let gcd = self.compute_gcd(a_int, b_int);
         let result = (a_int / gcd)
             .checked_mul(b_int)
-            .ok_or_else(|| ToolError::InvalidInput("LCM 计算结果溢出 i64 范围".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidInput("LCM result overflows i64 range".to_string()))?;
         Ok(MathOutput {
             result: result as f64,
             operation: "lcm".to_string(),
@@ -259,77 +265,77 @@ impl Tool for SimpleMathTool {
         match input.operation.as_str() {
             "power" => {
                 let base = input.value.ok_or_else(||
-                    ToolError::InvalidInput("power 操作需要 value 参数作为底数".to_string()))?;
+                    ToolError::InvalidInput("power operation requires a value parameter as the base".to_string()))?;
                 let exp = input.value2.ok_or_else(||
-                    ToolError::InvalidInput("power 操作需要 value2 参数作为指数".to_string()))?;
+                    ToolError::InvalidInput("power operation requires a value2 parameter as the exponent".to_string()))?;
                 self.power(base, exp)
             }
             "sqrt" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("sqrt 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("sqrt operation requires a value parameter".to_string()))?;
                 self.sqrt(value)
             }
             "log" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("log 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("log operation requires a value parameter".to_string()))?;
                 let base = input.base.unwrap_or(10.0);
                 self.log(value, base)
             }
             "ln" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("ln 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("ln operation requires a value parameter".to_string()))?;
                 self.ln(value)
             }
             "sin" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("sin 操作需要 value 参数（弧度）".to_string()))?;
+                    ToolError::InvalidInput("sin operation requires a value parameter (radians)".to_string()))?;
                 self.sin(value)
             }
             "cos" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("cos 操作需要 value 参数（弧度）".to_string()))?;
+                    ToolError::InvalidInput("cos operation requires a value parameter (radians)".to_string()))?;
                 self.cos(value)
             }
             "tan" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("tan 操作需要 value 参数（弧度）".to_string()))?;
+                    ToolError::InvalidInput("tan operation requires a value parameter (radians)".to_string()))?;
                 self.tan(value)
             }
             "abs" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("abs 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("abs operation requires a value parameter".to_string()))?;
                 self.abs(value)
             }
             "factorial" => {
                 let value = input.value.ok_or_else(||
-                    ToolError::InvalidInput("factorial 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("factorial operation requires a value parameter".to_string()))?;
                 self.factorial(value)
             }
             "mod" => {
                 let a = input.value.ok_or_else(||
-                    ToolError::InvalidInput("mod 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("mod operation requires a value parameter".to_string()))?;
                 let b = input.value2.ok_or_else(||
-                    ToolError::InvalidInput("mod 操作需要 value2 参数".to_string()))?;
+                    ToolError::InvalidInput("mod operation requires a value2 parameter".to_string()))?;
                 self.mod_op(a, b)
             }
             "gcd" => {
                 let a = input.value.ok_or_else(||
-                    ToolError::InvalidInput("gcd 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("gcd operation requires a value parameter".to_string()))?;
                 let b = input.value2.ok_or_else(||
-                    ToolError::InvalidInput("gcd 操作需要 value2 参数".to_string()))?;
+                    ToolError::InvalidInput("gcd operation requires a value2 parameter".to_string()))?;
                 self.gcd(a, b)
             }
             "lcm" => {
                 let a = input.value.ok_or_else(||
-                    ToolError::InvalidInput("lcm 操作需要 value 参数".to_string()))?;
+                    ToolError::InvalidInput("lcm operation requires a value parameter".to_string()))?;
                 let b = input.value2.ok_or_else(||
-                    ToolError::InvalidInput("lcm 操作需要 value2 参数".to_string()))?;
+                    ToolError::InvalidInput("lcm operation requires a value2 parameter".to_string()))?;
                 self.lcm(a, b)
             }
             "pi" => Ok(self.pi()),
             "e" => Ok(self.e()),
             _ => Err(ToolError::InvalidInput(
-                format!("不支持的操作: {}，请使用: power, sqrt, log, ln, sin, cos, tan, abs, factorial, mod, gcd, lcm, pi, e", input.operation)
+                format!("unsupported operation: {}, use: power, sqrt, log, ln, sin, cos, tan, abs, factorial, mod, gcd, lcm, pi, e", input.operation)
             )),
         }
     }
@@ -368,7 +374,7 @@ impl BaseTool for SimpleMathTool {
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let parsed: MathInput = serde_json::from_str(&input)
-            .map_err(|e| ToolError::InvalidInput(format!("JSON 解析失败: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("JSON parse failed: {}", e)))?;
 
         let output = self.invoke(parsed).await?;
 

@@ -6,36 +6,59 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub enum ToolCallState {
     /// 工具调用开始
-    Started { tool_name: String, call_id: String },
+    Started {
+        /// 工具名称
+        tool_name: String,
+        /// 调用 ID
+        call_id: String,
+    },
     /// 参数正在流式传输
     ArgumentsStreaming {
+        /// 工具名称
         tool_name: String,
+        /// 调用 ID
         call_id: String,
+        /// 已流式传输的部分参数
         partial_args: String,
     },
     /// 参数完成,准备执行
     ArgumentsComplete {
+        /// 工具名称
         tool_name: String,
+        /// 调用 ID
         call_id: String,
+        /// 完整的工具参数
         args: Value,
     },
     /// 工具正在执行
-    Executing { tool_name: String, call_id: String },
+    Executing {
+        /// 工具名称
+        tool_name: String,
+        /// 调用 ID
+        call_id: String,
+    },
     /// 执行完成
     Completed {
+        /// 工具名称
         tool_name: String,
+        /// 调用 ID
         call_id: String,
+        /// 工具执行结果
         result: String,
     },
     /// 执行失败
     Failed {
+        /// 工具名称
         tool_name: String,
+        /// 调用 ID
         call_id: String,
+        /// 失败原因
         error: String,
     },
 }
 
 impl ToolCallState {
+    /// 返回当前工具名称。
     pub fn tool_name(&self) -> &str {
         match self {
             ToolCallState::Started { tool_name, .. }
@@ -47,6 +70,7 @@ impl ToolCallState {
         }
     }
 
+    /// 返回当前工具调用 ID。
     pub fn call_id(&self) -> &str {
         match self {
             ToolCallState::Started { call_id, .. }
@@ -63,16 +87,32 @@ impl ToolCallState {
 #[derive(Debug, Clone)]
 pub enum AgentStreamEvent {
     /// LLM 输出文本(token)
-    Text { content: String },
+    Text {
+        /// 输出的文本内容
+        content: String,
+    },
 
     /// 工具调用状态变化 (Function Calling 风格)
-    ToolCall { state: ToolCallState },
+    ToolCall {
+        /// 工具调用状态
+        state: ToolCallState,
+    },
 
     /// ReAct 风格工具调用开始
-    ToolStart { name: String, input: String },
+    ToolStart {
+        /// 工具名称
+        name: String,
+        /// 工具输入
+        input: String,
+    },
 
     /// ReAct 风格工具调用完成
-    ToolEnd { name: String, output: String },
+    ToolEnd {
+        /// 工具名称
+        name: String,
+        /// 工具输出
+        output: String,
+    },
 
     /// Pipeline step event (for RAG/research agents).
     /// Indicates which stage of the pipeline is currently executing.
@@ -84,10 +124,16 @@ pub enum AgentStreamEvent {
     },
 
     /// 最终答案
-    FinalAnswer { content: String },
+    FinalAnswer {
+        /// 最终答案内容
+        content: String,
+    },
 
     /// 流式执行错误
-    Error { message: String },
+    Error {
+        /// 错误信息
+        message: String,
+    },
 }
 
 #[cfg(test)]

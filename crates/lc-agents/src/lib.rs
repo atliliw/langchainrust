@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-agents/src/lib.rs
 //! Agent system for building autonomous LLM applications.
 //!
@@ -25,16 +26,21 @@
 
 pub mod adapter;
 pub mod adaptive_rag;
-pub mod base;
+pub mod executor;
+/// Module alias preserving the historical `lc_agents::base` path.
+pub use executor as base;
 pub mod builder;
 pub mod cache;
 pub mod crag;
 pub mod deep_research;
+/// Function calling based agent module.
 pub mod function_calling;
 pub mod handoffs;
 pub mod hooks;
 pub mod metrics;
-pub mod orchestration;
+pub mod orchestrator;
+/// Module alias preserving the historical `lc_agents::orchestration` path.
+pub use orchestrator as orchestration;
 pub mod plan_execute;
 pub mod policy;
 pub mod react;
@@ -46,11 +52,11 @@ pub mod types;
 
 pub use adapter::{AgentEventRunnable, AgentRunnable, OrchestratorRunnable};
 pub use adaptive_rag::{AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, RagDecision};
-pub use base::{AgentError, AgentExecutor, BaseAgent};
 pub use builder::AgentBuilder;
 pub use cache::{MemoryCache, ResponseCache};
 pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
 pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
+pub use executor::{AgentError, AgentExecutor, BaseAgent};
 pub use function_calling::FunctionCallingAgent;
 pub use handoffs::HandoffManager;
 pub use hooks::{
@@ -59,7 +65,7 @@ pub use hooks::{
     TokenBudgetHook, ToolCallAction, ToolCallContext, ToolResultContext,
 };
 pub use metrics::AgentMetrics;
-pub use orchestration::{
+pub use orchestrator::{
     parse_review_verdict, review_envelope, task_adapter, FanOutFanIn, Orchestrator,
     ReviewOrchestrator, ReviewVerdict, RunContext, SequentialPipeline, TaskAdapter,
 };

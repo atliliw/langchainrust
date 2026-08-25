@@ -5,6 +5,7 @@ use serde_json::Value;
 
 /// Errors produced by `PartialJsonParser`.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum PartialJsonError {
     /// The buffer does not yet contain parseable JSON.
     #[error("Incomplete JSON: {0}")]

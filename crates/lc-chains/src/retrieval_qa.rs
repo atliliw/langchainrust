@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_rag::retriever::RetrieverTrait;
 use lc_schema::Message;
 use lc_shared::document::Document;
@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Default QA prompt template.
 const DEFAULT_QA_PROMPT: &str = "Answer the question based on the following context. If the context does not contain relevant information, say 'I don't know'.
@@ -32,8 +33,8 @@ Answer:";
 /// 1. Retrieves relevant documents
 /// 2. Assembles prompt (context + question)
 /// 3. LLM generates answer
-pub struct RetrievalQA<M: BaseChatModel> {
-    llm: M,
+pub struct RetrievalQA {
+    llm: BoxedChatModel,
     retriever: Arc<dyn RetrieverTrait>,
 
     prompt_template: String,
@@ -48,10 +49,15 @@ pub struct RetrievalQA<M: BaseChatModel> {
     source_document_key: String,
 }
 
-impl<M: BaseChatModel + 'static> RetrievalQA<M> {
-    pub fn new(llm: M, retriever: Arc<dyn RetrieverTrait>) -> Self {
+impl RetrievalQA {
+    /// Create a new [`RetrievalQA`] chain with the given LLM and retriever.
+    pub fn new<L>(llm: L, retriever: Arc<dyn RetrieverTrait>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             retriever,
             prompt_template: DEFAULT_QA_PROMPT.to_string(),
             input_key: "query".to_string(),
@@ -64,50 +70,60 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
         }
     }
 
+    /// Set the prompt template.
     pub fn with_prompt_template(mut self, template: impl Into<String>) -> Self {
         self.prompt_template = template.into();
         self
     }
 
+    /// Set the input key.
     pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = key.into();
         self
     }
 
+    /// Set the output key.
     pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = key.into();
         self
     }
 
+    /// Set the chain name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Set the number of documents to retrieve.
     pub fn with_k(mut self, k: usize) -> Self {
         self.k = k;
         self
     }
 
+    /// Set verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
 
+    /// Set whether to return the source documents with the answer.
     pub fn with_return_source_documents(mut self, return_source: bool) -> Self {
         self.return_source_documents = return_source;
         self
     }
 
+    /// Set the key under which source documents are placed in the output.
     pub fn with_source_document_key(mut self, key: impl Into<String>) -> Self {
         self.source_document_key = key.into();
         self
     }
 
+    /// Get the retriever reference.
     pub fn retriever(&self) -> &Arc<dyn RetrieverTrait> {
         &self.retriever
     }
 
+    /// Get the number of documents retrieved (`k`).
     pub fn k(&self) -> usize {
         self.k
     }
@@ -126,6 +142,7 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
             .replace("{question}", question)
     }
 
+    /// Simplified query interface returning the answer string.
     pub async fn query(&self, question: impl Into<String>) -> Result<String, ChainError> {
         let inputs = HashMap::from([(self.input_key.clone(), Value::String(question.into()))]);
 
@@ -138,6 +155,7 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
             .ok_or_else(|| ChainError::OutputError("Missing output result".to_string()))
     }
 
+    /// Query the chain, returning both the answer and the retrieved source documents.
     pub async fn query_with_sources(
         &self,
         question: impl Into<String>,
@@ -205,10 +223,7 @@ impl<M: BaseChatModel + 'static> RetrievalQA<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for RetrievalQA<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for RetrievalQA {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -341,20 +356,11 @@ mod tests {
     }
 
     /// Mock chat model with a deterministic token stream.
-    #[derive(Debug)]
-    struct MockError(String);
-    impl std::fmt::Display for MockError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-    impl std::error::Error for MockError {}
-
     struct MockLLM;
 
     #[async_trait]
     impl Runnable<Vec<Message>, LLMResult> for MockLLM {
-        type Error = MockError;
+        type Error = ProviderError;
         async fn invoke(
             &self,
             _input: Vec<Message>,

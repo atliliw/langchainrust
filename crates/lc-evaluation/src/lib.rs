@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Evaluation 模块 - LLM 应用评测
 //!
 //! 提供 `Evaluator` / `PairwiseEvaluator` trait、内置评测器、数据集加载与批量运行器,

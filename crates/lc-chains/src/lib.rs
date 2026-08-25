@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-chains/src/lib.rs
 //! Chain system for composing operations.
 //!
@@ -46,3 +47,14 @@ pub use llm_chain::{LLMChain, LLMChainBuilder};
 pub use retrieval_qa::RetrievalQA;
 pub use router_chain::{LLMRouterChain, RouteDestination, RouterChain};
 pub use sequential_chain::SequentialChain;
+
+use lc_core::BaseChatModel;
+use lc_providers::ProviderError;
+use std::sync::Arc;
+
+/// Uniform chat model trait object stored by every chain.
+///
+/// Chains hold the LLM behind this `Arc<dyn BaseChatModel<Error = ProviderError>>`
+/// instead of a generic `M: BaseChatModel`, so chains can be freely composed
+/// behind `Arc<dyn BaseChain>` without carrying type parameters.
+pub(crate) type BoxedChatModel = Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>;

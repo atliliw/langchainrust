@@ -28,10 +28,15 @@ pub const MOONSHOT_MODELS: [&str; 3] = [
 /// Moonshot 配置
 #[derive(Debug, Clone)]
 pub struct MoonshotConfig {
+    /// Moonshot API key.
     pub api_key: String,
+    /// Base URL of the Moonshot API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
 }
 
@@ -62,9 +67,10 @@ impl MoonshotConfig {
     /// - `MOONSHOT_API_KEY`: API key (required)
     /// - `MOONSHOT_BASE_URL`: API endpoint (optional)
     /// - `MOONSHOT_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("MOONSHOT_API_KEY")
-            .map_err(|_| "MOONSHOT_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("MOONSHOT_API_KEY").map_err(|_| {
+            ProviderError::Config("MOONSHOT_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url =
             env::var("MOONSHOT_BASE_URL").unwrap_or_else(|_| MOONSHOT_BASE_URL.to_string());
@@ -91,11 +97,13 @@ impl MoonshotConfig {
         self
     }
 
+    /// Sets the sampling temperature.
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
+    /// Sets the maximum number of tokens to generate.
     pub fn with_max_tokens(mut self, max: usize) -> Self {
         self.max_tokens = Some(max);
         self
@@ -141,12 +149,12 @@ impl MoonshotChat {
     }
 
     /// Creates a MoonshotChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(MoonshotConfig::from_env_result()?))
     }
 
     /// Creates a MoonshotChat with a specific model.
-    pub fn with_model(model: impl Into<String>) -> Result<Self, String> {
+    pub fn with_model(model: impl Into<String>) -> Result<Self, ProviderError> {
         let config = MoonshotConfig::from_env_result()?.with_model(model);
         Ok(Self::new(config))
     }

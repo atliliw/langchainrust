@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 
 /// Error types for LLM JSON parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LlmJsonParseError {
     /// The raw text could not be repaired into valid JSON.
     #[error("JSON repair failed: {0}")]
@@ -20,11 +21,17 @@ pub enum LlmJsonParseError {
 
     /// The repaired JSON could not be deserialized into the target type.
     #[error("Deserialization failed: {details}")]
-    DeserializationFailed { details: String },
+    DeserializationFailed {
+        /// The deserialization error detail.
+        details: String,
+    },
 
     /// All retry attempts failed.
     #[error("All {attempts} retry attempts failed")]
-    RetryExhausted { attempts: usize },
+    RetryExhausted {
+        /// The number of retry attempts that were made.
+        attempts: usize,
+    },
 }
 
 impl From<JsonRepairError> for LlmJsonParseError {
@@ -34,6 +41,9 @@ impl From<JsonRepairError> for LlmJsonParseError {
             JsonRepairError::DeserializationFailed { details } => {
                 LlmJsonParseError::DeserializationFailed { details }
             }
+            // `JsonRepairError` is `#[non_exhaustive]`; forward any future
+            // variants to the generic repair-failure error.
+            _ => LlmJsonParseError::RepairFailed(e.to_string()),
         }
     }
 }
@@ -66,7 +76,7 @@ pub async fn parse_llm_json_with_retry<T, F, Fut>(
 where
     T: DeserializeOwned,
     F: Fn(&str, &str) -> Fut,
-    Fut: std::future::Future<Output = Result<String, String>>,
+    Fut: std::future::Future<Output = Result<String, LlmJsonParseError>>,
 {
     let mut current_raw = raw.to_string();
 
@@ -75,11 +85,12 @@ where
             Ok(value) => return Ok(value),
             Err(e) if attempt < max_retries => {
                 let error_msg = e.to_string();
-                let corrected = retry_callback(&current_raw, &error_msg)
-                    .await
-                    .map_err(|_| LlmJsonParseError::RetryExhausted {
-                        attempts: attempt + 1,
-                    })?;
+                let corrected =
+                    retry_callback(&current_raw, &error_msg)
+                        .await
+                        .map_err(|repair_err| {
+                            LlmJsonParseError::RepairFailed(repair_err.to_string())
+                        })?;
                 current_raw = corrected;
             }
             Err(_) => {

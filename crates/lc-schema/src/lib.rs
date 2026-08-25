@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-schema/src/lib.rs
 //! Schema module - data structures for LangChain
 

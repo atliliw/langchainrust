@@ -8,9 +8,12 @@ use serde_json::Value;
 /// 提示词参数定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptArgument {
+    /// 参数名
     pub name: String,
+    /// 参数的可选描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 是否为必填参数
     #[serde(default)]
     pub required: bool,
 }
@@ -18,9 +21,12 @@ pub struct PromptArgument {
 /// 提示词描述(来自 `prompts/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
+    /// 提示词名称
     pub name: String,
+    /// 提示词的可选描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 提示词参数定义列表
     #[serde(default)]
     pub arguments: Vec<PromptArgument>,
 }
@@ -29,31 +35,52 @@ pub struct Prompt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PromptContent {
+    /// 文本内容
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// 文本数据
+        text: String,
+    },
+    /// 图片内容
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        /// 图片数据(base64 编码)
+        data: String,
+        /// 图片 MIME 类型
+        mime_type: String,
+    },
+    /// 资源引用内容
     #[serde(rename = "resource")]
-    Resource { uri: String, name: String },
+    Resource {
+        /// 资源 URI
+        uri: String,
+        /// 资源名称
+        name: String,
+    },
 }
 
 /// 提示词消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptMessage {
+    /// 消息角色(如 `user` 或 `assistant`)
     pub role: String,
+    /// 消息内容
     pub content: PromptContent,
 }
 
 /// `prompts/list` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPromptsResult {
+    /// 提示词列表
     pub prompts: Vec<Prompt>,
 }
 
 /// `prompts/get` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPromptParams {
+    /// 要获取的提示词名称
     pub name: String,
+    /// 提示词参数(JSON 对象,可选)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
 }
@@ -61,8 +88,10 @@ pub struct GetPromptParams {
 /// `prompts/get` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPromptResult {
+    /// 提示词的可选描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 提示词消息列表
     pub messages: Vec<PromptMessage>,
 }
 

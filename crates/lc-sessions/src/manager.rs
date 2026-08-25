@@ -37,6 +37,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// 使用指定的存储创建一个新的会话管理器
     pub fn new(store: Arc<dyn SessionStore>) -> Self {
         Self {
             store,
@@ -144,7 +145,7 @@ impl SessionManager {
                 let vars = mem
                     .load_memory_variables(&inputs)
                     .await
-                    .map_err(|e| SessionError::Memory(format!("加载记忆失败: {}", e)))?;
+                    .map_err(|e| SessionError::Memory(format!("failed to load memory: {}", e)))?;
                 lc_memory::memory_variables_to_messages(&vars)
             };
 
@@ -173,7 +174,7 @@ impl SessionManager {
             let outputs = HashMap::from([(self.memory_output_key.clone(), content.clone())]);
             mem.save_context(&inputs, &outputs)
                 .await
-                .map_err(|e| SessionError::Memory(format!("保存记忆失败: {}", e)))?;
+                .map_err(|e| SessionError::Memory(format!("failed to save memory: {}", e)))?;
         }
 
         self.store.update(&session).await?;
@@ -607,7 +608,7 @@ mod tests {
             _input: Vec<Message>,
             _config: Option<RunnableConfig>,
         ) -> Result<LLMResult, Self::Error> {
-            Err(MockSessionLlmError("模型超时".to_string()))
+            Err(MockSessionLlmError("model timed out".to_string()))
         }
     }
 
@@ -639,6 +640,6 @@ mod tests {
         let id = mgr.create_session().await.unwrap();
 
         let err = mgr.chat(&id, &llm, "你好".to_string()).await.unwrap_err();
-        assert!(matches!(err, SessionError::Llm(ref msg) if msg.contains("模型超时")));
+        assert!(matches!(err, SessionError::Llm(ref msg) if msg.contains("model timed out")));
     }
 }

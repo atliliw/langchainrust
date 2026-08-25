@@ -22,9 +22,8 @@ use uuid::Uuid;
 pub(crate) fn lock_error<T>(
     result: Result<T, std::sync::PoisonError<T>>,
 ) -> Result<T, VectorStoreError> {
-    result.map_err(|_| {
-        VectorStoreError::StorageError("文档存储内部锁已中毒 (lock poisoned)".to_string())
-    })
+    result
+        .map_err(|_| VectorStoreError::StorageError("document store lock is poisoned".to_string()))
 }
 
 /// 内存存储实现(开发/测试用)
@@ -42,6 +41,7 @@ pub struct InMemoryChunkedDocumentStore {
 }
 
 impl InMemoryChunkedDocumentStore {
+    /// 创建新的内存文档存储
     pub fn new() -> Self {
         Self {
             parent_docs: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -50,6 +50,7 @@ impl InMemoryChunkedDocumentStore {
         }
     }
 
+    /// 同步获取指定 chunk 对应的文档
     pub fn get_chunk_document_blocking(
         &self,
         chunk_id: &str,
@@ -284,40 +285,6 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
         Ok(())
     }
 
-    async fn save(&self, path: impl AsRef<Path> + Send) -> Result<(), VectorStoreError> {
-        let parents = lock_error(self.parent_docs.read())?;
-        let chunks = lock_error(self.chunks.read())?;
-        let mapping = lock_error(self.parent_to_chunks.read())?;
-
-        let data = ChunkedStoreData {
-            parent_docs: parents.clone(),
-            chunks: chunks.clone(),
-            parent_to_chunks: mapping.clone(),
-        };
-
-        let encoded =
-            bincode::serialize(&data).map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-
-        std::fs::write(path.as_ref(), encoded)
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn load(path: impl AsRef<Path> + Send) -> Result<Self, VectorStoreError> {
-        let bytes = std::fs::read(path.as_ref())
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-
-        let data: ChunkedStoreData = bincode::deserialize(&bytes)
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-
-        Ok(Self {
-            parent_docs: Arc::new(std::sync::RwLock::new(data.parent_docs)),
-            chunks: Arc::new(std::sync::RwLock::new(data.chunks)),
-            parent_to_chunks: Arc::new(std::sync::RwLock::new(data.parent_to_chunks)),
-        })
-    }
-
     fn add_parent_document_blocking(
         &self,
         document: Document,
@@ -373,4 +340,47 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 }
 
+impl InMemoryChunkedDocumentStore {
+    /// 将内存中的父文档与子块序列化 (bincode) 落盘。
+    ///
+    /// C3: `ChunkedDocumentStoreTrait` 上的默认 `save/load` 只会返回
+    /// "not implemented" 运行时错误,已被从 trait 删除;持久化改由各后端固有方法
+    /// 暴露。本方法即 InMemory 后端的真实实现,通过具体类型直接调用。
+    pub async fn save(&self, path: impl AsRef<Path>) -> Result<(), VectorStoreError> {
+        let parents = lock_error(self.parent_docs.read())?;
+        let chunks = lock_error(self.chunks.read())?;
+        let mapping = lock_error(self.parent_to_chunks.read())?;
+
+        let data = ChunkedStoreData {
+            parent_docs: parents.clone(),
+            chunks: chunks.clone(),
+            parent_to_chunks: mapping.clone(),
+        };
+
+        let encoded =
+            bincode::serialize(&data).map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        std::fs::write(path.as_ref(), encoded)
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// 从 [`save`](Self::save) 落盘的文件反序列化重建存储,父子关系完整保留。
+    pub async fn load(path: impl AsRef<Path>) -> Result<Self, VectorStoreError> {
+        let bytes = std::fs::read(path.as_ref())
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        let data: ChunkedStoreData = bincode::deserialize(&bytes)
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        Ok(Self {
+            parent_docs: Arc::new(std::sync::RwLock::new(data.parent_docs)),
+            chunks: Arc::new(std::sync::RwLock::new(data.chunks)),
+            parent_to_chunks: Arc::new(std::sync::RwLock::new(data.parent_to_chunks)),
+        })
+    }
+}
+
+/// `InMemoryChunkedDocumentStore` 的类型别名
 pub type ChunkedDocumentStore = InMemoryChunkedDocumentStore;

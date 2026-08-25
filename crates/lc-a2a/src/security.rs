@@ -26,6 +26,7 @@ use crate::protocol::AgentCard;
 
 /// Error raised when a security check fails.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SecurityError {
     /// The agent is not in the trust registry at all.
     #[error("agent `{0}` is not in the trust registry")]
@@ -39,8 +40,11 @@ pub enum SecurityError {
     /// A delegation path exceeds the configured depth limit.
     #[error("delegation depth {depth} for `{url}` exceeds the limit {limit}")]
     DeepDelegation {
+        /// The agent URL being delegated to.
         url: String,
+        /// The actual delegation depth.
         depth: usize,
+        /// The configured maximum delegation depth.
         limit: usize,
     },
     /// The key material registered for an agent is unusable.
@@ -51,7 +55,12 @@ pub enum SecurityError {
     SandboxDenied(String),
     /// A payload exceeded the sandbox's size limit.
     #[error("payload of {size} bytes exceeds the {limit} byte limit")]
-    PayloadTooLarge { size: usize, limit: usize },
+    PayloadTooLarge {
+        /// Actual payload size in bytes.
+        size: usize,
+        /// Maximum allowed payload size in bytes.
+        limit: usize,
+    },
 }
 
 /// Role of an agent in a trust hierarchy. Drives the base trust score before

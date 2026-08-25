@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-08-25
+
+### Added
+- **Configurable runtime selection** (`lc-core`): `RunnableConfigurable` routes a chain between a default runnable and named alternatives at invoke time, driven by `config.configurable["key"]` (the Rust counterpart of Python LCEL's `configurable_alternatives`); `RunnableConfigurableFields` applies per-field overrides (`configurable_fields`). `RunnableConfig` gains builder methods `with_configurable` / `with_tag` / `with_metadata` / `with_max_concurrency` / `with_run_id` / `with_run_name` / `with_callbacks`
+- **`RunnablePick` / `pluck`** (`lc-core`): keep selected keys — or pull one value — out of any runnable whose output is `HashMap<String, Value>` (Python `pick` / `pluck` counterpart). The composition is checked at compile time: a chain that does not produce a map simply won't compile
+- **LangGraph checkpoint improvements** (`lc-langgraph`): the checkpoint lifecycle is reworked and its documentation unified across `USAGE.md` / `USAGE_EN.md`
+- **3 new runnable examples + deployment guides** (`langchainrust`): `a2a_http_server`, `mcp_sse_server`, `mcp_stdio_server`, each with a matching `*-deployment.md` walkthrough
+
+### Changed
+- **Breaking — typed errors across the API surface**: ~78 public signatures switch from `Result<_, String>` to crate-specific `thiserror` errors (lc-providers / lc-embeddings / lc-callbacks / lc-core / lc-vector-stores / lc-agents / lc-prompts / lc-tools / lc-mcp / lc-rag), with `From` conversions bridging them into `LcelError`
+- **Breaking — `Document` metadata carries structured values** (`lc-shared`): `metadata` is now `HashMap<String, serde_json::Value>`; `with_metadata` accepts `impl Into<Value>`, so non-string metadata (numbers, nested objects) survives serialization
+- **Breaking — chains accept `Arc<dyn BaseChatModel>`** (`lc-chains`): the nine chain constructors drop the `<M: BaseChatModel>` type parameter for `Arc<dyn BaseChatModel<Error = ProviderError>>`, letting one chain instance swap model implementations without re-monomorphizing
+- **Production error/log strings unified to English** (workspace): log / panic / `expect` text in non-test code is English; LLM judge prompts, tool-result strings, and test code intentionally keep Chinese
+- **Public error enums marked `#[non_exhaustive]`** (workspace): 60+ `*Error` enums gain `#[non_exhaustive]`, so future minor versions can add variants without breaking consumers
+- **Constructors take `impl Into<String>`** (`lc-langgraph` / `lc-memory` / `lc-agents` / `lc-a2a` / `lc-rag` / `lc-shared`): string parameters accept `&str` / `String` directly, no `String::from` ceremony at call sites
+- **`ChunkedDocumentStoreTrait` no longer ships fake `save` / `load`** (`lc-vector-stores`): the trait-level defaults that always errored are removed; each backend exposes its own inherent `save` / `load`
+- **Core error-handling & logging cleanup** (`lc-core`): runnable error propagation, fallback behavior, and provider error mapping hardened
+- **CI**: a semver gate (`cargo-semver-checks`) and a wasm32 check (`lc-schema` / `lc-shared`) are added; the docs job enforces `RUSTDOCFLAGS: -D warnings`
+
+### Deprecated
+- **`ToolCall::new(id, name, args)`** (`lc-tools`): replaced by `ToolCallBuilder` — build with `.with_id()` / `.with_name()` / `.with_arguments()`; the positional constructor stays until 1.0
+
+### Fixed
+- **Production `unwrap` hardened** (workspace): a2a server, runnable binding / configurable paths, `json_parser`, and the docx loader no longer panic on unexpected data
+- **428 undocumented public items documented** (workspace): every crate builds clean under `missing_docs`
+
 ## [0.15.0] - 2026-08-20
 
 ### Added
@@ -800,6 +826,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RAG components
 - Built-in tools (Calculator, DateTime, Math, URLFetch)
 
+[0.16.0]: https://github.com/atliliw/langchainrust/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/atliliw/langchainrust/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/atliliw/langchainrust/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/atliliw/langchainrust/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/atliliw/langchainrust/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/atliliw/langchainrust/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/atliliw/langchainrust/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/atliliw/langchainrust/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/atliliw/langchainrust/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/atliliw/langchainrust/compare/v0.7.1...v0.7.2

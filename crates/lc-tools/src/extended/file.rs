@@ -18,6 +18,7 @@ pub struct FileTool {
 }
 
 impl FileTool {
+    /// 创建文件工具(沙箱根目录为 `base_path`)。
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             base_path,
@@ -31,11 +32,13 @@ impl FileTool {
         }
     }
 
+    /// 设置扩展名白名单(builder 风格)。
     pub fn with_allowed_extensions(mut self, exts: Vec<String>) -> Self {
         self.allowed_extensions = exts;
         self
     }
 
+    /// 设置最大文件大小(字节,builder 风格)。
     pub fn with_max_size(mut self, size: usize) -> Self {
         self.max_size = size;
         self
@@ -45,13 +48,14 @@ impl FileTool {
         let base = self
             .base_path
             .canonicalize()
-            .map_err(|e| ToolError::InvalidInput(format!("base_path 无效: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("invalid base_path: {}", e)))?;
         let target = base.join(relative);
 
         // Reject files without an extension (bypasses whitelist)
         if target.extension().is_none() {
             return Err(ToolError::InvalidInput(
-                "文件必须包含扩展名（无扩展名文件不在白名单中）".to_string(),
+                "file must have an extension (files without an extension are not in the whitelist)"
+                    .to_string(),
             ));
         }
 
@@ -59,7 +63,7 @@ impl FileTool {
         if let Some(ext) = target.extension().and_then(|e| e.to_str()) {
             if !self.allowed_extensions.iter().any(|a| a == ext) {
                 return Err(ToolError::InvalidInput(format!(
-                    "扩展名不允许: {}(允许: {:?})",
+                    "extension not allowed: {} (allowed: {:?})",
                     ext, self.allowed_extensions
                 )));
             }
@@ -78,16 +82,17 @@ impl FileTool {
                     .map(|p| p.join(file_name))
                     .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "parent"))
             })
-            .map_err(|e| ToolError::InvalidInput(format!("路径无效: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("invalid path: {}", e)))?;
 
         if !canon.starts_with(&base) {
             return Err(ToolError::InvalidInput(
-                "路径越界(base_path 沙箱)".to_string(),
+                "path escapes base_path sandbox".to_string(),
             ));
         }
         Ok(canon)
     }
 
+    /// 读取沙箱内文件内容(受路径越界与大小限制)。
     pub async fn read(&self, path: &str) -> Result<String, ToolError> {
         let p = self.safe_path(path)?;
         let metadata = fs::metadata(&p)
@@ -95,7 +100,7 @@ impl FileTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         if metadata.len() as usize > self.max_size {
             return Err(ToolError::InvalidInput(format!(
-                "文件超过 {} 字节",
+                "file exceeds {} bytes",
                 self.max_size
             )));
         }
@@ -104,10 +109,11 @@ impl FileTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     }
 
+    /// 写入内容到沙箱内文件(自动创建父目录)。
     pub async fn write(&self, path: &str, content: &str) -> Result<(), ToolError> {
         if content.len() > self.max_size {
             return Err(ToolError::InvalidInput(format!(
-                "内容超过 {} 字节",
+                "content exceeds {} bytes",
                 self.max_size
             )));
         }
@@ -126,17 +132,20 @@ impl FileTool {
         Ok(())
     }
 
+    /// 列出沙箱内目录下的条目名。
     pub async fn list(&self, dir: &str) -> Result<Vec<String>, ToolError> {
         let base = self
             .base_path
             .canonicalize()
-            .map_err(|e| ToolError::InvalidInput(format!("base_path 无效: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("invalid base_path: {}", e)))?;
         let target = base.join(dir);
         let canon = target
             .canonicalize()
-            .map_err(|e| ToolError::InvalidInput(format!("路径无效: {}", e)))?;
+            .map_err(|e| ToolError::InvalidInput(format!("invalid path: {}", e)))?;
         if !canon.starts_with(&base) {
-            return Err(ToolError::InvalidInput("路径越界".to_string()));
+            return Err(ToolError::InvalidInput(
+                "path escapes base_path".to_string(),
+            ));
         }
         let mut entries = fs::read_dir(&canon)
             .await
@@ -169,11 +178,11 @@ impl BaseTool for FileTool {
         let op = v
             .get("op")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| ToolError::InvalidInput("缺 op".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidInput("missing op".to_string()))?;
         let path = v
             .get("path")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| ToolError::InvalidInput("缺 path".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidInput("missing path".to_string()))?;
         match op {
             "read" => self.read(path).await,
             "write" => {
@@ -185,7 +194,7 @@ impl BaseTool for FileTool {
                 let list = self.list(path).await?;
                 serde_json::to_string(&list).map_err(|e| ToolError::ExecutionFailed(e.to_string()))
             }
-            other => Err(ToolError::InvalidInput(format!("未知 op: {}", other))),
+            other => Err(ToolError::InvalidInput(format!("unknown op: {}", other))),
         }
     }
 }

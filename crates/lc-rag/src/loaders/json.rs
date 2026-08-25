@@ -63,7 +63,7 @@ impl DocumentLoader for JSONLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
-                "JSON 文件不存在: {}",
+                "JSON file does not exist: {}",
                 self.path.display()
             )));
         }
@@ -215,7 +215,10 @@ mod tests {
         let docs = result.unwrap();
         assert_eq!(docs.len(), 2);
         assert!(docs[0].content.contains("Content A"));
-        assert_eq!(docs[0].metadata.get("title"), Some(&"A".to_string()));
+        assert_eq!(
+            docs[0].metadata.get("title"),
+            Some(&serde_json::Value::String("A".to_string()))
+        );
     }
 
     #[tokio::test]

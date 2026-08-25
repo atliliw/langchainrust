@@ -8,27 +8,39 @@ use std::collections::HashMap;
 /// A named entity extracted from a document.
 #[derive(Debug, Clone)]
 pub struct Entity {
+    /// Unique entity id.
     pub id: String,
+    /// Entity name.
     pub name: String,
+    /// Entity type (e.g. Person, Organization, Concept).
     pub entity_type: String,
+    /// Description of the entity.
     pub description: String,
 }
 
 /// A directed relation between two entities.
 #[derive(Debug, Clone)]
 pub struct Relation {
+    /// Id of the source entity.
     pub source: String,
+    /// Id of the target entity.
     pub target: String,
+    /// Relation type (e.g. works_at, part_of).
     pub relation_type: String,
+    /// Description of the relation.
     pub description: String,
+    /// Optional id of the document the relation was extracted from.
     pub doc_id: Option<String>,
 }
 
 /// A community of entities detected by community detection.
 #[derive(Debug, Clone)]
 pub struct Community {
+    /// Community index.
     pub id: usize,
+    /// Entity ids belonging to this community.
     pub entities: Vec<String>,
+    /// Size tier level of the community.
     pub level: usize,
 }
 

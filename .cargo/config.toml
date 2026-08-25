@@ -1,6 +1,0 @@
-# 本机构建产物目录:避开钉盘同步目录 D:\BaiduNetdiskDownload
-# 钉盘同步驱动会锁住同步目录内新生成的 .dll/.exe,导致 cargo 链接报
-# "Permission denied"。把 target 固定到同步目录外即可根治,任何终端/IDE
-# 跑 cargo 都自动生效。若想用回默认目录,删除本文件即可。
-[build]
-target-dir = "C:/Users/Administrator/rust-target"

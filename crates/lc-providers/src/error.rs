@@ -19,6 +19,7 @@ pub use crate::providers::gemini::GeminiError;
 /// mapping error types. Each variant wraps the original provider
 /// error, preserving full context.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ProviderError {
     /// OpenAI API error.
     OpenAI(OpenAIError),
@@ -46,6 +47,8 @@ pub enum ProviderError {
     Zhipu(OpenAIError),
     /// Mistral API error (OpenAI-compatible endpoint).
     Mistral(OpenAIError),
+    /// Configuration error (missing/malformed environment variables, etc.).
+    Config(String),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -64,6 +67,7 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Moonshot(e) => write!(f, "Moonshot error: {e}"),
             ProviderError::Zhipu(e) => write!(f, "Zhipu error: {e}"),
             ProviderError::Mistral(e) => write!(f, "Mistral error: {e}"),
+            ProviderError::Config(msg) => write!(f, "Configuration error: {msg}"),
         }
     }
 }
@@ -84,6 +88,7 @@ impl std::error::Error for ProviderError {
             ProviderError::Moonshot(e) => Some(e),
             ProviderError::Zhipu(e) => Some(e),
             ProviderError::Mistral(e) => Some(e),
+            ProviderError::Config(_) => None,
         }
     }
 }
@@ -164,7 +169,7 @@ mod tests {
         let lcel: lc_core::LcelError = e.into();
         assert!(matches!(
             lcel,
-            lc_core::LcelError::Provider(ref msg) if msg.contains("API 错误: rate limited")
+            lc_core::LcelError::Provider(ref msg) if msg.contains("API error: rate limited")
         ));
     }
 

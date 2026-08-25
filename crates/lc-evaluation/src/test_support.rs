@@ -93,7 +93,10 @@ impl BaseChatModel for ToolJudge {
             content: String::new(),
             model: "tool-judge".to_string(),
             token_usage: None,
-            tool_calls: Some(vec![ToolCall::new("call_1", "judge_tool", arguments)]),
+            tool_calls: Some(vec![ToolCall::builder("call_1")
+                .name("judge_tool")
+                .arguments(arguments)
+                .build()]),
             thinking_content: None,
         })
     }

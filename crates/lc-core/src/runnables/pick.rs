@@ -37,7 +37,10 @@ pub trait RunnablePick<I: Send + Sync + 'static>: Sized {
     ///     .with("b", RunnableLambda::new_sync(|s: String| s.to_uppercase()));
     /// let picked = parallel.pick(["a"]);   // output: {"a": N}
     /// ```
-    fn pick<K>(self, keys: impl IntoIterator<Item = K>) -> RunnableSequence<I, HashMap<String, Value>>
+    fn pick<K>(
+        self,
+        keys: impl IntoIterator<Item = K>,
+    ) -> RunnableSequence<I, HashMap<String, Value>>
     where
         K: Into<String>;
 
@@ -60,7 +63,10 @@ where
     R: Runnable<I, HashMap<String, Value>> + Sized + 'static,
     R::Error: Into<LcelError>,
 {
-    fn pick<K>(self, keys: impl IntoIterator<Item = K>) -> RunnableSequence<I, HashMap<String, Value>>
+    fn pick<K>(
+        self,
+        keys: impl IntoIterator<Item = K>,
+    ) -> RunnableSequence<I, HashMap<String, Value>>
     where
         K: Into<String>,
     {
@@ -92,7 +98,10 @@ mod tests {
     fn parallel() -> RunnableParallel<String> {
         RunnableParallel::<String>::new()
             .with("len", RunnableLambda::new_sync(|s: String| s.len() as i64))
-            .with("upper", RunnableLambda::new_sync(|s: String| s.to_uppercase()))
+            .with(
+                "upper",
+                RunnableLambda::new_sync(|s: String| s.to_uppercase()),
+            )
     }
 
     #[tokio::test]

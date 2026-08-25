@@ -46,6 +46,7 @@ fn split_claims(prediction: &str) -> Vec<String> {
 }
 
 impl<M: BaseChatModel> Faithfulness<M> {
+    /// 创建忠实度评测器。
     pub fn new(judge: M) -> Self {
         Self {
             judge,
@@ -86,7 +87,7 @@ impl<M: BaseChatModel> Faithfulness<M> {
         let args: VerdictArgs = structured_call(&self.judge, verdict_tool(), messages, |raw| {
             let verdict = parse_yes_no(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
-                    "无法从裁判回复解析是/否: {}",
+                    "failed to parse yes/no from judge reply: {}",
                     truncate(raw, 200)
                 ))
             })?;
@@ -448,7 +449,10 @@ mod tests {
         assert!((s.value - 1.0).abs() < 1e-9);
         let sent = f.judge.last_user_content();
         // 参考上下文被截到预算内:首部仍在、远在预算外的尾巴不会被发出去
-        assert!(sent.contains("这是一段非常长"), "实际发送: {sent}");
-        assert!(!sent.contains("不该被完整发送"), "完整长参考被重复发送");
+        assert!(sent.contains("这是一段非常长"), "actual sent: {sent}");
+        assert!(
+            !sent.contains("不该被完整发送"),
+            "full long reference was sent repeatedly"
+        );
     }
 }

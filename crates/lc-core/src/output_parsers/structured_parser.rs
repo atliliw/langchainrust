@@ -36,6 +36,7 @@ pub struct StructuredOutputParser {
 }
 
 impl StructuredOutputParser {
+    /// 创建使用默认分隔符(`:`)的结构化输出解析器。
     pub fn new() -> Self {
         Self { separator: ':' }
     }
@@ -140,6 +141,7 @@ pub struct TypedOutputParser<T> {
 }
 
 impl<T> TypedOutputParser<T> {
+    /// 创建类型化输出解析器。
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -163,12 +165,12 @@ impl<T: DeserializeOwned + Send + Sync + 'static> BaseOutputParser<T> for TypedO
 
         // 先尝试解析为 Value 验证合法性
         serde_json::from_str::<serde_json::Value>(json_str)
-            .map_err(|e| OutputParserError::JsonError(format!("输入不是合法 JSON：{}", e)))?;
+            .map_err(|e| OutputParserError::JsonError(format!("input is not valid JSON: {}", e)))?;
 
         // 反序列化为目标类型
         serde_json::from_str::<T>(json_str).map_err(|e| {
             OutputParserError::TypeError(format!(
-                "类型反序列化失败（请检查 JSON 字段是否匹配）：{}",
+                "type deserialization failed (check whether the JSON fields match): {}",
                 e
             ))
         })

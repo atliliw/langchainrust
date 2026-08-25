@@ -7,10 +7,14 @@ use serde::{Deserialize, Serialize};
 /// 资源描述(来自 `resources/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
+    /// 资源 URI
     pub uri: String,
+    /// 资源名称
     pub name: String,
+    /// 资源的可选描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 资源的 MIME 类型(可选)
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
 }
@@ -18,11 +22,15 @@ pub struct Resource {
 /// 资源内容(来自 `resources/read`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceContent {
+    /// 资源 URI
     pub uri: String,
+    /// 内容的 MIME 类型(可选)
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    /// 文本内容(与 `blob` 二选一)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// 二进制内容(base64 编码,与 `text` 二选一)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
 }
@@ -30,18 +38,21 @@ pub struct ResourceContent {
 /// `resources/list` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResourcesResult {
+    /// 资源列表
     pub resources: Vec<Resource>,
 }
 
 /// `resources/read` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadResourceParams {
+    /// 要读取的资源 URI
     pub uri: String,
 }
 
 /// `resources/read` 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadResourceResult {
+    /// 读取到的资源内容列表
     pub contents: Vec<ResourceContent>,
 }
 

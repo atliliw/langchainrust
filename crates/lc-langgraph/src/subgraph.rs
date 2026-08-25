@@ -56,6 +56,7 @@ pub struct SubgraphNode<S: StateSchema, SubS: StateSchema> {
 }
 
 impl<S: StateSchema, SubS: StateSchema> SubgraphNode<S, SubS> {
+    /// Create a new subgraph node with the given name, subgraph, and mappers.
     pub fn new(
         name: impl Into<String>,
         subgraph: CompiledGraph<SubS>,
@@ -74,6 +75,7 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphNode<S, SubS> {
 }
 
 impl<S: StateSchema + Clone> SubgraphNode<S, S> {
+    /// Create a subgraph node sharing the same state type, using clone-based mappers.
     pub fn same_state(name: impl Into<String>, subgraph: CompiledGraph<S>) -> Self {
         Self::new(
             name,
@@ -130,6 +132,7 @@ pub struct SubgraphBuilder<S: StateSchema, SubS: StateSchema> {
 }
 
 impl<S: StateSchema, SubS: StateSchema> SubgraphBuilder<S, SubS> {
+    /// Create a new subgraph builder with the given node name.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -141,21 +144,25 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphBuilder<S, SubS> {
         }
     }
 
+    /// Set the compiled subgraph to execute.
     pub fn subgraph(mut self, graph: CompiledGraph<SubS>) -> Self {
         self.subgraph = Some(graph);
         self
     }
 
+    /// Set the mapper from parent state to subgraph input.
     pub fn input_mapper(mut self, mapper: impl Fn(&S) -> SubS + Send + Sync + 'static) -> Self {
         self.input_mapper = Some(Arc::new(mapper));
         self
     }
 
+    /// Set the mapper from subgraph output back to parent state.
     pub fn output_mapper(mut self, mapper: impl Fn(&SubS, &mut S) + Send + Sync + 'static) -> Self {
         self.output_mapper = Some(Arc::new(mapper));
         self
     }
 
+    /// Build the `SubgraphNode`, failing if any required component is missing.
     pub fn build(self) -> GraphResult<SubgraphNode<S, SubS>> {
         let subgraph = self
             .subgraph

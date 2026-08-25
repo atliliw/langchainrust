@@ -6,9 +6,9 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::LLMResult;
 use lc_core::runnables::RunnableConfig;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// LLM Chain
 ///
@@ -30,9 +31,9 @@ use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
 /// let inputs = HashMap::from([("question".to_string(), "What is Rust?".into())]);
 /// let result = chain.invoke(inputs).await?;
 /// ```
-pub struct LLMChain<M: BaseChatModel> {
+pub struct LLMChain {
     /// LLM client.
-    llm: M,
+    llm: BoxedChatModel,
 
     /// Prompt template.
     prompt_template: String,
@@ -51,13 +52,22 @@ pub struct LLMChain<M: BaseChatModel> {
 static TEMPLATE_VAR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}").unwrap());
 
-impl<M: BaseChatModel> LLMChain<M> {
+impl LLMChain {
     /// Create a new LLMChain.
     ///
     /// # Arguments
     /// * `llm` - LLM client (any type implementing BaseChatModel)
     /// * `prompt_template` - Prompt template string with {variable} placeholders
-    pub fn new(llm: M, prompt_template: impl Into<String>) -> Self {
+    pub fn new<L>(llm: L, prompt_template: impl Into<String>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
+        Self::from_wrapped(wrap_chat_model(llm), prompt_template)
+    }
+
+    /// Construct from an already-wrapped model (internal builder path).
+    pub(crate) fn from_wrapped(llm: BoxedChatModel, prompt_template: impl Into<String>) -> Self {
         Self {
             llm,
             prompt_template: prompt_template.into(),
@@ -119,10 +129,7 @@ impl<M: BaseChatModel> LLMChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for LLMChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for LLMChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -279,18 +286,23 @@ where
 /// LLMChain Builder.
 ///
 /// Convenience builder for LLMChain.
-pub struct LLMChainBuilder<M: BaseChatModel> {
-    llm: M,
+pub struct LLMChainBuilder {
+    llm: BoxedChatModel,
     prompt_template: String,
     input_key: Option<String>,
     output_key: Option<String>,
     name: Option<String>,
 }
 
-impl<M: BaseChatModel> LLMChainBuilder<M> {
-    pub fn new(llm: M, prompt_template: impl Into<String>) -> Self {
+impl LLMChainBuilder {
+    /// Create a new [`LLMChainBuilder`] with the given LLM and prompt template.
+    pub fn new<L>(llm: L, prompt_template: impl Into<String>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             prompt_template: prompt_template.into(),
             input_key: None,
             output_key: None,
@@ -298,23 +310,27 @@ impl<M: BaseChatModel> LLMChainBuilder<M> {
         }
     }
 
+    /// Set the input key.
     pub fn input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = Some(key.into());
         self
     }
 
+    /// Set the output key.
     pub fn output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = Some(key.into());
         self
     }
 
+    /// Set the chain name.
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    pub fn build(self) -> LLMChain<M> {
-        let mut chain = LLMChain::new(self.llm, self.prompt_template);
+    /// Build the final [`LLMChain`].
+    pub fn build(self) -> LLMChain {
+        let mut chain = LLMChain::from_wrapped(self.llm, self.prompt_template);
 
         if let Some(key) = self.input_key {
             chain = chain.with_input_key(key);

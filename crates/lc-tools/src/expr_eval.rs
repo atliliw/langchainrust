@@ -19,20 +19,30 @@
 //! All arithmetic is floating point: `10 / 3` is `3.333…`, there is no
 //! integer division. `log(x)` is the natural logarithm (as `log(e) == 1`).
 
+/// Error type for the expression evaluator.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ExprEvalError {
+    /// The expression could not be evaluated (parse error, unknown
+    /// function/identifier, or invalid number).
+    #[error("{0}")]
+    Msg(String),
+}
+
 /// Evaluate a math expression to a single `f64`.
-pub fn eval(input: &str) -> Result<f64, String> {
+pub fn eval(input: &str) -> Result<f64, ExprEvalError> {
     let mut p = Parser::new(input);
     p.skip_ws();
     if p.peek().is_none() {
-        return Err("empty expression".to_string());
+        return Err(ExprEvalError::Msg("empty expression".to_string()));
     }
     let value = p.parse_expr()?;
     p.skip_ws();
     if let Some(c) = p.peek() {
-        return Err(format!(
+        return Err(ExprEvalError::Msg(format!(
             "unexpected character '{}' at position {}",
             c, p.pos
-        ));
+        )));
     }
     Ok(value)
 }
@@ -78,7 +88,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_expr(&mut self) -> Result<f64, String> {
+    fn parse_expr(&mut self) -> Result<f64, ExprEvalError> {
         let mut value = self.parse_term()?;
         loop {
             self.skip_ws();
@@ -92,7 +102,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_term(&mut self) -> Result<f64, String> {
+    fn parse_term(&mut self) -> Result<f64, ExprEvalError> {
         let mut value = self.parse_unary()?;
         loop {
             self.skip_ws();
@@ -108,7 +118,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_unary(&mut self) -> Result<f64, String> {
+    fn parse_unary(&mut self) -> Result<f64, ExprEvalError> {
         self.skip_ws();
         let mut negate = false;
         loop {
@@ -125,7 +135,7 @@ impl<'a> Parser<'a> {
         Ok(if negate { -value } else { value })
     }
 
-    fn parse_power(&mut self) -> Result<f64, String> {
+    fn parse_power(&mut self) -> Result<f64, ExprEvalError> {
         let base = self.parse_postfix()?;
         self.skip_ws();
         if self.eat('^') {
@@ -137,17 +147,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_postfix(&mut self) -> Result<f64, String> {
+    fn parse_postfix(&mut self) -> Result<f64, ExprEvalError> {
         self.parse_primary()
     }
 
-    fn parse_primary(&mut self) -> Result<f64, String> {
+    fn parse_primary(&mut self) -> Result<f64, ExprEvalError> {
         self.skip_ws();
         let Some(c) = self.peek() else {
-            return Err(format!(
+            return Err(ExprEvalError::Msg(format!(
                 "unexpected end of expression at position {}",
                 self.pos
-            ));
+            )));
         };
         if c.is_ascii_digit() || c == '.' {
             self.parse_number()
@@ -156,20 +166,23 @@ impl<'a> Parser<'a> {
             let value = self.parse_expr()?;
             self.skip_ws();
             if !self.eat(')') {
-                return Err(format!("expected ')' at position {}", self.pos));
+                return Err(ExprEvalError::Msg(format!(
+                    "expected ')' at position {}",
+                    self.pos
+                )));
             }
             Ok(value)
         } else if c.is_ascii_alphabetic() || c == '_' {
             self.parse_identifier()
         } else {
-            Err(format!(
+            Err(ExprEvalError::Msg(format!(
                 "unexpected character '{}' at position {}",
                 c, self.pos
-            ))
+            )))
         }
     }
 
-    fn parse_identifier(&mut self) -> Result<f64, String> {
+    fn parse_identifier(&mut self) -> Result<f64, ExprEvalError> {
         let start = self.pos;
         while self
             .peek()
@@ -183,12 +196,16 @@ impl<'a> Parser<'a> {
             let args = self.parse_args()?;
             call_function(name, args, start)
         } else {
-            constant(name)
-                .ok_or_else(|| format!("unknown identifier '{}' at position {}", name, start))
+            constant(name).ok_or_else(|| {
+                ExprEvalError::Msg(format!(
+                    "unknown identifier '{}' at position {}",
+                    name, start
+                ))
+            })
         }
     }
 
-    fn parse_args(&mut self) -> Result<Vec<f64>, String> {
+    fn parse_args(&mut self) -> Result<Vec<f64>, ExprEvalError> {
         let mut args = Vec::new();
         self.skip_ws();
         if self.eat(')') {
@@ -203,14 +220,14 @@ impl<'a> Parser<'a> {
             if self.eat(')') {
                 return Ok(args);
             }
-            return Err(format!(
+            return Err(ExprEvalError::Msg(format!(
                 "expected ',' or ')' in argument list at position {}",
                 self.pos
-            ));
+            )));
         }
     }
 
-    fn parse_number(&mut self) -> Result<f64, String> {
+    fn parse_number(&mut self) -> Result<f64, ExprEvalError> {
         let start = self.pos;
         // Integer part
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
@@ -234,17 +251,17 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
             if self.pos == exp_digits {
-                return Err(format!(
+                return Err(ExprEvalError::Msg(format!(
                     "invalid number '{}' at position {}",
                     &self.input[start..self.pos],
                     start
-                ));
+                )));
             }
         }
         let slice = &self.input[start..self.pos];
-        slice
-            .parse::<f64>()
-            .map_err(|_| format!("invalid number '{}' at position {}", slice, start))
+        slice.parse::<f64>().map_err(|_| {
+            ExprEvalError::Msg(format!("invalid number '{}' at position {}", slice, start))
+        })
     }
 }
 
@@ -259,8 +276,9 @@ fn constant(name: &str) -> Option<f64> {
 
 /// Dispatch a parsed function call. `start` is the position of the name for
 /// error messages.
-fn call_function(name: &str, args: Vec<f64>, start: usize) -> Result<f64, String> {
-    let err_unknown = || format!("unknown function '{}' at position {}", name, start);
+fn call_function(name: &str, args: Vec<f64>, start: usize) -> Result<f64, ExprEvalError> {
+    let err_unknown =
+        || ExprEvalError::Msg(format!("unknown function '{}' at position {}", name, start));
     match name {
         "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" | "asinh"
         | "acosh" | "atanh" | "sqrt" | "exp" | "ln" | "log" | "abs" | "floor" | "ceil"
@@ -299,10 +317,10 @@ fn call_function(name: &str, args: Vec<f64>, start: usize) -> Result<f64, String
         }
         "min" | "max" => {
             let Some(mut acc) = args.first().copied() else {
-                return Err(format!(
+                return Err(ExprEvalError::Msg(format!(
                     "function '{}' requires at least 1 argument at position {}",
                     name, start
-                ));
+                )));
             };
             for v in args.into_iter().skip(1) {
                 acc = if name == "min" {
@@ -317,29 +335,29 @@ fn call_function(name: &str, args: Vec<f64>, start: usize) -> Result<f64, String
     }
 }
 
-fn single_arg(name: &str, args: Vec<f64>, start: usize) -> Result<f64, String> {
+fn single_arg(name: &str, args: Vec<f64>, start: usize) -> Result<f64, ExprEvalError> {
     if args.len() == 1 {
         Ok(args[0])
     } else {
-        Err(format!(
+        Err(ExprEvalError::Msg(format!(
             "function '{}' requires exactly 1 argument, got {} at position {}",
             name,
             args.len(),
             start
-        ))
+        )))
     }
 }
 
-fn two_args(name: &str, args: Vec<f64>, start: usize) -> Result<(f64, f64), String> {
+fn two_args(name: &str, args: Vec<f64>, start: usize) -> Result<(f64, f64), ExprEvalError> {
     if args.len() == 2 {
         Ok((args[0], args[1]))
     } else {
-        Err(format!(
+        Err(ExprEvalError::Msg(format!(
             "function '{}' requires exactly 2 arguments, got {} at position {}",
             name,
             args.len(),
             start
-        ))
+        )))
     }
 }
 

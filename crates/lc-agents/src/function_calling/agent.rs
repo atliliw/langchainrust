@@ -130,16 +130,15 @@ impl FunctionCallingAgent {
         messages.push(Message::human(input));
 
         for step in intermediate_steps {
-            let tool_call = ToolCall::new(
-                &step.action.log,
-                &step.action.tool,
-                match &step.action.tool_input {
+            let tool_call = ToolCall::builder(&step.action.log)
+                .name(&step.action.tool)
+                .arguments(match &step.action.tool_input {
                     ToolInput::String { value: s } => s.clone(),
                     ToolInput::Object { value: v } => {
                         serde_json::to_string(v).unwrap_or_else(|_| v.to_string())
                     }
-                },
-            );
+                })
+                .build();
             messages.push(Message::ai_with_tool_calls("", vec![tool_call]));
             messages.push(Message::tool(&step.action.log, &step.observation));
         }
@@ -164,7 +163,7 @@ impl BaseAgent for FunctionCallingAgent {
             &crate::retry::RetryConfig::default(),
         )
         .await
-        .map_err(|e| AgentError::Other(format!("LLM 调用失败: {}", e)))?;
+        .map_err(|e| AgentError::Other(format!("LLM call failed: {}", e)))?;
 
         // P1-5: record token usage for the executor's metrics.
         if let Ok(mut guard) = self.last_token_usage.lock() {

@@ -15,12 +15,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// 统一混合索引配置
 pub struct HybridIndexConfig {
+    /// 文档分块大小
     pub chunk_size: usize,
+    /// 分块重叠大小
     pub chunk_overlap: usize,
+    /// BM25 检索返回数量
     pub bm25_k: usize,
+    /// 向量检索返回数量
     pub vector_k: usize,
+    /// RRF 融合参数 k
     pub rrf_k: usize,
+    /// 叶子块合并为父文档的阈值
     pub merge_threshold: f32,
     /// 向量检索最小分数阈值(P1-2),默认 0.0 保持旧行为。
     pub min_score: f32,
@@ -41,48 +48,64 @@ impl Default for HybridIndexConfig {
 }
 
 impl HybridIndexConfig {
+    /// 创建使用默认配置的 `HybridIndexConfig`
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 设置文档分块大小
     pub fn with_chunk_size(mut self, size: usize) -> Self {
         self.chunk_size = size;
         self
     }
 
+    /// 同时设置 BM25 与向量检索返回数量
     pub fn with_top_k(mut self, bm25_k: usize, vector_k: usize) -> Self {
         self.bm25_k = bm25_k;
         self.vector_k = vector_k;
         self
     }
 
+    /// 设置 RRF 融合参数 k
     pub fn with_rrf_k(mut self, k: usize) -> Self {
         self.rrf_k = k;
         self
     }
 
+    /// 设置叶子块合并为父文档的阈值
     pub fn with_merge_threshold(mut self, threshold: f32) -> Self {
         self.merge_threshold = threshold;
         self
     }
 
+    /// 设置向量检索最小分数阈值
     pub fn with_min_score(mut self, min_score: f32) -> Self {
         self.min_score = min_score;
         self
     }
 }
 
+/// 混合检索结果（带详细分数与排名信息）
 pub struct HybridSearchResult {
+    /// 检索到的文档
     pub document: Document,
+    /// RRF 融合分数
     pub rrf_score: f64,
+    /// BM25 分数（若在 BM25 结果中）
     pub bm25_score: Option<f32>,
+    /// BM25 排名（若在 BM25 结果中）
     pub bm25_rank: Option<usize>,
+    /// 向量相似度分数（若在向量结果中）
     pub vector_score: Option<f32>,
+    /// 向量排名（若在向量结果中）
     pub vector_rank: Option<usize>,
+    /// 命中的块 id 列表
     pub matched_chunks: Vec<String>,
+    /// 所属父文档 id
     pub parent_id: Option<String>,
 }
 
+/// 统一混合索引：统一管理 BM25 + 向量索引
 pub struct UnifiedHybridIndex {
     document_store: Arc<ChunkedDocumentStore>,
     bm25_retriever: Arc<Mutex<ChunkedBM25Retriever>>,
@@ -90,6 +113,7 @@ pub struct UnifiedHybridIndex {
     /// P1-1: 向量索引收敛到 `VectorStore`(原自持 `Vec<VectorEntry>` 暴力遍历
     /// 已删除),可复用 InMemoryVectorStore / Qdrant 等后端。
     vector_store: Arc<dyn VectorStore>,
+    /// 混合索引配置
     pub config: HybridIndexConfig,
 }
 
@@ -114,10 +138,12 @@ impl UnifiedHybridIndex {
         )
     }
 
+    /// 获取底层的文档存储
     pub fn document_store(&self) -> Arc<ChunkedDocumentStore> {
         self.document_store.clone()
     }
 
+    /// 使用指定配置创建统一混合索引
     pub fn with_config(
         embeddings: Arc<dyn Embeddings>,
         vector_store: Arc<dyn VectorStore>,
@@ -140,6 +166,7 @@ impl UnifiedHybridIndex {
         }
     }
 
+    /// 添加单个文档：自动分块并同时建立 BM25 与向量索引
     pub async fn add_document(&self, document: Document) -> Result<String, VectorStoreError> {
         let parent_id = document
             .id
@@ -193,6 +220,7 @@ impl UnifiedHybridIndex {
         Ok(parent_id)
     }
 
+    /// 批量添加文档，返回每个文档生成的 id
     pub async fn add_documents(
         &self,
         documents: Vec<Document>,
@@ -205,6 +233,7 @@ impl UnifiedHybridIndex {
         Ok(ids)
     }
 
+    /// 混合检索：融合 BM25 与向量结果后返回 RRF 排序文档
     pub async fn retrieve(
         &self,
         query: &str,
@@ -229,6 +258,7 @@ impl UnifiedHybridIndex {
         Ok(fused.into_iter().take(k).collect())
     }
 
+    /// 混合检索并返回带详细分数与排名信息的结果
     pub async fn retrieve_with_details(
         &self,
         query: &str,
@@ -385,14 +415,17 @@ impl UnifiedHybridIndex {
         Ok(docs)
     }
 
+    /// 返回已索引的父文档数量
     pub async fn document_count(&self) -> usize {
         self.document_store.parent_count().await
     }
 
+    /// 返回已索引的块数量
     pub async fn chunk_count(&self) -> usize {
         self.document_store.chunk_count().await
     }
 
+    /// 清空 BM25、向量索引与文档存储
     pub async fn clear(&self) -> Result<(), VectorStoreError> {
         ChunkedDocumentStoreTrait::clear(&*self.document_store).await?;
 

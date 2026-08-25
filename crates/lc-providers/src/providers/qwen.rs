@@ -31,10 +31,15 @@ pub const QWEN_MODELS: [&str; 6] = [
 /// Qwen 配置
 #[derive(Debug, Clone)]
 pub struct QwenConfig {
+    /// Qwen API key.
     pub api_key: String,
+    /// Base URL of the Qwen (DashScope) API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
 }
 
@@ -65,9 +70,10 @@ impl QwenConfig {
     /// - `QWEN_API_KEY`: API key (required)
     /// - `QWEN_BASE_URL`: API endpoint (optional)
     /// - `QWEN_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("QWEN_API_KEY")
-            .map_err(|_| "QWEN_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("QWEN_API_KEY").map_err(|_| {
+            ProviderError::Config("QWEN_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url = env::var("QWEN_BASE_URL").unwrap_or_else(|_| QWEN_BASE_URL.to_string());
 
@@ -93,11 +99,13 @@ impl QwenConfig {
         self
     }
 
+    /// Sets the sampling temperature.
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
+    /// Sets the maximum number of tokens to generate.
     pub fn with_max_tokens(mut self, max: usize) -> Self {
         self.max_tokens = Some(max);
         self
@@ -143,7 +151,7 @@ impl QwenChat {
     }
 
     /// Creates a QwenChat from environment variables, returning a Result.
-    pub fn from_env_result() -> Result<Self, String> {
+    pub fn from_env_result() -> Result<Self, ProviderError> {
         Ok(Self::new(QwenConfig::from_env_result()?))
     }
 }

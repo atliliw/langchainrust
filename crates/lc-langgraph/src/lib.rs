@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // crates/lc-langgraph/src/lib.rs
 //! LangGraph - Graph-based orchestration framework for building stateful LLM applications
 //!
@@ -52,6 +53,7 @@
 pub mod checkpointer;
 pub mod compiled;
 pub mod edge;
+/// Graph error types and result aliases.
 pub mod errors;
 pub mod graph;
 pub mod node;

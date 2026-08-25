@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-providers/src/lib.rs
 //! LLM provider integrations for langchainrust.
 //!

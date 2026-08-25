@@ -43,14 +43,19 @@ pub struct ProtocolInfo {
 /// JSON-RPC 请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPRequest {
+    /// JSON-RPC 版本标识(固定 `"2.0"`)
     pub jsonrpc: String,
+    /// 请求 ID(用于匹配响应)
     pub id: u64,
+    /// 方法名
     pub method: String,
+    /// 可选的请求参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl MCPRequest {
+    /// 构造新的 JSON-RPC 请求。
     pub fn new(id: u64, method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -64,11 +69,14 @@ impl MCPRequest {
 /// JSON-RPC 响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPResponse {
+    /// JSON-RPC 版本标识(固定 `"2.0"`)
     pub jsonrpc: String,
     /// Per JSON-RPC 2.0 spec, `id` is `null` when the request could not be parsed.
     pub id: Option<u64>,
+    /// 成功时的结果(错误响应为 `None`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// 错误信息(成功响应为 `None`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<MCPError>,
 }
@@ -91,13 +99,17 @@ impl MCPResponse {
 /// JSON-RPC 错误
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPError {
+    /// JSON-RPC 错误码
     pub code: i32,
+    /// 错误描述消息
     pub message: String,
+    /// 可选的附加错误数据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
 
 impl MCPError {
+    /// 构造 JSON-RPC 错误。
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,

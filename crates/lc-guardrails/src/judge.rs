@@ -13,6 +13,8 @@
 
 use async_trait::async_trait;
 
+use crate::guardrail::GuardrailError;
+
 use lc_core::judge::{structured_call, StructuredJudgeError};
 use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
@@ -23,10 +25,11 @@ use lc_schema::Message;
 /// `judge` 返回 `true` = 判定为真实泄露(应拦截);`false` = 正常提及(应放行)。
 #[async_trait]
 pub trait SensitiveJudge: Send + Sync {
+    /// 裁判名称。
     fn name(&self) -> &str;
 
     /// 判断一段文本是否泄露真实的敏感信息。
-    async fn judge(&self, text: &str) -> Result<bool, String>;
+    async fn judge(&self, text: &str) -> Result<bool, GuardrailError>;
 }
 
 /// 基于共享 LLM 裁判基础设施的敏感泄露裁判。
@@ -38,6 +41,7 @@ pub struct LlmSensitiveJudge<M: BaseChatModel> {
 }
 
 impl<M: BaseChatModel> LlmSensitiveJudge<M> {
+    /// 用给定的 LLM 创建裁判。
     pub fn new(judge: M) -> Self {
         Self { judge }
     }
@@ -49,7 +53,7 @@ impl<M: BaseChatModel> SensitiveJudge for LlmSensitiveJudge<M> {
         "llm_sensitive_judge"
     }
 
-    async fn judge(&self, text: &str) -> Result<bool, String> {
+    async fn judge(&self, text: &str) -> Result<bool, GuardrailError> {
         let system =
             "你是安全审查员。判断给定文本是否泄露了真实的敏感信息(真实的密码、密钥、凭证值等)。\
                       正常提及、教学或讨论场景(如'如何安全保存密码')不算泄露。\
@@ -61,7 +65,7 @@ impl<M: BaseChatModel> SensitiveJudge for LlmSensitiveJudge<M> {
         let args: LeakArgs = structured_call(&self.judge, leak_tool(), messages, |raw| {
             let is_leak = parse_leak_text(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
-                    "无法从裁判回复解析泄露判定: {}",
+                    "failed to parse leak verdict from judge reply: {}",
                     lc_core::judge::truncate(raw, 200)
                 ))
             })?;
@@ -71,7 +75,7 @@ impl<M: BaseChatModel> SensitiveJudge for LlmSensitiveJudge<M> {
             })
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| GuardrailError::Judge(e.to_string()))?;
         Ok(args.is_leak)
     }
 }

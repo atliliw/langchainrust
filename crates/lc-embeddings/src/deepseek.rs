@@ -17,8 +17,11 @@ pub const DEEPSEEK_EMBED_MODEL: &str = "deepseek-embedding";
 /// Configuration for DeepSeek embeddings API.
 #[derive(Debug, Clone)]
 pub struct DeepSeekEmbeddingsConfig {
+    /// DeepSeek API key.
     pub api_key: String,
+    /// Base URL for the DeepSeek embeddings API.
     pub base_url: String,
+    /// Embedding model name.
     pub model: String,
 }
 
@@ -47,9 +50,10 @@ impl DeepSeekEmbeddingsConfig {
     /// - `DEEPSEEK_API_KEY`: API key (required)
     /// - `DEEPSEEK_BASE_URL`: API endpoint (optional)
     /// - `DEEPSEEK_EMBED_MODEL`: Model name (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .map_err(|_| "DEEPSEEK_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, EmbeddingError> {
+        let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+            EmbeddingError::Config("DEEPSEEK_API_KEY environment variable not set".to_string())
+        })?;
         let base_url =
             std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEEPSEEK_BASE_URL.to_string());
         let model = std::env::var("DEEPSEEK_EMBED_MODEL")
@@ -96,7 +100,7 @@ impl CompatSpec for DeepSeekEmbeddingsConfig {
             )))
         }
     }
-    fn from_env_result() -> Result<Self, String> {
+    fn from_env_result() -> Result<Self, EmbeddingError> {
         Self::from_env_result()
     }
 }
@@ -130,7 +134,7 @@ mod tests {
         let result = embeddings.embed_documents(&["a", "b"]).await;
         assert!(
             matches!(result, Err(EmbeddingError::EmptyVectorInBatch)),
-            "少返回应报 EmptyVectorInBatch，实际: {:?}",
+            "truncated response should report EmptyVectorInBatch, got: {:?}",
             result
         );
     }
@@ -150,12 +154,12 @@ mod tests {
         let v = embeddings
             .embed_query("hello")
             .await
-            .expect("429 两次后应重试成功");
+            .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
         // P2-8: 返回向量应已归一化。
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
-        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 次初始 + 2 次重试");
+        assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
     /// P1-3: API key 为空 → 构造期 fail fast 报 `Config`，而非拖到发请求才 401。
@@ -216,7 +220,7 @@ mod tests {
         env::remove_var("DEEPSEEK_API_KEY");
         let result = DeepSeekEmbeddingsConfig::from_env_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("DEEPSEEK_API_KEY"));
+        assert!(result.unwrap_err().to_string().contains("DEEPSEEK_API_KEY"));
         restore("DEEPSEEK_API_KEY", old);
     }
 

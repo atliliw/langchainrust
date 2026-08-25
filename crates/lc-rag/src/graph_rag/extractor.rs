@@ -15,9 +15,12 @@ use crate::structured::{chat_structured, StructuredChatResult};
 /// An entity extracted from text by the LLM.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedEntity {
+    /// Entity name.
     pub name: String,
+    /// Entity type (e.g. Person, Organization, Technology).
     #[serde(rename = "type")]
     pub entity_type: String,
+    /// Optional description of the entity.
     #[serde(default)]
     pub description: String,
 }
@@ -25,10 +28,14 @@ pub struct ExtractedEntity {
 /// A relation extracted from text by the LLM.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedRelation {
+    /// Source entity name.
     pub source: String,
+    /// Target entity name.
     pub target: String,
+    /// Relation type (e.g. works_at, uses, part_of).
     #[serde(rename = "type")]
     pub relation_type: String,
+    /// Optional description of the relation.
     #[serde(default)]
     pub description: String,
 }
@@ -36,8 +43,10 @@ pub struct ExtractedRelation {
 /// The full LLM extraction response.
 #[derive(Debug, Deserialize)]
 pub struct ExtractionResult {
+    /// Extracted entities.
     #[serde(default)]
     pub entities: Vec<ExtractedEntity>,
+    /// Extracted relations.
     #[serde(default)]
     pub relations: Vec<ExtractedRelation>,
 }
@@ -165,7 +174,7 @@ async fn extract_with_retry<M: BaseChatModel>(
             vec![Message::human(&current_prompt)],
         )
         .await
-        .map_err(super::GraphRAGError::LLMError)?;
+        .map_err(|e| super::GraphRAGError::LLMError(e.to_string()))?;
 
         if let Some(parsed) = parse_structured(&result) {
             return Ok(parsed);
@@ -182,7 +191,7 @@ async fn extract_with_retry<M: BaseChatModel>(
     }
 
     Err(super::GraphRAGError::ExtractionError(
-        "LLM 多次输出非合法 JSON,实体/关系提取失败".to_string(),
+        "LLM repeatedly returned invalid JSON; entity/relation extraction failed".to_string(),
     ))
 }
 
@@ -302,7 +311,7 @@ mod tests {
     fn test_extraction_tool_schema() {
         let tool = extraction_tool();
         assert_eq!(tool.function.name, "extract_entities_relations");
-        let params = tool.function.parameters.expect("parameters 应存在");
+        let params = tool.function.parameters.expect("parameters should exist");
         assert!(params["properties"]["entities"].is_object());
         assert!(params["properties"]["relations"].is_object());
     }
@@ -317,7 +326,7 @@ mod tests {
                 "relations": []
             })),
         };
-        let parsed = parse_structured(&result).expect("tool_args 应解析成功");
+        let parsed = parse_structured(&result).expect("tool_args should parse successfully");
         assert_eq!(parsed.entities.len(), 1);
         assert_eq!(parsed.entities[0].name, "Alice");
         assert!(parsed.relations.is_empty());
@@ -330,7 +339,7 @@ mod tests {
             content: r#"{"entities": [{"name": "Bob", "type": "Person", "description": "mgr"}], "relations": []}"#.to_string(),
             tool_args: None,
         };
-        let parsed = parse_structured(&result).expect("文本 JSON 应解析成功");
+        let parsed = parse_structured(&result).expect("text JSON should parse successfully");
         assert_eq!(parsed.entities[0].name, "Bob");
     }
 

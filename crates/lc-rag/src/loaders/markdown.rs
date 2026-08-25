@@ -81,7 +81,7 @@ impl DocumentLoader for MarkdownLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
-                "Markdown 文件不存在: {}",
+                "markdown file does not exist: {}",
                 self.path.display()
             )));
         }
@@ -174,7 +174,7 @@ mod tests {
         assert!(docs[0].content.contains("Title"));
         assert_eq!(
             docs[0].metadata.get("format"),
-            Some(&"markdown".to_string())
+            Some(&serde_json::Value::String("markdown".to_string()))
         );
     }
 
@@ -195,11 +195,11 @@ mod tests {
         assert_eq!(docs.len(), 2);
         assert_eq!(
             docs[0].metadata.get("heading"),
-            Some(&"Section 1".to_string())
+            Some(&serde_json::Value::String("Section 1".to_string()))
         );
         assert_eq!(
             docs[1].metadata.get("heading"),
-            Some(&"Section 2".to_string())
+            Some(&serde_json::Value::String("Section 2".to_string()))
         );
     }
 

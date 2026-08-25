@@ -128,7 +128,7 @@ impl LLMClient {
     /// # Errors
     ///
     /// Returns error if no known environment variable is set.
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_env() -> Result<Self, ProviderError> {
         // Priority 1: OpenAI
         if std::env::var("OPENAI_API_KEY").is_ok() {
             return Ok(Self::openai(OpenAIConfig::from_env_result()?));
@@ -184,12 +184,12 @@ impl LLMClient {
             return Ok(Self::ollama(OllamaConfig::from_env_result()?));
         }
 
-        Err(
+        Err(ProviderError::Config(
             "No LLM provider detected. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, \
              AZURE_OPENAI_API_KEY, DEEPSEEK_API_KEY, QWEN_API_KEY, MOONSHOT_API_KEY, \
              ZHIPU_API_KEY, MISTRAL_API_KEY, COHERE_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL"
                 .to_string(),
-        )
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -496,7 +496,10 @@ mod tests {
 
         let result = LLMClient::from_env();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No LLM provider detected"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No LLM provider detected"));
 
         for (k, old) in saved {
             restore(k, old);

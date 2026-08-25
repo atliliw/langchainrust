@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 // lc-callbacks/src/lib.rs
 //! Callback and tracing system
 //!

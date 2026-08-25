@@ -500,7 +500,9 @@ impl BatchClient {
             }
             let parsed: OpenAIResultLine = serde_json::from_str(line)?;
             let result = if let Some(err) = parsed.error {
-                Err(err.message.unwrap_or_else(|| "unknown error".to_string()))
+                Err(BatchError::Api(
+                    err.message.unwrap_or_else(|| "unknown error".to_string()),
+                ))
             } else if let Some(resp_body) = parsed.response {
                 if let Some(inner) = resp_body.body {
                     let content = inner
@@ -524,10 +526,10 @@ impl BatchClient {
                         thinking_content: None,
                     })
                 } else {
-                    Err("empty response body".to_string())
+                    Err(BatchError::Api("empty response body".to_string()))
                 }
             } else {
-                Err("no response and no error".to_string())
+                Err(BatchError::Api("no response and no error".to_string()))
             };
             results.push(BatchResult {
                 custom_id: parsed.custom_id,
@@ -632,7 +634,9 @@ impl BatchClient {
                             thinking_content: None,
                         })
                     } else {
-                        Err("succeeded result missing message body".to_string())
+                        Err(BatchError::Api(
+                            "succeeded result missing message body".to_string(),
+                        ))
                     }
                 }
                 "errored" => {
@@ -641,11 +645,11 @@ impl BatchClient {
                         .error
                         .and_then(|e| e.message)
                         .unwrap_or_else(|| "unknown error".to_string());
-                    Err(err_msg)
+                    Err(BatchError::Api(err_msg))
                 }
-                "expired" => Err("request expired".to_string()),
-                "canceled" => Err("request canceled".to_string()),
-                other => Err(format!("unknown result type: {}", other)),
+                "expired" => Err(BatchError::Api("request expired".to_string())),
+                "canceled" => Err(BatchError::Api("request canceled".to_string())),
+                other => Err(BatchError::Api(format!("unknown result type: {}", other))),
             };
             results.push(BatchResult {
                 custom_id: parsed.custom_id,

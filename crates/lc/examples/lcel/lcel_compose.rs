@@ -28,8 +28,8 @@
 
 use langchainrust::{
     BM25Retriever, ChatPromptTemplate, ConversationBufferMemory, Document, Message, OpenAIChat,
-    OpenAIConfig, RAGPipelineBuilder, RagRunnable, Runnable, RunnableExt, RunnableWithMessageHistory,
-    StrOutputParser,
+    OpenAIConfig, RAGPipelineBuilder, RagRunnable, Runnable, RunnableExt,
+    RunnableWithMessageHistory, StrOutputParser,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,10 +68,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 链条类型: Runnable<String, String>
     // 读记忆 → 拼用户输入 → LLM → 写回,全部封装在 RunnableWithMessageHistory 里。
     let memory = ConversationBufferMemory::new().with_return_messages(true);
-    let chat_chain = RunnableWithMessageHistory::new(llm.clone(), memory)
-        .pipe(StrOutputParser::new());
+    let chat_chain =
+        RunnableWithMessageHistory::new(llm.clone(), memory).pipe(StrOutputParser::new());
 
-    let r1 = chat_chain.invoke("我叫小明,请记住我。".to_string(), None).await?;
+    let r1 = chat_chain
+        .invoke("我叫小明,请记住我。".to_string(), None)
+        .await?;
     let r2 = chat_chain.invoke("我叫什么名字?".to_string(), None).await?;
     println!("[2] 记忆+LLM+解析器(多轮)\n     第一轮: {r1}\n     第二轮: {r2}\n");
 

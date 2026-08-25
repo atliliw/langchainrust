@@ -5,6 +5,7 @@
 //! so they live here to break the circular dependency.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// Document structure.
@@ -14,7 +15,7 @@ pub struct Document {
     pub content: String,
 
     /// Document metadata.
-    pub metadata: HashMap<String, String>,
+    pub metadata: HashMap<String, Value>,
 
     /// Document ID (optional).
     pub id: Option<String>,
@@ -31,7 +32,7 @@ impl Document {
     }
 
     /// Adds metadata.
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
@@ -84,23 +85,28 @@ pub struct ChunkDocument {
     pub segment: usize,
 
     /// Chunk metadata
-    pub metadata: HashMap<String, String>,
+    pub metadata: HashMap<String, Value>,
 }
 
 impl ChunkDocument {
     /// Create a new chunk document
-    pub fn new(chunk_id: String, parent_id: String, content: String, segment: usize) -> Self {
+    pub fn new(
+        chunk_id: impl Into<String>,
+        parent_id: impl Into<String>,
+        content: impl Into<String>,
+        segment: usize,
+    ) -> Self {
         Self {
-            chunk_id,
-            parent_id,
-            content,
+            chunk_id: chunk_id.into(),
+            parent_id: parent_id.into(),
+            content: content.into(),
             segment,
             metadata: HashMap::new(),
         }
     }
 
     /// Add metadata
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
@@ -126,7 +132,10 @@ mod tests {
             .with_id("doc-1");
 
         assert_eq!(doc.content, "Hello, world!");
-        assert_eq!(doc.metadata.get("source"), Some(&"test".to_string()));
+        assert_eq!(
+            doc.metadata.get("source").and_then(|v| v.as_str()),
+            Some("test")
+        );
         assert_eq!(doc.id, Some("doc-1".to_string()));
     }
 

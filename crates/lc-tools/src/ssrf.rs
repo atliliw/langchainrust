@@ -98,7 +98,7 @@ pub(crate) async fn guarded_get(
             .get(&current)
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP 请求失败: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP request failed: {}", e)))?;
 
         if !resp.status().is_redirection() {
             return Ok(resp);
@@ -115,7 +115,7 @@ pub(crate) async fn guarded_get(
         current = resolve_redirect(&current, location)?;
     }
     Err(ToolError::ExecutionFailed(format!(
-        "请求重定向次数超过上限 {} 次",
+        "request redirect count exceeded the limit of {} times",
         MAX_REDIRECTS
     )))
 }
@@ -124,10 +124,10 @@ pub(crate) async fn guarded_get(
 fn resolve_redirect(base: &str, location: &str) -> Result<String, ToolError> {
     let joined = url::Url::parse(base)
         .and_then(|base_url| base_url.join(location))
-        .map_err(|e| ToolError::InvalidInput(format!("非法重定向目标: {}", e)))?;
+        .map_err(|e| ToolError::InvalidInput(format!("invalid redirect target: {}", e)))?;
     if joined.scheme() != "http" && joined.scheme() != "https" {
         return Err(ToolError::InvalidInput(format!(
-            "重定向目标协议不受支持: {}",
+            "redirect target protocol not supported: {}",
             joined.scheme()
         )));
     }
@@ -140,11 +140,19 @@ mod tests {
 
     #[test]
     fn ipv4_mapped_ipv6_private_is_blocked() {
-        assert!(is_private_ip(&"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip(
+            &"::ffff:127.0.0.1".parse::<IpAddr>().unwrap()
+        ));
         assert!(is_private_ip(&"::ffff:10.0.0.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"::ffff:169.254.169.254".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"::ffff:192.168.1.1".parse::<IpAddr>().unwrap()));
-        assert!(is_private_ip(&"::ffff:172.16.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip(
+            &"::ffff:169.254.169.254".parse::<IpAddr>().unwrap()
+        ));
+        assert!(is_private_ip(
+            &"::ffff:192.168.1.1".parse::<IpAddr>().unwrap()
+        ));
+        assert!(is_private_ip(
+            &"::ffff:172.16.0.1".parse::<IpAddr>().unwrap()
+        ));
     }
 
     #[test]

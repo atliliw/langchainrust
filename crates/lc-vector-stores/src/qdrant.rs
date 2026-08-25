@@ -17,17 +17,24 @@ use uuid::Uuid;
 /// Qdrant 配置
 #[derive(Debug, Clone)]
 pub struct QdrantConfig {
+    /// Qdrant 服务地址
     pub url: String,
+    /// 集合名称
     pub collection_name: String,
+    /// 向量维度
     pub vector_size: usize,
+    /// 距离度量方式
     pub distance: QdrantDistance,
 }
 
 /// Qdrant 距离度量类型
 #[derive(Debug, Clone, Copy)]
 pub enum QdrantDistance {
+    /// 余弦相似度
     Cosine,
+    /// 欧几里得距离
     Euclid,
+    /// 点积
     Dot,
 }
 
@@ -53,6 +60,7 @@ impl Default for QdrantConfig {
 }
 
 impl QdrantConfig {
+    /// 使用服务地址和集合名创建配置,其余字段取默认值。
     pub fn new(url: impl Into<String>, collection_name: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -61,11 +69,13 @@ impl QdrantConfig {
         }
     }
 
+    /// 设置向量维度。
     pub fn with_vector_size(mut self, size: usize) -> Self {
         self.vector_size = size;
         self
     }
 
+    /// 设置距离度量方式。
     pub fn with_distance(mut self, distance: QdrantDistance) -> Self {
         self.distance = distance;
         self
@@ -79,17 +89,20 @@ pub struct QdrantVectorStore {
 }
 
 impl QdrantVectorStore {
+    /// 根据配置连接 Qdrant,若集合不存在则自动创建。
     pub async fn new(config: QdrantConfig) -> Result<Self, VectorStoreError> {
-        let client = Qdrant::from_url(&config.url)
-            .build()
-            .map_err(|e| VectorStoreError::ConnectionError(format!("连接 Qdrant 失败: {}", e)))?;
+        let client = Qdrant::from_url(&config.url).build().map_err(|e| {
+            VectorStoreError::ConnectionError(format!("failed to connect to Qdrant: {}", e))
+        })?;
 
         let client = Arc::new(client);
 
         let exists = client
             .collection_exists(&config.collection_name)
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("检查集合失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to check collection: {}", e))
+            })?;
 
         if !exists {
             client
@@ -102,12 +115,15 @@ impl QdrantVectorStore {
                     ),
                 )
                 .await
-                .map_err(|e| VectorStoreError::StorageError(format!("创建集合失败: {}", e)))?;
+                .map_err(|e| {
+                    VectorStoreError::StorageError(format!("failed to create collection: {}", e))
+                })?;
         }
 
         Ok(Self { client, config })
     }
 
+    /// 从环境变量 `QDRANT_URL` 和 `QDRANT_COLLECTION` 读取配置创建存储。
     pub async fn from_env() -> Result<Self, VectorStoreError> {
         let url =
             std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string());
@@ -117,6 +133,7 @@ impl QdrantVectorStore {
         Self::new(QdrantConfig::new(url, collection_name)).await
     }
 
+    /// 按 metadata 键值匹配删除点,返回实际删除数量。
     pub async fn delete_by_metadata(
         &self,
         key: &str,
@@ -137,7 +154,12 @@ impl QdrantVectorStore {
                     .with_payload(false),
             )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("按metadata统计失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!(
+                    "failed to count matching points by metadata: {}",
+                    e
+                ))
+            })?;
 
         let deleted = matched.result.len();
 
@@ -148,7 +170,10 @@ impl QdrantVectorStore {
                 )
                 .await
                 .map_err(|e| {
-                    VectorStoreError::StorageError(format!("按metadata删除失败: {}", e))
+                    VectorStoreError::StorageError(format!(
+                        "failed to delete points by metadata: {}",
+                        e
+                    ))
                 })?;
         }
 
@@ -165,7 +190,7 @@ impl VectorStore for QdrantVectorStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "文档数量和嵌入向量数量不匹配".to_string(),
+                "document count and embedding count mismatch".to_string(),
             ));
         }
 
@@ -176,7 +201,7 @@ impl VectorStore for QdrantVectorStore {
         for embedding in &embeddings {
             if embedding.len() != self.config.vector_size {
                 return Err(VectorStoreError::StorageError(format!(
-                    "向量维度不匹配: 期望 {}, 实际 {}",
+                    "vector dimension mismatch: expected {}, got {}",
                     self.config.vector_size,
                     embedding.len()
                 )));
@@ -212,7 +237,9 @@ impl VectorStore for QdrantVectorStore {
                 points,
             ))
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("插入文档失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to insert documents: {}", e))
+            })?;
 
         Ok(ids)
     }
@@ -224,7 +251,7 @@ impl VectorStore for QdrantVectorStore {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         if query_embedding.len() != self.config.vector_size {
             return Err(VectorStoreError::StorageError(format!(
-                "查询向量维度不匹配: 期望 {}, 实际 {}",
+                "query vector dimension mismatch: expected {}, got {}",
                 self.config.vector_size,
                 query_embedding.len()
             )));
@@ -239,7 +266,7 @@ impl VectorStore for QdrantVectorStore {
                     .with_payload(true),
             )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("搜索失败: {}", e)))?;
+            .map_err(|e| VectorStoreError::StorageError(format!("search failed: {}", e)))?;
 
         let results: Vec<SearchResult> = search_result
             .result
@@ -263,7 +290,7 @@ impl VectorStore for QdrantVectorStore {
                 for (key, value) in &payload {
                     if key != "content" && key != "doc_id" {
                         if let Some(s) = value.as_str() {
-                            metadata.insert(key.clone(), s.clone());
+                            metadata.insert(key.clone(), s.clone().into());
                         }
                     }
                 }
@@ -295,7 +322,9 @@ impl VectorStore for QdrantVectorStore {
                     .with_payload(true),
             )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("获取文档失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to get document: {}", e))
+            })?;
 
         if let Some(point) = results.result.first() {
             let payload_map = point.payload.clone();
@@ -316,7 +345,7 @@ impl VectorStore for QdrantVectorStore {
             for (key, value) in &payload_map {
                 if key != "content" && key != "doc_id" {
                     if let Some(s) = value.as_str() {
-                        metadata.insert(key.clone(), s.clone());
+                        metadata.insert(key.clone(), s.clone().into());
                     }
                 }
             }
@@ -344,7 +373,7 @@ impl VectorStore for QdrantVectorStore {
                     .with_payload(true),
             )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("获取向量失败: {}", e)))?;
+            .map_err(|e| VectorStoreError::StorageError(format!("failed to get vector: {}", e)))?;
 
         if let Some(point) = results.result.first() {
             if let Some(vectors) = &point.vectors {
@@ -364,7 +393,9 @@ impl VectorStore for QdrantVectorStore {
         self.client
             .delete_points(DeletePointsBuilder::new(&self.config.collection_name).points(filter))
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("删除文档失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to delete document: {}", e))
+            })?;
 
         Ok(())
     }
@@ -385,7 +416,9 @@ impl VectorStore for QdrantVectorStore {
         self.client
             .delete_collection(&collection_name)
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("删除集合失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to delete collection: {}", e))
+            })?;
 
         self.client
             .create_collection(
@@ -397,7 +430,9 @@ impl VectorStore for QdrantVectorStore {
                 ),
             )
             .await
-            .map_err(|e| VectorStoreError::StorageError(format!("重建集合失败: {}", e)))?;
+            .map_err(|e| {
+                VectorStoreError::StorageError(format!("failed to recreate collection: {}", e))
+            })?;
 
         Ok(())
     }

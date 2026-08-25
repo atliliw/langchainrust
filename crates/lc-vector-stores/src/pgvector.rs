@@ -18,6 +18,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::VectorStoreError;
+
 static TABLE_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
 
@@ -25,14 +27,14 @@ static TABLE_NAME_RE: LazyLock<Regex> =
 ///
 /// Only allows: `^[a-zA-Z_][a-zA-Z0-9_]*$`
 /// This prevents SQL injection via table names.
-pub fn validate_table_name(table: &str) -> Result<(), String> {
+pub fn validate_table_name(table: &str) -> Result<(), VectorStoreError> {
     if TABLE_NAME_RE.is_match(table) {
         Ok(())
     } else {
-        Err(format!(
+        Err(VectorStoreError::ConfigError(format!(
             "Invalid table name '{}': must match ^[a-zA-Z_][a-zA-Z0-9_]*$",
             table
-        ))
+        )))
     }
 }
 

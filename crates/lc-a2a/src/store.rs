@@ -74,6 +74,7 @@ impl StoredTask {
 
 /// Error returned by a [`TaskStore`] backend.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The backend is temporarily unavailable (e.g. connection loss).
     #[error("task store unavailable: {0}")]

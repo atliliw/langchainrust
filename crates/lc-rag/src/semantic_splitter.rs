@@ -109,7 +109,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
             .enumerate()
             .map(|(i, chunk)| {
                 let mut metadata = document.metadata.clone();
-                metadata.insert("chunk".to_string(), i.to_string());
+                metadata.insert("chunk".to_string(), i.to_string().into());
                 Document {
                     content: chunk,
                     metadata,
@@ -191,8 +191,14 @@ mod tests {
         let chunks = s.split_document(&doc).await.unwrap();
         assert!(chunks.len() >= 2);
         for (i, c) in chunks.iter().enumerate() {
-            assert_eq!(c.metadata.get("chunk"), Some(&i.to_string()));
-            assert_eq!(c.metadata.get("source"), Some(&"test".to_string()));
+            assert_eq!(
+                c.metadata.get("chunk"),
+                Some(&serde_json::Value::String(i.to_string()))
+            );
+            assert_eq!(
+                c.metadata.get("source"),
+                Some(&serde_json::Value::String("test".to_string()))
+            );
             assert!(c.id.is_none());
         }
     }

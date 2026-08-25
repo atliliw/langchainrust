@@ -5,6 +5,8 @@ use lc_core::tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use std::env;
 
+use crate::ProviderError;
+
 /// Anthropic API endpoint.
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
@@ -71,11 +73,17 @@ impl Default for ThinkingConfig {
 /// Anthropic Claude configuration.
 #[derive(Debug, Clone)]
 pub struct AnthropicConfig {
+    /// Anthropic API key.
     pub api_key: String,
+    /// Base URL of the Anthropic API endpoint.
     pub base_url: String,
+    /// Model name to use.
     pub model: String,
+    /// Maximum number of tokens to generate.
     pub max_tokens: usize,
+    /// Sampling temperature.
     pub temperature: Option<f32>,
+    /// Optional system prompt.
     pub system_prompt: Option<String>,
     /// Extended thinking configuration.
     pub thinking: ThinkingConfig,
@@ -117,9 +125,10 @@ impl AnthropicConfig {
     /// - `ANTHROPIC_BASE_URL`: API endpoint (optional)
     /// - `ANTHROPIC_MODEL`: Model name (optional)
     /// - `ANTHROPIC_MAX_TOKENS`: Max tokens (optional)
-    pub fn from_env_result() -> Result<Self, String> {
-        let api_key = env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
+    pub fn from_env_result() -> Result<Self, ProviderError> {
+        let api_key = env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            ProviderError::Config("ANTHROPIC_API_KEY environment variable not set".to_string())
+        })?;
 
         let base_url =
             env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| ANTHROPIC_BASE_URL.to_string());

@@ -93,6 +93,7 @@ pub use lc_a2a::client::A2AError;
 /// mapping error types. Each variant wraps the original sub-module
 /// error, preserving full context.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     // ---- LLM Provider ----
     /// OpenAI API error.

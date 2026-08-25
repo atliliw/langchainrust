@@ -53,8 +53,11 @@ impl From<crate::RunType> for SpanKind {
 /// Token usage recorded in a span.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SpanTokenUsage {
+    /// Number of tokens in the prompt.
     pub prompt_tokens: usize,
+    /// Number of tokens in the completion.
     pub completion_tokens: usize,
+    /// Total number of tokens.
     pub total_tokens: usize,
 }
 
@@ -124,7 +127,9 @@ pub struct TraceSpan {
 /// A node in the trace tree (span + children).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceNode {
+    /// The span itself.
     pub span: TraceSpan,
+    /// Child nodes of this span.
     pub children: Vec<TraceNode>,
 }
 

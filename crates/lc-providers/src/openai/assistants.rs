@@ -13,6 +13,7 @@ use std::time::Duration;
 
 /// Assistants 错误
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AssistantError {
     /// HTTP 请求错误
     Http(String),
@@ -23,22 +24,27 @@ pub enum AssistantError {
     /// Run 终止于非完成状态
     RunFailed(String),
     /// 工具执行错误
-    ToolExecution { tool_name: String, error: String },
-    /// 轮询超时
+    ToolExecution {
+        /// 工具名称
+        tool_name: String,
+        /// 错误信息
+        error: String,
+    },
+    /// Polling timed out
     Timeout,
 }
 
 impl std::fmt::Display for AssistantError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AssistantError::Http(m) => write!(f, "HTTP 错误: {}", m),
-            AssistantError::Api(m) => write!(f, "API 错误: {}", m),
-            AssistantError::Parse(m) => write!(f, "解析错误: {}", m),
-            AssistantError::RunFailed(s) => write!(f, "Run 失败, 状态: {}", s),
+            AssistantError::Http(m) => write!(f, "HTTP error: {}", m),
+            AssistantError::Api(m) => write!(f, "API error: {}", m),
+            AssistantError::Parse(m) => write!(f, "Parse error: {}", m),
+            AssistantError::RunFailed(s) => write!(f, "Run failed, status: {}", s),
             AssistantError::ToolExecution { tool_name, error } => {
-                write!(f, "工具 '{}' 执行失败: {}", tool_name, error)
+                write!(f, "Tool '{}' execution failed: {}", tool_name, error)
             }
-            AssistantError::Timeout => write!(f, "轮询超时"),
+            AssistantError::Timeout => write!(f, "Polling timeout"),
         }
     }
 }
@@ -100,7 +106,7 @@ impl OpenAIAssistant {
         let id = resp
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AssistantError::Parse("缺少 assistant id".into()))?
+            .ok_or_else(|| AssistantError::Parse("missing assistant id".into()))?
             .to_string();
         Ok(Self {
             client,
@@ -149,7 +155,7 @@ impl OpenAIAssistant {
         let id = resp
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AssistantError::Parse("缺少 assistant id".into()))?
+            .ok_or_else(|| AssistantError::Parse("missing assistant id".into()))?
             .to_string();
         Ok(Self {
             client,
@@ -186,6 +192,7 @@ impl OpenAIAssistant {
         }
     }
 
+    /// 获取助手 ID
     pub fn assistant_id(&self) -> &str {
         &self.assistant_id
     }
@@ -223,7 +230,7 @@ impl OpenAIAssistant {
         let thread_id = thread
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AssistantError::Parse("缺少 thread id".into()))?;
+            .ok_or_else(|| AssistantError::Parse("missing thread id".into()))?;
 
         // 2. 加用户消息
         Self::post(
@@ -245,7 +252,7 @@ impl OpenAIAssistant {
         let run_id = run
             .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AssistantError::Parse("缺少 run id".into()))?;
+            .ok_or_else(|| AssistantError::Parse("missing run id".into()))?;
 
         // 4. 轮询 + 处理 requires_action
         let mut attempts = 0u32;
@@ -292,10 +299,10 @@ impl OpenAIAssistant {
         let data = messages
             .get("data")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| AssistantError::Parse("缺少 messages data".into()))?;
+            .ok_or_else(|| AssistantError::Parse("missing messages data".into()))?;
         let first = data
             .first()
-            .ok_or_else(|| AssistantError::Parse("无消息".into()))?;
+            .ok_or_else(|| AssistantError::Parse("no messages".into()))?;
         let text = first
             .get("content")
             .and_then(|c| c.as_array())
@@ -303,7 +310,7 @@ impl OpenAIAssistant {
             .and_then(|c| c.get("text"))
             .and_then(|t| t.get("value"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| AssistantError::Parse("无法解析消息内容".into()))?;
+            .ok_or_else(|| AssistantError::Parse("failed to parse message content".into()))?;
         Ok(text.to_string())
     }
 
@@ -323,7 +330,8 @@ impl OpenAIAssistant {
             .and_then(|tc| tc.as_array())
             .ok_or_else(|| {
                 AssistantError::Parse(
-                    "requires_action 但缺少 required_action.submit_tool_outputs.tool_calls".into(),
+                    "requires_action but missing required_action.submit_tool_outputs.tool_calls"
+                        .into(),
                 )
             })?;
 
@@ -333,14 +341,14 @@ impl OpenAIAssistant {
             let call_id = tc
                 .get("id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| AssistantError::Parse("tool_call 缺少 id".into()))?;
+                .ok_or_else(|| AssistantError::Parse("tool_call missing id".into()))?;
             let function = tc
                 .get("function")
-                .ok_or_else(|| AssistantError::Parse("tool_call 缺少 function".into()))?;
+                .ok_or_else(|| AssistantError::Parse("tool_call missing function".into()))?;
             let fn_name = function
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| AssistantError::Parse("tool_call.function 缺少 name".into()))?;
+                .ok_or_else(|| AssistantError::Parse("tool_call.function missing name".into()))?;
             let fn_args = function
                 .get("arguments")
                 .and_then(|v| v.as_str())
@@ -352,11 +360,11 @@ impl OpenAIAssistant {
                     Ok(result) => result,
                     Err(e) => {
                         // 工具执行失败,返回错误信息给 Assistant
-                        format!("工具执行错误: {}", e)
+                        format!("Tool execution error: {}", e)
                     }
                 },
                 None => {
-                    format!("未找到工具: {}", fn_name)
+                    format!("Tool not found: {}", fn_name)
                 }
             };
 
@@ -424,7 +432,7 @@ impl OpenAIAssistant {
                 .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
-                .unwrap_or("未知错误");
+                .unwrap_or("unknown error");
             return Err(AssistantError::Api(msg.to_string()));
         }
         Ok(json)
@@ -548,6 +556,6 @@ mod tests {
         assert!(e.to_string().contains("expired"));
 
         let e = AssistantError::Timeout;
-        assert!(e.to_string().contains("超时"));
+        assert!(e.to_string().contains("timeout"));
     }
 }

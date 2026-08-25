@@ -26,6 +26,7 @@ pub struct ChunkedVectorStore {
 }
 
 impl ChunkedVectorStore {
+    /// 创建新的 ChunkedVectorStore
     pub fn new(document_store: Arc<ChunkedDocumentStore>, vector_size: usize) -> Self {
         Self {
             document_store,
@@ -37,17 +38,18 @@ impl ChunkedVectorStore {
     /// 添加 chunk 向量（chunk_id + embedding）
     pub async fn add_chunk_vector(
         &self,
-        chunk_id: String,
+        chunk_id: impl Into<String>,
         embedding: Vec<f32>,
     ) -> Result<(), VectorStoreError> {
         if embedding.len() != self.vector_size {
             return Err(VectorStoreError::StorageError(format!(
-                "向量维度不匹配: 期望 {}, 实际 {}",
+                "embedding dimension mismatch: expected {}, got {}",
                 self.vector_size,
                 embedding.len()
             )));
         }
 
+        let chunk_id = chunk_id.into();
         let mut vectors = self.vectors.write().await;
         vectors.insert(
             chunk_id.clone(),
@@ -68,7 +70,7 @@ impl ChunkedVectorStore {
     ) -> Result<(), VectorStoreError> {
         if chunk_ids.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "chunk_id 数量和向量数量不匹配".to_string(),
+                "chunk_id count and embedding count mismatch".to_string(),
             ));
         }
 
@@ -130,7 +132,7 @@ impl VectorStore for ChunkedVectorStore {
     ) -> Result<Vec<String>, VectorStoreError> {
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::StorageError(
-                "文档数量和向量数量不匹配".to_string(),
+                "document count and embedding count mismatch".to_string(),
             ));
         }
 
@@ -194,7 +196,7 @@ impl VectorStore for ChunkedVectorStore {
                     Err(e) => {
                         // 不再静默吞错:读失败记日志,该 chunk 从 top-k 结果中缺失
                         log::error!(
-                            "检索时读取 chunk `{}` 文档失败(该 chunk 已从结果中缺失): {}",
+                            "failed to read document for chunk `{}` while retrieving (chunk dropped from results): {}",
                             chunk_id,
                             e
                         );

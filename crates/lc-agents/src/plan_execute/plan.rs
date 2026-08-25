@@ -5,11 +5,16 @@ use serde::{Deserialize, Serialize};
 /// 步骤状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum StepStatus {
+    /// 等待执行
     #[default]
     Pending,
+    /// 正在执行
     Running,
+    /// 已完成
     Completed,
+    /// 执行失败
     Failed {
+        /// 失败原因
         error: String,
     },
 }
@@ -17,15 +22,20 @@ pub enum StepStatus {
 /// 执行计划步骤
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
+    /// 步骤 ID
     pub id: usize,
+    /// 步骤描述
     pub description: String,
+    /// 步骤状态
     #[serde(default)]
     pub status: StepStatus,
+    /// 步骤执行结果
     #[serde(default)]
     pub result: Option<String>,
 }
 
 impl PlanStep {
+    /// 创建新的计划步骤,初始状态为 Pending。
     pub fn new(id: usize, description: impl Into<String>) -> Self {
         Self {
             id,
@@ -39,11 +49,14 @@ impl PlanStep {
 /// 执行计划
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    /// 计划目标
     pub objective: String,
+    /// 步骤列表
     pub steps: Vec<PlanStep>,
 }
 
 impl Plan {
+    /// 创建新的执行计划。
     pub fn new(objective: impl Into<String>, steps: Vec<PlanStep>) -> Self {
         Self {
             objective: objective.into(),
@@ -71,16 +84,20 @@ impl Plan {
         self.steps.iter().all(|s| s.status == StepStatus::Completed)
     }
 
-    pub fn mark_completed(&mut self, id: usize, result: String) {
+    /// 将指定步骤标记为已完成并记录结果。
+    pub fn mark_completed(&mut self, id: usize, result: impl Into<String>) {
         if let Some(s) = self.steps.iter_mut().find(|s| s.id == id) {
             s.status = StepStatus::Completed;
-            s.result = Some(result);
+            s.result = Some(result.into());
         }
     }
 
-    pub fn mark_failed(&mut self, id: usize, error: String) {
+    /// 将指定步骤标记为失败并记录错误信息。
+    pub fn mark_failed(&mut self, id: usize, error: impl Into<String>) {
         if let Some(s) = self.steps.iter_mut().find(|s| s.id == id) {
-            s.status = StepStatus::Failed { error };
+            s.status = StepStatus::Failed {
+                error: error.into(),
+            };
         }
     }
 }

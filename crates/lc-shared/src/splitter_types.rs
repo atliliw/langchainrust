@@ -6,6 +6,7 @@
 //! the circular dependency.
 
 use crate::document_types::Document;
+use serde_json::Value;
 
 /// Text splitter trait
 pub trait TextSplitter: Send + Sync {
@@ -22,7 +23,9 @@ pub trait TextSplitter: Send + Sync {
                 let mut metadata = document.metadata.clone();
                 // Only insert the chunk index when the user hasn't already
                 // provided a "chunk" key — never silently overwrite it.
-                metadata.entry("chunk".to_string()).or_insert(i.to_string());
+                metadata
+                    .entry("chunk".to_string())
+                    .or_insert(Value::String(i.to_string()));
 
                 Document {
                     content: chunk,
@@ -223,8 +226,14 @@ mod tests {
         assert!(!chunks.is_empty());
         for (i, chunk) in chunks.iter().enumerate() {
             assert!(chunk.metadata.contains_key("chunk"));
-            assert_eq!(chunk.metadata.get("chunk"), Some(&i.to_string()));
-            assert_eq!(chunk.metadata.get("source"), Some(&"test".to_string()));
+            assert_eq!(
+                chunk.metadata.get("chunk"),
+                Some(&Value::String(i.to_string()))
+            );
+            assert_eq!(
+                chunk.metadata.get("source"),
+                Some(&Value::String("test".to_string()))
+            );
         }
     }
 
@@ -242,7 +251,7 @@ mod tests {
         for chunk in &chunks {
             assert_eq!(
                 chunk.metadata.get("chunk"),
-                Some(&"user-supplied".to_string())
+                Some(&Value::String("user-supplied".to_string()))
             );
         }
     }

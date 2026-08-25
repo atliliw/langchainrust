@@ -28,21 +28,32 @@ pub enum AnthropicMessageContent {
 pub enum AnthropicContentBlock {
     /// Text content block.
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// The text content.
+        text: String,
+    },
     /// Image content block (base64-encoded).
     #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
+    Image {
+        /// The image source.
+        source: AnthropicImageSource,
+    },
     /// Tool use content block (from assistant).
     #[serde(rename = "tool_use")]
     ToolUse {
+        /// Tool call ID.
         id: String,
+        /// Tool name.
         name: String,
+        /// Tool input arguments as JSON.
         input: serde_json::Value,
     },
     /// Tool result content block (from user, responding to tool use).
     #[serde(rename = "tool_result")]
     ToolResult {
+        /// The tool call ID this result responds to.
         tool_use_id: String,
+        /// The result content.
         content: String,
     },
 }
@@ -52,9 +63,12 @@ pub enum AnthropicContentBlock {
 /// Anthropic only supports base64-encoded images (no URL-based images).
 #[derive(Serialize, Clone, Debug)]
 pub struct AnthropicImageSource {
+    /// Source type (e.g. "base64").
     #[serde(rename = "type")]
     pub source_type: String,
+    /// Media type of the image (e.g. "image/png").
     pub media_type: String,
+    /// Base64-encoded image data.
     pub data: String,
 }
 

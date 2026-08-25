@@ -5,9 +5,9 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use lc_core::language_models::LLMResult;
-use lc_core::{BaseChatModel, Runnable};
+use lc_core::BaseChatModel;
 use lc_memory::{BaseMemory, ConversationBufferMemory};
+use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,12 +15,13 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::BoxedChatModel;
 
 /// Conversation Chain
 ///
 /// A Chain with memory that automatically saves and loads conversation history.
-pub struct ConversationChain<M: BaseChatModel> {
-    llm: M,
+pub struct ConversationChain {
+    llm: BoxedChatModel,
     memory: Arc<Mutex<dyn BaseMemory>>,
     system_prompt: Option<String>,
     input_key: String,
@@ -29,13 +30,17 @@ pub struct ConversationChain<M: BaseChatModel> {
     verbose: bool,
 }
 
-impl<M: BaseChatModel + 'static> ConversationChain<M> {
+impl ConversationChain {
     /// Create a new ConversationChain.
     ///
     /// # Arguments
     /// * `llm` - LLM client (any type implementing BaseChatModel)
     /// * `memory` - Conversation memory
-    pub fn new(llm: M, memory: ConversationBufferMemory) -> Self {
+    pub fn new<L>(llm: L, memory: ConversationBufferMemory) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self::from_memory(llm, Arc::new(Mutex::new(memory.with_return_messages(true))))
     }
 
@@ -45,7 +50,19 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
     /// `ConversationBufferMemory`), this accepts any memory — window, summary,
     /// vector-store, persistent — so the chain's memory is pluggable without
     /// changing the chain source.
-    pub fn from_memory(llm: M, memory: Arc<Mutex<dyn BaseMemory>>) -> Self {
+    pub fn from_memory<L>(llm: L, memory: Arc<Mutex<dyn BaseMemory>>) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
+        Self::from_wrapped_memory(wrap_chat_model(llm), memory)
+    }
+
+    /// Construct from an already-wrapped model (internal builder path).
+    pub(crate) fn from_wrapped_memory(
+        llm: BoxedChatModel,
+        memory: Arc<Mutex<dyn BaseMemory>>,
+    ) -> Self {
         Self {
             llm,
             memory,
@@ -92,7 +109,12 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
         &self.memory
     }
 
-    pub fn builder(llm: M) -> ConversationChainBuilder<M> {
+    /// Create a [`ConversationChainBuilder`] from an LLM.
+    pub fn builder<L>(llm: L) -> ConversationChainBuilder
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         ConversationChainBuilder::new(llm)
     }
 
@@ -172,10 +194,7 @@ impl<M: BaseChatModel + 'static> ConversationChain<M> {
 }
 
 #[async_trait]
-impl<M: BaseChatModel + Send + Sync + 'static> BaseChain for ConversationChain<M>
-where
-    <M as Runnable<Vec<Message>, LLMResult>>::Error: std::fmt::Display,
-{
+impl BaseChain for ConversationChain {
     fn input_keys(&self) -> Vec<&str> {
         vec![&self.input_key]
     }
@@ -314,8 +333,8 @@ where
 /// ConversationChain Builder.
 ///
 /// Convenience builder for ConversationChain.
-pub struct ConversationChainBuilder<M: BaseChatModel> {
-    llm: M,
+pub struct ConversationChainBuilder {
+    llm: BoxedChatModel,
     memory: Option<Arc<Mutex<dyn BaseMemory>>>,
     system_prompt: Option<String>,
     input_key: Option<String>,
@@ -324,10 +343,15 @@ pub struct ConversationChainBuilder<M: BaseChatModel> {
     verbose: Option<bool>,
 }
 
-impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
-    pub fn new(llm: M) -> Self {
+impl ConversationChainBuilder {
+    /// Create a new [`ConversationChainBuilder`] with the given chat model.
+    pub fn new<L>(llm: L) -> Self
+    where
+        L: BaseChatModel + Send + Sync + 'static,
+        L::Error: Into<ProviderError>,
+    {
         Self {
-            llm,
+            llm: wrap_chat_model(llm),
             memory: None,
             system_prompt: None,
             input_key: None,
@@ -337,40 +361,52 @@ impl<M: BaseChatModel + 'static> ConversationChainBuilder<M> {
         }
     }
 
+    /// Set the conversation memory.
     pub fn memory<Mem: BaseMemory + 'static>(mut self, memory: Mem) -> Self {
         self.memory = Some(Arc::new(Mutex::new(memory)));
         self
     }
 
+    /// Set the system prompt.
     pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
+    /// Set the input key.
     pub fn input_key(mut self, key: impl Into<String>) -> Self {
         self.input_key = Some(key.into());
         self
     }
 
+    /// Set the output key.
     pub fn output_key(mut self, key: impl Into<String>) -> Self {
         self.output_key = Some(key.into());
         self
     }
 
+    /// Set the chain name.
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
+    /// Set verbose mode.
     pub fn verbose(mut self, verbose: bool) -> Self {
         self.verbose = Some(verbose);
         self
     }
 
-    pub fn build(self) -> ConversationChain<M> {
+    /// Build the final [`ConversationChain`].
+    pub fn build(self) -> ConversationChain {
         let mut chain = match self.memory {
-            Some(memory) => ConversationChain::from_memory(self.llm, memory),
-            None => ConversationChain::new(self.llm, ConversationBufferMemory::new()),
+            Some(memory) => ConversationChain::from_wrapped_memory(self.llm, memory),
+            None => ConversationChain::from_wrapped_memory(
+                self.llm,
+                Arc::new(Mutex::new(
+                    ConversationBufferMemory::new().with_return_messages(true),
+                )),
+            ),
         };
 
         if let Some(prompt) = self.system_prompt {

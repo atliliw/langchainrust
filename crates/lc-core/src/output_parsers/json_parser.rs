@@ -32,6 +32,7 @@ pub struct JsonOutputParser {
 }
 
 impl JsonOutputParser {
+    /// 创建标准 JSON 输出解析器。
     pub fn new() -> Self {
         Self { partial: false }
     }
@@ -88,7 +89,7 @@ impl BaseOutputParser<serde_json::Value> for JsonOutputParser {
         } else {
             serde_json::from_str(json_str).map_err(|e| {
                 OutputParserError::JsonError(format!(
-                    "JSON 解析失败（位置 {}:{}）：{}，输入：{}",
+                    "JSON parse failed (position {}:{}): {}, input: {}",
                     e.line(),
                     e.column(),
                     e,
@@ -121,7 +122,7 @@ impl JsonOutputParser {
         }
 
         Err(OutputParserError::JsonError(format!(
-            "部分 JSON 解析失败：{}",
+            "partial JSON parse failed: {}",
             preview_slice(text, 200)
         )))
     }
@@ -216,9 +217,11 @@ impl JsonOutputParser {
                 let after_quote = &repaired[open_pos + 1..];
                 if after_quote.contains('\n') {
                     // Truncate at the newline and close the string
-                    let newline_pos = repaired[open_pos + 1..].find('\n').unwrap() + open_pos + 1;
-                    repaired.truncate(newline_pos);
-                    repaired.push('"');
+                    if let Some(pos) = repaired[open_pos + 1..].find('\n') {
+                        let newline_pos = pos + open_pos + 1;
+                        repaired.truncate(newline_pos);
+                        repaired.push('"');
+                    }
                 }
             }
         }

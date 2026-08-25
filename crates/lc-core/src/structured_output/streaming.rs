@@ -233,7 +233,7 @@ where
                             // The accumulated buffer is invalid JSON even after repair.
                             // This can happen with garbage tokens; skip and continue.
                             // We don't terminate the stream for a single bad parse.
-                            log::warn!("结构化输出流出现非法 JSON 片段(已跳过,继续累积): {msg}");
+                            log::warn!("structured output stream hit invalid JSON fragment (skipped, continuing to accumulate): {msg}");
                             continue;
                         }
                     }
@@ -273,7 +273,7 @@ where
                             // in yielding partial results, but the final buffer is invalid.
                             // This can happen if the LLM appended non-JSON text.
                             if this.last_value.is_some() {
-                                log::warn!("结构化输出流结束时缓冲非法(已返回此前部分结果): {msg}");
+                                log::warn!("structured output stream ended with invalid buffer (already returned earlier partial results): {msg}");
                                 return std::task::Poll::Ready(None);
                             }
                             return std::task::Poll::Ready(Some(Err(
@@ -282,7 +282,9 @@ where
                         }
                         Err(PartialJsonError::Incomplete(msg)) => {
                             if this.last_value.is_some() {
-                                log::warn!("结构化输出流结束时缓冲仍不完整(已返回此前部分结果): {msg}");
+                                log::warn!(
+                                    "structured output stream ended with incomplete buffer (already returned earlier partial results): {msg}"
+                                );
                                 return std::task::Poll::Ready(None);
                             }
                             return std::task::Poll::Ready(Some(Err(
@@ -301,7 +303,9 @@ where
 
 /// Attempt to deserialize a `serde_json::Value` into `T`, returning `None`
 /// if deserialization fails (e.g., missing required fields).
-#[allow(dead_code)]
+///
+/// Only used from `#[cfg(test)]` test helpers, so compile it in for tests only.
+#[cfg(test)]
 pub(crate) fn try_deserialize_partial<T: DeserializeOwned>(value: Value) -> Option<T> {
     serde_json::from_value::<T>(value).ok()
 }

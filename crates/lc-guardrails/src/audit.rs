@@ -15,6 +15,7 @@ use crate::runner::GuardrailViolation;
 /// 审计不应阻塞或破坏主流程。
 #[async_trait]
 pub trait AuditSink: Send + Sync {
+    /// 审计 sink 的名称。
     fn name(&self) -> &str;
 
     /// 记录一条违规。
@@ -27,6 +28,7 @@ pub struct FileAuditSink {
 }
 
 impl FileAuditSink {
+    /// 创建一个写入指定路径的 JSON Lines 审计 sink。
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
