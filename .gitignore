@@ -41,6 +41,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.log
+*.omo
 *.tar
 nul
 
