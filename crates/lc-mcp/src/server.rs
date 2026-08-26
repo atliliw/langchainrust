@@ -97,7 +97,7 @@ impl MCPServer {
         self
     }
 
-    /// 注入 sampling 回调(server→host 方向),启用 [`Self::create_message`](S10)。
+    /// 注入 sampling 回调(server→host 方向),启用 [`Self::create_message`]。
     ///
     /// 回调负责把 `sampling/createMessage` 送达已连接的 Host 并取回响应;
     /// 未注入时 `create_message` 返回明确错误。
@@ -106,7 +106,7 @@ impl MCPServer {
         self
     }
 
-    /// 注入 elicitation 回调(server→host 方向),启用 [`Self::create_elicitation`](S10)。
+    /// 注入 elicitation 回调(server→host 方向),启用 [`Self::create_elicitation`]。
     ///
     /// 回调负责把 `elicitation/create` 送达已连接的 Host(经其 UI 向用户收集输入)
     /// 并取回响应;未注入时 `create_elicitation` 返回明确错误。

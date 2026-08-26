@@ -307,7 +307,7 @@ impl Neo4jVectorStore {
 ///   参数化(防 Cypher 注入);参数名单调递增。
 /// - `In`/`Nin` 要求值是数组,生成 `... IN $fNv` / `NOT ... IN $fNv`。
 /// - 标量操作(`Eq/Ne/Gt/Gte/Lt/Lte`)只接受字符串/数字/布尔值,其余类型返回
-///   [`VectorStoreError::UnsupportedFilter`](不静默忽略)。
+///   [`VectorStoreError::UnsupportedFilter`],不静默忽略。
 pub fn filter_to_cypher(
     filter: &MetadataFilter,
     metadata_prop: &str,
