@@ -28,7 +28,7 @@ pub enum MessageType {
 }
 
 /// Complete message structure for chat interactions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     /// 消息文本内容
     pub content: String,

@@ -5,7 +5,7 @@ use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -175,7 +175,8 @@ impl MoonshotChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>, OpenAIError>
+    {
         self.inner.stream_chat(messages, config).await
     }
 
@@ -283,7 +284,8 @@ impl BaseChatModel for MoonshotChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
         let stream = self
             .inner

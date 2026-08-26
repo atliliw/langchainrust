@@ -40,6 +40,10 @@ pub enum AgentError {
     #[error("Budget exceeded: {0:?}")]
     BudgetExceeded(BudgetExceeded),
 
+    /// 跨进程 resume(§4.2):挂起点读 / 写 / 恢复失败。
+    #[error("Resume error: {0}")]
+    Resume(String),
+
     /// Other error.
     #[error("Agent error: {0}")]
     Other(String),
@@ -74,9 +78,11 @@ pub trait BaseAgent: Send + Sync {
     /// * `inputs` - User input.
     /// * `on_token` - Called with each chunk of model text as it becomes
     ///   available, taking **ownership** of the chunk (so the returned future
-    ///   never borrows the token and stays `'static`). May be the whole answer
-    ///   in one call for non-streaming agents, or empty for agents that never
-    ///   emit free text (e.g. function-calling).
+    ///   never borrows the token and stays `'static`). Streaming-capable agents
+    ///   (e.g. ReAct, function-calling) emit free text per token; steps that
+    ///   produce no free text (e.g. a function-calling step invoking a tool)
+    ///   emit nothing. Non-streaming agents deliver the whole answer in one
+    ///   call.
     ///
     /// # Returns
     /// * `AgentOutput::Action` - Action to execute.

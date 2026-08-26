@@ -25,7 +25,7 @@ impl std::fmt::Display for RagDecision {
     }
 }
 
-/// Result returned by [`AdaptiveRAG::invoke`].
+/// Result returned by [`AdaptiveRAG::invoke`](crate::adaptive_rag::AdaptiveRAG::invoke).
 #[derive(Debug, Clone)]
 pub struct AdaptiveRAGResult {
     /// The generated answer.
@@ -36,7 +36,7 @@ pub struct AdaptiveRAGResult {
     pub sources: Vec<Document>,
 }
 
-/// Errors produced by [`AdaptiveRAG`].
+/// Errors produced by [`AdaptiveRAG`](crate::adaptive_rag::AdaptiveRAG).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AdaptiveRAGError {

@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::{Runnable, RunnableConfig};
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -10,6 +12,7 @@ use std::pin::Pin;
 
 /// 返回固定回复的假模型,`Error = ProviderError`(与真 provider 同层,
 /// 满足 `RecordingProvider<M>` 的 `M::Error: Into<ProviderError>` 约束)。
+#[derive(Clone)]
 pub struct FakeModel {
     reply: String,
 }
@@ -84,8 +87,11 @@ impl BaseChatModel for FakeModel {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let full = self.invoke(messages, config).await?.content;
-        Ok(Box::pin(futures_util::stream::iter(vec![Ok(full)])))
+        Ok(Box::pin(futures_util::stream::iter(vec![Ok(
+            StreamChunk::new(full),
+        )])))
     }
 }

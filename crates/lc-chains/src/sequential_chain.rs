@@ -311,7 +311,7 @@ impl BaseChain for SequentialChain {
     /// into subsequent chains). The last chain's output is streamed token
     /// by token by delegating to its `stream()` method; its `output_mapping`
     /// names the global output keys that stream stands for (validated in
-    /// [`Self::stream_steps`] so a broken mapping fails loudly, P2-3).
+    /// `Self::stream_steps` so a broken mapping fails loudly, P2-3).
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
         self.stream_steps(inputs, None).await
     }

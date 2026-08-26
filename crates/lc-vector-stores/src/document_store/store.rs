@@ -112,7 +112,10 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         let mut chunks = lock_error(self.chunks.write())?;
 
-        let chunk = ChunkDocument::new(id.clone(), id.clone(), document.content.clone(), 0);
+        // S3: chunk 继承父文档的 metadata,否则 get_chunk_document 返回的
+        // 文档元数据为空,chunked 后端的元数据过滤(以及任何按元数据检索)都会失配。
+        let chunk = ChunkDocument::new(id.clone(), id.clone(), document.content.clone(), 0)
+            .with_metadata_map(document.metadata.clone());
 
         chunks.insert(id.clone(), chunk);
 

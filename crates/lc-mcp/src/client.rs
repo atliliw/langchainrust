@@ -335,7 +335,7 @@ impl MCPClient {
     /// P0-3: 自动发现 —— 若工具缓存为空则自动调用 `list_tools`,
     /// 不再静默返回空列表;以 `Result` 显式暴露失败。
     ///
-    /// P1-8: 缓存带 TTL —— 空缓存或超过 [`TOOLS_CACHE_TTL`] 未刷新时重新拉取;
+    /// P1-8: 缓存带 TTL —— 空缓存或超过 `TOOLS_CACHE_TTL` 未刷新时重新拉取;
     /// 收到 `tools/list_changed` 通知(后台监听)或断连后缓存即时失效。
     pub async fn as_tools(&self) -> Result<Vec<Arc<dyn BaseTool>>, MCPError> {
         let tools = {

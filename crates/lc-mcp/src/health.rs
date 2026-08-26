@@ -34,7 +34,7 @@ pub enum HealthStatus {
 
 /// 单个 Server 的健康快照(P2-5)。
 ///
-/// 由 [`ConnectionManager::health`] 返回;`last_check` 为最近一次探活时间,
+/// 由 [`ConnectionManager::health`](crate::connection_manager::ConnectionManager::health) 返回;`last_check` 为最近一次探活时间,
 /// `failures` 为连续失败次数,`max_failures` 为触发 Down 的阈值。
 #[derive(Debug, Clone)]
 pub struct ServerHealth {
@@ -103,7 +103,7 @@ fn backoff_delay(step: u32) -> Duration {
 
 /// 熔断器(P2-5):连续失败熔断 + 指数退避 + 半开探测。
 ///
-/// 由 [`ConnectionManager`] 内每个 `ManagedServer` 持有一个。请求放行规则:
+/// 由 [`ConnectionManager`](crate::connection_manager::ConnectionManager) 内每个 `ManagedServer` 持有一个。请求放行规则:
 ///
 /// - `Closed`:放行(可正常建连/调用);
 /// - `Open` 且未到退避时间:拒绝(快速失败,不打坏 Server);

@@ -46,7 +46,9 @@ use self::types::*;
 use crate::openai::sse::SSEParser;
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -211,7 +213,7 @@ impl AzureOpenAIChat {
         &self,
         messages: Vec<Message>,
     ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<String, AzureOpenAIError>> + Send>>,
+        Pin<Box<dyn Stream<Item = Result<StreamChunk, AzureOpenAIError>> + Send>>,
         AzureOpenAIError,
     > {
         use std::sync::{Arc, Mutex};
@@ -241,7 +243,7 @@ impl AzureOpenAIChat {
         let byte_stream = response.bytes_stream();
         let parser = Arc::new(Mutex::new(SSEParser::new()));
         let parser_clone = parser.clone();
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, AzureOpenAIError>>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, AzureOpenAIError>>(64);
 
         tokio::spawn(async move {
             use futures_util::StreamExt;
@@ -271,9 +273,24 @@ impl AzureOpenAIChat {
                         Ok(Some(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
                                 if let Some(content) = &choice.delta.content {
-                                    if tx.send(Ok(content.clone())).await.is_err() {
+                                    if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
                                         return;
                                     }
+                                }
+                            }
+                            // Azure OpenAI 与 OpenAI 同构:末尾 chunk 携带 usage。
+                            if let Some(usage) = chunk.usage {
+                                let token_usage = TokenUsage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    total_tokens: usage.total_tokens,
+                                };
+                                let final_chunk = StreamChunk {
+                                    text: String::new(),
+                                    token_usage: Some(token_usage),
+                                };
+                                if tx.send(Ok(final_chunk)).await.is_err() {
+                                    return;
                                 }
                             }
                         }
@@ -359,10 +376,10 @@ impl Runnable<Vec<Message>, LLMResult> for AzureOpenAIChat {
         let token_stream = effective.stream_chat_internal(input).await?;
 
         let stream = token_stream.map(move |token_result| match token_result {
-            Ok(token) => Ok(LLMResult {
-                content: token,
+            Ok(chunk) => Ok(LLMResult {
+                content: chunk.text,
                 model: model.clone(),
-                token_usage: None,
+                token_usage: chunk.token_usage,
                 tool_calls: None,
                 thinking_content: None,
             }),
@@ -459,7 +476,8 @@ impl BaseChatModel for AzureOpenAIChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
 
         let run_name = config
@@ -502,7 +520,7 @@ impl BaseChatModel for AzureOpenAIChat {
                 if let Some(ref cbs) = cbs {
                     if let Ok(ref token) = token_result {
                         for handler in cbs.handlers() {
-                            handler.on_llm_new_token(&run, token).await;
+                            handler.on_llm_new_token(&run, &token.text).await;
                         }
                     }
                 }

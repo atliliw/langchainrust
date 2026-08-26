@@ -28,7 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_edge("reply", END)
         .compile()?;
 
-    let result = compiled.invoke(AgentState::new("world".to_string())).await?;
+    let result = compiled
+        .invoke(AgentState::new("world".to_string()))
+        .await?;
     println!("input:  {}", result.final_state.input);
     println!("output: {:?}", result.final_state.output);
     Ok(())

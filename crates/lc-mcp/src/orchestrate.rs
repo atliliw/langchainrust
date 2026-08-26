@@ -9,7 +9,7 @@
 //! 3. 步骤参数支持 `${id}` / `${id.field}` 模板:执行前把前序步骤的输出
 //!    代入参数(`${id}` 引用整个输出,`${id.field}` 提取对象字段)。
 //!
-//! [`ToolCaller`] trait 抽象"按名调用工具"的动作,[`MCPGateway`](crate::MCPGateway)
+//! [`ToolCaller`] trait 抽象"按名调用工具"的动作,[`MCPGateway`]
 //! 已实现——把多工具编排直接挂在 Gateway 的 `server:tool` 命名空间上。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,7 +24,7 @@ use lc_core::tools::ToolError;
 
 /// "按全名调用一个工具"的抽象(P2-10)。
 ///
-/// [`MCPGateway`](crate::MCPGateway) 已实现(把 `server:tool` 字符串结果解析
+/// [`MCPGateway`] 已实现(把 `server:tool` 字符串结果解析
 /// 成 JSON,解析失败则退化为 `Value::String`);自定义 caller 可实现此 trait
 /// 接入任意工具注册表。每次调用返回结构化输出,供 `${id.field}` 模板引用。
 #[async_trait::async_trait]

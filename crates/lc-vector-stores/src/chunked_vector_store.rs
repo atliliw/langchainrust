@@ -5,7 +5,9 @@
 //! 支持 Parent-Child 文档结构，适合长文档分割场景。
 
 use crate::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait, DocumentStore};
-use crate::{cosine_similarity, Document, SearchResult, VectorStore, VectorStoreError};
+use crate::{
+    cosine_similarity, Document, MetadataFilter, SearchResult, VectorStore, VectorStoreError,
+};
 use async_trait::async_trait;
 use futures_util::future;
 use std::collections::HashMap;
@@ -216,6 +218,72 @@ impl VectorStore for ChunkedVectorStore {
         Ok(search_results)
     }
 
+    /// S3: 分块存储元数据过滤。
+    ///
+    /// 向量索引不携带 metadata,过滤需要按 chunk_id 到 document store 取文档。
+    /// 因此语义是"全量打分 → 降序扫描、逐条按 metadata 过滤 → 收满 k 条即停",
+    /// 保证过滤后仍返回相似度最高的 top-k(而不是先截断再过滤)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        // filter: None → 委托普通检索(不过滤)。
+        let Some(filter) = filter else {
+            return self.similarity_search(query_embedding, k).await;
+        };
+
+        let vectors = self.vectors.read().await;
+
+        // 1. 全量打分
+        let mut scored: Vec<(String, f32)> = vectors
+            .values()
+            .map(|entry| {
+                let score = cosine_similarity(query_embedding, &entry.embedding).unwrap_or(0.0);
+                (entry.chunk_id.clone(), score)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 2. 降序扫描,逐条取文档并按 metadata 过滤,收满 k 条即停。
+        //    文档缺失/读取失败记日志并跳过该候选(与 with_min_score 的处理一致)。
+        let mut results: Vec<SearchResult> = Vec::new();
+        for (chunk_id, score) in scored {
+            // 读取失败与 with_min_score 一致:记日志、跳过该候选,不中断整体检索。
+            let doc = match self.document_store.get_chunk_document(&chunk_id).await {
+                Ok(doc) => doc,
+                Err(e) => {
+                    log::error!(
+                        "failed to read document for chunk `{}` while filtering (chunk skipped): {}",
+                        chunk_id,
+                        e
+                    );
+                    continue;
+                }
+            };
+            let Some(doc) = doc else {
+                log::error!(
+                    "document for chunk `{}` is missing while filtering (chunk skipped)",
+                    chunk_id
+                );
+                continue;
+            };
+            if filter.matches(&doc.metadata) {
+                results.push(SearchResult {
+                    document: doc,
+                    score,
+                });
+                if results.len() >= k {
+                    break;
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
         self.document_store.get_chunk_document(id).await
     }
@@ -357,6 +425,81 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(filtered.len(), 2);
+    }
+
+    /// S3: 分块存储元数据过滤 —— 过滤在 top-k 之前,返回匹配文档中的相似度 top-k。
+    #[tokio::test]
+    async fn test_similarity_search_with_filter() {
+        use crate::FilterOp;
+
+        let doc_store = Arc::new(ChunkedDocumentStore::new());
+        let vector_store = ChunkedVectorStore::new(doc_store.clone(), 3);
+
+        vector_store
+            .add_chunk_vector("chunk_001".to_string(), vec![1.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        vector_store
+            .add_chunk_vector("chunk_002".to_string(), vec![0.0, 1.0, 0.0])
+            .await
+            .unwrap();
+        vector_store
+            .add_chunk_vector("chunk_003".to_string(), vec![0.9, 0.1, 0.0])
+            .await
+            .unwrap();
+
+        doc_store
+            .add_document(
+                Document::new("rust doc")
+                    .with_id("chunk_001")
+                    .with_metadata("lang", "rust"),
+            )
+            .await
+            .unwrap();
+        doc_store
+            .add_document(
+                Document::new("python doc")
+                    .with_id("chunk_002")
+                    .with_metadata("lang", "python"),
+            )
+            .await
+            .unwrap();
+        doc_store
+            .add_document(
+                Document::new("rust legacy")
+                    .with_id("chunk_003")
+                    .with_metadata("lang", "rust"),
+            )
+            .await
+            .unwrap();
+
+        let query = vec![1.0, 0.0, 0.0];
+
+        // 单条件:只返回 rust 文档,且按相似度降序(chunk_001 > chunk_003)
+        let eq = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let r = vector_store
+            .similarity_search_with_filter(&query, 5, Some(&eq))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].document.content, "rust doc");
+        assert_eq!(r[1].document.content, "rust legacy");
+
+        // k 在过滤后生效
+        let r = vector_store
+            .similarity_search_with_filter(&query, 1, Some(&eq))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].document.content, "rust doc");
+
+        // filter: None 与 similarity_search 一致
+        let none = vector_store
+            .similarity_search_with_filter(&query, 5, None)
+            .await
+            .unwrap();
+        let base = vector_store.similarity_search(&query, 5).await.unwrap();
+        assert_eq!(none.len(), base.len());
     }
 
     #[tokio::test]

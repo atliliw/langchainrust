@@ -24,8 +24,8 @@ use crate::{EmbeddingError, Embeddings};
 /// Based on word frequency + hashing, no API calls, suitable for offline, privacy, zero-cost coarse-grained retrieval.
 ///
 /// Note: This is a lightweight implementation (bag-of-words hash) with limited semantic quality;
-/// for high-quality neural network embeddings (BGE/E5 via `ort`), enable the `local-embeddings` feature
-/// and use [`LocalEmbeddings`].
+/// for high-quality neural network embeddings (BGE/E5 via `ort`), enable the `local-embeddings`
+/// feature and use the `LocalEmbeddings` type (only exists under that feature).
 pub struct BagOfWordsEmbeddings {
     dim: usize,
 }
@@ -130,25 +130,14 @@ mod nn;
 pub use nn::{LocalEmbeddings, LocalEmbeddingsBuilder};
 
 // ---------------------------------------------------------------------------
-// Backward compatibility: LocalEmbeddings without feature points to BagOfWordsEmbeddings
+// 1.0:LocalEmbeddings 降级别名已移除
 // ---------------------------------------------------------------------------
 
-/// Without the `local-embeddings` feature, `LocalEmbeddings` is a type alias for `BagOfWordsEmbeddings`,
-/// maintaining backward compatibility.
-///
-/// With the `local-embeddings` feature enabled, `LocalEmbeddings` becomes the ONNX Runtime-based neural network implementation.
-///
-/// P2-1: 消除静默降级。无 feature 时 `LocalEmbeddings` 静默退化为词袋哈希嵌入,
-/// 用户以为在用语义向量、实际是词频——"好像能用,但不对"。这里加
-/// `#[deprecated]` 让降级在编译期可见:使用者需显式改用 `BagOfWordsEmbeddings`,
-/// 或开启 `local-embeddings` feature 使用真正的 ONNX 神经嵌入。
-#[cfg(not(feature = "local-embeddings"))]
-#[deprecated(
-    note = "LocalEmbeddings without the `local-embeddings` feature degrades to \
-            BagOfWordsEmbeddings (bag-of-words hash), not semantic neural embedding. \
-            Enable the `local-embeddings` feature, or use BagOfWordsEmbeddings explicitly."
-)]
-pub type LocalEmbeddings = BagOfWordsEmbeddings;
+// 1.0 起,无 `local-embeddings` feature 时不再提供 `LocalEmbeddings` 名字(原
+// `BagOfWordsEmbeddings` 降级别名)。使用者被迫显式选边:要么 `BagOfWordsEmbeddings`
+// (词袋哈希),要么开启 feature 用 ONNX 神经嵌入——彻底封掉"以为在用语义向量、
+// 实际是词频"的坑。有 feature 时 `LocalEmbeddings` 为 nn 模块的 ONNX 实现
+// (见上方 `#[cfg(feature = "local-embeddings")] pub use nn::...`)。
 
 // ---------------------------------------------------------------------------
 // Tests

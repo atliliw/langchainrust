@@ -6,7 +6,7 @@ use futures_util::{Stream, StreamExt};
 use lc_callbacks::{CallbackHandler, CallbackManager, RunTree, RunType};
 use lc_chains::base::{BaseChain, ChainError, ChainResult};
 use lc_chains::{ChainRunnable, LLMChain, RouterChain, SequentialChain};
-use lc_core::language_models::LLMResult;
+use lc_core::language_models::{LLMResult, StreamChunk};
 use lc_core::runnables::{Runnable, RunnableConfig};
 use lc_core::{BaseChatModel, BaseLanguageModel};
 use lc_providers::openai::OpenAIError;
@@ -260,7 +260,8 @@ impl BaseChatModel for MockChatModel {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         Err(ProviderError::OpenAI(OpenAIError::Api(
             "stream not supported".to_string(),
         )))

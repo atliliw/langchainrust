@@ -83,6 +83,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - PineconeStore
   - SemanticSplitter
   - Unified VectorStore Trait ✨ v0.15.0
+  - MetadataFilter ✨ v0.18.0
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
 - [Document Loaders](#document-loaders)
@@ -92,6 +93,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - SitemapLoader ✨ v0.4.1
 - [MultiQueryRetriever](#multiqueryretriever)
 - [HyDE Retriever](#hyde-retriever)
+- [SelfQueryRetriever](#selfqueryretriever) ✨ v0.18.0
 - [Reranking](#reranking)
 - [Callbacks](#callbacks)
   - OtelHandler
@@ -505,8 +507,9 @@ let mut stream = llm.stream_chat(vec![
 ], None).await?;
 
 while let Some(chunk) = stream.next().await {
-    if let Ok(token) = chunk {
-        print!("{}", token);  // Real-time output
+    if let Ok(chunk) = chunk {
+        print!("{}", chunk.text);  // Real-time output (StreamChunk's text field)
+        // On the final chunk, chunk.token_usage carries the token usage (when the provider reports it)
     }
 }
 ```
@@ -2094,6 +2097,29 @@ let executor = executor.with_budget(BudgetConfig {
     max_iterations: Some(10),                          // tighten/override default iteration cap
     ..Default::default()
 });
+
+### Cross-Process Resume (ResumeStore / FileResumeStore) ✨ v0.18.0
+
+The approval / budget gate's pending point can be **persisted to disk**: a process death no longer loses an in-flight approval — a restarted executor loads the pending point and re-enters approval instead of restarting the whole agent loop.
+
+```rust
+use langchainrust::{FileResumeStore, ResumeStore};
+use std::sync::Arc;
+
+// Process A: attach a disk-backed resume store + approval gate
+let store = Arc::new(FileResumeStore::new("/var/checkpoints/app")?);
+let executor = AgentExecutor::new(agent, tools)
+    .with_resume_store(store)
+    .with_approval(handler);
+
+// Process B (after restart): load the pending point, show the operator, resume with a decision
+if let Some(pending) = executor.pending_approval().await? {
+    println!("pending: {} {}", pending.tool_name, pending.arguments);
+    let answer = executor.resume(decision).await?;   // Allow / Deny / Modify
+}
+```
+
+Before every tool call enters approval, the framework snapshots a `PendingApproval` (tool name / arguments / intermediate steps / iteration index / budget consumed) into the store and clears it once the decision lands — written atomically (`pending.json.tmp` then rename), so a crash can't leave a half-written checkpoint. The `ApprovalHandler` interface is unchanged (zero migration); `MemoryResumeStore` is the in-memory variant (single-process demos / tests). Concurrent executors must use separate directories.
 ```
 
 ## Plan-Execute Agent
@@ -2617,7 +2643,45 @@ Companion capabilities:
 - **`ToolOrchestrator`**: tool DAG orchestration — auto-orders / parallelizes once dependencies are declared
 - **`VersionPolicy`**: multi-version MCP protocol negotiation (`VersionPolicy::Latest` / `Pin("2024-11-05")`)
 
-> **Note**: `Resources` / `Prompts` / `Completion` / `Elicitation` types are defined, but the corresponding primitive call logic is not yet implemented (calls return `method_not_found`). The currently available primitives are `initialize` / `tools/list` / `tools/call`, plus streaming tool results (`PartialContent`, via `notifications/tool_partial` notification + `subscribe_tool_stream` subscription) and `notifications/cancelled` cancellation.
+### MCP Server Primitive Wiring ✨ v0.18.0
+
+Since v0.18.0 the client→server primitives (`resources/*` / `prompts/*` / `completion/complete`) are **registration-based**: register a data source on `MCPServer` and the methods return real data; unregistered ones still return `method_not_found` (-32601, honest boundary). The `initialize` handshake advertises `capabilities` for whatever is actually registered (`tools` is always declared).
+
+```rust
+use langchainrust::mcp::{MCPError, MCPServer, Resource, ResourceContent, ResourceProvider};
+use std::sync::Arc;
+
+struct StaticResources;
+
+#[async_trait::async_trait]
+impl ResourceProvider for StaticResources {
+    async fn list_resources(&self) -> Result<Vec<Resource>, MCPError> {
+        Ok(vec![Resource {
+            uri: "file:///README.md".into(),
+            name: "README".into(),
+            description: None,
+            mime_type: Some("text/markdown".into()),
+        }])
+    }
+    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError> {
+        let text = format!("content of {uri}");
+        Ok(vec![ResourceContent {
+            uri: uri.into(),
+            mime_type: Some("text/plain".into()),
+            text: Some(text),
+            blob: None,
+        }])
+    }
+}
+
+let server = MCPServer::new()
+    .with_tool(Arc::new(Calculator))
+    .with_resource_provider(Arc::new(StaticResources))
+    .with_prompt_provider(Arc::new(my_prompts))         // prompts/list + prompts/get
+    .with_completion_provider(Arc::new(my_completions)); // completion/complete
+```
+
+The server→host direction (`sampling::create_message` / `elicitation::create`) is initiated by the Server and executed by the Host: `MCPServer` provides the initiating methods (`create_message` / `create_elicitation`) that call an injected host callback (`with_sampling_handler` / `with_elicitation_handler`); without a callback they return an explicit error, never silent. Real interaction depends on the host UI/model environment — the user wires it via callbacks (tests cover the initiating path with injected mocks).
 
 ## Tools
 
@@ -3099,24 +3163,26 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### PGVectorStore
 
-PostgreSQL + pgvector extension vector store. Good when you already have PostgreSQL infrastructure and want relational DB + vector search in one. Requires the `pgvector-storage` feature; since `sqlx` / `pgvector` deps are not enabled inside the crate, add `sqlx` and `pgvector` to your `Cargo.toml` yourself.
+PostgreSQL + pgvector extension vector store. Good when you already have PostgreSQL infrastructure and want relational DB + vector search in one. Requires the `pgvector-storage` feature (the crate bundles `sqlx` + `pgvector` deps inside the feature — no need to add them yourself). Before use, an admin must run `CREATE EXTENSION vector;`.
 
 ```rust
 use langchainrust::vector_stores::PGVectorStore;
-use langchainrust::embeddings::Embeddings;
 
-let store = PGVectorStore::new(
+let store = PGVectorStore::connect(
     "postgres://user:pass@localhost/db",
     "docs",
     1536, // vector dimension
 ).await?;
-// embeddings: impl Embeddings (e.g. OpenAIEmbeddings); docs: &[Document]
-store.add_documents(&docs, &embeddings).await?;
-let found = store.similarity_search("query", 5, &embeddings).await?;
-store.delete("doc-id").await?;
+// Create the table (CREATE TABLE IF NOT EXISTS, idempotent); requires CREATE EXTENSION vector first
+store.initialize().await?;
+// docs: Vec<Document>; embeddings: Vec<Vec<f32>> (from Embeddings::embed_documents)
+let ids = store.add_documents(docs, embeddings).await?;
+// query_embedding: Vec<f32> (from Embeddings::embed_query)
+let found = store.similarity_search(&query_embedding, 5).await?;
+store.delete_document("doc-id").await?;
 ```
 
-`PGVectorStore::new` runs `CREATE EXTENSION IF NOT EXISTS vector` and creates the table; `build_table_sql(table, dim)` is a pure function for the table DDL.
+`connect` only creates the connection pool, not the table; `initialize()` creates the table (idempotent); `build_table_sql(table, dim)` is a pure function for the table DDL. Retrieval supports [`MetadataFilter`](#metadatafilter) filtering via `similarity_search_with_filter`.
 
 ### PineconeStore
 
@@ -3165,6 +3231,35 @@ let store = VectorStoreBuilder::qdrant("http://localhost:6334", "kb").build().aw
 **Backend list**: `InMemoryVectorStore`, `ChromaDBVectorStore`, `PGVectorStore`, `PineconeStore`, `LanceDBVectorStore`, `Neo4jVectorStore`, `QdrantVectorStore`, `FileVectorStore`, `ChunkedVectorStore`, plus the `DocumentStore` family (`InMemoryDocumentStore` / `MongoChunkedDocumentStore` / `RedisDocumentStore` / `SQLiteDocumentStore`).
 
 > **Honest errors, no silent degradation**: backends requiring a feature (e.g. Qdrant) return an explicit error when the feature is off (pointing to `qdrant-integration`), and do **not** silently fall back to in-memory storage — otherwise production code would think it's writing persistent data and lose everything on restart.
+
+<a id="metadatafilter"></a>
+### MetadataFilter ✨ v0.18.0
+
+Since 0.18.0 `VectorStore` supports **backend-consistent metadata filtering**: `similarity_search_with_filter(&query_embedding, k, Some(&filter))`. `filter: None` is equivalent to the old `similarity_search`; backends that don't override filtering return an explicit `VectorStoreError::UnsupportedFilter` — **the filter is never silently dropped for a full result**.
+
+```rust
+use langchainrust::{FilterOp, MetadataFilter};
+
+// Single condition: field equals
+let f = MetadataFilter::field("category", FilterOp::Eq, "news");
+// AND / OR combination
+let f2 = MetadataFilter::and(vec![
+    MetadataFilter::field("year", FilterOp::Gte, 2024),
+    MetadataFilter::field("author", FilterOp::In, vec!["alice", "bob"]),
+]);
+
+let found = store
+    .similarity_search_with_filter(&qvec, 5, Some(&f2))
+    .await?;
+```
+
+| Operator | Meaning |
+|----------|---------|
+| `Eq` / `Ne` | equals / not-equals |
+| `Gt` / `Gte` / `Lt` / `Lte` | numeric / date range comparison |
+| `In` / `Nin` | in-set / not-in-set (value is an array) |
+
+Backends with filtering: in-memory / file / Qdrant / Pinecone / Chroma / LanceDB / Neo4j / PGVector (`pgvector-storage` feature). Third-party `VectorStore` implementations that want filtering override `similarity_search_with_filter` and translate `MetadataFilter` into their native query syntax; backends that don't rely on the default implementation (reporting `UnsupportedFilter` for filter requests). `SelfQueryRetriever` is built on top of this layer (see next section).
 
 ---
 
@@ -3694,6 +3789,35 @@ Notes:
 
 ---
 
+<a id="selfqueryretriever"></a>
+## SelfQueryRetriever ✨ v0.18.0
+
+Users ask in natural language, but the fields in the documents are structured metadata — "last year's tech news" implicitly means `year >= 2024 AND category = tech`. SelfQueryRetriever has the LLM split the query into `{query, filter}`: the cleaned query goes to vector retrieval, and the parsed `MetadataFilter` goes to `similarity_search_with_filter` for metadata filtering (built on the unified filtering layer).
+
+```rust
+use langchainrust::{SelfQueryRetriever, OpenAIChat};
+use std::sync::Arc;
+
+let retriever = Arc::new(SelfQueryRetriever::new(
+    OpenAIChat::new(config),
+    store,          // Arc<dyn VectorStore>
+    embeddings,     // Arc<dyn Embeddings>
+    vec!["category".to_string(), "year".to_string()], // allowed_attributes whitelist
+));
+
+let docs = retriever.retrieve("last year's tech news", 5).await?;
+```
+
+Key behaviors:
+
+- **Whitelist against arbitrary fields**: `allowed_attributes` is the only field set allowed in the filter; if the LLM builds a filter referencing a field outside it, the whole filter is dropped with a warning and retrieval falls back to unfiltered (so a hallucinated field can't produce an empty result).
+- **Structured first, text fallback**: splitting goes through `structured_call` (same path as Guardrails / Evaluation) to get structured arguments; models without structured output fall back to treating the whole text as the query.
+- **Composes in LCEL**: implements `RetrieverTrait`, so it can be wrapped by `RetrieverRunnable` and composed like any other retriever.
+
+Contrast: MultiQuery / HyDE solve **low recall** (query variants, hypothetical documents); SelfQuery solves **implicit filter intent in the query** — use it when the corpus has structured metadata and user queries carry filter conditions.
+
+---
+
 ## Reranking
 
 Initial retrieval may return less-relevant results. Rerankers re-score retrieval results, pushing the most relevant to the top for better precision.
@@ -4211,7 +4335,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.16.0"
+lc-testkit = "0.18.0"
 ```
 
 ```rust
@@ -4225,6 +4349,21 @@ let result = chain.invoke(inputs).await?;
 ```
 
 Recording is a side-channel, not an interceptor: a failed real call writes nothing; a failed disk write only warns and never blocks the real result. Round-trip (record → replay byte-identical) and a real-chain replay test ship with the crate.
+
+**Three replay strategies (since v0.18.0)**:
+
+| Strategy | Matching | When to use |
+|----------|----------|-------------|
+| `Fifo` (default) | dequeues in recording order | single-request sequential replay, simple cases |
+| `ByToolName` | request-side tool name hits | parallel multi-tool, route by tool |
+| `Exact` ✨ v0.18.0 | full `messages` signature matched strictly per request | exact correspondence under parallel reordering; no match returns `TestkitError::ReplayNoMatch` (no silent FIFO fallback) |
+
+```rust
+use lc_testkit::{ReplayProvider, ReplayStrategy};
+
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
+    .with_strategy(ReplayStrategy::Exact);
+```
 
 ---
 
@@ -4666,18 +4805,18 @@ for citation in &report.citations {
 
 ### MCP Protocol Primitives
 
-The MCP spec defines 6 categories of primitives. In LangChainRust the primitives **with implemented call logic** are `initialize` (handshake), `tools/list`, `tools/call`, plus streaming tool results (`notifications/tool_partial`) and cancellation (`notifications/cancelled`). The remaining primitives have their message types defined (serializable/deserializable, usable for type design), but their **call logic is not yet implemented** — direct calls return `method_not_found`:
+The MCP spec defines 6 categories of primitives. In LangChainRust the client→server primitives with implemented call logic are `initialize` (handshake), `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `completion/complete`, plus streaming tool results (`notifications/tool_partial`) and cancellation (`notifications/cancelled`). All client→server primitives are **registration-based**: register a data source and they return real data; unregistered ones still return `method_not_found`. The server→host primitives `sampling::create_message` / `elicitation::create` are initiated by `MCPServer` and need an injected callback.
 
 | Primitive | Status | Description |
 |-----------|--------|-------------|
-| **Resources** | ⏳ types defined | browse/read server resources |
-| **Prompts** | ⏳ types defined | fetch predefined prompt templates |
-| **Completion** | ⏳ types defined | parameter auto-completion suggestions |
-| **Elicitation** | ⏳ types defined | interactive prompts to the user |
-| **Roots** | ⏳ types defined | discover client root directories |
-| **Sampling** | ✅ sampling guard | server-side `SamplingGuard` protecting `sampling/createMessage` |
+| **Resources** | ✅ server wired | `with_resource_provider`; `resources/list` / `resources/read` |
+| **Prompts** | ✅ server wired | `with_prompt_provider`; `prompts/list` / `prompts/get` |
+| **Completion** | ✅ server wired | `with_completion_provider`; `completion/complete` |
+| **Elicitation** | ✅ initiating method | server→host; `MCPServer::create_elicitation` needs an `ElicitationHandler` callback |
+| **Roots** | ⏳ types defined | discover client root directories (client capability, not wired) |
+| **Sampling** | ✅ initiating method + guard | server→host; `create_message` needs a `SamplingHandler`; `SamplingGuard` protection |
 
-> Server-side sampling has its own `SamplingGuard` (depth / token budget / timeout triple protection), see the [MCP](#mcp) section. If you need Resources/Prompts primitives you can extend on top of the type layer.
+> Server-side sampling has its own `SamplingGuard` (depth / token budget / timeout triple protection), see the [MCP](#mcp) section. Client→server primitives still return `method_not_found` when no data source is registered; server→host primitives return an explicit error when no callback is injected. Real interaction (sampling / elicitation) depends on the host UI/model environment — wired by the user via callbacks (tests cover the initiating path with injected mocks).
 
 ---
 

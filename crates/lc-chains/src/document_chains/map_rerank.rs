@@ -249,7 +249,7 @@ impl MapRerankDocumentsChain {
         let mut text = String::new();
         while let Some(chunk) = llm_stream.next().await {
             match chunk {
-                Ok(token) => text.push_str(&token),
+                Ok(chunk) => text.push_str(&chunk.text),
                 Err(e) => {
                     return Err(ChainError::StreamError(format!(
                         "Map stream token error (document {}): {}",
@@ -419,7 +419,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
-    use lc_core::language_models::LLMResult;
+    use lc_core::language_models::{LLMResult, StreamChunk};
     use lc_core::runnables::RunnableConfig;
     use lc_core::{BaseLanguageModel, Runnable};
     use std::pin::Pin;
@@ -480,9 +480,11 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
-            let tokens = [Ok("Relevance score: 90\nAnswer: best answer".to_string())];
+            let tokens = [Ok(StreamChunk::new(
+                "Relevance score: 90\nAnswer: best answer",
+            ))];
             Ok(Box::pin(futures_util::stream::iter(tokens)))
         }
     }

@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::{Runnable, RunnableConfig};
 use lc_schema::Message;
 use std::pin::Pin;
@@ -110,7 +110,8 @@ impl BaseChatModel for MockLlm {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         unimplemented!("stream_chat not needed for tests")
     }
 }

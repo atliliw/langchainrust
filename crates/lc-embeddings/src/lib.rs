@@ -29,10 +29,11 @@ pub use cohere::{
     COHERE_EMBED_MODEL,
 };
 pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
-// P2-1: 无 `local-embeddings` feature 时 `LocalEmbeddings` 是已弃用的
-// BagOfWordsEmbeddings 别名(静默降级);`#[allow(deprecated)]` 豁免重导出警告。
-#[allow(deprecated)]
-pub use local::{BagOfWordsEmbeddings, LocalEmbeddings};
+pub use local::BagOfWordsEmbeddings;
+// 1.0:无 `local-embeddings` feature 时 `LocalEmbeddings` 名字不可用(原降级别名
+// 已移除),需显式选边——`BagOfWordsEmbeddings` 或开启 feature 用 ONNX 版。
+#[cfg(feature = "local-embeddings")]
+pub use local::LocalEmbeddings;
 pub use mock::MockEmbeddings;
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};

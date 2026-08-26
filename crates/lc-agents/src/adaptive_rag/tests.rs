@@ -3,7 +3,7 @@
 
 use super::*;
 use async_trait::async_trait;
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::{Runnable, RunnableConfig};
 use lc_rag::{RetrieverError, RetrieverTrait};
 use lc_schema::Message;
@@ -113,7 +113,9 @@ impl BaseChatModel for MockLLM {
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
     ) -> Result<
-        std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<String, Self::Error>> + Send>>,
+        std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<StreamChunk, Self::Error>> + Send>,
+        >,
         Self::Error,
     > {
         let content = {
@@ -124,7 +126,7 @@ impl BaseChatModel for MockLLM {
                 guard.remove(0)
             }
         };
-        let stream = futures_util::stream::once(async move { Ok(content) });
+        let stream = futures_util::stream::once(async move { Ok(StreamChunk::new(content)) });
         Ok(Box::pin(stream))
     }
 }
@@ -197,11 +199,13 @@ impl BaseChatModel for MockToolCallLLM {
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
     ) -> Result<
-        std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<String, Self::Error>> + Send>>,
+        std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<StreamChunk, Self::Error>> + Send>,
+        >,
         Self::Error,
     > {
         let decision = self.decision.clone();
-        let stream = futures_util::stream::once(async move { Ok(decision) });
+        let stream = futures_util::stream::once(async move { Ok(StreamChunk::new(decision)) });
         Ok(Box::pin(stream))
     }
 }

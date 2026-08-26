@@ -189,8 +189,10 @@ impl BaseAgent for ReActAgent {
     /// 把每个 chunk 经 `on_token` 实时转发为 `Text` 事件,同时累积成完整文本
     /// 供 Action / Final Answer 解析。
     ///
-    /// 权衡:流式 `stream_chat` 只回传文本字符串,拿不到 token 用量——流式路径
-    /// 的 metrics 用量由非流式 `invoke` 路径补齐。`stream_chat` 立即可用即失败
+    /// 权衡:流式 `stream_chat` 的 chunk 携带可选 `token_usage`,流结束后写入
+    /// `last_token_usage` 供预算门读取;provider 未回传用量(chunk.token_usage
+    /// 为 None)时,流式路径的 metrics 用量由非流式 `invoke` 路径补齐。
+    /// `stream_chat` 立即可用即失败
     /// (如 provider 未实现流式)时回退到非流式 `plan()`,保证 agent 循环不中断。
     async fn plan_stream(
         &self,
@@ -224,10 +226,17 @@ impl BaseAgent for ReActAgent {
         // 解析只在流结束后进行,因此一个 ReAct 步骤的 Action / Final Answer
         // 判定不受影响。
         let mut full = String::new();
+        let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| AgentError::Other(format!("LLM stream error: {}", e)))?;
-            on_token(chunk.clone()).await;
-            full.push_str(&chunk);
+            on_token(chunk.text.clone()).await;
+            full.push_str(&chunk.text);
+            if chunk.token_usage.is_some() {
+                usage = chunk.token_usage;
+            }
+        }
+        if let Ok(mut guard) = self.last_token_usage.lock() {
+            *guard = usage;
         }
         self.parser.parse(&full)
     }
@@ -246,8 +255,13 @@ impl BaseAgent for ReActAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::Stream;
+    use lc_core::language_models::{LLMResult, StreamChunk};
+    use lc_core::runnables::{Runnable, RunnableConfig};
+    use lc_core::BaseLanguageModel;
     use lc_providers::{OpenAIChat, OpenAIConfig};
     use lc_tools::Calculator;
+    use std::pin::Pin;
 
     /// 创建测试用的 OpenAI 配置
     fn create_test_config() -> OpenAIConfig {
@@ -329,5 +343,103 @@ mod tests {
         let prompt = agent.build_prompt("计算 4 + 4", &[], None);
 
         assert!(prompt.contains("你是一个数学助手"));
+    }
+
+    /// S1 流式 mock:逐 chunk 回传文本,最后一个 chunk 携带 `token_usage`。
+    /// 用于验证 `plan_stream` 把流式用量写入 `last_token_usage`,供
+    /// `AgentExecutor::stream` 的预算门读取。
+    struct UsageStreamingLLM;
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for UsageStreamingLLM {
+        type Error = ProviderError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Ok(LLMResult {
+                content: "Final Answer: 42".to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for UsageStreamingLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for UsageStreamingLLM {
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(messages, config).await
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+        {
+            // 首 chunk 不带用量,末 chunk 带用量 —— 验证"取最后一个非 None"。
+            let chunks = [
+                Ok(StreamChunk::new("Final ")),
+                Ok(StreamChunk {
+                    text: "Answer: 42".to_string(),
+                    token_usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                }),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(chunks)))
+        }
+    }
+
+    /// S1:`plan_stream` 逐 chunk 转发文本并把最后一个非 None 的 token_usage
+    /// 写入 `last_token_usage`(流式路径的预算门依赖此值)。
+    #[tokio::test]
+    async fn test_plan_stream_records_streaming_token_usage() {
+        let llm = UsageStreamingLLM;
+        let agent = ReActAgent::new(llm, vec![], None);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "6 * 7".to_string());
+        let mut received = String::new();
+        let mut on_token = |text: String| {
+            received.push_str(&text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("plan_stream should parse to Finish");
+
+        assert_eq!(received, "Final Answer: 42");
+        assert!(matches!(output, AgentOutput::Finish(_)));
+        let usage = agent.last_token_usage().expect("streaming usage recorded");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
     }
 }

@@ -71,7 +71,7 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use lc_core::language_models::BaseLanguageModel;
+    use lc_core::language_models::{BaseLanguageModel, StreamChunk};
     use lc_core::runnables::Runnable;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -158,7 +158,9 @@ mod tests {
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
         ) -> Result<
-            std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<String, Self::Error>> + Send>>,
+            std::pin::Pin<
+                Box<dyn futures_util::Stream<Item = Result<StreamChunk, Self::Error>> + Send>,
+            >,
             Self::Error,
         > {
             unreachable!()

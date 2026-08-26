@@ -7,7 +7,7 @@
 //! - **动态层**:按 query 相关性取 top-k 个工具临时注入(工具发现,类比 RAG 的
 //!   检索,把"查工具"当"查文档"处理)。
 //!
-//! 相关性评分走 [`ToolScorer`] trait 的 [`KeywordScorer`](KeywordScorer) 默认实现
+//! 相关性评分走 [`ToolScorer`] trait 的 [`KeywordScorer`] 默认实现
 //! (词元重叠,零额外依赖);需要向量检索时自行实现 `ToolScorer`(如用 lc-embeddings
 //! 算 query / tool 相似度)替换,`with_scorer` 注入。
 

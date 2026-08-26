@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{Document, SearchResult, VectorStore, VectorStoreError};
+use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 
 /// Neo4j vector store configuration.
 #[derive(Debug, Clone)]
@@ -242,6 +242,186 @@ impl Neo4jVectorStore {
 
         Ok(neo4j_response)
     }
+
+    /// `db.index.vector.queryNodes` 前缀(不含 WHERE/RETURN)。
+    fn search_query_prefix(&self) -> String {
+        "CALL db.index.vector.queryNodes($index_name, $k, $query_vector) \
+         YIELD node, score"
+            .to_string()
+    }
+
+    /// RETURN 子句与排序(普通与过滤检索共用)。
+    fn search_query_suffix(&self) -> String {
+        format!(
+            " RETURN node.{id_prop} AS id, \
+                    node.{content_prop} AS content, \
+                    node.{metadata_prop} AS metadata, \
+                    score \
+             ORDER BY score DESC",
+            id_prop = self.config.id_property,
+            content_prop = self.config.content_property,
+            metadata_prop = self.config.metadata_property,
+        )
+    }
+
+    /// 把 queryNodes 的返回行解析成 [`SearchResult`](普通与过滤检索共用)。
+    fn parse_search_results(&self, response: Neo4jResponse) -> Vec<SearchResult> {
+        let Some(neo4j_result) = response.results.first() else {
+            return Vec::new();
+        };
+
+        let mut search_results = Vec::new();
+        for row in &neo4j_result.data {
+            if row.row.len() >= 4 {
+                let id = row.row[0].as_str().unwrap_or_default().to_string();
+                let content = row.row[1].as_str().unwrap_or_default().to_string();
+                let score = row.row[3].as_f64().unwrap_or(0.0) as f32;
+
+                let mut doc = Document::new(content).with_id(id);
+
+                // Parse metadata from JSON object
+                if let Some(meta_obj) = row.row[2].as_object() {
+                    for (key, value) in meta_obj {
+                        if let Some(s) = value.as_str() {
+                            doc = doc.with_metadata(key, s);
+                        } else {
+                            doc = doc.with_metadata(key, value.to_string());
+                        }
+                    }
+                }
+
+                search_results.push(SearchResult {
+                    document: doc,
+                    score,
+                });
+            }
+        }
+
+        search_results
+    }
+}
+
+/// S3: [`MetadataFilter`] → Cypher `WHERE` 表达式 + 参数表。
+///
+/// - 每个字段条件生成 `node.{metadata_prop}[$fNk] <op> $fNv`,key 与 value 全部
+///   参数化(防 Cypher 注入);参数名单调递增。
+/// - `In`/`Nin` 要求值是数组,生成 `... IN $fNv` / `NOT ... IN $fNv`。
+/// - 标量操作(`Eq/Ne/Gt/Gte/Lt/Lte`)只接受字符串/数字/布尔值,其余类型返回
+///   [`VectorStoreError::UnsupportedFilter`](不静默忽略)。
+pub fn filter_to_cypher(
+    filter: &MetadataFilter,
+    metadata_prop: &str,
+) -> Result<(String, serde_json::Value), VectorStoreError> {
+    let mut state = CypherState { next: 0 };
+    let mut params = serde_json::Map::new();
+    let expr = state.expr(filter, metadata_prop, &mut params)?;
+    Ok((expr, serde_json::Value::Object(params)))
+}
+
+/// 递归翻译的计数器(保证参数名唯一)。
+struct CypherState {
+    next: usize,
+}
+
+impl CypherState {
+    fn expr(
+        &mut self,
+        filter: &MetadataFilter,
+        metadata_prop: &str,
+        params: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<String, VectorStoreError> {
+        match filter {
+            MetadataFilter::Field { key, op, value } => {
+                let kp = format!("f{}k", self.next);
+                let vp = format!("f{}v", self.next);
+                self.next += 1;
+
+                params.insert(kp.clone(), serde_json::Value::String(key.clone()));
+                // 节点上的 metadata 属性是 map,用 `node.metadata[$k]` 按下标取键值
+                let target = format!("node.{}[${}]", metadata_prop, kp);
+
+                match op {
+                    FilterOp::In | FilterOp::Nin => {
+                        let arr = value.as_array().ok_or_else(|| {
+                            VectorStoreError::UnsupportedFilter(format!(
+                                "IN/NIN requires an array value for field `{}`, got {}",
+                                key,
+                                value_type_name(value)
+                            ))
+                        })?;
+                        params.insert(vp.clone(), serde_json::Value::Array(arr.clone()));
+                        if matches!(op, FilterOp::In) {
+                            Ok(format!("{} IN ${}", target, vp))
+                        } else {
+                            Ok(format!("NOT {} IN ${}", target, vp))
+                        }
+                    }
+                    _ => {
+                        if !matches!(
+                            value,
+                            serde_json::Value::String(_)
+                                | serde_json::Value::Number(_)
+                                | serde_json::Value::Bool(_)
+                        ) {
+                            return Err(VectorStoreError::UnsupportedFilter(format!(
+                                "cannot translate value of type {} to a Cypher comparison for field `{}`",
+                                value_type_name(value),
+                                key
+                            )));
+                        }
+                        params.insert(vp.clone(), value.clone());
+                        Ok(format!("{} {} ${}", target, cypher_op(op), vp))
+                    }
+                }
+            }
+            MetadataFilter::And(filters) => self.join(filters, metadata_prop, params, "AND"),
+            MetadataFilter::Or(filters) => self.join(filters, metadata_prop, params, "OR"),
+        }
+    }
+
+    fn join(
+        &mut self,
+        filters: &[MetadataFilter],
+        metadata_prop: &str,
+        params: &mut serde_json::Map<String, serde_json::Value>,
+        keyword: &str,
+    ) -> Result<String, VectorStoreError> {
+        let parts = filters
+            .iter()
+            .map(|f| self.expr(f, metadata_prop, params))
+            .collect::<Result<Vec<String>, _>>()?;
+        if parts.is_empty() {
+            return Ok("TRUE".to_string());
+        }
+        Ok(parts
+            .iter()
+            .map(|p| format!("({})", p))
+            .collect::<Vec<_>>()
+            .join(&format!(" {} ", keyword)))
+    }
+}
+
+fn cypher_op(op: &FilterOp) -> &'static str {
+    match op {
+        FilterOp::Eq => "=",
+        FilterOp::Ne => "<>",
+        FilterOp::Gt => ">",
+        FilterOp::Gte => ">=",
+        FilterOp::Lt => "<",
+        FilterOp::Lte => "<=",
+        FilterOp::In | FilterOp::Nin => unreachable!("handled by filter_to_cypher"),
+    }
+}
+
+fn value_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 /// Base64 encoding helper (no external dependency needed).
@@ -364,18 +544,10 @@ impl VectorStore for Neo4jVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // Use Neo4j's db.index.vector.queryNodes procedure
         let query = format!(
-            "CALL db.index.vector.queryNodes($index_name, $k, $query_vector) \
-             YIELD node, score \
-             RETURN node.{id_prop} AS id, \
-                    node.{content_prop} AS content, \
-                    node.{metadata_prop} AS metadata, \
-                    score \
-             ORDER BY score DESC",
-            id_prop = self.config.id_property,
-            content_prop = self.config.content_property,
-            metadata_prop = self.config.metadata_property,
+            "{}{}",
+            self.search_query_prefix(),
+            self.search_query_suffix()
         );
 
         let params = json!({
@@ -385,40 +557,34 @@ impl VectorStore for Neo4jVectorStore {
         });
 
         let response = self.run_query(&query, params).await?;
+        Ok(self.parse_search_results(response))
+    }
 
-        let result = response.results.first();
-        let Some(neo4j_result) = result else {
-            return Ok(Vec::new());
-        };
-
-        let mut search_results = Vec::new();
-        for row in &neo4j_result.data {
-            if row.row.len() >= 4 {
-                let id = row.row[0].as_str().unwrap_or_default().to_string();
-                let content = row.row[1].as_str().unwrap_or_default().to_string();
-                let score = row.row[3].as_f64().unwrap_or(0.0) as f32;
-
-                let mut doc = Document::new(content).with_id(id);
-
-                // Parse metadata from JSON object
-                if let Some(meta_obj) = row.row[2].as_object() {
-                    for (key, value) in meta_obj {
-                        if let Some(s) = value.as_str() {
-                            doc = doc.with_metadata(key, s);
-                        } else {
-                            doc = doc.with_metadata(key, value.to_string());
-                        }
-                    }
-                }
-
-                search_results.push(SearchResult {
-                    document: doc,
-                    score,
-                });
+    /// S3: 带元数据过滤的相似度检索 —— 用 Cypher `WHERE` 在服务端过滤
+    /// `db.index.vector.queryNodes` 返回的结果(参数化 key/value,防注入)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let mut query = self.search_query_prefix();
+        let mut params = json!({
+            "index_name": self.config.index_name,
+            "k": k,
+            "query_vector": query_embedding,
+        });
+        if let Some(f) = filter {
+            let (where_clause, extra_params) = filter_to_cypher(f, &self.config.metadata_property)?;
+            query.push_str(&format!(" WHERE {}", where_clause));
+            if let (Some(base), Some(extra)) = (params.as_object_mut(), extra_params.as_object()) {
+                base.extend(extra.clone());
             }
         }
+        query.push_str(&self.search_query_suffix());
 
-        Ok(search_results)
+        let response = self.run_query(&query, params).await?;
+        Ok(self.parse_search_results(response))
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
@@ -642,5 +808,84 @@ mod tests {
         let debug_str = format!("{:?}", store);
         assert!(debug_str.contains("Neo4jVectorStore"));
         assert!(debug_str.contains("idx"));
+    }
+
+    /// S3: 单字段条件 → 参数化 Cypher 表达式 + 参数表。
+    #[test]
+    fn test_filter_to_cypher_field() {
+        let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let (expr, params) = filter_to_cypher(&f, "metadata").unwrap();
+        assert_eq!(expr, "node.metadata[$f0k] = $f0v");
+        assert_eq!(params["f0k"], "lang");
+        assert_eq!(params["f0v"], "rust");
+
+        let (expr, params) = filter_to_cypher(
+            &MetadataFilter::field("year", FilterOp::Gte, 2020),
+            "metadata",
+        )
+        .unwrap();
+        assert_eq!(expr, "node.metadata[$f0k] >= $f0v");
+        assert_eq!(params["f0v"], 2020);
+
+        // Ne → <>(Cypher 的不等于)
+        let (expr, _) = filter_to_cypher(
+            &MetadataFilter::field("lang", FilterOp::Ne, "rust"),
+            "metadata",
+        )
+        .unwrap();
+        assert_eq!(expr, "node.metadata[$f0k] <> $f0v");
+    }
+
+    /// S3: IN/NOT IN → 数组参数。
+    #[test]
+    fn test_filter_to_cypher_in_nin() {
+        let (expr, params) = filter_to_cypher(
+            &MetadataFilter::field("tags", FilterOp::In, vec!["a", "b"]),
+            "meta",
+        )
+        .unwrap();
+        assert_eq!(expr, "node.meta[$f0k] IN $f0v");
+        assert_eq!(params["f0v"], serde_json::json!(["a", "b"]));
+
+        let (expr, _) = filter_to_cypher(
+            &MetadataFilter::field("tags", FilterOp::Nin, vec!["x"]),
+            "meta",
+        )
+        .unwrap();
+        assert_eq!(expr, "NOT node.meta[$f0k] IN $f0v");
+
+        // IN 值非数组 → 显式报错
+        let err = filter_to_cypher(&MetadataFilter::field("tags", FilterOp::In, "oops"), "meta");
+        assert!(matches!(err, Err(VectorStoreError::UnsupportedFilter(_))));
+    }
+
+    /// S3: AND/OR 组合 → 括号 + 参数名继续递增不冲突。
+    #[test]
+    fn test_filter_to_cypher_and_or() {
+        let f = MetadataFilter::or(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "python"),
+            MetadataFilter::and(vec![
+                MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+                MetadataFilter::field("year", FilterOp::Gt, 2020),
+            ]),
+        ]);
+        let (expr, params) = filter_to_cypher(&f, "metadata").unwrap();
+        assert_eq!(
+            expr,
+            "(node.metadata[$f0k] = $f0v) OR ((node.metadata[$f1k] = $f1v) AND (node.metadata[$f2k] > $f2v))"
+        );
+        assert_eq!(params["f0v"], "python");
+        assert_eq!(params["f1v"], "rust");
+        assert_eq!(params["f2v"], 2020);
+    }
+
+    /// S3: 不可表达的标量比较(对象值)显式报错。
+    #[test]
+    fn test_filter_to_cypher_unsupported_value() {
+        let f = MetadataFilter::field("nested", FilterOp::Eq, serde_json::json!({ "a": 1 }));
+        assert!(matches!(
+            filter_to_cypher(&f, "metadata"),
+            Err(VectorStoreError::UnsupportedFilter(_))
+        ));
     }
 }

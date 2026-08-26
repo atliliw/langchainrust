@@ -67,10 +67,12 @@ impl StreamingFunctionCallingAgent {
             let mut full = String::new();
             while let Some(chunk) = stream.next().await {
                 match chunk {
-                    Ok(token) => {
-                        full.push_str(&token);
+                    Ok(chunk) => {
+                        full.push_str(&chunk.text);
                         if tx
-                            .send(AgentStreamEvent::Text { content: token })
+                            .send(AgentStreamEvent::Text {
+                                content: chunk.text,
+                            })
                             .await
                             .is_err()
                         {

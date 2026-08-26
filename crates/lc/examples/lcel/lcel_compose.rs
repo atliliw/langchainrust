@@ -52,7 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === 1. Prompt + LLM + parser (P0 core chain) ===
     // Chain type: Runnable<HashMap<String, String>, String>
     let prompt = ChatPromptTemplate::from_messages([
-        Message::system("You are a concise Rust assistant. Output only the conclusion, no extra text."),
+        Message::system(
+            "You are a concise Rust assistant. Output only the conclusion, no extra text.",
+        ),
         Message::human("{question}"),
     ]);
     let qa_chain = prompt.pipe(llm.clone()).pipe(StrOutputParser::new());
@@ -74,9 +76,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         RunnableWithMessageHistory::new(llm.clone(), memory).pipe(StrOutputParser::new());
 
     let r1 = chat_chain
-        .invoke("My name is Xiao Ming, please remember me.".to_string(), None)
+        .invoke(
+            "My name is Xiao Ming, please remember me.".to_string(),
+            None,
+        )
         .await?;
-    let r2 = chat_chain.invoke("What is my name?".to_string(), None).await?;
+    let r2 = chat_chain
+        .invoke("What is my name?".to_string(), None)
+        .await?;
     println!("[2] Memory+LLM+Parser (multi-turn)\n     turn 1: {r1}\n     turn 2: {r2}\n");
 
     // === 3. RAG chain (BM25 local retrieval + LLM generation) ===

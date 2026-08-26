@@ -31,8 +31,8 @@ Thumbs.db
 # Test
 /coverage/
 
-# 功能测试目录(仅本地测试用,不进 git)
-/crates/lc/tests/
+# v0.18:功能测试目录 crates/lc/tests 不纳入 git(用户拍板:仅在本地跑,失败用例已 #[ignore] 注明原因)
+crates/lc/tests/
 
 # Documentation (internal only)
 /docs/internal/

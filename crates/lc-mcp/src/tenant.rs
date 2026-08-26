@@ -2,7 +2,7 @@
 //!
 //! 100+ Server 部署常由多个业务方共享同一批 Server,租户之间必须隔离:
 //! A 租户注册的工具、命名空间、发现层、限流与审计,对 B 租户不可见。
-//! [`TenantGateway`] 为每个租户持有独立的 [`MCPGateway`](crate::MCPGateway),
+//! [`TenantGateway`] 为每个租户持有独立的 [`MCPGateway`],
 //! 注册 / 同步 / 调用 / 审计全部按租户路由;移除租户即整体清理其注册表。
 
 use std::collections::HashMap;

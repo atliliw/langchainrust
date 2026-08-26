@@ -10,6 +10,10 @@ pub enum AnthropicStreamToken {
     Text(String),
     /// A thinking content token (extended reasoning).
     Thinking(String),
+    /// Token usage reported at the end of the stream (`message_delta` event).
+    /// Carried separately so the streaming path can observe usage without a
+    /// separate non-streaming `chat` call.
+    Usage(AnthropicUsage),
 }
 
 /// Content for an Anthropic message, supporting both simple text and structured content arrays.
@@ -109,8 +113,12 @@ pub(crate) struct AnthropicContent {
     pub(crate) input: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct AnthropicUsage {
+/// Token usage reported in the Anthropic `message_delta` stream event.
+///
+/// Exposed (with crate-private fields) because it appears as the payload of
+/// the public [`AnthropicStreamToken::Usage`] variant.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AnthropicUsage {
     pub(crate) input_tokens: usize,
     pub(crate) output_tokens: usize,
 }
@@ -120,6 +128,9 @@ pub(crate) struct AnthropicStreamEvent {
     #[serde(rename = "type")]
     pub(crate) type_field: String,
     pub(crate) delta: Option<AnthropicDelta>,
+    /// Token usage from the `message_delta` event (stream end).
+    #[serde(default)]
+    pub(crate) usage: Option<AnthropicUsage>,
 }
 
 #[derive(Deserialize)]

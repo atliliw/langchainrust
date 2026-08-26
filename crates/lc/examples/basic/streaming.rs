@@ -37,12 +37,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let mut stream = llm.stream_chat(messages, None).await?;
+    let mut total_usage = None;
     while let Some(chunk) = stream.next().await {
-        if let Ok(token) = chunk {
-            print!("{}", token);
+        if let Ok(chunk) = chunk {
+            print!("{}", chunk.text);
+            if chunk.token_usage.is_some() {
+                total_usage = chunk.token_usage;
+            }
         }
     }
-    println!();
+    if let Some(usage) = total_usage {
+        println!();
+        println!(
+            "[token usage] prompt: {}, completion: {}, total: {}",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+        );
+    } else {
+        println!();
+    }
 
     Ok(())
 }

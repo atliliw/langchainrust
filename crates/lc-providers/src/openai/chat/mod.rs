@@ -18,7 +18,9 @@ use std::pin::Pin;
 
 use super::OpenAIConfig;
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -201,10 +203,10 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
         // H4: True streaming — emit one LLMResult per token instead of
         // collecting all tokens first and emitting a single result.
         let stream = token_stream.map(move |token_result| match token_result {
-            Ok(token) => Ok(LLMResult {
-                content: token,
+            Ok(chunk) => Ok(LLMResult {
+                content: chunk.text,
                 model: model.clone(),
-                token_usage: None,
+                token_usage: chunk.token_usage,
                 tool_calls: None,
                 thinking_content: None,
             }),
@@ -349,7 +351,8 @@ impl BaseChatModel for OpenAIChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
 
         let run_name = config
@@ -392,7 +395,7 @@ impl BaseChatModel for OpenAIChat {
                 if let Some(ref cbs) = cbs {
                     if let Ok(ref token) = token_result {
                         for handler in cbs.handlers() {
-                            handler.on_llm_new_token(&run, token).await;
+                            handler.on_llm_new_token(&run, &token.text).await;
                         }
                     }
                 }
@@ -490,7 +493,8 @@ impl OpenAIChat {
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>, OpenAIError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>, OpenAIError>
+    {
         use super::sse::SSEParser;
         use std::sync::{Arc, Mutex};
 
@@ -519,7 +523,7 @@ impl OpenAIChat {
 
         let parser_clone = parser.clone();
         // M18: Use bounded channel to prevent OOM with slow consumers
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, OpenAIError>>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, OpenAIError>>(64);
 
         tokio::spawn(async move {
             use futures_util::StreamExt;
@@ -552,9 +556,26 @@ impl OpenAIChat {
                         Ok(Some(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
                                 if let Some(content) = &choice.delta.content {
-                                    if tx.send(Ok(content.clone())).await.is_err() {
+                                    if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
                                         return;
                                     }
+                                }
+                            }
+                            // OpenAI 在流末尾(通常是 `[DONE]` 前最后一个 chunk)携带 usage。
+                            // 把它作为独立 chunk 发出:文本为空、token_usage 填充,消费方
+                            // 从流式路径即可拿到整次调用的 token 用量。
+                            if let Some(usage) = chunk.usage {
+                                let token_usage = TokenUsage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    total_tokens: usage.total_tokens,
+                                };
+                                let final_chunk = StreamChunk {
+                                    text: String::new(),
+                                    token_usage: Some(token_usage),
+                                };
+                                if tx.send(Ok(final_chunk)).await.is_err() {
+                                    return;
                                 }
                             }
                         }
@@ -579,12 +600,12 @@ impl OpenAIChat {
     /// This is the piece that makes `config.streaming` observable: the
     /// non-streaming `chat()` path consumes the token stream through here.
     async fn aggregate_stream(
-        mut stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>>,
+        mut stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>,
     ) -> Result<String, OpenAIError> {
         use futures_util::StreamExt;
         let mut content = String::new();
         while let Some(item) = stream.next().await {
-            content.push_str(&item?);
+            content.push_str(&item?.text);
         }
         Ok(content)
     }

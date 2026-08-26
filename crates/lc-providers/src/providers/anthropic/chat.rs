@@ -464,6 +464,20 @@ impl AnthropicChat {
                                 if let Ok(event) =
                                     serde_json::from_str::<AnthropicStreamEvent>(data)
                                 {
+                                    if event.type_field == "message_delta" {
+                                        // 流末尾的 message_delta 携带 usage,作为独立 token
+                                        // 发出,流式路径即可拿到整次调用用量。
+                                        if let Some(usage) = event.usage {
+                                            if tx
+                                                .send(Ok(AnthropicStreamToken::Usage(usage)))
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     if event.type_field == "content_block_delta" {
                                         if let Some(delta) = event.delta {
                                             match delta.type_field.as_str() {

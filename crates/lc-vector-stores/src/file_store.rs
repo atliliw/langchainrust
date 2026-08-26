@@ -15,7 +15,8 @@
 //! ```
 
 use crate::{
-    cosine_similarity, Document, SearchResult, VectorDocument, VectorStore, VectorStoreError,
+    cosine_similarity, Document, MetadataFilter, SearchResult, VectorDocument, VectorStore,
+    VectorStoreError,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -165,6 +166,37 @@ impl VectorStore for FileVectorStore {
         let mut results: Vec<SearchResult> = data
             .documents
             .values()
+            .map(|vd| {
+                let score = cosine_similarity(query_embedding, &vd.embedding).unwrap_or(0.0);
+                SearchResult {
+                    document: vd.document.clone(),
+                    score,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(results.into_iter().take(k).collect())
+    }
+
+    /// S3: 文件存储元数据过滤 —— 与内存存储同款"先过滤再算相似度"语义。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let data = self.data.read().await;
+
+        let mut results: Vec<SearchResult> = data
+            .documents
+            .values()
+            .filter(|vd| filter.is_none_or(|f| f.matches(&vd.document.metadata)))
             .map(|vd| {
                 let score = cosine_similarity(query_embedding, &vd.embedding).unwrap_or(0.0);
                 SearchResult {
@@ -369,5 +401,58 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
         assert!((cosine_similarity(&a, &b).unwrap() - 0.0).abs() < 0.0001);
+    }
+
+    /// S3: 文件存储元数据过滤 —— 单条件 + AND 组合。
+    #[tokio::test]
+    async fn test_metadata_filter() {
+        use crate::FilterOp;
+
+        let dir = TempDir::new().unwrap();
+        let path = test_store_path(&dir);
+        let store = FileVectorStore::new(path, 3).await.unwrap();
+
+        store
+            .add_documents(
+                vec![
+                    Document::new("rust doc")
+                        .with_metadata("lang", "rust")
+                        .with_metadata("year", 2024),
+                    Document::new("python doc")
+                        .with_metadata("lang", "python")
+                        .with_metadata("year", 2023),
+                ],
+                vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+            )
+            .await
+            .unwrap();
+
+        let query = vec![1.0, 0.0, 0.0];
+
+        let eq = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let r = store
+            .similarity_search_with_filter(&query, 5, Some(&eq))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].document.content, "rust doc");
+
+        let and = MetadataFilter::and(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+            MetadataFilter::field("year", FilterOp::Gt, 2020),
+        ]);
+        let r = store
+            .similarity_search_with_filter(&query, 5, Some(&and))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 1);
+
+        // filter: None 与 similarity_search 一致
+        let none = store
+            .similarity_search_with_filter(&query, 5, None)
+            .await
+            .unwrap();
+        let base = store.similarity_search(&query, 5).await.unwrap();
+        assert_eq!(none.len(), base.len());
     }
 }

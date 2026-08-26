@@ -282,10 +282,10 @@ impl BaseChain for ConversationChain {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         let stream = llm_stream.map(move |result| match result {
-            Ok(token) => {
-                let _ = tx.send(token.clone());
+            Ok(chunk) => {
+                let _ = tx.send(chunk.text.clone());
                 Ok(StreamToken {
-                    token,
+                    token: chunk.text,
                     is_final: false,
                 })
             }

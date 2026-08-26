@@ -62,12 +62,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== SensitiveInfoGuardrail direct verification (deterministic, no LLM call) ===\n");
     let g = SensitiveInfoGuardrail::new();
     let demos = [
-        ("How to store passwords safely", "Pass (P2-1 plain mention not blocked)"),
+        (
+            "How to store passwords safely",
+            "Pass (P2-1 plain mention not blocked)",
+        ),
         (
             "You should move the password field to environment variables",
             "Pass (P2-1 plain mention not blocked)",
         ),
-        ("Please contact user@example.com", "Block (concrete email pattern)"),
+        (
+            "Please contact user@example.com",
+            "Block (concrete email pattern)",
+        ),
         (
             "secret key sk-abcdefghijklmnopqrstuvwxyz123456",
             "Block (API key pattern)",

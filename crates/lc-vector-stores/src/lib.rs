@@ -8,6 +8,7 @@ pub mod chromadb;
 pub mod chunked_vector_store;
 pub mod document_store;
 mod file_store;
+pub mod filter;
 pub mod lancedb;
 mod memory;
 pub mod neo4j;
@@ -36,6 +37,7 @@ pub use document_store::{
     InMemoryDocumentStore,
 };
 pub use file_store::FileVectorStore;
+pub use filter::{FilterOp, MetadataFilter};
 pub use lancedb::{LanceDBConfig, LanceDBVectorStore};
 pub use memory::InMemoryVectorStore;
 pub use neo4j::{Neo4jConfig, Neo4jVectorStore};
@@ -55,6 +57,9 @@ pub use redis_store::{RedisDocumentStore, RedisStoreConfig};
 
 #[cfg(feature = "sqlite-storage")]
 pub use sqlite_store::{SQLiteDocumentStore, SQLiteStoreConfig};
+
+#[cfg(feature = "pgvector-storage")]
+pub use pgvector::{build_filter_sql, FilterBinding, FilterSql, PGVectorConfig, PGVectorStore};
 
 use async_trait::async_trait;
 
@@ -87,6 +92,10 @@ pub enum VectorStoreError {
     /// Configuration error (e.g. missing environment variables, invalid settings).
     #[error("Configuration error: {0}")]
     ConfigError(String),
+
+    /// 元数据过滤不受支持(后端未覆写过滤检索)。
+    #[error("Metadata filter not supported: {0}")]
+    UnsupportedFilter(String),
 }
 
 /// Vector store trait.
@@ -152,6 +161,31 @@ pub trait VectorStore: Send + Sync {
             .await
             .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
         self.similarity_search(&query_embedding, k).await
+    }
+
+    /// 带元数据过滤的相似度检索。
+    ///
+    /// - `filter: None` —— 不过滤,等价 [`similarity_search`](Self::similarity_search)。
+    /// - `filter: Some(f)` —— 只返回满足过滤条件的文档,最多 `k` 条。
+    ///
+    /// 默认实现:无过滤时委托 [`similarity_search`](Self::similarity_search);有过滤
+    /// 但后端未覆写(不支持)时返回 [`VectorStoreError::UnsupportedFilter`],**不静默
+    /// 忽略**过滤。支持过滤的后端应覆写本方法,把 [`MetadataFilter`] 翻译成各自
+    /// 原生查询语法(Qdrant payload filter / Pinecone filter / Chroma where / …)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        match filter {
+            None => self.similarity_search(query_embedding, k).await,
+            Some(_) => Err(VectorStoreError::UnsupportedFilter(
+                "this vector store does not support metadata filtering; pass filter: None or \
+                 switch to a store that implements similarity_search_with_filter"
+                    .to_string(),
+            )),
+        }
     }
 
     /// 带最低分数阈值的相似度检索。

@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.16.0 • 功能</div>
+            <div class="sidebar-subtitle">v0.18.0 • 功能</div>
         </div>
 
         <div class="sidebar-nav">
@@ -559,6 +559,7 @@
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
                 <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan & Execute</a>
                 <a href="#unified-015" class="nav-item new">🧩 v0.15.0 统一能力</a>
+                <a href="#v018-complete" class="nav-item new">🚀 v0.18.0 能力补全</a>
                 <a href="#whats-new-050" class="nav-item new">✨ v0.5.0+ 新特性</a>
                 <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
                 <a href="#deep-research" class="nav-item new">🔬 Deep Research</a>
@@ -2045,7 +2046,7 @@ graph.validate()?;
                     <div class="feature-card"><h3>知识图谱 RAG</h3><p>知识图谱 + 社区检测 + 摘要</p></div>
                     <div class="feature-card"><h3>深度研究</h3><p>多轮深度研究 + 引用报告</p></div>
                     <div class="feature-card"><h3>模型路由</h3><p>5 种策略：Fallback/RoundRobin/Latency/Cost/Input</p></div>
-                    <div class="feature-card"><h3>MCP 原语</h3><p>已实现 initialize / tools/list / tools/call + 流式工具结果与取消；Resources 等原语类型已定义（见 v0.15 传输韧性）</p></div>
+                    <div class="feature-card"><h3>MCP 原语</h3><p>initialize / tools/list / tools/call + resources / prompts / completion 注册制接线；sampling / elicitation 发起方法（见 v0.18 能力补全）</p></div>
                     <div class="feature-card" id="sandbox"><h3>代码沙箱</h3><p>LocalSandbox（子进程 + 超时 + 资源限制）</p></div>
                     <div class="feature-card" id="responses-api"><h3>Responses API</h3><p>/v1/responses，内置 web_search/file_search/code/computer</p></div>
                     <div class="feature-card" id="extended-thinking"><h3>扩展思考</h3><p>with_thinking(budget_tokens) + thinking_content 思考链</p></div>
@@ -2275,7 +2276,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>核心原语</h3><p>initialize / tools/list / tools/call + 流式工具结果（PartialContent）与取消</p></div>
+                    <div class="feature-card"><h3>核心原语</h3><p>initialize / tools/list / tools/call + resources / prompts / completion 原语 + 流式工具结果（PartialContent）与取消</p></div>
                     <div class="feature-card"><h3>传输韧性</h3><p>自动重连（0.5s→30s 指数退避）、ConnectionManager 连接池、CircuitBreaker 熔断</p></div>
                     <div class="feature-card"><h3>命名空间 / 发现</h3><p>ToolNamespace 多 server 隔离、ToolDiscovery 批量发现、ToolSpec 超时策略</p></div>
                     <div class="feature-card"><h3>安全</h3><p>SamplingGuard 采样递归防护（深度 + token 预算 + 超时）、ServerSandbox 参数与出站策略</p></div>
@@ -2284,7 +2285,7 @@ println!(<span class="str">"{}"</span>, report.summary);
 
                 <div class="callout">
                     <div class="callout-title">⚠️ 诚实状态</div>
-                    <p><code>Resources</code> / <code>Prompts</code> / <code>Completion</code> / <code>Elicitation</code> / <code>Roots</code> 的类型已定义，但对应调用逻辑尚未实现，直接调用返回 <code>method_not_found</code>。当前可用原语为 initialize / tools/list / tools/call，外加流式工具结果与取消。</p>
+                    <p><code>resources/list</code> / <code>resources/read</code> / <code>prompts/list</code> / <code>prompts/get</code> / <code>completion/complete</code> 已接线（v0.18.0）：注册 provider 后返回对应结构，未注册返回 <code>method_not_found</code>。<code>elicitation/create</code> / <code>sampling/createMessage</code> 为 server→host 发起方法，需注入 host 回调，未注入返回明确错误。<code>Roots</code> 仍为类型定义。</p>
                 </div>
 
                 <hr class="divider">
@@ -2310,6 +2311,31 @@ println!(<span class="str">"{}"</span>, report.summary);
                     <div class="feature-card"><h3>评估增强</h3><p>LLMAsJudge（0-10）、PairwiseJudge（成对竞技 + 位置偏差缓解）、Report 逐条容错</p></div>
                     <div class="feature-card"><h3>多模态消息</h3><p>Message 携带 images/audio/files + ToolCall，MultimodalModel 三接口（默认 Unsupported 诚实报错）</p></div>
                     <div class="feature-card"><h3>新 Provider</h3><p>Azure / Cohere / Mistral 加入，共 11 家，统一 LLMClient::from_env 自动发现</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.18.0 Capability Completion -->
+            <section class="module" id="v018-complete" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🚀</span>
+                    <h2>v0.18.0 能力补全 <span class="badge new">v0.18.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.18.0 = 能力补全版：0.17 列为 ⏳ 的两件 P0（SelfQuery 自查询、流式路径 token 用量）与四件 P2 全部做完，外加 MCP 原语调用逻辑接线。含 2 个计划内 breaking（<code>stream_chat</code> chunk 类型、<code>VectorStore</code> 加过滤方法），迁移见 <code>docs/internal/v0.18.0/MIGRATION_0.17_to_0.18.md</code>。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>流式 token 用量</h3><p>StreamChunk { text, token_usage }，末尾 chunk 带整段真实用量</p></div>
+                    <div class="feature-card"><h3>元数据过滤</h3><p>MetadataFilter（Eq/Ne/Gt/Gte/Lt/Lte/In/Nin + And/Or），VectorStore 跨后端统一过滤</p></div>
+                    <div class="feature-card"><h3>SelfQuery 自查询</h3><p>LLM 拆 {query, filter} + allowed_attributes 白名单，走过滤相似度检索</p></div>
+                    <div class="feature-card"><h3>PGVector 类型化</h3><p>pgvector-storage feature 下 PGVectorStore: VectorStore 真实现（sqlx + pgvector）</p></div>
+                    <div class="feature-card"><h3>跨进程 resume</h3><p>FileResumeStore 审批/预算挂起点落盘，进程重启从挂起点续跑</p></div>
+                    <div class="feature-card"><h3>function-calling 逐字流</h3><p>FunctionCallingAgent 最终答案逐 token 流出，打字机效果</p></div>
+                    <div class="feature-card"><h3>MCP 原语接线</h3><p>resources / prompts / completion 注册制 handler + sampling / elicitation 发起方法</p></div>
+                    <div class="feature-card"><h3>严格签名回放</h3><p>ReplayStrategy::Exact 按 messages 完整签名匹配，并行乱序精确对应</p></div>
                 </div>
 
                 <hr class="divider">
@@ -2426,7 +2452,7 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
 crates/
-├── lc/                  # Facade crate (package name: langchainrust, v0.16.0)
+├── lc/                  # Facade crate (package name: langchainrust, v0.18.0)
 ├── lc-shared/           # 共享类型 (ToolCall, Document, TextSplitter)
 ├── lc-schema/           # 数据结构 (Message 含多模态附件 / ToolCall, ImageContent, AudioContent, FileContent)
 ├── lc-core/             # 核心抽象
@@ -2466,14 +2492,14 @@ crates/
 ├── lc-tools/            # 内置工具 + 沙箱（Calculator、DateTime、HTTPTool、PythonREPL、CodeSandbox、ComputerUseTool）+ SSRF 防护
 ├── lc-tools-derive/     # `#[tool]` 过程宏
 ├── lc-mcp/              # MCP 客户端/服务端 + ConnectionManager / Gateway / SamplingGuard / CircuitBreaker
-│   ├── protocol.rs      # initialize / tools/list / tools/call（Resources 等原语仅类型已定义）
+│   ├── protocol.rs      # initialize / tools/list / tools/call + resources/prompts/completion 注册制接线、sampling/elicitation 发起（v0.18）
 │   ├── stream.rs        # PartialContent 流式工具结果 + 取消
 │   ├── connection_manager.rs / gateway.rs / tenant.rs / orchestrate.rs
 │   ├── health.rs        # ServerHealth / CircuitBreaker
 │   ├── sampling.rs      # SamplingGuard 采样保护
 │   └── sandbox.rs       # ServerSandbox（ParamRule / EgressPolicy）
 ├── lc-a2a/              # Agent-to-Agent 协议（tasks/send、get、cancel + AgentCard）
-├── lc-testkit/          # 录播测试 harness（RecordingProvider / ReplayProvider）v0.16
+├── lc-testkit/          # 录播测试 harness（RecordingProvider / ReplayProvider，Exact 签名回放 v0.18）
 ├── lc-langgraph/        # LangGraph（StateGraph、Reducer、GraphEdge、Checkpointer 家族、GraphPersistence、Subgraph、并行）
 ├── lc-sessions/         # 会话管理（SessionStatus 生命周期 + 接入记忆）
 ├── lc-guardrails/       # 输入/输出安全护栏（Guardable、流式护栏、审计持久化）
@@ -2620,7 +2646,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API 文档</a>
                 </div>
-                <p class="copyright">LangChainRust v0.16.0 | MIT 许可证</p>
+                <p class="copyright">LangChainRust v0.18.0 | MIT 许可证</p>
             </footer>
         </div>
     </main>

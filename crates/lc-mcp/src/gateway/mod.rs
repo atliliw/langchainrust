@@ -7,9 +7,9 @@
 //! - **P2-1** 惰性连接 / 空闲回收 / 连接池([`ConnectionManager`]);
 //! - **P2-2** 工具命名空间 + 冲突策略([`ToolNamespace`]);
 //! - **P2-3** 静态层 + 动态层工具发现([`ToolDiscovery`]);
-//! - **P2-4** per-tool 超时 + Progress 重置([`ToolSpec`]);
+//! - **P2-4** per-tool 超时 + Progress 重置([`ToolSpec`](crate::tool_timeout::ToolSpec));
 //! - **P2-5** 健康检查 + 熔断([`crate::ServerHealth`]);
-//! - **P2-6** per-Server 安全沙箱([`ServerSandbox`]);
+//! - **P2-6** per-Server 安全沙箱([`ServerSandbox`](crate::sandbox::ServerSandbox));
 //! - **速率限制**:每 Server 固定窗口限流([`RateLimiter`]);
 //! - **统一审计**:Gateway 入口全量记录放行/拦截([`GatewayAuditRecord`])。
 //!
@@ -68,7 +68,7 @@ use policy::ServerPolicy;
 /// 整合 P2-1~P2-6 的能力:
 /// - 连接管理([`ConnectionManager`],惰性 / 空闲回收 / 熔断);
 /// - 命名空间([`ToolNamespace`])与静态/动态发现([`ToolDiscovery`]);
-/// - per-tool 超时([`ToolSpec`])、安全沙箱([`ServerSandbox`]);
+/// - per-tool 超时([`ToolSpec`](crate::tool_timeout::ToolSpec))、安全沙箱([`ServerSandbox`](crate::sandbox::ServerSandbox));
 /// - 每 Server 速率限制([`RateLimiter`]) + 统一审计([`GatewayAuditRecord`])。
 ///
 /// 对外暴露统一工具注册表([`tools`](Self::tools)),并可直接 `call("server:tool")`

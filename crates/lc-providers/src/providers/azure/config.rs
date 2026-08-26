@@ -11,7 +11,7 @@ pub const AZURE_DEFAULT_API_VERSION: &str = "2024-02-15-preview";
 /// Azure OpenAI configuration.
 #[derive(Debug, Clone)]
 pub struct AzureOpenAIConfig {
-    /// Azure OpenAI resource endpoint (e.g., https://myresource.openai.azure.com).
+    /// Azure OpenAI resource endpoint (e.g., <https://myresource.openai.azure.com>).
     pub endpoint: String,
     /// Deployment name (e.g., "my-gpt4-deployment").
     pub deployment_name: String,

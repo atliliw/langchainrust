@@ -512,6 +512,50 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.auto_merge_async(top_chunks, k).await
     }
 
+    /// 只读 BM25 检索:返回命中的 parent id 列表(去重),按最佳 chunk 分排序。
+    ///
+    /// 与 [`search`](Self::search)/[`search_async`](Self::search_async) 不同:
+    /// 这里**不做** AutoMerging 比例门控 —— 任何 chunk 命中即让该 parent 入围,
+    /// 语义即 [`ParentDocumentRetriever`](crate::parent_document::ParentDocumentRetriever)
+    /// 需要的"命中子块 → 返回整篇父文档"。全 `&self` 只读(idf 不缓存),可安全并发。
+    pub fn search_matched_parents(&self, query: &str, k: usize) -> Vec<(String, f32)> {
+        if self.index.n_docs == 0 {
+            return Vec::new();
+        }
+
+        let query_terms = self.index.tokenizer.tokenize(query);
+        if query_terms.is_empty() {
+            return Vec::new();
+        }
+
+        // 只读 idf:不写 idf_cache,避免 `&mut self`。
+        let idf_values: HashMap<String, f64> = query_terms
+            .iter()
+            .map(|t| {
+                let n = self.index.term_index.get(t).map(|v| v.len()).unwrap_or(0);
+                (t.clone(), compute_idf(n, self.index.n_docs))
+            })
+            .collect();
+
+        let scored_chunks = self.score_chunks(&query_terms, &idf_values);
+        if scored_chunks.is_empty() {
+            return Vec::new();
+        }
+
+        let top_chunks: Vec<(usize, f64)> = scored_chunks.into_iter().take(k * 2).collect();
+        let parent_stats = self.collect_parent_stats(&top_chunks);
+
+        let mut ranked: Vec<(String, f32)> = parent_stats
+            .into_iter()
+            .map(|(parent_id, leaves)| {
+                let best = leaves.iter().map(|(_, s)| *s as f32).fold(0.0f32, f32::max);
+                (parent_id, best)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.into_iter().take(k).collect()
+    }
+
     fn auto_merge_sync(
         &self,
         scored_chunks: Vec<(usize, f64)>,

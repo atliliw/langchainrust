@@ -7,7 +7,7 @@
 use crate::error::ProviderError;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -124,7 +124,7 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>, ProviderError>
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>, ProviderError>
     {
         let stream = self
             .inner
@@ -250,7 +250,7 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>, ProviderError>
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>, ProviderError>
     {
         let stream = self
             .inner

@@ -18,6 +18,9 @@ pub enum RetrieverError {
     /// 嵌入错误
     EmbeddingError(String),
 
+    /// LLM 拆解失败(调用失败 / 输出无法解析)。SelfQuery(S4) 用。
+    LlmError(String),
+
     /// 无结果
     NoResults,
 }
@@ -27,6 +30,7 @@ impl std::fmt::Display for RetrieverError {
         match self {
             RetrieverError::StoreError(e) => write!(f, "storage error: {}", e),
             RetrieverError::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
+            RetrieverError::LlmError(msg) => write!(f, "LLM error: {}", msg),
             RetrieverError::NoResults => write!(f, "no relevant documents found"),
         }
     }

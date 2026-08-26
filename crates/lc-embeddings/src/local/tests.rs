@@ -97,16 +97,8 @@ fn test_bow_model_name() {
     assert_eq!(e.model_name(), "local-bow");
 }
 
-// ---- LocalEmbeddings backward compatibility test (without feature, is BagOfWordsEmbeddings alias) ----
+// ---- 1.0:LocalEmbeddings 降级别名已移除 ----
 
-/// P2-1: 该测试正是验证"无 feature 时 LocalEmbeddings = BagOfWordsEmbeddings",
-/// 是有意使用已弃用别名,`#[allow(deprecated)]` 豁免降级警告。
-#[allow(deprecated)]
-#[tokio::test]
-async fn test_local_embeddings_backward_compat() {
-    // Without feature, LocalEmbeddings = BagOfWordsEmbeddings
-    let e = LocalEmbeddings::new(64);
-    let v = e.embed_query("test backward compat").await.unwrap();
-    assert_eq!(v.len(), 64);
-    assert_eq!(e.model_name(), "local-bow");
-}
+// 原 `test_local_embeddings_backward_compat`(验证无 feature 时
+// `LocalEmbeddings = BagOfWordsEmbeddings`)随降级别名一并删除:1.0 起无 feature
+// 时 `LocalEmbeddings` 名字不可用,不存在"向后兼容别名"可测。

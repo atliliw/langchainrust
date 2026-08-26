@@ -6,6 +6,7 @@ mod common;
 
 use common::FakeModel;
 use lc_core::language_models::BaseChatModel;
+use lc_core::tools::ToolDefinition;
 use lc_schema::Message;
 use lc_testkit::{RecordingProvider, ReplayProvider};
 
@@ -45,4 +46,43 @@ async fn record_then_replay_roundtrip() {
     assert_eq!(tokens.prompt_tokens, 2);
     assert_eq!(tokens.completion_tokens, 1);
     assert_eq!(tokens.total_tokens, 3);
+}
+
+#[tokio::test]
+async fn record_with_bound_tools_then_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.jsonl");
+
+    // 1. 绑定工具后录制:exchange 的 tools 字段应落盘
+    let recorded = RecordingProvider::new(FakeModel::new("计算结果是 5。"), &path).unwrap();
+    let bound = recorded.bind_tools(vec![ToolDefinition::new("calculator", "数学计算")]);
+    let result = bound
+        .chat(vec![Message::system("测试"), Message::human("2+3=?")], None)
+        .await
+        .unwrap();
+    assert_eq!(result.content, "计算结果是 5。");
+
+    // 2. 文件里应有工具名
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.contains("calculator"),
+        "录播文件应包含绑定的工具名: {raw}"
+    );
+
+    // 3. 回放:tools 保留,响应一致
+    let replay = ReplayProvider::from_file(&path).unwrap();
+    assert_eq!(replay.len(), 1);
+    let replayed = replay
+        .chat(vec![Message::human("2+3=?")], None)
+        .await
+        .unwrap();
+    assert_eq!(replayed.content, result.content);
+}
+
+#[test]
+fn old_fixture_without_tools_still_deserializes() {
+    // 旧格式 fixture(llm_chain_f01.jsonl)没有 tools 字段 → 读成 None,零改动。
+    let line = r#"{"messages":[{"content":"q","type":"human"}],"response":{"content":"a","model":"m","token_usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}}"#;
+    let exchange: lc_testkit::RecordedExchange = serde_json::from_str(line).unwrap();
+    assert!(exchange.tools.is_none());
 }

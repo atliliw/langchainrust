@@ -18,7 +18,9 @@ use super::OllamaConfig;
 use crate::openai::sse::SSEParser;
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::tools::{StructuredOutput, ToolCall, ToolDefinition};
 use lc_core::RunnableConfig;
@@ -245,7 +247,8 @@ impl OllamaChat {
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, OllamaError>> + Send>>, OllamaError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OllamaError>> + Send>>, OllamaError>
+    {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, true);
 
@@ -266,7 +269,7 @@ impl OllamaChat {
 
         let byte_stream = response.bytes_stream();
         let parser = Arc::new(Mutex::new(SSEParser::new()));
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, OllamaError>>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, OllamaError>>(64);
 
         let parser_clone = parser.clone();
         tokio::spawn(async move {
@@ -300,11 +303,13 @@ impl OllamaChat {
                         Ok(Some(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
                                 if let Some(content) = &choice.delta.content {
-                                    if tx.send(Ok(content.clone())).await.is_err() {
+                                    if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
                                         return;
                                     }
                                 }
                             }
+                            // Ollama 本地服务不保证回传 usage,维持 token_usage: None
+                            // (与 wrapper/client 代理路径一致,文档注明)。
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -356,10 +361,10 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
 
         // H4: True streaming — emit one LLMResult per token
         let stream = token_stream.map(move |token_result| match token_result {
-            Ok(token) => Ok(LLMResult {
-                content: token,
+            Ok(chunk) => Ok(LLMResult {
+                content: chunk.text,
                 model: model.clone(),
-                token_usage: None,
+                token_usage: chunk.token_usage,
                 tool_calls: None,
                 thinking_content: None,
             }),
@@ -489,7 +494,8 @@ impl BaseChatModel for OllamaChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
 
         let run_name = config
@@ -532,7 +538,7 @@ impl BaseChatModel for OllamaChat {
                 if let Some(ref cbs) = cbs {
                     if let Ok(ref token) = token_result {
                         for handler in cbs.handlers() {
-                            handler.on_llm_new_token(&run, token).await;
+                            handler.on_llm_new_token(&run, &token.text).await;
                         }
                     }
                 }

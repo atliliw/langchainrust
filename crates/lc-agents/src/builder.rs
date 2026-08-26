@@ -33,7 +33,7 @@ use std::sync::Arc;
 ///     .build()?;
 /// ```
 ///
-/// # 使用 Arc<dyn BaseChatModel>
+/// # 使用 `Arc<dyn BaseChatModel>`
 ///
 /// ```ignore
 /// let llm = wrap_chat_model(OpenAIChat::new(config));

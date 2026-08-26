@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::LLMResult;
+use lc_core::language_models::{LLMResult, StreamChunk};
 use lc_core::tools::{ToolCall, ToolDefinition};
 use lc_core::{BaseChatModel, BaseLanguageModel, Runnable, RunnableConfig};
 use lc_schema::Message;
@@ -104,7 +104,8 @@ impl BaseChatModel for ToolJudge {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         Err(JudgeError("not supported".into()))
     }
 

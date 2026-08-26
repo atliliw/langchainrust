@@ -49,17 +49,32 @@ pub mod types;
 mod test_support;
 
 pub use client::MCPClient;
+pub use completion::{
+    CompletionArgument, CompletionProvider, CompletionRef, CompletionRequest, CompletionResult,
+    CompletionValue,
+};
 pub use connection_manager::{ConnectionManager, ServerSpec};
+pub use elicitation::{
+    ElicitationAction, ElicitationHandler, ElicitationRequest, ElicitationResponse,
+};
 pub use gateway::{GatewayAuditRecord, GatewayServerSpec, MCPGateway, RateLimiter};
 pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
 pub use orchestrate::{OrchestrateError, ToolCaller, ToolOrchestrator, ToolStep};
+pub use prompts::{
+    GetPromptParams, GetPromptResult, ListPromptsResult, Prompt, PromptArgument, PromptContent,
+    PromptMessage, PromptProvider,
+};
 pub use protocol::{
     MCPError, MCPRequest, MCPResponse, ProtocolInfo, VersionPolicy, MCP_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
 };
+pub use resources::{
+    ListResourcesResult, ReadResourceParams, ReadResourceResult, Resource, ResourceContent,
+    ResourceProvider,
+};
 pub use sampling::{
-    ModelHint, ModelPreferences, SamplingContent, SamplingGuard, SamplingGuardError, SamplingLease,
-    SamplingMessage, SamplingRequest, SamplingResult, SamplingRole,
+    ModelHint, ModelPreferences, SamplingContent, SamplingGuard, SamplingGuardError,
+    SamplingHandler, SamplingLease, SamplingMessage, SamplingRequest, SamplingResult, SamplingRole,
 };
 pub use sandbox::{
     AuditRecord, EgressPolicy, ParamRule, ParamRuleError, SandboxError, ServerSandbox,

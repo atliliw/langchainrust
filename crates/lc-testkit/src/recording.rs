@@ -10,8 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::{Runnable, RunnableConfig};
+use lc_core::tools::ToolDefinition;
 use lc_providers::ProviderError;
 use lc_schema::Message;
 use serde::{Deserialize, Serialize};
@@ -25,6 +28,12 @@ pub struct RecordedExchange {
     pub messages: Vec<Message>,
     /// 完整响应。
     pub response: LLMResult,
+    /// 请求侧绑定的工具定义(`bind_tools` 绑定后非空)。
+    ///
+    /// `#[serde(default)]` 让旧 fixture(无 `tools` 字段)读成 `None`,零改动兼容;
+    /// `skip_serializing_if` 让未绑定工具的录播文件保持旧格式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDefinition>>,
 }
 
 /// 追加写录制文件的共享句柄(append 模式,std Mutex 保护)。
@@ -73,6 +82,8 @@ pub struct RecordingProvider<M> {
     inner: M,
     recorder: Arc<Recorder>,
     model_name: String,
+    /// 当前绑定的工具定义(`bind_tools` 设置,chat 时录进 exchange)。
+    tools: Option<Vec<ToolDefinition>>,
 }
 
 impl<M> RecordingProvider<M>
@@ -88,6 +99,7 @@ where
             inner,
             recorder,
             model_name,
+            tools: None,
         })
     }
 
@@ -95,12 +107,28 @@ where
     pub fn inner(&self) -> &M {
         &self.inner
     }
+
+    /// 绑定工具:返回一个记录该工具集的新实例。
+    ///
+    /// 后续 `chat` 会把工具定义录进 `RecordedExchange.tools`,让回放侧
+    /// 能按工具名路由(见 [`crate::ReplayStrategy::ByToolName`])。
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self
+    where
+        M: Clone,
+    {
+        Self {
+            inner: self.inner.clone(),
+            recorder: self.recorder.clone(),
+            model_name: self.model_name.clone(),
+            tools: Some(tools),
+        }
+    }
 }
 
 #[async_trait]
 impl<M> Runnable<Vec<Message>, LLMResult> for RecordingProvider<M>
 where
-    M: BaseChatModel + Send + Sync + 'static,
+    M: BaseChatModel + Clone + Send + Sync + 'static,
     M::Error: Into<ProviderError>,
 {
     type Error = TestkitError;
@@ -116,7 +144,7 @@ where
 
 impl<M> BaseLanguageModel<Vec<Message>, LLMResult> for RecordingProvider<M>
 where
-    M: BaseChatModel + Send + Sync + 'static,
+    M: BaseChatModel + Clone + Send + Sync + 'static,
     M::Error: Into<ProviderError>,
 {
     fn model_name(&self) -> &str {
@@ -149,7 +177,7 @@ where
 #[async_trait]
 impl<M> BaseChatModel for RecordingProvider<M>
 where
-    M: BaseChatModel + Send + Sync + 'static,
+    M: BaseChatModel + Clone + Send + Sync + 'static,
     M::Error: Into<ProviderError>,
 {
     async fn chat(
@@ -165,6 +193,7 @@ where
         self.recorder.record(&RecordedExchange {
             messages,
             response: response.clone(),
+            tools: self.tools.clone(),
         });
         Ok(response)
     }
@@ -173,25 +202,45 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let mut stream = self
             .inner
             .stream_chat(messages.clone(), config)
             .await
             .map_err(to_testkit)?;
-        let mut chunks = Vec::new();
+        let mut full = String::new();
+        let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
-            chunks.push(chunk.map_err(to_testkit)?);
+            let chunk = chunk.map_err(to_testkit)?;
+            full.push_str(&chunk.text);
+            if chunk.token_usage.is_some() {
+                usage = chunk.token_usage;
+            }
         }
-        let full = chunks.concat();
         let response = LLMResult {
             content: full.clone(),
             model: self.model_name.clone(),
+            token_usage: usage.clone(),
             ..Default::default()
         };
-        self.recorder
-            .record(&RecordedExchange { messages, response });
-        let stream = futures_util::stream::iter(vec![Ok(full)]);
+        self.recorder.record(&RecordedExchange {
+            messages,
+            response,
+            tools: self.tools.clone(),
+        });
+        let stream = futures_util::stream::iter(vec![Ok(StreamChunk {
+            text: full,
+            token_usage: usage,
+        })]);
         Ok(Box::pin(stream))
+    }
+
+    fn bind_tools(
+        &self,
+        tools: Vec<ToolDefinition>,
+    ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
+        // 委托给 inherent `bind_tools`:克隆内层模型、记录工具集、返回新实例。
+        Some(Box::new(self.bind_tools(tools)))
     }
 }

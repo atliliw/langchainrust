@@ -34,7 +34,7 @@ const DEFAULT_MARKER: &str = "[REDACTED: potential prompt injection detected ({}
 
 /// 检测并清洗工具返回内容中的提示注入。
 ///
-/// `on_after_tool_call` 阶段扫描工具结果;命中 [`DEFAULT_INJECTION_PATTERNS`]
+/// `on_after_tool_call` 阶段扫描工具结果;命中 `DEFAULT_INJECTION_PATTERNS`
 /// 中任意模式(或自定义模式)时,把整段结果替换为安全占位符,恶意指令不会进入
 /// 下一轮 `plan()` 的 prompt(阻断跨轮污染)。
 ///

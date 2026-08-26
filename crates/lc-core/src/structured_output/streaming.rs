@@ -144,9 +144,13 @@ where
         .await
         .map_err(|e| StructuredOutputError::LLMError(e.to_string()))?;
 
-    // Map the inner stream's error type from M::Error to StructuredOutputError
-    let mapped_stream =
-        token_stream.map(|item| item.map_err(|e| StructuredOutputError::LLMError(e.to_string())));
+    // Map the inner stream: each chunk's text delta becomes the token fed to
+    // the partial-JSON parser, and the error type is erased to
+    // StructuredOutputError.
+    let mapped_stream = token_stream.map(|item| {
+        item.map(|chunk| chunk.text)
+            .map_err(|e| StructuredOutputError::LLMError(e.to_string()))
+    });
 
     // Box the mapped stream so it has a concrete type for StructuredStreamProcessor
     let boxed: Pin<Box<dyn Stream<Item = Result<String, StructuredOutputError>> + Send>> =

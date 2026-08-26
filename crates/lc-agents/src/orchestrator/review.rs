@@ -114,7 +114,7 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
 ///
 /// 组合模式:worker 产出输出 → 评审 Agent(`reviewer`)检验 → 不达标就把评审
 /// 反馈拼进任务目标重做,直到达标或尝试耗尽。默认尝试耗尽仍未达标返回
-/// [`AgentError`](宁可失败也不把未过审的产出当结果);[`Self::keep_last_output`]
+/// `AgentError`(宁可失败也不把未过审的产出当结果);[`Self::keep_last_output`]
 /// 可改为返回最近一次产出(对应 DeepResearch "轮数用完即收"的语义)。
 ///
 /// worker / reviewer 都是 [`Orchestrator`],本组合器自身也实现 [`Orchestrator`],

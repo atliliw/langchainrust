@@ -45,7 +45,7 @@ use crate::providers::zhipu::ZhipuConfig;
 use crate::wrap_chat_model;
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -397,7 +397,7 @@ impl BaseChatModel for LLMClient {
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
     ) -> Result<
-        std::pin::Pin<Box<dyn Stream<Item = Result<String, ProviderError>> + Send>>,
+        std::pin::Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>,
         ProviderError,
     > {
         self.inner

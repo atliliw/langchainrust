@@ -2,6 +2,8 @@
 //!
 //! MCP Prompts 允许 Server 暴露可复用的提示词模板,Client 可带参数获取。
 
+use crate::protocol::MCPError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -93,6 +95,21 @@ pub struct GetPromptResult {
     pub description: Option<String>,
     /// 提示词消息列表
     pub messages: Vec<PromptMessage>,
+}
+
+/// 提示词提供者:server 注册后,`prompts/list` / `prompts/get` 才有数据源。
+///
+/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+#[async_trait]
+pub trait PromptProvider: Send + Sync {
+    /// 返回全部提示词列表。
+    async fn list_prompts(&self) -> Result<Vec<Prompt>, MCPError>;
+    /// 按名称 + 可选参数生成提示词消息。
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<&Value>,
+    ) -> Result<GetPromptResult, MCPError>;
 }
 
 #[cfg(test)]

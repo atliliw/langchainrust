@@ -259,7 +259,7 @@ impl A2AServer {
     /// Spawn a background sweeper that periodically scans for expired tasks
     /// (P1-2), in addition to the lazy cleanup on the read paths.
     ///
-    /// The loop calls [`sweep_expired_tasks`] every `interval` (clamped to at
+    /// The loop calls `sweep_expired_tasks` every `interval` (clamped to at
     /// least 1s). It runs until the current Tokio runtime shuts down. If the
     /// server has no TTL configured (`with_task_ttl(None)`), no task is
     /// spawned — there is nothing to expire.

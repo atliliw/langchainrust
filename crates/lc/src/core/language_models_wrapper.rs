@@ -7,7 +7,7 @@
 use crate::error::Error;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -140,14 +140,14 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>>, Error> {
         let inner_stream = self
             .inner
             .stream_chat(messages, config)
             .await
             .map_err(Into::into)?;
 
-        let mapped: Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>> =
+        let mapped: Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>> =
             Box::pin(inner_stream.map(|item| item.map_err(Into::into)));
 
         Ok(mapped)
@@ -272,14 +272,14 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>>, Error> {
         let inner_stream = self
             .inner
             .stream_chat(messages, config)
             .await
             .map_err(Into::into)?;
 
-        let mapped: Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>> =
+        let mapped: Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>> =
             Box::pin(inner_stream.map(|item| item.map_err(Into::into)));
 
         Ok(mapped)
@@ -421,13 +421,13 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>>, Error> {
         let inner_stream = self
             .inner
             .stream_chat(messages, config)
             .await
             .map_err(Into::into)?;
-        let mapped: Pin<Box<dyn Stream<Item = Result<String, Error>> + Send>> =
+        let mapped: Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>> =
             Box::pin(inner_stream.map(|item| item.map_err(Into::into)));
         Ok(mapped)
     }

@@ -101,7 +101,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use crate::language_models::LLMResult;
+    use crate::language_models::{LLMResult, StreamChunk};
     use crate::{BaseLanguageModel, Runnable, RunnableConfig};
 
     #[derive(Debug)]
@@ -176,7 +176,7 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
             Err(JudgeError("not supported".into()))
         }

@@ -114,6 +114,21 @@ pub struct OpenAIStreamChunk {
     pub model: String,
     /// 流式选择列表
     pub choices: Vec<StreamChoice>,
+    /// 整次调用的 token 用量。OpenAI 在流末尾(通常为 `[DONE]` 前最后一个
+    /// chunk)携带;中间 chunk 该字段缺省。
+    #[serde(default)]
+    pub usage: Option<StreamUsage>,
+}
+
+/// 流式响应携带的 token 用量(OpenAI 兼容接口)。
+#[derive(Debug, Deserialize, Clone)]
+pub struct StreamUsage {
+    /// 输入 token 数
+    pub prompt_tokens: usize,
+    /// 输出 token 数
+    pub completion_tokens: usize,
+    /// 总 token 数
+    pub total_tokens: usize,
 }
 
 /// 流式响应中的选择项

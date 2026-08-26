@@ -10,27 +10,90 @@ use super::AgentError;
 use crate::approval::ApprovalDecision;
 use crate::hooks::{ToolCallAction, ToolCallContext, ToolResultContext};
 use crate::metrics::AgentMetrics;
+use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{RunTree, RunType};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
+/// 跨进程 resume(§4.2):单次工具调用所需的挂起点上下文。
+///
+/// 由 agent loop 在 Action 分支构造:`tool_name` / `arguments` / `tool_id` 先占位,
+/// `execute_tool_inner` 在同步 hook 跑完后用审批看到的**最终值**填充并落盘;
+/// 审批决定落地后清除。并行工具路径(`execute_tools_parallel`)不构造它 ——
+/// 多工具并发审批互不落盘,避免互相覆盖挂起点。
+pub(crate) struct ResumeContext<'a> {
+    /// 已填好 loop 上下文的挂起点模板(输入 / 步骤 / 迭代 / 预算累计 / trace)。
+    pending: &'a PendingApproval,
+    /// 挂起点存储(审批前后落盘 / 清除)。
+    store: &'a Arc<dyn ResumeStore>,
+}
+
+/// 把审批决定落到 `tool_ctx`。
+///
+/// 返回 `Some(reason)` 表示 **Deny**(中止执行,拒绝 observation 喂回循环);
+/// `None` 表示 Allow / Modify(继续执行)。Modify 会覆盖 `tool_ctx.arguments`。
+fn apply_approval_decision(
+    decision: ApprovalDecision,
+    tool_ctx: &mut ToolCallContext,
+) -> Option<String> {
+    match decision {
+        ApprovalDecision::Allow => None,
+        ApprovalDecision::Deny { reason } => {
+            log::info!(
+                target: "lc_agents::approval",
+                "tool_call denied by approval handler name={} reason={}",
+                tool_ctx.name,
+                reason
+            );
+            Some(reason)
+        }
+        ApprovalDecision::Modify { arguments, note } => {
+            log::info!(
+                target: "lc_agents::approval",
+                "tool_call arguments modified by approval handler name={} note={}",
+                tool_ctx.name,
+                note
+            );
+            tool_ctx.arguments = arguments;
+            None
+        }
+    }
+}
+
 impl AgentExecutor {
-    /// Runs the agent loop.
+    /// Runs the agent loop from scratch.
     ///
     /// Accumulates `metrics` (LLM calls, tool calls, token usage) as it goes.
     pub(crate) async fn run_agent_loop(
         &self,
         inputs: HashMap<String, String>,
+        intermediate_steps: Vec<AgentStep>,
+        root_run: &mut RunTree,
+        metrics: &mut AgentMetrics,
+    ) -> Result<String, AgentError> {
+        self.run_agent_loop_from(inputs, intermediate_steps, 0, root_run, metrics)
+            .await
+    }
+
+    /// Runs the agent loop starting at a given iteration.
+    ///
+    /// 跨进程 resume(§4.2)用它从挂起迭代续跑:迭代预算 / 工具次数预算从挂起点
+    /// 累计量继续计数,已完成的中间步骤不重放。
+    pub(crate) async fn run_agent_loop_from(
+        &self,
+        inputs: HashMap<String, String>,
         mut intermediate_steps: Vec<AgentStep>,
+        start_iteration: usize,
         root_run: &mut RunTree,
         metrics: &mut AgentMetrics,
     ) -> Result<String, AgentError> {
         // 预算门(§4.2):循环起表,供 max_duration / max_iterations 检查。
         let loop_start = Instant::now();
 
-        for iteration in 0..self.max_iterations {
+        for iteration in start_iteration..self.max_iterations {
             // 预算门:迭代级(迭代次数 + 总时长)。默认关(None 时立即返回 None)。
             if let Some(err) = self.budget_iteration_gate(iteration, loop_start) {
                 return Err(err);
@@ -68,7 +131,30 @@ impl AgentExecutor {
                         return Err(err);
                     }
 
-                    let observation = self.execute_tool(&action, root_run).await?;
+                    // 跨进程 resume(§4.2):构造挂起点上下文(仅当配置了 store)。
+                    // 只带 loop 上下文快照;tool_name / arguments / tool_id 由
+                    // execute_tool_inner 在同步 hook 跑完后填审批看到的最终值。
+                    // `inputs` / `intermediate_steps` 克隆快照,resume 时从这批
+                    // 中间步骤续跑,不重放已完成的工具调用。
+                    let pending = PendingApproval {
+                        tool_name: action.tool.clone(),
+                        arguments: serde_json::Value::Null,
+                        tool_id: String::new(),
+                        inputs: inputs.clone(),
+                        steps: intermediate_steps.clone(),
+                        iteration,
+                        tool_calls_consumed: metrics.tool_calls,
+                        tokens_consumed: metrics.total_tokens,
+                        trace_id: root_run.trace_id.map(|id| id.to_string()),
+                    };
+                    let resume_ctx = self.resume_store.as_ref().map(|store| ResumeContext {
+                        pending: &pending,
+                        store,
+                    });
+
+                    let observation = self
+                        .execute_tool_inner(&action, root_run, resume_ctx.as_ref(), None)
+                        .await?;
 
                     if self.verbose {
                         log::info!("Observation: {}", observation);
@@ -220,11 +306,30 @@ impl AgentExecutor {
         Ok(observations)
     }
 
-    /// Executes a single tool.
+    /// Executes a single tool (no resume context, no pre-decided approval).
     async fn execute_tool(
         &self,
         action: &AgentAction,
         root_run: &RunTree,
+    ) -> Result<String, AgentError> {
+        self.execute_tool_inner(action, root_run, None, None).await
+    }
+
+    /// Executes a single tool with optional cross-process resume integration.
+    ///
+    /// - `resume_ctx`:非 None 时,进入人审门等待审批**之前**把挂起点(含同步
+    ///   hook 修改后的最终 `tool_name` / `arguments`)落盘;审批决定**落地后**
+    ///   清除。并行工具路径(`execute_tools_parallel`)传 `None`,多工具并发审批
+    ///   互不落盘,避免互相覆盖挂起点。
+    /// - `pre_decided`:非 None 时跳过审批 handler,直接用给定决定(跨进程 resume
+    ///   注入决定,不重跑审批;此时 `resume_ctx` 应为 None —— 挂起点已在
+    ///   [`AgentExecutor::resume`](crate::executor::AgentExecutor::resume) 里认领)。
+    pub(crate) async fn execute_tool_inner(
+        &self,
+        action: &AgentAction,
+        root_run: &RunTree,
+        resume_ctx: Option<&ResumeContext<'_>>,
+        pre_decided: Option<ApprovalDecision>,
     ) -> Result<String, AgentError> {
         let tool = self
             .tools
@@ -273,31 +378,46 @@ impl AgentExecutor {
             }
         }
 
-        // 人审门(§4.2):同步 hook 之后、实际执行之前。默认关(None = 原样放行)。
-        // `Deny` 与 `ToolCallAction::Skip` 同构 —— 以 observation 喂回循环,
-        // 不执行工具也不中断运行,下一轮 plan 看到拒绝观察后自行调整。
-        if let Some(handler) = &self.approval {
-            match handler.approve(&tool_ctx).await {
-                ApprovalDecision::Allow => {}
-                ApprovalDecision::Deny { reason } => {
-                    log::info!(
-                        target: "lc_agents::approval",
-                        "tool_call denied by approval handler name={} reason={}",
-                        tool_ctx.name,
-                        reason
+        // 人审门(§4.2) + 跨进程 resume(§4.2):同步 hook 之后、实际执行之前。
+        // - 正常 invoke:无 pre_decided,走 handler;审批前落盘、决定落地后清除。
+        // - resume:注入 pre_decided,不再落盘/清除(挂起点已在 resume() 认领)。
+        // Deny 与 ToolCallAction::Skip 同构 —— 以 observation 喂回循环,不执行
+        // 工具也不中断运行,下一轮 plan 看到拒绝观察后自行调整。
+        let deny_reason: Option<String> = if let Some(pre) = pre_decided {
+            apply_approval_decision(pre, &mut tool_ctx)
+        } else if let Some(handler) = &self.approval {
+            // 跨进程 resume:审批前落盘。同步 hook 已跑完,这里是审批看到的最终值。
+            if let Some(ctx) = resume_ctx {
+                let mut pending = ctx.pending.clone();
+                pending.tool_name = tool_ctx.name.clone();
+                pending.arguments = tool_ctx.arguments.clone();
+                pending.tool_id = tool_ctx.tool_id.clone();
+                if let Err(e) = ctx.store.save_pending(&pending).await {
+                    log::warn!(
+                        target: "lc_agents::resume",
+                        "failed to persist pending approval: {}",
+                        e
                     );
-                    return Ok(format!("[DENIED by approval: {reason}]"));
-                }
-                ApprovalDecision::Modify { arguments, note } => {
-                    log::info!(
-                        target: "lc_agents::approval",
-                        "tool_call arguments modified by approval handler name={} note={}",
-                        tool_ctx.name,
-                        note
-                    );
-                    tool_ctx.arguments = arguments;
                 }
             }
+            apply_approval_decision(handler.approve(&tool_ctx).await, &mut tool_ctx)
+        } else {
+            None
+        };
+
+        // 审批决定已落地:清除挂起点(Allow / Modify 继续执行;Deny 拒绝观察返回)。
+        if let Some(ctx) = resume_ctx {
+            if let Err(e) = ctx.store.clear_pending().await {
+                log::warn!(
+                    target: "lc_agents::resume",
+                    "failed to clear pending approval: {}",
+                    e
+                );
+            }
+        }
+
+        if let Some(reason) = deny_reason {
+            return Ok(format!("[DENIED by approval: {reason}]"));
         }
 
         let tool_name = tool_ctx.name.clone();

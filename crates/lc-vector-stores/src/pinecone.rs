@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::{Document, Embeddings, SearchResult, VectorStore, VectorStoreError};
+use crate::{
+    Document, Embeddings, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError,
+};
 
 /// Pinecone vector store client
 pub struct PineconeStore {
@@ -49,6 +51,21 @@ impl PineconeStore {
             "topK": top_k,
             "includeMetadata": true,
         })
+    }
+
+    /// Build query request body with a metadata filter (pure function, convenient for testing).
+    ///
+    /// S3: 在 [`build_query_body`](Self::build_query_body) 的基础上附加 Pinecone
+    /// `filter` 字段,由 [`filter_to_pinecone`] 完成 [`MetadataFilter`] → Pinecone
+    /// 查询语法的翻译(字段名 → `$op` 值,组合用 `$and`/`$or`)。
+    pub fn build_query_body_filtered(
+        query_vec: &[f32],
+        top_k: usize,
+        filter: &MetadataFilter,
+    ) -> serde_json::Value {
+        let mut body = Self::build_query_body(query_vec, top_k);
+        body["filter"] = filter_to_pinecone(filter);
+        body
     }
 
     /// Upsert documents (auto-embed).
@@ -170,6 +187,89 @@ impl PineconeStore {
         }
         Ok(())
     }
+
+    /// POST `/query` 并解析结果(普通与过滤检索共用)。
+    async fn query_impl(
+        &self,
+        body: serde_json::Value,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let url = format!("{}/query", self.host);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Api-Key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(VectorStoreError::StorageError(format!(
+                "Pinecone query HTTP error: {}",
+                resp.status()
+            )));
+        }
+
+        let query_resp: QueryResponse = resp.json().await.map_err(|e| {
+            VectorStoreError::StorageError(format!("Pinecone query parse error: {}", e))
+        })?;
+
+        Ok(query_resp
+            .matches
+            .into_iter()
+            .map(|m| {
+                let content = m
+                    .metadata
+                    .as_ref()
+                    .and_then(|md| md.get("content").and_then(|v| v.as_str()))
+                    .unwrap_or_default()
+                    .to_string();
+                let doc = Document {
+                    content,
+                    metadata: m.metadata.unwrap_or_default(),
+                    id: Some(m.id.clone()),
+                };
+                SearchResult {
+                    document: doc,
+                    score: m.score as f32,
+                }
+            })
+            .collect())
+    }
+}
+
+/// S3: [`MetadataFilter`] → Pinecone `filter` 语法。
+///
+/// 单字段条件翻译成 `{ key: { "$op": value } }`(Pinecone 支持
+/// `$eq $ne $gt $gte $lt $lte $in $nin`),AND/OR 组合翻译成
+/// `{ "$and": [...] }` / `{ "$or": [...] }`。类型与 [`FilterOp`] 一一对应,
+/// 无不可表达的构造。
+pub fn filter_to_pinecone(filter: &MetadataFilter) -> serde_json::Value {
+    fn op_str(op: FilterOp) -> &'static str {
+        match op {
+            FilterOp::Eq => "$eq",
+            FilterOp::Ne => "$ne",
+            FilterOp::Gt => "$gt",
+            FilterOp::Gte => "$gte",
+            FilterOp::Lt => "$lt",
+            FilterOp::Lte => "$lte",
+            FilterOp::In => "$in",
+            FilterOp::Nin => "$nin",
+        }
+    }
+    match filter {
+        MetadataFilter::Field { key, op, value } => {
+            serde_json::json!({ key.clone(): { op_str(*op): value.clone() } })
+        }
+        MetadataFilter::And(filters) => {
+            let items: Vec<serde_json::Value> = filters.iter().map(filter_to_pinecone).collect();
+            serde_json::json!({ "$and": items })
+        }
+        MetadataFilter::Or(filters) => {
+            let items: Vec<serde_json::Value> = filters.iter().map(filter_to_pinecone).collect();
+            serde_json::json!({ "$or": items })
+        }
+    }
 }
 
 #[async_trait]
@@ -217,50 +317,21 @@ impl VectorStore for PineconeStore {
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let body = Self::build_query_body(query_embedding, k);
-        let url = format!("{}/query", self.host);
-        let resp = self
-            .client
-            .post(&url)
-            .header("Api-Key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| VectorStoreError::StorageError(format!("Pinecone query failed: {}", e)))?;
+        self.query_impl(body).await
+    }
 
-        if !resp.status().is_success() {
-            return Err(VectorStoreError::StorageError(format!(
-                "Pinecone query HTTP error: {}",
-                resp.status()
-            )));
-        }
-
-        let query_resp: QueryResponse = resp.json().await.map_err(|e| {
-            VectorStoreError::StorageError(format!("Pinecone query parse error: {}", e))
-        })?;
-
-        let results = query_resp
-            .matches
-            .into_iter()
-            .map(|m| {
-                let content = m
-                    .metadata
-                    .as_ref()
-                    .and_then(|md| md.get("content").and_then(|v| v.as_str()))
-                    .unwrap_or_default()
-                    .to_string();
-                let doc = Document {
-                    content,
-                    metadata: m.metadata.unwrap_or_default(),
-                    id: Some(m.id.clone()),
-                };
-                SearchResult {
-                    document: doc,
-                    score: m.score as f32,
-                }
-            })
-            .collect();
-
-        Ok(results)
+    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(原生 Pinecone filter 语法)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let body = match filter {
+            Some(f) => Self::build_query_body_filtered(query_embedding, k, f),
+            None => Self::build_query_body(query_embedding, k),
+        };
+        self.query_impl(body).await
     }
 
     async fn get_document(&self, _id: &str) -> Result<Option<Document>, VectorStoreError> {
@@ -315,7 +386,7 @@ struct QueryMatch {
 /// Pinecone `describe_index_stats` 响应(只需我们关心的字段)。
 ///
 /// Q4: 提供给 [`PineconeStore::describe_index_stats`],供调用方读取真实向量总数,
-/// 也是 [`VectorStore::count`](crate::VectorStore::count) 的数据来源。
+/// 也是 [`VectorStore::count`] 的数据来源。
 #[derive(Deserialize)]
 pub struct PineconeIndexStats {
     /// 索引中的总向量数
@@ -367,5 +438,59 @@ mod tests {
     fn test_new() {
         let store = PineconeStore::new("key", "https://index.svc.env.pinecone.io");
         assert_eq!(store.host, "https://index.svc.env.pinecone.io");
+    }
+
+    /// S3: 单字段条件 → Pinecone `{ key: { "$op": value } }`。
+    #[test]
+    fn test_filter_to_pinecone_field_ops() {
+        assert_eq!(
+            filter_to_pinecone(&MetadataFilter::field("lang", FilterOp::Eq, "rust")),
+            serde_json::json!({ "lang": { "$eq": "rust" } })
+        );
+        assert_eq!(
+            filter_to_pinecone(&MetadataFilter::field("year", FilterOp::Gte, 2020)),
+            serde_json::json!({ "year": { "$gte": 2020 } })
+        );
+        assert_eq!(
+            filter_to_pinecone(&MetadataFilter::field("tags", FilterOp::Nin, vec!["blog"])),
+            serde_json::json!({ "tags": { "$nin": ["blog"] } })
+        );
+    }
+
+    /// S3: AND/OR 组合 → `$and`/`$or` 嵌套。
+    #[test]
+    fn test_filter_to_pinecone_and_or() {
+        let f = MetadataFilter::and(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+            MetadataFilter::or(vec![
+                MetadataFilter::field("year", FilterOp::Gte, 2020),
+                MetadataFilter::field("tags", FilterOp::In, vec!["ml"]),
+            ]),
+        ]);
+        assert_eq!(
+            filter_to_pinecone(&f),
+            serde_json::json!({
+                "$and": [
+                    { "lang": { "$eq": "rust" } },
+                    { "$or": [
+                        { "year": { "$gte": 2020 } },
+                        { "tags": { "$in": ["ml"] } }
+                    ]}
+                ]
+            })
+        );
+    }
+
+    /// S3: 过滤查询体 = 普通查询体 + filter 字段。
+    #[test]
+    fn test_build_query_body_filtered() {
+        let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let body = PineconeStore::build_query_body_filtered(&[1.0, 2.0], 5, &f);
+        assert_eq!(body["topK"], 5);
+        assert_eq!(body["includeMetadata"], true);
+        assert_eq!(
+            body["filter"],
+            serde_json::json!({ "lang": { "$eq": "rust" } })
+        );
     }
 }

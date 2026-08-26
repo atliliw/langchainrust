@@ -2,6 +2,8 @@
 //!
 //! MCP Resources 允许 Server 暴露结构化数据(文件、数据库记录等)供 Client 读取。
 
+use crate::protocol::MCPError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// 资源描述(来自 `resources/list`)
@@ -54,6 +56,17 @@ pub struct ReadResourceParams {
 pub struct ReadResourceResult {
     /// 读取到的资源内容列表
     pub contents: Vec<ResourceContent>,
+}
+
+/// 资源提供者:server 注册后,`resources/list` / `resources/read` 才有数据源。
+///
+/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+#[async_trait]
+pub trait ResourceProvider: Send + Sync {
+    /// 返回全部资源列表。
+    async fn list_resources(&self) -> Result<Vec<Resource>, MCPError>;
+    /// 按 URI 读取资源内容。
+    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError>;
 }
 
 #[cfg(test)]

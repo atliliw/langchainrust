@@ -64,6 +64,7 @@ pub use mcp::MCPServer;
 
 /// Sessions: conversation lifecycle management.
 pub mod sessions;
+pub use sessions::SessionManagerRunnable;
 
 pub mod evaluation;
 /// Guardrails: input/output safety validation.
@@ -82,17 +83,20 @@ pub use agents::{
     AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError, AgentEventRunnable, AgentExecutor,
     AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, AllowAll,
     ApprovalDecision, ApprovalHandler, BaseAgent, BudgetConfig, BudgetExceeded, CRAGError,
-    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FunctionCallingAgent,
-    HandoffManager, Orchestrator, OrchestratorRunnable, PlanExecuteAgent, PlanExecuteError,
-    PromptInjectionHook, RagDecision, ReActAgent, ResearchError, ResearchReport,
-    ReviewOrchestrator, ReviewVerdict, RunContext, SequentialPipeline,
-    StreamingFunctionCallingAgent, TaskAdapter, TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk,
+    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FileResumeStore,
+    FunctionCallingAgent, HandoffManager, MemoryResumeStore, Orchestrator, OrchestratorRunnable,
+    PendingApproval, PlanExecuteAgent, PlanExecuteError, PromptInjectionHook, RagDecision,
+    ReActAgent, ResearchError, ResearchReport, ResumeStore, ReviewOrchestrator, ReviewVerdict,
+    RunContext, SequentialPipeline, StreamingFunctionCallingAgent, TaskAdapter, TokenBudgetHook,
+    ToolInput, ToolPolicy, ToolRisk,
 };
 pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
 };
 pub use core::language_models::wrap_chat_model;
-pub use core::language_models::LLMResult;
+pub use core::language_models::{
+    predict_tools, LLMResult, PredictToolsError, StreamChunk, TokenUsage,
+};
 pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
 pub use core::tools::to_tool_definition;
@@ -172,20 +176,20 @@ pub use chains::{
 pub use memory::MongoPersistentMemory;
 
 // Embeddings
-// P2-1: 无 `local-embeddings` feature 时 `LocalEmbeddings` 是已弃用的
-// BagOfWordsEmbeddings 别名(静默降级);`#[allow(deprecated)]` 豁免重导出警告。
-#[allow(deprecated)]
 pub use embeddings::{
     cosine_similarity, l2_normalize, BagOfWordsEmbeddings, DeepSeekEmbeddings,
-    DeepSeekEmbeddingsConfig, EmbeddingError, Embeddings, LocalEmbeddings, MockEmbeddings,
-    OpenAIEmbeddings, OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
+    DeepSeekEmbeddingsConfig, EmbeddingError, Embeddings, MockEmbeddings, OpenAIEmbeddings,
+    OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
 };
+// 1.0:无 `local-embeddings` feature 时 `LocalEmbeddings` 不可用(降级别名已移除)。
+#[cfg(feature = "local-embeddings")]
+pub use embeddings::LocalEmbeddings;
 
 // Vector Stores
 pub use vector_stores::{
-    ChromaDBConfig, ChromaDBVectorStore, Document, FileVectorStore, InMemoryVectorStore,
-    SearchResult, VectorStore, VectorStoreBuilder, VectorStoreError, VectorStoreProvider,
-    VectorStoreType,
+    ChromaDBConfig, ChromaDBVectorStore, Document, FileVectorStore, FilterOp, InMemoryVectorStore,
+    MetadataFilter, SearchResult, VectorStore, VectorStoreBuilder, VectorStoreError,
+    VectorStoreProvider, VectorStoreType,
 };
 
 #[cfg(feature = "redis-storage")]
@@ -194,10 +198,12 @@ pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
 #[cfg(feature = "sqlite-storage")]
 pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
 
-// PGVectorStore requires user-configured sqlx + pgvector dependencies.
-// See src/vector_stores/pgvector.rs and docs/USAGE_EN.md for setup.
+// PGVector 类型化存储:开启 `pgvector-storage` feature 后可用(sqlx + pgvector 依赖
+// 由 feature 拉入,无需用户自配)。模块路径与类型路径同时暴露。
 #[cfg(feature = "pgvector-storage")]
 pub use vector_stores::pgvector;
+#[cfg(feature = "pgvector-storage")]
+pub use vector_stores::{PGVectorConfig, PGVectorStore};
 
 pub use vector_stores::PineconeStore;
 pub use vector_stores::{
@@ -224,9 +230,9 @@ pub use retrieval::{
 };
 pub use retrieval::{
     CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
-    PDFLoader, RecursiveCharacterSplitter, Retriever, RetrieverError, RetrieverTrait,
-    SemanticSplitter, SimilarityRetriever, SitemapLoader, TextLoader, TextSplitter,
-    WebScraperLoader,
+    PDFLoader, ParentDocumentRetriever, RecursiveCharacterSplitter, Retriever, RetrieverError,
+    RetrieverRunnable, RetrieverTrait, SelfQueryRetriever, SemanticSplitter, SimilarityRetriever,
+    SitemapLoader, TextLoader, TextSplitter, WebScraperLoader,
 };
 pub use retrieval::{
     GraphCommunity, GraphEntity, GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult,

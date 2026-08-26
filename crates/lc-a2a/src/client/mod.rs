@@ -130,8 +130,8 @@ impl A2AClient {
     /// is safe to share and call concurrently; each request gets its own ID.
     ///
     /// Returns an error if the HTTP client cannot be built (e.g. the TLS
-    /// backend fails to initialize). For full configuration, use [`builder`]
-    /// (Self::builder) instead.
+    /// backend fails to initialize). For full configuration, use
+    /// [`builder`](Self::builder) instead.
     pub fn new(base_url: impl Into<String>) -> Result<Self, A2AError> {
         let base_url = base_url.into();
         if !base_url.starts_with("https://") {
@@ -475,7 +475,7 @@ impl A2AClient {
         Ok(a2a_resp)
     }
 
-    /// Open an SSE stream from `sse_url`, yielding [`TaskPushNotification`]
+    /// Open an SSE stream from `sse_url`, yielding [`TaskPushNotification`](crate::protocol::TaskPushNotification)
     /// events as they arrive (P2-1).
     ///
     /// The stream is useful for observing task progress without polling
@@ -501,7 +501,7 @@ impl A2AClient {
     ///
     /// Opens the SSE subscription at `sse_url` first (so no early events are
     /// missed), then sends the task via `tasks/send`. The returned stream
-    /// yields [`TaskPushNotification`] events for the task.
+    /// yields [`TaskPushNotification`](crate::protocol::TaskPushNotification) events for the task.
     pub async fn send_task_streaming(
         &self,
         sse_url: &str,

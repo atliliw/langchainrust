@@ -4,7 +4,7 @@
 //! 推送;客户端 [`subscribe_tool_stream`](crate::MCPClient::subscribe_tool_stream)
 //! 订阅后按序接收增量,直至收到 `final: true` 的片段。
 //!
-//! 配合 P1-7 多类型内容:每个片段携带独立的 [`MCPContent`](crate::MCPContent)
+//! 配合 P1-7 多类型内容:每个片段携带独立的 [`MCPContent`]
 //! (文本 / 图片 / 资源),`render_text` 统一渲染,非文本内容以占位描述代表。
 //!
 //! ## 推送格式(`notifications/tool_partial` 的 params)

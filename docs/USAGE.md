@@ -83,6 +83,7 @@
   - PineconeStore
   - SemanticSplitter
   - 统一 VectorStore trait ✨ v0.15.0
+  - MetadataFilter ✨ v0.18.0
 - [BM25](#bm25)
 - [混合检索](#hybrid-retrieval)
 - [文档加载器](#document-loaders)
@@ -92,6 +93,7 @@
   - SitemapLoader ✨ v0.4.1
 - [MultiQueryRetriever](#multiqueryretriever)
 - [HyDE 检索器](#hyde-retriever)
+- [SelfQueryRetriever](#selfqueryretriever) ✨ v0.18.0
 - [重排序](#reranking)
 - [回调](#callbacks)
   - OtelHandler
@@ -505,8 +507,9 @@ let mut stream = llm.stream_chat(vec![
 ], None).await?;
 
 while let Some(chunk) = stream.next().await {
-    if let Ok(token) = chunk {
-        print!("{}", token);  // 实时输出
+    if let Ok(chunk) = chunk {
+        print!("{}", chunk.text);  // 实时输出(StreamChunk 的文本字段)
+        // 流结束时 chunk.token_usage 携带 token 用量(provider 支持时)
     }
 }
 ```
@@ -2105,6 +2108,29 @@ let executor = executor.with_budget(BudgetConfig {
     max_iterations: Some(10),                          // 覆盖/收紧默认迭代上限
     ..Default::default()
 });
+
+### 跨进程 resume（ResumeStore / FileResumeStore） ✨ v0.18.0
+
+人审门 / 预算门的挂起点可以**落盘**：进程死亡不再丢等待中的审批，重启后从磁盘恢复续跑，而不是从头重放 agent 循环。
+
+```rust
+use langchainrust::{FileResumeStore, ResumeStore};
+use std::sync::Arc;
+
+// 进程 A：给 executor 挂上磁盘挂起点存储 + 审批门
+let store = Arc::new(FileResumeStore::new("/var/checkpoints/app")?);
+let executor = AgentExecutor::new(agent, tools)
+    .with_resume_store(store)
+    .with_approval(handler);
+
+// 进程 B（重启后）：读挂起点、向操作员展示待审批调用、用审批决定续跑
+if let Some(pending) = executor.pending_approval().await? {
+    println!("待审批: {} {}", pending.tool_name, pending.arguments);
+    let answer = executor.resume(decision).await?;   // Allow / Deny / Modify
+}
+```
+
+框架在每次工具调用进入审批**之前**把 `PendingApproval` 快照写入 store（工具名 / 参数 / 中间步骤 / 迭代序号 / 预算累计），审批决定落地后清除——原子写（先 `pending.json.tmp` 再 rename），崩溃不产生半截 checkpoint。`ApprovalHandler` 接口不变，调用方零改动；`MemoryResumeStore` 是内存版（单进程演示 / 测试用）。并发 executor 须用各自独立目录。
 ```
 
 ## Plan-Execute Agent
@@ -2628,7 +2654,47 @@ let tools = gateway.as_base_tools().await?; // 自动加 server 前缀,互不冲
 - **`ToolOrchestrator`**:工具 DAG 编排,声明依赖关系后自动排序/并行执行
 - **`VersionPolicy`**:多版本 MCP 协议协商(`VersionPolicy::Latest` / `Pin("2024-11-05")`)
 
-> **注意**:`Resources` / `Prompts` / `Completion` / `Elicitation` 等类型已定义,但对应原语调用逻辑尚未实现(调用会返回 `method_not_found`)。当前可用原语为 `initialize` / `tools/list` / `tools/call`,外加流式工具结果(`PartialContent`,经 `notifications/tool_partial` 通知 + `subscribe_tool_stream` 订阅)与 `notifications/cancelled` 取消。
+### MCP Server 原语接线 ✨ v0.18.0
+
+client→server 原语(`resources/*` / `prompts/*` / `completion/complete`)为**注册制**:给 `MCPServer` 注册数据源后,对应方法返回真实数据;未注册仍返回 `method_not_found`(-32601,诚实边界)。`initialize` 握手时 `capabilities` 按实际注册项补齐(`tools` 恒声明)。
+
+```rust
+use langchainrust::mcp::{
+    ElicitationAction, MCPError, MCPServer, Resource, ResourceContent, ResourceProvider,
+};
+use std::sync::Arc;
+
+struct StaticResources;
+
+#[async_trait::async_trait]
+impl ResourceProvider for StaticResources {
+    async fn list_resources(&self) -> Result<Vec<Resource>, MCPError> {
+        Ok(vec![Resource {
+            uri: "file:///README.md".into(),
+            name: "README".into(),
+            description: None,
+            mime_type: Some("text/markdown".into()),
+        }])
+    }
+    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError> {
+        let text = format!("content of {uri}");
+        Ok(vec![ResourceContent {
+            uri: uri.into(),
+            mime_type: Some("text/plain".into()),
+            text: Some(text),
+            blob: None,
+        }])
+    }
+}
+
+let server = MCPServer::new()
+    .with_tool(Arc::new(Calculator))
+    .with_resource_provider(Arc::new(StaticResources))
+    .with_prompt_provider(Arc::new(my_prompts))      // prompts/list + prompts/get
+    .with_completion_provider(Arc::new(my_completions)); // completion/complete
+```
+
+server→host 方向的 `sampling::create_message` / `elicitation::create` 由 Server 发起、Host 执行: `MCPServer` 提供发起方法(`create_message` / `create_elicitation`),需注入回调(`with_sampling_handler` / `with_elicitation_handler`);未注入回调时返回明确错误,不静默。真实交互依赖宿主 UI/模型环境,由使用者经回调接入(测试用注入 mock 覆盖)。
 
 ## Tools
 
@@ -3110,24 +3176,26 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ### PGVectorStore
 
-PostgreSQL + pgvector 扩展向量存储。适合已有 PostgreSQL 基础设施、需要关系型数据库 + 向量检索合一的场景。需要 `pgvector-storage` feature；由于 `sqlx` / `pgvector` 依赖未在 crate 内启用，需自行在 `Cargo.toml` 中添加 `sqlx和 pgvector。
+PostgreSQL + pgvector 扩展向量存储。适合已有 PostgreSQL 基础设施、需要关系型数据库 + 向量检索合一的场景。需要 `pgvector-storage` feature（框架在 feature 内已内置 `sqlx` + `pgvector` 依赖，无需自行添加）。建库前需由管理员执行 `CREATE EXTENSION vector;`。
 
 ```rust
 use langchainrust::vector_stores::PGVectorStore;
-use langchainrust::embeddings::Embeddings;
 
-let store = PGVectorStore::new(
+let store = PGVectorStore::connect(
     "postgres://user:pass@localhost/db",
     "docs",
     1536, // 向量维度
 ).await?;
-// embeddings: impl Embeddings (e.g. OpenAIEmbeddings); docs: &[Document]
-store.add_documents(&docs, &embeddings).await?;
-let found = store.similarity_search("query", 5, &embeddings).await?;
-store.delete("doc-id").await?;
+// 建表（CREATE TABLE IF NOT EXISTS，幂等）；需先由管理员执行 CREATE EXTENSION vector
+store.initialize().await?;
+// docs: Vec<Document>；embeddings: Vec<Vec<f32>>（来自 Embeddings::embed_documents）
+let ids = store.add_documents(docs, embeddings).await?;
+// query_embedding: Vec<f32>（来自 Embeddings::embed_query）
+let found = store.similarity_search(&query_embedding, 5).await?;
+store.delete_document("doc-id").await?;
 ```
 
-`PGVectorStore::new` 会执行 `CREATE EXTENSION IF NOT EXISTS vector` 并创建表；`build_table_sql(table, dim)` 是用于表 DDL 的纯函数。
+`connect` 只建连接池不建表；`initialize()` 建表（幂等）；`build_table_sql(table, dim)` 是用于表 DDL 的纯函数。检索支持 [`MetadataFilter`](#metadatafilter) 过滤（`similarity_search_with_filter`）。
 
 ### PineconeStore
 
@@ -3176,6 +3244,35 @@ let store = VectorStoreBuilder::qdrant("http://localhost:6334", "kb").build().aw
 **后端清单**：`InMemoryVectorStore`、`ChromaDBVectorStore`、`PGVectorStore`、`PineconeStore`、`LanceDBVectorStore`、`Neo4jVectorStore`、`QdrantVectorStore`、`FileVectorStore`、`ChunkedVectorStore`，以及 `DocumentStore` 家族（`InMemoryDocumentStore` / `MongoChunkedDocumentStore` / `RedisDocumentStore` / `SQLiteDocumentStore`）。
 
 > **诚实报错，拒绝静默降级**：Qdrant 等需要 feature 的后端在未启用 feature 时返回显式错误（提示开启 `qdrant-integration`），**不会**悄悄回退到内存存储——否则生产代码以为在写持久化，进程重启数据即丢。
+
+<a id="metadatafilter"></a>
+### MetadataFilter 元数据过滤 ✨ v0.18.0
+
+`VectorStore` 从 0.18 起支持**跨后端一致的元数据过滤**：`similarity_search_with_filter(&query_embedding, k, Some(&filter))`。`filter: None` 等价旧 `similarity_search`；后端未覆写过滤时返回明确 `VectorStoreError::UnsupportedFilter`，**不静默吞掉过滤返回全量**。
+
+```rust
+use langchainrust::{FilterOp, MetadataFilter};
+
+// 单条件：字段等于
+let f = MetadataFilter::field("category", FilterOp::Eq, "news");
+// AND / OR 组合
+let f2 = MetadataFilter::and(vec![
+    MetadataFilter::field("year", FilterOp::Gte, 2024),
+    MetadataFilter::field("author", FilterOp::In, vec!["alice", "bob"]),
+]);
+
+let found = store
+    .similarity_search_with_filter(&qvec, 5, Some(&f2))
+    .await?;
+```
+
+| 操作符 | 含义 |
+|--------|------|
+| `Eq` / `Ne` | 等于 / 不等于 |
+| `Gt` / `Gte` / `Lt` / `Lte` | 数值 / 日期范围比较 |
+| `In` / `Nin` | 在集合内 / 不在（value 为数组） |
+
+支持过滤的后端：内存 / 文件 / Qdrant / Pinecone / Chroma / LanceDB / Neo4j / PGVector（`pgvector-storage` feature）。第三方 `VectorStore` 实现想支持过滤，覆写 `similarity_search_with_filter` 把 `MetadataFilter` 翻译成原生查询即可；不需要的后端依赖默认实现（有过滤请求时报 `UnsupportedFilter`）。`SelfQueryRetriever` 就是建立在这层过滤之上的（见下节）。
 
 ---
 
@@ -3708,6 +3805,35 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 
 ---
 
+<a id="selfqueryretriever"></a>
+## SelfQueryRetriever ✨ v0.18.0
+
+用户问的是自然语言，但文档里的字段是结构化元数据——"去年的科技新闻"其实隐含了 `year >= 2024 AND category = tech` 的过滤条件。SelfQueryRetriever 让 LLM 把查询拆成 `{query, filter}`：清洗后的 query 走向量检索，解析出的 `MetadataFilter` 交给 `similarity_search_with_filter` 做元数据过滤（建立在统一过滤之上）。
+
+```rust
+use langchainrust::{SelfQueryRetriever, OpenAIChat};
+use std::sync::Arc;
+
+let retriever = Arc::new(SelfQueryRetriever::new(
+    OpenAIChat::new(config),
+    store,          // Arc<dyn VectorStore>
+    embeddings,     // Arc<dyn Embeddings>
+    vec!["category".to_string(), "year".to_string()], // allowed_attributes 白名单
+));
+
+let docs = retriever.retrieve("去年的科技新闻", 5).await?;
+```
+
+关键行为：
+
+- **白名单防乱用字段**：`allowed_attributes` 是唯一允许出现在 filter 里的字段集合；LLM 构造了白名单外的字段时，整个 filter 被丢弃并记 warning，回退无过滤检索（避免 LLM 用不存在的字段过滤导致空结果）。
+- **结构化优先、文本回落**：拆解走 `structured_call`（与 Guardrails / Evaluation 同源）拿结构化参数；模型不支持结构化输出时，把整段文本当查询词回落。
+- **可进 LCEL**：实现 `RetrieverTrait`，用 `RetrieverRunnable` 包进链中与其他检索器一样组合。
+
+对比：MultiQuery / HyDE 解决的是**召回不足**（问法变体、假设文档），SelfQuery 解决的是**查询里隐含的过滤意图**——语料带结构化元数据、用户查询里带筛选条件时用它。
+
+---
+
 <a id="reranking"></a>
 ## 重排序
 
@@ -4230,7 +4356,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.16.0"
+lc-testkit = "0.18.0"
 ```
 
 ```rust
@@ -4244,6 +4370,21 @@ let result = chain.invoke(inputs).await?;
 ```
 
 录制是旁路不是拦截：真调失败不写录播；写盘失败仅告警不阻断真实结果。内置 round-trip（录→回放逐字节一致）与真链回放测试。
+
+**三档回放策略（v0.18.0 起）**：
+
+| 策略 | 匹配方式 | 何时用 |
+|------|----------|--------|
+| `Fifo`（默认） | 按录制顺序逐个出队 | 单请求顺序回放、简单场景 |
+| `ByToolName` | 请求侧工具名命中即取 | 多工具并行、按工具路由 |
+| `Exact` ✨ v0.18.0 | 请求 `messages` 完整签名逐条严格匹配 | 并行乱序下精确对应；无匹配返回 `TestkitError::ReplayNoMatch`（不做静默 FIFO 兜底） |
+
+```rust
+use lc_testkit::{ReplayProvider, ReplayStrategy};
+
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
+    .with_strategy(ReplayStrategy::Exact);
+```
 
 ---
 
@@ -4686,18 +4827,18 @@ for citation in &report.citations {
 
 ### MCP 协议原语
 
-MCP 规范定义了 6 类原语。LangChainRust 中 **已实现调用逻辑** 的是：`initialize`（握手）、`tools/list`、`tools/call`，以及流式工具结果（`notifications/tool_partial`）与取消（`notifications/cancelled`）。其余原语的消息类型均已定义（可序列化/反序列化、可做类型设计），但对应**调用逻辑尚未实现**，直接调用会返回 `method_not_found`：
+MCP 规范定义了 6 类原语。LangChainRust 中 **已实现调用逻辑** 的是：`initialize`（握手）、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`prompts/list`、`prompts/get`、`completion/complete`，以及流式工具结果（`notifications/tool_partial`）与取消（`notifications/cancelled`）。client→server 原语均为**注册制**：注册数据源后才返回真实数据，未注册仍返回 `method_not_found`。server→host 方向的 `sampling::create_message` / `elicitation::create` 由 `MCPServer` 发起，需注入回调。
 
 | 原语 | 状态 | 说明 |
 |-----------|---------|-------------|
-| **Resources** | ⏳ 类型已定义 | 浏览/读取服务器资源 |
-| **Prompts** | ⏳ 类型已定义 | 获取预定义提示词模板 |
-| **Completion** | ⏳ 类型已定义 | 参数自动补全建议 |
-| **Elicitation** | ⏳ 类型已定义 | 向用户的交互式提示 |
-| **Roots** | ⏳ 类型已定义 | 发现客户端根目录 |
-| **Sampling** | ✅ 采样保护 | 服务端 `SamplingGuard` 防护 `sampling/createMessage` |
+| **Resources** | ✅ server 已接线 | `with_resource_provider` 注册数据源；`resources/list` / `resources/read` |
+| **Prompts** | ✅ server 已接线 | `with_prompt_provider` 注册数据源；`prompts/list` / `prompts/get` |
+| **Completion** | ✅ server 已接线 | `with_completion_provider` 注册数据源；`completion/complete` |
+| **Elicitation** | ✅ 发起方法已接 | server→host；`MCPServer::create_elicitation` 需注入 `ElicitationHandler` 回调 |
+| **Roots** | ⏳ 类型已定义 | 发现客户端根目录（client 能力，未接入） |
+| **Sampling** | ✅ 发起方法 + 防护 | server→host；`create_message` 需注入 `SamplingHandler`；`SamplingGuard` 防护 |
 
-> 服务端采样有独立的 `SamplingGuard`（深度 / token 预算 / 超时三重防护），见 [MCP](#mcp) 章节。需要 Resources/Prompts 原语的可基于类型层自行扩展。
+> 服务端采样有独立的 `SamplingGuard`（深度 / token 预算 / 超时三重防护），见 [MCP](#mcp) 章节。client→server 原语未注册数据源时仍返回 `method_not_found`；server→host 原语未注入回调时返回明确错误。真实交互（采样 / elicitation）依赖宿主 UI、模型环境，由使用者经回调接入（测试用注入 mock 覆盖）。
 
 ---
 

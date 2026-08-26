@@ -3,6 +3,8 @@
 //! MCP Sampling 允许 Server 请求 Host(即 LLM Client)执行 LLM 推理,
 //! Server 可借此利用 Host 的模型能力完成子任务。
 
+use crate::protocol::MCPError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -116,6 +118,17 @@ pub struct SamplingResult {
     /// 停止原因(可选)
     #[serde(rename = "stopReason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+}
+
+/// Sampling 处理者(server→host 方向)。
+///
+/// 按 MCP 语义,`sampling/createMessage` 由 Server 发起、Host 执行 LLM 推理。
+/// 框架层不连接具体传输,由宿主注入本回调;回调内部负责把请求送达 Host
+/// 并取回响应。未注入时 [`crate::MCPServer::create_message`] 返回明确错误。
+#[async_trait]
+pub trait SamplingHandler: Send + Sync {
+    /// 执行一次采样,返回 Host 的推理结果。
+    async fn create_message(&self, request: &SamplingRequest) -> Result<SamplingResult, MCPError>;
 }
 
 /// Sampling 递归防护错误(P2-7)。

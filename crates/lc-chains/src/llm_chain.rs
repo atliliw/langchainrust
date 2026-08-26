@@ -258,8 +258,8 @@ impl BaseChain for LLMChain {
             .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
         let stream = llm_stream.map(move |result| match result {
-            Ok(token) => Ok(StreamToken {
-                token,
+            Ok(chunk) => Ok(StreamToken {
+                token: chunk.text,
                 is_final: false,
             }),
             Err(e) => Err(ChainError::StreamError(format!(

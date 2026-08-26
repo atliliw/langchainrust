@@ -2,6 +2,8 @@
 //!
 //! MCP Completion 允许 Server 为提示词参数或资源 URI 提供自动补全建议。
 
+use crate::protocol::MCPError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// 补全引用类型
@@ -53,6 +55,15 @@ pub struct CompletionResult {
     /// 是否还有更多补全建议
     #[serde(rename = "hasMore", default)]
     pub has_more: bool,
+}
+
+/// 补全提供者:server 注册后,`completion/complete` 才有数据源。
+///
+/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+#[async_trait]
+pub trait CompletionProvider: Send + Sync {
+    /// 按补全请求返回建议列表。
+    async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResult, MCPError>;
 }
 
 #[cfg(test)]

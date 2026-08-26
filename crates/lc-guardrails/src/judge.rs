@@ -35,7 +35,7 @@ pub trait SensitiveJudge: Send + Sync {
 /// 基于共享 LLM 裁判基础设施的敏感泄露裁判。
 ///
 /// 用 [`structured_call`] 让裁判以结构化参数提交 `{"is_leak": bool, "reason": "..."}`;
-/// 模型不支持工具绑定或返回纯文本时,回落 [`parse_leak_text`] 的文本解析。
+/// 模型不支持工具绑定或返回纯文本时,回落 `parse_leak_text` 的文本解析。
 pub struct LlmSensitiveJudge<M: BaseChatModel> {
     judge: M,
 }
@@ -134,7 +134,7 @@ fn parse_leak_text(raw: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use futures_util::Stream;
-    use lc_core::language_models::LLMResult;
+    use lc_core::language_models::{LLMResult, StreamChunk};
     use lc_core::{BaseLanguageModel, Runnable, RunnableConfig};
     use lc_schema::MessageType;
     use std::pin::Pin;
@@ -230,7 +230,7 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
             Err(MockJudgeError("not supported".into()))
         }

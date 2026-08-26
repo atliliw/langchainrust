@@ -28,7 +28,10 @@ pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseErro
 
 pub use judge::{structured_call, truncate, StructuredJudgeError};
 
-pub use language_models::{BaseChatModel, BaseLanguageModel, MultimodalError, MultimodalModel};
+pub use language_models::{
+    predict_tools, BaseChatModel, BaseLanguageModel, MultimodalError, MultimodalModel,
+    PredictToolsError, StreamChunk, TokenUsage,
+};
 pub use output_parsers::{
     BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,

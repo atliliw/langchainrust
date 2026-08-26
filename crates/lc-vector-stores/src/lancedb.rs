@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{Document, SearchResult, VectorStore, VectorStoreError};
+use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 
 /// LanceDB configuration.
 #[derive(Debug, Clone)]
@@ -129,6 +129,147 @@ impl LanceDBVectorStore {
         }
         req
     }
+
+    /// POST `/search` 并解析结果(普通与过滤检索共用)。
+    async fn search_impl(
+        &self,
+        body: serde_json::Value,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let url = format!("{}/search", self.table_url());
+
+        let req = self.client.post(&url);
+        let req = self.add_auth(req);
+        let response = req
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(VectorStoreError::StorageError(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
+        }
+
+        let search_response: LanceDBSearchResponse = response
+            .json()
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        Ok(search_response
+            .data
+            .into_iter()
+            .map(|item| {
+                let mut doc = Document::new(item.content).with_id(item.id);
+                for (key, value) in item.metadata {
+                    doc = doc.with_metadata(key, value);
+                }
+                SearchResult {
+                    document: doc,
+                    score: item.score.unwrap_or(0.0),
+                }
+            })
+            .collect())
+    }
+}
+
+/// S3: [`MetadataFilter`] → LanceDB SQL `where` 子句。
+///
+/// - 字符串值加单引号并转义内部单引号;数字/布尔原样输出。
+/// - `In`/`Nin` 要求值是数组,生成 `key IN (...)` / `key NOT IN (...)`。
+/// - 无法表达的值类型(对象/嵌套数组用于比较、`In` 的非数组值)返回
+///   [`VectorStoreError::UnsupportedFilter`],不静默忽略。
+pub fn filter_to_sql(filter: &MetadataFilter) -> Result<String, VectorStoreError> {
+    match filter {
+        MetadataFilter::Field { key, op, value } => {
+            let ident = quote_ident(key);
+            match op {
+                FilterOp::In | FilterOp::Nin => {
+                    let arr = value.as_array().ok_or_else(|| {
+                        VectorStoreError::UnsupportedFilter(format!(
+                            "IN/NIN requires an array value for field `{}`, got {}",
+                            key,
+                            value_type(value)
+                        ))
+                    })?;
+                    let items = arr
+                        .iter()
+                        .map(sql_literal)
+                        .collect::<Result<Vec<String>, _>>()?;
+                    let keyword = if matches!(op, FilterOp::In) {
+                        "IN"
+                    } else {
+                        "NOT IN"
+                    };
+                    Ok(format!("{} {} ({})", ident, keyword, items.join(", ")))
+                }
+                _ => Ok(format!("{} {} {}", ident, sql_op(op), sql_literal(value)?)),
+            }
+        }
+        MetadataFilter::And(filters) => join_sql(filters, "AND"),
+        MetadataFilter::Or(filters) => join_sql(filters, "OR"),
+    }
+}
+
+/// AND/OR 组合:每个子过滤加括号后连接。
+fn join_sql(filters: &[MetadataFilter], keyword: &str) -> Result<String, VectorStoreError> {
+    if filters.is_empty() {
+        return Ok("TRUE".to_string());
+    }
+    let parts = filters
+        .iter()
+        .map(filter_to_sql)
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(parts
+        .iter()
+        .map(|p| format!("({})", p))
+        .collect::<Vec<_>>()
+        .join(&format!(" {} ", keyword)))
+}
+
+/// 标识符(字段名)用双引号包裹并转义内部双引号,防注入。
+fn quote_ident(key: &str) -> String {
+    format!("\"{}\"", key.replace('"', "\"\""))
+}
+
+/// 标量值 → SQL 字面量;无法表达的类型返回 [`VectorStoreError::UnsupportedFilter`]。
+fn sql_literal(value: &serde_json::Value) -> Result<String, VectorStoreError> {
+    match value {
+        serde_json::Value::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        serde_json::Value::Bool(b) => Ok(b.to_string()),
+        _ => Err(VectorStoreError::UnsupportedFilter(format!(
+            "cannot translate value of type {} to a SQL literal",
+            value_type(value)
+        ))),
+    }
+}
+
+fn value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn sql_op(op: &FilterOp) -> &'static str {
+    match op {
+        FilterOp::Eq => "=",
+        FilterOp::Ne => "!=",
+        FilterOp::Gt => ">",
+        FilterOp::Gte => ">=",
+        FilterOp::Lt => "<",
+        FilterOp::Lte => "<=",
+        FilterOp::In | FilterOp::Nin => unreachable!("handled by filter_to_sql"),
+    }
 }
 
 /// Internal document representation for LanceDB.
@@ -225,49 +366,23 @@ impl VectorStore for LanceDBVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        let url = format!("{}/search", self.table_url());
-        let body = json!({
-            "vector": query_embedding,
-            "k": k,
-        });
+        let body = json!({ "vector": query_embedding, "k": k });
+        self.search_impl(body).await
+    }
 
-        let req = self.client.post(&url);
-        let req = self.add_auth(req);
-        let response = req
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
+    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(LanceDB SQL `where` 子句)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let mut body = json!({ "vector": query_embedding, "k": k });
+        if let Some(f) = filter {
+            // 翻译失败(如 IN 的非数组值/嵌套对象)显式报错,不静默忽略过滤。
+            body["where"] = serde_json::Value::String(filter_to_sql(f)?);
         }
-
-        let search_response: LanceDBSearchResponse = response
-            .json()
-            .await
-            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
-
-        Ok(search_response
-            .data
-            .into_iter()
-            .map(|item| {
-                let mut doc = Document::new(item.content).with_id(item.id);
-                for (key, value) in item.metadata {
-                    doc = doc.with_metadata(key, value);
-                }
-                SearchResult {
-                    document: doc,
-                    score: item.score.unwrap_or(0.0),
-                }
-            })
-            .collect())
+        self.search_impl(body).await
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
@@ -448,5 +563,69 @@ mod tests {
         assert_eq!(json["id"], "test-1");
         assert!(json["vector"].is_array());
         assert_eq!(json["content"], "hello world");
+    }
+
+    /// S3: 单字段条件 → SQL 表达式(字符串加引号,数字原样)。
+    #[test]
+    fn test_filter_to_sql_field() {
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("lang", FilterOp::Eq, "rust")).unwrap(),
+            r#""lang" = 'rust'"#
+        );
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("year", FilterOp::Gte, 2020)).unwrap(),
+            r#""year" >= 2020"#
+        );
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("active", FilterOp::Ne, true)).unwrap(),
+            r#""active" != true"#
+        );
+        // 单引号转义
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("title", FilterOp::Eq, "it's")).unwrap(),
+            r#""title" = 'it''s'"#
+        );
+    }
+
+    /// S3: IN/NOT IN 需要数组值。
+    #[test]
+    fn test_filter_to_sql_in_nin() {
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("tags", FilterOp::In, vec!["a", "b"])).unwrap(),
+            r#""tags" IN ('a', 'b')"#
+        );
+        assert_eq!(
+            filter_to_sql(&MetadataFilter::field("tags", FilterOp::Nin, vec!["x"])).unwrap(),
+            r#""tags" NOT IN ('x')"#
+        );
+        // IN 值非数组 → 显式报错
+        let err = filter_to_sql(&MetadataFilter::field("tags", FilterOp::In, "oops"));
+        assert!(matches!(err, Err(VectorStoreError::UnsupportedFilter(_))));
+    }
+
+    /// S3: AND/OR 组合 → 括号包裹 + 连接词。
+    #[test]
+    fn test_filter_to_sql_and_or() {
+        let f = MetadataFilter::or(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "python"),
+            MetadataFilter::and(vec![
+                MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+                MetadataFilter::field("year", FilterOp::Gt, 2020),
+            ]),
+        ]);
+        assert_eq!(
+            filter_to_sql(&f).unwrap(),
+            r#"("lang" = 'python') OR (("lang" = 'rust') AND ("year" > 2020))"#
+        );
+    }
+
+    /// S3: 不可表达的标量比较(对象值)显式报错。
+    #[test]
+    fn test_filter_to_sql_unsupported_value() {
+        let f = MetadataFilter::field("nested", FilterOp::Eq, serde_json::json!({ "a": 1 }));
+        assert!(matches!(
+            filter_to_sql(&f),
+            Err(VectorStoreError::UnsupportedFilter(_))
+        ));
     }
 }

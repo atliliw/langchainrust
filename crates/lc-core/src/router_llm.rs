@@ -21,7 +21,7 @@
 //! Instead it wraps every model in a `ModelAdapter` that converts the
 //! model's native error into the unified [`RouterError`].
 
-use crate::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use crate::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use crate::runnables::Runnable;
 use crate::RunnableConfig;
 use async_trait::async_trait;
@@ -280,7 +280,8 @@ impl RouterLLM {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, RouterError>> + Send>>, RouterError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, RouterError>> + Send>>, RouterError>
+    {
         if self.slots.is_empty() {
             return Err(RouterError::Empty);
         }
@@ -375,7 +376,8 @@ impl BaseChatModel for RouterLLM {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         self.stream_chat_routed(messages, config).await
     }
 }
@@ -396,7 +398,7 @@ trait RoutedModel: Send + Sync {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, RouterError>> + Send>>, RouterError>;
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, RouterError>> + Send>>, RouterError>;
 }
 
 /// Wraps any `BaseChatModel` whose error is `std::error::Error + Send + Sync`,
@@ -427,7 +429,8 @@ where
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, RouterError>> + Send>>, RouterError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, RouterError>> + Send>>, RouterError>
+    {
         let name = self.0.model_name().to_string();
         let inner = self
             .0
@@ -504,8 +507,10 @@ mod tests {
                 &self,
                 _m: Vec<Message>,
                 _c: Option<RunnableConfig>,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<String, RouterError>> + Send>>, RouterError>
-            {
+            ) -> Result<
+                Pin<Box<dyn Stream<Item = Result<StreamChunk, RouterError>> + Send>>,
+                RouterError,
+            > {
                 Err(RouterError::Empty)
             }
         }

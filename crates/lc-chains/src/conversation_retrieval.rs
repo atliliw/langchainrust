@@ -408,10 +408,10 @@ impl BaseChain for ConversationRetrievalChain {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         let stream = llm_stream.map(move |result| match result {
-            Ok(token) => {
-                let _ = tx.send(token.clone());
+            Ok(chunk) => {
+                let _ = tx.send(chunk.text.clone());
                 Ok(StreamToken {
-                    token,
+                    token: chunk.text,
                     is_final: false,
                 })
             }
@@ -460,7 +460,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
-    use lc_core::language_models::LLMResult;
+    use lc_core::language_models::{LLMResult, StreamChunk};
     use lc_core::runnables::RunnableConfig;
     use lc_core::{BaseLanguageModel, Runnable};
     use lc_rag::retriever::RetrieverError;
@@ -543,12 +543,12 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
             let tokens = [
-                Ok("hello".to_string()),
-                Ok(" ".to_string()),
-                Ok("world".to_string()),
+                Ok(StreamChunk::new("hello")),
+                Ok(StreamChunk::new(" ")),
+                Ok(StreamChunk::new("world")),
             ];
             Ok(Box::pin(futures_util::stream::iter(tokens)))
         }

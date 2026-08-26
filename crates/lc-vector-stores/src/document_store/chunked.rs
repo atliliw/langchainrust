@@ -33,7 +33,7 @@ pub(crate) fn lock_error<T>(
 /// BM25 等同步检索路径在 async 上下文中调用(见 lc-rag 的 hybrid retriever),而 tokio
 /// 的 `blocking_read/blocking_write` 在 async 上下文调用会 panic(见 tokio 文档
 /// "Panics if called within an asynchronous execution context")。因此只消除
-/// `.unwrap()` 的锁中毒 panic 风险,见 [`lock_error`]。
+/// `.unwrap()` 的锁中毒 panic 风险,见 `lock_error`。
 pub struct InMemoryChunkedDocumentStore {
     pub(crate) parent_docs: Arc<std::sync::RwLock<HashMap<String, Document>>>,
     pub(crate) chunks: Arc<std::sync::RwLock<HashMap<String, ChunkDocument>>>,
@@ -70,6 +70,12 @@ impl InMemoryChunkedDocumentStore {
 
         let mut chunk_ids = Vec::new();
 
+        // S3: 分割出的 chunk 继承父文档的 metadata(供 chunked 后端元数据过滤)。
+        let parent_meta = self
+            .get_parent_document_blocking(parent_id)?
+            .map(|d| d.metadata)
+            .unwrap_or_default();
+
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}::{}", parent_id, segment);
 
@@ -78,7 +84,8 @@ impl InMemoryChunkedDocumentStore {
                 parent_id.to_string(),
                 chunk_content,
                 segment,
-            );
+            )
+            .with_metadata_map(parent_meta.clone());
 
             {
                 let mut chunks_store = lock_error(self.chunks.write())?;
@@ -110,6 +117,13 @@ impl InMemoryChunkedDocumentStore {
 
         let mut chunk_ids = Vec::new();
 
+        // S3: 分割出的 chunk 继承父文档的 metadata(供 chunked 后端元数据过滤)。
+        let parent_meta = self
+            .get_parent_document(parent_id)
+            .await?
+            .map(|d| d.metadata)
+            .unwrap_or_default();
+
         // Acquire locks once for all chunks
         let mut chunks_store = lock_error(self.chunks.write())?;
         let mut mapping = lock_error(self.parent_to_chunks.write())?;
@@ -122,7 +136,8 @@ impl InMemoryChunkedDocumentStore {
                 parent_id.to_string(),
                 chunk_content,
                 segment,
-            );
+            )
+            .with_metadata_map(parent_meta.clone());
 
             chunks_store.insert(chunk_id.clone(), chunk);
 

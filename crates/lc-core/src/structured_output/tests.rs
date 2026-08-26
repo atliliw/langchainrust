@@ -12,7 +12,7 @@ use futures_util::stream::StreamExt;
 use futures_util::Stream;
 use std::pin::Pin;
 
-use crate::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use crate::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use crate::runnables::Runnable;
 use crate::RunnableConfig;
 use lc_schema::Message;
@@ -102,9 +102,10 @@ impl BaseChatModel for MockChatModel {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let content = self.response.clone();
-        let stream = futures_util::stream::once(async move { Ok(content) });
+        let stream = futures_util::stream::once(async move { Ok(StreamChunk::new(content)) });
         Ok(Box::pin(stream))
     }
 }
@@ -747,9 +748,11 @@ impl BaseChatModel for StreamingMockChatModel {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let tokens = self.tokens.clone();
-        let stream = futures_util::stream::iter(tokens.into_iter().map(Ok));
+        let stream =
+            futures_util::stream::iter(tokens.into_iter().map(|t| Ok(StreamChunk::new(t))));
         Ok(Box::pin(stream))
     }
 }

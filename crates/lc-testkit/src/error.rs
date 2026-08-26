@@ -15,6 +15,10 @@ pub enum TestkitError {
     /// 回放队列耗尽:请求条数超过录制条数。
     #[error("replay queue exhausted (requested {requested} messages, no recording left)")]
     ReplayExhausted { requested: usize },
+    /// `ReplayStrategy::Exact` 下请求消息签名在录播中无匹配(显式报错,不做
+    /// 静默 FIFO 兜底);`left` 为队列剩余条数,便于排查录播与请求的字段漂移。
+    #[error("replay has no recording matching request messages (strategy=Exact, {left} exchange(s) left)")]
+    ReplayNoMatch { left: usize },
     /// 内层模型错误,无损透传真实 provider 错误。
     #[error("inner model error: {0}")]
     Inner(#[from] ProviderError),

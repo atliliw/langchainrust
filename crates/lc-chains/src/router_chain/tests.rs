@@ -4,7 +4,7 @@
 use super::*;
 use async_trait::async_trait;
 use futures_util::Stream;
-use lc_core::language_models::LLMResult;
+use lc_core::language_models::{LLMResult, StreamChunk};
 use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
@@ -84,8 +84,9 @@ impl BaseChatModel for MockRouterLLM {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
-        let tokens = [Ok(self.response.content.clone())];
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
+        let tokens = [Ok(StreamChunk::new(self.response.content.clone()))];
         Ok(Box::pin(futures_util::stream::iter(tokens)))
     }
     fn bind_tools(

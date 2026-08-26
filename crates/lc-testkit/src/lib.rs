@@ -12,4 +12,4 @@ mod replay;
 
 pub use error::TestkitError;
 pub use recording::{RecordedExchange, Recorder, RecordingProvider};
-pub use replay::ReplayProvider;
+pub use replay::{ReplayProvider, ReplayStrategy};

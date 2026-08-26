@@ -2,6 +2,9 @@
 //! Unit tests for `AgentExecutor`.
 
 use super::*;
+use crate::approval::{ApprovalDecision, ApprovalHandler};
+use crate::hooks::ToolCallContext;
+use crate::resume::{FileResumeStore, PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentFinish, AgentOutput, AgentStep, ToolInput};
 use crate::ResponseCache;
 use async_trait::async_trait;
@@ -227,7 +230,7 @@ async fn test_agent_executor_with_vector_store_memory() {
 /// 摘要,`history` 以 "Summary: ..." 注入 prompt,Agent 从摘要里读出早期信息。
 #[tokio::test]
 async fn test_agent_executor_with_summary_compression_memory() {
-    use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+    use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
     use lc_core::runnables::Runnable;
     use lc_core::token_counter::CharRatioCounter;
     use lc_schema::Message;
@@ -289,7 +292,7 @@ async fn test_agent_executor_with_summary_compression_memory() {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
             Err(MockError("streaming not supported".to_string()))
         }
@@ -847,4 +850,172 @@ async fn test_token_budget_hook_allows_within_budget() {
 
     let out = executor.invoke("calc".to_string()).await.unwrap();
     assert_eq!(out, "done");
+}
+
+// ============ S6 跨进程 resume(§4.2)============
+
+/// 阻塞审批:进入 approve 时发"已落盘"信号(此刻挂起点已在磁盘),然后永久挂起,
+/// 直到 invoke 任务被 abort —— 模拟进程在等待审批时死亡,审批决定永远不会到。
+struct BlockingApproval {
+    persisted_tx: tokio::sync::mpsc::Sender<()>,
+}
+
+#[async_trait]
+impl ApprovalHandler for BlockingApproval {
+    async fn approve(&self, _ctx: &ToolCallContext) -> ApprovalDecision {
+        let _ = self.persisted_tx.send(()).await;
+        std::future::pending().await
+    }
+}
+
+/// 永远返回工具动作的 agent(测预算门用;永远不会 Finish)。
+struct RelentlessActionAgent;
+
+#[async_trait]
+impl BaseAgent for RelentlessActionAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+    ) -> Result<AgentOutput, AgentError> {
+        Ok(AgentOutput::Action(AgentAction {
+            tool: "counter".to_string(),
+            tool_input: ToolInput::Object {
+                value: serde_json::json!({}),
+            },
+            log: String::new(),
+        }))
+    }
+}
+
+/// 计数工具:统计执行次数(区分"从累计量继续"与"从头重算")。
+struct CountingTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl BaseTool for CountingTool {
+    fn name(&self) -> &str {
+        "counter"
+    }
+
+    fn description(&self) -> &str {
+        "counts invocations"
+    }
+
+    async fn run(&self, _input: String) -> Result<String, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok("ok".to_string())
+    }
+}
+
+/// S6:模拟进程重启 —— 构造 executor → 阻塞审批 → 任务 abort(进程死亡)→ 从磁盘
+/// 恢复挂起点 → 注入审批决定 → 工具执行、最终答案正确、挂起点清除。
+#[tokio::test]
+async fn test_cross_process_resume_recovers_after_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn ResumeStore> = Arc::new(FileResumeStore::new(dir.path()).unwrap());
+
+    // 进程 A:阻塞审批 + resume store。审批进入前挂起点已落盘。
+    let (persisted_tx, mut persisted_rx) = tokio::sync::mpsc::channel(1);
+    let exec_a = Arc::new(
+        AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
+            .with_resume_store(store.clone())
+            .with_approval(Arc::new(BlockingApproval { persisted_tx })),
+    );
+
+    let task = tokio::spawn({
+        let exec = exec_a.clone();
+        async move { exec.invoke("compute".to_string()).await }
+    });
+
+    // 审批进入 → 挂起点已落盘(此刻 kill 进程,挂起点留在磁盘)。
+    persisted_rx
+        .recv()
+        .await
+        .expect("approval should be entered");
+
+    // 模拟进程崩溃:abort 正在等待审批的 invoke 任务。磁盘挂起点不受影响。
+    task.abort();
+
+    // 进程 B:重建 executor(相同 agent / tools / store 目录)。resume 注入决定,
+    // 不重跑审批 handler,故无需再配 approval。
+    let exec_b = AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
+        .with_resume_store(store.clone());
+
+    let pending = exec_b
+        .pending_approval()
+        .await
+        .unwrap()
+        .expect("pending approval should be on disk after crash");
+    assert_eq!(pending.tool_name, "calculator");
+    assert_eq!(pending.inputs.get("input").unwrap(), "compute");
+
+    // 注入 Allow:待审批工具执行,从挂起迭代续跑 → 最终答案。
+    let answer = exec_b
+        .resume(ApprovalDecision::Allow)
+        .await
+        .unwrap()
+        .expect("resume should produce an answer");
+    assert_eq!(answer, "done");
+
+    // 决定落地后挂起点已清除(认领)。
+    assert!(exec_b.pending_approval().await.unwrap().is_none());
+
+    // 工具确实执行过(预算从累计量继续:tool_calls 含挂起工具)。
+    let metrics = exec_b.last_metrics().unwrap();
+    assert!(metrics.tool_calls >= 1, "{metrics:?}");
+}
+
+/// S6:预算门恢复后从累计量继续 —— 挂起点记录已消耗 1 次工具调用(含待审批工具),
+/// `max_tool_calls = 1` 时 resume 在下一轮 plan 前硬停,不重复执行工具。
+#[tokio::test]
+async fn test_resume_budget_continues_from_consumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn ResumeStore> = Arc::new(FileResumeStore::new(dir.path()).unwrap());
+    let counter = Arc::new(CountingTool {
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+
+    // 手工构造挂起点:已消耗 1 次工具调用(含待审批的这 1 次),预算上限 1。
+    let mut inputs = HashMap::new();
+    inputs.insert("input".to_string(), "compute".to_string());
+    store
+        .save_pending(&PendingApproval {
+            tool_name: "counter".to_string(),
+            arguments: serde_json::json!({}),
+            tool_id: String::new(),
+            inputs,
+            steps: Vec::new(),
+            iteration: 0,
+            tool_calls_consumed: 1,
+            tokens_consumed: None,
+            trace_id: None,
+        })
+        .await
+        .unwrap();
+
+    let exec = AgentExecutor::new(Arc::new(RelentlessActionAgent), vec![counter.clone()])
+        .with_resume_store(store.clone())
+        .with_budget(BudgetConfig {
+            max_tool_calls: Some(1),
+            ..Default::default()
+        });
+
+    // resume:先执行待审批工具(累计量 1),下一轮 plan 又要工具 → 2 > 1 硬停。
+    let err = exec.resume(ApprovalDecision::Allow).await.unwrap_err();
+    match err {
+        AgentError::BudgetExceeded(BudgetExceeded::ToolCalls { limit, actual }) => {
+            assert_eq!(limit, 1);
+            assert_eq!(actual, 2);
+        }
+        other => panic!("expected BudgetExceeded::ToolCalls, got {:?}", other),
+    }
+
+    // 预算从累计量继续:待审批工具只执行了 1 次,后续那次被门拦下。
+    // (若从 0 重算,第二次工具会先执行,计数会是 2。)
+    assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
+
+    // 挂起点已认领(清除)。
+    assert!(exec.pending_approval().await.unwrap().is_none());
 }

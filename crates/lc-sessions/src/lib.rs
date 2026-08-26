@@ -22,9 +22,11 @@
 pub mod manager;
 pub mod memory_store;
 pub mod session;
+pub mod session_runnable;
 pub mod store;
 
 pub use manager::SessionManager;
 pub use memory_store::MemorySessionStore;
 pub use session::{Session, SessionStatus};
+pub use session_runnable::SessionManagerRunnable;
 pub use store::{SessionError, SessionStore};

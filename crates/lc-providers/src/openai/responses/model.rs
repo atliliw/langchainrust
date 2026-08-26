@@ -11,7 +11,9 @@ use serde_json::json;
 use std::pin::Pin;
 
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolCall;
 use lc_core::RunnableConfig;
@@ -293,8 +295,10 @@ impl ResponsesModel {
     pub(crate) async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, ResponsesError>> + Send>>, ResponsesError>
-    {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<StreamChunk, ResponsesError>> + Send>>,
+        ResponsesError,
+    > {
         use crate::openai::sse::SSEParser;
         use std::sync::{Arc, Mutex};
 
@@ -323,7 +327,7 @@ impl ResponsesModel {
         let byte_stream = response.bytes_stream();
         let parser = Arc::new(Mutex::new(SSEParser::new()));
         // M18: Use bounded channel to prevent OOM with slow consumers
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, ResponsesError>>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, ResponsesError>>(64);
 
         let parser_clone = parser.clone();
         tokio::spawn(async move {
@@ -346,7 +350,7 @@ impl ResponsesModel {
 
                 for event in events {
                     if event.is_done() {
-                        let _ = tx.send(Ok(String::new())).await;
+                        let _ = tx.send(Ok(StreamChunk::new(""))).await;
                         return;
                     }
                     // Try to parse as a Responses API stream event
@@ -355,13 +359,28 @@ impl ResponsesModel {
                     {
                         match stream_event {
                             ResponsesStreamEvent::OutputTextDelta(delta) => {
-                                if tx.send(Ok(delta.delta)).await.is_err() {
+                                if tx.send(Ok(StreamChunk::new(delta.delta))).await.is_err() {
                                     return;
                                 }
                             }
-                            ResponsesStreamEvent::Completed(_completed) => {
-                                // Final event — nothing more to emit
-                                let _ = tx.send(Ok(String::new())).await;
+                            ResponsesStreamEvent::Completed(completed) => {
+                                // Final event: emit token usage if the response
+                                // carried it, then finish the stream.
+                                if let Some(usage) = completed.response.usage {
+                                    let token_usage = TokenUsage {
+                                        prompt_tokens: usage.input_tokens,
+                                        completion_tokens: usage.output_tokens,
+                                        total_tokens: usage.total_tokens,
+                                    };
+                                    let _ = tx
+                                        .send(Ok(StreamChunk {
+                                            text: String::new(),
+                                            token_usage: Some(token_usage),
+                                        }))
+                                        .await;
+                                } else {
+                                    let _ = tx.send(Ok(StreamChunk::new(""))).await;
+                                }
                                 return;
                             }
                             ResponsesStreamEvent::Failed(_) => {
@@ -416,7 +435,7 @@ impl Runnable<Vec<Message>, LLMResult> for ResponsesModel {
             let content = token_stream
                 .fold(String::new(), |mut acc, token_result| async move {
                     if let Ok(token) = token_result {
-                        acc.push_str(&token);
+                        acc.push_str(&token.text);
                     }
                     acc
                 })
@@ -545,7 +564,8 @@ impl BaseChatModel for ResponsesModel {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         use futures_util::StreamExt;
         let run_name = config
             .as_ref()
@@ -579,7 +599,7 @@ impl BaseChatModel for ResponsesModel {
                 if let Some(ref cbs) = cbs {
                     if let Ok(ref token) = token_result {
                         for handler in cbs.handlers() {
-                            handler.on_llm_new_token(&run, token).await;
+                            handler.on_llm_new_token(&run, &token.text).await;
                         }
                     }
                 }

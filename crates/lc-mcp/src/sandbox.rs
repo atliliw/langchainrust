@@ -12,7 +12,8 @@
 //!   即全禁(fail-closed);
 //! - **审计层全量记录**:[`ServerSandbox`] 记录每次放行/拦截调用,供事后审计。
 //!
-//! [`MCPToolAdapter::with_sandbox`] 把 `ServerSandbox` 挂到工具适配器上,`run()`
+//! [`MCPToolAdapter::with_sandbox`](crate::tool_adapter::MCPToolAdapter::with_sandbox)
+//! 把 `ServerSandbox` 挂到工具适配器上,`run()`
 //! 在发请求前先过 `check_call`,拦截则返回错误并记审计。
 
 use serde_json::Value;

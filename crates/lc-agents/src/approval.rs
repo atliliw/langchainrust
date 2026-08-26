@@ -6,7 +6,7 @@
 //! hook **之后**、实际执行**之前**跑 —— 顺序为
 //! `预算门 → execute_tool(同步 hook → 人审门 → 工具执行)`。
 //!
-//! 框架只提供闸,审批策略由调用方实现 [`ApprovalHandler`](trait)。参考实现
+//! 框架只提供闸,审批策略由调用方实现 [`ApprovalHandler`]。参考实现
 //! [`AllowAll`] 供测试/演示。
 
 use async_trait::async_trait;

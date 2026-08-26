@@ -4,7 +4,8 @@
 //! 将文档和向量存储在内存中，适用于小规模数据和测试。
 
 use crate::{
-    cosine_similarity, Document, SearchResult, VectorDocument, VectorStore, VectorStoreError,
+    cosine_similarity, Document, MetadataFilter, SearchResult, VectorDocument, VectorStore,
+    VectorStoreError,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -111,6 +112,36 @@ impl VectorStore for InMemoryVectorStore {
         });
 
         // 返回前 k 个结果
+        Ok(results.into_iter().take(k).collect())
+    }
+
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let store = self.documents.read().await;
+
+        // S3: 内存元数据过滤 —— 先按过滤条件筛文档,再算相似度取 top-k。
+        let mut results: Vec<SearchResult> = store
+            .values()
+            .filter(|vd| filter.is_none_or(|f| f.matches(&vd.document.metadata)))
+            .map(|vd| {
+                let score = cosine_similarity(query_embedding, &vd.embedding).unwrap_or(0.0);
+                SearchResult {
+                    document: vd.document.clone(),
+                    score,
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         Ok(results.into_iter().take(k).collect())
     }
 
@@ -273,5 +304,78 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
         assert!((cosine_similarity(&a, &b).unwrap() - 0.0).abs() < 0.0001);
+    }
+
+    /// S3: 内存元数据过滤 —— 单条件 + AND/OR 组合;`filter: None` 与旧路径一致。
+    #[tokio::test]
+    async fn test_metadata_filter() {
+        use crate::FilterOp;
+
+        let store = InMemoryVectorStore::new();
+        store
+            .add_documents(
+                vec![
+                    Document::new("rust doc")
+                        .with_metadata("lang", "rust")
+                        .with_metadata("year", 2024),
+                    Document::new("python doc")
+                        .with_metadata("lang", "python")
+                        .with_metadata("year", 2023),
+                    Document::new("rust legacy")
+                        .with_metadata("lang", "rust")
+                        .with_metadata("year", 2020),
+                ],
+                vec![
+                    vec![1.0, 0.0, 0.0],
+                    vec![0.0, 1.0, 0.0],
+                    vec![0.9, 0.1, 0.0],
+                ],
+            )
+            .await
+            .unwrap();
+
+        let query = vec![1.0, 0.0, 0.0];
+
+        // 单条件
+        let eq = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let r = store
+            .similarity_search_with_filter(&query, 5, Some(&eq))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert!(r
+            .iter()
+            .all(|s| s.document.metadata.get("lang").and_then(|v| v.as_str()) == Some("rust")));
+
+        // AND 组合
+        let and = MetadataFilter::and(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+            MetadataFilter::field("year", FilterOp::Gte, 2021),
+        ]);
+        let r = store
+            .similarity_search_with_filter(&query, 5, Some(&and))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        assert!(r[0].document.content.contains("rust doc"));
+
+        // OR 组合
+        let or = MetadataFilter::or(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "python"),
+            MetadataFilter::field("year", FilterOp::Lt, 2021),
+        ]);
+        let r = store
+            .similarity_search_with_filter(&query, 5, Some(&or))
+            .await
+            .unwrap();
+        assert_eq!(r.len(), 2);
+
+        // filter: None 与 similarity_search 行为一致(回归)
+        let none = store
+            .similarity_search_with_filter(&query, 5, None)
+            .await
+            .unwrap();
+        let base = store.similarity_search(&query, 5).await.unwrap();
+        assert_eq!(none.len(), base.len());
     }
 }

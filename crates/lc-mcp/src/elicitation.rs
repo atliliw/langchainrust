@@ -3,6 +3,8 @@
 //! MCP Elicitation 允许 Server 向用户请求信息(如确认、输入等),
 //! 通过 Host 的 UI 向用户展示表单并收集响应。
 
+use crate::protocol::MCPError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -36,6 +38,18 @@ pub enum ElicitationAction {
     Decline,
     /// 用户取消请求
     Cancel,
+}
+
+/// 交互请求处理者(server→host 方向)。
+///
+/// 按 MCP 语义,`elicitation/create` 由 Server 发起、Host 通过 UI 向用户收集
+/// 输入。框架层不连接具体传输,由宿主注入本回调;回调内部负责把请求送达
+/// Host 并取回响应。未注入时 [`crate::MCPServer::create_elicitation`] 返回
+/// 明确错误。
+#[async_trait]
+pub trait ElicitationHandler: Send + Sync {
+    /// 发起一次交互请求,返回用户响应。
+    async fn create(&self, request: &ElicitationRequest) -> Result<ElicitationResponse, MCPError>;
 }
 
 #[cfg(test)]

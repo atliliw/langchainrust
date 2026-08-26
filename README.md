@@ -37,7 +37,7 @@ The framework is engineered around a few hard rules that come out of its own des
 |-----------|-------------|
 | **Unified LLM access** | 11 providers behind one `BaseChatModel` trait: OpenAI, Ollama, Anthropic Claude, Gemini, Azure, Cohere, DeepSeek, Qwen, Moonshot, Zhipu, Mistral. `LLMClient::from_env()` auto-detects any of the 11 from environment variables. |
 | **OpenAI-compatible thin wrappers** | DeepSeek / Qwen / Moonshot / Zhipu / Mistral reuse the OpenAI request path; each keeps its own error variant (`ProviderError::DeepSeek`, etc.) so you can tell which vendor failed. New vendors are cheap to add. |
-| **Chat & Streaming** | `chat()` (one full reply) and `stream_chat()` (first token in ~1s). `config.streaming = true` makes `chat()` stream internally then aggregate. |
+| **Chat & Streaming** | `chat()` (one full reply) and `stream_chat()` (first token in ~1s). Streaming chunks carry token usage (`StreamChunk`), so budget gates get real usage on the streaming path (v0.18). `config.streaming = true` makes `chat()` stream internally then aggregate. |
 | **Function Calling** | `bind_tools()` + `result.tool_calls`, the native path for tool-capable models. |
 | **Multimodal Vision** | `Message::human_with_image` / `human_with_audio` / `human_with_file` via schema `ImageContent` / `AudioContent` / `FileContent`. |
 | **Thinking models** | Reasoning is kept in `LLMResult.thinking_content` and never leaked into `content` (DeepSeek-R1, GLM-5.2, Claude Extended Thinking). |
@@ -68,6 +68,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Chains** | `BaseChain` with 9 implementations: `LLMChain`, `ConversationChain`, `SequentialChain`, `RouterChain`, `LLMRouterChain`, `RetrievalQA`, `ConversationRetrievalChain`, plus the 4 document chains — `Stuff` / `MapReduce` / `Refine` / `MapRerank`. Chain streaming per token, `ChainRunnable` bridges chains into LCEL. |
 | **Prompts** | `PromptTemplate` (parsed once, cached segments), `ChatPromptTemplate` (Runnable, outputs `Vec<Message>`), `FewShotPromptTemplate` + `ExampleSelector`s (`LengthBasedExampleSelector`). `{{`/`}}` escapes, Chinese variable names, missing variables error loudly. |
 | **Output Parsers** | `StrOutputParser`, `JsonOutputParser`, `CommaSeparatedListOutputParser`, `StructuredOutputParser`, `TypedOutputParser<T>` — all tolerant of dirty model output (markdown fences, trailing commas, trailing junk). |
+| **Retrieval & Sessions in LCEL (v0.17)** | `RetrieverRunnable` wraps any retriever as `Runnable<String, Vec<Document>>`; `SessionManagerRunnable` wraps persistent sessions as `Runnable<(session_id, message), reply>` — both compose with `pipe` into a chain. |
 | **Cancellation** | `CancellationToken` threads through `RunnableConfig` into every execution. |
 
 ### Agents & Multi-Agent
@@ -84,6 +85,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Orchestrators** | `FanOutFanIn` (parallel fan-out + aggregate), `SequentialPipeline` (serial), `OrchestratorRunnable` for LCEL integration. |
 | **Agent Hooks** | Approval (`on_before_tool_call` allow/reject/skip), `PromptInjectionHook`, `TokenBudgetHook`, `ContentFilterHook`, logging. |
 | **Agent Gates (v0.16)** | Async human-approval gate — `.with_approval()` (Allow / Deny / Modify; Deny feeds the reason back as an observation, Modify rewrites the arguments). Budget gate — `.with_budget()` with hard caps on tool calls / tokens / wall-clock duration / iterations, exceeding returns `AgentError::BudgetExceeded`. Both default off. |
+| **Cross-process resume (v0.18)** | `FileResumeStore` persists the pending human-approval / budget-gate state to disk (atomic write); a restarted executor loads the pending point and re-enters approval instead of restarting the agent loop. |
 | **Streaming** | Token-level streaming via `StreamingFunctionCallingAgent` + `AgentStreamEvent`; tool-level events via `AgentExecutor::stream`. |
 | **Tool Policies** | `ToolPolicy` / `ToolRisk` risk classification for tool access control. |
 
@@ -91,13 +93,14 @@ The framework is engineered around a few hard rules that come out of its own des
 
 | Component | Description |
 |-----------|-------------|
-| **Unified `RetrieverTrait`** | All retrievers implement it: `SimilarityRetriever`, `BM25Retriever` / `ChunkedBM25Retriever`, `UnifiedHybridIndex` — so any retrieval strategy plugs into the RAG pipeline. |
+| **Unified `RetrieverTrait`** | All retrievers implement it: `SimilarityRetriever`, `BM25Retriever` / `ChunkedBM25Retriever`, `UnifiedHybridIndex`, `ParentDocumentRetriever` — so any retrieval strategy plugs into the RAG pipeline. |
 | **RAGPipeline** | `RAGPipelineBuilder` (llm + embeddings + vector store + retriever) → `index_documents` / `query` / `query_with_sources` (citation tracing). |
 | **Document Loaders** | Text / JSON / Markdown / PDF / CSV / HTML + WebScraper / Sitemap / Docx. |
 | **Splitting** | `RecursiveCharacterSplitter` (paragraph → line → sentence → char), `SemanticSplitter` (async semantic chunking). |
 | **BM25** | Keyword search with Chinese/English tokenization, `ChunkedBM25Retriever` parent-child structure, AutoMerging. |
 | **Hybrid** | `UnifiedHybridIndex` — BM25 + vector with RRF fusion, configurable `min_score`. |
 | **Query Transformations** | `MultiQueryRetriever` (decompose into multiple queries), `HyDERetriever` (hypothetical document), `RerankingExecutor` + `KeywordReranker` / `BM25Reranker`. |
+| **SelfQueryRetriever (v0.18)** | LLM splits a natural-language query into `{query, filter}` via structured call, with an `allowed_attributes` whitelist; retrieves through `similarity_search_with_filter`. Composes in LCEL as a `RetrieverRunnable`. |
 | **GraphRAG** | Knowledge-graph RAG with Global / Local / Hybrid modes, entity extraction, community detection. |
 | **Advanced RAG** | `CorrectiveRAG` (self-correcting), `AdaptiveRAG` (adaptive retrieval + structured routing decisions). |
 
@@ -151,8 +154,8 @@ The framework is engineered around a few hard rules that come out of its own des
 
 | Component | Description |
 |-----------|-------------|
-| **Unified `VectorStore` trait** | `add_documents`, `similarity_search`, `similarity_search_with_min_score`, `similarity_search_text` (auto-embeds if the store owns an embedder, else explicit error), `embed_query`, `get_document`, `delete_document`, `count`, `clear`. |
-| **Backends** | InMemory, FileVectorStore (atomic write, fixed dim), ChunkedVectorStore (parent-child source retrieval), Qdrant, ChromaDB, LanceDB, Neo4j, Pinecone, Redis, MongoDB, SQLite, PGVector (helper + user-provided sqlx). |
+| **Unified `VectorStore` trait** | `add_documents`, `similarity_search`, `similarity_search_with_min_score`, `similarity_search_with_filter` (`MetadataFilter` with Eq/Ne/Gt/Gte/Lt/Lte/In/Nin + And/Or, v0.18), `similarity_search_text` (auto-embeds if the store owns an embedder, else explicit error), `embed_query`, `get_document`, `delete_document`, `count`, `clear`. |
+| **Backends** | InMemory, FileVectorStore (atomic write, fixed dim), ChunkedVectorStore (parent-child source retrieval), Qdrant, ChromaDB, LanceDB, Neo4j, Pinecone, Redis, MongoDB, SQLite, PGVector (typed `PGVectorStore` via the `pgvector-storage` feature). |
 | **Honest errors** | `VectorStoreError` distinguishes `DocumentNotFound` / `EmbeddingError` / `StorageError` / `ConnectionError`; missing features fail loudly instead of silently degrading (e.g. Qdrant without the feature → `ConnectionError`, not in-memory fallback). |
 
 ---
@@ -207,7 +210,7 @@ langchainrust is a **22-crate workspace** with a single facade crate `langchainr
 | **lc-evaluation** | Rule evaluators + LLM judges, `EvalRunner` + `Report`. |
 | **lc-guardrails** | Input/output guardrails, `Guardable`, streaming guardrails, audit sinks. |
 | **lc-callbacks** | `CallbackHandler`/`CallbackManager` + StdOut/File/LangSmith/OTel + `Tracer`/`SpanGuard`. |
-| **lc-testkit** | Record/replay test harness: `RecordingProvider` records real LLM exchanges to JSONL, `ReplayProvider` replays them offline with zero network — framework tests run without API keys. |
+| **lc-testkit** | Record/replay test harness: `RecordingProvider` records real LLM exchanges to JSONL, `ReplayProvider` replays them offline with zero network — framework tests run without API keys. Phase 2 (v0.17): tool definition recording (`bind_tools`), out-of-order replay (`ReplayStrategy::{Fifo, ByToolName}`), agent-level offline replay, and chain scenarios transcribed from online tests. Phase 3 (v0.18): strict message-signature replay (`ReplayStrategy::Exact`). |
 
 ---
 
@@ -215,20 +218,20 @@ langchainrust is a **22-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.16.0"
+langchainrust = "0.18.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.16.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.16.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.16.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.16.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.16.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.16.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.16.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
-langchainrust = { version = "0.16.0", features = ["fastembed"] }            # FastEmbed embeddings
-langchainrust = { version = "0.16.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.16.0", features = ["experimental"] }         # Experimental features
+langchainrust = { version = "0.18.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.18.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.18.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.18.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.18.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.18.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.18.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.18.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.18.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.18.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

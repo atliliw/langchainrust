@@ -40,7 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Document::new("Rust is a systems programming language, focused on safety and performance."),
         Document::new("Rust's ownership system avoids data races and null pointers."),
         Document::new("Tokio is the most popular async runtime for Rust."),
-        Document::new("async-std is another Rust async runtime with an API closer to the standard library."),
+        Document::new(
+            "async-std is another Rust async runtime with an API closer to the standard library.",
+        ),
     ];
     let doc_texts: Vec<&str> = docs.iter().map(|d| d.content.as_str()).collect();
     let doc_embeddings = embeddings.embed_documents(&doc_texts).await?;
@@ -63,7 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_result("[SingleSearch] specific question", &result);
 
     // Scenario 3: complex question — multi-angle retrieval
-    let result = rag.invoke("Compare the scheduling models of Tokio and async-std").await?;
+    let result = rag
+        .invoke("Compare the scheduling models of Tokio and async-std")
+        .await?;
     print_result("[MultiQuery] complex question", &result);
 
     Ok(())

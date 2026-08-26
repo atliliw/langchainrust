@@ -1,6 +1,6 @@
 [package]
 name = "lc-vector-stores"
-version = "0.16.0"
+version = "0.18.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Vector store implementations for langchainrust — InMemory, File, Qdrant, MongoDB, Redis, SQLite, ChromaDB, Pinecone, PGVector"
@@ -8,9 +8,9 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.82"
 
 [dependencies]
-lc-shared = { path = "../lc-shared", version = "0.16.0" }
-lc-core = { path = "../lc-core", version = "0.16.0" }
-lc-embeddings = { path = "../lc-embeddings", version = "0.16.0" }
+lc-shared = { path = "../lc-shared", version = "0.18.0" }
+lc-core = { path = "../lc-core", version = "0.18.0" }
+lc-embeddings = { path = "../lc-embeddings", version = "0.18.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -28,6 +28,8 @@ qdrant-client = { version = "1.7", optional = true }
 mongodb = { version = "2.8", optional = true }
 redis = { version = "0.25", optional = true, features = ["tokio-comp"] }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+pgvector = { version = "0.4", features = ["sqlx"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -39,7 +41,7 @@ qdrant-integration = ["qdrant-client"]
 mongodb-persistence = ["mongodb"]
 redis-storage = ["redis"]
 sqlite-storage = ["rusqlite"]
-pgvector-storage = []
+pgvector-storage = ["dep:sqlx", "dep:pgvector"]
 
 [package.metadata.docs.rs]
 all-features = true

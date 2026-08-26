@@ -122,7 +122,7 @@ impl<L> RunnableWithMessageHistory<L> {
     }
 
     /// 设置 session 缓存上限(Sessions 模式)。超过上限后,新 session 会淘汰最旧
-    /// 的槽,防 session_id 无限增长的内存 DoS(M2a)。默认 [`DEFAULT_MAX_SESSIONS`]。
+    /// 的槽,防 session_id 无限增长的内存 DoS(M2a)。默认 `DEFAULT_MAX_SESSIONS`。
     pub fn with_max_sessions(mut self, max: usize) -> Self {
         if let HistoryMode::Sessions { max_sessions, .. } = &mut self.mode {
             *max_sessions = max.max(1);
@@ -235,7 +235,7 @@ where
 mod tests {
     use super::*;
     use futures_util::Stream;
-    use lc_core::language_models::{BaseChatModel, BaseLanguageModel};
+    use lc_core::language_models::{BaseChatModel, BaseLanguageModel, StreamChunk};
     use lc_core::runnables::RunnableConfig;
     use lc_schema::MessageType;
     use serde_json::json;
@@ -304,7 +304,7 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>, LcelError>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LcelError>> + Send>>, LcelError>
         {
             unimplemented!("stream_chat not needed for tests")
         }
@@ -527,7 +527,7 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _config: Option<RunnableConfig>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<String, LcelError>> + Send>>, LcelError>
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LcelError>> + Send>>, LcelError>
         {
             unimplemented!("stream_chat not needed for tests")
         }

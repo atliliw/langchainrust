@@ -37,7 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Add documents (the LLM extracts entities and relations automatically)
     let docs = vec![
-        Document::new("Alice is a professor at Tsinghua University, specializing in artificial intelligence."),
+        Document::new(
+            "Alice is a professor at Tsinghua University, specializing in artificial intelligence.",
+        ),
         Document::new("Bob is Alice's student, currently researching large language models."),
         Document::new("Charlie is also Alice's student, researching computer vision."),
     ];
@@ -58,14 +60,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Global: searches community summaries, good for high-level questions
     let global_result = graph_rag
-        .query("What research areas does this knowledge base cover?", QueryMode::Global)
+        .query(
+            "What research areas does this knowledge base cover?",
+            QueryMode::Global,
+        )
         .await?;
     println!("\n[Global query] Which research areas are covered?");
     println!("Answer: {}", global_result.answer);
 
     // Hybrid: combines Local + Global
     let hybrid_result = graph_rag
-        .query("What is Alice's research group working on?", QueryMode::Hybrid)
+        .query(
+            "What is Alice's research group working on?",
+            QueryMode::Hybrid,
+        )
         .await?;
     println!("\n[Hybrid query] What is Alice's research group working on?");
     println!("Answer: {}", hybrid_result.answer);

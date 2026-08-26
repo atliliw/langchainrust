@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-08-26
+
+### Added
+- **`StreamChunk` with `TokenUsage`** (`lc-core`, breaking): `stream_chat` now yields `Result<StreamChunk, _>` where `StreamChunk { text, token_usage: Option<TokenUsage> }` — providers that report usage fill `token_usage` on the final chunk, so the streaming path no longer loses token accounting (S1)
+- **Function-calling per-token streaming** (`lc-agents`): `FunctionCallingAgent` overrides `plan_stream` to stream final-answer tokens (reusing the ReAct pattern), and the budget gate receives real cumulative usage on the streaming path (S2)
+- **`MetadataFilter`** (`lc-vector-stores`, breaking): `VectorStore` gains `similarity_search_with_filter`; `MetadataFilter::{Field, And, Or}` over `FilterOp::{Eq, Ne, Gt, Gte, Lt, Lte, In, Nin}`; backends that cannot filter return an explicit `UnsupportedFilter` instead of silently ignoring (S3)
+- **`SelfQueryRetriever`** (`lc-rag`): an LLM splits a natural-language query into `{query, filter}` via structured call, with an `allowed_attributes` whitelist guarding filter fields; composes into LCEL as a `RetrieverRunnable` (S4)
+- **`PGVectorStore`** (`lc-vector-stores`, `pgvector-storage` feature): typed `VectorStore` implementation on sqlx + pgvector, feature-gated to keep the libsqlite3-sys linkage conflict out of default builds; table-name whitelist + parameterized SQL preserved (S5)
+- **Cross-process resume** (`lc-agents`): `FileResumeStore` persists the pending human-approval / budget-gate state to disk (atomic write + recovery), so a restarted executor loads the pending point and re-enters approval instead of restarting the agent loop (S6)
+- **`ReplayStrategy::Exact`** (`lc-testkit`): strict signature-matched replay — each request is matched to its recorded exchange by the full messages signature; no match returns an explicit `TestkitError` (Fifo / ByToolName unchanged, non-breaking) (S7)
+- **MCP server primitives wired** (`lc-mcp`): `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `completion/complete` are handled via provider registration (unregistered → `method_not_found`); `sampling/createMessage` and `elicitation/create` ship as server→host initiation methods behind injected callbacks (no callback → explicit error); `initialize` advertises only the registered capabilities (S10)
+
+### Changed
+- **Breaking — `stream_chat` chunk type** (workspace): the chunk is `StreamChunk` instead of `String`; consumers destructure `text`, and streaming token usage is now available directly instead of relying on non-streaming `invoke` (S1)
+- **Breaking — `VectorStore` trait** (`lc-vector-stores`): third-party implementations must add `similarity_search_with_filter` (the default delegates to `similarity_search` when `filter: None` and errors on unsupported filters) (S3)
+- **11 known-failing online tests marked `#[ignore]` with reasons** (`langchainrust`): `crates/lc/tests/` is now tracked instead of gitignored; the failing cases (chains 7× model-permission `AccessDenied.Unpurchased`, core f04 / evaluation f06 output drift, mcp f10/f11 remote unreachable) are explicit `#[ignore]` with the cause noted, and the passing online tests run in CI (S8)
+
+### Migration
+- **`docs/internal/v0.18.0/MIGRATION_0.17_to_0.18.md`**: covers the `StreamChunk` destructure and the `VectorStore` trait addition (S9)
+
+## [0.17.0] - 2026-08-26
+
+### Added
+- **lc-testkit phase 2 — tool recording & out-of-order replay**: `RecordedExchange` gains an optional `tools` field (`#[serde(default)]`, old fixtures deserialize unchanged); `RecordingProvider::bind_tools` records bound tool definitions into exchanges, `ReplayProvider::bind_tools` returns itself so tool-calling agent loops run fully offline; new `ReplayStrategy::{Fifo, ByToolName}` covers concurrent/out-of-order replay (`ByToolName` routes each request to the exchange whose tools / `tool_calls` match). Ships agent-level offline replay (`tests/agent_offline.rs`) and six chain scenarios transcribed from online tests (`tests/chains_offline.rs`)
+- **`predict_tools`** (`lc-core`): one-shot tool call — `bind_tools` + `chat` in a single entry point; returns an explicit `PredictToolsError::ToolsUnsupported` instead of silently degrading when the model cannot bind tools
+- **`RetrieverRunnable`** (`lc-rag`): wraps any `RetrieverTrait` as `Runnable<String, Vec<Document>>`, so retrieval becomes an LCEL chain step
+- **`SessionManagerRunnable`** (`lc-sessions`): wraps persistent sessions as `Runnable<(session_id, message), reply>` — repeated invokes with the same session id accumulate history automatically
+- **`ParentDocumentRetriever`** (`lc-rag`): parent-child retrieval — small chunks are indexed, a hit on any chunk returns the full parent document; `ParentDocument → prompt → LLM` composes as one LCEL chain
+
+### Changed
+- **Breaking — `ToolCall::new` removed**: the deprecated 3-positional-arg constructor is gone; use `ToolCall::builder(id).name(..).arguments(..)`
+- **Breaking — `LocalEmbeddings` fallback alias removed** (no `local-embeddings` feature): the name is no longer available without the feature; use `BagOfWordsEmbeddings` explicitly or enable the feature
+
 ## [0.16.0] - 2026-08-25
 
 ### Added

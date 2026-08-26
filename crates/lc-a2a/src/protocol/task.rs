@@ -127,7 +127,7 @@ pub struct A2ATask {
     pub owner: Option<String>,
     /// Full message history for multi-turn dialogue (P2-2).
     ///
-    /// The first element is the initiating message (equal to [`message`]);
+    /// The first element is the initiating message (equal to [`message`](Self::message));
     /// subsequent turns are appended by `tasks/send` with a `taskId`. The
     /// chain is invoked over this whole history for continued tasks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

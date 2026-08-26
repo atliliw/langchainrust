@@ -101,11 +101,11 @@ mod tests_q3_q4 {
     #[tokio::test]
     async fn test_aggregate_stream_concatenates_tokens_in_order() {
         // Q4: the aggregation helper produces the full content in order.
-        let stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>> =
+        let stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>> =
             Box::pin(futures_util::stream::iter(vec![
-                Ok("Hello".to_string()),
-                Ok(", ".to_string()),
-                Ok("world".to_string()),
+                Ok(StreamChunk::new("Hello")),
+                Ok(StreamChunk::new(", ")),
+                Ok(StreamChunk::new("world")),
             ]));
 
         let content = OpenAIChat::aggregate_stream(stream).await.unwrap();
@@ -114,11 +114,11 @@ mod tests_q3_q4 {
 
     #[tokio::test]
     async fn test_aggregate_stream_stops_on_error() {
-        let stream: Pin<Box<dyn Stream<Item = Result<String, OpenAIError>> + Send>> =
+        let stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>> =
             Box::pin(futures_util::stream::iter(vec![
-                Ok("Hello".to_string()),
+                Ok(StreamChunk::new("Hello")),
                 Err(OpenAIError::Api("boom".to_string())),
-                Ok("never".to_string()),
+                Ok(StreamChunk::new("never")),
             ]));
 
         let err = OpenAIChat::aggregate_stream(stream).await.unwrap_err();

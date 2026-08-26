@@ -111,6 +111,12 @@ impl ChunkDocument {
         self
     }
 
+    /// 整体替换 metadata(用于 chunk 继承父文档元数据等场景)。
+    pub fn with_metadata_map(mut self, metadata: HashMap<String, Value>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Convert to Document
     pub fn to_document(&self) -> Document {
         Document {

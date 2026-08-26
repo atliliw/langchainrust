@@ -7,7 +7,9 @@ use serde_json::json;
 use std::pin::Pin;
 
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
@@ -61,6 +63,17 @@ impl Runnable<Vec<Message>, LLMResult> for AnthropicChat {
                 content: t,
                 model: model.clone(),
                 token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            }),
+            Ok(AnthropicStreamToken::Usage(u)) => Ok(LLMResult {
+                content: String::new(),
+                model: model.clone(),
+                token_usage: Some(TokenUsage {
+                    prompt_tokens: u.input_tokens,
+                    completion_tokens: u.output_tokens,
+                    total_tokens: u.input_tokens + u.output_tokens,
+                }),
                 tool_calls: None,
                 thinking_content: None,
             }),
@@ -191,7 +204,8 @@ impl BaseChatModel for AnthropicChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let run_name = config
             .as_ref()
             .and_then(|c| c.run_name.clone())
@@ -244,17 +258,27 @@ impl BaseChatModel for AnthropicChat {
                             }
                         }
                     }
+                    Ok(AnthropicStreamToken::Usage(_)) => {}
                     Err(_) => {}
                 }
                 token_result
             }
         });
 
-        // Flatten: emit Text tokens as Ok(String), drop Thinking tokens from the stream
+        // Flatten: emit Text tokens as Ok(StreamChunk), drop Thinking tokens
+        // from the stream, forward Usage as a usage-carrying chunk.
         let stream = stream.flat_map(|token_result| {
             futures_util::stream::iter(match token_result {
-                Ok(AnthropicStreamToken::Text(token)) => vec![Ok(token)],
+                Ok(AnthropicStreamToken::Text(token)) => vec![Ok(StreamChunk::new(token))],
                 Ok(AnthropicStreamToken::Thinking(_)) => vec![],
+                Ok(AnthropicStreamToken::Usage(usage)) => vec![Ok(StreamChunk {
+                    text: String::new(),
+                    token_usage: Some(TokenUsage {
+                        prompt_tokens: usage.input_tokens,
+                        completion_tokens: usage.output_tokens,
+                        total_tokens: usage.input_tokens + usage.output_tokens,
+                    }),
+                })],
                 Err(e) => vec![Err(e)],
             })
         });

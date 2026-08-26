@@ -13,22 +13,28 @@ pub mod hybrid;
 pub mod hyde;
 pub mod loaders;
 pub mod multi_query;
+pub mod parent_document;
 pub mod pipeline;
 pub mod reranking;
 pub mod retriever;
+pub mod retriever_runnable;
+pub mod self_query;
 pub mod semantic_splitter;
 pub mod splitter;
 mod structured;
 pub mod unified_hybrid;
 
 pub use adapter::RagRunnable;
+pub use parent_document::ParentDocumentRetriever;
 pub use pipeline::{RAGPipeline, RAGPipelineBuilder, RAGQueryResult};
+pub use retriever_runnable::RetrieverRunnable;
 
 pub use loaders::{
     CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
     PDFLoader, SitemapLoader, TextLoader, WebScraperLoader,
 };
 pub use retriever::{Retriever, RetrieverError, RetrieverTrait, SimilarityRetriever};
+pub use self_query::{SelfQueryArgs, SelfQueryRetriever};
 pub use semantic_splitter::SemanticSplitter;
 pub use splitter::{RecursiveCharacterSplitter, TextSplitter};
 

@@ -1,7 +1,10 @@
 //! MCP Server - 把本地 `BaseTool` 暴露为 MCP Server,供其他 Host(Claude Desktop/Cursor 等)调用
 //!
 //! 与 `MCPClient` 对称:Client 连别人的 Server 用工具,Server 把自己的工具暴露给别人。
-//! 支持 `initialize` 握手、`tools/list`、`tools/call`;`resources`/`prompts` 暂留 method_not_found。
+//! 支持 `initialize` 握手、`tools/list`、`tools/call`,以及注册制原语
+//! `resources/*` / `prompts/*` / `completion/complete`(未注册仍返回
+//! `method_not_found`,诚实边界)与 server→host 方向 `sampling::create_message` /
+//! `elicitation::create`(需注入回调)。
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,9 +12,14 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 
+use super::completion::{CompletionProvider, CompletionRequest};
+use super::elicitation::{ElicitationHandler, ElicitationRequest, ElicitationResponse};
+use super::prompts::{ListPromptsResult, PromptProvider};
 use super::protocol::{
     MCPError, MCPRequest, MCPResponse, MCP_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
+use super::resources::{ListResourcesResult, ReadResourceResult, ResourceProvider};
+use super::sampling::{SamplingHandler, SamplingRequest, SamplingResult};
 use super::stream::PartialContent;
 use super::types::{MCPContent, MCPToolDefinition, MCPToolResult};
 use lc_core::BaseTool;
@@ -24,6 +32,16 @@ pub struct MCPServer {
     /// 流式工具输出广播(P2-9):`publish_partial` 推送增量片段,
     /// `InMemoryTransport` 等传输层订阅后转发给客户端。
     partial_tx: broadcast::Sender<PartialContent>,
+    /// 可选资源提供者(S10):注册后启用 `resources/list` / `resources/read`。
+    resources: Option<Arc<dyn ResourceProvider>>,
+    /// 可选提示词提供者(S10):注册后启用 `prompts/list` / `prompts/get`。
+    prompts: Option<Arc<dyn PromptProvider>>,
+    /// 可选补全提供者(S10):注册后启用 `completion/complete`。
+    completion: Option<Arc<dyn CompletionProvider>>,
+    /// 可选 sampling 回调(S10,server→host 方向):注入后 `create_message` 才能发起。
+    sampling_handler: Option<Arc<dyn SamplingHandler>>,
+    /// 可选 elicitation 回调(S10,server→host 方向):注入后 `create_elicitation` 才能发起。
+    elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
 }
 
 impl MCPServer {
@@ -34,6 +52,11 @@ impl MCPServer {
             server_name: "langchainrust-mcp-server".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
             partial_tx: broadcast::channel(64).0,
+            resources: None,
+            prompts: None,
+            completion: None,
+            sampling_handler: None,
+            elicitation_handler: None,
         }
     }
 
@@ -47,6 +70,48 @@ impl MCPServer {
     pub fn with_server_info(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
         self.server_name = name.into();
         self.server_version = version.into();
+        self
+    }
+
+    /// 注册资源提供者,启用 `resources/list` / `resources/read`(S10)。
+    ///
+    /// 未注册时两个原语仍返回 `method_not_found`(诚实边界)。
+    pub fn with_resource_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
+        self.resources = Some(provider);
+        self
+    }
+
+    /// 注册提示词提供者,启用 `prompts/list` / `prompts/get`(S10)。
+    ///
+    /// 未注册时两个原语仍返回 `method_not_found`(诚实边界)。
+    pub fn with_prompt_provider(mut self, provider: Arc<dyn PromptProvider>) -> Self {
+        self.prompts = Some(provider);
+        self
+    }
+
+    /// 注册补全提供者,启用 `completion/complete`(S10)。
+    ///
+    /// 未注册时该原语仍返回 `method_not_found`(诚实边界)。
+    pub fn with_completion_provider(mut self, provider: Arc<dyn CompletionProvider>) -> Self {
+        self.completion = Some(provider);
+        self
+    }
+
+    /// 注入 sampling 回调(server→host 方向),启用 [`Self::create_message`](S10)。
+    ///
+    /// 回调负责把 `sampling/createMessage` 送达已连接的 Host 并取回响应;
+    /// 未注入时 `create_message` 返回明确错误。
+    pub fn with_sampling_handler(mut self, handler: Arc<dyn SamplingHandler>) -> Self {
+        self.sampling_handler = Some(handler);
+        self
+    }
+
+    /// 注入 elicitation 回调(server→host 方向),启用 [`Self::create_elicitation`](S10)。
+    ///
+    /// 回调负责把 `elicitation/create` 送达已连接的 Host(经其 UI 向用户收集输入)
+    /// 并取回响应;未注入时 `create_elicitation` 返回明确错误。
+    pub fn with_elicitation_handler(mut self, handler: Arc<dyn ElicitationHandler>) -> Self {
+        self.elicitation_handler = Some(handler);
         self
     }
 
@@ -96,12 +161,24 @@ impl MCPServer {
                     Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v.to_string(),
                     _ => MCP_VERSION.to_string(),
                 };
+                // S10 能力声明:client→server 原语按实际注册项补齐;
+                // sampling/elicitation 是 client 能力,不进 server capabilities。
+                let mut capabilities = json!({ "tools": {} });
+                if self.resources.is_some() {
+                    capabilities["resources"] = json!({});
+                }
+                if self.prompts.is_some() {
+                    capabilities["prompts"] = json!({});
+                }
+                if self.completion.is_some() {
+                    capabilities["completion"] = json!({});
+                }
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
                     result: Some(json!({
                         "protocolVersion": protocol_version,
-                        "capabilities": { "tools": {} },
+                        "capabilities": capabilities,
                         "serverInfo": { "name": self.server_name, "version": self.server_version }
                     })),
                     error: None,
@@ -123,13 +200,185 @@ impl MCPServer {
                 }
             }
             "tools/call" => self.handle_tools_call(req).await,
-            _ => MCPResponse {
-                jsonrpc: "2.0".to_string(),
-                id: Some(req.id),
-                result: None,
-                error: Some(MCPError::method_not_found()),
-            },
+            // S10 五个 client→server 原语:注册后返回正确结构,未注册 method_not_found。
+            "resources/list" => self.handle_resources_list(req).await,
+            "resources/read" => self.handle_resources_read(req).await,
+            "prompts/list" => self.handle_prompts_list(req).await,
+            "prompts/get" => self.handle_prompts_get(req).await,
+            "completion/complete" => self.handle_completion_complete(req).await,
+            _ => Self::method_not_found_response(req.id),
         }
+    }
+
+    /// `resources/list`:列出已注册资源。
+    async fn handle_resources_list(&self, req: MCPRequest) -> MCPResponse {
+        match &self.resources {
+            Some(provider) => match provider.list_resources().await {
+                Ok(resources) => {
+                    let result = serde_json::to_value(ListResourcesResult { resources })
+                        .unwrap_or(Value::Null);
+                    Self::ok_response(req.id, result)
+                }
+                Err(e) => Self::error_response(req.id, e),
+            },
+            None => Self::method_not_found_response(req.id),
+        }
+    }
+
+    /// `resources/read`:按 URI 读取资源内容。
+    async fn handle_resources_read(&self, req: MCPRequest) -> MCPResponse {
+        let provider = match &self.resources {
+            Some(p) => p,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let uri = match params.get("uri").and_then(Value::as_str) {
+            Some(u) => u.to_string(),
+            None => {
+                return Self::invalid_params_response(req.id, "missing uri parameter");
+            }
+        };
+        match provider.read_resource(&uri).await {
+            Ok(contents) => {
+                let result =
+                    serde_json::to_value(ReadResourceResult { contents }).unwrap_or(Value::Null);
+                Self::ok_response(req.id, result)
+            }
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// `prompts/list`:列出已注册提示词。
+    async fn handle_prompts_list(&self, req: MCPRequest) -> MCPResponse {
+        match &self.prompts {
+            Some(provider) => match provider.list_prompts().await {
+                Ok(prompts) => {
+                    let result =
+                        serde_json::to_value(ListPromptsResult { prompts }).unwrap_or(Value::Null);
+                    Self::ok_response(req.id, result)
+                }
+                Err(e) => Self::error_response(req.id, e),
+            },
+            None => Self::method_not_found_response(req.id),
+        }
+    }
+
+    /// `prompts/get`:按名称 + 参数生成提示词消息。
+    async fn handle_prompts_get(&self, req: MCPRequest) -> MCPResponse {
+        let provider = match &self.prompts {
+            Some(p) => p,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let name = match params.get("name").and_then(Value::as_str) {
+            Some(n) => n.to_string(),
+            None => {
+                return Self::invalid_params_response(req.id, "missing name parameter");
+            }
+        };
+        let arguments = params.get("arguments").cloned();
+        match provider.get_prompt(&name, arguments.as_ref()).await {
+            Ok(result) => {
+                let result = serde_json::to_value(result).unwrap_or(Value::Null);
+                Self::ok_response(req.id, result)
+            }
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// `completion/complete`:为提示词参数 / 资源 URI 提供补全建议。
+    async fn handle_completion_complete(&self, req: MCPRequest) -> MCPResponse {
+        let provider = match &self.completion {
+            Some(p) => p,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let request: CompletionRequest = match serde_json::from_value(params) {
+            Ok(r) => r,
+            Err(e) => {
+                return Self::invalid_params_response(
+                    req.id,
+                    format!("invalid completion request: {e}"),
+                );
+            }
+        };
+        match provider.complete(&request).await {
+            Ok(result) => {
+                let result = serde_json::to_value(result).unwrap_or(Value::Null);
+                Self::ok_response(req.id, result)
+            }
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// 发起一次 sampling 请求(server→host 方向,S10)。
+    ///
+    /// 按 MCP 语义,`sampling/createMessage` 由 Server 发起、Host 执行 LLM 推理。
+    /// 本方法把请求转给注入的 [`SamplingHandler`];未注入 handler 时返回明确
+    /// 错误,不静默。真实交互依赖宿主环境的 UI/模型,由使用者经
+    /// [`Self::with_sampling_handler`] 接入。
+    pub async fn create_message(
+        &self,
+        request: &SamplingRequest,
+    ) -> Result<SamplingResult, MCPError> {
+        match &self.sampling_handler {
+            Some(handler) => handler.create_message(request).await,
+            None => Err(MCPError::new(
+                -32603,
+                "sampling handler not configured: register one via \
+                 MCPServer::with_sampling_handler() before create_message",
+            )),
+        }
+    }
+
+    /// 发起一次 elicitation 请求(server→host 方向,S10)。
+    ///
+    /// 按 MCP 语义,`elicitation/create` 由 Server 发起、Host 通过 UI 向用户
+    /// 收集输入。本方法把请求转给注入的 [`ElicitationHandler`];未注入 handler
+    /// 时返回明确错误,不静默。真实交互依赖宿主 UI,由使用者经
+    /// [`Self::with_elicitation_handler`] 接入。
+    pub async fn create_elicitation(
+        &self,
+        request: &ElicitationRequest,
+    ) -> Result<ElicitationResponse, MCPError> {
+        match &self.elicitation_handler {
+            Some(handler) => handler.create(request).await,
+            None => Err(MCPError::new(
+                -32603,
+                "elicitation handler not configured: register one via \
+                 MCPServer::with_elicitation_handler() before create_elicitation",
+            )),
+        }
+    }
+
+    /// 构造成功响应。
+    fn ok_response(id: u64, result: Value) -> MCPResponse {
+        MCPResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    /// 构造带 JSON-RPC 错误的响应。
+    fn error_response(id: u64, error: MCPError) -> MCPResponse {
+        MCPResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            result: None,
+            error: Some(error),
+        }
+    }
+
+    /// 构造 `method_not_found`(-32601)响应:未注册的能力 / 未知方法共用。
+    fn method_not_found_response(id: u64) -> MCPResponse {
+        Self::error_response(id, MCPError::method_not_found())
+    }
+
+    /// 构造 `invalid_params`(-32602)响应。
+    fn invalid_params_response(id: u64, msg: impl Into<String>) -> MCPResponse {
+        Self::error_response(id, MCPError::invalid_params(msg))
     }
 
     async fn handle_tools_call(&self, req: MCPRequest) -> MCPResponse {
@@ -333,6 +582,11 @@ async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, json: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::completion::{CompletionResult, CompletionValue};
+    use crate::elicitation::ElicitationAction;
+    use crate::prompts::{GetPromptResult, Prompt, PromptContent, PromptMessage};
+    use crate::resources::{Resource, ResourceContent};
+    use crate::sampling::{SamplingContent, SamplingMessage, SamplingRole};
     use lc_core::tools::ToolError;
 
     /// 测试用工具:回显输入
@@ -466,6 +720,387 @@ mod tests {
             .await;
         assert!(resp.is_error());
         assert_eq!(resp.error.unwrap().code, -32601); // method_not_found
+    }
+
+    // ============================================================================
+    // S10 五个 client→server 原语:注册后返回正确结构,未注册 method_not_found
+    // ============================================================================
+
+    struct MockResources;
+    #[async_trait::async_trait]
+    impl ResourceProvider for MockResources {
+        async fn list_resources(&self) -> Result<Vec<Resource>, MCPError> {
+            Ok(vec![Resource {
+                uri: "file:///a.txt".to_string(),
+                name: "a.txt".to_string(),
+                description: Some("a sample resource".to_string()),
+                mime_type: Some("text/plain".to_string()),
+            }])
+        }
+        async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError> {
+            Ok(vec![ResourceContent {
+                uri: uri.to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: Some("hello from resource".to_string()),
+                blob: None,
+            }])
+        }
+    }
+
+    struct MockPrompts;
+    #[async_trait::async_trait]
+    impl PromptProvider for MockPrompts {
+        async fn list_prompts(&self) -> Result<Vec<Prompt>, MCPError> {
+            Ok(vec![Prompt {
+                name: "greet".to_string(),
+                description: Some("Greet someone".to_string()),
+                arguments: vec![],
+            }])
+        }
+        async fn get_prompt(
+            &self,
+            name: &str,
+            arguments: Option<&Value>,
+        ) -> Result<GetPromptResult, MCPError> {
+            if name != "greet" {
+                return Err(MCPError::invalid_params(format!("unknown prompt: {name}")));
+            }
+            let who = arguments
+                .and_then(|a| a.get("who"))
+                .and_then(Value::as_str)
+                .map(|w| format!(", {w}"))
+                .unwrap_or_default();
+            Ok(GetPromptResult {
+                description: Some("Greet someone".to_string()),
+                messages: vec![PromptMessage {
+                    role: "user".to_string(),
+                    content: PromptContent::Text {
+                        text: format!("Hello{who}"),
+                    },
+                }],
+            })
+        }
+    }
+
+    struct MockCompletion;
+    #[async_trait::async_trait]
+    impl CompletionProvider for MockCompletion {
+        async fn complete(
+            &self,
+            request: &CompletionRequest,
+        ) -> Result<CompletionResult, MCPError> {
+            // 按前缀过滤出候选(真实补全的常见形态)。
+            let prefix = &request.argument.value;
+            let candidates = ["rust", "ruby", "python"];
+            let values: Vec<CompletionValue> = candidates
+                .iter()
+                .filter(|s| s.starts_with(prefix.as_str()))
+                .map(|s| CompletionValue {
+                    label: s.to_string(),
+                    description: None,
+                })
+                .collect();
+            let count = values.len();
+            Ok(CompletionResult {
+                values,
+                total: Some(count),
+                has_more: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resources_list_registered() {
+        let server = MCPServer::new().with_resource_provider(Arc::new(MockResources));
+        let resp = server
+            .handle_request(MCPRequest::new(10, "resources/list", None))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "resources/list 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: ListResourcesResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.resources.len(), 1);
+        assert_eq!(result.resources[0].uri, "file:///a.txt");
+    }
+
+    #[tokio::test]
+    async fn test_resources_list_not_registered() {
+        let server = MCPServer::new();
+        let resp = server
+            .handle_request(MCPRequest::new(11, "resources/list", None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_resources_read_registered() {
+        let server = MCPServer::new().with_resource_provider(Arc::new(MockResources));
+        let params = json!({"uri": "file:///a.txt"});
+        let resp = server
+            .handle_request(MCPRequest::new(12, "resources/read", Some(params)))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "resources/read 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: ReadResourceResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.contents.len(), 1);
+        assert_eq!(
+            result.contents[0].text.as_deref(),
+            Some("hello from resource")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resources_read_missing_uri() {
+        let server = MCPServer::new().with_resource_provider(Arc::new(MockResources));
+        let resp = server
+            .handle_request(MCPRequest::new(13, "resources/read", None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_prompts_list_registered() {
+        let server = MCPServer::new().with_prompt_provider(Arc::new(MockPrompts));
+        let resp = server
+            .handle_request(MCPRequest::new(14, "prompts/list", None))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "prompts/list 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: ListPromptsResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.prompts.len(), 1);
+        assert_eq!(result.prompts[0].name, "greet");
+    }
+
+    #[tokio::test]
+    async fn test_prompts_list_not_registered() {
+        let server = MCPServer::new();
+        let resp = server
+            .handle_request(MCPRequest::new(15, "prompts/list", None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_prompts_get_registered() {
+        let server = MCPServer::new().with_prompt_provider(Arc::new(MockPrompts));
+        let params = json!({"name": "greet", "arguments": {"who": "world"}});
+        let resp = server
+            .handle_request(MCPRequest::new(16, "prompts/get", Some(params)))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "prompts/get 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: GetPromptResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.messages.len(), 1);
+        match &result.messages[0].content {
+            PromptContent::Text { text } => assert_eq!(text, "Hello, world"),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prompts_get_missing_name() {
+        let server = MCPServer::new().with_prompt_provider(Arc::new(MockPrompts));
+        let resp = server
+            .handle_request(MCPRequest::new(17, "prompts/get", None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_prompts_get_not_registered() {
+        let server = MCPServer::new();
+        let params = json!({"name": "greet"});
+        let resp = server
+            .handle_request(MCPRequest::new(18, "prompts/get", Some(params)))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_completion_complete_registered() {
+        let server = MCPServer::new().with_completion_provider(Arc::new(MockCompletion));
+        let params = json!({
+            "reference": {"type": "ref/prompt", "uri": "prompt://greet"},
+            "argument": {"name": "who", "value": "ru"}
+        });
+        let resp = server
+            .handle_request(MCPRequest::new(19, "completion/complete", Some(params)))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "completion/complete 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: CompletionResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.values.len(), 2, "ru 前缀应筛出 rust/ruby");
+        assert_eq!(result.values[0].label, "rust");
+        assert_eq!(result.total, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_completion_complete_not_registered() {
+        let server = MCPServer::new();
+        let params = json!({
+            "reference": {"type": "ref/prompt", "uri": "prompt://greet"},
+            "argument": {"name": "who", "value": "ru"}
+        });
+        let resp = server
+            .handle_request(MCPRequest::new(20, "completion/complete", Some(params)))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_capabilities_reflect_registration() {
+        let server = MCPServer::new()
+            .with_resource_provider(Arc::new(MockResources))
+            .with_prompt_provider(Arc::new(MockPrompts))
+            .with_completion_provider(Arc::new(MockCompletion));
+        let resp = server
+            .handle_request(MCPRequest::new(21, "initialize", None))
+            .await;
+        let caps = resp.result.unwrap().get("capabilities").unwrap().clone();
+        assert!(caps.get("tools").is_some(), "tools 恒声明");
+        assert!(caps.get("resources").is_some(), "注册后应声明 resources");
+        assert!(caps.get("prompts").is_some(), "注册后应声明 prompts");
+        assert!(caps.get("completion").is_some(), "注册后应声明 completion");
+
+        let plain = MCPServer::new();
+        let resp = plain
+            .handle_request(MCPRequest::new(22, "initialize", None))
+            .await;
+        let caps = resp.result.unwrap().get("capabilities").unwrap().clone();
+        assert!(caps.get("tools").is_some(), "tools 恒声明");
+        assert!(caps.get("resources").is_none(), "未注册不声明 resources");
+        assert!(caps.get("prompts").is_none(), "未注册不声明 prompts");
+        assert!(caps.get("completion").is_none(), "未注册不声明 completion");
+    }
+
+    // ============================================================================
+    // S10 两个 server→host 原语:注入 mock 回调发起成功;无回调明确报错
+    // ============================================================================
+
+    struct MockSampling;
+    #[async_trait::async_trait]
+    impl SamplingHandler for MockSampling {
+        async fn create_message(
+            &self,
+            request: &SamplingRequest,
+        ) -> Result<SamplingResult, MCPError> {
+            Ok(SamplingResult {
+                role: SamplingRole::Assistant,
+                content: SamplingContent::Text {
+                    text: format!("echo: {}", request.max_tokens),
+                },
+                model: None,
+                stop_reason: Some("endTurn".to_string()),
+            })
+        }
+    }
+
+    struct MockElicitation;
+    #[async_trait::async_trait]
+    impl ElicitationHandler for MockElicitation {
+        async fn create(
+            &self,
+            request: &ElicitationRequest,
+        ) -> Result<ElicitationResponse, MCPError> {
+            Ok(ElicitationResponse {
+                action: ElicitationAction::Accept,
+                content: Some(json!({ "answer": request.message })),
+            })
+        }
+    }
+
+    fn sampling_request() -> SamplingRequest {
+        SamplingRequest {
+            messages: vec![SamplingMessage {
+                role: SamplingRole::User,
+                content: SamplingContent::Text {
+                    text: "hi".to_string(),
+                },
+            }],
+            max_tokens: 42,
+            system_prompt: None,
+            model_preferences: None,
+            temperature: None,
+            stop_sequences: None,
+            include_context: None,
+            metadata: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sampling_create_message_with_handler() {
+        let server = MCPServer::new().with_sampling_handler(Arc::new(MockSampling));
+        let result = server
+            .create_message(&sampling_request())
+            .await
+            .expect("注入 handler 后应成功");
+        assert!(matches!(result.role, SamplingRole::Assistant));
+        match result.content {
+            SamplingContent::Text { text } => assert_eq!(text, "echo: 42"),
+            SamplingContent::Image { .. } => panic!("expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sampling_create_message_without_handler() {
+        let server = MCPServer::new();
+        let err = server
+            .create_message(&sampling_request())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("sampling handler not configured"),
+            "无回调应返回明确错误,实际: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_elicitation_create_with_handler() {
+        let server = MCPServer::new().with_elicitation_handler(Arc::new(MockElicitation));
+        let req = ElicitationRequest {
+            message: "proceed?".to_string(),
+            schema: None,
+        };
+        let resp = server
+            .create_elicitation(&req)
+            .await
+            .expect("注入 handler 后应成功");
+        assert!(matches!(resp.action, ElicitationAction::Accept));
+    }
+
+    #[tokio::test]
+    async fn test_elicitation_create_without_handler() {
+        let server = MCPServer::new();
+        let req = ElicitationRequest {
+            message: "proceed?".to_string(),
+            schema: None,
+        };
+        let err = server.create_elicitation(&req).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("elicitation handler not configured"),
+            "无回调应返回明确错误,实际: {err}"
+        );
     }
 
     #[test]

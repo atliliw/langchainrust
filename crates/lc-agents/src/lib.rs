@@ -47,6 +47,11 @@ pub use orchestrator as orchestration;
 pub mod plan_execute;
 pub mod policy;
 pub mod react;
+/// 跨进程 resume(§4.2 人审/预算门):挂起状态落盘 + 恢复。框架在审批前后
+/// 落/清挂起点([`ResumeStore`]),新进程用 [`AgentExecutor::pending_approval`]
+/// 查看、[`AgentExecutor::resume`] 续跑。默认关(不配置 [`ResumeStore`] 即无
+/// 序列化,存量行为不变)。
+pub mod resume;
 pub mod retry;
 pub mod streaming;
 mod structured;
@@ -76,6 +81,7 @@ pub use orchestrator::{
 pub use plan_execute::{PlanExecuteAgent, PlanExecuteError};
 pub use policy::{ToolPolicy, ToolRisk};
 pub use react::ReActAgent;
+pub use resume::{FileResumeStore, MemoryResumeStore, PendingApproval, ResumeError, ResumeStore};
 pub use retry::RetryConfig;
 pub use streaming::{AgentStreamEvent, StreamingFunctionCallingAgent, ToolCallState};
 pub use task::AgentTask;

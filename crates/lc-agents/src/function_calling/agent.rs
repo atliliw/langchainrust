@@ -6,11 +6,14 @@
 
 use crate::{AgentAction, AgentError, AgentFinish, AgentOutput, AgentStep, BaseAgent, ToolInput};
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::language_models::{BaseChatModel, LLMResult, TokenUsage};
 use lc_core::tools::{to_tool_definition, BaseTool, ToolCall, ToolDefinition};
 use lc_providers::ProviderError;
 use lc_schema::Message;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// Function Calling Agent
@@ -206,6 +209,74 @@ impl BaseAgent for FunctionCallingAgent {
         )))
     }
 
+    /// 流式规划(S2):走 `stream_chat` 逐 token 转发模型文本 + 累积 usage。
+    ///
+    /// 函数调用 Agent 的**最终答案**以文本逐 token 流出(打字机效果);但
+    /// **工具调用步骤**模型不回文本(内容为空、tool_calls 在增量里),而当前
+    /// `stream_chat` 的 chunk 只携带文本与 usage、不携带 tool_calls —— 流式路径
+    /// 无法重构工具调用,故累积文本为空时回退非流式 [`BaseAgent::plan`] 拿原生
+    /// `tool_calls`,避免"空文本 → 空 Finish"的假流式把 agent 循环提前终止。
+    /// `stream_chat` 立即可用即失败时同样回退非流式 `plan()`。
+    /// 诚实边界:模型在单个步骤同时输出文本与工具调用时,当前只保留文本
+    /// (工具调用丢失)——与 provider 层 chunk 不带 tool_calls 的现状一致,已在
+    /// v0.18 计划书 "chunk 内携带 thinking / tool_calls 增量" 留作后续演进。
+    async fn plan_stream(
+        &self,
+        intermediate_steps: &[AgentStep],
+        inputs: &HashMap<String, String>,
+        on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+    ) -> Result<AgentOutput, AgentError> {
+        let messages = self.build_messages(inputs, intermediate_steps);
+
+        let mut stream = match self.llm.stream_chat(messages, None).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!(
+                    "stream_chat unavailable ({}), falling back to non-streaming plan",
+                    e
+                );
+                let output = self.plan(intermediate_steps, inputs).await?;
+                if let AgentOutput::Finish(finish) = &output {
+                    on_token(finish.output().unwrap_or("").to_string()).await;
+                }
+                return Ok(output);
+            }
+        };
+
+        // 逐 token:转发非空文本,累积完整文本 + 最后一个非 None 的 usage。
+        let mut full = String::new();
+        let mut usage: Option<TokenUsage> = None;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| AgentError::Other(format!("LLM stream error: {}", e)))?;
+            if !chunk.text.is_empty() {
+                on_token(chunk.text.clone()).await;
+            }
+            full.push_str(&chunk.text);
+            if chunk.token_usage.is_some() {
+                usage = chunk.token_usage;
+            }
+        }
+        if let Ok(mut guard) = self.last_token_usage.lock() {
+            *guard = usage;
+        }
+
+        // 工具调用步骤模型不回文本:流式 chunk 拿不到 tool_calls,回退非流式
+        // plan() 拿原生工具调用,保证 agent 循环不因"空 Finish"提前终止。
+        if full.trim().is_empty() {
+            log::debug!(
+                "streamed plan produced no text (likely a tool call), \
+                 falling back to non-streaming plan for tool_calls"
+            );
+            let output = self.plan(intermediate_steps, inputs).await?;
+            if let AgentOutput::Finish(finish) = &output {
+                on_token(finish.output().unwrap_or("").to_string()).await;
+            }
+            return Ok(output);
+        }
+
+        Ok(AgentOutput::Finish(AgentFinish::new(full, String::new())))
+    }
+
     fn get_allowed_tools(&self) -> Option<Vec<&str>> {
         Some(self.tools.iter().map(|t| t.name()).collect())
     }
@@ -232,8 +303,12 @@ impl std::fmt::Debug for FunctionCallingAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lc_providers::{OpenAIChat, OpenAIConfig};
+    use futures_util::Stream;
+    use lc_core::language_models::{BaseLanguageModel, StreamChunk};
+    use lc_core::runnables::{Runnable, RunnableConfig};
+    use lc_providers::{AssistantError, OpenAIChat, OpenAIConfig};
     use lc_tools::Calculator;
+    use std::sync::Mutex;
 
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig::new("test_key").with_base_url("http://localhost:8080/v1")
@@ -329,5 +404,246 @@ mod tests {
         let agent = FunctionCallingAgent::from_arc(llm_arc, tools, Some("test".into()));
         assert_eq!(agent.tools.len(), 1);
         assert_eq!(agent.system_prompt, Some("test".to_string()));
+    }
+
+    /// S2 流式 mock:可配置 `stream_chat` 返回(正常 chunks / 立即失败)与 `chat`
+    /// 返回(工具调用 / 最终答案),并记录方法调用序列,验证 FunctionCallingAgent
+    /// 的 `plan_stream` 覆写:逐 token 转发、空流回退非流式 plan、立即失败回退。
+    struct MockFuncLLM {
+        stream_chunks: Option<Vec<StreamChunk>>,
+        chat_result: LLMResult,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockFuncLLM {
+        fn new(stream_chunks: Option<Vec<StreamChunk>>, chat_result: LLMResult) -> Self {
+            Self {
+                stream_chunks,
+                chat_result,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for MockFuncLLM {
+        type Error = ProviderError;
+        async fn invoke(
+            &self,
+            input: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.chat(input, config).await
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for MockFuncLLM {
+        fn model_name(&self) -> &str {
+            "mock-func"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for MockFuncLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push("chat".to_string());
+            Ok(self.chat_result.clone())
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+        {
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push("stream_chat".to_string());
+            match &self.stream_chunks {
+                Some(chunks) => {
+                    let items: Vec<Result<StreamChunk, ProviderError>> =
+                        chunks.iter().cloned().map(Ok).collect();
+                    Ok(Box::pin(futures_util::stream::iter(items)))
+                }
+                None => Err(ProviderError::Assistant(AssistantError::Api(
+                    "stream_chat unavailable".to_string(),
+                ))),
+            }
+        }
+    }
+
+    fn calculator_call_result() -> LLMResult {
+        let call = ToolCall::builder("call_1")
+            .name("calculator")
+            .arguments(r#"{"expression": "2+3"}"#)
+            .build();
+        LLMResult {
+            content: String::new(),
+            model: "mock-func".to_string(),
+            token_usage: Some(TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            }),
+            tool_calls: Some(vec![call]),
+            thinking_content: None,
+        }
+    }
+
+    fn text_result(content: &str) -> LLMResult {
+        LLMResult {
+            content: content.to_string(),
+            model: "mock-func".to_string(),
+            token_usage: Some(TokenUsage {
+                prompt_tokens: 8,
+                completion_tokens: 6,
+                total_tokens: 14,
+            }),
+            tool_calls: None,
+            thinking_content: None,
+        }
+    }
+
+    fn streaming_agent(llm: MockFuncLLM) -> (FunctionCallingAgent, Arc<MockFuncLLM>) {
+        let arc: Arc<MockFuncLLM> = Arc::new(llm);
+        let agent = FunctionCallingAgent::from_arc(
+            arc.clone() as Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
+            vec![],
+            None,
+        );
+        (agent, arc)
+    }
+
+    /// S2:最终答案逐 token 流出(Text 事件),并记录流式用量供预算门。
+    #[tokio::test]
+    async fn test_function_calling_plan_stream_streams_final_answer() {
+        let llm = MockFuncLLM::new(
+            Some(vec![
+                StreamChunk::new("Final "),
+                StreamChunk {
+                    text: "Answer: 42".to_string(),
+                    token_usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                },
+            ]),
+            text_result("unused"),
+        );
+        let (agent, llm) = streaming_agent(llm);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "计算 6 * 7".to_string());
+        let mut received = String::new();
+        let mut on_token = |text: String| {
+            received.push_str(&text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("plan_stream should succeed");
+
+        assert_eq!(received, "Final Answer: 42");
+        assert!(matches!(
+            output,
+            AgentOutput::Finish(f) if f.output() == Some("Final Answer: 42")
+        ));
+        let usage = agent.last_token_usage().expect("streaming usage recorded");
+        assert_eq!(usage.total_tokens, 15);
+        // 走的是流式路径:只调了 stream_chat,没有回退 chat。
+        assert_eq!(llm.calls(), vec!["stream_chat"]);
+    }
+
+    /// S2:工具调用步骤模型不回文本,流式 chunk 拿不到 tool_calls —— `plan_stream`
+    /// 回退非流式 `plan()` 拿原生工具调用,不产生"空 Finish"假流式。
+    #[tokio::test]
+    async fn test_function_calling_plan_stream_falls_back_for_tool_call() {
+        // 模拟工具调用步骤:流只回传空文本 + usage 块。
+        let llm = MockFuncLLM::new(
+            Some(vec![StreamChunk {
+                text: String::new(),
+                token_usage: Some(TokenUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 0,
+                    total_tokens: 5,
+                }),
+            }]),
+            calculator_call_result(),
+        );
+        let (agent, llm) = streaming_agent(llm);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "计算 2 + 3".to_string());
+        let mut emitted: Vec<String> = Vec::new();
+        let mut on_token = |text: String| {
+            emitted.push(text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("plan_stream should succeed");
+
+        assert!(
+            matches!(&output, AgentOutput::Action(a) if a.tool == "calculator"),
+            "tool-call step must return Action"
+        );
+        assert!(emitted.is_empty(), "tool-call step emits no free text");
+        // 回退路径的用量来自非流式 plan()(预算门仍能拿到真实用量)。
+        let usage = agent.last_token_usage().expect("usage via fallback plan");
+        assert_eq!(usage.total_tokens, 15);
+        // 工具调用步骤:先启动流(空文本),再回退非流式 chat 拿原生 tool_calls。
+        assert_eq!(llm.calls(), vec!["stream_chat", "chat"]);
+    }
+
+    /// S2:`stream_chat` 立即可用即失败时,`plan_stream` 回退非流式 `plan()`,
+    /// 最终答案作为单个 Text 事件转发(与旧非流式路径一致)。
+    #[tokio::test]
+    async fn test_function_calling_plan_stream_falls_back_on_immediate_error() {
+        let llm = MockFuncLLM::new(None, text_result("Final Answer: 42"));
+        let (agent, llm) = streaming_agent(llm);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "计算 6 * 7".to_string());
+        let mut received = String::new();
+        let mut on_token = |text: String| {
+            received.push_str(&text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("fallback plan should succeed");
+
+        assert_eq!(received, "Final Answer: 42");
+        assert!(matches!(output, AgentOutput::Finish(_)));
+        // stream_chat 立即可用即失败 → 回退非流式 chat,整段答案作为单个 Text 事件。
+        assert_eq!(llm.calls(), vec!["stream_chat", "chat"]);
     }
 }

@@ -27,7 +27,9 @@ use std::sync::{Arc, Mutex};
 use self::types::*;
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, TokenUsage};
+use lc_core::language_models::{
+    BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
+};
 use lc_core::runnables::Runnable;
 use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
@@ -454,7 +456,8 @@ impl GeminiChat {
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, GeminiError>> + Send>>, GeminiError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, GeminiError>> + Send>>, GeminiError>
+    {
         let url = format!(
             "{}/models/{}:streamGenerateContent?alt=event-stream",
             self.config.base_url, self.config.model
@@ -484,7 +487,7 @@ impl GeminiChat {
 
         let byte_stream = response.bytes_stream();
         let sse_buffer = Arc::new(Mutex::new(String::new()));
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, GeminiError>>(64);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, GeminiError>>(64);
 
         let buffer_clone = sse_buffer.clone();
         tokio::spawn(async move {
@@ -529,12 +532,34 @@ impl GeminiChat {
                                         if let Some(content) = candidate.content {
                                             for part in content.parts {
                                                 if let Some(text) = part.text {
-                                                    if tx.send(Ok(text)).await.is_err() {
+                                                    if tx
+                                                        .send(Ok(StreamChunk::new(text)))
+                                                        .await
+                                                        .is_err()
+                                                    {
                                                         return;
                                                     }
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                                // Gemini 在最后一个 chunk 携带 usageMetadata;有则发出
+                                // usage chunk,流式路径即可拿到整次调用用量。
+                                if let Some(usage) = resp.usage_metadata {
+                                    let token_usage = TokenUsage {
+                                        prompt_tokens: usage.prompt_token_count.unwrap_or(0)
+                                            as usize,
+                                        completion_tokens: usage.candidates_token_count.unwrap_or(0)
+                                            as usize,
+                                        total_tokens: usage.total_token_count.unwrap_or(0) as usize,
+                                    };
+                                    let usage_chunk = StreamChunk {
+                                        text: String::new(),
+                                        token_usage: Some(token_usage),
+                                    };
+                                    if tx.send(Ok(usage_chunk)).await.is_err() {
+                                        return;
                                     }
                                 }
                             }
@@ -581,10 +606,10 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
         // C1 fix: true streaming — emit one LLMResult per token,
         // matching OpenAI/Ollama/Anthropic behavior.
         let stream = token_stream.map(move |token_result| match token_result {
-            Ok(token) => Ok(LLMResult {
-                content: token,
+            Ok(chunk) => Ok(LLMResult {
+                content: chunk.text,
                 model: model.clone(),
-                token_usage: None,
+                token_usage: chunk.token_usage,
                 tool_calls: None,
                 thinking_content: None,
             }),
@@ -714,7 +739,8 @@ impl BaseChatModel for GeminiChat {
         &self,
         messages: Vec<Message>,
         config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let run_name = config
             .as_ref()
             .and_then(|c| c.run_name.clone())
@@ -755,7 +781,7 @@ impl BaseChatModel for GeminiChat {
                 if let Some(ref cbs) = cbs {
                     if let Ok(ref token) = token_result {
                         for handler in cbs.handlers() {
-                            handler.on_llm_new_token(&run, token).await;
+                            handler.on_llm_new_token(&run, &token.text).await;
                         }
                     }
                 }

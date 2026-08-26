@@ -5,7 +5,7 @@ use super::*;
 use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::BaseChatModel;
-use lc_core::language_models::{BaseLanguageModel, LLMResult};
+use lc_core::language_models::{BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
 use lc_core::runnables::RunnableConfig;
 use lc_core::tools::{BaseTool, ToolError};
@@ -122,9 +122,10 @@ impl BaseChatModel for SequentialMockLLM {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String, Self::Error>> + Send>>, Self::Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         let content = self.next_response();
-        let stream = futures_util::stream::once(async move { Ok(content) });
+        let stream = futures_util::stream::once(async move { Ok(StreamChunk::new(content)) });
         Ok(Box::pin(stream))
     }
 }

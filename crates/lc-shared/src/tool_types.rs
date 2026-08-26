@@ -11,7 +11,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 /// Tool call from LLM response
 ///
 /// When an LLM decides to call a tool, it returns a ToolCall structure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
     /// Tool call ID (used to reference the call result)
     pub id: String,
@@ -25,27 +25,6 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    /// Create a new tool call.
-    ///
-    /// The three positional arguments are easy to swap (id/name/arguments);
-    /// prefer [`ToolCall::builder`] for call sites that construct calls from
-    /// untrusted or variable input.
-    #[deprecated(note = "use ToolCall::builder(id).name(..).arguments(..).build() instead")]
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        arguments: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            tool_type: "function".to_string(),
-            function: FunctionCall {
-                name: name.into(),
-                arguments: arguments.into(),
-            },
-        }
-    }
-
     /// Create a builder for a [`ToolCall`].
     pub fn builder(id: impl Into<String>) -> ToolCallBuilder {
         ToolCallBuilder::new(id)
@@ -73,7 +52,8 @@ impl ToolCall {
 
 /// Builder for constructing a [`ToolCall`] field by field.
 ///
-/// Replaces the error-prone 3-positional-argument [`ToolCall::new`].
+/// Replaces the error-prone 3-positional-argument constructor `ToolCall::new`
+/// (removed in 0.17; use [`ToolCall::builder`] instead).
 ///
 /// ```
 /// use lc_shared::ToolCall;
@@ -129,7 +109,7 @@ impl ToolCallBuilder {
 }
 
 /// Function call inside a ToolCall
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FunctionCall {
     /// Function name
     pub name: String,

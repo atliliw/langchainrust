@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::{Document, SearchResult, VectorStore, VectorStoreError};
+use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 
 /// ChromaDB 配置
 #[derive(Debug, Clone)]
@@ -78,6 +78,9 @@ struct ChromaQueryRequest {
     n_results: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     include: Option<Vec<String>>,
+    /// Chroma `where` 过滤字典(见 [`filter_to_chroma`])
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    where_filter: Option<serde_json::Value>,
 }
 
 /// ChromaDB query 响应
@@ -204,67 +207,14 @@ impl ChromaDBVectorStore {
             self.config.host, cid, endpoint
         ))
     }
-}
 
-#[async_trait]
-impl VectorStore for ChromaDBVectorStore {
-    async fn add_documents(
-        &self,
-        documents: Vec<Document>,
-        embeddings: Vec<Vec<f32>>,
-    ) -> Result<Vec<String>, VectorStoreError> {
-        if documents.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let count = documents.len();
-        let ids: Vec<String> = (0..count)
-            .map(|i| {
-                documents[i]
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-            })
-            .collect();
-
-        let contents: Vec<String> = documents.iter().map(|d| d.content.clone()).collect();
-        let metadatas: Vec<HashMap<String, serde_json::Value>> =
-            documents.iter().map(|d| d.metadata.clone()).collect();
-        let has_metadata = metadatas.iter().any(|m| !m.is_empty());
-
-        let request = ChromaAddRequest {
-            ids: ids.clone(),
-            embeddings,
-            documents: contents,
-            metadatas: if has_metadata { Some(metadatas) } else { None },
-        };
-
-        let url = self.collection_url("add")?;
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(VectorStoreError::StorageError(format!(
-                "failed to add documents: {}",
-                text
-            )));
-        }
-
-        Ok(ids)
-    }
-
-    async fn similarity_search(
-        &self,
+    /// 构造 Chroma query 请求体(pure function,便于测试)。
+    fn query_request(
         query_embedding: &[f32],
         k: usize,
-    ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        let request = ChromaQueryRequest {
+        filter: Option<&MetadataFilter>,
+    ) -> ChromaQueryRequest {
+        ChromaQueryRequest {
             query_embeddings: vec![query_embedding.to_vec()],
             n_results: k,
             include: Some(vec![
@@ -272,8 +222,15 @@ impl VectorStore for ChromaDBVectorStore {
                 "distances".to_string(),
                 "metadatas".to_string(),
             ]),
-        };
+            where_filter: filter.map(filter_to_chroma),
+        }
+    }
 
+    /// POST `/query` 并解析结果(普通与过滤检索共用)。
+    async fn query_impl(
+        &self,
+        request: ChromaQueryRequest,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let url = self.collection_url("query")?;
         let response = self
             .client
@@ -340,6 +297,80 @@ impl VectorStore for ChromaDBVectorStore {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(results)
+    }
+}
+
+#[async_trait]
+impl VectorStore for ChromaDBVectorStore {
+    async fn add_documents(
+        &self,
+        documents: Vec<Document>,
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<Vec<String>, VectorStoreError> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let count = documents.len();
+        let ids: Vec<String> = (0..count)
+            .map(|i| {
+                documents[i]
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            })
+            .collect();
+
+        let contents: Vec<String> = documents.iter().map(|d| d.content.clone()).collect();
+        let metadatas: Vec<HashMap<String, serde_json::Value>> =
+            documents.iter().map(|d| d.metadata.clone()).collect();
+        let has_metadata = metadatas.iter().any(|m| !m.is_empty());
+
+        let request = ChromaAddRequest {
+            ids: ids.clone(),
+            embeddings,
+            documents: contents,
+            metadatas: if has_metadata { Some(metadatas) } else { None },
+        };
+
+        let url = self.collection_url("add")?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(VectorStoreError::StorageError(format!(
+                "failed to add documents: {}",
+                text
+            )));
+        }
+
+        Ok(ids)
+    }
+
+    async fn similarity_search(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let request = Self::query_request(query_embedding, k, None);
+        self.query_impl(request).await
+    }
+
+    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(Chroma `where` 语法)。
+    async fn similarity_search_with_filter(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        let request = Self::query_request(query_embedding, k, filter);
+        self.query_impl(request).await
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
@@ -530,5 +561,100 @@ impl VectorStore for ChromaDBVectorStore {
         }
 
         Ok(())
+    }
+}
+
+/// S3: [`MetadataFilter`] → Chroma `where` 过滤字典。
+///
+/// 单字段条件翻译成 `{ key: { "$op": value } }`(Chroma v2 支持
+/// `$eq $ne $gt $gte $lt $lte $in $nin`),AND/OR 组合翻译成
+/// `{ "$and": [...] }` / `{ "$or": [...] }`。与 Pinecone 的翻译同构,
+/// 但按后端各自独立维护,语义完全交给服务端执行。
+pub fn filter_to_chroma(filter: &MetadataFilter) -> serde_json::Value {
+    fn op_str(op: FilterOp) -> &'static str {
+        match op {
+            FilterOp::Eq => "$eq",
+            FilterOp::Ne => "$ne",
+            FilterOp::Gt => "$gt",
+            FilterOp::Gte => "$gte",
+            FilterOp::Lt => "$lt",
+            FilterOp::Lte => "$lte",
+            FilterOp::In => "$in",
+            FilterOp::Nin => "$nin",
+        }
+    }
+    match filter {
+        MetadataFilter::Field { key, op, value } => {
+            serde_json::json!({ key.clone(): { op_str(*op): value.clone() } })
+        }
+        MetadataFilter::And(filters) => {
+            let items: Vec<serde_json::Value> = filters.iter().map(filter_to_chroma).collect();
+            serde_json::json!({ "$and": items })
+        }
+        MetadataFilter::Or(filters) => {
+            let items: Vec<serde_json::Value> = filters.iter().map(filter_to_chroma).collect();
+            serde_json::json!({ "$or": items })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S3: 单字段条件 → Chroma `where` 字典。
+    #[test]
+    fn test_filter_to_chroma_field() {
+        assert_eq!(
+            filter_to_chroma(&MetadataFilter::field("lang", FilterOp::Eq, "rust")),
+            serde_json::json!({ "lang": { "$eq": "rust" } })
+        );
+        assert_eq!(
+            filter_to_chroma(&MetadataFilter::field("year", FilterOp::Lt, 2020)),
+            serde_json::json!({ "year": { "$lt": 2020 } })
+        );
+    }
+
+    /// S3: AND/OR 组合 → `$and`/`$or` 嵌套。
+    #[test]
+    fn test_filter_to_chroma_and_or() {
+        let f = MetadataFilter::or(vec![
+            MetadataFilter::field("lang", FilterOp::Eq, "python"),
+            MetadataFilter::and(vec![
+                MetadataFilter::field("lang", FilterOp::Eq, "rust"),
+                MetadataFilter::field("tags", FilterOp::In, vec!["ml"]),
+            ]),
+        ]);
+        assert_eq!(
+            filter_to_chroma(&f),
+            serde_json::json!({
+                "$or": [
+                    { "lang": { "$eq": "python" } },
+                    { "$and": [
+                        { "lang": { "$eq": "rust" } },
+                        { "tags": { "$in": ["ml"] } }
+                    ]}
+                ]
+            })
+        );
+    }
+
+    /// S3: 无过滤时 `where_filter` 为 None,不序列化 `where` 字段。
+    #[test]
+    fn test_query_request_no_filter() {
+        let req = ChromaDBVectorStore::query_request(&[1.0, 2.0], 3, None);
+        assert!(req.where_filter.is_none());
+        let v = serde_json::to_value(&req).unwrap();
+        assert!(v.get("where").is_none());
+        assert_eq!(v["n_results"], 3);
+    }
+
+    /// S3: 有过滤时 `where` 字段序列化为 Chroma 字典。
+    #[test]
+    fn test_query_request_with_filter() {
+        let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let req = ChromaDBVectorStore::query_request(&[1.0, 2.0], 3, Some(&f));
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["where"], serde_json::json!({ "lang": { "$eq": "rust" } }));
     }
 }

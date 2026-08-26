@@ -6,7 +6,7 @@
 //! conversation history accumulates across turns — is the stateful counterpart.
 //!
 //! [`AgentExecutorChain`] bridges the two so an `A2AServer` can be backed
-//! directly by an agent via [`A2AServer::from_agent`], giving each A2A task
+//! directly by an agent via [`A2AServer::from_agent`](crate::A2AServer::from_agent), giving each A2A task
 //! genuine conversational continuity instead of a series of independent chain
 //! invocations.
 

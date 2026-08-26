@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.16.0 • Features</div>
+            <div class="sidebar-subtitle">v0.18.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -559,6 +559,7 @@
                 <a href="#langgraph" class="nav-item">📊 LangGraph</a>
                 <a href="#plan-execute" class="nav-item" style="color: var(--accent-tertiary);">📋 Plan & Execute</a>
                 <a href="#unified-015" class="nav-item new">🧩 Unified v0.15.0</a>
+                <a href="#v018-complete" class="nav-item new">🚀 v0.18.0 Capability Completion</a>
                 <a href="#whats-new-050" class="nav-item new">✨ v0.5.0+ New Features</a>
                 <a href="#llm-cache" class="nav-item new">⚡ LLM Cache</a>
                 <a href="#deep-research" class="nav-item new">🔬 Deep Research</a>
@@ -2040,7 +2041,7 @@ graph.validate()?;
                     <div class="feature-card"><h3>GraphRAG</h3><p>Knowledge graph + community detection + summaries</p></div>
                     <div class="feature-card"><h3>Deep Research</h3><p>Multi-round research with citations</p></div>
                     <div class="feature-card"><h3>RouterLLM</h3><p>5 strategies: Fallback/RoundRobin/Latency/Cost/Input</p></div>
-                    <div class="feature-card"><h3>MCP Primitives</h3><p>Implemented initialize / tools/list / tools/call + streaming tool results & cancellation; Resources etc. types defined (see v0.15 transport resilience)</p></div>
+                    <div class="feature-card"><h3>MCP Primitives</h3><p>initialize / tools/list / tools/call + resources / prompts / completion registration-based wiring; sampling / elicitation initiating methods (see v0.18 capability completion)</p></div>
                     <div class="feature-card" id="sandbox"><h3>Code Sandbox</h3><p>LocalSandbox (subprocess + timeout + resource limits)</p></div>
                     <div class="feature-card" id="responses-api"><h3>Responses API</h3><p>/v1/responses with web_search/file_search/code/computer</p></div>
                     <div class="feature-card" id="extended-thinking"><h3>Extended Thinking</h3><p>with_thinking(budget_tokens) + thinking_content</p></div>
@@ -2270,7 +2271,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>Core Primitives</h3><p>initialize / tools/list / tools/call + streaming tool results (PartialContent) & cancellation</p></div>
+                    <div class="feature-card"><h3>Core Primitives</h3><p>initialize / tools/list / tools/call + resources / prompts / completion primitives + streaming tool results (PartialContent) & cancellation</p></div>
                     <div class="feature-card"><h3>Transport Resilience</h3><p>Auto-reconnect (0.5s→30s exponential backoff), ConnectionManager pool, CircuitBreaker</p></div>
                     <div class="feature-card"><h3>Namespacing / Discovery</h3><p>ToolNamespace multi-server isolation, ToolDiscovery batch discovery, ToolSpec timeout policy</p></div>
                     <div class="feature-card"><h3>Security</h3><p>SamplingGuard sampling recursion guard (depth + token budget + timeout), ServerSandbox param & egress policy</p></div>
@@ -2279,7 +2280,7 @@ println!(<span class="str">"{}"</span>, report.summary);
 
                 <div class="callout">
                     <div class="callout-title">⚠️ Honest Status</div>
-                    <p><code>Resources</code> / <code>Prompts</code> / <code>Completion</code> / <code>Elicitation</code> / <code>Roots</code> types are defined, but their call logic is not implemented yet — direct calls return <code>method_not_found</code>. Currently available primitives are initialize / tools/list / tools/call, plus streaming tool results and cancellation.</p>
+                    <p><code>resources/list</code> / <code>resources/read</code> / <code>prompts/list</code> / <code>prompts/get</code> / <code>completion/complete</code> are wired (v0.18.0): registering a provider returns the corresponding structure; unregistered primitives return <code>method_not_found</code>. <code>elicitation/create</code> / <code>sampling/createMessage</code> are server→host initiation methods that require an injected host callback; without one they return an explicit error. <code>Roots</code> remains type-only.</p>
                 </div>
 
                 <hr class="divider">
@@ -2305,6 +2306,31 @@ println!(<span class="str">"{}"</span>, report.summary);
                     <div class="feature-card"><h3>Evaluation Enhanced</h3><p>LLMAsJudge (0-10), PairwiseJudge (A/B with position-bias mitigation), Report per-item fault tolerance</p></div>
                     <div class="feature-card"><h3>Multimodal Messages</h3><p>Message carries images/audio/files + ToolCall, MultimodalModel 3 interfaces (honest default Unsupported)</p></div>
                     <div class="feature-card"><h3>New Providers</h3><p>Azure / Cohere / Mistral added, 11 total, unified LLMClient::from_env auto-discovery</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.18.0 Capability Completion -->
+            <section class="module" id="v018-complete" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🚀</span>
+                    <h2>Capability Completion v0.18.0 <span class="badge new">v0.18.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.18.0 = capability completion: the two P0s flagged ⏳ in 0.17 (SelfQuery, streaming-path token usage) and four P2s are all done, plus MCP primitive call-logic wiring. Includes 2 planned breaking changes (<code>stream_chat</code> chunk type, <code>VectorStore</code> gains filter methods) — migration in <code>docs/internal/v0.18.0/MIGRATION_0.17_to_0.18.md</code>.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Streaming Token Usage</h3><p>StreamChunk { text, token_usage }, final chunk carries the whole call's usage</p></div>
+                    <div class="feature-card"><h3>Metadata Filtering</h3><p>MetadataFilter (Eq/Ne/Gt/Gte/Lt/Lte/In/Nin + And/Or), unified across VectorStore backends</p></div>
+                    <div class="feature-card"><h3>SelfQuery</h3><p>LLM splits {query, filter} + allowed_attributes whitelist, filtered similarity search</p></div>
+                    <div class="feature-card"><h3>PGVector Typed</h3><p>pgvector-storage feature: PGVectorStore is a real VectorStore impl (sqlx + pgvector)</p></div>
+                    <div class="feature-card"><h3>Cross-process Resume</h3><p>FileResumeStore persists approval/budget checkpoints, resume after restart</p></div>
+                    <div class="feature-card"><h3>Function-calling Word Stream</h3><p>FunctionCallingAgent final answer streams token-by-token, typewriter effect</p></div>
+                    <div class="feature-card"><h3>MCP Primitive Wiring</h3><p>resources / prompts / completion registration handlers + sampling / elicitation initiating methods</p></div>
+                    <div class="feature-card"><h3>Strict Signature Replay</h3><p>ReplayStrategy::Exact matches by full message signature, precise under parallel out-of-order</p></div>
                 </div>
 
                 <hr class="divider">
@@ -2421,7 +2447,7 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
 crates/
-├── lc/                  # Facade crate (package name: langchainrust, v0.16.0)
+├── lc/                  # Facade crate (package name: langchainrust, v0.18.0)
 ├── lc-shared/           # Shared types (ToolCall, Document, TextSplitter)
 ├── lc-schema/           # Data structures (Message with multimodal attrs / ToolCall, ImageContent, AudioContent, FileContent)
 ├── lc-core/             # Core abstractions
@@ -2461,14 +2487,14 @@ crates/
 ├── lc-tools/            # Built-in tools + sandbox (Calculator, DateTime, HTTPTool, PythonREPL, CodeSandbox, ComputerUseTool) + SSRF protection
 ├── lc-tools-derive/     # `#[tool]` proc macro
 ├── lc-mcp/              # MCP client/server + ConnectionManager / Gateway / SamplingGuard / CircuitBreaker
-│   ├── protocol.rs      # initialize / tools/list / tools/call (Resources etc. types defined only)
+│   ├── protocol.rs      # initialize / tools/list / tools/call + resources/prompts/completion wiring, sampling/elicitation initiating (v0.18)
 │   ├── stream.rs        # PartialContent streaming tool results + cancellation
 │   ├── connection_manager.rs / gateway.rs / tenant.rs / orchestrate.rs
 │   ├── health.rs        # ServerHealth / CircuitBreaker
 │   ├── sampling.rs      # SamplingGuard sampling protection
 │   └── sandbox.rs       # ServerSandbox (ParamRule / EgressPolicy)
 ├── lc-a2a/              # Agent-to-Agent protocol (tasks/send, get, cancel + AgentCard)
-├── lc-testkit/          # Record/replay test harness (RecordingProvider / ReplayProvider) v0.16
+├── lc-testkit/          # Record/replay test harness (RecordingProvider / ReplayProvider, Exact replay v0.18)
 ├── lc-langgraph/        # LangGraph (StateGraph, Reducer, GraphEdge, Checkpointer family, GraphPersistence, Subgraph, parallel)
 ├── lc-sessions/         # Session management (SessionStatus lifecycle + memory integration)
 ├── lc-guardrails/       # Input/output safety guardrails (Guardable, streaming guardrails, audit persistence)
@@ -2615,7 +2641,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.16.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.18.0 | MIT License</p>
             </footer>
         </div>
     </main>

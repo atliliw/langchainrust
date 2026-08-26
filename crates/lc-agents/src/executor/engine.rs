@@ -8,13 +8,14 @@ use super::{
     AgentError, BaseAgent, CACHE_NS, DEFAULT_MAX_CONCURRENCY, MAX_MAX_ITERATIONS,
     MIN_MAX_ITERATIONS,
 };
-use crate::approval::ApprovalHandler;
+use crate::approval::{ApprovalDecision, ApprovalHandler};
 use crate::cache::ResponseCache;
 use crate::hooks::{AgentHook, HookError};
 use crate::metrics::AgentMetrics;
 use crate::policy::ToolPolicy;
+use crate::resume::{PendingApproval, ResumeStore};
 use crate::streaming::state::AgentStreamEvent;
-use crate::types::{AgentOutput, AgentStep, ToolInput};
+use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use futures_util::Stream;
 use lc_callbacks::{CallbackManager, RunTree, RunType};
 use lc_core::runnables::RunnableConfig;
@@ -80,6 +81,11 @@ pub struct AgentExecutor {
     pub(crate) approval: Option<Arc<dyn ApprovalHandler>>,
     /// 预算门(§4.2):硬上限。`None` = 不限(默认关)。
     pub(crate) budget: Option<BudgetConfig>,
+
+    /// 跨进程 resume(§4.2):挂起点存储。`Some` 时,`execute_tool` 在等待审批
+    /// 前落盘 pending 审批、决定落地后清除;新进程可 `pending_approval()` 查看、
+    /// `resume(decision)` 续跑。`None` = 关闭(默认)。
+    pub(crate) resume_store: Option<Arc<dyn ResumeStore>>,
 }
 
 impl AgentExecutor {
@@ -102,6 +108,7 @@ impl AgentExecutor {
             tool_policy: None,
             approval: None,
             budget: None,
+            resume_store: None,
         }
     }
 
@@ -176,10 +183,10 @@ impl AgentExecutor {
     ///
     /// 默认 `None` = 不拦截,存量行为不变。审批决定(调用方实现
     /// [`ApprovalHandler`]):
-    /// - [`ApprovalDecision::Allow`][]:原样执行;
-    /// - [`ApprovalDecision::Deny`][]:跳过该工具,把理由作为 observation 喂回
+    /// - [`ApprovalDecision::Allow`](crate::approval::ApprovalDecision::Allow):原样执行;
+    /// - [`ApprovalDecision::Deny`](crate::approval::ApprovalDecision::Deny):跳过该工具,把理由作为 observation 喂回
     ///   循环,下一轮重新 plan;
-    /// - [`ApprovalDecision::Modify`][]:用新参数替换后执行。
+    /// - [`ApprovalDecision::Modify`](crate::approval::ApprovalDecision::Modify):用新参数替换后执行。
     ///
     /// # Example
     ///
@@ -210,6 +217,31 @@ impl AgentExecutor {
     /// ```
     pub fn with_budget(mut self, budget: BudgetConfig) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    /// 跨进程 resume(§4.2):挂起点存储。
+    ///
+    /// 开启后,每次工具调用进入人审门等待审批**之前**,框架把待审批工具 +
+    /// 恢复 agent loop 所需的上下文([`PendingApproval`])写入 store;审批决定
+    /// **落地之后**清除。进程崩溃时挂起点留在磁盘,新进程重建同配置 executor
+    /// 后调用 [`pending_approval`](Self::pending_approval) / [`resume`](Self::resume)
+    /// 续跑,而不是从头重放整个对话。
+    ///
+    /// 仅对非流式 `invoke` 路径生效(流式路径无审批闸);需与
+    /// [`with_approval`](Self::with_approval) 配合才有意义。并行工具执行
+    /// (多工具同时审批)不参与跨进程落盘 —— 单进程内审批仍正常。
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let store = Arc::new(FileResumeStore::new("/var/checkpoints/app")?);
+    /// let executor = AgentExecutor::new(agent, tools)
+    ///     .with_resume_store(store)
+    ///     .with_approval(Arc::new(MyHandler));
+    /// ```
+    pub fn with_resume_store(mut self, store: Arc<dyn ResumeStore>) -> Self {
+        self.resume_store = Some(store);
         self
     }
 
@@ -266,6 +298,103 @@ impl AgentExecutor {
     /// Returns metrics from the most recent invocation, if any.
     pub fn last_metrics(&self) -> Option<AgentMetrics> {
         self.metrics_store.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 读取当前待审批的挂起点(跨进程 resume)。
+    ///
+    /// 未配置 [`ResumeStore`] 或 store 为空时返回 `Ok(None)`。调用方拿到
+    /// [`PendingApproval`] 后向操作员展示 `tool_name` / `arguments`,收集审批
+    /// 决定,再调用 [`resume`](Self::resume) 续跑。
+    pub async fn pending_approval(&self) -> Result<Option<PendingApproval>, AgentError> {
+        let Some(store) = &self.resume_store else {
+            return Ok(None);
+        };
+        store
+            .load_pending()
+            .await
+            .map_err(|e| AgentError::Resume(e.to_string()))
+    }
+
+    /// 从挂起点恢复(跨进程 resume):用给定决定处理待审批工具,再从挂起迭代
+    /// 继续 agent loop,返回最终答案。
+    ///
+    /// - 未配置 [`ResumeStore`] 或无挂起点 → `Ok(None)`(无操作)。
+    /// - 有挂起点 → 先**认领**(清除)防止重复审批,执行待审批工具,然后从
+    ///   `iteration + 1` 继续循环;预算(tool / token / 迭代)从挂起点累计量
+    ///   续算,`max_duration` 从恢复时刻重新起表(跨进程单调时钟不可移植,诚实
+    ///   近似)。
+    ///
+    /// 恢复的 executor 必须与崩溃前构造一致(相同 agent / tools / store 目录),
+    /// 才能正确续跑;审批决定由调用方注入,不再重跑 [`ApprovalHandler`]。
+    pub async fn resume(&self, decision: ApprovalDecision) -> Result<Option<String>, AgentError> {
+        let Some(store) = &self.resume_store else {
+            return Ok(None);
+        };
+        let Some(pending) = store
+            .load_pending()
+            .await
+            .map_err(|e| AgentError::Resume(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        // 认领挂起点:先清除。resume 中途崩溃时不重复审批(至多一次)。
+        store
+            .clear_pending()
+            .await
+            .map_err(|e| AgentError::Resume(e.to_string()))?;
+
+        let action = AgentAction {
+            tool: pending.tool_name.clone(),
+            tool_input: ToolInput::Object {
+                value: pending.arguments.clone(),
+            },
+            log: String::new(),
+        };
+
+        let mut root_run = RunTree::new(
+            "AgentExecutor",
+            RunType::Chain,
+            json!({"input": pending.inputs.get("input").cloned().unwrap_or_default()}),
+        );
+        // 沿用原 trace_id,恢复后的 tool child run 追踪连续。
+        if let Some(tid) = &pending.trace_id {
+            if let Ok(id) = uuid::Uuid::parse_str(tid) {
+                root_run.trace_id = Some(id);
+                root_run = root_run.with_metadata("trace_id", json!(tid));
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let mut metrics = AgentMetrics {
+            trace_id: root_run.trace_id.map(|id| id.to_string()),
+            tool_calls: pending.tool_calls_consumed,
+            total_tokens: pending.tokens_consumed,
+            ..Default::default()
+        };
+
+        // 执行待审批工具(注入给定决定,不再重跑审批 handler)。
+        let observation = self
+            .execute_tool_inner(&action, &root_run, None, Some(decision))
+            .await?;
+        let mut steps = pending.steps;
+        steps.push(AgentStep::new(action, observation));
+
+        let result = self
+            .run_agent_loop_from(
+                pending.inputs,
+                steps,
+                pending.iteration + 1,
+                &mut root_run,
+                &mut metrics,
+            )
+            .await;
+
+        metrics.duration = started.elapsed();
+        metrics.log_summary();
+        if let Ok(mut guard) = self.metrics_store.lock() {
+            *guard = Some(metrics);
+        }
+        result.map(Some)
     }
 
     /// 生成 `plan()` 缓存的 key:命名空间 + 输入 + 中间步骤(含工具观察)。
@@ -535,6 +664,7 @@ impl AgentExecutor {
             tool_policy: self.tool_policy.clone(),
             approval: self.approval.clone(),
             budget: self.budget.clone(),
+            resume_store: self.resume_store.clone(),
         };
 
         merged_executor.invoke_inner(input, trace_id).await
@@ -550,12 +680,15 @@ impl AgentExecutor {
     /// `Text` events carry model text, but their granularity depends on the
     /// agent's [`BaseAgent::plan_stream`] implementation:
     ///
-    /// * **Text ReAct agents** stream from the model's chat API, so `Text`
-    ///   events arrive **per token** — concat them as they come for a live
-    ///   word-stream.
-    /// * **Other agents** (function-calling, plan-and-execute, …) use the
-    ///   non-streaming default, so the whole final answer arrives as a single
-    ///   `Text` event immediately before `FinalAnswer`.
+    /// * **ReAct and FunctionCalling agents** stream from the model's chat API,
+    ///   so `Text` events arrive **per token** — concat them as they come for a
+    ///   live word-stream. A function-calling step that calls a tool streams
+    ///   back empty model text (tool calls aren't carried in stream chunks);
+    ///   such steps fall back to the non-streaming path internally, so no
+    ///   phantom empty `Text` is emitted.
+    /// * **Other agents** (plan-and-execute without a streaming inner agent, …)
+    ///   use the non-streaming default, so the whole final answer arrives as a
+    ///   single `Text` event immediately before `FinalAnswer`.
     ///
     /// `ToolStart`/`ToolEnd` events are always emitted per tool call.
     ///
@@ -616,9 +749,9 @@ impl AgentExecutor {
                     return;
                 }
                 // F3:流式规划——agent 内部把模型文本逐 token 经 on_token 转发
-                // 为 Text 事件。ReAct 走 `stream_chat` 得到真正的逐字流;其它 agent
-                // 走 `plan_stream` 默认实现(整段答案作为单个 Text 事件),行为与旧
-                // 路径一致。
+                // 为 Text 事件。ReAct / FunctionCalling 覆写 plan_stream 走
+                // `stream_chat` 得到真正的逐字流;其它 agent 走默认实现(整段答案
+                // 作为单个 Text 事件),行为与旧路径一致。
                 let output = {
                     // 不能 shadow 外层 tx:闭包 move 会把它带走,后面的
                     // ToolStart/FinalAnswer 就再也用不了外层 tx 了。
@@ -787,6 +920,7 @@ impl std::fmt::Debug for AgentExecutor {
             .field("max_concurrency", &self.max_concurrency)
             .field("has_response_cache", &self.response_cache.is_some())
             .field("has_tool_policy", &self.tool_policy.is_some())
+            .field("has_resume_store", &self.resume_store.is_some())
             .field(
                 "has_metrics",
                 &self

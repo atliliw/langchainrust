@@ -70,10 +70,11 @@ fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(ms.min(MAX_RECONNECT_BACKOFF_MS))
 }
 
-/// 进程内传输:把 [`MCPClient`] 直接接到一个 [`MCPServer`](crate::MCPServer) 上,
+/// 进程内传输:把 [`MCPClient`](crate::client::MCPClient) 直接接到一个
+/// [`MCPServer`](crate::MCPServer) 上,
 /// 不走子进程 / 网络,便于嵌入式集成与测试(P2-6)。
 ///
-/// 请求经 [`MCPServer::handle_request`] 原地处理;通知(`notifications/initialized`
+/// 请求经 [`MCPServer::handle_request`](crate::MCPServer::handle_request) 原地处理;通知(`notifications/initialized`
 /// 等)无需响应,直接忽略;事件通道仅广播一次 `Connected`(没有服务器推送)。
 pub struct InMemoryTransport {
     server: Arc<crate::MCPServer>,
