@@ -1,5 +1,5 @@
 // crates/lc-prompts/src/chat_prompt_template.rs
-//! 聊天消息模板
+//! Chat message template
 
 use crate::error::PromptsError;
 use crate::template_parser::{
@@ -10,22 +10,23 @@ use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
 use lc_schema::Message;
 use std::collections::HashMap;
 
-/// 聊天提示词模板
+/// Chat prompt template
 ///
-/// 支持多条消息的模板，每条消息内容可以使用 `{variable}` 格式。
-/// 消息内容在构造时被解析一次，`format` 直接替换占位符而不是每次重扫正则。
+/// Supports a multi-message template; each message's content can use `{variable}` format.
+/// Message content is parsed once at construction; `format` replaces placeholders directly
+/// instead of re-scanning the regex every time.
 pub struct ChatPromptTemplate {
     messages: Vec<Message>,
     segments: Vec<Vec<TemplateSegment>>,
 }
 
 impl ChatPromptTemplate {
-    /// 创建新的聊天模板
+    /// Creates a new chat template
     ///
-    /// # 参数
-    /// * `messages` - 消息列表，消息内容可以使用 `{variable}` 标记变量
+    /// # Arguments
+    /// * `messages` - Message list; message content can use `{variable}` markers
     ///
-    /// # 示例
+    /// # Example
     /// ```ignore
     /// let template = ChatPromptTemplate::new(vec![
     ///     Message::system("你是一个{role}助手。"),
@@ -44,16 +45,16 @@ impl ChatPromptTemplate {
         Self { messages, segments }
     }
 
-    /// 格式化模板，替换所有消息中的变量
+    /// Formats the template, replacing variables in all messages
     ///
-    /// # 参数
-    /// * `variables` - 变量映射表
+    /// # Arguments
+    /// * `variables` - Variable mapping
     ///
-    /// # 返回
-    /// 替换后的消息列表，或缺失变量的错误
+    /// # Returns
+    /// The replaced message list, or a missing-variable error
     ///
-    /// # 错误
-    /// 如果任何消息中有变量但 `variables` 中没有提供对应的值，返回错误
+    /// # Errors
+    /// Returns an error if any message has a variable with no matching value in `variables`
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, PromptsError> {
         self.messages
             .iter()
@@ -69,10 +70,10 @@ impl ChatPromptTemplate {
             .collect()
     }
 
-    /// 获取模板中需要的所有变量名
+    /// Returns all variable names the template needs
     ///
-    /// # 返回
-    /// 变量名列表（去重）
+    /// # Returns
+    /// The variable-name list (deduplicated)
     pub fn variables(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         for segments in &self.segments {
@@ -83,14 +84,14 @@ impl ChatPromptTemplate {
         seen.into_iter().collect()
     }
 
-    /// 获取原始消息模板
+    /// Returns the raw message templates
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
-    /// 从消息数组快速创建模板
+    /// Quickly creates a template from a message array
     ///
-    /// # 示例
+    /// # Example
     /// ```ignore
     /// let template = ChatPromptTemplate::from_messages([
     ///     Message::system("你是一个{role}助手。"),
@@ -102,8 +103,9 @@ impl ChatPromptTemplate {
     }
 }
 
-// Runnable 形态:让提示词进 LCEL 链,`prompt.pipe(llm)` 成立。
-// 接收 owned 变量表(HashMap<String, String>),转引用委托给 `format`。
+// Runnable form: lets the prompt join an LCEL chain, so `prompt.pipe(llm)` works.
+// Receives an owned variable map (HashMap<String, String>), converting to references and
+// delegating to `format`.
 #[async_trait]
 impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
     type Error = LcelError;
@@ -113,7 +115,7 @@ impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
         input: HashMap<String, String>,
         _config: Option<RunnableConfig>,
     ) -> Result<Vec<Message>, LcelError> {
-        // `format` 收 &HashMap<&str, &str>,这里从 owned map 转引用
+        // `format` takes &HashMap<&str, &str>; convert from the owned map to references here
         let vars: HashMap<&str, &str> = input
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -157,7 +159,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "你是一个编程助手。");
         assert_eq!(messages[1].content, "你好，我是小明。");
-        // 非 content 字段应被保留（Q4：不再手工逐字段克隆）
+        // Non-content fields should be preserved (Q4: no more manual per-field cloning)
         assert!(matches!(
             messages[0].message_type,
             lc_schema::MessageType::System

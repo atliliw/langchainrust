@@ -1,29 +1,33 @@
 // lc-agents/src/cache.rs
-//! LLM 结果缓存(P2-1)
+//! LLM result cache (P2-1)
 //!
-//! Agent 循环里 `plan()` 的 LLM 调用按 `(输入 + 中间步骤 + 执行器命名空间)`
-//! 哈希命中缓存,确定性 prompt 场景下相同输入直接复用上次的 `AgentOutput`,
-//! 跳过 LLM 往返。工具执行结果(observation)进入 key,不缓存工具本身。
+//! `plan()`'s LLM calls in the agent loop are keyed by `(input +
+//! intermediate steps + executor namespace)`; under deterministic prompts the
+//! same input reuses the previous `AgentOutput`, skipping the LLM round trip.
+//! Tool execution results (observations) enter the key; tools themselves are
+//! not cached.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
-/// LLM 结果缓存抽象。
+/// LLM result cache abstraction.
 ///
-/// 值以字符串承载(内部存序列化后的 `AgentOutput`),实现可换成磁盘 / Redis /
-/// 进程间共享,只要 `get`/`put` 语义一致。
+/// Values are carried as strings (internally a serialized `AgentOutput`); the
+/// implementation can be swapped for disk / Redis / cross-process sharing as
+/// long as `get`/`put` semantics stay consistent.
 pub trait ResponseCache: Send + Sync {
-    /// 按 key 命中缓存,返回序列化结果。
+    /// Returns the serialized result for `key`, if cached.
     fn get(&self, key: &str) -> Option<String>;
-    /// 写入缓存。
+    /// Writes a cache entry.
     fn put(&self, key: String, value: String);
-    /// 清空缓存。
+    /// Clears the cache.
     fn clear(&self);
 }
 
-/// 有界内存缓存。
+/// Bounded in-memory cache.
 ///
-/// 条目超过 `max_entries` 时按 FIFO 淘汰最旧条目,防止确定性缓存无限增长。
+/// When entries exceed `max_entries`, the oldest are evicted FIFO to keep the
+/// deterministic cache from growing without bound.
 #[derive(Default)]
 pub struct MemoryCache {
     inner: Mutex<CacheInner>,
@@ -46,12 +50,12 @@ impl Default for CacheInner {
 }
 
 impl MemoryCache {
-    /// 创建默认容量(256 条)的内存缓存。
+    /// Creates an in-memory cache with default capacity (256 entries).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 指定最大条目数(至少 1)。
+    /// Sets the maximum entry count (at least 1).
     pub fn with_capacity(max_entries: usize) -> Self {
         Self {
             inner: Mutex::new(CacheInner {

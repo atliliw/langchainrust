@@ -1,26 +1,29 @@
 //! PGVector vector store (PostgreSQL + pgvector extension)
 //!
-//! [`PGVectorStore`] 是 `VectorStore` 的类型化实现,依赖 `sqlx` + `pgvector` 两个
-//! crate(在 `pgvector-storage` feature 下启用)。feature 默认关闭:
+//! [`PGVectorStore`] is a typed `VectorStore` implementation backed by `sqlx` + `pgvector`
+//! (enabled under the `pgvector-storage` feature). The feature is off by default:
 //!
-//! - sqlx 是重依赖,开启会显著拉长编译时间;
-//! - 历史注释称与 `rusqlite`(libsqlite3-sys linkage)冲突 —— 本实现选用的 sqlx 0.8
-//!   与 rusqlite 0.31 **共享** `libsqlite3-sys` 0.28,二者可共存(升级 sqlx 到 0.8.6+
-//!   会改拉 `libsqlite3-sys` 0.31,才触发 links 冲突,故锁定 0.8)。
+//! - sqlx is a heavy dependency; enabling it noticeably lengthens compile time;
+//! - historical comments claimed a conflict with `rusqlite` (libsqlite3-sys linkage) — the
+//!   sqlx 0.8 selected here **shares** `libsqlite3-sys` 0.28 with rusqlite 0.31, so the two
+//!   can coexist (upgrading sqlx to 0.8.6+ would pull `libsqlite3-sys` 0.31 instead and
+//!   trigger a links conflict, hence the 0.8 pin).
 //!
-//! 使用前提(管理员执行):`CREATE EXTENSION vector;`。随后:
+//! Prerequisite (run by an administrator): `CREATE EXTENSION vector;`. Then:
 //! ```text
 //! let store = lc_vector_stores::pgvector::PGVectorStore::connect(
 //!     "postgres://postgres:postgres@localhost:5432/vectors", "docs", 768).await?;
 //! store.initialize().await?;
 //! ```
 //!
-//! 相似度用 cosine 距离(`<=>`),分数 = `1 - distance`,与内存存储的 cosine 相似度
-//! 约定一致(区间 [-1, 1])。SQL 注入防线延续 `validate_table_name`(表名白名单),
-//! 过滤条件的 metadata key 也走同款正则白名单;所有比较值一律 sqlx 参数绑定。
+//! Similarity uses cosine distance (`<=>`), score = `1 - distance`, consistent with the
+//! in-memory store's cosine similarity convention (range [-1, 1]). The SQL injection defense
+//! follows `validate_table_name` (table name whitelist); filter metadata keys go through the
+//! same regex whitelist; all comparison values are bound as sqlx parameters.
 //!
-//! 诚实边界:运行时正确性依赖外部 PG 实例,CI 无实例 —— 集成测试标 `#[ignore]`
-//! (需设 `PGVECTOR_TEST_URL`),本地单测只覆盖 SQL 构造纯函数(`build_filter_sql`)。
+//! Honest boundary: runtime correctness depends on an external PG instance, and CI has none —
+//! integration tests are marked `#[ignore]` (requires `PGVECTOR_TEST_URL`); local unit tests
+//! cover only the pure SQL construction function (`build_filter_sql`).
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -85,16 +88,16 @@ pub fn build_table_sql(table: &str, dim: usize) -> String {
 /// PGVector store configuration.
 #[derive(Debug, Clone)]
 pub struct PGVectorConfig {
-    /// PostgreSQL 连接串,如 `postgres://postgres:postgres@localhost:5432/vectors`。
+    /// PostgreSQL connection string, e.g. `postgres://postgres:postgres@localhost:5432/vectors`.
     pub database_url: String,
-    /// 存储向量数据的表名(需满足 [`validate_table_name`] 白名单)。
+    /// Table name holding vector data (must satisfy the [`validate_table_name`] whitelist).
     pub table: String,
-    /// 向量维度(必须与建表时 `vector(dim)` 一致)。
+    /// Vector dimension (must match the `vector(dim)` used at table creation).
     pub dimension: usize,
 }
 
 impl PGVectorConfig {
-    /// 构造配置。
+    /// Constructs a config.
     pub fn new(
         database_url: impl Into<String>,
         table: impl Into<String>,
@@ -108,38 +111,39 @@ impl PGVectorConfig {
     }
 }
 
-/// 绑定到 SQL 参数的过滤值。
+/// A filter value bound to a SQL parameter.
 ///
-/// 文本值绑定为 `text`(与 `metadata->>'key'` 比较);数值绑定为 `float8`(配合
-/// `(metadata->>'key')::float8` 与 `jsonb_typeof` 守卫做数值比较)。
+/// Text values bind as `text` (compared against `metadata->>'key'`); numbers bind as `float8`
+/// (numeric comparison via `(metadata->>'key')::float8` guarded by `jsonb_typeof`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterBinding {
-    /// 文本值(字符串 / 布尔)。
+    /// Text value (string / boolean).
     Text(String),
-    /// 数值。
+    /// Numeric value.
     Number(f64),
 }
 
-/// [`build_filter_sql`] 的结果:`WHERE` 子句 + 按 `$N` 出现顺序排列的绑定值。
+/// Result of [`build_filter_sql`]: a `WHERE` clause + bound values ordered by `$N` appearance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterSql {
-    /// 不带 `WHERE` 前缀的 SQL 条件子句(空组合时为 `TRUE` / `FALSE`)。
+    /// SQL condition clause without the `WHERE` prefix (`TRUE` / `FALSE` for empty combinations).
     pub clause: String,
-    /// 与 `$N` 占位符一一对应的绑定值。
+    /// Bound values, one per `$N` placeholder in order.
     pub bindings: Vec<FilterBinding>,
 }
 
-/// 把 [`MetadataFilter`] 翻译成 PGVector 可用的 SQL `WHERE` 子句。
+/// Translates a [`MetadataFilter`] into a PGVector-ready SQL `WHERE` clause.
 ///
-/// 纯函数,不触库 —— 单元测试无需 PG 实例。`start_idx` 是第一个 `$N` 占位符编号
-/// (检索查询里 `$1` 被查询向量占用,过滤从 `$2` 起)。
+/// Pure function, touches no database — unit tests need no PG instance. `start_idx` is the
+/// first `$N` placeholder number (in retrieval queries `$1` is taken by the query vector, so
+/// filtering starts at `$2`).
 ///
-/// 语义对齐 [`MetadataFilter::matches`](crate::MetadataFilter::matches):
-/// - 缺失字段对 `Eq` / `In` / 排序操作**不命中**(`metadata->'key'` 为 NULL);
-/// - 缺失字段对 `Ne` / `Nin` **命中**(包一层 `metadata->'key' IS NULL OR …`);
-/// - 数值比较加 `jsonb_typeof(metadata->'key') = 'number'` 守卫,避免对非数值
-///   字段做 `::float8` 转换时报错;
-/// - 空 `In` 恒为假(`FALSE`)、空 `Nin` 恒为真(`TRUE`)。
+/// Semantics align with [`MetadataFilter::matches`](crate::MetadataFilter::matches):
+/// - missing fields do **not** match `Eq` / `In` / ordering ops (`metadata->'key'` is NULL);
+/// - missing fields **do** match `Ne` / `Nin` (wrapped as `metadata->'key' IS NULL OR …`);
+/// - numeric comparisons add a `jsonb_typeof(metadata->'key') = 'number'` guard to avoid a
+///   `::float8` cast error on non-numeric fields;
+/// - an empty `In` is always false (`FALSE`), an empty `Nin` is always true (`TRUE`).
 pub fn build_filter_sql(
     filter: &MetadataFilter,
     start_idx: usize,
@@ -155,7 +159,7 @@ pub fn build_filter_sql(
     })
 }
 
-/// 过滤 SQL 构造时的绑定上下文:累积绑定值 + 下一个 `$N` 编号。
+/// Binding context while building filter SQL: accumulated bound values + the next `$N` number.
 struct FilterContext {
     bindings: Vec<FilterBinding>,
     next: usize,
@@ -249,7 +253,7 @@ fn eq_ne_clause(
         }
     };
     if op == FilterOp::Ne {
-        // SQL NULL 语义:缺失字段对 Ne 匹配(与 filter.rs 一致)。
+        // SQL NULL semantics: a missing field matches Ne (consistent with filter.rs).
         Ok(format!("(metadata->'{}' IS NULL OR {})", key, base))
     } else {
         Ok(base)
@@ -297,7 +301,7 @@ fn in_clause(
         ))
     })?;
     if arr.is_empty() {
-        // 空 In 恒假、空 Nin 恒真(与 filter.rs 语义一致)。
+        // an empty In is always false, an empty Nin is always true (consistent with filter.rs semantics).
         return Ok(if op == FilterOp::In {
             "FALSE".to_string()
         } else {
@@ -342,7 +346,7 @@ fn in_clause(
     }
 }
 
-/// 把 sqlx 错误映射成 `VectorStoreError`(连接类错误单独区分)。
+/// Maps sqlx errors to `VectorStoreError` (connection-class errors are distinguished separately).
 fn map_sqlx(e: sqlx::Error) -> VectorStoreError {
     match e {
         sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => {
@@ -352,12 +356,12 @@ fn map_sqlx(e: sqlx::Error) -> VectorStoreError {
     }
 }
 
-/// 解码错误(行字段读取失败)。
+/// Decode error (failed to read a row field).
 fn map_decode(e: sqlx::Error) -> VectorStoreError {
     VectorStoreError::StorageError(format!("failed to decode PostgreSQL row: {e}"))
 }
 
-/// 把查询结果行(score 已由 SQL 算出)转成 `SearchResult`。
+/// Converts query result rows (score already computed by SQL) into `SearchResult`s.
 fn rows_to_results(rows: Vec<PgRow>) -> Result<Vec<SearchResult>, VectorStoreError> {
     rows.into_iter()
         .map(|row| {
@@ -381,11 +385,11 @@ fn rows_to_results(rows: Vec<PgRow>) -> Result<Vec<SearchResult>, VectorStoreErr
         .collect()
 }
 
-/// PGVector 类型化向量存储。
+/// Typed PGVector vector store.
 ///
-/// 用 `sqlx` 连接池访问 PostgreSQL + pgvector 扩展。表名走
-/// [`validate_table_name`] 白名单;向量维度在客户端校验(DB 端 `vector(dim)`
-/// 列也会兜底)。
+/// Uses a `sqlx` connection pool to access PostgreSQL + the pgvector extension. Table names go
+/// through the [`validate_table_name`] whitelist; the vector dimension is validated client-side
+/// (the DB-side `vector(dim)` column also backstops it).
 pub struct PGVectorStore {
     pool: PgPool,
     table: String,
@@ -393,7 +397,7 @@ pub struct PGVectorStore {
 }
 
 impl PGVectorStore {
-    /// 从一个已存在的 `sqlx` 连接池创建。
+    /// Creates a store from an existing `sqlx` connection pool.
     pub fn new(pool: PgPool, table: &str, dim: usize) -> Result<Self, VectorStoreError> {
         validate_table_name(table)?;
         if dim == 0 {
@@ -408,9 +412,9 @@ impl PGVectorStore {
         })
     }
 
-    /// 连接 PostgreSQL 并创建 store。
+    /// Connects to PostgreSQL and creates a store.
     ///
-    /// 只建连接池,不建表;建表调用 [`initialize`](Self::initialize)。
+    /// Only builds the connection pool, not the table; call [`initialize`](Self::initialize) to create the table.
     pub async fn connect(
         database_url: &str,
         table: &str,
@@ -436,27 +440,27 @@ impl PGVectorStore {
         })
     }
 
-    /// 从配置连接。
+    /// Connects from a config.
     pub async fn from_config(config: PGVectorConfig) -> Result<Self, VectorStoreError> {
         Self::connect(&config.database_url, &config.table, config.dimension).await
     }
 
-    /// 建表(`CREATE TABLE IF NOT EXISTS`,幂等)。
+    /// Creates the table (`CREATE TABLE IF NOT EXISTS`, idempotent).
     ///
-    /// 需先由管理员执行 `CREATE EXTENSION vector;`(本方法不代为执行 —— 需要
-    /// 超级用户权限,缺权限时会报错而非静默)。
+    /// `CREATE EXTENSION vector;` must be run by an administrator first (this method does not
+    /// run it — it needs superuser privileges; without them it errors rather than silently).
     pub async fn initialize(&self) -> Result<(), VectorStoreError> {
         let sql = build_table_sql(&self.table, self.dim);
         query(&sql).execute(&self.pool).await.map_err(map_sqlx)?;
         Ok(())
     }
 
-    /// 统一的检索实现:可选 metadata 过滤 + 可选最低分数阈值。
+    /// Unified retrieval implementation: optional metadata filtering + optional minimum score threshold.
     ///
-    /// SQL 形状:`SELECT … (1 - (embedding <=> $1)) AS score FROM <table>
+    /// SQL shape: `SELECT … (1 - (embedding <=> $1)) AS score FROM <table>
     /// [WHERE <filter> [AND (1 - (embedding <=> $1)) >= $N]]
-    /// ORDER BY score DESC LIMIT $M`。`$1`(查询向量)被 `<=>` 两处引用时是同一
-    /// 参数,只需 bind 一次。
+    /// ORDER BY score DESC LIMIT $M`. When `$1` (the query vector) is referenced by the two
+    /// `<=>` uses it is the same parameter, so it only needs to be bound once.
     async fn search_with(
         &self,
         query_embedding: &[f32],
@@ -584,8 +588,8 @@ impl VectorStore for PGVectorStore {
         k: usize,
         min_score: Option<f32>,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // Q2: 覆写以获得"先按阈值过滤再取 top-k"的精确语义,而不是默认实现的
-        // "top-k 后二次过滤"近似。
+        // Q2: override to get the exact "filter by threshold first, then take top-k" semantics,
+        // not the default implementation's "top-k then re-filter" approximation.
         self.search_with(query_embedding, k, None, min_score).await
     }
 
@@ -697,9 +701,9 @@ mod tests {
         assert!(validate_table_name("").is_err()); // empty
     }
 
-    // ---- build_filter_sql 纯函数单测(无需 PG 实例) ----
+    // ---- build_filter_sql pure-function unit tests (no PG instance needed) ----
 
-    /// Eq 字符串 → 文本比较;绑定值按 `$N` 顺序。
+    /// Eq string → text comparison; bound values follow `$N` order.
     #[test]
     fn test_filter_eq_string() {
         let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
@@ -708,7 +712,7 @@ mod tests {
         assert_eq!(fs.bindings, vec![FilterBinding::Text("rust".to_string())]);
     }
 
-    /// Eq 数值 → `jsonb_typeof` 守卫 + `::float8` 比较。
+    /// Eq number → `jsonb_typeof` guard + `::float8` comparison.
     #[test]
     fn test_filter_eq_number() {
         let f = MetadataFilter::field("year", FilterOp::Eq, 2024);
@@ -720,7 +724,7 @@ mod tests {
         assert_eq!(fs.bindings, vec![FilterBinding::Number(2024.0)]);
     }
 
-    /// Ne → 缺失字段匹配语义(IS NULL OR)。
+    /// Ne → missing-field match semantics (IS NULL OR).
     #[test]
     fn test_filter_ne_string() {
         let f = MetadataFilter::field("lang", FilterOp::Ne, "rust");
@@ -731,7 +735,7 @@ mod tests {
         );
     }
 
-    /// 排序操作 → `::float8` 比较,非数值 value 报 UnsupportedFilter。
+    /// Ordering ops → `::float8` comparison; a non-numeric value raises UnsupportedFilter.
     #[test]
     fn test_filter_ordering() {
         let f = MetadataFilter::field("year", FilterOp::Gte, 2021);
@@ -747,7 +751,7 @@ mod tests {
         assert!(matches!(err, VectorStoreError::UnsupportedFilter(_)));
     }
 
-    /// In/Nin 字符串数组。
+    /// In/Nin string arrays.
     #[test]
     fn test_filter_in_strings() {
         let f = MetadataFilter::field("source", FilterOp::In, vec!["docs", "web"]);
@@ -769,7 +773,7 @@ mod tests {
         );
     }
 
-    /// In 数值数组 → `::float8 IN`。
+    /// In numeric arrays → `::float8 IN`.
     #[test]
     fn test_filter_in_numbers() {
         let f = MetadataFilter::field("year", FilterOp::In, vec![2020, 2024]);
@@ -784,7 +788,7 @@ mod tests {
         );
     }
 
-    /// 空 In → FALSE、空 Nin → TRUE(与 filter.rs 语义一致)。
+    /// Empty In → FALSE, empty Nin → TRUE (consistent with filter.rs semantics).
     #[test]
     fn test_filter_empty_in_nin() {
         let empty_in: Vec<String> = vec![];
@@ -795,7 +799,7 @@ mod tests {
         assert_eq!(build_filter_sql(&f, 2).unwrap().clause, "TRUE");
     }
 
-    /// And/Or 嵌套 → 括号分组;空 And → TRUE、空 Or → FALSE。
+    /// And/Or nesting → parenthesized groups; empty And → TRUE, empty Or → FALSE.
     #[test]
     fn test_filter_and_or_nesting() {
         let f = MetadataFilter::and(vec![
@@ -816,7 +820,7 @@ mod tests {
         assert_eq!(build_filter_sql(&empty_or, 2).unwrap().clause, "FALSE");
     }
 
-    /// `start_idx` 决定首个 `$N` 编号(检索查询里 $1 被查询向量占用)。
+    /// `start_idx` decides the first `$N` number ($1 is taken by the query vector in retrieval queries).
     #[test]
     fn test_filter_start_idx() {
         let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
@@ -824,7 +828,7 @@ mod tests {
         assert_eq!(fs.clause, "metadata->>'lang' = $5");
     }
 
-    /// 非法 metadata key → UnsupportedFilter(SQL 注入防线)。
+    /// Invalid metadata key → UnsupportedFilter (SQL injection defense).
     #[test]
     fn test_filter_invalid_key_errors() {
         let f = MetadataFilter::field("user id", FilterOp::Eq, "x");
@@ -835,21 +839,21 @@ mod tests {
         assert!(build_filter_sql(&inject, 2).is_err());
     }
 
-    /// 混合类型 In 数组 → UnsupportedFilter(拒绝歧义比较)。
+    /// Mixed-type In array → UnsupportedFilter (rejects ambiguous comparisons).
     #[test]
     fn test_filter_mixed_in_errors() {
         let f = MetadataFilter::field("tag", FilterOp::In, json!([1, "x"]));
         assert!(build_filter_sql(&f, 2).is_err());
     }
 
-    // ---- 集成测试(需外部 PG + pgvector 扩展,默认 #[ignore]) ----
+    // ---- integration tests (need an external PG + the pgvector extension, #[ignore] by default) ----
 
     fn test_url() -> String {
         std::env::var("PGVECTOR_TEST_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/vectors".to_string())
     }
 
-    /// 建表 + 增删查 + cosine 分数全流程。
+    /// Full roundtrip: create table + add/delete/query + cosine scores.
     #[ignore = "requires a running PostgreSQL with the pgvector extension (CREATE EXTENSION vector); set PGVECTOR_TEST_URL"]
     #[tokio::test]
     async fn test_pgvector_roundtrip() {
@@ -865,7 +869,7 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert_eq!(store.count().await, 2);
 
-        // cosine 分数:同向 ≈ 1,正交 ≈ 0。
+        // cosine scores: same direction ≈ 1, orthogonal ≈ 0.
         let results = store.similarity_search(&[0.9, 0.1, 0.0], 2).await.unwrap();
         assert_eq!(results.len(), 2);
         assert!(results[0].document.content.contains("rust"));
@@ -887,7 +891,7 @@ mod tests {
             .await;
     }
 
-    /// S3 过滤落到 PG 侧。
+    /// S3 filtering is pushed down to the PG side.
     #[ignore = "requires a running PostgreSQL with the pgvector extension (CREATE EXTENSION vector); set PGVECTOR_TEST_URL"]
     #[tokio::test]
     async fn test_pgvector_metadata_filter() {
@@ -919,7 +923,7 @@ mod tests {
             .await
             .unwrap();
 
-        // AND 组合:lang=rust AND year>=2021 → 只有 rust doc。
+        // AND combination: lang=rust AND year>=2021 → only rust doc.
         let and = MetadataFilter::and(vec![
             MetadataFilter::field("lang", FilterOp::Eq, "rust"),
             MetadataFilter::field("year", FilterOp::Gte, 2021),
@@ -931,7 +935,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].document.content.contains("rust doc"));
 
-        // Nin + 缺失字段语义:lang NOT IN (python) → rust 两条 + 缺失的也会命中。
+        // Nin + missing-field semantics: lang NOT IN (python) → the two rust docs plus any with the field missing.
         let nin = MetadataFilter::field("lang", FilterOp::Nin, vec!["python"]);
         let results = store
             .similarity_search_with_filter(&[1.0, 0.0, 0.0], 5, Some(&nin))
@@ -939,7 +943,7 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 2);
 
-        // 非法 key → UnsupportedFilter(不静默忽略)。
+        // invalid key → UnsupportedFilter (not silently ignored).
         let bad = MetadataFilter::field("nonexistent key!", FilterOp::Eq, "x");
         let err = store
             .similarity_search_with_filter(&[1.0, 0.0, 0.0], 5, Some(&bad))
@@ -952,7 +956,7 @@ mod tests {
             .await;
     }
 
-    /// 精确的 min_score 语义:阈值过滤发生在取 top-k 之前。
+    /// Exact min_score semantics: threshold filtering happens before taking top-k.
     #[ignore = "requires a running PostgreSQL with the pgvector extension (CREATE EXTENSION vector); set PGVECTOR_TEST_URL"]
     #[tokio::test]
     async fn test_pgvector_min_score() {

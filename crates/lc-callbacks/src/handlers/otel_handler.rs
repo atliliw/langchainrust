@@ -1,10 +1,12 @@
-//! OpenTelemetry callback handler(feature = "opentelemetry")
+//! OpenTelemetry callback handler (feature = "opentelemetry")
 //!
-//! 把框架执行事件(LLM/Chain/Tool/Retriever 的开始/结束/错误)转为 OTel span。
+//! Converts framework execution events (LLM/Chain/Tool/Retriever start/end/error)
+//! into OTel spans.
 //!
-//! 使用前需先配置全局 tracer provider(如 `opentelemetry-otlp`),否则用 noop tracer。
+//! A global tracer provider must be configured first (e.g. `opentelemetry-otlp`);
+//! otherwise a noop tracer is used.
 //!
-//! # 示例
+//! # Example
 //! ```ignore
 //! use lc_callbacks::CallbackManager;
 //! use lc_callbacks::OtelHandler;
@@ -23,7 +25,7 @@ use crate::base::CallbackHandler;
 use crate::run_tree::RunTree;
 use lc_schema::Message;
 
-/// OpenTelemetry callback handler:把执行事件转为 OTel span
+/// OpenTelemetry callback handler: converts execution events into OTel spans
 ///
 /// Uses a HashMap keyed by run ID instead of a stack, so spans are
 /// tracked by their run ID and parent relationships are established
@@ -36,7 +38,7 @@ pub struct OtelHandler {
 }
 
 impl OtelHandler {
-    /// 用指定 tracer 构造
+    /// Construct with the given tracer
     pub fn new(tracer: BoxedTracer) -> Self {
         Self {
             tracer,
@@ -44,7 +46,7 @@ impl OtelHandler {
         }
     }
 
-    /// 用全局 tracer 构造(需先 `global::set_tracer_provider`)
+    /// Construct with the global tracer (requires `global::set_tracer_provider` first)
     pub fn from_global(name: &str) -> Self {
         Self::new(global::tracer(name.to_string()))
     }
@@ -88,7 +90,7 @@ impl OtelHandler {
         }
     }
 
-    /// 当前活跃 span 数(测试用)
+    /// Number of currently active spans (for tests)
     pub async fn active_span_count(&self) -> usize {
         self.spans.lock().await.len()
     }
@@ -257,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_from_global_does_not_panic() {
-        // 未设 provider 时返回 noop tracer,不应 panic
+        // Without a provider the noop tracer is returned; must not panic
         let _h = OtelHandler::from_global("test");
     }
 
@@ -282,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn test_end_span_when_empty_is_noop() {
         let h = OtelHandler::from_global("test");
-        // 栈空时 end 不应 panic
+        // end with an empty stack must not panic
         let run = RunTree::new("nonexistent", crate::RunType::Llm, serde_json::json!({}));
         h.end_span(&run).await;
         assert_eq!(h.active_span_count().await, 0);

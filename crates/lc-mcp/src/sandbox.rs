@@ -1,59 +1,60 @@
-//! per-Server 安全隔离(P2-6)。
+//! per-Server security isolation (P2-6).
 //!
-//! 100+ Server 来源各异、权限边界不同,必须按 Server 独立收窄权限:
+//! With 100+ servers of varied provenance and differing permission boundaries, permissions must be narrowed
+//! independently per server:
 //!
-//! - **进程层独立容器**:每个 Server 是独立子进程 / 独立连接,互不共享内存
-//!   (P2-1 惰性连接天然隔离);
-//! - **权限层独立凭证**:`ServerSpec` 各自携带自己的 config/凭证,无跨 Server
-//!   共享;
-//! - **参数级最小权限**:[`ParamRule`] 在工具调用参数上做约束——文件 Server
-//!   只允许 `file:///tmp` 前缀、格式只允许枚举值、拒绝路径穿越子串,违反即拦截;
-//! - **网络层出站白名单**:[`EgressPolicy`] 声明该 Server 可访问的主机,空白名单
-//!   即全禁(fail-closed);
-//! - **审计层全量记录**:[`ServerSandbox`] 记录每次放行/拦截调用,供事后审计。
+//! - **Process-layer isolated containers**: each server is its own child process / independent connection, sharing
+//!   no memory (P2-1 lazy connections are naturally isolated);
+//! - **Credential-layer independent credentials**: each `ServerSpec` carries its own config/credentials, never
+//!   shared across servers;
+//! - **Parameter-level least privilege**: [`ParamRule`] constrains tool-call arguments — a file server only allows
+//!   the `file:///tmp` prefix, formats only allow enum values, path-traversal substrings are rejected, violations are blocked;
+//! - **Network-layer egress allowlist**: [`EgressPolicy`] declares the hosts a server may reach; an empty allowlist
+//!   blocks everything (fail-closed);
+//! - **Audit-layer full recording**: [`ServerSandbox`] records every allow/block call for later auditing.
 //!
-//! [`MCPToolAdapter::with_sandbox`](crate::tool_adapter::MCPToolAdapter::with_sandbox)
-//! 把 `ServerSandbox` 挂到工具适配器上,`run()`
-//! 在发请求前先过 `check_call`,拦截则返回错误并记审计。
+//! [`MCPToolAdapter::with_sandbox`](crate::tool_adapter::MCPToolAdapter::with_sandbox) attaches a `ServerSandbox`
+//! to the tool adapter; `run()` passes `check_call` before sending the request, returning an error and recording
+//! the audit when blocked.
 
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-/// 参数级最小权限规则(P2-6)。
+/// Parameter-level least-privilege rule (P2-6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamRule {
-    /// 字符串参数必须以指定前缀开头(最小权限前缀白名单,
-    /// 如文件 Server 只允许 `file:///tmp/`)。
+    /// The string parameter must start with a given prefix (a least-privilege prefix allowlist,
+    /// e.g. a file server only allows `file:///tmp/`).
     Prefix {
-        /// 目标参数字段名
+        /// Target parameter field name
         field: String,
-        /// 要求的前缀
+        /// Required prefix
         prefix: String,
     },
-    /// 字符串参数必须落在允许集合内(枚举白名单)。
+    /// The string parameter must fall within the allowed set (enum allowlist).
     Enum {
-        /// 目标参数字段名
+        /// Target parameter field name
         field: String,
-        /// 允许的取值集合
+        /// Allowed value set
         allowed: Vec<String>,
     },
-    /// 字符串参数禁止包含指定子串(如路径穿越 `..`、危险命令)。
+    /// The string parameter must not contain a given substring (e.g. path traversal `..`, dangerous commands).
     RejectContains {
-        /// 目标参数字段名
+        /// Target parameter field name
         field: String,
-        /// 禁止出现的子串列表
+        /// List of forbidden substrings
         forbidden: Vec<String>,
     },
 }
 
 impl ParamRule {
-    /// 对一次工具调用参数校验;返回违规原因。
+    /// Validates one tool call's arguments; returns the violation reason.
     fn check(&self, arguments: &Value) -> Result<(), ParamRuleError> {
         let obj = match arguments {
             Value::Object(m) => m,
-            // 非对象参数(无字段可校验):fail-closed,拦截以保最小权限。
+            // Non-object arguments (no fields to validate): fail-closed, block to preserve least privilege.
             _ => {
                 return Err(ParamRuleError::Violation(
                     "arguments must be a JSON object to perform least-privilege validation"
@@ -102,11 +103,11 @@ impl ParamRule {
     }
 }
 
-/// 参数级最小权限校验错误(P2-6)。
+/// Parameter-level least-privilege validation error (P2-6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParamRuleError {
-    /// 违反参数规则的具体原因。
+    /// The specific reason the parameter rule was violated.
     Violation(String),
 }
 
@@ -120,33 +121,33 @@ impl std::fmt::Display for ParamRuleError {
 
 impl std::error::Error for ParamRuleError {}
 
-/// 网络层出站白名单(P2-6):该 Server 允许访问的主机。
+/// Network-layer egress allowlist (P2-6): the hosts this Server may access.
 ///
-/// 空策略 = 禁止一切出站(fail-closed)。`allows` 支持子域:
-/// 允许 `example.com` 即放行 `api.example.com`,但不放行 `evil-example.com`。
+/// An empty policy = all egress blocked (fail-closed). `allows` supports subdomains:
+/// allowing `example.com` permits `api.example.com`, but not `evil-example.com`.
 #[derive(Debug, Clone, Default)]
 pub struct EgressPolicy {
     allowed: Vec<String>,
 }
 
 impl EgressPolicy {
-    /// 空白名单(禁止一切出站)。
+    /// Empty allowlist (blocks all egress).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 追加一个允许访问的主机名。
+    /// Adds an allowed hostname.
     pub fn allow(mut self, host: impl Into<String>) -> Self {
         self.allowed.push(host.into());
         self
     }
 
-    /// 白名单是否为空(为空表示禁止一切出站)。
+    /// Whether the allowlist is empty (empty means all egress is blocked).
     pub fn is_empty(&self) -> bool {
         self.allowed.is_empty()
     }
 
-    /// 是否允许访问该主机(大小写不敏感,支持子域通配)。
+    /// Whether the host is allowed (case-insensitive, supports subdomain wildcards).
     pub fn allows(&self, host: &str) -> bool {
         let host = host.to_ascii_lowercase();
         self.allowed.iter().any(|a| {
@@ -156,32 +157,32 @@ impl EgressPolicy {
     }
 }
 
-/// 审计记录(P2-6):一次放行/拦截的调用。
+/// Audit record (P2-6): one allowed/blocked call.
 #[derive(Debug, Clone)]
 pub struct AuditRecord {
-    /// 所属 Server。
+    /// The owning Server.
     pub server: String,
-    /// 被调用的工具。
+    /// The tool that was called.
     pub tool: String,
-    /// 工具调用参数(全量)。
+    /// Tool call arguments (in full).
     pub arguments: Value,
-    /// 是否放行。
+    /// Whether it was allowed.
     pub allowed: bool,
-    /// 拦截原因(`allowed` 为 false 时有值)。
+    /// Block reason (present when `allowed` is false).
     pub reason: Option<String>,
-    /// 记录时间。
+    /// Record time.
     pub at: SystemTime,
 }
 
-/// 沙箱拦截错误。
+/// Sandbox block error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxError {
-    /// 拦截原因描述
+    /// Block reason description
     pub reason: String,
 }
 
 impl SandboxError {
-    /// 构造沙箱拦截错误。
+    /// Builds a sandbox block error.
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
@@ -197,25 +198,25 @@ impl std::fmt::Display for SandboxError {
 
 impl std::error::Error for SandboxError {}
 
-/// per-Server 安全沙箱(P2-6):参数最小权限 + 出站白名单 + 全量审计。
+/// per-Server security sandbox (P2-6): parameter least privilege + egress allowlist + full audit.
 ///
-/// 字段均为 `Arc`/`Mutex`,可廉价 `Clone` 分发给同一 Server 的多个工具适配器,
-/// 共享同一份规则与审计日志。
+/// Fields are all `Arc`/`Mutex`, cheaply `Clone`able for distribution to multiple tool adapters of the same
+/// server, sharing the same rules and audit log.
 #[derive(Debug, Clone)]
 pub struct ServerSandbox {
     server: String,
-    /// 参数级最小权限规则。
+    /// Parameter-level least-privilege rules.
     param_rules: Arc<Vec<ParamRule>>,
-    /// 网络层出站白名单。
+    /// Network-layer egress allowlist.
     egress: Arc<EgressPolicy>,
-    /// 全量审计日志(环形,上限 `max_audit`)。
+    /// Full audit log (ring buffer, cap `max_audit`).
     audit: Arc<Mutex<VecDeque<AuditRecord>>>,
-    /// 审计日志上限(默认 1000)。
+    /// Audit log cap (default 1000).
     max_audit: usize,
 }
 
 impl ServerSandbox {
-    /// 创建一个 per-Server 安全沙箱(默认无参数规则:放行;出站全禁)。
+    /// Creates a per-Server security sandbox (no parameter rules by default: allow; all egress blocked).
     pub fn new(server: impl Into<String>) -> Self {
         Self {
             server: server.into(),
@@ -226,13 +227,13 @@ impl ServerSandbox {
         }
     }
 
-    /// 追加一条参数级最小权限规则。
+    /// Adds a parameter-level least-privilege rule.
     pub fn with_param_rule(mut self, rule: ParamRule) -> Self {
         Arc::make_mut(&mut self.param_rules).push(rule);
         self
     }
 
-    /// 追加一个出站白名单主机。
+    /// Adds an egress-allowlist host.
     pub fn allow_host(mut self, host: impl Into<String>) -> Self {
         let mut policy = Arc::make_mut(&mut self.egress).clone();
         policy.allowed.push(host.into());
@@ -240,19 +241,19 @@ impl ServerSandbox {
         self
     }
 
-    /// 替换整个出站白名单。
+    /// Replaces the whole egress allowlist.
     pub fn with_egress(mut self, policy: EgressPolicy) -> Self {
         self.egress = Arc::new(policy);
         self
     }
 
-    /// 设置审计日志上限(最少 1)。
+    /// Sets the audit-log cap (minimum 1).
     pub fn with_max_audit(mut self, max: usize) -> Self {
         self.max_audit = max.max(1);
         self
     }
 
-    /// 校验一次工具调用(参数级最小权限),放行记 Allowed、拦截记 Blocked。
+    /// Validates one tool call (parameter-level least privilege), recording Allowed on pass and Blocked on intercept.
     pub fn check_call(&self, tool: &str, arguments: &Value) -> Result<(), SandboxError> {
         for rule in self.param_rules.iter() {
             if let Err(e) = rule.check(arguments) {
@@ -265,7 +266,7 @@ impl ServerSandbox {
         Ok(())
     }
 
-    /// 校验出站目标是否在白名单内(网络层)。
+    /// Validates whether the egress target is in the allowlist (network layer).
     pub fn check_egress(&self, tool: &str, host: &str) -> Result<(), SandboxError> {
         if !self.egress.allows(host) {
             let reason = format!("egress target '{host}' is not in the allowlist");
@@ -276,7 +277,7 @@ impl ServerSandbox {
         Ok(())
     }
 
-    /// 全量审计日志(按时间先后)。
+    /// Full audit log (in chronological order).
     pub fn audit_log(&self) -> Vec<AuditRecord> {
         self.audit
             .lock()
@@ -286,7 +287,7 @@ impl ServerSandbox {
             .collect()
     }
 
-    /// 清空审计日志。
+    /// Clears the audit log.
     pub fn clear_audit(&self) {
         self.audit.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -313,7 +314,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// 参数级最小权限:文件 Server 只允许 `file:///tmp/` 前缀。
+    /// Parameter-level least privilege: a file server only allows the `file:///tmp/` prefix.
     #[test]
     fn test_prefix_rule_blocks_and_allows() {
         let sandbox = ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
@@ -331,7 +332,7 @@ mod tests {
             "{}",
             err
         );
-        // 缺字段 fail-closed。
+        // Missing field fails closed.
         let err = sandbox.check_call("read_file", &json!({})).unwrap_err();
         assert!(
             err.to_string().contains("missing string parameter"),
@@ -340,7 +341,7 @@ mod tests {
         );
     }
 
-    /// 枚举白名单:只允许声明的值。
+    /// Enum allowlist: only declared values are allowed.
     #[test]
     fn test_enum_rule() {
         let sandbox = ServerSandbox::new("fmt").with_param_rule(ParamRule::Enum {
@@ -360,7 +361,7 @@ mod tests {
         );
     }
 
-    /// 拒绝路径穿越子串。
+    /// Rejects path-traversal substrings.
     #[test]
     fn test_reject_contains_rule() {
         let sandbox = ServerSandbox::new("fs").with_param_rule(ParamRule::RejectContains {
@@ -376,7 +377,7 @@ mod tests {
         assert!(err.to_string().contains("forbidden substring"), "{}", err);
     }
 
-    /// 非对象参数 fail-closed。
+    /// Non-object arguments fail closed.
     #[test]
     fn test_non_object_arguments_blocked() {
         let sandbox = ServerSandbox::new("s").with_param_rule(ParamRule::Prefix {
@@ -387,7 +388,7 @@ mod tests {
         assert!(err.to_string().contains("must be a JSON object"), "{}", err);
     }
 
-    /// 出站白名单:精确匹配 + 子域放行 + 空策略全禁。
+    /// Egress allowlist: exact match + subdomain allowed + empty policy blocks all.
     #[test]
     fn test_egress_whitelist() {
         let policy = EgressPolicy::new().allow("example.com");
@@ -408,7 +409,7 @@ mod tests {
         );
     }
 
-    /// 出站校验记审计:放行 + 拦截各一条。
+    /// Egress check records audit: one record for allow, one for block.
     #[test]
     fn test_egress_check_records_audit() {
         let sandbox = ServerSandbox::new("fetch").allow_host("example.com");
@@ -427,7 +428,7 @@ mod tests {
         assert_eq!(log[1].tool, "http_get");
     }
 
-    /// 全量审计:放行与拦截均记录,拦截带原因。
+    /// Full audit: both allow and block are recorded, with the reason on block.
     #[test]
     fn test_audit_log_records_all_calls() {
         let sandbox = ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
@@ -453,7 +454,7 @@ mod tests {
         assert!(log[1].reason.is_some());
     }
 
-    /// 审计日志环形上限:只保留最新 max_audit 条。
+    /// Audit-log ring cap: only the newest max_audit entries are kept.
     #[test]
     fn test_audit_cap_keeps_newest() {
         let sandbox = ServerSandbox::new("fs").with_max_audit(2);
@@ -468,7 +469,7 @@ mod tests {
         assert_eq!(log[1].arguments["n"], 2);
     }
 
-    /// 克隆沙箱共享同一份审计日志。
+    /// A cloned sandbox shares the same audit log.
     #[test]
     fn test_clone_shares_audit() {
         let sandbox = ServerSandbox::new("fs");

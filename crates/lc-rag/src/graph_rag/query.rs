@@ -319,7 +319,8 @@ fn format_template(template_str: &str, vars: &[(&str, &str)]) -> String {
         .unwrap_or_else(|_| template_str.to_string())
 }
 
-/// 计 token;编码器加载失败时按字节数高估(宁可略超预算,不静默按 0 算导致截断失效)。
+/// Counts tokens; when the encoder fails to load, overestimates with the byte length
+/// (better to slightly exceed the budget than to silently count 0 and break truncation).
 fn count_tokens_estimate(text: &str) -> usize {
     count_tokens(text).unwrap_or_else(|e| {
         log::warn!("token counting failed, falling back to byte-length estimate: {e}");
@@ -388,11 +389,12 @@ fn truncate_prompt(prompt: &str, max_tokens: Option<usize>) -> String {
 
 /// Finds entity ids whose name or description contains query keywords.
 ///
-/// P1-6: 委托给 [`KeywordMatcher`](super::matcher::KeywordMatcher),消除
-/// 原先 query.rs 与 matcher.rs 两处重复的 name+3/type+2/desc+1 关键词权重实现。
-/// 旧函数返回全部命中(无 top_k 限制),故传一个足够大的 k 保持行为不变。
-/// P2-4: 同义词/中英归一化/CJK 二元组/TF-IDF 加权等改进都随委托落在
-/// `KeywordMatcher` 上,这里无需改动。
+/// P1-6: delegates to [`KeywordMatcher`](super::matcher::KeywordMatcher), eliminating the
+/// duplicated name+3/type+2/desc+1 keyword-weighting implementation that used to live in
+/// both query.rs and matcher.rs. The old function returned all hits (no top_k limit), so a
+/// sufficiently large k is passed to keep the behavior unchanged.
+/// P2-4: improvements such as synonyms / Chinese-English normalization / CJK bigrams /
+/// TF-IDF weighting all land on `KeywordMatcher` through the delegation; nothing to change here.
 fn find_relevant_entities(store: &GraphStore, query: &str) -> Vec<String> {
     let matcher = KeywordMatcher::new();
     matcher.find_relevant(query, store, usize::MAX)
@@ -445,7 +447,7 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// P1-6: `find_relevant_entities` 委托 `KeywordMatcher`,结果必须一致。
+    /// P1-6: `find_relevant_entities` delegates to `KeywordMatcher`; the results must match.
     #[test]
     fn test_find_relevant_entities_matches_keyword_matcher() {
         let mut store = GraphStore::new();

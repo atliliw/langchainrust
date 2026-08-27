@@ -7,17 +7,17 @@ use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 use crate::structured_output::parser::PartialJsonParser;
 
-/// JSON 输出解析器
+/// JSON output parser
 ///
-/// 将 LLM 输出的 JSON 字符串解析为 `serde_json::Value`。
-/// 支持：
-/// - 标准 JSON 解析
-/// - 从 Markdown 代码块中提取 JSON
-/// - 可选的部分 JSON 解析（用于流式场景）
+/// Parses the LLM's JSON string output into a `serde_json::Value`.
+/// Supports:
+/// - standard JSON parsing
+/// - extracting JSON from a Markdown code block
+/// - optional partial-JSON parsing (for streaming scenarios)
 ///
-/// 相当于 Python LangChain 的 `JsonOutputParser`。
+/// Equivalent to Python LangChain's `JsonOutputParser`.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::output_parsers::JsonOutputParser;
 /// use serde_json::json;
@@ -27,33 +27,33 @@ use crate::structured_output::parser::PartialJsonParser;
 /// assert_eq!(result["name"], "Rust");
 /// ```
 pub struct JsonOutputParser {
-    /// 是否允许部分 JSON 解析（用于流式场景）
+    /// Whether partial-JSON parsing is allowed (for streaming scenarios)
     partial: bool,
 }
 
 impl JsonOutputParser {
-    /// 创建标准 JSON 输出解析器。
+    /// Creates a standard JSON output parser.
     pub fn new() -> Self {
         Self { partial: false }
     }
 
-    /// 创建支持部分 JSON 解析的解析器
+    /// Creates a parser that supports partial-JSON parsing
     ///
-    /// 在流式场景中，LLM 可能输出不完整的 JSON，
-    /// 启用此选项后会尝试从中解析尽可能多的数据。
+    /// In streaming scenarios the LLM may emit incomplete JSON;
+    /// with this option enabled it tries to parse as much data out as possible.
     pub fn new_partial() -> Self {
         Self { partial: true }
     }
 
-    /// 从文本中提取 JSON 字符串
+    /// Extracts the JSON string from text
     ///
-    /// 剥掉 Markdown 代码块 ```json ... ```、前导/尾随文本,返回真正的 JSON 值。
-    /// 比旧的 `find("```")` 匹配更稳:未闭合的围栏(只有开头没有结尾)也能正确剥离,
-    /// 且带围栏的完整 JSON 不会被误判为解析失败。
+    /// Strips the Markdown code block ```json ... ``` and leading/trailing text, returning the actual JSON value.
+    /// More robust than the old `find("```")` matching: an unclosed fence (opening only, no closing) is stripped
+    /// correctly, and a complete fenced JSON is not misread as a parse failure.
     fn extract_json_str<'a>(&self, text: &'a str) -> OutputParserResult<&'a str> {
         let json = PartialJsonParser::strip_markdown_fence(text);
         if json.is_empty() {
-            // 没有 JSON 结构字符:交给调用方 serde 报错(避免返回空串被当成合法值)
+            // no JSON structural chars: let the caller's serde report the error (avoid treating an empty string as a valid value)
             Ok(text.trim())
         } else {
             Ok(json.trim())
@@ -67,13 +67,13 @@ impl Default for JsonOutputParser {
     }
 }
 
-/// 取字符串前 `max_chars` 个字符用于错误预览。
+/// Takes the first `max_chars` chars of a string for an error preview.
 ///
-/// 不能用字节截断:多字节 UTF-8 字符会被切在字符中间导致切片 panic
-/// (非法 CJK JSON 的错误路径曾按字节 200 截断而崩溃)。
+/// Byte truncation cannot be used: a multi-byte UTF-8 char would be cut mid-char, panicking on slicing
+/// (the error path for invalid CJK JSON once crashed truncating at 200 bytes).
 fn preview_slice(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
-        // 第 max_chars 个字符的起始字节是安全边界,切到它即保留前 max_chars 个字符
+        // the start byte of the max_chars-th char is a safe boundary; slicing to it keeps the first max_chars chars
         Some((i, _)) => &s[..i],
         None => s,
     }
@@ -105,17 +105,17 @@ impl BaseOutputParser<serde_json::Value> for JsonOutputParser {
 }
 
 impl JsonOutputParser {
-    /// 尝试解析部分（不完整）JSON
+    /// Tries to parse partial (incomplete) JSON
     ///
-    /// 在 LLM 流式输出场景中，逐步累积的 JSON 可能是不完整的。
-    /// 此方法尝试从中提取尽可能多的数据。
+    /// In streaming LLM output the progressively accumulated JSON may be incomplete.
+    /// This method attempts to extract as much data from it as possible.
     fn parse_partial_json(&self, text: &str) -> OutputParserResult<serde_json::Value> {
-        // 先尝试完整解析
+        // first try a complete parse
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
             return Ok(value);
         }
 
-        // 尝试修复常见的不完整 JSON 模式
+        // try to repair common incomplete JSON patterns
         let repaired = self.repair_partial_json(text);
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
             return Ok(value);
@@ -127,16 +127,16 @@ impl JsonOutputParser {
         )))
     }
 
-    /// 修复不完整的 JSON 字符串
+    /// Repairs an incomplete JSON string
     ///
-    /// 处理常见的不完整 JSON 格式，如：
-    /// - 末尾多余的逗号
-    /// - 不完整的字符串
-    /// - 不完整的对象/数组
+    /// Handles common incomplete JSON forms, such as:
+    /// - a trailing extra comma
+    /// - an incomplete string
+    /// - an incomplete object/array
     fn repair_partial_json(&self, text: &str) -> String {
         let mut repaired = text.trim().to_string();
 
-        // 处理以 `"` 结束的不完整字符串（去掉最后一个不完整的 token）
+        // handle an unclosed string ending in `"` (drop the last incomplete token)
         if let Some(stripped) = Self::strip_incomplete_token(&repaired) {
             repaired = stripped;
         }
@@ -173,7 +173,7 @@ impl JsonOutputParser {
             }
         }
 
-        // 补全括号
+        // close the unclosed braces
         for _ in close_braces..open_braces {
             repaired.push('}');
         }
@@ -182,7 +182,7 @@ impl JsonOutputParser {
             repaired.push(']');
         }
 
-        // 确保字符串以引号结束（如果开始了一个字符串）
+        // ensure the string ends with a quote (if a string was opened)
         // Scan forward (not backward) to find unclosed strings (M31)
         let mut in_string = false;
         let mut escape_next = false;
@@ -229,7 +229,7 @@ impl JsonOutputParser {
         repaired
     }
 
-    /// 去掉末尾的不完整 token
+    /// Drops an incomplete trailing token
     fn strip_incomplete_token(s: &str) -> Option<String> {
         let trimmed = s.trim_end();
 
@@ -333,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_parser_from_markdown_block_unclosed_fence() {
-        // H4: 只有开头 ```json 没有结尾 ```(模型输出被截断)也要能剥掉围栏解析
+        // H4: only the opening ```json without the closing ``` (truncated model output) must also strip the fence and parse
         let parser = JsonOutputParser::new();
         let input = "以下是结果：\n```json\n{\"status\": \"ok\"}";
         let result = parser.parse(input).await.unwrap();
@@ -342,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_parser_from_prose_prefix() {
-        // H4: 模型先输出一句"结果是:"再给 JSON,也要剥掉前导文本
+        // H4: a prose prefix ("result:") before the JSON must also be stripped
         let parser = JsonOutputParser::new();
         let input = "结果是：\n{\"a\": 1}\n以上";
         let result = parser.parse(input).await.unwrap();
@@ -365,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_parser_invoke_runnable() {
-        // Runnable 形态接收 LLMResult,取 content 字段解析
+        // Runnable form takes an LLMResult and parses its content field
         let parser = JsonOutputParser::new();
         let result = parser
             .invoke(
@@ -383,15 +383,15 @@ mod tests {
     #[tokio::test]
     async fn test_json_parser_partial_success() {
         let parser = JsonOutputParser::new_partial();
-        // 完整 JSON，partial 模式也应该能解析
+        // complete JSON: partial mode must also parse it
         let result = parser.parse(r#"{"a": 1}"#).await.unwrap();
         assert_eq!(result["a"], 1);
     }
 
     #[tokio::test]
     async fn test_json_parser_invalid_cjk_over_200_bytes() {
-        // >200 字节的非法中文 JSON:错误路径若按字节 200 截断会切在多字节字符中间 panic,
-        // 修复后应返回 Err 而非崩溃
+        // >200-byte invalid CJK JSON: if the error path truncated at 200 bytes it would panic mid multi-byte char;
+        // after the fix it returns Err instead of crashing
         let parser = JsonOutputParser::new();
         let long_cjk = "汉".repeat(200);
         let bad = format!("{{\"名字\": {}", long_cjk);
@@ -401,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_parser_partial_invalid_cjk_over_200_bytes() {
-        // partial 模式同样走错误预览截断,需同样不 panic
+        // partial mode uses the same error-preview truncation; must also not panic
         let parser = JsonOutputParser::new_partial();
         let long_cjk = "汉".repeat(200);
         let bad = format!("{{\"名字\": {}", long_cjk);

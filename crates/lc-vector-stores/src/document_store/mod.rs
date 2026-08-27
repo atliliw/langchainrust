@@ -1,8 +1,8 @@
 // lc-vector-stores/src/document_store/mod.rs
-//! 文档存储模块
+//! Document store module
 //!
-//! 单独存储文档内容，供 BM25 和向量检索共用。
-//! 支持原始文档和分割后的 chunk 文档。
+//! Stores document content separately, shared by BM25 and vector retrieval.
+//! Supports both raw documents and split chunk documents.
 
 pub mod chunked;
 pub mod store;

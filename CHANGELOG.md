@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] - 2026-08-27
+
+Patch release fixing the streaming-path gaps found by a focused review of the 0.18.0 streaming feature. **Correction: the 0.18.0 Added note "the budget gate receives real cumulative usage on the streaming path" was not true in 0.18.0 / 0.18.1 — `AgentExecutor::stream()` never captured `BudgetConfig`, so all four budget gates were wired to the non-streaming `invoke` loop only. This release wires them into the streaming loop and adds path-level tests.**
+
+### Fixed
+- **Streaming budget gates actually enforced** (`lc-agents`): `stream()` now captures `BudgetConfig`, starts the loop clock, accumulates `AgentMetrics`, and checks all four gates — `max_iterations` / `max_duration` at loop entry, `max_tokens` after each LLM plan, `max_tool_calls` (+ `max_duration`) before each tool call (single and parallel). An exceeded limit terminates the stream by sending `Err(AgentError::BudgetExceeded)` on the channel, matching the `invoke` semantics, so callers can still distinguish "budget stop" from "model did not converge". The three gate checks were refactored from `AgentExecutor` methods into shared free functions used by both paths, so the two paths cannot drift again
+- **Streaming now publishes `AgentMetrics`** (`lc-agents`): `stream()` accumulates `llm_calls` / `tool_calls` / `total_tokens` and writes them to `last_metrics()` on every terminal path (final answer, iteration-limit placeholder, budget exceeded, plan/policy error). Metrics are published **before** the terminal event is sent, so a consumer that has received the final event can read `last_metrics()` without a race
+- **Streaming single-tool errors no longer abort the stream** (`lc-agents`): a failing tool execution is converted to the same `[Tool execution error: …]` observation as the parallel path and fed back into the loop, and the agent may recover on the next plan — previously the stream terminated with an `Error` event on the first tool failure
+
+### Changed
+- **Streaming tool-error semantics differ from sequential by design** (`lc-agents`): sequential `invoke` still hard-fails a tool error (`Err(AgentError::ToolExecutionError)`); streaming (single and parallel) converts the error to an observation. This asymmetry is documented on the executor module and locked in by tests
+
+### Migration
+- **Streaming consumers**: a stream where a tool fails now receives `ToolEnd` with an error observation and continues (possibly to `FinalAnswer`), instead of an `Error` event and stream termination. Handle the observation text if you surfaced tool failures as stream errors
+
 ## [0.18.1] - 2026-08-27
 
 Patch release fixing the 7 review findings from the 0.18.0 gate.

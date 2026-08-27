@@ -38,7 +38,7 @@ fn test_backoff_delay_starts_small() {
 
 #[test]
 fn test_backoff_delay_capped() {
-    // attempt=6 → 0.5 * 2^6 = 32s → 上限 30s
+    // attempt=6 → 0.5 * 2^6 = 32s → cap 30s
     assert_eq!(backoff_delay(6), Duration::from_millis(30_000));
     assert_eq!(backoff_delay(100), Duration::from_millis(30_000));
 }
@@ -76,7 +76,8 @@ fn test_connection_lost_error() {
     assert!(!other.is_connection_lost());
 }
 
-/// 等待 SSE 后台读循环建立连接(request 的早退检查要求 connected=true)。
+/// Waits for the SSE background read loop to establish the connection (the early-exit check in request
+/// requires connected=true).
 async fn wait_connected(transport: &SseTransport) {
     transport.ensure_reader();
     timeout(Duration::from_secs(5), async {
@@ -90,14 +91,14 @@ async fn wait_connected(transport: &SseTransport) {
 
 #[tokio::test]
 async fn test_sse_request_success() {
-    // 正常流程:发现 endpoint → POST 成功。
+    // Normal flow: discover the endpoint → POST succeeds.
     let server =
         crate::test_support::start_fake_sse_server(crate::test_support::PostMode::Quiet).await;
     let config = MCPConfig::sse(&server.sse_url);
     let transport = SseTransport::new(&config).unwrap();
     wait_connected(&transport).await;
 
-    // 用未知方法(测试服务器对未识别方法回 {"ok": true})
+    // Use an unknown method (the test server replies {"ok": true} to unrecognized methods)
     let req = MCPRequest::new(1, "ping", None);
     let resp = transport
         .request(req)
@@ -109,7 +110,7 @@ async fn test_sse_request_success() {
 
 #[tokio::test]
 async fn test_sse_request_retries_after_post_failure() {
-    // P1-1:第一次 POST 返回 500 → 清空缓存 + 重连重发现 + 重试一次 → 成功。
+    // P1-1: the first POST returns 500 → clear the cache + reconnect re-discover + retry once → success.
     let server =
         crate::test_support::start_fake_sse_server(crate::test_support::PostMode::FailFirstPost)
             .await;
@@ -117,11 +118,12 @@ async fn test_sse_request_retries_after_post_failure() {
     let transport = SseTransport::new(&config).unwrap();
     wait_connected(&transport).await;
 
-    // 用未知方法(测试服务器对未识别方法回 {"ok": true})
+    // Use an unknown method (the test server replies {"ok": true} to unrecognized methods)
     let req = MCPRequest::new(1, "ping", None);
     let resp = transport.request(req).await.expect("retry should succeed");
     assert_eq!(resp.result, Some(serde_json::json!({ "ok": true })));
-    // 至少发生了 2 次 POST(首次失败 + 重试成功),证明缓存确实被清掉重试了
+    // At least 2 POSTs happened (first failure + successful retry), proving the cache was really cleared and
+    // retried
     assert!(
         server.post_count.load(Ordering::SeqCst) >= 2,
         "expected >=2 POSTs after failure+retry, got {}",
@@ -131,10 +133,10 @@ async fn test_sse_request_retries_after_post_failure() {
 
 #[tokio::test]
 async fn test_sse_request_accepts_202_and_reads_response_via_sse_push() {
-    // F4:服务器对 POST 回 202 Accepted、JSON-RPC 响应经 SSE `event: message`
-    // 推送 → request 必须按 `id` 关联到推送并返回结果(与直接响应型服务器
-    // 互操作)。PushResponse 模式下 POST body 恒为空,结果只能来自 SSE 推送,
-    // 因此成功返回即证明推送关联路径走通。
+    // F4: the server replies 202 Accepted to the POST and pushes the JSON-RPC response over SSE
+    // `event: message` → request must correlate the push by `id` and return the result (interop with
+    // direct-response servers). Under PushResponse mode the POST body is always empty, so the result can only
+    // come from the SSE push — a successful return proves the push-correlation path works.
     let server =
         crate::test_support::start_fake_sse_server(crate::test_support::PostMode::PushResponse)
             .await;
@@ -142,7 +144,8 @@ async fn test_sse_request_accepts_202_and_reads_response_via_sse_push() {
     let transport = SseTransport::new(&config).unwrap();
     wait_connected(&transport).await;
 
-    // 用未知方法(测试服务器对未识别方法回 {"ok": true}),与既有用例一致。
+    // Use an unknown method (the test server replies {"ok": true} to unrecognized methods), consistent with
+    // the existing cases.
     let req = MCPRequest::new(1, "ping", None);
     let result = timeout(Duration::from_secs(10), transport.request(req)).await;
     let resp = result
@@ -154,19 +157,19 @@ async fn test_sse_request_accepts_202_and_reads_response_via_sse_push() {
 
 #[tokio::test]
 async fn test_sse_request_times_out_when_server_hangs() {
-    // F2:服务器"连上了但吞 POST 不回 body"→ 请求必须在 request_timeout
-    // 内返回带 "timed out" 的错误,绝不永久挂起。
+    // F2: the server "connected but swallows the POST without returning a body" → the request must return an
+    // error carrying "timed out" within request_timeout, never hanging forever.
     let server =
         crate::test_support::start_fake_sse_server(crate::test_support::PostMode::HangPost).await;
     let config = MCPConfig::sse(&server.sse_url);
-    // 测试缩短超时窗口到 300ms,否则真等 30s。
+    // The test shortens the timeout window to 300ms; otherwise it would really wait 30s.
     let transport = SseTransport::new(&config)
         .unwrap()
         .with_request_timeout(Duration::from_millis(300));
     wait_connected(&transport).await;
 
     let req = MCPRequest::new(1, "ping", None);
-    // 外层 10s 兜底:若超时机制失效,这里 fail 报错而不是把测试挂死。
+    // Outer 10s backstop: if the timeout mechanism fails, this fails with an error instead of hanging the test.
     let result = timeout(Duration::from_secs(10), transport.request(req)).await;
     let err = result
         .expect("request must not hang forever (10s guard)")
@@ -178,10 +181,10 @@ async fn test_sse_request_times_out_when_server_hangs() {
     );
 }
 
-/// P2-6: 进程内传输 + 真实 `MCPServer` 打通 Client↔Server 协议链路。
+/// P2-6: in-process transport + a real `MCPServer` wires the Client↔Server protocol chain end-to-end.
 ///
-/// 走 `MCPClient::with_transport`(握手) → `list_tools` → `call_tool`,
-/// 全程无子进程 / 网络,验证 `tools/call` 经 `BaseTool::run` 被真实执行。
+/// Goes through `MCPClient::with_transport` (handshake) → `list_tools` → `call_tool`, no child process /
+/// network at all, verifying `tools/call` is really executed via `BaseTool::run`.
 #[tokio::test]
 async fn test_in_memory_transport_round_trip() {
     use crate::MCPClient;

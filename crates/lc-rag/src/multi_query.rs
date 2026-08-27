@@ -1,7 +1,7 @@
 // src/retrieval/multi_query.rs
-//! MultiQueryRetriever 实现
+//! MultiQueryRetriever implementation
 //!
-//! 使用 LLM 生成多个查询变体，提高检索召回率。
+//! Uses an LLM to generate multiple query variants, improving retrieval recall.
 
 use lc_core::language_models::BaseChatModel;
 use lc_core::tools::ToolDefinition;
@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 /// Generate a stable document ID from content hash (M58).
 ///
-/// P2-3: 用 FNV-1a 64 替代 `DefaultHasher`(std 内部算法不保证跨进程稳定;
-/// FNV-1a 是完全指定的确定性哈希)。
+/// P2-3: Replaces `DefaultHasher` with FNV-1a 64-bit (the std internal algorithm is not
+/// guaranteed stable across processes; FNV-1a is a fully-specified deterministic hash).
 fn doc_content_hash(content: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = fnv::FnvHasher::default();
@@ -27,17 +27,17 @@ fn doc_content_hash(content: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// MultiQueryRetriever 错误类型
+/// MultiQueryRetriever error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum MultiQueryError {
-    /// LLM 错误
+    /// LLM error
     LLMError(String),
 
-    /// 检索错误
+    /// Retriever error
     RetrieverError(String),
 
-    /// 解析错误
+    /// Parse error
     ParseError(String),
 }
 
@@ -53,18 +53,18 @@ impl std::fmt::Display for MultiQueryError {
 
 impl std::error::Error for MultiQueryError {}
 
-/// MultiQueryRetriever 配置
+/// MultiQueryRetriever configuration
 pub struct MultiQueryConfig {
-    /// 生成的查询数量
+    /// Number of generated queries
     pub num_queries: usize,
 
-    /// 每个查询返回的文档数
+    /// Number of documents returned per query
     pub k_per_query: usize,
 
-    /// 最终返回的文档数
+    /// Number of documents returned in the final result
     pub final_k: usize,
 
-    /// 查询生成 prompt
+    /// The query-generation prompt
     pub prompt_template: String,
 }
 
@@ -80,30 +80,30 @@ impl Default for MultiQueryConfig {
 }
 
 impl MultiQueryConfig {
-    /// 创建使用默认配置的 `MultiQueryConfig`
+    /// Creates a `MultiQueryConfig` with default configuration
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 设置生成的查询数量
+    /// Sets the number of generated queries
     pub fn with_num_queries(mut self, n: usize) -> Self {
         self.num_queries = n;
         self
     }
 
-    /// 设置每个查询返回的文档数
+    /// Sets the number of documents returned per query
     pub fn with_k_per_query(mut self, k: usize) -> Self {
         self.k_per_query = k;
         self
     }
 
-    /// 设置最终返回的文档数
+    /// Sets the number of documents returned in the final result
     pub fn with_final_k(mut self, k: usize) -> Self {
         self.final_k = k;
         self
     }
 
-    /// 设置查询生成 prompt
+    /// Sets the query-generation prompt
     pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.prompt_template = prompt.into();
         self
@@ -122,23 +122,23 @@ Alternative questions:"#;
 
 /// MultiQueryRetriever
 ///
-/// 使用 LLM 生成多个查询变体，然后用基础检索器分别检索，
-/// 最后合并去重结果返回。
+/// Uses an LLM to generate multiple query variants, retrieves with the base retriever for
+/// each one, then merges and dedups the results before returning.
 pub struct MultiQueryRetriever {
-    /// LLM 用于生成查询变体
+    /// The LLM used to generate query variants
     ///
-    /// P0-3: 不再硬编码 `OpenAIChat`,接受任意实现 `BaseChatModel` 的 LLM。
+    /// P0-3: no longer hardcodes `OpenAIChat`; accepts any LLM implementing `BaseChatModel`.
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 
-    /// 基础检索器
+    /// The base retriever
     base_retriever: Arc<dyn RetrieverTrait>,
 
-    /// 配置
+    /// Configuration
     config: MultiQueryConfig,
 }
 
 impl MultiQueryRetriever {
-    /// 创建 MultiQueryRetriever(接受任意实现 `BaseChatModel` 的 LLM)
+    /// Creates a MultiQueryRetriever (accepting any LLM implementing `BaseChatModel`)
     pub fn new<L>(llm: L, base_retriever: Arc<dyn RetrieverTrait>) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -151,7 +151,7 @@ impl MultiQueryRetriever {
         }
     }
 
-    /// P0-3: 从已包装的 `Arc<dyn BaseChatModel<Error = ProviderError>>` 构建
+    /// P0-3: Builds from an already-wrapped `Arc<dyn BaseChatModel<Error = ProviderError>>`
     pub fn new_arc(
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         base_retriever: Arc<dyn RetrieverTrait>,
@@ -163,25 +163,25 @@ impl MultiQueryRetriever {
         }
     }
 
-    /// 设置 MultiQuery 配置
+    /// Sets the MultiQuery configuration
     pub fn with_config(mut self, config: MultiQueryConfig) -> Self {
         self.config = config;
         self
     }
 
-    /// 设置生成的查询数量
+    /// Sets the number of generated queries
     pub fn with_num_queries(mut self, n: usize) -> Self {
         self.config.num_queries = n;
         self
     }
 
-    /// 设置每个查询返回的文档数
+    /// Sets the number of documents returned per query
     pub fn with_k_per_query(mut self, k: usize) -> Self {
         self.config.k_per_query = k;
         self
     }
 
-    /// 设置最终返回的文档数
+    /// Sets the number of documents returned in the final result
     pub fn with_final_k(mut self, k: usize) -> Self {
         self.config.final_k = k;
         self
@@ -195,7 +195,8 @@ impl MultiQueryRetriever {
             .format(&vars)
             .unwrap_or_else(|_| self.config.prompt_template.clone());
 
-        // P2-1: 优先 tool_calls 结构化查询列表;文本解析失败时带提示重试 1 次。
+        // P2-1: Prefer the structured query list from tool_calls; on text-parse failure,
+        // retry once with a hint.
         const MAX_RETRIES: usize = 1;
         let mut current_prompt = prompt;
 
@@ -208,7 +209,7 @@ impl MultiQueryRetriever {
             .await
             .map_err(|e| MultiQueryError::LLMError(e.to_string()))?;
 
-            // 优先 tool_calls:查询字符串数组
+            // Prefer tool_calls: the query string array
             if let Some(args) = &result.tool_args {
                 if let Some(queries) = parse_queries(args) {
                     if !queries.is_empty() {
@@ -217,7 +218,7 @@ impl MultiQueryRetriever {
                 }
             }
 
-            // 文本兜底:逐行切,清理编号/引号/项目符号等脏文本
+            // Text fallback: split line by line, cleaning numbered/quote/bullet noise
             let queries = parse_query_lines(&result.content, self.config.num_queries);
             if !queries.is_empty() {
                 return Ok(queries);
@@ -238,7 +239,7 @@ impl MultiQueryRetriever {
         ))
     }
 
-    /// 生成多个查询变体并分别检索，合并去重后返回最终文档
+    /// Generates multiple query variants, retrieves each one, and returns the merged deduped documents
     pub async fn retrieve_multi(&self, query: &str) -> Result<Vec<Document>, MultiQueryError> {
         let queries = self.generate_queries(query).await?;
 
@@ -286,7 +287,7 @@ impl MultiQueryRetriever {
         Ok(final_docs)
     }
 
-    /// 生成多个查询变体并分别检索，合并去重后返回带分数的结果
+    /// Generates multiple query variants, retrieves each one, and returns the merged deduped results with scores
     pub async fn retrieve_multi_with_scores(
         &self,
         query: &str,
@@ -345,13 +346,13 @@ impl MultiQueryRetriever {
         Ok(final_results)
     }
 
-    /// 获取 LLM 生成的查询变体（不执行检索）
+    /// Returns the LLM-generated query variants (without retrieving)
     pub async fn get_generated_queries(&self, query: &str) -> Result<Vec<String>, MultiQueryError> {
         self.generate_queries(query).await
     }
 }
 
-/// 查询变体工具定义(P2-1):强制 LLM 输出查询字符串数组。
+/// Query-variant tool definition (P2-1): forces the LLM to output a query string array.
 fn queries_tool() -> ToolDefinition {
     ToolDefinition::new(
         "generate_queries",
@@ -369,7 +370,7 @@ fn queries_tool() -> ToolDefinition {
     }))
 }
 
-/// 从 tool_call 参数中提取查询数组。
+/// Extracts the query array from tool_call arguments.
 fn parse_queries(args: &serde_json::Value) -> Option<Vec<String>> {
     args.get("queries")?
         .as_array()?
@@ -378,10 +379,11 @@ fn parse_queries(args: &serde_json::Value) -> Option<Vec<String>> {
         .collect()
 }
 
-/// 文本行解析:清理编号"1. xxx"、项目符号、两端引号,避免脏文本当查询。
+/// Text-line parsing: strips numbering ("1. xxx"), bullets, and surrounding quotes so dirty
+/// text never becomes a query.
 ///
-/// 只取前 `limit` 行(通常为 `num_queries`):LLM 常把查询排在最前,
-/// 末尾的解释性散文行会被截掉,不会混入查询列表。
+/// Takes only the first `limit` lines (usually `num_queries`): the LLM typically puts the
+/// queries first, and trailing explanatory prose gets truncated instead of leaking in.
 fn parse_query_lines(content: &str, limit: usize) -> Vec<String> {
     content
         .lines()
@@ -402,21 +404,21 @@ fn parse_query_lines(content: &str, limit: usize) -> Vec<String> {
         .collect()
 }
 
-/// 静态查询生成器（不依赖 LLM）
+/// A static query generator (no LLM dependency)
 #[allow(clippy::type_complexity)]
 pub struct StaticQueryGenerator {
     expansions: Vec<Box<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
 }
 
 impl StaticQueryGenerator {
-    /// 创建空的静态查询生成器
+    /// Creates an empty static query generator
     pub fn new() -> Self {
         Self {
             expansions: Vec::new(),
         }
     }
 
-    /// 添加同义词扩展规则
+    /// Adds a synonym-expansion rule
     pub fn with_synonym_expansion(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
         self.expansions.push(Box::new(move |query: &str| {
             let mut expanded = Vec::new();
@@ -432,7 +434,7 @@ impl StaticQueryGenerator {
         self
     }
 
-    /// 添加前缀扩展规则
+    /// Adds a prefix-expansion rule
     pub fn with_prefix_expansion(mut self, prefixes: Vec<String>) -> Self {
         self.expansions.push(Box::new(move |query: &str| {
             prefixes
@@ -443,7 +445,7 @@ impl StaticQueryGenerator {
         self
     }
 
-    /// 应用所有扩展规则生成查询变体
+    /// Applies all expansion rules to generate query variants
     pub fn generate(&self, query: &str) -> Vec<String> {
         self.expansions
             .iter()
@@ -510,7 +512,7 @@ mod tests {
         assert_eq!(config.final_k, 10);
     }
 
-    /// P2-1: 查询工具定义携带 queries 数组 schema。
+    /// P2-1: The query tool definition carries a queries-array schema.
     #[test]
     fn test_queries_tool_schema() {
         let tool = queries_tool();
@@ -519,7 +521,7 @@ mod tests {
         assert_eq!(params["properties"]["queries"]["type"], "array");
     }
 
-    /// P2-1: tool_call 参数解析出查询数组。
+    /// P2-1: The tool_call arguments parse into a query array.
     #[test]
     fn test_parse_queries() {
         let args = json!({ "queries": ["数据库连接失败怎么办", "DB 连接错误排查"] });
@@ -528,14 +530,14 @@ mod tests {
         assert_eq!(queries[0], "数据库连接失败怎么办");
     }
 
-    /// P2-1: 缺失 queries 键 → None。
+    /// P2-1: A missing `queries` key → None.
     #[test]
     fn test_parse_queries_missing_key() {
         let args = json!({ "other": 1 });
         assert!(parse_queries(&args).is_none());
     }
 
-    /// P2-1: 文本行解析清理编号/项目符号/引号,并按 limit 截断尾部散文。
+    /// P2-1: Text-line parsing strips numbering/bullets/quotes and caps trailing prose by limit.
     #[test]
     fn test_parse_query_lines_cleanup() {
         let content = "1. 数据库连接失败\n- 如何排查 DB 错误\n• \"连接超时怎么办\"\n\n补充解释";
@@ -550,13 +552,13 @@ mod tests {
         );
     }
 
-    /// P2-1: 空文本 → 空数组。
+    /// P2-1: Empty text → empty array.
     #[test]
     fn test_parse_query_lines_empty() {
         assert!(parse_query_lines("  \n\n", 3).is_empty());
     }
 
-    /// P2-1: 超过 limit 的额外行被截断。
+    /// P2-1: Extra lines beyond the limit are truncated.
     #[test]
     fn test_parse_query_lines_capped() {
         let content = "a\nb\nc\nd";

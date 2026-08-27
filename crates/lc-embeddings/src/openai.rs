@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
 
-/// P2-6: 批量切块后的并发上限——避免一次性打爆 provider 限流。
+/// P2-6: concurrency cap after batch chunking — avoids blowing past provider rate limits at once.
 const MAX_CONCURRENT_CHUNKS: usize = 8;
 
 /// OpenAI Embeddings configuration
@@ -70,8 +70,9 @@ pub struct OpenAIEmbeddings {
 impl OpenAIEmbeddings {
     /// Create a new OpenAI Embeddings client.
     ///
-    /// 构造时 fail fast（P1-3）：API key 为空立即报错，而不是拖到发请求才 401。
-    /// 模型维度已知才构造（P1-2）：未知模型返回 `Err`，不得回落默认 1536 撒谎。
+    /// Fails fast at construction (P1-3): an empty API key errors immediately instead of
+    /// waiting until the request to 401. Constructs only when the model dimension is known
+    /// (P1-2): unknown models return `Err`, never silently falling back to a default 1536.
     pub fn new(config: OpenAIEmbeddingsConfig) -> Result<Self, EmbeddingError> {
         if config.api_key.trim().is_empty() {
             return Err(EmbeddingError::Config(
@@ -87,7 +88,7 @@ impl OpenAIEmbeddings {
         })
     }
 
-    /// 已知模型的 embedding 维度表；未知模型返回 `Err`（P1-2）。
+    /// Dimension table for known models; unknown models return `Err` (P1-2).
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError> {
         match model {
             "text-embedding-ada-002" => Ok(1536),
@@ -138,7 +139,7 @@ impl Embeddings for OpenAIEmbeddings {
             "input": text,
         });
 
-        // P2-5: 429/5xx 指数退避重试,瞬时故障不再一次失败即抛错。
+        // P2-5: exponential backoff retry on 429/5xx; transient failures no longer error on first try.
         let response = crate::retry::post_json_with_retry(
             &self.client,
             &url,
@@ -151,7 +152,7 @@ impl Embeddings for OpenAIEmbeddings {
 
         let status = response.status();
         if !status.is_success() {
-            // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
             let error_text = response.text().await.map_err(|e| {
                 EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
             })?;
@@ -172,7 +173,7 @@ impl Embeddings for OpenAIEmbeddings {
             .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
             .embedding
             .clone();
-        // P2-8: 统一 L2 归一化,保证单位长度,消除 provider 漂移。
+        // P2-8: uniform L2 normalization, guaranteeing unit length and removing provider drift.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
     }
@@ -181,22 +182,25 @@ impl Embeddings for OpenAIEmbeddings {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        // P1-1: 任一空/全空白文本都报错，与 trait 默认契约一致。
+        // P1-1: any empty/all-whitespace text errors, consistent with the trait's default contract.
         if texts.iter().any(|t| t.trim().is_empty()) {
             return Err(EmbeddingError::EmptyInput);
         }
 
         let url = format!("{}/embeddings", self.config.base_url);
         let batch_size = self.config.batch_size.max(1);
-        // P2-6: 各 chunk 并发请求(buffer_unordered + 并发上限),而非串行 await,
-        // 提升大批量吞吐;并发上限避免一次性打爆 provider 限流。
+        // P2-6: chunks are requested concurrently (buffer_unordered + concurrency cap)
+        // instead of serial awaits, improving high-volume throughput; the cap avoids blowing
+        // past provider rate limits at once.
         let concurrency = texts.len().div_ceil(batch_size).min(MAX_CONCURRENT_CHUNKS);
 
-        // 每个 future 返回 (chunk_idx, data);并发完成顺序不定,由收集端按 chunk_idx
-        // 放回全局槽位。P0-1: 任一槽位空缺即显式报错,绝不把缺失向量当成"不相似"。
-        // 参考 faithfulness.rs 的并发写法:先把各 chunk 转成 owned Vec<String> 再
-        // stream::iter,map 闭包输入无生命周期 → 闭包天然可泛化;async move 只捕获
-        // owned chunk + Copy 引用(client/api_key/model/url),map(FnMut) 才编译得过。
+        // Each future returns (chunk_idx, data); completion order varies, and the collector
+        // places results back by chunk_idx. P0-1: any empty slot is an explicit error, never
+        // treating a missing vector as "dissimilar".
+        // Follows faithfulness.rs's concurrency pattern: convert chunks to owned Vec<String>
+        // first, then stream::iter, so the map closure's input has no lifetime → the closure
+        // generalizes naturally; async move captures only the owned chunk + Copy references
+        // (client/api_key/model/url), so map(FnMut) compiles.
         let chunks: Vec<(usize, Vec<String>)> = texts
             .chunks(batch_size)
             .enumerate()
@@ -213,7 +217,7 @@ impl Embeddings for OpenAIEmbeddings {
                     "model": model,
                     "input": chunk,
                 });
-                // P2-5: 429/5xx 指数退避重试。
+                // P2-5: exponential backoff retry on 429/5xx.
                 let response = crate::retry::post_json_with_retry(
                     client,
                     url,
@@ -226,7 +230,7 @@ impl Embeddings for OpenAIEmbeddings {
 
                 let status = response.status();
                 if !status.is_success() {
-                    // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+                    // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
                     let error_text = response.text().await.map_err(|e| {
                         EmbeddingError::HttpError(format!(
                             "failed to read error response body: {e}"
@@ -252,7 +256,7 @@ impl Embeddings for OpenAIEmbeddings {
             for item in data {
                 let global_index = base + item.index as usize;
                 if global_index >= all_results.len() {
-                    // 服务端 index 超出请求范围 = 批次错位,直接报错。
+                    // Provider index beyond the requested range = batch misalignment; error out.
                     return Err(EmbeddingError::BatchMismatch {
                         expected: all_results.len(),
                         actual: global_index + 1,
@@ -262,7 +266,7 @@ impl Embeddings for OpenAIEmbeddings {
             }
         }
 
-        // 展开为 Result:任一槽位空缺即显式报错,而非留下零向量;并统一 L2 归一化(P2-8)。
+        // Unwrap into Result: any empty slot errors explicitly rather than leaving a zero vector; then apply uniform L2 normalization (P2-8).
         all_results
             .into_iter()
             .map(|opt| {
@@ -389,7 +393,7 @@ mod tests {
     use crate::test_support::{spawn_embeddings_stub, spawn_status_stub};
     use std::sync::Arc;
 
-    /// P0-1: 跨 chunk 边界批量对齐——顺序与输入一致，无空向量、无错位。
+    /// P0-1: batch alignment across chunk boundaries — order matches input, no empty vectors, no misalignment.
     #[tokio::test]
     async fn test_embed_documents_batch_alignment() {
         let base_url = spawn_embeddings_stub(Arc::new(|n| n)).await;
@@ -401,9 +405,9 @@ mod tests {
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
-        // 5 条文本 → 3 个 chunk（2/2/1），验证跨 chunk 顺序正确。
-        // stub 以文本字节和编码向量,因此每条文本必须落到自己的槽位,
-        // 任何错位/重复都会让对应槽位的向量与文本不匹配。
+        // 5 texts → 3 chunks (2/2/1), verifying correct order across chunks.
+        // The stub encodes vectors from text bytes, so each text must land in its own slot;
+        // any misalignment/duplication would make the slot's vector mismatch its text.
         let texts = ["a", "b", "c", "d", "e"];
         let results = embeddings
             .embed_documents(&texts)
@@ -411,8 +415,9 @@ mod tests {
             .expect("batch embedding should succeed");
         assert_eq!(results.len(), 5);
         for (i, text) in texts.iter().enumerate() {
-            // stub 返回 [sum, 1.0];P2-8 归一化后与逐条归一化的期望值一致,
-            // 且每条向量仍互不相同,可验证跨 chunk 顺序对齐。
+            // The stub returns [sum, 1.0]; after P2-8 normalization it matches the
+            // per-item normalized expectation, and each vector stays distinct, verifying
+            // cross-chunk order alignment.
             let raw = text.bytes().map(|b| b as f32).sum::<f32>();
             let mut expected = vec![raw, 1.0];
             crate::l2_normalize(&mut expected);
@@ -420,7 +425,7 @@ mod tests {
         }
     }
 
-    /// P0-1: 服务端某 chunk 少返回 → 显式 `EmptyVectorInBatch`，而非静默空向量。
+    /// P0-1: a chunk with fewer results → explicit `EmptyVectorInBatch`, not a silent empty vector.
     #[tokio::test]
     async fn test_embed_documents_truncated_response_errors() {
         let base_url = spawn_embeddings_stub(Arc::new(|n| n.saturating_sub(1))).await;
@@ -440,7 +445,7 @@ mod tests {
         );
     }
 
-    /// P0-1: 服务端返回 index 超出请求范围 → 显式 `BatchMismatch`。
+    /// P0-1: provider index beyond the requested range → explicit `BatchMismatch`.
     #[tokio::test]
     async fn test_embed_documents_overrun_returns_batch_mismatch() {
         let base_url = spawn_embeddings_stub(Arc::new(|_| 100)).await;
@@ -460,7 +465,7 @@ mod tests {
         );
     }
 
-    /// P2-5: `embed_query` 接线重试——429 两次后 200，请求共 3 次且返回成功。
+    /// P2-5: `embed_query` wired to retry — two 429s then 200, 3 total requests, success returned.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
         use std::sync::atomic::Ordering;
@@ -480,13 +485,13 @@ mod tests {
             .await
             .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
-        // P2-8: 返回向量应已归一化。
+        // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
         assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
-    /// P2-5: `embed_documents` 的每个 chunk 同样走重试——429 后成功。
+    /// P2-5: each chunk of `embed_documents` also retries — succeeds after a 429.
     #[tokio::test]
     async fn test_embed_documents_retries_on_429() {
         use std::sync::atomic::Ordering;
@@ -513,8 +518,8 @@ mod tests {
         );
     }
 
-    /// P2-6: 多 chunk 并发请求——并发度受 `MAX_CONCURRENT_CHUNKS` 约束，
-    /// 且确实并行（最大在途请求数 > 1），而非串行。
+    /// P2-6: multi-chunk concurrent requests — concurrency is bounded by `MAX_CONCURRENT_CHUNKS`
+    /// and genuinely parallel (max in-flight > 1), not serial.
     #[tokio::test]
     async fn test_embed_documents_chunks_run_concurrently() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -572,7 +577,7 @@ mod tests {
 
                     let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                     max_in_flight.fetch_max(now, Ordering::SeqCst);
-                    // 50ms 让各 chunk 有重叠窗口，验证确实并行。
+                    // 50ms gives chunks an overlap window, verifying genuine parallelism.
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     in_flight.fetch_sub(1, Ordering::SeqCst);
 
@@ -611,7 +616,7 @@ mod tests {
             api_key: "test-key".into(),
             base_url,
             model: "text-embedding-ada-002".into(),
-            batch_size: 1, // 每条文本一个 chunk → 5 个并发 future
+            batch_size: 1, // one chunk per text → 5 concurrent futures
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 

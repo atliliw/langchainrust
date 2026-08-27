@@ -111,7 +111,8 @@ impl ChunkDocument {
         self
     }
 
-    /// 整体替换 metadata(用于 chunk 继承父文档元数据等场景)。
+    /// Replace the whole metadata map (used when a chunk inherits its parent
+    /// document's metadata, etc.).
     pub fn with_metadata_map(mut self, metadata: HashMap<String, Value>) -> Self {
         self.metadata = metadata;
         self

@@ -1,16 +1,16 @@
-//! 工具编排(P2-10):把一次任务的多个工具调用编排成依赖图,并行 + 串行执行。
+//! Tool orchestration (P2-10): arranges a task's multiple tool calls into a dependency graph, executed in parallel + serial.
 //!
-//! 复杂任务往往是一串互相依赖的工具调用——前一个工具的输出是后一个的输入。
-//! [`ToolOrchestrator`] 把步骤声明成 DAG(`depends_on` 表达依赖),执行时:
+//! A complex task is usually a chain of interdependent tool calls — one tool's output is the next one's input.
+//! [`ToolOrchestrator`] declares the steps as a DAG (`depends_on` expresses the dependencies) and, at execution:
 //!
-//! 1. Kahn 拓扑排序 + 环检测,环 / 未定义依赖在**执行前**报错;
-//! 2. 按轮推进:每轮取出"依赖已全部满足"的步骤并发执行,用
-//!    [`tokio::sync::Semaphore`] 封顶并发度(默认 4);
-//! 3. 步骤参数支持 `${id}` / `${id.field}` 模板:执行前把前序步骤的输出
-//!    代入参数(`${id}` 引用整个输出,`${id.field}` 提取对象字段)。
+//! 1. Kahn topological sort + cycle detection — cycles / undefined dependencies error out **before** execution;
+//! 2. Round-robin progress: each round takes out the steps whose dependencies are all satisfied and runs them
+//!    concurrently, capped by [`tokio::sync::Semaphore`] (default 4);
+//! 3. Step arguments support `${id}` / `${id.field}` templates: prior steps' outputs are substituted into the
+//!    arguments before execution (`${id}` references the whole output, `${id.field}` extracts an object field).
 //!
-//! [`ToolCaller`] trait 抽象"按名调用工具"的动作,[`MCPGateway`]
-//! 已实现——把多工具编排直接挂在 Gateway 的 `server:tool` 命名空间上。
+//! The [`ToolCaller`] trait abstracts "call a tool by name", implemented by [`MCPGateway`] —
+//! hanging multi-tool orchestration directly on the Gateway's `server:tool` namespace.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -22,36 +22,36 @@ use tokio::sync::Semaphore;
 use crate::gateway::MCPGateway;
 use lc_core::tools::ToolError;
 
-/// "按全名调用一个工具"的抽象(P2-10)。
+/// Abstraction of "call one tool by its full name" (P2-10).
 ///
-/// [`MCPGateway`] 已实现(把 `server:tool` 字符串结果解析
-/// 成 JSON,解析失败则退化为 `Value::String`);自定义 caller 可实现此 trait
-/// 接入任意工具注册表。每次调用返回结构化输出,供 `${id.field}` 模板引用。
+/// [`MCPGateway`] implements it (parses the `server:tool` string result into JSON, degrading to `Value::String`
+/// on parse failure); custom callers can implement this trait to hook in any tool registry. Each call returns
+/// structured output for `${id.field}` template references.
 #[async_trait::async_trait]
 pub trait ToolCaller: Send + Sync {
-    /// 调用工具并返回其结构化输出。
+    /// Calls the tool and returns its structured output.
     async fn call(&self, tool: &str, args: Value) -> Result<Value, ToolError>;
 }
 
-/// 编排的单个步骤(P2-10)。
+/// A single step of an orchestration (P2-10).
 ///
-/// `id` 是本步骤在编排内的唯一标识(供其他步骤 `depends_on` 与 `${id}` 引用);
-/// `tool` 是工具全名(`server:tool`);`args` 可含 `${...}` 模板,执行时以
-/// 前序步骤的输出代入。
+/// `id` uniquely identifies this step within the orchestration (referenced by other steps' `depends_on` and `${id}`);
+/// `tool` is the full tool name (`server:tool`); `args` may contain `${...}` templates, substituted with prior
+/// steps' outputs at execution.
 #[derive(Debug, Clone)]
 pub struct ToolStep {
-    /// 步骤唯一标识。
+    /// Unique step identifier.
     pub id: String,
-    /// 工具全名(如 `fs:read_file`)。
+    /// Full tool name (e.g. `fs:read_file`).
     pub tool: String,
-    /// 调用参数(支持 `${id}` / `${id.field}` 模板)。
+    /// Call arguments (supports `${id}` / `${id.field}` templates).
     pub args: Value,
-    /// 本步骤依赖的步骤 id;全部完成才执行。
+    /// Step ids this step depends on; it only runs once they are all done.
     pub depends_on: Vec<String>,
 }
 
 impl ToolStep {
-    /// 创建一个步骤,`depends_on` 默认空。
+    /// Creates a step with an empty `depends_on` by default.
     pub fn new(id: impl Into<String>, tool: impl Into<String>, args: Value) -> Self {
         Self {
             id: id.into(),
@@ -61,32 +61,32 @@ impl ToolStep {
         }
     }
 
-    /// 声明一个前置依赖(可链式多次调用)。
+    /// Declares a prerequisite dependency (chainable).
     pub fn after(mut self, dep: impl Into<String>) -> Self {
         self.depends_on.push(dep.into());
         self
     }
 }
 
-/// 工具编排的错误类别(P2-10)。
+/// Error category for tool orchestration (P2-10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OrchestrateError {
-    /// `depends_on` 引用了未定义的步骤 id。
+    /// `depends_on` references an undefined step id.
     UnknownStep(String),
-    /// 步骤 id 重复。
+    /// Duplicated step id.
     DuplicateId(String),
-    /// 依赖图存在环,无法拓扑排序。
+    /// The dependency graph has a cycle; topological sort is impossible.
     Cycle,
-    /// 编排未收敛(依赖互等的死局;环检测通过后不应发生)。
+    /// Orchestration did not converge (steps waiting on each other; shouldn't happen after cycle detection passes).
     Deadlock,
-    /// 参数模板引用了未执行的步骤。
+    /// The parameter template references an unexecuted step.
     MissingStep(String),
-    /// 参数模板 `id.field` 的字段不存在。
+    /// The `id.field` template's field does not exist.
     MissingField(String, String),
-    /// 底层工具调用失败。
+    /// The underlying tool call failed.
     Tool(String),
-    /// 并发闸门已关闭。
+    /// The concurrency gate is closed.
     SemaphoreClosed,
 }
 
@@ -131,11 +131,11 @@ impl From<ToolError> for OrchestrateError {
     }
 }
 
-/// 工具编排器(P2-10)。
+/// Tool orchestrator (P2-10).
 ///
-/// 持有步骤 DAG 与并发上限,`execute` 以轮次推进:每轮并发执行所有
-/// "依赖已满足"的步骤(并发度 ≤ `max_concurrency`),结果存入 map 供下一轮
-/// `${id}` 引用。执行前先做环检测,环 / 未定义依赖直接拒绝执行。
+/// Holds the step DAG and a concurrency cap; `execute` advances in rounds: each round runs all steps whose
+/// dependencies are satisfied concurrently (concurrency ≤ `max_concurrency`), storing results in a map for the
+/// next round's `${id}` references. Cycle detection runs first; cycles / undefined dependencies are rejected outright.
 #[derive(Debug)]
 pub struct ToolOrchestrator {
     steps: Vec<ToolStep>,
@@ -149,7 +149,7 @@ impl Default for ToolOrchestrator {
 }
 
 impl ToolOrchestrator {
-    /// 空编排器,默认并发上限 4。
+    /// Empty orchestrator, default concurrency cap 4.
     pub fn new() -> Self {
         Self {
             steps: Vec::new(),
@@ -157,23 +157,23 @@ impl ToolOrchestrator {
         }
     }
 
-    /// 设置并发上限(同时执行的最大步骤数)。
+    /// Sets the concurrency cap (maximum number of steps running at once).
     pub fn with_max_concurrency(mut self, n: usize) -> Self {
         self.max_concurrency = n.max(1);
         self
     }
 
-    /// 添加一个步骤(链式)。
+    /// Adds a step (chainable).
     pub fn add_step(mut self, step: ToolStep) -> Self {
         self.steps.push(step);
         self
     }
 
-    /// 执行整个 DAG,返回 `步骤 id → 输出` 的映射。
+    /// Executes the whole DAG, returning a `step id → output` map.
     ///
-    /// - 前置校验:步骤 id 唯一、依赖全部有定义、无环;
-    /// - 每轮取"依赖已满足"的步骤并发执行(信号量封顶);
-    /// - 步骤参数中的 `${id}` / `${id.field}` 模板以前序结果代入。
+    /// - Pre-check: step ids are unique, all dependencies defined, no cycles;
+    /// - Each round takes the steps whose dependencies are satisfied and runs them concurrently (capped by a semaphore);
+    /// - `${id}` / `${id.field}` templates in step arguments are substituted with prior results.
     pub async fn execute<C: ToolCaller>(
         &self,
         caller: &C,
@@ -196,7 +196,7 @@ impl ToolOrchestrator {
                 })
                 .collect();
             if ready.is_empty() {
-                // 拓扑检测通过后不应发生;防御性报错而非死循环。
+                // Shouldn't happen after topological detection passes; error out defensively rather than loop forever.
                 return Err(OrchestrateError::Deadlock);
             }
 
@@ -223,7 +223,7 @@ impl ToolOrchestrator {
         Ok(results)
     }
 
-    /// 前置校验:id 唯一、依赖有定义、依赖图无环。
+    /// Pre-check: ids unique, dependencies defined, dependency graph acyclic.
     fn validate(&self) -> Result<(), OrchestrateError> {
         let mut seen = HashSet::with_capacity(self.steps.len());
         let mut by_id: HashMap<&str, &ToolStep> = HashMap::with_capacity(self.steps.len());
@@ -240,7 +240,7 @@ impl ToolOrchestrator {
                 }
             }
         }
-        // Kahn 拓扑:每步入度取去重后的依赖数;减到 0 才可执行。
+        // Kahn topological sort: each step's in-degree is its deduplicated dependency count; it can only run once the count hits 0.
         let mut in_degree: HashMap<&str, usize> = HashMap::with_capacity(self.steps.len());
         let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
         for s in &self.steps {
@@ -277,10 +277,10 @@ impl ToolOrchestrator {
     }
 }
 
-/// 解析参数里的 `${id}` / `${id.field}` 模板。
+/// Resolves `${id}` / `${id.field}` templates in the arguments.
 ///
-/// 仅当整个字符串恰好是单个 `${...}` 引用时替换;普通文本原样保留。
-/// 遍历 JSON 树:数组逐元素、对象逐字段,引用部分以其前序输出代入。
+/// Substitutes only when the whole string is exactly a single `${...}` reference; plain text is kept as-is.
+/// Walks the JSON tree: arrays element by element, objects field by field; reference parts are substituted with their prior outputs.
 fn resolve_template(
     value: &Value,
     results: &HashMap<String, Value>,
@@ -328,8 +328,8 @@ fn resolve_template(
 impl ToolCaller for MCPGateway {
     async fn call(&self, tool: &str, args: Value) -> Result<Value, ToolError> {
         let raw = MCPGateway::call(self, tool, args).await?;
-        // Gateway 返回的是序列化文本;能解析成 JSON 就给结构化输出,
-        // 否则退化为纯文本值(供 `${id}` 整体引用)。
+        // The Gateway returns serialized text; if it parses as JSON, hand back the structured output,
+        // otherwise degrade to a plain-text value (for a whole `${id}` reference).
         match serde_json::from_str(&raw) {
             Ok(v) => Ok(v),
             Err(_) => Ok(Value::String(raw)),
@@ -346,7 +346,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    /// 脚本化 caller:按工具名返回结构化输出,便于断言模板代入。
+    /// Scripted caller: returns structured output by tool name, making template substitution easy to assert.
     struct ScriptedCaller;
 
     #[async_trait::async_trait]
@@ -365,7 +365,7 @@ mod tests {
         }
     }
 
-    /// 线性链:b 依赖 a,参数 `${a.sum}` 代入 a 的输出。
+    /// Linear chain: b depends on a; the `${a.sum}` argument substitutes a's output.
     #[tokio::test]
     async fn test_linear_chain_resolves_template() {
         let orch = ToolOrchestrator::new()
@@ -380,7 +380,7 @@ mod tests {
         );
     }
 
-    /// 并行依赖:x、y 互不依赖并行跑完,z 汇总两者。
+    /// Parallel dependencies: x and y are independent and run in parallel; z aggregates both.
     #[tokio::test]
     async fn test_parallel_deps_join() {
         let orch = ToolOrchestrator::new()
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(results["z"]["sum"], 10, "x.sum=5 and y.sum=5 should sum");
     }
 
-    /// 整结果引用:参数就是 `${id}`,替换为前序步骤的完整输出对象。
+    /// Whole-result reference: the argument is just `${id}`, replaced with the prior step's complete output object.
     #[tokio::test]
     async fn test_whole_result_reference() {
         let orch = ToolOrchestrator::new()
@@ -411,7 +411,7 @@ mod tests {
         );
     }
 
-    /// 环检测:a → b → a,执行前报 Cycle。
+    /// Cycle detection: a → b → a reports Cycle before execution.
     #[tokio::test]
     async fn test_cycle_detected() {
         let orch = ToolOrchestrator::new()
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(err, OrchestrateError::Cycle);
     }
 
-    /// 未定义的依赖:执行前报 UnknownStep。
+    /// Undefined dependency: reports UnknownStep before execution.
     #[tokio::test]
     async fn test_unknown_step_rejected() {
         let orch =
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(err, OrchestrateError::UnknownStep("nope".to_string()));
     }
 
-    /// 重复 id:执行前报 DuplicateId。
+    /// Duplicate id: reports DuplicateId before execution.
     #[tokio::test]
     async fn test_duplicate_id_rejected() {
         let orch = ToolOrchestrator::new()
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(err, OrchestrateError::DuplicateId("a".to_string()));
     }
 
-    /// 模板字段缺失:a 存在但无 `nope` 字段 → MissingField。
+    /// Missing template field: a exists but has no `nope` field → MissingField.
     #[tokio::test]
     async fn test_missing_template_field() {
         let orch = ToolOrchestrator::new()
@@ -457,7 +457,7 @@ mod tests {
         );
     }
 
-    /// 并发上限:6 个独立步骤,`max_concurrency=2`,同时执行数 ≤ 2。
+    /// Concurrency cap: 6 independent steps with `max_concurrency=2`; concurrent executions ≤ 2.
     #[tokio::test]
     async fn test_concurrency_capped() {
         struct GatedCaller {
@@ -493,8 +493,8 @@ mod tests {
         );
     }
 
-    /// 与真实 Gateway 集成:两个步骤都走假 SSE 服务器 `fs:echo`,
-    /// 步骤间依赖成立,`impl ToolCaller for MCPGateway` 路径打通。
+    /// Integration with the real Gateway: both steps go through the fake SSE server `fs:echo`,
+    /// the inter-step dependency holds, and the `impl ToolCaller for MCPGateway` path works end to end.
     #[tokio::test]
     async fn test_orchestrator_with_gateway() {
         let fake = start_fake_sse_server(PostMode::Quiet).await;

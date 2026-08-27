@@ -1,4 +1,4 @@
-//! `TaskAdapter`:把 `Input=String` 编排器桥接为消费 [`AgentTask`] 的子 Agent(P2-5)。
+//! `TaskAdapter`: bridges an `Input=String` orchestrator into a child agent consuming [`AgentTask`] (P2-5).
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -7,18 +7,20 @@ use super::{Orchestrator, RunContext};
 use crate::task::AgentTask;
 use crate::AgentError;
 
-/// 把 `Input=String` 的编排器适配为消费 [`AgentTask`] 的子 Agent(P2-5)。
+/// Adapts an `Input=String` orchestrator into a child agent consuming [`AgentTask`] (P2-5).
 ///
-/// 桥接两类编排器:真实 Agent(PlanExecuteAgent / DeepResearchAgent 等,
-/// `Input=String`)经此包装后,可放进 `FanOutFanIn` / `SequentialPipeline`
-/// 接受 [`AgentTask`] 派发。取目标喂给底层编排器;任务声明了 `allowed_tools`
-/// 时,由消费方(AgentExecutor 等)按白名单装配,此处不越界替其过滤。
+/// Bridges two orchestrator kinds: a real agent (PlanExecuteAgent /
+/// DeepResearchAgent, etc., `Input=String`) wrapped this way can be placed in a
+/// `FanOutFanIn` / `SequentialPipeline` that dispatches [`AgentTask`]. Takes the
+/// objective and feeds it to the inner orchestrator; when the task declares
+/// `allowed_tools`, the consumer (AgentExecutor, etc.) assembles the tool list
+/// from that allowlist — this adapter does not filter on its behalf.
 pub struct TaskAdapter {
     inner: Arc<dyn Orchestrator<Input = String, Output = String>>,
 }
 
 impl TaskAdapter {
-    /// 包装一个 `Input=String` 的编排器。
+    /// Wrap an `Input=String` orchestrator.
     pub fn new(inner: Arc<dyn Orchestrator<Input = String, Output = String>>) -> Self {
         Self { inner }
     }
@@ -44,7 +46,7 @@ impl Orchestrator for TaskAdapter {
     }
 }
 
-/// 便捷包装:把 `Input=String` 编排器转成可接收 [`AgentTask`] 派发的 trait 对象。
+/// Convenience wrapper: converts an `Input=String` orchestrator into a trait object that accepts [`AgentTask`] dispatch.
 pub fn task_adapter(
     inner: Arc<dyn Orchestrator<Input = String, Output = String>>,
 ) -> Arc<dyn Orchestrator<Input = AgentTask, Output = String>> {

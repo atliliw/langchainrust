@@ -1,6 +1,6 @@
-//! 成对比较评测器:让 LLM 裁判在两个回答中二选一(竞技场模式)。
+//! Pairwise-comparison evaluator: an LLM judge picks the better of two answers (arena mode).
 //!
-//! 带位置偏差缓解:交换 A/B 顺序跑两次,两次都选同一个才算真赢,否则判平局。
+//! Comes with position-bias mitigation: runs twice with A/B swapped, and only a consistent winner counts; otherwise it is a tie.
 
 use async_trait::async_trait;
 use futures_util::future;
@@ -13,18 +13,18 @@ use lc_schema::Message;
 
 use super::{EvalError, PairwiseEvaluator, Score};
 
-/// 成对比较结果
+/// Pairwise comparison result
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// A 回答更优
+    /// Answer A is better
     AWins,
-    /// B 回答更优
+    /// Answer B is better
     BWins,
-    /// 平局
+    /// Tie
     Tie,
 }
 
-/// 裁判选了哪个位置
+/// Which position the judge picked
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pick {
     First,
@@ -32,10 +32,10 @@ enum Pick {
     Tie,
 }
 
-/// 成对比较评测器(用 LLM 当裁判,二选一)。
+/// Pairwise-comparison evaluator (an LLM as the judge, picks one of two).
 ///
-/// P1-1: 实现 `PairwiseEvaluator` trait,可与单点 `Evaluator` 一起进 `EvalRunner`
-/// 统一报告;直接调用仍可走 `compare` 拿细粒度 `Verdict`(A 赢 / B 赢 / 平局)。
+/// P1-1: implements the `PairwiseEvaluator` trait and can join the pointwise `Evaluator`s in `EvalRunner`
+/// unified report; calling `compare` directly still yields the fine-grained `Verdict` (A wins / B wins / tie).
 pub struct PairwiseJudge<M: BaseChatModel> {
     judge: M,
     rubric: String,
@@ -47,7 +47,7 @@ const DEFAULT_PAIRWISE_RUBRIC: &str = "\
 清晰性:表达是否清晰、简洁。";
 
 impl<M: BaseChatModel> PairwiseJudge<M> {
-    /// 创建使用默认评分标准的成对比较评测器。
+    /// Creates a pairwise-comparison evaluator using the default rubric.
     pub fn new(judge: M) -> Self {
         Self {
             judge,
@@ -55,26 +55,27 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
         }
     }
 
-    /// 设置自定义评分标准(builder 风格)。
+    /// Sets a custom rubric (builder style).
     pub fn with_rubric(mut self, rubric: impl Into<String>) -> Self {
         self.rubric = rubric.into();
         self
     }
 
-    /// 比较 A、B 两个回答,返回谁更好。
+    /// Compares answers A and B, returning which is better.
     ///
-    /// 交换 A/B 顺序跑两次,消除位置偏差:两次都选同一个才算真赢,否则判平局。
-    /// P2-4: 两次 ask 相互独立,用 `future::join` 并发发起(消除 N+1 串行往返)。
+    /// Runs twice with A/B swapped to eliminate position bias: a consistent winner in both counts,
+    /// otherwise a tie. P2-4: the two asks are independent and fire concurrently via `future::join`
+    /// (eliminating the N+1 serial round-trips).
     pub async fn compare(&self, input: &str, a: &str, b: &str) -> Result<Verdict, EvalError> {
         let (v1, v2) = future::join(self.ask(input, a, b), self.ask(input, b, a)).await;
-        let v1 = v1?; // A 在前
-        let v2 = v2?; // 交换,B 在前
+        let v1 = v1?; // A first
+        let v2 = v2?; // swapped, B first
 
         Ok(match (v1, v2) {
             (Pick::Tie, _) | (_, Pick::Tie) => Verdict::Tie,
-            (Pick::First, Pick::Second) => Verdict::AWins, // v1 选 A(前),v2 选 A(后)
-            (Pick::Second, Pick::First) => Verdict::BWins, // v1 选 B(后),v2 选 B(前)
-            _ => Verdict::Tie, // 位置偏差:两次选的位置一致但映射回不同答案
+            (Pick::First, Pick::Second) => Verdict::AWins, // v1 picks A (first), v2 picks A (second)
+            (Pick::Second, Pick::First) => Verdict::BWins, // v1 picks B (second), v2 picks B (first)
+            _ => Verdict::Tie, // position bias: both rounds picked the same position but it maps to different answers
         })
     }
 
@@ -89,7 +90,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
             format!("题目:\n{input}\n\n第一个回答:\n{first}\n\n第二个回答:\n{second}\n\n哪个更好?");
         let messages = vec![Message::system(system), Message::human(user)];
 
-        // P0-1: 优先结构化输出(verdict: a/b/tie);不支持工具绑定的模型走文本解析回落。
+        // P0-1: prefer structured output (verdict: a/b/tie); models without tool binding fall back to text parsing.
         let args: PickArgs = structured_call(&self.judge, pick_tool(), messages, |raw| {
             let pick = parse_pick(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
@@ -107,9 +108,9 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
     }
 }
 
-/// P1-1: 作为 `PairwiseEvaluator` 进 `EvalRunner`,judge 以
-/// (a=prediction, b=reference) 为两个候选。得分映射:1.0 = A 优、
-/// 0.5 = 平局、0.0 = B 优,label 保留裁决含义(a_wins / tie / b_wins)。
+/// P1-1: enters `EvalRunner` as a `PairwiseEvaluator`, judging the two candidates
+/// as (a=prediction, b=reference). Score mapping: 1.0 = A wins,
+/// 0.5 = tie, 0.0 = B wins, and the label keeps the verdict meaning (a_wins / tie / b_wins).
 #[async_trait]
 impl<M: BaseChatModel> PairwiseEvaluator for PairwiseJudge<M> {
     async fn eval_pair(&self, input: &str, a: &str, b: &str) -> Result<Score, EvalError> {
@@ -126,17 +127,17 @@ impl<M: BaseChatModel> PairwiseEvaluator for PairwiseJudge<M> {
     }
 }
 
-/// 结构化判定参数(经 tool_calls 返回)。
+/// Structured verdict arguments (returned via tool_calls).
 #[derive(Debug, Deserialize)]
 struct PickArgs {
     verdict: String, // "a" | "b" | "tie"
-    /// 让 LLM 附上简短理由(改善判定质量),当前不消费。
+    /// Asks the LLM to attach a brief reason (improves judgment quality); currently unused.
     #[serde(default)]
     #[allow(dead_code)]
     reason: String,
 }
 
-/// 构建二选一工具:让 LLM 以 `{"verdict": "a"|"b"|"tie", "reason": "..."}` 提交判定。
+/// Builds the pick-one-of-two tool: lets the LLM submit a verdict as `{"verdict": "a"|"b"|"tie", "reason": "..."}`.
 fn pick_tool() -> ToolDefinition {
     ToolDefinition::new(
         "pick_better",
@@ -164,7 +165,7 @@ fn pick_to_str(pick: Pick) -> &'static str {
     }
 }
 
-/// 把结构化 verdict 字符串映射回 `Pick`;非法值报解析错误。
+/// Maps a structured verdict string back to `Pick`; an invalid value reports a parse error.
 fn str_to_pick(verdict: &str) -> Result<Pick, EvalError> {
     match verdict {
         "a" => Ok(Pick::First),
@@ -177,19 +178,19 @@ fn str_to_pick(verdict: &str) -> Result<Pick, EvalError> {
     }
 }
 
-/// 解析裁判回复为 Pick。无任何有效标记时返回 `None`(解析失败,由调用方报错),
-/// 而非静默默认为平局——避免 LLM 跑题回复被当成"无偏好"。
+/// Parses a judge reply into a Pick. With no valid marker returns `None` (parse failure, reported by the caller),
+/// rather than silently defaulting to a tie — so an off-topic LLM reply is not read as "no preference".
 fn parse_pick(raw: &str) -> Option<Pick> {
     let lower = raw.to_lowercase();
     if lower.contains("平局") || lower.contains("tie") || lower.contains("一样") {
         return Some(Pick::Tie);
     }
-    // 第一个 / 前者 / former:任一措辞,取最早出现位置
+    // "first"/"former" wordings: any phrasing, take the earliest occurrence position
     let first_pos = ["第一个", "first", "前者", "former"]
         .into_iter()
         .filter_map(|kw| lower.find(kw))
         .min();
-    // 第二个 / 后者 / latter
+    // "second"/"latter" wordings
     let second_pos = ["第二个", "second", "后者", "latter"]
         .into_iter()
         .filter_map(|kw| lower.find(kw))
@@ -223,7 +224,7 @@ mod tests {
     }
     impl std::error::Error for JudgeError {}
 
-    /// 依次返回预设回复的 mock 裁判
+    /// Mock judge returning preset replies in order
     struct SeqMockJudge {
         replies: Vec<String>,
         call: Arc<AtomicUsize>,
@@ -294,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pairwise_a_wins() {
-        // 第一次(A在前)选第一个=A;第二次(B在前)选第二个=A => A赢
+        // first round (A first) picks the first = A; second round (B first) picks the second = A => A wins
         let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
             "第一个更好".into(),
             "第二个更好".into(),
@@ -304,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pairwise_b_wins() {
-        // 第一次(A在前)选第二个=B;第二次(B在前)选第一个=B => B赢
+        // first round (A first) picks the second = B; second round (B first) picks the first = B => B wins
         let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
             "第二个更好".into(),
             "第一个更好".into(),
@@ -314,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pairwise_position_bias_tie() {
-        // 裁判总选第一个(位置偏差):两次都选 first => 映射回不同答案 => 平局
+        // judge always picks the first (position bias): both rounds pick first => maps to different answers => tie
         let judge = PairwiseJudge::new(SeqMockJudge::new(vec![
             "第一个更好".into(),
             "第一个更好".into(),
@@ -335,20 +336,20 @@ mod tests {
         assert_eq!(parse_pick("平局"), Some(Pick::Tie));
         assert_eq!(parse_pick("两个一样好"), Some(Pick::Tie));
         assert_eq!(parse_pick("第二个比第一个好"), Some(Pick::Second));
-        // 前者/后者、former/latter:LLM 不一定按"第一个"格式回
+        // "former"/"latter" wordings: the LLM may not reply in the "first"/"second" format
         assert_eq!(parse_pick("前者更好"), Some(Pick::First));
         assert_eq!(parse_pick("后者更准确"), Some(Pick::Second));
         assert_eq!(parse_pick("the former is better"), Some(Pick::First));
         assert_eq!(parse_pick("the latter wins"), Some(Pick::Second));
-        // 无任何有效标记 = 解析失败,不应静默默认为平局
+        // no valid marker = parse failure, must not silently default to a tie
         assert_eq!(parse_pick("我无法判断"), None);
     }
 
-    /// P0-1: 支持 bind_tools 的模型走结构化输出(verdict: a/b/tie)。
+    /// P0-1: models supporting bind_tools use structured output (verdict: a/b/tie).
     #[tokio::test]
     async fn test_pairwise_structured_verdict() {
         use crate::test_support::ToolJudge;
-        // A 赢:第一轮(A 在前)选 "a"(第一个=A),第二轮(B 在前)选 "b"(第二个=A)
+        // A wins: round 1 (A first) picks "a" (first = A), round 2 (B first) picks "b" (second = A)
         let judge = PairwiseJudge::new(ToolJudge::sequence(vec![
             r#"{"verdict": "a", "reason": "第一个更完整"}"#.into(),
             r#"{"verdict": "b", "reason": "第二个更完整"}"#.into(),
@@ -359,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn test_pairwise_structured_verdict_b() {
         use crate::test_support::ToolJudge;
-        // B 赢:第一轮(A 在前)选 "b"(第二个=B),第二轮(B 在前)选 "a"(第一个=B)
+        // B wins: round 1 (A first) picks "b" (second = B), round 2 (B first) picks "a" (first = B)
         let judge = PairwiseJudge::new(ToolJudge::sequence(vec![
             r#"{"verdict": "b", "reason": "第二个更准确"}"#.into(),
             r#"{"verdict": "a", "reason": "第一个更准确"}"#.into(),

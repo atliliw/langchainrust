@@ -1,4 +1,4 @@
-//! 扇出-聚合编排器 `FanOutFanIn`(Supervisor 的一种形态,P2-3)。
+//! Fan-out/fan-in orchestrator `FanOutFanIn` (a form of Supervisor, P2-3).
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -8,14 +8,17 @@ use super::{Orchestrator, RunContext};
 use crate::task::AgentTask;
 use crate::AgentError;
 
-/// 扇出-聚合编排器(Supervisor 的一种形态,P2-3)。
+/// Fan-out/fan-in orchestrator (a form of Supervisor, P2-3).
 ///
-/// 把同一任务广播给 N 个子编排器**并行**执行(受 `max_concurrency` 限流),
-/// 全部完成后把各自的输出交给聚合函数合并。适合"多角色评审 / 委员会"场景:
-/// 多个独立视角各算各的,最后统一裁决。
+/// Broadcasts the same task to N child orchestrators running **in parallel**
+/// (rate-limited by `max_concurrency`), then merges their outputs with an
+/// aggregator once all complete. Suited to "multi-role review / committee"
+/// scenarios: independent perspectives each compute their own, and a unified
+/// verdict is reached at the end.
 ///
-/// 默认聚合是换行拼接;可用 [`FanOutFanIn::with_aggregator`] 换成投票 /
-/// 择优等自定义策略。任一 worker 失败即整体失败(不吞错)。
+/// The default aggregator joins with newlines; swap it via
+/// [`FanOutFanIn::with_aggregator`] for voting / best-of custom strategies.
+/// Any worker failure fails the whole run (errors are not swallowed).
 pub struct FanOutFanIn {
     workers: Vec<Arc<dyn Orchestrator<Input = AgentTask, Output = String>>>,
     aggregator: Box<dyn Fn(Vec<String>) -> String + Send + Sync>,
@@ -24,9 +27,11 @@ pub struct FanOutFanIn {
 }
 
 impl FanOutFanIn {
-    /// 用一组同构 `AgentTask -> String` 子编排器构造,聚合默认换行拼接。
+    /// Construct from a set of homogeneous `AgentTask -> String` child orchestrators;
+    /// aggregation defaults to newline-joining.
     ///
-    /// 真实 Agent(`Input=String`)用 [`crate::orchestration::task_adapter`] 包装后再放进 worker 列表。
+    /// Real agents (`Input=String`) should be wrapped with
+    /// [`crate::orchestration::task_adapter`] before being put into the worker list.
     pub fn new(workers: Vec<Arc<dyn Orchestrator<Input = AgentTask, Output = String>>>) -> Self {
         let n = workers.len().max(1);
         Self {
@@ -37,7 +42,7 @@ impl FanOutFanIn {
         }
     }
 
-    /// 自定义聚合函数(如择优、投票、拼接模板)。
+    /// Custom aggregator function (e.g. best-of, voting, join templates).
     pub fn with_aggregator(
         mut self,
         aggregator: impl Fn(Vec<String>) -> String + Send + Sync + 'static,
@@ -46,7 +51,7 @@ impl FanOutFanIn {
         self
     }
 
-    /// 限制并行 worker 数(至少 1)。
+    /// Cap the number of parallel workers (at least 1).
     pub fn with_max_concurrency(mut self, n: usize) -> Self {
         self.max_concurrency = n.max(1);
         self.semaphore = Arc::new(Semaphore::new(self.max_concurrency));

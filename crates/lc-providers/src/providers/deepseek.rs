@@ -1,5 +1,5 @@
 // src/language_models/providers/deepseek.rs
-//! DeepSeek API 实现 (OpenAI 兼容)
+//! DeepSeek API implementation (OpenAI-compatible)
 
 use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
@@ -15,18 +15,18 @@ use serde::de::DeserializeOwned;
 use std::env;
 use std::pin::Pin;
 
-/// DeepSeek API 端点
+/// DeepSeek API endpoint
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 
-/// DeepSeek 模型列表
+/// DeepSeek model list
 pub const DEEPSEEK_MODELS: [&str; 4] = [
-    "deepseek-chat",     // 通用对话模型
-    "deepseek-coder",    // 代码专用模型
-    "deepseek-reasoner", // 推理模型 (R1)
-    "deepseek-v3",       // V3 版本
+    "deepseek-chat",     // general-purpose chat model
+    "deepseek-coder",    // code-specialized model
+    "deepseek-reasoner", // reasoning model (R1)
+    "deepseek-v3",       // V3 version
 ];
 
-/// DeepSeek 配置
+/// DeepSeek config
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
     /// DeepSeek API key.
@@ -110,7 +110,7 @@ impl DeepSeekConfig {
         self
     }
 
-    /// 转换为 OpenAI 配置 (复用 OpenAI 实现)
+    /// Converts into an OpenAI config (reuses the OpenAI implementation)
     pub fn into_openai_config(self) -> OpenAIConfig {
         OpenAIConfig {
             api_key: self.api_key,
@@ -129,7 +129,7 @@ impl DeepSeekConfig {
     }
 }
 
-/// DeepSeek 聊天客户端
+/// DeepSeek chat client
 #[derive(Clone)]
 pub struct DeepSeekChat {
     inner: OpenAIChat,

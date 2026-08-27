@@ -1,20 +1,20 @@
-//! Session 存储 trait 与错误类型
+//! Session storage trait and error types
 
 use async_trait::async_trait;
 
 use super::session::Session;
 
-/// Session 错误
+/// Session error
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SessionError {
-    /// Session 不存在
+    /// Session not found
     NotFound(String),
-    /// 存储操作错误
+    /// Storage operation error
     StoreError(String),
-    /// LLM 调用错误(Q1:LLM 失败不得伪装成存储错误)
+    /// LLM call error (Q1: an LLM failure must not masquerade as a storage error)
     Llm(String),
-    /// 记忆组件错误
+    /// Memory component error
     Memory(String),
 }
 
@@ -31,17 +31,17 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
-/// Session 存储 trait
+/// Session storage trait
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    /// 创建会话,返回会话 ID
+    /// Creates a session, returning its ID
     async fn create(&self, session: Session) -> Result<String, SessionError>;
-    /// 获取会话
+    /// Gets a session
     async fn get(&self, id: &str) -> Result<Option<Session>, SessionError>;
-    /// 更新会话
+    /// Updates a session
     async fn update(&self, session: &Session) -> Result<(), SessionError>;
-    /// 删除会话
+    /// Deletes a session
     async fn delete(&self, id: &str) -> Result<(), SessionError>;
-    /// 获取用户所有会话
+    /// Gets all sessions of a user
     async fn list_by_user(&self, user_id: &str) -> Result<Vec<Session>, SessionError>;
 }

@@ -1,4 +1,4 @@
-//! Tiktoken 计数器(OpenAI tokenizer)
+//! Tiktoken counter (OpenAI tokenizer)
 
 use tiktoken_rs::CoreBPE;
 
@@ -7,13 +7,13 @@ use lc_schema::Message;
 use super::counter::TokenCounter;
 use super::TokenCounterError;
 
-/// Tiktoken 计数器(使用 cl100k_base,适用于 GPT-3.5 / 4 / 4o)
+/// Tiktoken counter (uses cl100k_base, for GPT-3.5 / 4 / 4o)
 pub struct TiktokenCounter {
     encoder: CoreBPE,
 }
 
 impl TiktokenCounter {
-    /// 创建 Tiktoken 计数器(加载 cl100k_base BPE 编码器)。
+    /// Creates a Tiktoken counter (loads the cl100k_base BPE encoder).
     pub fn new() -> Result<Self, TokenCounterError> {
         let encoder = tiktoken_rs::cl100k_base()
             .map_err(|e| TokenCounterError::EncoderLoad(e.to_string()))?;
@@ -32,17 +32,17 @@ impl TokenCounter for TiktokenCounter {
     fn count_messages(&self, messages: &[Message]) -> u32 {
         let mut total = 0u32;
         for msg in messages {
-            total += 4; // OpenAI 消息格式开销
+            total += 4; // OpenAI message-format overhead
             total += self.count_tokens(&msg.content);
             if let Some(name) = &msg.name {
                 total += self.count_tokens(name);
             }
-            // 图片内容粗略计为 1000 token/图
+            // images count roughly as 1000 tokens each
             for _ in &msg.images {
                 total += 1000;
             }
         }
-        total += 2; // 对话边界标记
+        total += 2; // conversation boundary marker
         total
     }
 }
@@ -69,7 +69,7 @@ mod tests {
         let counter = TiktokenCounter::new().unwrap();
         let msgs = vec![Message::system("You are helpful."), Message::human("Hi")];
         let n = counter.count_messages(&msgs);
-        // 至少含 2*4 开销 + 2 边界 + 各消息 token
+        // at least 2*4 overhead + 2 boundary + per-message tokens
         assert!(n >= 10);
     }
 
@@ -78,7 +78,7 @@ mod tests {
         let counter = TiktokenCounter::new().unwrap();
         let msg = Message::human_with_image("看图", "https://example.com/x.png");
         let n = counter.count_messages(&[msg]);
-        assert!(n >= 1000); // 图片 1000 token
+        assert!(n >= 1000); // image = 1000 tokens
     }
 
     #[test]

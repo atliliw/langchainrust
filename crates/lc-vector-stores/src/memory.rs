@@ -1,7 +1,7 @@
 // lc-vector-stores/src/memory.rs
-//! 内存向量存储
+//! In-memory vector store
 //!
-//! 将文档和向量存储在内存中，适用于小规模数据和测试。
+//! Stores documents and vectors in memory, suitable for small-scale data and tests.
 
 use crate::{
     cosine_similarity, Document, MetadataFilter, SearchResult, VectorDocument, VectorStore,
@@ -13,14 +13,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// 内存向量存储
+/// In-memory vector store
 pub struct InMemoryVectorStore {
-    /// 文档存储
+    /// Document storage
     documents: Arc<RwLock<HashMap<String, VectorDocument>>>,
 }
 
 impl InMemoryVectorStore {
-    /// 创建新的内存向量存储
+    /// Creates a new in-memory vector store
     pub fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
@@ -74,8 +74,9 @@ impl VectorStore for InMemoryVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // Q2: 不再硬过滤 score > 0 —— 全负分语料下也应返回 top-k;
-        // 是否设阈值由调用方通过 similarity_search_with_min_score 显式决定。
+        // Q2: no longer hard-filters score > 0 — under an all-negative corpus the top-k
+        // should still be returned; whether to set a threshold is the caller's explicit
+        // decision via similarity_search_with_min_score.
         self.similarity_search_with_min_score(query_embedding, k, None)
             .await
     }
@@ -88,7 +89,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let store = self.documents.read().await;
 
-        // 计算所有文档的相似度,先按阈值过滤再取 top-k (Q2)
+        // compute similarity for all documents, filter by threshold first, then take top-k (Q2)
         let mut results: Vec<SearchResult> = store
             .values()
             .filter_map(|vd| {
@@ -104,14 +105,14 @@ impl VectorStore for InMemoryVectorStore {
             })
             .collect();
 
-        // 按相似度降序排序
+        // sort by similarity descending
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // 返回前 k 个结果
+        // return the top k results
         Ok(results.into_iter().take(k).collect())
     }
 
@@ -123,7 +124,7 @@ impl VectorStore for InMemoryVectorStore {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let store = self.documents.read().await;
 
-        // S3: 内存元数据过滤 —— 先按过滤条件筛文档,再算相似度取 top-k。
+        // S3: in-memory metadata filtering — filter documents by the condition first, then compute similarity and take top-k.
         let mut results: Vec<SearchResult> = store
             .values()
             .filter(|vd| filter.is_none_or(|f| f.matches(&vd.document.metadata)))
@@ -181,26 +182,26 @@ mod tests {
     async fn test_add_and_search() {
         let store = InMemoryVectorStore::new();
 
-        // 添加文档
+        // add documents
         let docs = vec![
             Document::new("Rust is a systems programming language"),
             Document::new("Python is a scripting language"),
             Document::new("JavaScript is used for web development"),
         ];
 
-        // 创建简单的模拟嵌入向量
+        // create simple mock embedding vectors
         let embeddings = vec![
-            vec![1.0, 0.0, 0.0], // Rust 相关
-            vec![0.0, 1.0, 0.0], // Python 相关
-            vec![0.0, 0.0, 1.0], // JavaScript 相关
+            vec![1.0, 0.0, 0.0], // Rust-related
+            vec![0.0, 1.0, 0.0], // Python-related
+            vec![0.0, 0.0, 1.0], // JavaScript-related
         ];
 
         let ids = store.add_documents(docs, embeddings).await.unwrap();
         assert_eq!(ids.len(), 3);
         assert_eq!(store.count().await, 3);
 
-        // 搜索相似文档
-        let query = vec![0.9, 0.1, 0.0]; // 更接近 Rust
+        // search for similar documents
+        let query = vec![0.9, 0.1, 0.0]; // closer to Rust
         let results = store.similarity_search(&query, 2).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -217,16 +218,16 @@ mod tests {
 
         store.add_documents(vec![doc], embeddings).await.unwrap();
 
-        // 获取文档
+        // get the document
         let retrieved = store.get_document("test-id").await.unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().content, "Test document");
 
-        // 删除文档
+        // delete the document
         store.delete_document("test-id").await.unwrap();
         assert_eq!(store.count().await, 0);
 
-        // 再次获取应该返回 None
+        // fetching again should return None
         let retrieved = store.get_document("test-id").await.unwrap();
         assert!(retrieved.is_none());
     }
@@ -245,8 +246,8 @@ mod tests {
         assert_eq!(store.count().await, 0);
     }
 
-    /// Q1: 未配置嵌入器时,similarity_search_text 应显式报 EmbeddingError,
-    /// 而不是静默成功或 panic。
+    /// Q1: without a configured embedder, similarity_search_text must report EmbeddingError
+    /// explicitly, rather than silently succeeding or panicking.
     #[tokio::test]
     async fn test_similarity_search_text_without_embedder_errors() {
         let store = InMemoryVectorStore::new();
@@ -254,8 +255,9 @@ mod tests {
         assert!(matches!(err, VectorStoreError::EmbeddingError(_)));
     }
 
-    /// Q2: 全非正分语料下 similarity_search 仍返回 top-k(不再被 score>0 硬过滤清空);
-    /// similarity_search_with_min_score 按阈值显式过滤。
+    /// Q2: under an all-non-positive-score corpus, similarity_search still returns the top-k
+    /// (no longer cleared by a score>0 hard filter); similarity_search_with_min_score filters
+    /// explicitly by threshold.
     #[tokio::test]
     async fn test_negative_scores_not_dropped() {
         let store = InMemoryVectorStore::new();
@@ -273,19 +275,19 @@ mod tests {
 
         let query = vec![1.0, 0.0];
 
-        // 旧实现 score > 0.0 硬过滤,该语料下会返回空;现在返回 top-k(3 条,全部非正分)。
+        // the old implementation hard-filtered score > 0.0, which would return empty here; now it returns the top-k (3 items, all non-positive).
         let results = store.similarity_search(&query, 3).await.unwrap();
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.score <= 0.0));
 
-        // 显式阈值:score >= -0.5 → 排除 score = -1.0 的那条
+        // explicit threshold: score >= -0.5 excludes the score = -1.0 entry
         let filtered = store
             .similarity_search_with_min_score(&query, 3, Some(-0.5))
             .await
             .unwrap();
         assert_eq!(filtered.len(), 2);
 
-        // min_score = None 时与 similarity_search 行为一致
+        // min_score = None behaves identically to similarity_search
         let all = store
             .similarity_search_with_min_score(&query, 3, None)
             .await
@@ -306,7 +308,7 @@ mod tests {
         assert!((cosine_similarity(&a, &b).unwrap() - 0.0).abs() < 0.0001);
     }
 
-    /// S3: 内存元数据过滤 —— 单条件 + AND/OR 组合;`filter: None` 与旧路径一致。
+    /// S3: in-memory metadata filtering — single condition + AND/OR combination; `filter: None` matches the legacy path.
     #[tokio::test]
     async fn test_metadata_filter() {
         use crate::FilterOp;
@@ -336,7 +338,7 @@ mod tests {
 
         let query = vec![1.0, 0.0, 0.0];
 
-        // 单条件
+        // single condition
         let eq = MetadataFilter::field("lang", FilterOp::Eq, "rust");
         let r = store
             .similarity_search_with_filter(&query, 5, Some(&eq))
@@ -347,7 +349,7 @@ mod tests {
             .iter()
             .all(|s| s.document.metadata.get("lang").and_then(|v| v.as_str()) == Some("rust")));
 
-        // AND 组合
+        // AND combination
         let and = MetadataFilter::and(vec![
             MetadataFilter::field("lang", FilterOp::Eq, "rust"),
             MetadataFilter::field("year", FilterOp::Gte, 2021),
@@ -359,7 +361,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r[0].document.content.contains("rust doc"));
 
-        // OR 组合
+        // OR combination
         let or = MetadataFilter::or(vec![
             MetadataFilter::field("lang", FilterOp::Eq, "python"),
             MetadataFilter::field("year", FilterOp::Lt, 2021),
@@ -370,7 +372,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.len(), 2);
 
-        // filter: None 与 similarity_search 行为一致(回归)
+        // filter: None behaves identically to similarity_search (regression)
         let none = store
             .similarity_search_with_filter(&query, 5, None)
             .await

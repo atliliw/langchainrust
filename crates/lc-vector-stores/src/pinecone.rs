@@ -55,9 +55,9 @@ impl PineconeStore {
 
     /// Build query request body with a metadata filter (pure function, convenient for testing).
     ///
-    /// S3: 在 [`build_query_body`](Self::build_query_body) 的基础上附加 Pinecone
-    /// `filter` 字段,由 [`filter_to_pinecone`] 完成 [`MetadataFilter`] → Pinecone
-    /// 查询语法的翻译(字段名 → `$op` 值,组合用 `$and`/`$or`)。
+    /// S3: extends [`build_query_body`](Self::build_query_body) with a Pinecone `filter` field,
+    /// where [`filter_to_pinecone`] translates [`MetadataFilter`] → Pinecone query syntax
+    /// (field name → `$op` value, combinations via `$and`/`$or`).
     pub fn build_query_body_filtered(
         query_vec: &[f32],
         top_k: usize,
@@ -144,9 +144,9 @@ impl PineconeStore {
         Ok(result)
     }
 
-    /// 读取索引统计(真实 count 的唯一可靠来源)。
+    /// Reads index statistics (the only reliable source for a true count).
     ///
-    /// Pinecone REST 提供 `describe_index_stats`,返回 `totalVectorCount`。
+    /// The Pinecone REST API provides `describe_index_stats`, returning `totalVectorCount`.
     pub async fn describe_index_stats(&self) -> Result<PineconeIndexStats, VectorStoreError> {
         let url = format!("{}/describe_index_stats", self.host);
         let resp = self
@@ -188,7 +188,7 @@ impl PineconeStore {
         Ok(())
     }
 
-    /// POST `/query` 并解析结果(普通与过滤检索共用)。
+    /// POSTs to `/query` and parses the result (shared by plain and filtered retrieval).
     async fn query_impl(
         &self,
         body: serde_json::Value,
@@ -238,12 +238,12 @@ impl PineconeStore {
     }
 }
 
-/// S3: [`MetadataFilter`] → Pinecone `filter` 语法。
+/// S3: translates [`MetadataFilter`] → Pinecone `filter` syntax.
 ///
-/// 单字段条件翻译成 `{ key: { "$op": value } }`(Pinecone 支持
-/// `$eq $ne $gt $gte $lt $lte $in $nin`),AND/OR 组合翻译成
-/// `{ "$and": [...] }` / `{ "$or": [...] }`。类型与 [`FilterOp`] 一一对应,
-/// 无不可表达的构造。
+/// A single-field condition becomes `{ key: { "$op": value } }` (Pinecone supports
+/// `$eq $ne $gt $gte $lt $lte $in $nin`); AND/OR combinations become
+/// `{ "$and": [...] }` / `{ "$or": [...] }`. The types map one-to-one with [`FilterOp`],
+/// with no inexpressible construct.
 pub fn filter_to_pinecone(filter: &MetadataFilter) -> serde_json::Value {
     fn op_str(op: FilterOp) -> &'static str {
         match op {
@@ -320,7 +320,7 @@ impl VectorStore for PineconeStore {
         self.query_impl(body).await
     }
 
-    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(原生 Pinecone filter 语法)。
+    /// S3: similarity search with metadata filtering — filtering is delegated to the server (native Pinecone filter syntax).
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -353,8 +353,8 @@ impl VectorStore for PineconeStore {
     }
 
     async fn count(&self) -> usize {
-        // Q4: 真实现 —— 通过 describe_index_stats 读取 totalVectorCount,不再写死 0。
-        // trait 签名返回 usize,网络失败时退化为 0 并记录日志(不抛错)。
+        // Q4: real implementation — reads totalVectorCount via describe_index_stats, no longer hardcoded to 0.
+        // the trait signature returns usize; on network failure it degrades to 0 and logs (no error raised).
         match self.describe_index_stats().await {
             Ok(stats) => stats.total_vector_count,
             Err(e) => {
@@ -383,13 +383,13 @@ struct QueryMatch {
     metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
-/// Pinecone `describe_index_stats` 响应(只需我们关心的字段)。
+/// Response of Pinecone `describe_index_stats` (only the fields we care about).
 ///
-/// Q4: 提供给 [`PineconeStore::describe_index_stats`],供调用方读取真实向量总数,
-/// 也是 [`VectorStore::count`] 的数据来源。
+/// Q4: returned by [`PineconeStore::describe_index_stats`], letting callers read the true
+/// total vector count; it is also the data source for [`VectorStore::count`].
 #[derive(Deserialize)]
 pub struct PineconeIndexStats {
-    /// 索引中的总向量数
+    /// Total number of vectors in the index
     #[serde(default)]
     pub total_vector_count: usize,
 }
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(store.host, "https://index.svc.env.pinecone.io");
     }
 
-    /// S3: 单字段条件 → Pinecone `{ key: { "$op": value } }`。
+    /// S3: single-field condition → Pinecone `{ key: { "$op": value } }`.
     #[test]
     fn test_filter_to_pinecone_field_ops() {
         assert_eq!(
@@ -457,7 +457,7 @@ mod tests {
         );
     }
 
-    /// S3: AND/OR 组合 → `$and`/`$or` 嵌套。
+    /// S3: AND/OR combination → nested `$and`/`$or`.
     #[test]
     fn test_filter_to_pinecone_and_or() {
         let f = MetadataFilter::and(vec![
@@ -481,7 +481,7 @@ mod tests {
         );
     }
 
-    /// S3: 过滤查询体 = 普通查询体 + filter 字段。
+    /// S3: the filtered query body = the plain query body + a filter field.
     #[test]
     fn test_build_query_body_filtered() {
         let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");

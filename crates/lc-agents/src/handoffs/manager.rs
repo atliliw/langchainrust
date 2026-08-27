@@ -13,30 +13,30 @@ use lc_core::tools::ToolError;
 
 use super::handoff::{Handoff, HandoffContext, HandoffError, HandoffRecord, HandoffResult};
 
-/// Handoff 管理器内部状态(单 Mutex 避免多锁获取顺序不一致导致死锁)
+/// Internal state of the Handoff manager (a single Mutex avoids deadlocks from inconsistent multi-lock acquisition order)
 struct HandoffState {
     agents: HashMap<String, Arc<AgentExecutor>>,
     primary: Option<String>,
     history: Vec<HandoffRecord>,
-    /// 当前交接链(从 primary 起,含正在执行的 agent),用于环检测(P1-7)。
+    /// Current handoff chain (from primary, including the agent currently executing), for cycle detection (P1-7).
     chain: Vec<String>,
 }
 
-/// Handoff 管理器:注册多个 Agent,支持任务交接
+/// Handoff manager: registers multiple Agents and supports task handoff
 pub struct HandoffManager {
     state: Mutex<HandoffState>,
-    /// 交接深度上限,超过即拒绝(P1-7)。
+    /// Handoff depth limit; exceeding it is rejected (P1-7).
     max_handoff_depth: usize,
 }
 
-/// 交接输入里,对话摘要段的标记(P2-4)。
+/// Marker for the conversation-summary segment in handoff input (P2-4).
 const SUMMARY_MARKER: &str = "【交接摘要】";
-/// 交接输入里,任务段的标记(P2-4)。
+/// Marker for the task segment in handoff input (P2-4).
 const TASK_MARKER: &str = "【交接任务】";
 
-/// 把交接上下文里的对话摘要拼进目标 Agent 的输入(P2-4)。
+/// Folds the conversation summary from the handoff context into the target Agent's input (P2-4).
 ///
-/// 摘要缺失或为空时退化为裸任务文本,保持旧行为。
+/// Falls back to bare task text when the summary is missing or empty, preserving old behavior.
 fn build_handoff_input(handoff: &Handoff) -> String {
     let summary = handoff
         .context
@@ -53,7 +53,7 @@ fn build_handoff_input(handoff: &Handoff) -> String {
 }
 
 impl HandoffManager {
-    /// 创建新的 HandoffManager。
+    /// Creates a new HandoffManager.
     pub fn new() -> Self {
         Self {
             state: Mutex::new(HandoffState {
@@ -66,13 +66,13 @@ impl HandoffManager {
         }
     }
 
-    /// 设置交接深度上限,默认 10(P1-7)。
+    /// Sets the handoff depth limit (default 10, P1-7).
     pub fn with_max_handoff_depth(mut self, depth: usize) -> Self {
         self.max_handoff_depth = depth.max(1);
         self
     }
 
-    /// 注册 Agent
+    /// Registers an Agent
     pub fn register_agent(
         &self,
         name: impl Into<String>,
@@ -86,7 +86,7 @@ impl HandoffManager {
         Ok(())
     }
 
-    /// 设置主 Agent
+    /// Sets the primary Agent
     pub fn set_primary(&self, name: &str) -> Result<(), HandoffError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.agents.contains_key(name) {
@@ -96,18 +96,18 @@ impl HandoffManager {
         Ok(())
     }
 
-    /// 执行交接:把任务交给目标 Agent
+    /// Executes a handoff: gives the task to the target Agent
     pub async fn execute_handoff(&self, handoff: Handoff) -> Result<HandoffResult, HandoffError> {
         let executor = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
-            // P1-7:交接深度上限
+            // P1-7: handoff depth limit
             if state.chain.len() >= self.max_handoff_depth {
                 return Err(HandoffError::MaxHandoffDepthExceeded(
                     self.max_handoff_depth,
                 ));
             }
-            // P1-7:环检测 - 目标已在交接链中,说明 A→B→A 循环
+            // P1-7: cycle detection - the target is already in the chain, meaning an A→B→A cycle
             if state.chain.contains(&handoff.target_agent) {
                 return Err(HandoffError::HandoffCycleDetected(
                     handoff.target_agent.clone(),
@@ -122,14 +122,14 @@ impl HandoffManager {
             executor
         };
 
-        // P2-4:把交接上下文里的对话摘要拼进目标 Agent 输入,而非裸转移控制权。
+        // P2-4: fold the conversation summary from the handoff context into the target Agent's input, rather than transferring control raw.
         let input = build_handoff_input(&handoff);
         let result = executor
             .invoke(input)
             .await
             .map_err(|e| HandoffError::ExecutionError(e.to_string()));
 
-        // 无论成败都弹出当前链节点,避免一次失败后 chain 污染后续交接
+        // Pop the current chain node whether it succeeds or fails, so a single failure doesn't poison subsequent handoffs
         let result = match result {
             Ok(r) => r,
             Err(e) => {
@@ -167,7 +167,7 @@ impl HandoffManager {
         })
     }
 
-    /// 运行主 Agent
+    /// Runs the primary Agent
     pub async fn run(&self, input: String) -> Result<String, HandoffError> {
         let executor = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -180,7 +180,7 @@ impl HandoffManager {
                 .get(&primary)
                 .ok_or_else(|| HandoffError::AgentNotFound(primary.clone()))?
                 .clone();
-            // P1-7:primary 作为交接链起点,参与环检测
+            // P1-7: primary is the chain's start, taking part in cycle detection
             state.chain.clear();
             state.chain.push(primary);
             executor
@@ -197,7 +197,7 @@ impl HandoffManager {
         result
     }
 
-    /// 获取交接历史
+    /// Gets the handoff history
     pub fn history(&self) -> Vec<HandoffRecord> {
         self.state
             .lock()
@@ -206,7 +206,7 @@ impl HandoffManager {
             .clone()
     }
 
-    /// 为每个注册的 Agent 生成 HandoffTool(供主 Agent 调用)
+    /// Generates a HandoffTool for each registered Agent (for the primary Agent to call)
     pub fn handoff_tools(self: &Arc<Self>) -> Vec<Arc<dyn BaseTool>> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state
@@ -223,7 +223,7 @@ impl Default for HandoffManager {
     }
 }
 
-/// Handoff Tool - 暴露给 LLM 的交接工具
+/// Handoff Tool - the handoff tool exposed to the LLM
 pub struct HandoffTool {
     manager: Arc<HandoffManager>,
     target_agent: String,
@@ -232,7 +232,7 @@ pub struct HandoffTool {
 }
 
 impl HandoffTool {
-    /// 创建一个指向指定目标 Agent 的交接工具。
+    /// Creates a handoff tool targeting the given Agent.
     pub fn new(manager: Arc<HandoffManager>, target_agent: impl Into<String>) -> Self {
         let target_agent = target_agent.into();
         let name = format!("handoff_to_{}", target_agent);
@@ -257,14 +257,14 @@ impl BaseTool for HandoffTool {
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {
-        // 输入可能是 JSON {"task": "...", "summary": "..."} 或纯文本
+        // The input may be JSON {"task": "...", "summary": "..."} or plain text
         let parsed = serde_json::from_str::<Value>(&input).ok();
         let task = parsed
             .as_ref()
             .and_then(|v| v.get("task").and_then(|t| t.as_str()))
             .map(|s| s.to_string())
             .unwrap_or(input.clone());
-        // P2-4:JSON 里可带 summary,经上下文传给目标 Agent。
+        // P2-4: the JSON may carry a summary, passed to the target Agent via the context.
         let summary = parsed
             .as_ref()
             .and_then(|v| v.get("summary").and_then(|s| s.as_str()))
@@ -307,10 +307,11 @@ mod tests {
         ))
     }
 
-    /// 可离线运行的 mock agent,用于 P1-7 嵌套交接测试(不走真实 LLM)。
+    /// Offline-capable mock agent for P1-7 nested handoff tests (no real LLM).
     ///
-    /// 行为:首轮要么发一次工具调用(`first_action`),要么直接触发一次交接
-    /// (`direct_handoff`,绕过 HandoffTool),后续轮返回 Finish。
+    /// Behavior: the first round either issues one tool call (`first_action`),
+    /// or directly triggers one handoff (`direct_handoff`, bypassing
+    /// HandoffTool); later rounds return Finish.
     struct OfflineAgent {
         first_action: Option<(&'static str, String)>,
         direct_handoff: Option<String>,
@@ -331,7 +332,7 @@ mod tests {
                 )));
             }
             if let Some(target) = &self.direct_handoff {
-                // 首轮在 plan 内直接触发交接;环检测时 execute_handoff 会立刻拒绝。
+                // First round triggers the handoff directly inside plan; cycle detection makes execute_handoff reject it immediately.
                 let mgr = self.manager.as_ref().unwrap();
                 let result = mgr
                     .execute_handoff(Handoff {
@@ -369,7 +370,7 @@ mod tests {
         let mgr = HandoffManager::new();
         mgr.register_agent("researcher", mock_executor()).unwrap();
         mgr.set_primary("researcher").unwrap();
-        // 不存在的 agent
+        // Non-existent agent
         assert!(mgr.set_primary("nope").is_err());
     }
 
@@ -414,7 +415,7 @@ mod tests {
         assert_eq!(tools.len(), 2);
     }
 
-    /// P1-7:A 交接给 B,B 又交接给 A → 检测到环并报错,不死循环。
+    /// P1-7: A hands off to B, B hands back to A → cycle detected and error, no infinite loop.
     #[tokio::test]
     async fn test_handoff_cycle_detected() {
         let manager = Arc::new(HandoffManager::new());
@@ -447,10 +448,10 @@ mod tests {
         );
     }
 
-    /// P1-7:交接深度超过上限 → 拒绝并报错。
+    /// P1-7: handoff depth exceeds the limit → rejected with an error.
     #[tokio::test]
     async fn test_handoff_depth_limit() {
-        // 深度上限 1:primary(a) 已占一层,再交接 b 即超限。
+        // Depth limit 1: primary(a) already takes one layer, so handing off to b exceeds it.
         let manager = Arc::new(HandoffManager::new().with_max_handoff_depth(1));
         let agent_a = OfflineAgent {
             first_action: Some(("handoff_to_b", "t".to_string())),
@@ -481,7 +482,7 @@ mod tests {
         );
     }
 
-    /// 捕获目标 Agent 收到的输入(P2-4 测试用)。
+    /// Captures the input the target Agent receives (for P2-4 tests).
     struct CaptureAgent {
         received: Arc<Mutex<Option<String>>>,
     }
@@ -510,7 +511,7 @@ mod tests {
         ))
     }
 
-    /// P2-4:交接携带摘要时,目标 Agent 收到的输入包含摘要与任务标记。
+    /// P2-4: when a handoff carries a summary, the target Agent's input contains the summary and task markers.
     #[tokio::test]
     async fn test_handoff_carries_conversation_summary() {
         let received = Arc::new(Mutex::new(None));
@@ -540,7 +541,7 @@ mod tests {
         assert!(input.contains("【交接摘要】"), "应带摘要标记");
     }
 
-    /// P2-4:交接不携带摘要时,目标 Agent 收到裸任务文本(旧行为不变)。
+    /// P2-4: when a handoff carries no summary, the target Agent receives bare task text (old behavior unchanged).
     #[tokio::test]
     async fn test_handoff_without_summary_bare_task() {
         let received = Arc::new(Mutex::new(None));
@@ -564,7 +565,7 @@ mod tests {
         assert_eq!(input, "只做这个");
     }
 
-    /// P2-4:空摘要退化为裸任务,不污染输入。
+    /// P2-4: an empty summary degrades to the bare task, not polluting the input.
     #[tokio::test]
     async fn test_handoff_empty_summary_bare_task() {
         let received = Arc::new(Mutex::new(None));
@@ -589,7 +590,7 @@ mod tests {
         assert_eq!(input, "taskY");
     }
 
-    /// P2-4:HandoffTool 的 JSON 输入里带 summary 时,经上下文传给目标。
+    /// P2-4: when HandoffTool's JSON input carries a summary, it reaches the target via the context.
     #[tokio::test]
     async fn test_handoff_tool_summary_json_flows_to_target() {
         let received = Arc::new(Mutex::new(None));
@@ -614,7 +615,7 @@ mod tests {
         assert!(input.contains("写总结"));
     }
 
-    /// P2-4:HandoffTool 纯文本输入保持裸任务传递。
+    /// P2-4: HandoffTool plain-text input stays a bare-task transfer.
     #[tokio::test]
     async fn test_handoff_tool_plain_text_bare_task() {
         let received = Arc::new(Mutex::new(None));

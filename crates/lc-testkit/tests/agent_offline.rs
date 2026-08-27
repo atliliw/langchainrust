@@ -1,17 +1,18 @@
-//! A5:agent 级离线录播——真 `FunctionCallingAgent` + 真 `Calculator` 工具 +
-//! `ReplayProvider`,零网络跑通工具调用循环。
+//! A5: agent-level offline record/replay — a real `FunctionCallingAgent` + a real `Calculator`
+//! tool + `ReplayProvider`, running the tool-call loop over zero network.
 //!
-//! 这是 lc-testkit 二期新能力的真实消费方:
-//! - 工具录制(A2 `RecordingProvider::bind_tools`)录下请求侧 `tools`;
-//! - 回放侧(A3 `ReplayProvider::bind_tools`)让 agent"绑了工具的循环"前提成立;
-//! - FIFO 回放把「请求工具调用 → 工具结果喂回 → 最终答案」放回,
-//!   断言 ToolStart/ToolEnd 事件序列与最终答案落地。
+//! This is the real consumer of lc-testkit's second-phase capabilities:
+//! - tool recording (A2 `RecordingProvider::bind_tools`) records the request-side `tools`;
+//! - the replay side (A3 `ReplayProvider::bind_tools`) satisfies the agent's "tools-bound loop" precondition;
+//! - FIFO replay replays "request a tool call → feed the tool result back → final answer",
+//!   asserting the ToolStart/ToolEnd event sequence and the final answer.
 //!
-//! 录播条数的语义(S2 起):流式 executor 走 `plan_stream`,而工具调用轮模型
-//! 不回文本(`stream_chat` chunk 只带 text/usage、不携带 tool_calls),`plan_stream`
-//! 在空文本时回退非流式 `plan()` 拿原生 tool_calls —— **一个工具轮消费 2 条
-//! 录播**(流式尝试 + 非流式重规划),最终答案轮只消费 1 条。故 fixture 为
-//! 3 条:[工具轮×2, 答案轮×1],两条工具轮录播内容相同。
+//! Recording-count semantics (since S2): the streaming executor goes through `plan_stream`, and a
+//! tool-call round's model returns no text (`stream_chat` chunks only carry text/usage, not
+//! `tool_calls`), so `plan_stream` falls back to the non-streaming `plan()` for the native
+//! `tool_calls` — **one tool round consumes 2 recordings** (a streaming attempt + a non-streaming
+//! replan), the final-answer round consumes only 1. Hence the fixture has 3 recordings:
+//! [tool round × 2, answer round × 1], with the two tool-round recordings identical.
 
 use std::sync::Arc;
 
@@ -24,11 +25,12 @@ use lc_tools::Calculator;
 
 #[tokio::test]
 async fn agent_offline_replays_tool_call_loop() {
-    // 1. 手写确定性录播(等价 fixture):
-    //    - 工具轮(流式尝试):模型请求调用 calculator(响应带 tool_calls,文本为空)
-    //    - 工具轮(非流式重规划):`plan_stream` 空文本回退 `plan()`,同样返回
-    //      calculator 调用 —— 与上一轮内容一致(见模块 doc 的条数语义说明)
-    //    - 答案轮:工具结果喂回后,模型给出最终答案 "4"
+    // 1. Hand-written deterministic recordings (equivalent to a fixture):
+    //    - tool round (streaming attempt): the model requests a calculator call (tool_calls in the response, empty text)
+    //    - tool round (non-streaming replan): `plan_stream` falls back to `plan()` on empty text,
+    //      returning the same calculator call — identical to the previous round (see the module doc's
+    //      count-semantics note)
+    //    - answer round: after the tool result is fed back, the model gives the final answer "4"
     let tool_call_round = || RecordedExchange {
         messages: vec![],
         response: LLMResult {
@@ -57,18 +59,18 @@ async fn agent_offline_replays_tool_call_loop() {
     ];
     let replay = ReplayProvider::from_exchanges(exchanges);
 
-    // 2. 真 agent(带真 Calculator 工具)+ 真 executor
+    // 2. Real agent (with the real Calculator tool) + real executor
     let agent = FunctionCallingAgent::new(replay, vec![Arc::new(Calculator::new())], None);
     let executor = AgentExecutor::new(Arc::new(agent), vec![Arc::new(Calculator::new())]);
 
-    // 3. 流式执行:工具循环应发出 ToolStart → ToolEnd,最终以 FinalAnswer 收尾
+    // 3. Streaming execution: the tool loop should emit ToolStart → ToolEnd, ending with FinalAnswer
     let mut stream = executor.stream("2+2=?".to_string());
     let mut events = Vec::new();
     while let Some(event) = stream.next().await {
         events.push(event.expect("回放 agent 执行不应失败"));
     }
 
-    // 4. 断言:工具事件序列 + 最终答案来自第二轮回放
+    // 4. Assert: the tool event sequence + the final answer comes from the second round of replay
     assert!(events.len() >= 4, "事件数不足: {events:?}");
     assert!(
         matches!(&events[0], AgentStreamEvent::ToolStart { name, .. } if name == "calculator"),

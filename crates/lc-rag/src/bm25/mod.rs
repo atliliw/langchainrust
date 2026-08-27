@@ -1,8 +1,8 @@
 // src/retrieval/bm25/mod.rs
-//! BM25 检索模块
+//! BM25 retrieval module
 //!
-//! BM25 (Best Match 25) 是一种经典的 TF-IDF 加权检索算法，
-//! 适用于关键词搜索、长文档检索等场景。
+//! BM25 (Best Match 25) is a classic TF-IDF weighted retrieval algorithm,
+//! suited to keyword search, long-document retrieval, and similar scenarios.
 
 mod algorithm;
 mod chunked;

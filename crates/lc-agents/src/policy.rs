@@ -1,31 +1,32 @@
 // lc-agents/src/policy.rs
-//! 工具权限分级 + 沙箱门禁(P2-9)。
+//! Tool permission tiering + sandbox gate (P2-9).
 //!
-//! [`ToolPolicy`] 在 AgentExecutor 的工具执行边界做两道检查:
-//! 1. **权限分级**:工具按风险分级([`ToolRisk`]),风险高于执行器允许档位
-//!    (`max_permitted`)的工具直接拒绝执行。
-//! 2. **沙箱门禁**:高风险工具必须被声明为已搬进受限环境
-//!    ([`ToolPolicy::sandboxed`])才能执行——声明代表该工具已用受限后端
-//!    (如 `lc-tools` 的 `SandboxTool` / `LocalSandbox`)包装;未声明的危险
-//!    工具被拒绝,不允许以无沙箱状态运行。
+//! [`ToolPolicy`] enforces two checks at the `AgentExecutor` tool-execution boundary:
+//! 1. **Permission tiering**: tools are classified by risk ([`ToolRisk`]); any tool whose
+//!    risk exceeds the executor's permitted tier (`max_permitted`) is rejected outright.
+//! 2. **Sandbox gate**: a high-risk tool must be declared as wrapped in a restricted
+//!    environment ([`ToolPolicy::sandboxed`]) before it can run — the declaration means the
+//!    tool has been wrapped in a restricted backend (e.g. `lc-tools`'s `SandboxTool` /
+//!    `LocalSandbox`); undeclared dangerous tools are rejected and cannot run unsandboxed.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::base::AgentError;
 
-/// 工具风险等级(自低到高)。
+/// Tool risk level (from low to high).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ToolRisk {
-    /// 无副作用或纯计算(计算器 / 日期等)。
+    /// No side effects or pure computation (calculator / date, etc.).
     Safe,
-    /// 有外部依赖但受控(网页抓取 / 检索)。
+    /// Has external dependencies but is controlled (web scraping / retrieval).
     Standard,
-    /// 可执行任意代码 / 访问文件系统 / 网络等(代码解释器 / 文件 / HTTP)。
+    /// Can execute arbitrary code / access the filesystem / network, etc.
+    /// (code interpreter / file / HTTP).
     Dangerous,
 }
 
 impl ToolRisk {
-    /// 风险等级名。
+    /// Risk level name.
     pub fn name(&self) -> &'static str {
         match self {
             ToolRisk::Safe => "safe",
@@ -41,9 +42,10 @@ impl std::fmt::Display for ToolRisk {
     }
 }
 
-/// 工具权限策略:权限分级 + 沙箱门禁。
+/// Tool permission policy: permission tiering + sandbox gate.
 ///
-/// 未配置策略时执行器不校验;配置后每次工具执行前经 [`ToolPolicy::check`] 校验。
+/// When no policy is configured the executor does not enforce anything; once configured,
+/// every tool execution is checked via [`ToolPolicy::check`] before it runs.
 ///
 /// # Example
 ///
@@ -52,20 +54,20 @@ impl std::fmt::Display for ToolRisk {
 ///
 /// let policy = ToolPolicy::new()
 ///     .risk("code_interpreter", ToolRisk::Dangerous)
-///     .sandboxed("code_interpreter"); // 已搬进受限环境,允许执行
+///     .sandboxed("code_interpreter"); // wrapped in a restricted env, allowed to run
 /// let executor = AgentExecutor::new(agent, tools).with_tool_policy(policy);
 /// ```
 #[derive(Debug, Clone)]
 pub struct ToolPolicy {
-    /// 工具名 → 风险等级。
+    /// Tool name -> risk level.
     risks: HashMap<String, ToolRisk>,
-    /// 未显式声明的工具默认风险。
+    /// Default risk for tools not explicitly declared.
     default_risk: ToolRisk,
-    /// 执行器允许的最高风险档位(权限分级)。
+    /// Highest risk tier the executor permits (permission tiering).
     max_permitted: ToolRisk,
-    /// 已搬进受限环境的工具名(沙箱门禁允许清单)。
+    /// Tool names wrapped in a restricted environment (sandbox-gate allowlist).
     sandboxed: HashSet<String>,
-    /// 显式放行"未沙箱化危险工具"(默认 false,需逐把钥匙开启)。
+    /// Explicitly allow unsandboxed dangerous tools (default `false`; opt in per key).
     allow_unrestricted_dangerous: bool,
 }
 
@@ -76,7 +78,8 @@ impl Default for ToolPolicy {
 }
 
 impl ToolPolicy {
-    /// 空策略:所有工具默认 [`ToolRisk::Safe`],允许档位最高,无沙箱清单。
+    /// Empty policy: every tool defaults to [`ToolRisk::Safe`], the permitted tier is the
+    /// highest, and there is no sandbox allowlist.
     pub fn new() -> Self {
         Self {
             risks: HashMap::new(),
@@ -87,46 +90,48 @@ impl ToolPolicy {
         }
     }
 
-    /// 声明工具风险等级。
+    /// Declare a tool's risk level.
     pub fn risk(mut self, name: impl Into<String>, risk: ToolRisk) -> Self {
         self.risks.insert(name.into(), risk);
         self
     }
 
-    /// 声明工具已搬进受限环境(沙箱门禁允许清单)。
+    /// Declare that a tool is wrapped in a restricted environment (sandbox-gate allowlist).
     pub fn sandboxed(mut self, name: impl Into<String>) -> Self {
         self.sandboxed.insert(name.into());
         self
     }
 
-    /// 设置未显式声明工具的默认风险等级。
+    /// Set the default risk level for tools not explicitly declared.
     pub fn with_default_risk(mut self, risk: ToolRisk) -> Self {
         self.default_risk = risk;
         self
     }
 
-    /// 设置执行器允许的最高风险档位(权限分级)。
+    /// Set the highest risk tier the executor permits (permission tiering).
     pub fn with_max_permitted(mut self, risk: ToolRisk) -> Self {
         self.max_permitted = risk;
         self
     }
 
-    /// 显式放行"未沙箱化危险工具"(危险但必须裸跑的兜底开关,默认关闭)。
+    /// Explicitly allow unsandboxed dangerous tools (an escape hatch for tools that are
+    /// dangerous but must run bare; off by default).
     pub fn allow_unrestricted_dangerous(mut self, allow: bool) -> Self {
         self.allow_unrestricted_dangerous = allow;
         self
     }
 
-    /// 解析工具风险等级。
+    /// Resolve a tool's risk level.
     pub fn risk_of(&self, name: &str) -> ToolRisk {
         self.risks.get(name).copied().unwrap_or(self.default_risk)
     }
 
-    /// 执行前门禁:不达标返回 [`AgentError`],达标返回 `Ok(())`。
+    /// Pre-execution gate: returns [`AgentError`] when the tool does not meet the policy,
+    /// `Ok(())` when it passes.
     pub fn check(&self, name: &str) -> Result<(), AgentError> {
         let risk = self.risk_of(name);
 
-        // 1. 权限分级:风险高于允许档位。
+        // 1. Permission tiering: risk above the permitted tier.
         if risk > self.max_permitted {
             return Err(AgentError::Other(format!(
                 "tool '{name}' requires permission tier '{risk}', max permitted is '{}'",
@@ -134,7 +139,7 @@ impl ToolPolicy {
             )));
         }
 
-        // 2. 沙箱门禁:危险工具必须已搬进受限环境。
+        // 2. Sandbox gate: a dangerous tool must be wrapped in a restricted environment.
         if risk == ToolRisk::Dangerous
             && !self.sandboxed.contains(name)
             && !self.allow_unrestricted_dangerous
@@ -164,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_policy_allows_default_safe_tools() {
-        // 空策略:任何工具默认 Safe,不拦截。
+        // Empty policy: any tool defaults to Safe, nothing is blocked.
         let policy = ToolPolicy::new();
         assert!(policy.check("any_tool").is_ok());
         assert_eq!(policy.risk_of("any_tool"), ToolRisk::Safe);
@@ -177,18 +182,18 @@ mod tests {
             .with_max_permitted(ToolRisk::Standard);
         let err = policy.check("calculator").unwrap_err();
         assert!(err.to_string().contains("permission tier"), "{}", err);
-        // 未声明的工具仍按默认 Safe,低于允许档位。
+        // Undeclared tools still default to Safe, below the permitted tier.
         assert!(policy.check("other").is_ok());
     }
 
     #[test]
     fn test_policy_dangerous_requires_sandbox() {
-        // 危险但未声明沙箱 → 拒绝。
+        // Dangerous but not declared sandboxed -> rejected.
         let policy = ToolPolicy::new().risk("code_interpreter", ToolRisk::Dangerous);
         let err = policy.check("code_interpreter").unwrap_err();
         assert!(err.to_string().contains("sandboxed"), "{}", err);
 
-        // 声明沙箱后允许执行(已搬进受限环境)。
+        // Once declared sandboxed it may run (wrapped in a restricted environment).
         let policy = policy.sandboxed("code_interpreter");
         assert!(policy.check("code_interpreter").is_ok());
     }
@@ -203,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_policy_sandboxed_but_not_dangerous_still_gated_by_tier() {
-        // 沙箱声明只豁免"沙箱门禁",不豁免"权限分级"。
+        // The sandbox declaration only exempts the sandbox gate, not permission tiering.
         let policy = ToolPolicy::new()
             .risk("calculator", ToolRisk::Dangerous)
             .sandboxed("calculator")

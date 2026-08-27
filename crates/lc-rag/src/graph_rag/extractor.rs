@@ -84,7 +84,8 @@ Output:
 Text:
 {text}"#;
 
-/// 实体/关系提取工具定义(P2-1):强制 LLM 输出结构化 JSON 参数。
+/// Entity/relation extraction tool definition (P2-1): forces the LLM to output structured
+/// JSON arguments.
 fn extraction_tool() -> ToolDefinition {
     ToolDefinition::new(
         "extract_entities_relations",
@@ -123,7 +124,7 @@ fn extraction_tool() -> ToolDefinition {
     }))
 }
 
-/// 解析一次结构化调用结果:优先 tool_calls 参数,其次文本 JSON。
+/// Parses one structured call result: prefers tool_calls arguments, then text JSON.
 fn parse_structured(result: &StructuredChatResult) -> Option<ExtractionResult> {
     if let Some(args) = &result.tool_args {
         if let Ok(parsed) = serde_json::from_value::<ExtractionResult>(args.clone()) {
@@ -157,8 +158,8 @@ pub async fn extract<M: BaseChatModel>(
     extract_with_retry(llm, text, prompt).await
 }
 
-/// P2-1/P2-2: 优先原生 tool_calls 结构化输出;文本 JSON 解析失败时,
-/// 带"只返回 JSON"提示重试 1-2 次,仍失败才返回错误。
+/// P2-1/P2-2: prefers native tool_calls structured output; when text JSON parsing fails,
+/// retries 1-2 times with a "return JSON only" hint, and only then returns an error.
 async fn extract_with_retry<M: BaseChatModel>(
     llm: &M,
     original_text: &str,
@@ -306,7 +307,7 @@ mod tests {
         );
     }
 
-    /// P2-1: 提取工具定义携带完整 JSON Schema(entities + relations)。
+    /// P2-1: the extraction tool definition carries a full JSON Schema (entities + relations).
     #[test]
     fn test_extraction_tool_schema() {
         let tool = extraction_tool();
@@ -316,7 +317,7 @@ mod tests {
         assert!(params["properties"]["relations"].is_object());
     }
 
-    /// P2-1: tool_calls 参数可解析为 ExtractionResult。
+    /// P2-1: tool_calls arguments parse into an ExtractionResult.
     #[test]
     fn test_parse_structured_tool_args() {
         let result = StructuredChatResult {
@@ -332,7 +333,7 @@ mod tests {
         assert!(parsed.relations.is_empty());
     }
 
-    /// P2-1: 无 tool_calls 时回落文本 JSON 解析。
+    /// P2-1: falls back to text JSON parsing when there are no tool_calls.
     #[test]
     fn test_parse_structured_text_fallback() {
         let result = StructuredChatResult {
@@ -343,7 +344,8 @@ mod tests {
         assert_eq!(parsed.entities[0].name, "Bob");
     }
 
-    /// P2-1: tool_args 反序列化失败且文本非 JSON → None(触发重试)。
+    /// P2-1: when tool_args deserialization fails and the text is not JSON -> None
+    /// (triggering a retry).
     #[test]
     fn test_parse_structured_none() {
         let result = StructuredChatResult {

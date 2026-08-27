@@ -1,29 +1,29 @@
-//! 批量运行器:`Report` 与 `EvalRunner`。
+//! Batch runner: `Report` and `EvalRunner`.
 //!
-//! `EvalRunner` 在数据集上逐条调用 `Predictor`,再交给多个单点 `Evaluator`
-//! 与成对 `PairwiseEvaluator` 打分,最终汇总为 `Report`。
+//! `EvalRunner` calls the `Predictor` per example in the dataset, then scores with the pointwise
+//! `Evaluator`s and pairwise `PairwiseEvaluator`s, aggregating into a `Report`.
 //!
-//! P1-3: 逐条容错——单条 predict 或某评测器打分失败记入 `Report::failures`,
-//! 已算好的结果不丢弃,整体不中止。P1-4: `Report` 携带原始文本 + 标准差,
-//! 并实现 `Serialize`/`Deserialize`,便于落盘后二次分析。
+//! P1-3: per-item tolerance — a failed predict or a failed evaluator score is recorded in
+//! `Report::failures`, computed results are kept, and the run does not abort. P1-4: `Report`
+//! carries the original text + stddev and implements `Serialize`/`Deserialize` for post-hoc analysis.
 
 use std::collections::{HashMap, HashSet};
 
 use super::criteria::{Dataset, EvalError, Evaluator, PairwiseEvaluator, Predictor, Score};
 
-/// 单条样例的完整评测记录(含原始文本,便于出低分时追溯)。
+/// Complete evaluation record for one example (includes the original text, for tracing low scores).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExampleReport {
-    /// 样例在数据集中的下标(0 起)
+    /// Example index in the dataset (0-based)
     pub index: usize,
     pub input: String,
     pub reference: String,
     pub prediction: String,
-    /// 各评测器对该条的得分(失败或未运行的评测器不在其中)
+    /// Scores each evaluator assigned to this example (failed or not-run evaluators are absent)
     pub scores: HashMap<String, Score>,
 }
 
-/// 单个评测器的汇总统计(均值 + 总体标准差 + 样本数)。
+/// Summary statistics for one evaluator (mean + population stddev + sample count).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScoreSummary {
     pub mean: f64,
@@ -31,35 +31,35 @@ pub struct ScoreSummary {
     pub count: usize,
 }
 
-/// 单条失败记录:某下标样例的 predict 或某评测器打分失败。
+/// Failure record: a predict or an evaluator score failed for the example at a given index.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FailureRecord {
-    /// 样例在数据集中的下标(0 起)
+    /// Example index in the dataset (0-based)
     pub index: usize,
-    /// 失败阶段:`"predict"` 或评测器 `name()`
+    /// Failure stage: `"predict"` or an evaluator's `name()`
     pub stage: String,
     pub error: String,
 }
 
-/// 评测报告(含原文、标准差、失败清单;可反序列化)。
+/// Evaluation report (with original text, stddev, failure list; deserializable).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Report {
-    /// 逐条完整记录(含 input/reference/prediction 原文)
+    /// Per-example complete records (including input/reference/prediction originals)
     pub per_example: Vec<ExampleReport>,
-    /// 各评测器汇总(均值 + 标准差 + 样本数)
+    /// Per-evaluator summaries (mean + stddev + sample count)
     pub summary: HashMap<String, ScoreSummary>,
-    /// 逐条容错收集的失败记录(为空表示全部成功)
+    /// Failure records collected by per-item tolerance (empty = all succeeded)
     pub failures: Vec<FailureRecord>,
 }
 
-/// 批量运行器:同时收纳单点与成对评测器。
+/// Batch runner: holds both pointwise and pairwise evaluators.
 pub struct EvalRunner {
     evaluators: Vec<Box<dyn Evaluator>>,
     pairwise: Vec<Box<dyn PairwiseEvaluator>>,
 }
 
 impl EvalRunner {
-    /// 创建批量运行器(仅含单点评测器)。
+    /// Creates a batch runner (pointwise evaluators only).
     pub fn new(evaluators: Vec<Box<dyn Evaluator>>) -> Self {
         Self {
             evaluators,
@@ -67,18 +67,18 @@ impl EvalRunner {
         }
     }
 
-    /// 追加成对评测器(P1-1,竞技场评测进统一报告)。
+    /// Appends pairwise evaluators (P1-1, arena evaluation enters the unified report).
     pub fn with_pairwise(mut self, pairwise: Vec<Box<dyn PairwiseEvaluator>>) -> Self {
         self.pairwise.extend(pairwise);
         self
     }
 
-    /// 在数据集上运行所有评测器,返回报告。
+    /// Runs all evaluators on the dataset, returning the report.
     ///
-    /// P1-3: 逐条容错——单条 predict 失败记 `"predict"` 失败记录并跳过该条;
-    /// 某评测器打分失败只记该评测器的失败记录,其它评测器照常出分。
-    /// P1-1: 成对评测器同样参与,以 `(prediction, reference)` 作为 A/B 两个候选
-    /// (竞技场用法:把待比答案放进 reference 槽)。
+    /// P1-3: per-item tolerance — a failed predict records a `"predict"` failure and skips the example;
+    /// a failed evaluator score records only that evaluator's failure, others still score.
+    /// P1-1: pairwise evaluators participate too, using `(prediction, reference)` as the A/B candidates
+    /// (arena usage: put the answer under comparison in the reference slot).
     pub async fn run(
         &self,
         dataset: &Dataset,
@@ -88,7 +88,7 @@ impl EvalRunner {
 
         let mut per_example = Vec::with_capacity(dataset.len());
         let mut failures = Vec::new();
-        // 每个评测器累计所有成功的样本分,用于算均值/标准差
+        // accumulate each evaluator's successful sample scores per name, for mean/std computation
         let mut per_name: HashMap<String, Vec<f64>> = HashMap::new();
 
         for (i, ex) in dataset.examples.iter().enumerate() {
@@ -151,7 +151,7 @@ impl EvalRunner {
         for (name, values) in per_name {
             let count = values.len();
             let mean = values.iter().sum::<f64>() / count as f64;
-            // 总体标准差:分布/方差信息比均值更能反映评测器的稳定性
+            // population stddev: spread/variance reflects evaluator stability better than the mean alone
             let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count as f64;
             summary.insert(
                 name,
@@ -170,7 +170,7 @@ impl EvalRunner {
         })
     }
 
-    /// P1-4: 重名评测器会在 summary/报告里静默互相覆盖,至少 `log::warn` 提示。
+    /// P1-4: duplicate-named evaluators silently overwrite each other in the summary/report; at least `log::warn`.
     fn warn_duplicate_names(
         evaluators: &[Box<dyn Evaluator>],
         pairwise: &[Box<dyn PairwiseEvaluator>],

@@ -1,11 +1,13 @@
 // lc-agents/src/executor/agent_loop.rs
-//! `AgentExecutor` 的决策循环:主 agent loop + 工具顺序/并行执行。
+//! `AgentExecutor`'s decision loop: the main agent loop plus sequential/parallel tool
+//! execution.
 //!
-//! 与 `executor.rs`(结构体 + 构建器 + invoke/stream 入口)、`plan.rs`(缓存规划)配合。
+//! Works alongside `executor.rs` (struct + builder + invoke/stream entry points) and
+//! `plan.rs` (cached planning).
 
-use super::budget::BudgetExceeded;
+use super::budget::{budget_iteration_gate, budget_token_gate, budget_tool_gate};
 use super::engine::AgentExecutor;
-use super::tools::run_tool_with_timeout;
+use super::tools::{run_tool_with_timeout, tool_error_observation};
 use super::AgentError;
 use crate::approval::ApprovalDecision;
 use crate::hooks::{ToolCallAction, ToolCallContext, ToolResultContext};
@@ -18,23 +20,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// 跨进程 resume(§4.2):单次工具调用所需的挂起点上下文。
+/// Cross-process resume (§4.2): the checkpoint context needed for a single tool call.
 ///
-/// 由 agent loop 在 Action 分支构造:`tool_name` / `arguments` / `tool_id` 先占位,
-/// `execute_tool_inner` 在同步 hook 跑完后用审批看到的**最终值**填充并落盘;
-/// 审批决定落地后清除。并行工具路径(`execute_tools_parallel`)不构造它 ——
-/// 多工具并发审批互不落盘,避免互相覆盖挂起点。
+/// Constructed by the agent loop in the Action branch: `tool_name` / `arguments` /
+/// `tool_id` start as placeholders, then `execute_tool_inner` fills in the **final values**
+/// the approval saw once the synchronous hooks finish, and persists them; the checkpoint
+/// is cleared once the approval decision lands. The parallel tool path
+/// (`execute_tools_parallel`) does not build one — concurrent multi-tool approvals never
+/// persist, so checkpoints cannot overwrite each other.
 pub(crate) struct ResumeContext<'a> {
-    /// 已填好 loop 上下文的挂起点模板(输入 / 步骤 / 迭代 / 预算累计 / trace)。
+    /// Checkpoint template pre-filled with loop context (inputs / steps / iteration /
+    /// budget accumulation / trace).
     pending: &'a PendingApproval,
-    /// 挂起点存储(审批前后落盘 / 清除)。
+    /// Checkpoint storage (persist before / clear after approval).
     store: &'a Arc<dyn ResumeStore>,
 }
 
-/// 把审批决定落到 `tool_ctx`。
+/// Applies an approval decision to `tool_ctx`.
 ///
-/// 返回 `Some(reason)` 表示 **Deny**(中止执行,拒绝 observation 喂回循环);
-/// `None` 表示 Allow / Modify(继续执行)。Modify 会覆盖 `tool_ctx.arguments`。
+/// Returns `Some(reason)` for **Deny** (aborts execution; the rejection observation is fed
+/// back to the loop); `None` for Allow / Modify (execution continues). Modify overwrites
+/// `tool_ctx.arguments`.
 fn apply_approval_decision(
     decision: ApprovalDecision,
     tool_ctx: &mut ToolCallContext,
@@ -80,8 +86,9 @@ impl AgentExecutor {
 
     /// Runs the agent loop starting at a given iteration.
     ///
-    /// 跨进程 resume(§4.2)用它从挂起迭代续跑:迭代预算 / 工具次数预算从挂起点
-    /// 累计量继续计数,已完成的中间步骤不重放。
+    /// Cross-process resume (§4.2) uses this to continue from a pending iteration: the
+    /// iteration / tool-call budgets keep counting from the checkpoint's accumulated
+    /// amounts, and already-completed intermediate steps are not replayed.
     pub(crate) async fn run_agent_loop_from(
         &self,
         inputs: HashMap<String, String>,
@@ -90,12 +97,19 @@ impl AgentExecutor {
         root_run: &mut RunTree,
         metrics: &mut AgentMetrics,
     ) -> Result<String, AgentError> {
-        // 预算门(§4.2):循环起表,供 max_duration / max_iterations 检查。
+        // Budget gate (§4.2): start the loop timer, used by the max_duration /
+        // max_iterations checks.
         let loop_start = Instant::now();
 
         for iteration in start_iteration..self.max_iterations {
-            // 预算门:迭代级(迭代次数 + 总时长)。默认关(None 时立即返回 None)。
-            if let Some(err) = self.budget_iteration_gate(iteration, loop_start) {
+            // Budget gate: iteration-level (iteration count + wall-clock). Off by default
+            // (returns None immediately when the config is None).
+            if let Some(err) = budget_iteration_gate(
+                self.budget.as_ref(),
+                self.max_iterations,
+                iteration,
+                loop_start,
+            ) {
                 return Err(err);
             }
 
@@ -107,8 +121,9 @@ impl AgentExecutor {
                 .plan_cached(&intermediate_steps, &inputs, metrics)
                 .await?;
 
-            // 预算门:LLM 调用后累计 token,超限硬停。
-            if let Some(err) = self.budget_token_gate(metrics) {
+            // Budget gate: cumulative tokens after an LLM call; hard-stops when the limit
+            // is exceeded.
+            if let Some(err) = budget_token_gate(self.budget.as_ref(), metrics) {
                 return Err(err);
             }
 
@@ -126,16 +141,19 @@ impl AgentExecutor {
                         log::info!("Action: {}({})", action.tool, action.tool_input);
                     }
 
-                    // 预算门:工具调用前检查累计次数与总时长。
-                    if let Some(err) = self.budget_tool_gate(metrics, loop_start) {
+                    // Budget gate: check cumulative call count and wall-clock before the
+                    // tool runs.
+                    if let Some(err) = budget_tool_gate(self.budget.as_ref(), metrics, loop_start) {
                         return Err(err);
                     }
 
-                    // 跨进程 resume(§4.2):构造挂起点上下文(仅当配置了 store)。
-                    // 只带 loop 上下文快照;tool_name / arguments / tool_id 由
-                    // execute_tool_inner 在同步 hook 跑完后填审批看到的最终值。
-                    // `inputs` / `intermediate_steps` 克隆快照,resume 时从这批
-                    // 中间步骤续跑,不重放已完成的工具调用。
+                    // Cross-process resume (§4.2): build the checkpoint context (only when
+                    // a store is configured). Carries a snapshot of the loop context only;
+                    // tool_name / arguments / tool_id are filled in by execute_tool_inner
+                    // with the final values the approval sees, once the sync hooks finish.
+                    // `inputs` / `intermediate_steps` are cloned as snapshots so resume
+                    // continues from this batch of intermediate steps without replaying
+                    // already-completed tool calls.
                     let pending = PendingApproval {
                         tool_name: action.tool.clone(),
                         arguments: serde_json::Value::Null,
@@ -172,8 +190,9 @@ impl AgentExecutor {
                         }
                     }
 
-                    // 预算门:工具调用前检查累计次数与总时长。
-                    if let Some(err) = self.budget_tool_gate(metrics, loop_start) {
+                    // Budget gate: check cumulative call count and wall-clock before the
+                    // tool runs.
+                    if let Some(err) = budget_tool_gate(self.budget.as_ref(), metrics, loop_start) {
                         return Err(err);
                     }
 
@@ -192,8 +211,9 @@ impl AgentExecutor {
             }
         }
 
-        // 达到迭代上限返回占位串,不能只靠 verbose 可见:调用方无法区分真实答案与占位,
-        // 这里记 error 级日志显式暴露
+        // Reaching the iteration cap returns a placeholder string. It must not be only
+        // verbose-visible: the caller cannot distinguish a real answer from the
+        // placeholder, so log it explicitly at warning level.
         log::warn!(
             "agent reached max iterations {} without returning a final answer; returning a placeholder result (not the real final answer)",
             self.max_iterations
@@ -201,73 +221,6 @@ impl AgentExecutor {
 
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())
-    }
-
-    /// 预算门(§4.2):迭代级检查(迭代次数 + 总时长)。超限 → 返回错误。
-    ///
-    /// `max_iterations` 取 `min(self.max_iterations, budget.max_iterations)`
-    /// 作为有效上限 —— budget 比默认更紧时超出即硬停;比默认更松时由
-    /// `self.max_iterations` 兜底,不改变原有占位返回路径。
-    fn budget_iteration_gate(&self, iteration: usize, loop_start: Instant) -> Option<AgentError> {
-        let budget = self.budget.as_ref()?;
-        if let Some(limit) = budget.max_iterations {
-            let effective = limit.min(self.max_iterations);
-            if iteration >= effective {
-                return Some(AgentError::BudgetExceeded(BudgetExceeded::Iterations {
-                    limit: effective,
-                }));
-            }
-        }
-        if let Some(limit) = budget.max_duration {
-            let elapsed = loop_start.elapsed();
-            if elapsed >= limit {
-                return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
-                    limit,
-                    elapsed,
-                }));
-            }
-        }
-        None
-    }
-
-    /// 预算门(§4.2):LLM 调用后累计 token 检查。agent 不上报 token 时不生效。
-    fn budget_token_gate(&self, metrics: &AgentMetrics) -> Option<AgentError> {
-        let budget = self.budget.as_ref()?;
-        let limit = budget.max_tokens?;
-        let actual = metrics.total_tokens.unwrap_or(0);
-        if actual >= limit {
-            return Some(AgentError::BudgetExceeded(BudgetExceeded::Tokens {
-                limit,
-                actual,
-            }));
-        }
-        None
-    }
-
-    /// 预算门(§4.2):工具调用前检查累计次数与总时长。
-    ///
-    /// `metrics.tool_calls` 已先自增,故用 `> limit` 判定 —— 允许恰好 `limit`
-    /// 次工具执行,第 `limit + 1` 次触发硬停。
-    fn budget_tool_gate(&self, metrics: &AgentMetrics, loop_start: Instant) -> Option<AgentError> {
-        let budget = self.budget.as_ref()?;
-        if let Some(limit) = budget.max_tool_calls {
-            if metrics.tool_calls > limit {
-                return Some(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
-                    limit,
-                    actual: metrics.tool_calls,
-                }));
-            }
-        }
-        if let Some(limit) = budget.max_duration {
-            let elapsed = loop_start.elapsed();
-            if elapsed >= limit {
-                return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
-                    limit,
-                    elapsed,
-                }));
-            }
-        }
-        None
     }
 
     /// Executes multiple tools in parallel.
@@ -300,7 +253,7 @@ impl AgentExecutor {
         for result in results {
             match result {
                 Ok(output) => observations.push(output),
-                Err(e) => observations.push(format!("[Tool execution error: {}]", e)),
+                Err(e) => observations.push(tool_error_observation(&e)),
             }
         }
         Ok(observations)
@@ -317,13 +270,16 @@ impl AgentExecutor {
 
     /// Executes a single tool with optional cross-process resume integration.
     ///
-    /// - `resume_ctx`:非 None 时,进入人审门等待审批**之前**把挂起点(含同步
-    ///   hook 修改后的最终 `tool_name` / `arguments`)落盘;审批决定**落地后**
-    ///   清除。并行工具路径(`execute_tools_parallel`)传 `None`,多工具并发审批
-    ///   互不落盘,避免互相覆盖挂起点。
-    /// - `pre_decided`:非 None 时跳过审批 handler,直接用给定决定(跨进程 resume
-    ///   注入决定,不重跑审批;此时 `resume_ctx` 应为 None —— 挂起点已在
-    ///   [`AgentExecutor::resume`](crate::executor::AgentExecutor::resume) 里认领)。
+    /// - `resume_ctx`: when non-None, the checkpoint (including the final
+    ///   `tool_name` / `arguments` after synchronous-hook mutation) is persisted
+    ///   **before** entering the approval gate to await approval, and cleared once the
+    ///   decision **lands**. The parallel tool path (`execute_tools_parallel`) passes
+    ///   `None` so concurrent multi-tool approvals never persist and cannot overwrite
+    ///   each other's checkpoints.
+    /// - `pre_decided`: when non-None, the approval handler is skipped and the given
+    ///   decision is used directly (cross-process resume injects the decision without
+    ///   re-running approval; `resume_ctx` should then be `None` — the checkpoint was
+    ///   already claimed in [`AgentExecutor::resume`](crate::executor::AgentExecutor::resume)).
     pub(crate) async fn execute_tool_inner(
         &self,
         action: &AgentAction,
@@ -378,15 +334,20 @@ impl AgentExecutor {
             }
         }
 
-        // 人审门(§4.2) + 跨进程 resume(§4.2):同步 hook 之后、实际执行之前。
-        // - 正常 invoke:无 pre_decided,走 handler;审批前落盘、决定落地后清除。
-        // - resume:注入 pre_decided,不再落盘/清除(挂起点已在 resume() 认领)。
-        // Deny 与 ToolCallAction::Skip 同构 —— 以 observation 喂回循环,不执行
-        // 工具也不中断运行,下一轮 plan 看到拒绝观察后自行调整。
+        // Approval gate (§4.2) + cross-process resume (§4.2): after the sync hooks,
+        // before the actual execution.
+        // - Normal invoke: no pre_decided, goes through the handler; persists the
+        //   checkpoint before approval, clears it once the decision lands.
+        // - Resume: injects pre_decided, no persist/clear (the checkpoint was already
+        //   claimed in resume()).
+        // Deny is isomorphic with ToolCallAction::Skip — the rejection is fed back as an
+        // observation; the tool does not run and the loop is not interrupted; the next
+        // plan round sees the rejection observation and adjusts on its own.
         let deny_reason: Option<String> = if let Some(pre) = pre_decided {
             apply_approval_decision(pre, &mut tool_ctx)
         } else if let Some(handler) = &self.approval {
-            // 跨进程 resume:审批前落盘。同步 hook 已跑完,这里是审批看到的最终值。
+            // Cross-process resume: persist before approval. The sync hooks have already
+            // run, so this is the final value the approval sees.
             if let Some(ctx) = resume_ctx {
                 let mut pending = ctx.pending.clone();
                 pending.tool_name = tool_ctx.name.clone();
@@ -405,7 +366,8 @@ impl AgentExecutor {
             None
         };
 
-        // 审批决定已落地:清除挂起点(Allow / Modify 继续执行;Deny 拒绝观察返回)。
+        // The approval decision has landed: clear the checkpoint (Allow / Modify continue
+        // execution; Deny returns the rejection observation).
         if let Some(ctx) = resume_ctx {
             if let Err(e) = ctx.store.clear_pending().await {
                 log::warn!(
@@ -422,7 +384,8 @@ impl AgentExecutor {
 
         let tool_name = tool_ctx.name.clone();
 
-        // P2-9: 工具权限策略(权限分级 + 沙箱门禁)。未配置则放行。
+        // P2-9: tool permission policy (permission tiering + sandbox gate). Allows when
+        // unconfigured.
         if let Some(policy) = &self.tool_policy {
             policy.check(&tool_name)?;
         }

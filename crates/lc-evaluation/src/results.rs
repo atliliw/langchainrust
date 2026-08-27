@@ -12,7 +12,7 @@ use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
 
 use super::criteria::{EvalError, Evaluator, Score};
 
-/// 精确匹配评测器:预测与参考答案 trim 后完全一致得 1.0,否则 0.0。
+/// Exact-match evaluator: 1.0 when the prediction equals the reference after trimming, otherwise 0.0.
 pub struct ExactMatch;
 
 #[async_trait]
@@ -33,7 +33,7 @@ impl Evaluator for ExactMatch {
     }
 }
 
-/// 字符串距离评测器:基于 Levenshtein 编辑距离归一化打分。
+/// String-distance evaluator: scores by Levenshtein edit distance, normalized.
 pub struct StringDistance;
 
 impl StringDistance {
@@ -83,13 +83,13 @@ impl Evaluator for StringDistance {
     }
 }
 
-/// 嵌入相似度评测器:用预测与参考答案的嵌入向量余弦相似度打分。
+/// Embedding-similarity evaluator: scores by the cosine similarity of prediction and reference embeddings.
 pub struct EmbeddingSimilarity<E: Embeddings> {
     embeddings: E,
 }
 
 impl<E: Embeddings> EmbeddingSimilarity<E> {
-    /// 创建嵌入相似度评测器。
+    /// Creates an embedding-similarity evaluator.
     pub fn new(embeddings: E) -> Self {
         Self { embeddings }
     }
@@ -113,7 +113,7 @@ impl<E: Embeddings> Evaluator for EmbeddingSimilarity<E> {
             .embed_query(reference)
             .await
             .map_err(|e| EvalError::EmbeddingError(e.to_string()))?;
-        // P2-7: cosine 长度不匹配是数据缺陷(向量维度不一致),不再吞成 0.0 静默降级
+        // P2-7: a cosine length mismatch is a data defect (inconsistent vector dimensions), no longer swallowed as a silent 0.0 downgrade
         let sim =
             cosine_similarity(&p, &r).map_err(|e| EvalError::EmbeddingError(e.to_string()))?;
         let v = ((sim + 1.0) / 2.0).clamp(0.0, 1.0);
@@ -124,7 +124,7 @@ impl<E: Embeddings> Evaluator for EmbeddingSimilarity<E> {
     }
 }
 
-/// LLM 裁判评测器:让 LLM 按评分标准对预测打分(0 到 `max_score`)。
+/// LLM-judge evaluator: has the LLM score the prediction against a rubric (0 to `max_score`).
 pub struct LLMAsJudge<M: BaseChatModel> {
     judge: M,
     rubric: String,
@@ -137,7 +137,7 @@ const DEFAULT_RUBRIC: &str = "\
 清晰性:表达是否清晰、无歧义、无冗余。";
 
 impl<M: BaseChatModel> LLMAsJudge<M> {
-    /// 创建使用默认评分标准与 10 分制的 LLM 裁判评测器。
+    /// Creates an LLM-judge evaluator using the default rubric on a 10-point scale.
     pub fn new(judge: M) -> Self {
         Self {
             judge,
@@ -145,12 +145,12 @@ impl<M: BaseChatModel> LLMAsJudge<M> {
             max_score: 10,
         }
     }
-    /// 设置自定义评分标准(builder 风格)。
+    /// Sets a custom rubric (builder style).
     pub fn with_rubric(mut self, rubric: impl Into<String>) -> Self {
         self.rubric = rubric.into();
         self
     }
-    /// 设置最高分(最小为 1)。
+    /// Sets the maximum score (at least 1).
     pub fn with_max_score(mut self, max_score: u8) -> Self {
         self.max_score = max_score.max(1);
         self
@@ -170,17 +170,17 @@ impl<M: BaseChatModel> LLMAsJudge<M> {
     }
 }
 
-/// 结构化评分参数(经 tool_calls 返回)。
+/// Structured scoring arguments (returned via tool_calls).
 #[derive(Debug, Deserialize)]
 struct ScoreArgs {
     score: f64,
-    /// 让 LLM 附上简短理由(改善打分质量),当前不消费。
+    /// Asks the LLM to attach a brief reason (improves scoring quality); currently unused.
     #[serde(default)]
     #[allow(dead_code)]
     reason: String,
 }
 
-/// 构建评分工具:让 LLM 以 `{"score": 0..max, "reason": "..."}` 提交评分。
+/// Builds the scoring tool: lets the LLM submit a score as `{"score": 0..max, "reason": "..."}`.
 fn score_tool(max_score: u8) -> ToolDefinition {
     ToolDefinition::new(
         "submit_evaluation",
@@ -212,7 +212,7 @@ impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
         let (system, user) = self.build_prompt(input, prediction, reference);
         let messages = vec![Message::system(system), Message::human(user)];
 
-        // P0-1: 优先结构化输出(tool_calls);不支持工具绑定的模型走文本解析回落。
+        // P0-1: prefer structured output (tool_calls); models without tool binding fall back to text parsing.
         let args: ScoreArgs =
             structured_call(&self.judge, score_tool(self.max_score), messages, |raw| {
                 let norm = parse_score(raw, self.max_score).ok_or_else(|| {
@@ -287,7 +287,7 @@ mod tests {
     use super::*;
     use lc_embeddings::{EmbeddingError, MockEmbeddings};
 
-    /// 让 embed_query 按文本返回不同维度的向量,复现"向量长度不匹配"。
+    /// Lets embed_query return different-dimension vectors per text, reproducing "vector length mismatch".
     struct MismatchedDimEmbeddings;
 
     #[async_trait]
@@ -331,7 +331,7 @@ mod tests {
         assert!((s - 1.0).abs() < 1e-6);
     }
 
-    /// P2-7: 向量长度不匹配是数据缺陷,报错而不是静默返回 0.0。
+    /// P2-7: a vector length mismatch is a data defect; error instead of silently returning 0.0.
     #[tokio::test]
     async fn test_embedding_similarity_mismatched_dim_errors() {
         let ev = EmbeddingSimilarity::new(MismatchedDimEmbeddings);

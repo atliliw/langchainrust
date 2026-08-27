@@ -43,7 +43,7 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
         let prompt = build_grade_prompt(query, &document.content);
 
         let messages = vec![Message::human(&prompt)];
-        // P1-3:优先 tool_calls 结构化打分,不支持绑定时回落文本解析。
+        // P1-3: prefer structured scoring via tool_calls, falling back to text parsing.
         let structured = crate::structured::chat_structured(
             self.llm,
             Some(grade_tool()),
@@ -94,7 +94,7 @@ fn build_grade_prompt(query: &str, document_content: &str) -> String {
         .unwrap_or_else(|_| GRADE_PROMPT.to_string())
 }
 
-/// 打分工具定义:强制 LLM 输出相关性与 0-1 分数(P1-3)。
+/// Grading tool definition: forces the LLM to output relevance and a 0-1 score (P1-3).
 fn grade_tool() -> ToolDefinition {
     ToolDefinition::new(
         "grade_document",
@@ -120,14 +120,14 @@ fn grade_tool() -> ToolDefinition {
     }))
 }
 
-/// 从 tool_call 参数构造打分结果。解析失败返回 None(回落文本解析)。
+/// Builds a grade result from tool_call arguments. Returns None on parse failure (fall back to text parsing).
 fn grade_from_tool_args(args: &Value) -> Option<GradeResult> {
     let score = args.get("score").and_then(|v| v.as_f64())?.clamp(0.0, 1.0);
     let reasoning = args
         .get("reasoning")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // 结构化输出带显式 score → 不算歧义。
+    // Structured output with an explicit score → not ambiguous.
     Some(GradeResult {
         score,
         reasoning,
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_grade_from_tool_args() {
-        // P1-3:tool_call 结构化参数 → GradeResult。
+        // P1-3: structured tool_call arguments → GradeResult.
         let args = json!({"relevant": true, "score": 0.9, "reasoning": "direct match"});
         let result = grade_from_tool_args(&args).unwrap();
         assert!((result.score - 0.9).abs() < 1e-9);

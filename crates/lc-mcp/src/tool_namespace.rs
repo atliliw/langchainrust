@@ -1,81 +1,86 @@
-//! MCP 工具命名空间隔离(P2-2):`server_name:tool_name` 唯一化 + 冲突策略。
+//! MCP tool namespace isolation (P2-2): `server_name:tool_name` uniquification + conflict policy.
 //!
-//! 100+ Server 各自声明的工具可能同名(如多个 Server 都有 `read_file`),直接
-//! 合并注册到 Agent 会撞名。本模块把每个工具唯一化为 `server_name:tool_name`,
-//! 并按显式 [`ToolConflict`] 策略决定同名工具的取舍:
+//! Tools declared by 100+ Servers may share names (e.g. several Servers all have `read_file`); merging them
+//! straight into the Agent registry would collide. This module uniquifies each tool as
+//! `server_name:tool_name` and decides how same-named tools are treated by the explicit [`ToolConflict`]
+//! policy:
 //!
-//! - [`Prefix`](ToolConflict::Prefix):同名工具都暴露,统一加 `server_name:` 前缀;
-//! - [`Reject`](ToolConflict::Reject):同名工具第二次注册时拒绝,返回错误。
+//! - [`Prefix`](ToolConflict::Prefix): same-named tools are all exposed, each prefixed with `server_name:`;
+//! - [`Reject`](ToolConflict::Reject): a second registration of a same-named tool is rejected with an error.
 //!
-//! 命名空间化后的工具交给
-//! [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced) 挂到 Agent,
-//! LLM 看到带前缀的对外名,实际调用自动剥掉前缀走 Server 侧原始工具名。
+//! Namespaced tools are handed to
+//! [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced) to attach to the Agent;
+//! the LLM sees the prefixed external name, the actual call strips the prefix automatically and uses the
+//! Server-side original tool name.
 
 use std::collections::HashMap;
 
 use crate::protocol::MCPError;
 use crate::types::MCPToolDefinition;
 
-/// 工具命名冲突处理策略(P2-2)。
+/// Tool naming conflict handling policy (P2-2).
 ///
-/// `server_name:tool_name` 唯一化时,不同 Server 的同名工具如何处理。
+/// How same-named tools from different Servers are treated during `server_name:tool_name` uniquification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolConflict {
-    /// 都暴露:冲突工具加 `server_name:` 前缀,同名工具各自唯一。
+    /// Expose all: conflicting tools get a `server_name:` prefix, each same-named tool becomes unique.
     Prefix,
-    /// 报错拒绝注册:第二次出现同名工具(属不同 Server)时返回错误。
+    /// Reject with an error: a second same-named tool (belonging to a different Server) returns an error.
     Reject,
 }
 
-/// 命名空间化后的工具条目。
+/// A namespaced tool entry.
 #[derive(Debug, Clone)]
 pub struct NamespacedTool {
-    /// 对外暴露的唯一工具名(格式 `server_name:tool_name`)。
+    /// The unique externally exposed tool name (format `server_name:tool_name`).
     pub full_name: String,
-    /// 来源 Server 名(连接管理器注册表 key)。
+    /// The source Server name (the connection-manager registry key).
     pub server: String,
-    /// 原始工具定义。实际调用仍用 `definition.name`——Server 侧不认识前缀。
+    /// The original tool definition. The actual call still uses `definition.name` — the Server side does not
+    /// know the prefix.
     pub definition: MCPToolDefinition,
 }
 
-/// 多 Server 工具命名空间注册表(P2-2)。
+/// Multi-Server tool namespace registry (P2-2).
 ///
-/// 把每个工具唯一化为 `server_name:tool_name`,并按 [`ToolConflict`] 策略
-/// 决定同名工具的取舍。对外名用 [`qualify`](Self::qualify) 生成、反查用
-/// [`resolve`](Self::resolve);命名空间化后的工具交给
-/// [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced) 挂到
-/// Agent 时自动剥掉前缀走原始名。
+/// Uniquifies each tool as `server_name:tool_name` and decides how same-named tools are treated by the
+/// [`ToolConflict`] policy. External names are generated with [`qualify`](Self::qualify), looked back up with
+/// [`resolve`](Self::resolve); namespaced tools handed to
+/// [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced) automatically strip the prefix and use
+/// the original name when attached to an Agent.
 #[derive(Debug, Default)]
 pub struct ToolNamespace {
-    /// `full_name` → `(server, 原始工具名)`。
+    /// `full_name` → `(server, original tool name)`.
     index: HashMap<String, (String, String)>,
 }
 
 impl ToolNamespace {
-    /// 空命名空间。
+    /// An empty namespace.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 生成某个 Server 下工具的唯一对外名。
+    /// Generates the unique external name of a tool under a Server.
     pub fn qualify(server: &str, tool: &str) -> String {
         format!("{server}:{tool}")
     }
 
-    /// 从对外全名解析回 `(server, 原始工具名)`;不含 `:` 则返回 `None`。
+    /// Parses an external full name back into `(server, original tool name)`; returns `None` when it contains
+    /// no `:`.
     pub fn parse(full_name: &str) -> Option<(&str, &str)> {
         full_name.split_once(':')
     }
 
-    /// 注册一批工具,按冲突策略命名空间化。
+    /// Registers a batch of tools, namespacing them per the conflict policy.
     ///
-    /// - 同一 `full_name`(`server:tool`)重复注册总是报错;
-    /// - [`Reject`](ToolConflict::Reject) 下,原始工具名已属于其它 Server(即
-    ///   不加前缀就会撞名)时,本次注册报错;
-    /// - [`Prefix`](ToolConflict::Prefix) 下,同名工具各自带前缀暴露,互不干扰。
+    /// - Re-registering the same `full_name` (`server:tool`) always errors;
+    /// - under [`Reject`](ToolConflict::Reject), this registration errors when the original tool name already
+    ///   belongs to another Server (i.e. it would collide without a prefix);
+    /// - under [`Prefix`](ToolConflict::Prefix), same-named tools are each exposed with their own prefix,
+    ///   without interfering.
     ///
-    /// 返回命名空间化结果,调用方可据此构造
-    /// [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced)。
+    /// Returns the namespacing result, from which the caller can construct
+    /// [`MCPToolAdapter::namespaced`](crate::MCPToolAdapter::namespaced).
     pub fn register(
         &mut self,
         server: &str,
@@ -113,24 +118,25 @@ impl ToolNamespace {
         Ok(out)
     }
 
-    /// 从对外全名反查 `(server, 原始工具名)`;未注册返回 `None`。
+    /// Looks an external full name back up as `(server, original tool name)`; returns `None` if not registered.
     pub fn resolve(&self, full_name: &str) -> Option<(&str, &str)> {
         self.index
             .get(full_name)
             .map(|(s, t)| (s.as_str(), t.as_str()))
     }
 
-    /// 枚举全部已注册的对外全名(顺序不稳定)。Gateway(P2-8)统一注册表遍历用。
+    /// Enumerates all registered external full names (order not stable). Used by the Gateway (P2-8) unified
+    /// registry traversal.
     pub fn names(&self) -> Vec<String> {
         self.index.keys().cloned().collect()
     }
 
-    /// 已注册的工具数。
+    /// Number of registered tools.
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
-    /// 是否为空注册表。
+    /// Whether the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }
@@ -162,7 +168,7 @@ mod tests {
         assert_eq!(ToolNamespace::parse("no_separator"), None);
     }
 
-    /// Prefix 策略:不同 Server 的同名工具都暴露,各自带前缀唯一。
+    /// Prefix policy: same-named tools from different Servers are all exposed, each unique with its own prefix.
     #[test]
     fn test_prefix_policy_exposes_same_name_tools() {
         let mut ns = ToolNamespace::new();
@@ -176,12 +182,13 @@ mod tests {
         assert_eq!(a[0].full_name, "server_a:read");
         assert_eq!(b[0].full_name, "server_b:read");
         assert_eq!(ns.len(), 2);
-        // 反查路由到正确 server / 原始名。
+        // Lookup routes to the correct server / original name.
         assert_eq!(ns.resolve("server_a:read"), Some(("server_a", "read")));
         assert_eq!(ns.resolve("server_b:read"), Some(("server_b", "read")));
     }
 
-    /// Reject 策略:不同 Server 的同名工具第二次注册报错,注册表不增长。
+    /// Reject policy: a second registration of a same-named tool from a different Server errors, and the
+    /// registry does not grow.
     #[test]
     fn test_reject_policy_rejects_same_name_across_servers() {
         let mut ns = ToolNamespace::new();
@@ -198,7 +205,7 @@ mod tests {
         );
     }
 
-    /// Reject 策略:不同名工具正常共存。
+    /// Reject policy: distinct-named tools coexist normally.
     #[test]
     fn test_reject_policy_allows_distinct_tools() {
         let mut ns = ToolNamespace::new();
@@ -214,7 +221,7 @@ mod tests {
         assert_eq!(ns.resolve("server_b:search"), Some(("server_b", "search")));
     }
 
-    /// 同一 `full_name` 重复注册无论何种策略都报错。
+    /// Re-registering the same `full_name` errors under any policy.
     #[test]
     fn test_duplicate_registration_rejected() {
         let mut ns = ToolNamespace::new();
@@ -226,13 +233,14 @@ mod tests {
         assert_eq!(ns.len(), 1);
     }
 
-    /// 冲突策略按 register 调用显式决定:同名工具的来源决定是否冲突。
+    /// The conflict policy is decided explicitly per register call: whether a same-named tool conflicts
+    /// depends on its source.
     #[test]
     fn test_conflict_policy_per_register_call() {
         let mut ns = ToolNamespace::new();
         ns.register("server_a", [tool("read")], ToolConflict::Prefix)
             .unwrap();
-        // server_b 的 "read" 与 server_a 同名:Prefix 策略下都暴露。
+        // server_b's "read" shares the name with server_a: under the Prefix policy both are exposed.
         let b = ns
             .register("server_b", [tool("read")], ToolConflict::Prefix)
             .unwrap();
@@ -240,10 +248,11 @@ mod tests {
         assert_eq!(ns.len(), 2);
     }
 
-    /// 命名空间适配器:LLM 看到 `server:tool`,实际调用剥前缀走原始名。
+    /// Namespaced adapter: the LLM sees `server:tool`, the actual call strips the prefix and uses the raw name.
     ///
-    /// 假 SSE 服务器的 `tools/call` 不校验工具名——若 `run` 带了前缀调用
-    /// 仍能成功返回(而非未实现/参数错误),说明路由走的是原始名路径。
+    /// The fake SSE server's `tools/call` does not validate the tool name — if `run` called with the prefix
+    /// and still returned successfully (rather than method-not-found / invalid-params), it proves the routing
+    /// went through the original-name path.
     #[tokio::test]
     async fn test_namespaced_adapter_routes_to_raw_name() {
         let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -252,13 +261,14 @@ mod tests {
             .expect("connecting to fake SSE server should succeed");
 
         let adapter = MCPToolAdapter::namespaced(client, "server_a", tool("echo"));
-        // BaseTool::name() → 对外名带命名空间前缀。
+        // BaseTool::name() → the external name carries the namespace prefix.
         assert_eq!(adapter.name(), "server_a:echo");
         assert_eq!(adapter.display_name(), "server_a:echo");
         assert_eq!(adapter.description(), "echo desc");
         assert!(adapter.args_schema().is_some());
-        // run 剥掉前缀走原始名 "echo" 调假服务器;假服务器回显收到的工具名,
-        // 等于原始名即证明命名空间前缀没有泄漏到 Server 侧。
+        // run strips the prefix and calls the fake server by the original name "echo"; the fake server echoes
+        // the received tool name, so it equals the original name proves the namespace prefix did not leak to
+        // the Server side.
         let out = adapter.run("{}".into()).await;
         assert!(
             matches!(out.as_deref(), Ok("echo")),
@@ -267,7 +277,7 @@ mod tests {
         );
     }
 
-    /// 未命名空间适配器保持原始名,行为与旧版一致。
+    /// A non-namespaced adapter keeps the original name, matching the legacy behavior.
     #[tokio::test]
     async fn test_plain_adapter_keeps_raw_name() {
         let fake = start_fake_sse_server(PostMode::Quiet).await;

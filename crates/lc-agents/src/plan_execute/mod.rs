@@ -1,4 +1,4 @@
-//! Plan-Execute Agent:规划-执行-重规划
+//! Plan-Execute Agent: plan - execute - replan
 
 pub mod agent;
 pub mod plan;

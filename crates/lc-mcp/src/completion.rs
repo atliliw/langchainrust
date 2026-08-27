@@ -1,68 +1,68 @@
-//! MCP Completion - 补全类型与 `completion/complete` 处理
+//! MCP Completion - completion types and `completion/complete` handling
 //!
-//! MCP Completion 允许 Server 为提示词参数或资源 URI 提供自动补全建议。
+//! MCP Completion lets a Server provide autocomplete suggestions for prompt arguments or resource URIs.
 
 use crate::protocol::MCPError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// 补全引用类型
+/// A completion reference type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRef {
-    /// 引用类型(`ref/prompt` 或 `ref/resource`)
+    /// Reference type (`ref/prompt` or `ref/resource`)
     #[serde(rename = "type")]
     pub ref_type: String,
-    /// 被补全对象的 URI
+    /// URI of the object being completed
     pub uri: String,
 }
 
-/// 补全请求参数
+/// Completion request argument
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionArgument {
-    /// 参数名
+    /// Argument name
     pub name: String,
-    /// 当前参数值(用于提供补全建议)
+    /// Current argument value (used to provide completion suggestions)
     pub value: String,
 }
 
-/// `completion/complete` 请求参数
+/// `completion/complete` request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
-    /// 被补全的引用
+    /// The reference being completed
     pub reference: CompletionRef,
-    /// 补全参数
+    /// The completion argument
     pub argument: CompletionArgument,
 }
 
-/// 补全值
+/// A completion value
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionValue {
-    /// 补全建议的显示标签
+    /// Display label of the completion suggestion
     pub label: String,
-    /// 补全建议的可选描述
+    /// Optional description of the completion suggestion
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-/// `completion/complete` 响应
+/// `completion/complete` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionResult {
-    /// 补全建议列表
+    /// List of completion suggestions
     pub values: Vec<CompletionValue>,
-    /// 可选的总补全数量
+    /// Optional total number of completions
     #[serde(default)]
     pub total: Option<usize>,
-    /// 是否还有更多补全建议
+    /// Whether more completion suggestions are available
     #[serde(rename = "hasMore", default)]
     pub has_more: bool,
 }
 
-/// 补全提供者:server 注册后,`completion/complete` 才有数据源。
+/// Completion provider: once a server registers, `completion/complete` has a data source.
 ///
-/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+/// When nothing is registered the method still returns `method_not_found` (an honest boundary, no pretending to support it).
 #[async_trait]
 pub trait CompletionProvider: Send + Sync {
-    /// 按补全请求返回建议列表。
+    /// Returns the suggestion list for a completion request.
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResult, MCPError>;
 }
 

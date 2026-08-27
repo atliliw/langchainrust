@@ -1,62 +1,62 @@
-//! MCP 类型定义:工具、内容、配置
+//! MCP type definitions: tools, content, configuration
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// MCP 工具定义(来自 `tools/list`)
+/// MCP tool definition (from `tools/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolDefinition {
-    /// 工具名称
+    /// Tool name
     pub name: String,
-    /// 工具描述
+    /// Tool description
     #[serde(default)]
     pub description: String,
-    /// 工具参数的 JSON Schema
+    /// JSON Schema of the tool arguments
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
 }
 
-/// MCP 工具调用结果(来自 `tools/call`)
+/// MCP tool-call result (from `tools/call`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolResult {
-    /// 工具返回的内容列表
+    /// The content list returned by the tool
     pub content: Vec<MCPContent>,
-    /// 是否为错误结果
+    /// Whether this is an error result
     #[serde(default)]
     pub is_error: bool,
 }
 
-/// MCP 内容类型( tagged enum,`type` 字段区分)
+/// MCP content type (a tagged enum, distinguished by the `type` field)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MCPContent {
-    /// 文本内容
+    /// Text content
     #[serde(rename = "text")]
     Text {
-        /// 文本数据
+        /// Text data
         text: String,
     },
-    /// 图片内容
+    /// Image content
     #[serde(rename = "image")]
     Image {
-        /// 图片数据(base64 编码)
+        /// Image data (base64-encoded)
         data: String,
-        /// 图片 MIME 类型
+        /// Image MIME type
         mime_type: String,
     },
-    /// 资源引用内容
+    /// Resource-reference content
     #[serde(rename = "resource")]
     Resource {
-        /// 资源 URI
+        /// Resource URI
         uri: String,
-        /// 资源名称
+        /// Resource name
         name: String,
     },
 }
 
 impl MCPContent {
-    /// 若为文本内容,返回文本引用
+    /// Returns a text reference when this is text content
     pub fn as_text(&self) -> Option<&str> {
         match self {
             MCPContent::Text { text } => Some(text),
@@ -64,10 +64,12 @@ impl MCPContent {
         }
     }
 
-    /// 渲染为文本(P1-7):文本原样;图片/资源用占位描述代表,不静默丢弃。
+    /// Renders as text (P1-7): text stays as-is; images / resources are represented by a placeholder
+    /// description, not silently dropped.
     ///
-    /// `BaseTool` 只接受 String 输出,多类型内容(图/资源)无法直接表达,
-    /// 用带元信息的占位串告知上层"这里有一个非文本内容",而不是悄悄吞掉。
+    /// `BaseTool` only accepts String output; multi-type content (image/resource) cannot be expressed
+    /// directly, so a placeholder string carrying metadata tells the upper layer "there is a non-text content
+    /// here" instead of quietly swallowing it.
     pub fn render_text(&self) -> String {
         match self {
             MCPContent::Text { text } => text.clone(),
@@ -82,9 +84,10 @@ impl MCPContent {
 }
 
 impl MCPToolResult {
-    /// 渲染所有内容为文本,用换行连接(P1-7)。
+    /// Renders all content as text, joined by newlines (P1-7).
     ///
-    /// 图片/资源等非文本内容以占位描述代表,不再被静默丢弃。
+    /// Non-text content such as images / resources is represented by a placeholder description, no longer
+    /// silently dropped.
     pub fn text(&self) -> String {
         self.content
             .iter()
@@ -94,27 +97,27 @@ impl MCPToolResult {
     }
 }
 
-/// MCP Client 配置
+/// MCP Client configuration
 #[derive(Debug, Clone)]
 pub enum MCPConfig {
-    /// Stdio 传输:启动子进程,通过 stdin/stdout 通信
+    /// Stdio transport: spawns a child process, communicating over stdin/stdout
     Stdio {
-        /// 要启动的命令
+        /// The command to start
         command: String,
-        /// 命令行参数
+        /// Command-line arguments
         args: Vec<String>,
-        /// 子进程环境变量
+        /// Child-process environment variables
         env: HashMap<String, String>,
     },
-    /// SSE 传输:HTTP Server-Sent Events
+    /// SSE transport: HTTP Server-Sent Events
     Sse {
-        /// SSE 端点 URL
+        /// SSE endpoint URL
         url: String,
     },
 }
 
 impl MCPConfig {
-    /// 创建 Stdio 配置(默认空环境变量)
+    /// Creates a Stdio config (empty environment variables by default)
     pub fn stdio(command: impl Into<String>, args: Vec<String>) -> Self {
         Self::Stdio {
             command: command.into(),
@@ -123,12 +126,12 @@ impl MCPConfig {
         }
     }
 
-    /// 创建 SSE 配置
+    /// Creates an SSE config
     pub fn sse(url: impl Into<String>) -> Self {
         Self::Sse { url: url.into() }
     }
 
-    /// 追加环境变量(仅 Stdio 生效)
+    /// Appends an environment variable (only effective for Stdio)
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         if let MCPConfig::Stdio { env, .. } = &mut self {
             env.insert(key.into(), value.into());
@@ -189,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_render_image_placeholder_not_dropped() {
-        // P1-7:图片内容以占位描述代表,不再被静默丢弃。
+        // P1-7: image content is represented by a placeholder description, no longer silently dropped.
         let content = MCPContent::Image {
             data: "base64...".to_string(),
             mime_type: "image/png".to_string(),
@@ -201,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_render_resource_placeholder_not_dropped() {
-        // P1-7:资源内容以占位描述代表。
+        // P1-7: resource content is represented by a placeholder description.
         let content = MCPContent::Resource {
             uri: "file:///tmp/x.json".to_string(),
             name: "x.json".to_string(),
@@ -212,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_text_mixed_content() {
-        // 文本 + 图片混排:文本保留,图片降级为占位,两者都进 text()。
+        // Text + image mixed: text is kept, the image degrades to a placeholder, both go into text().
         let result = MCPToolResult {
             content: vec![
                 MCPContent::Text {

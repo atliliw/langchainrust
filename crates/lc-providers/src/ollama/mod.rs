@@ -1,18 +1,18 @@
 // src/language_models/ollama/mod.rs
-//! Ollama 本地模型支持
+//! Ollama local model support
 //!
-//! Ollama 是一个本地大语言模型运行工具，支持多种开源模型。
-//! Ollama 提供 OpenAI 兼容的 API，可以直接使用本框架的聊天接口。
+//! Ollama is a local large-language-model runner that supports many open-source models.
+//! Ollama exposes an OpenAI-compatible API, so it can use this framework's chat interface directly.
 //!
-//! # 支持的模型
+//! # Supported Models
 //! - llama3.2
 //! - mistral
 //! - codellama
 //! - qwen2
 //! - gemma
-//! - 等等
+//! - and more
 //!
-//! # 使用示例
+//! # Usage Example
 //! ```rust,ignore
 //! use langchainrust::{OllamaChat, OllamaConfig, BaseChatModel};
 //! use langchainrust::schema::Message;

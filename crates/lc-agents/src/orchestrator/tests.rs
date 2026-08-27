@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// 用一个最小可测编排器验证 trait 可用性,不依赖真实 LLM。
+/// Verifies trait usability with a minimal testable orchestrator, no real LLM needed.
 struct DummyOrchestrator;
 
 #[async_trait]
@@ -59,7 +59,7 @@ fn test_generate_trace_id_unique() {
     assert_ne!(a, b);
 }
 
-/// 确定性 mock 子编排器:返回 `tag:objective`。
+/// Deterministic mock sub-orchestrator: returns `tag:objective`.
 struct MockOrch {
     tag: &'static str,
 }
@@ -78,7 +78,7 @@ impl Orchestrator for MockOrch {
     }
 }
 
-/// 必定失败的 mock 子编排器。
+/// Mock sub-orchestrator that always fails.
 struct MockOrchFail;
 
 #[async_trait]
@@ -99,7 +99,7 @@ fn mock_orch(tag: &'static str) -> Arc<dyn Orchestrator<Input = AgentTask, Outpu
     Arc::new(MockOrch { tag })
 }
 
-/// 记录收到的任务,用于断言约束(目标/预期输出/允许工具)是否随派发传递。
+/// Records received tasks, to assert whether constraints (objective/expected output/allowed tools) propagate with dispatch.
 struct CapturingOrch {
     tag: &'static str,
     seen: Arc<Mutex<Vec<AgentTask>>>,
@@ -123,7 +123,7 @@ impl Orchestrator for CapturingOrch {
     }
 }
 
-/// P2-3: 扇出把同一任务广播给所有 worker,默认换行聚合,顺序稳定。
+/// P2-3: fan-out broadcasts the same task to all workers, newline-joined by default, stable order.
 #[tokio::test]
 async fn test_fanout_broadcast_and_join() {
     let orch = FanOutFanIn::new(vec![mock_orch("a"), mock_orch("b")]);
@@ -135,7 +135,7 @@ async fn test_fanout_broadcast_and_join() {
     assert_eq!(out, "a:task:t1\nb:task:t1");
 }
 
-/// P2-3: 自定义聚合函数生效。
+/// P2-3: a custom aggregator takes effect.
 #[tokio::test]
 async fn test_fanout_custom_aggregator() {
     let orch =
@@ -148,7 +148,7 @@ async fn test_fanout_custom_aggregator() {
     assert_eq!(out, "a:x:t2 + b:x:t2");
 }
 
-/// P2-3: 任一 worker 失败则整体失败,错误带 worker 序号。
+/// P2-3: if any worker fails the whole run fails, with the worker index in the error.
 #[tokio::test]
 async fn test_fanout_worker_error_fails_all() {
     let orch = FanOutFanIn::new(vec![mock_orch("ok"), Arc::new(MockOrchFail)]);
@@ -160,7 +160,7 @@ async fn test_fanout_worker_error_fails_all() {
     assert!(err.to_string().contains("worker 1 failed"));
 }
 
-/// P2-3: 空 worker 列表在运行时报错而非返回空串。
+/// P2-3: an empty worker list errors at run time rather than returning an empty string.
 #[tokio::test]
 async fn test_fanout_empty_workers_errors() {
     let orch = FanOutFanIn::new(vec![]);
@@ -172,7 +172,7 @@ async fn test_fanout_empty_workers_errors() {
     assert!(err.to_string().contains("at least one worker"));
 }
 
-/// P2-3: 流水线按序串联,前一阶段输出喂给后一阶段。
+/// P2-3: the pipeline chains stages in order, feeding each stage's output into the next.
 #[tokio::test]
 async fn test_pipeline_order_and_data_flow() {
     let pipe = SequentialPipeline::new(vec![mock_orch("s1"), mock_orch("s2")]);
@@ -181,11 +181,11 @@ async fn test_pipeline_order_and_data_flow() {
         .run_with_context(AgentTask::new("seed"), &ctx)
         .await
         .unwrap();
-    // s1 输出 "s1:seed:t5" 作为 s2 目标 → "s2:s1:seed:t5:t5"
+    // s1 outputs "s1:seed:t5" as s2's objective → "s2:s1:seed:t5:t5"
     assert_eq!(out, "s2:s1:seed:t5:t5");
 }
 
-/// P2-3: 追加阶段生效。
+/// P2-3: appended stages take effect.
 #[tokio::test]
 async fn test_pipeline_push_stage() {
     let pipe = SequentialPipeline::new(vec![mock_orch("s1")]).push_stage(mock_orch("s2"));
@@ -197,7 +197,7 @@ async fn test_pipeline_push_stage() {
     assert_eq!(out, "s2:s1:p:t6:t6");
 }
 
-/// P2-3: 流水线阶段失败时带序号报错。
+/// P2-3: a failing pipeline stage reports the error with its index.
 #[tokio::test]
 async fn test_pipeline_stage_error_reports_index() {
     let pipe = SequentialPipeline::new(vec![mock_orch("s1"), Arc::new(MockOrchFail)]);
@@ -209,7 +209,7 @@ async fn test_pipeline_stage_error_reports_index() {
     assert!(err.to_string().contains("stage 1"));
 }
 
-/// P2-3: 两种模式可互相嵌套(流水线里套扇出)。
+/// P2-3: the two modes nest (fan-out inside a pipeline).
 #[tokio::test]
 async fn test_fanout_nested_in_pipeline() {
     let fanout = FanOutFanIn::new(vec![mock_orch("a"), mock_orch("b")]);
@@ -219,11 +219,11 @@ async fn test_fanout_nested_in_pipeline() {
         .run_with_context(AgentTask::new("in"), &ctx)
         .await
         .unwrap();
-    // fanout → "a:in:t8\nb:in:t8"; tail 再包一层
+    // fanout → "a:in:t8\nb:in:t8"; tail wraps one more layer
     assert_eq!(out, "tail:a:in:t8\nb:in:t8:t8");
 }
 
-/// P2-5: `TaskAdapter` 把 `Input=String` 编排器桥接为可接收任务派发。
+/// P2-5: `TaskAdapter` bridges an `Input=String` orchestrator to accept task dispatch.
 #[tokio::test]
 async fn test_task_adapter_bridges_string_orchestrator() {
     let inner =
@@ -238,11 +238,11 @@ async fn test_task_adapter_bridges_string_orchestrator() {
         )
         .await
         .unwrap();
-    // 底层 String 编排器收到目标文本,而非整个任务
+    // The underlying String orchestrator receives the objective text, not the whole task
     assert_eq!(out, "适配目标 via t9");
 }
 
-/// P2-5: 扇出派发时,任务的预期输出 / 允许工具随目标一并到达每个 worker。
+/// P2-5: on fan-out dispatch, the task's expected output / allowed tools arrive at each worker together with the objective.
 #[tokio::test]
 async fn test_fanout_dispatches_task_with_constraints() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -271,7 +271,7 @@ async fn test_fanout_dispatches_task_with_constraints() {
     }
 }
 
-/// P2-5: 流水线的任务级约束沿链传递,阶段输出成为下一阶段目标。
+/// P2-5: pipeline task-level constraints propagate along the chain; each stage's output becomes the next stage's objective.
 #[tokio::test]
 async fn test_pipeline_carries_constraints_through_stages() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -291,7 +291,7 @@ async fn test_pipeline_carries_constraints_through_stages() {
     assert_eq!(seen[0].objective(), "起点");
     assert_eq!(seen[0].expected_output(), Some("要点"));
     assert_eq!(seen[0].allowed_tools(), &["calc".to_string()]);
-    // 第二段收到前一段输出作为目标,约束沿用
+    // The second stage receives the previous stage's output as its objective, constraints carried over
     assert_eq!(seen[1].objective(), "s:起点");
     assert_eq!(seen[1].expected_output(), Some("要点"));
     assert_eq!(seen[1].allowed_tools(), &["calc".to_string()]);
@@ -299,8 +299,9 @@ async fn test_pipeline_carries_constraints_through_stages() {
 
 // === P2-8: ReviewOrchestrator ===
 
-/// mock worker:记录收到的任务;`first_try_good=true` 首次即达标,
-/// 否则只有目标含"修订"(带反馈重做后)才产出达标文本。
+/// Mock worker: records received tasks; with `first_try_good=true` the first
+/// try already passes, otherwise it produces a passing text only when the
+/// objective contains "修订" (i.e. after redoing with feedback).
 struct ReviewWorker {
     calls: Arc<Mutex<Vec<AgentTask>>>,
     first_try_good: bool,
@@ -328,13 +329,13 @@ impl Orchestrator for ReviewWorker {
     }
 }
 
-/// mock worker 工厂返回类型。
+/// Return type of the mock worker factory.
 type ReviewWorkerPair = (
     Arc<dyn Orchestrator<Input = AgentTask, Output = String>>,
     Arc<Mutex<Vec<AgentTask>>>,
 );
 
-/// mock worker 工厂:返回 worker trait 对象 + 记录的任务列表。
+/// Mock worker factory: returns the worker trait object + the recorded task list.
 fn review_worker(first_try_good: bool) -> ReviewWorkerPair {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let worker = Arc::new(ReviewWorker {
@@ -344,7 +345,7 @@ fn review_worker(first_try_good: bool) -> ReviewWorkerPair {
     (worker, calls)
 }
 
-/// mock 评审:产出含 "good" → PASS,否则 FAIL + 反馈(定界符格式)。
+/// Mock reviewer: output containing "good" → PASS, otherwise FAIL + feedback (delimited format).
 struct ReviewChecker;
 
 #[async_trait]
@@ -368,7 +369,7 @@ impl Orchestrator for ReviewChecker {
     }
 }
 
-/// mock 评审:恒返回 FAIL + 反馈(用于验证耗尽路径)。
+/// Mock reviewer: always returns FAIL + feedback (for verifying the exhaustion path).
 struct AlwaysFailReview;
 
 #[async_trait]
@@ -388,7 +389,7 @@ impl Orchestrator for AlwaysFailReview {
     }
 }
 
-/// P2-8: 首次产出即达标,直接返回,不做重做。
+/// P2-8: the first output already passes; return directly without redoing.
 #[tokio::test]
 async fn test_review_passes_on_first_attempt() {
     let (worker, calls) = review_worker(true);
@@ -406,7 +407,7 @@ async fn test_review_passes_on_first_attempt() {
     );
 }
 
-/// P2-8: 首轮不达标,带着反馈重做后达标,任务级约束沿链保留。
+/// P2-8: the first round fails; after redoing with feedback it passes, with task-level constraints kept along the chain.
 #[tokio::test]
 async fn test_review_redo_until_pass() {
     let (worker, calls) = review_worker(false);
@@ -425,12 +426,12 @@ async fn test_review_redo_until_pass() {
         "第二轮目标应携带评审反馈, 实际: {}",
         calls[1].objective()
     );
-    // 约束沿链保留
+    // Constraints carried along the chain
     assert_eq!(calls[1].expected_output(), Some("一页结论"));
     assert_eq!(calls[1].allowed_tools(), &["calc".to_string()]);
 }
 
-/// P2-8: 尝试耗尽仍未达标,默认返回 Err(不把未过审产出当结果)。
+/// P2-8: attempts exhausted without passing → Err by default (never treats an unapproved output as the result).
 #[tokio::test]
 async fn test_review_exhausts_returns_error_by_default() {
     let (worker, _) = review_worker(false);
@@ -443,7 +444,7 @@ async fn test_review_exhausts_returns_error_by_default() {
     assert!(err.to_string().contains("did not pass"), "{}", err);
 }
 
-/// P2-8: `keep_last_output()` 使耗尽后返回最近产出而非报错。
+/// P2-8: `keep_last_output()` returns the latest output on exhaustion instead of erroring.
 #[tokio::test]
 async fn test_review_keep_last_output_on_exhaustion() {
     let (worker, _) = review_worker(true);
@@ -456,7 +457,7 @@ async fn test_review_keep_last_output_on_exhaustion() {
     assert_eq!(out, "good answer");
 }
 
-/// P2-8: ReviewOrchestrator 作为组合模式可嵌进流水线。
+/// P2-8: ReviewOrchestrator as a composition pattern nests inside a pipeline.
 #[tokio::test]
 async fn test_review_orchestrator_composes_in_pipeline() {
     let (worker, _) = review_worker(false);
@@ -467,7 +468,7 @@ async fn test_review_orchestrator_composes_in_pipeline() {
         .run_with_context(AgentTask::new("研究X"), &ctx)
         .await
         .unwrap();
-    // review 重做后产出 "good answer" → tail 再包一层
+    // review redo produces "good answer" → tail wraps one more layer
     assert_eq!(out, "tail:good answer:r5");
 }
 

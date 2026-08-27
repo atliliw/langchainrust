@@ -1,5 +1,5 @@
 // src/language_models/providers/moonshot.rs
-//! Moonshot (Kimi) API 实现 (OpenAI 兼容)
+//! Moonshot (Kimi) API implementation (OpenAI-compatible)
 
 use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
@@ -15,17 +15,17 @@ use serde::de::DeserializeOwned;
 use std::env;
 use std::pin::Pin;
 
-/// Moonshot API 端点
+/// Moonshot API endpoint
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
 
-/// Moonshot 模型列表
+/// Moonshot model list
 pub const MOONSHOT_MODELS: [&str; 3] = [
-    "moonshot-v1-8k",   // 8K 上下文
-    "moonshot-v1-32k",  // 32K 上下文
-    "moonshot-v1-128k", // 128K 长文本
+    "moonshot-v1-8k",   // 8K context
+    "moonshot-v1-32k",  // 32K context
+    "moonshot-v1-128k", // 128K long-context
 ];
 
-/// Moonshot 配置
+/// Moonshot config
 #[derive(Debug, Clone)]
 pub struct MoonshotConfig {
     /// Moonshot API key.
@@ -109,7 +109,7 @@ impl MoonshotConfig {
         self
     }
 
-    /// 转换为 OpenAI 配置 (复用 OpenAI 实现)
+    /// Converts into an OpenAI config (reuses the OpenAI implementation)
     pub fn into_openai_config(self) -> OpenAIConfig {
         OpenAIConfig {
             api_key: self.api_key,
@@ -128,7 +128,7 @@ impl MoonshotConfig {
     }
 }
 
-/// Moonshot 聊天客户端
+/// Moonshot chat client
 #[derive(Clone)]
 pub struct MoonshotChat {
     inner: OpenAIChat,

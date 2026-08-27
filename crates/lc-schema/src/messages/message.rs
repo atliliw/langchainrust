@@ -14,15 +14,15 @@ use super::image::ImageContent;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageType {
-    /// 系统消息
+    /// System message
     System,
-    /// 人类（用户）消息
+    /// Human (user) message
     Human,
-    /// AI（助手）消息
+    /// AI (assistant) message
     AI,
-    /// 工具结果消息，携带对应的 tool_call_id
+    /// Tool result message, carrying the matching tool_call_id
     Tool {
-        /// 关联的工具调用 ID
+        /// Associated tool call ID
         tool_call_id: String,
     },
 }
@@ -30,38 +30,38 @@ pub enum MessageType {
 /// Complete message structure for chat interactions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
-    /// 消息文本内容
+    /// Message text content
     pub content: String,
 
-    /// 图片内容(多模态 vision)
+    /// Image content (multimodal vision)
     #[serde(default)]
     pub images: Vec<ImageContent>,
 
-    /// 音频内容(多模态 audio)
+    /// Audio content (multimodal audio)
     #[serde(default)]
     pub audio: Vec<AudioContent>,
 
-    /// 文件内容(多模态 document)
+    /// File content (multimodal document)
     #[serde(default)]
     pub files: Vec<FileContent>,
 
-    /// 消息类型
+    /// Message type
     #[serde(rename = "type")]
     pub message_type: MessageType,
 
-    /// 消息名称（可选）
+    /// Message name (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
-    /// 附加关键字参数
+    /// Additional keyword arguments
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub additional_kwargs: HashMap<String, Value>,
 
-    /// 消息 ID（可选）
+    /// Message ID (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
-    /// 工具调用列表（可选）
+    /// Tool call list (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
 }
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_message_deserialize_without_images_field() {
-        // 旧格式(无 images 字段)应能反序列化(#[serde(default)])
+        // The old format (no images field) must still deserialize (#[serde(default)])
         let json = r#"{"content":"hi","type":"human"}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content, "hi");

@@ -1,4 +1,4 @@
-//! 共享测试替身:一个不联网的假 `BaseChatModel`(Error 与真 provider 同层)。
+//! Shared test double: an offline fake `BaseChatModel` (its Error sits at the real provider's layer).
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -10,8 +10,8 @@ use lc_providers::ProviderError;
 use lc_schema::Message;
 use std::pin::Pin;
 
-/// 返回固定回复的假模型,`Error = ProviderError`(与真 provider 同层,
-/// 满足 `RecordingProvider<M>` 的 `M::Error: Into<ProviderError>` 约束)。
+/// A fake model returning a fixed reply, `Error = ProviderError` (same layer as a real provider,
+/// satisfying `RecordingProvider<M>`'s `M::Error: Into<ProviderError>` bound).
 #[derive(Clone)]
 pub struct FakeModel {
     reply: String,

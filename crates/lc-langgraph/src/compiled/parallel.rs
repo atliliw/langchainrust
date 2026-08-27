@@ -69,8 +69,9 @@ impl<S: StateSchema> CompiledGraph<S> {
                     state = self.merge_parallel_states(&parallel_branches)?;
                     current_node = merge_node;
                 } else {
-                    // H6: 与 invoke.rs 的主路径一致——所有分支结果经 reducer 合并,
-                    // 而不是只保留 `parallel_branches.last()` 一个分支、丢弃其余分支。
+                    // H6: same as the main path in invoke.rs — all branch results are merged
+                    // through the reducer, rather than keeping only `parallel_branches.last()`
+                    // and dropping the rest.
                     state = self.merge_parallel_states(&parallel_branches)?;
                     current_node = END.to_string();
                 }

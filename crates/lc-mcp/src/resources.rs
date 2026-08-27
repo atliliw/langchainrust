@@ -1,71 +1,71 @@
-//! MCP Resources - 资源类型与 `resources/list`、`resources/read` 处理
+//! MCP Resources - resource types and `resources/list` / `resources/read` handling
 //!
-//! MCP Resources 允许 Server 暴露结构化数据(文件、数据库记录等)供 Client 读取。
+//! MCP Resources lets a Server expose structured data (files, database records, etc.) for a Client to read.
 
 use crate::protocol::MCPError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// 资源描述(来自 `resources/list`)
+/// Resource description (from `resources/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
-    /// 资源 URI
+    /// Resource URI
     pub uri: String,
-    /// 资源名称
+    /// Resource name
     pub name: String,
-    /// 资源的可选描述
+    /// Optional description of the resource
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 资源的 MIME 类型(可选)
+    /// Resource MIME type (optional)
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
 }
 
-/// 资源内容(来自 `resources/read`)
+/// Resource content (from `resources/read`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceContent {
-    /// 资源 URI
+    /// Resource URI
     pub uri: String,
-    /// 内容的 MIME 类型(可选)
+    /// Content MIME type (optional)
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
-    /// 文本内容(与 `blob` 二选一)
+    /// Text content (mutually exclusive with `blob`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// 二进制内容(base64 编码,与 `text` 二选一)
+    /// Binary content (base64-encoded, mutually exclusive with `text`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
 }
 
-/// `resources/list` 响应
+/// `resources/list` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListResourcesResult {
-    /// 资源列表
+    /// List of resources
     pub resources: Vec<Resource>,
 }
 
-/// `resources/read` 请求参数
+/// `resources/read` request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadResourceParams {
-    /// 要读取的资源 URI
+    /// URI of the resource to read
     pub uri: String,
 }
 
-/// `resources/read` 响应
+/// `resources/read` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadResourceResult {
-    /// 读取到的资源内容列表
+    /// List of resource contents that were read
     pub contents: Vec<ResourceContent>,
 }
 
-/// 资源提供者:server 注册后,`resources/list` / `resources/read` 才有数据源。
+/// Resource provider: once a server registers, `resources/list` / `resources/read` have a data source.
 ///
-/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+/// When nothing is registered the methods still return `method_not_found` (an honest boundary, no pretending to support it).
 #[async_trait]
 pub trait ResourceProvider: Send + Sync {
-    /// 返回全部资源列表。
+    /// Returns the full list of resources.
     async fn list_resources(&self) -> Result<Vec<Resource>, MCPError>;
-    /// 按 URI 读取资源内容。
+    /// Reads the resource content by URI.
     async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError>;
 }
 

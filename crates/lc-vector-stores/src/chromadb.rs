@@ -1,8 +1,8 @@
 // lc-vector-stores/src/chromadb.rs
-//! ChromaDB 向量存储实现（HTTP API）
+//! ChromaDB vector store implementation (HTTP API)
 //!
-//! 使用 ChromaDB 的 REST API 进行向量存储和检索。
-//! 支持连接远程 ChromaDB 服务（docker run -p 8000:8000 chromadb/chroma）。
+//! Uses ChromaDB's REST API for vector storage and retrieval.
+//! Supports connecting to a remote ChromaDB service (docker run -p 8000:8000 chromadb/chroma).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,16 +11,16 @@ use std::collections::HashMap;
 
 use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 
-/// ChromaDB 配置
+/// ChromaDB configuration
 #[derive(Debug, Clone)]
 pub struct ChromaDBConfig {
-    /// ChromaDB 服务地址，默认为 http://localhost:8000
+    /// ChromaDB service URL, default http://localhost:8000
     pub host: String,
-    /// 集合名称
+    /// Collection name
     pub collection_name: String,
-    /// 向量维度
+    /// Vector dimension
     pub vector_size: usize,
-    /// 集合元数据（可选）
+    /// Collection metadata (optional)
     pub metadata: Option<HashMap<String, String>>,
 }
 
@@ -36,7 +36,7 @@ impl Default for ChromaDBConfig {
 }
 
 impl ChromaDBConfig {
-    /// 创建新的 ChromaDB 配置
+    /// Creates a new ChromaDB configuration
     pub fn new(
         host: impl Into<String>,
         collection_name: impl Into<String>,
@@ -51,7 +51,7 @@ impl ChromaDBConfig {
     }
 }
 
-/// ChromaDB 集合信息（从 API 返回解析）
+/// ChromaDB collection info (parsed from the API response)
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct ChromaCollection {
@@ -61,7 +61,7 @@ struct ChromaCollection {
     metadata: Option<serde_json::Value>,
 }
 
-/// ChromaDB add 请求体
+/// ChromaDB add request body
 #[derive(Debug, Serialize)]
 struct ChromaAddRequest {
     ids: Vec<String>,
@@ -71,19 +71,19 @@ struct ChromaAddRequest {
     metadatas: Option<Vec<HashMap<String, serde_json::Value>>>,
 }
 
-/// ChromaDB query 请求体
+/// ChromaDB query request body
 #[derive(Debug, Serialize)]
 struct ChromaQueryRequest {
     query_embeddings: Vec<Vec<f32>>,
     n_results: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     include: Option<Vec<String>>,
-    /// Chroma `where` 过滤字典(见 [`filter_to_chroma`])
+    /// Chroma `where` filter dict (see [`filter_to_chroma`])
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
     where_filter: Option<serde_json::Value>,
 }
 
-/// ChromaDB query 响应
+/// ChromaDB query response
 #[derive(Debug, Deserialize)]
 struct ChromaQueryResponse {
     ids: Vec<Vec<String>>,
@@ -93,7 +93,7 @@ struct ChromaQueryResponse {
     metadatas: Vec<Vec<Option<HashMap<String, serde_json::Value>>>>,
 }
 
-/// ChromaDB get 响应
+/// ChromaDB get response
 #[derive(Debug, Deserialize)]
 struct ChromaGetResponse {
     ids: Vec<String>,
@@ -103,11 +103,11 @@ struct ChromaGetResponse {
     embeddings: Option<Vec<Vec<f32>>>,
 }
 
-/// ChromaDB 向量存储
+/// ChromaDB vector store
 ///
-/// 通过 HTTP API 连接 ChromaDB 服务。
+/// Connects to a ChromaDB service via HTTP API.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use lc_vector_stores::ChromaDBVectorStore;
 ///
@@ -122,7 +122,7 @@ pub struct ChromaDBVectorStore {
 }
 
 impl ChromaDBVectorStore {
-    /// 创建 ChromaDB 向量存储并自动初始化集合
+    /// Creates a ChromaDB vector store and initializes the collection automatically
     pub async fn new(config: ChromaDBConfig) -> Result<Self, VectorStoreError> {
         let client = reqwest::Client::new();
         let mut store = Self {
@@ -134,9 +134,9 @@ impl ChromaDBVectorStore {
         Ok(store)
     }
 
-    /// 初始化或获取集合
+    /// Initializes or fetches the collection
     async fn init_collection(&mut self) -> Result<(), VectorStoreError> {
-        // 尝试获取已有集合
+        // try to fetch the existing collection
         let url = format!(
             "{}/api/v1/collections/{}",
             self.config.host, self.config.collection_name
@@ -156,7 +156,7 @@ impl ChromaDBVectorStore {
             return Ok(());
         }
 
-        // 集合不存在，创建新集合
+        // collection does not exist, create a new one
         let create_url = format!("{}/api/v1/collections", self.config.host);
         let mut body = json!({
             "name": self.config.collection_name,
@@ -192,14 +192,14 @@ impl ChromaDBVectorStore {
         }
     }
 
-    /// 获取集合 ID
+    /// Gets the collection ID
     fn get_collection_id(&self) -> Result<&str, VectorStoreError> {
         self.collection_id.as_deref().ok_or_else(|| {
             VectorStoreError::StorageError("collection is not initialized".to_string())
         })
     }
 
-    /// 构建集合 API 基础 URL
+    /// Builds the collection API base URL
     fn collection_url(&self, endpoint: &str) -> Result<String, VectorStoreError> {
         let cid = self.get_collection_id()?;
         Ok(format!(
@@ -208,7 +208,7 @@ impl ChromaDBVectorStore {
         ))
     }
 
-    /// 构造 Chroma query 请求体(pure function,便于测试)。
+    /// Builds a Chroma query request body (pure function, convenient for testing).
     fn query_request(
         query_embedding: &[f32],
         k: usize,
@@ -226,7 +226,7 @@ impl ChromaDBVectorStore {
         }
     }
 
-    /// POST `/query` 并解析结果(普通与过滤检索共用)。
+    /// POSTs to `/query` and parses the result (shared by plain and filtered retrieval).
     async fn query_impl(
         &self,
         request: ChromaQueryRequest,
@@ -254,7 +254,7 @@ impl ChromaDBVectorStore {
 
         let mut results = Vec::new();
 
-        // ChromaDB 返回嵌套数组（每个 query 一个结果集）
+        // ChromaDB returns nested arrays (one result set per query)
         if let Some(doc_list) = query_result.documents.into_iter().next() {
             let dist_list = query_result
                 .distances
@@ -270,7 +270,7 @@ impl ChromaDBVectorStore {
 
             for (i, content) in doc_list.into_iter().enumerate() {
                 let score = dist_list.get(i).copied().unwrap_or(0.0);
-                // ChromaDB 返回的是 L2 距离，转换为相似度分数（1 / (1 + dist)）
+                // ChromaDB returns L2 distance; convert to a similarity score (1 / (1 + dist))
                 let similarity = 1.0 / (1.0 + score);
                 let metadata = meta_list
                     .get(i)
@@ -290,7 +290,7 @@ impl ChromaDBVectorStore {
             }
         }
 
-        // 按相似度降序排序
+        // sort by similarity descending
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -362,7 +362,7 @@ impl VectorStore for ChromaDBVectorStore {
         self.query_impl(request).await
     }
 
-    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(Chroma `where` 语法)。
+    /// S3: similarity search with metadata filtering — filtering is delegated to the server (Chroma `where` syntax).
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -508,7 +508,7 @@ impl VectorStore for ChromaDBVectorStore {
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        // 获取所有文档 ID 后批量删除
+        // fetch all document IDs, then delete in bulk
         let get_url = self.collection_url("get")?;
         let body = json!({
             "include": []
@@ -538,7 +538,7 @@ impl VectorStore for ChromaDBVectorStore {
             return Ok(());
         }
 
-        // 批量删除
+        // delete in bulk
         let del_url = self.collection_url("delete")?;
         let del_body = json!({
             "ids": get_result.ids
@@ -564,12 +564,12 @@ impl VectorStore for ChromaDBVectorStore {
     }
 }
 
-/// S3: [`MetadataFilter`] → Chroma `where` 过滤字典。
+/// S3: translates [`MetadataFilter`] → Chroma `where` filter dict.
 ///
-/// 单字段条件翻译成 `{ key: { "$op": value } }`(Chroma v2 支持
-/// `$eq $ne $gt $gte $lt $lte $in $nin`),AND/OR 组合翻译成
-/// `{ "$and": [...] }` / `{ "$or": [...] }`。与 Pinecone 的翻译同构,
-/// 但按后端各自独立维护,语义完全交给服务端执行。
+/// A single-field condition becomes `{ key: { "$op": value } }` (Chroma v2 supports
+/// `$eq $ne $gt $gte $lt $lte $in $nin`); AND/OR combinations become
+/// `{ "$and": [...] }` / `{ "$or": [...] }`. Isomorphic to the Pinecone translation,
+/// but maintained per backend independently; the semantics are fully delegated to the server.
 pub fn filter_to_chroma(filter: &MetadataFilter) -> serde_json::Value {
     fn op_str(op: FilterOp) -> &'static str {
         match op {
@@ -602,7 +602,7 @@ pub fn filter_to_chroma(filter: &MetadataFilter) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    /// S3: 单字段条件 → Chroma `where` 字典。
+    /// S3: single-field condition → Chroma `where` dict.
     #[test]
     fn test_filter_to_chroma_field() {
         assert_eq!(
@@ -615,7 +615,7 @@ mod tests {
         );
     }
 
-    /// S3: AND/OR 组合 → `$and`/`$or` 嵌套。
+    /// S3: AND/OR combination → nested `$and`/`$or`.
     #[test]
     fn test_filter_to_chroma_and_or() {
         let f = MetadataFilter::or(vec![
@@ -639,7 +639,7 @@ mod tests {
         );
     }
 
-    /// S3: 无过滤时 `where_filter` 为 None,不序列化 `where` 字段。
+    /// S3: without a filter, `where_filter` is None and the `where` field is not serialized.
     #[test]
     fn test_query_request_no_filter() {
         let req = ChromaDBVectorStore::query_request(&[1.0, 2.0], 3, None);
@@ -649,7 +649,7 @@ mod tests {
         assert_eq!(v["n_results"], 3);
     }
 
-    /// S3: 有过滤时 `where` 字段序列化为 Chroma 字典。
+    /// S3: with a filter, the `where` field serializes to a Chroma dict.
     #[test]
     fn test_query_request_with_filter() {
         let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");

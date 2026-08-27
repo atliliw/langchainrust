@@ -1,32 +1,32 @@
 // lc-rag/src/retriever.rs
-//! 检索器实现
+//! Retriever implementations
 //!
-//! 提供基于相似度的文档检索功能。
+//! Provides similarity-based document retrieval.
 
 use async_trait::async_trait;
 use lc_embeddings::Embeddings;
 use lc_vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
 use std::sync::Arc;
 
-/// 检索器错误类型
+/// Retriever error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RetrieverError {
-    /// 向量存储错误
+    /// Vector store error
     StoreError(VectorStoreError),
 
-    /// 嵌入错误
+    /// Embedding error
     EmbeddingError(String),
 
-    /// LLM 拆解失败(调用失败 / 输出无法解析)。SelfQuery(S4) 用。
+    /// LLM breakdown failure (call failed / output unparseable). Used by SelfQuery (S4).
     LlmError(String),
 
-    /// 过滤器引用了 `allowed_attributes` 白名单外的字段(SelfQuery)。
-    /// 显式报错,绝不静默丢弃后回落无过滤检索——那会让本该被过滤排除的
-    /// 数据被返回(数据面过曝)。
+    /// The filter references a field outside the `allowed_attributes` whitelist (SelfQuery).
+    /// Errors out explicitly, never silently falls back to unfiltered retrieval — that would
+    /// return data that should have been filtered out (data-plane over-exposure).
     InvalidFilter(String),
 
-    /// 无结果
+    /// No results
     NoResults,
 }
 
@@ -50,41 +50,41 @@ impl From<VectorStoreError> for RetrieverError {
     }
 }
 
-/// 检索器 trait
+/// Retriever trait
 #[async_trait]
 pub trait RetrieverTrait: Send + Sync {
-    /// 检索相关文档
+    /// Retrieves relevant documents
     ///
-    /// # 参数
-    /// * `query` - 查询文本
-    /// * `k` - 返回的文档数量
+    /// # Arguments
+    /// * `query` - the query text
+    /// * `k` - the number of documents to return
     ///
-    /// # 返回
-    /// 相关文档列表
+    /// # Returns
+    /// The list of relevant documents
     async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError>;
 
-    /// 检索相关文档（带分数）
+    /// Retrieves relevant documents (with scores)
     async fn retrieve_with_scores(
         &self,
         query: &str,
         k: usize,
     ) -> Result<Vec<SearchResult>, RetrieverError>;
 
-    /// 添加文档
+    /// Adds documents
     async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError>;
 }
 
-/// 基于相似度的检索器
+/// Similarity-based retriever
 pub struct SimilarityRetriever {
-    /// 向量存储
+    /// Vector store
     store: Arc<dyn VectorStore>,
 
-    /// 嵌入模型
+    /// Embedding model
     embeddings: Arc<dyn Embeddings>,
 }
 
 impl SimilarityRetriever {
-    /// 创建新的相似度检索器
+    /// Creates a new similarity retriever
     pub fn new(store: Arc<dyn VectorStore>, embeddings: Arc<dyn Embeddings>) -> Self {
         Self { store, embeddings }
     }
@@ -102,21 +102,21 @@ impl RetrieverTrait for SimilarityRetriever {
         query: &str,
         k: usize,
     ) -> Result<Vec<SearchResult>, RetrieverError> {
-        // 生成查询向量
+        // Generate the query vector
         let query_embedding = self
             .embeddings
             .embed_query(query)
             .await
             .map_err(|e| RetrieverError::EmbeddingError(e.to_string()))?;
 
-        // 检索相似文档
+        // Retrieve similar documents
         let results = self.store.similarity_search(&query_embedding, k).await?;
 
         Ok(results)
     }
 
     async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
-        // 生成文档嵌入
+        // Generate document embeddings
         let texts: Vec<&str> = documents.iter().map(|d| d.content.as_str()).collect();
         let embeddings = self
             .embeddings
@@ -124,14 +124,14 @@ impl RetrieverTrait for SimilarityRetriever {
             .await
             .map_err(|e| RetrieverError::EmbeddingError(e.to_string()))?;
 
-        // 添加到存储
+        // Add to storage
         self.store.add_documents(documents, embeddings).await?;
 
         Ok(())
     }
 }
 
-/// 简化的 Retriever 类型别名（用于快速使用）
+/// A simplified Retriever type alias (for quick use)
 pub type Retriever = SimilarityRetriever;
 
 #[cfg(test)]
@@ -142,11 +142,11 @@ mod tests {
     use lc_embeddings::MockEmbeddings;
     use lc_vector_stores::InMemoryVectorStore;
 
-    /// P0-1: 验证 BM25 / UnifiedHybrid 均可作为
-    /// `Arc<dyn RetrieverTrait>` 使用,完成 add + retrieve 全流程。
+    /// P0-1: Verifies both BM25 / UnifiedHybrid work as
+    /// `Arc<dyn RetrieverTrait>`, completing the full add + retrieve flow.
     #[tokio::test]
     async fn test_retriever_trait_object_hybrid_retrievers() {
-        // BM25Retriever 作为 trait object
+        // BM25Retriever as a trait object
         let bm25: Arc<dyn RetrieverTrait> = Arc::new(BM25Retriever::new());
         bm25.add_documents(vec![Document::new(
             "Rust is a systems programming language",
@@ -156,7 +156,7 @@ mod tests {
         let results = bm25.retrieve("systems", 1).await.unwrap();
         assert!(!results.is_empty());
 
-        // UnifiedHybridIndex 作为 trait object
+        // UnifiedHybridIndex as a trait object
         let embeddings = Arc::new(MockEmbeddings::new(128));
         let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
         let unified: Arc<dyn RetrieverTrait> = Arc::new(UnifiedHybridIndex::new(
@@ -181,7 +181,7 @@ mod tests {
 
         let retriever = SimilarityRetriever::new(store.clone(), embeddings.clone());
 
-        // 添加文档
+        // Add documents
         let docs = vec![
             Document::new("Rust is a systems programming language"),
             Document::new("Python is a scripting language"),
@@ -191,7 +191,7 @@ mod tests {
         retriever.add_documents(docs).await.unwrap();
         assert_eq!(store.count().await, 3);
 
-        // 检索文档
+        // Retrieve documents
         let results = retriever.retrieve("programming language", 2).await.unwrap();
         assert!(
             !results.is_empty(),
@@ -214,7 +214,7 @@ mod tests {
         let results = retriever.retrieve_with_scores("query", 2).await.unwrap();
         assert_eq!(results.len(), 2);
 
-        // 结果应该包含分数
+        // Results should include scores
         assert!(results[0].score >= -1.0 && results[0].score <= 1.0);
     }
 }

@@ -475,7 +475,7 @@ impl GraphPersistence for FilePersistence {
 }
 
 // ============================================================================
-// MongoDB 持久化实现
+// MongoDB persistence implementation
 // ============================================================================
 
 #[cfg(feature = "mongodb-persistence")]
@@ -487,20 +487,20 @@ mod mongo_impl {
         Client, Collection,
     };
 
-    /// MongoDB配置
+    /// MongoDB configuration
     pub struct MongoConfig {
-        /// MongoDB连接URI (例如: mongodb://localhost:27017 或 mongodb+srv://user:pass@cluster.mongodb.net)
+        /// MongoDB connection URI (e.g. mongodb://localhost:27017 or mongodb+srv://user:pass@cluster.mongodb.net)
         pub uri: String,
 
-        /// 数据库名称
+        /// Database name
         pub database: String,
 
-        /// 集合名称
+        /// Collection name
         pub collection: String,
     }
 
     impl MongoConfig {
-        /// 创建新的MongoDB配置
+        /// Create a new MongoDB configuration
         pub fn new(
             uri: impl Into<String>,
             database: impl Into<String>,
@@ -513,12 +513,12 @@ mod mongo_impl {
             }
         }
 
-        /// 从环境变量创建配置
+        /// Create a configuration from environment variables
         ///
-        /// 环境变量:
-        /// - MONGO_URI: MongoDB连接URI
-        /// - MONGO_DATABASE: 数据库名称 (默认: langgraph)
-        /// - MONGO_COLLECTION: 集合名称 (默认: graph_definitions)
+        /// Environment variables:
+        /// - MONGO_URI: MongoDB connection URI
+        /// - MONGO_DATABASE: database name (default: langgraph)
+        /// - MONGO_COLLECTION: collection name (default: graph_definitions)
         pub fn from_env() -> Result<Self, PersistenceError> {
             Ok(Self {
                 uri: std::env::var("MONGO_URI").map_err(|_| {
@@ -534,7 +534,7 @@ mod mongo_impl {
         }
     }
 
-    /// MongoPersistence - MongoDB图存储实现
+    /// MongoPersistence - MongoDB graph storage implementation
     pub struct MongoPersistence {
         client: Client,
         collection: Collection<Document>,
@@ -543,12 +543,12 @@ mod mongo_impl {
     }
 
     impl MongoPersistence {
-        /// 创建新的MongoDB持久化实例
+        /// Create a new MongoDB persistence instance
         ///
-        /// # 参数
-        /// - config: MongoDB配置
+        /// # Arguments
+        /// - config: MongoDB configuration
         ///
-        /// # 示例
+        /// # Example
         /// ```ignore
         /// let config = MongoConfig::new(
         ///     "mongodb://localhost:27017",
@@ -576,23 +576,23 @@ mod mongo_impl {
             })
         }
 
-        /// 从环境变量创建实例
+        /// Create an instance from environment variables
         pub async fn from_env() -> Result<Self, PersistenceError> {
             let config = MongoConfig::from_env()?;
             Self::new(config).await
         }
 
-        /// 获取MongoDB客户端
+        /// Get the MongoDB client
         pub fn client(&self) -> &Client {
             &self.client
         }
 
-        /// 获取集合名称
+        /// Get the collection name
         pub fn collection_name(&self) -> &str {
             &self.collection_name
         }
 
-        /// 获取数据库名称
+        /// Get the database name
         pub fn database_name(&self) -> &str {
             &self.database_name
         }
@@ -608,7 +608,7 @@ mod mongo_impl {
             let doc = to_document(definition)
                 .map_err(|e| PersistenceError::SerializationError(e.to_string()))?;
 
-            // 使用 upsert 操作：如果存在则更新，不存在则插入
+            // Use an upsert: update if it exists, insert otherwise
             self.collection
                 .update_one(
                     doc! { "_id": id },

@@ -1,11 +1,14 @@
-//! 高层编排器公共 trait(P1-1)
+//! Common trait for high-level orchestrators (P1-1)
 //!
 //! `PlanExecuteAgent` / `DeepResearchAgent` / `CorrectiveRAGAgent` / `AdaptiveRAG`
-//! 此前各写各的 `run()`,签名互不兼容,无法组合、无法进 LCEL。这里统一收敛:
+//! each used to define its own `run()`, with incompatible signatures that could
+//! not be composed or plugged into LCEL. This module unifies them:
 //!
-//! - [`Orchestrator`] 定义 `run_with_context(input, ctx)`,错误统一到 [`AgentError`]。
-//! - [`RunContext`] 携带 `trace_id`(P1-4 可观测性)与跨步骤共享工作区。
-//! - [`crate::adapter::OrchestratorRunnable`] 让编排器能进 LCEL 管道。
+//! - [`Orchestrator`] defines `run_with_context(input, ctx)`, with errors
+//!   unified to [`AgentError`].
+//! - [`RunContext`] carries `trace_id` (P1-4 observability) and a cross-step
+//!   shared workspace.
+//! - [`crate::adapter::OrchestratorRunnable`] lets orchestrators enter LCEL pipelines.
 //!
 //! # Example
 //!
@@ -38,18 +41,20 @@ pub use review::{parse_review_verdict, review_envelope, ReviewOrchestrator, Revi
 pub use sequential::SequentialPipeline;
 pub use task_adapter::{task_adapter, TaskAdapter};
 
-/// 高层编排器公共 trait。
+/// Common trait for high-level orchestrators.
 ///
-/// 关联类型表达各编排器不同的输入/输出(PlanExecute→String,AdaptiveRAG→AdaptiveRAGResult 等),
-/// `run_with_context` 统一签名 + 统一 [`AgentError`],让编排器可组合、可进 LCEL。
+/// Associated types express each orchestrator's different input/output
+/// (PlanExecute→String, AdaptiveRAG→AdaptiveRAGResult, etc.); `run_with_context`
+/// unifies the signature + [`AgentError`], so orchestrators are composable and
+/// can enter LCEL.
 #[async_trait]
 pub trait Orchestrator: Send + Sync {
-    /// 输入类型(通常为 `String` 目标/问题)。
+    /// Input type (usually a `String` objective/question).
     type Input;
-    /// 输出类型。
+    /// Output type.
     type Output;
 
-    /// 携带运行上下文的执行入口。
+    /// Execution entry point carrying the run context.
     async fn run_with_context(
         &self,
         input: Self::Input,
@@ -57,19 +62,19 @@ pub trait Orchestrator: Send + Sync {
     ) -> Result<Self::Output, AgentError>;
 }
 
-/// 编排器运行上下文。
+/// Orchestrator run context.
 ///
-/// `trace_id` 在多 Agent / 跨步骤调用链间传播(P1-4);`shared_state` 提供
-/// 跨步骤共享的 JSON 工作区。
+/// `trace_id` propagates across multi-agent / cross-step call chains (P1-4);
+/// `shared_state` provides a JSON workspace shared across steps.
 #[derive(Debug, Clone)]
 pub struct RunContext {
-    /// 追踪 ID:整条调用链共享,用于日志/审计/指标关联。
+    /// Trace ID: shared across the whole call chain, for log/audit/metric correlation.
     pub trace_id: String,
-    /// 跨步骤共享工作区(可选)。
+    /// Workspace shared across steps (optional).
     pub shared_state: Option<Arc<Mutex<Value>>>,
 }
 
-/// 生成一个轻量 trace_id(时间戳十六进制)。
+/// Generates a lightweight trace_id (hex timestamp).
 pub fn generate_trace_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -80,7 +85,7 @@ pub fn generate_trace_id() -> String {
 }
 
 impl RunContext {
-    /// 创建上下文,指定 `trace_id`。
+    /// Creates a context with the given `trace_id`.
     pub fn new(trace_id: impl Into<String>) -> Self {
         Self {
             trace_id: trace_id.into(),
@@ -88,19 +93,20 @@ impl RunContext {
         }
     }
 
-    /// 创建上下文,自动生成 `trace_id`。
+    /// Creates a context, auto-generating `trace_id`.
     pub fn new_random() -> Self {
         Self::new(generate_trace_id())
     }
 
-    /// 携带共享工作区。
+    /// Carries the shared workspace.
     pub fn with_shared_state(mut self, shared_state: Arc<Mutex<Value>>) -> Self {
         self.shared_state = Some(shared_state);
         self
     }
 
-    /// 从 LCEL [`RunnableConfig`] 提取 `trace_id`(读 `metadata["trace_id"]`),
-    /// 缺失则自动生成。用于把 LCEL 管道的 trace 贯通到编排器。
+    /// Extracts `trace_id` from the LCEL [`RunnableConfig`] (reads
+    /// `metadata["trace_id"]`), generating one if missing. Used to thread the
+    /// LCEL pipeline's trace through to the orchestrator.
     pub fn from_config(config: &RunnableConfig) -> Self {
         let trace_id = config
             .metadata

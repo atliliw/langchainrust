@@ -130,14 +130,15 @@ mod nn;
 pub use nn::{LocalEmbeddings, LocalEmbeddingsBuilder};
 
 // ---------------------------------------------------------------------------
-// 1.0:LocalEmbeddings 降级别名已移除
+// 1.0: the LocalEmbeddings fallback alias has been removed
 // ---------------------------------------------------------------------------
 
-// 1.0 起,无 `local-embeddings` feature 时不再提供 `LocalEmbeddings` 名字(原
-// `BagOfWordsEmbeddings` 降级别名)。使用者被迫显式选边:要么 `BagOfWordsEmbeddings`
-// (词袋哈希),要么开启 feature 用 ONNX 神经嵌入——彻底封掉"以为在用语义向量、
-// 实际是词频"的坑。有 feature 时 `LocalEmbeddings` 为 nn 模块的 ONNX 实现
-// (见上方 `#[cfg(feature = "local-embeddings")] pub use nn::...`)。
+// As of 1.0, without the `local-embeddings` feature the `LocalEmbeddings` name is no longer
+// provided (the old `BagOfWordsEmbeddings` fallback alias). Users must explicitly choose:
+// either `BagOfWordsEmbeddings` (bag-of-words hashing) or enable the feature for ONNX neural
+// embeddings — completely closing the trap of "thinking you use semantic vectors while it is
+// actually word frequency". With the feature, `LocalEmbeddings` is the ONNX implementation in
+// the nn module (see `#[cfg(feature = "local-embeddings")] pub use nn::...` above).
 
 // ---------------------------------------------------------------------------
 // Tests

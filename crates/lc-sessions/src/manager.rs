@@ -1,4 +1,4 @@
-//! Session 管理器 - 创建/获取会话,在会话中对话
+//! Session manager — creates/gets sessions and chats within them
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,33 +11,35 @@ use tokio::sync::Mutex;
 use super::session::Session;
 use super::store::{SessionError, SessionStore};
 
-/// Session 管理器
+/// Session manager
 pub struct SessionManager {
     store: Arc<dyn SessionStore>,
 
-    /// P2-1: 可选记忆组件。挂接后 `chat()` 的 LLM 上下文由记忆提供
-    /// (窗口/摘要压缩后的历史)+ 本轮用户消息,轮后 `save_context` 记录;
-    /// 未挂接时保持原行为(传完整 session 历史)。
+    /// P2-1: optional memory component. When attached, the LLM context for `chat()` comes from
+    /// memory (window/summary-compressed history) plus the current user message; `save_context`
+    /// records after each turn. Without it the original behavior is kept (full session history).
     memory: Option<Arc<Mutex<dyn BaseMemory>>>,
 
-    /// 记忆输入 key(需与记忆实例的 input_key 对齐,默认 `"input"`)。
+    /// Memory input key (must align with the memory instance's input_key; default `"input"`).
     memory_input_key: String,
 
-    /// 记忆输出 key(需与记忆实例的 output_key 对齐,默认 `"output"`)。
+    /// Memory output key (must align with the memory instance's output_key; default `"output"`).
     memory_output_key: String,
 
-    /// Q2: 按 session id 的条纹锁,序列化 `chat`/`clear`/`archive` 的
-    /// get→modify→update 整段操作,避免同一会话并发对话时互相覆盖丢消息。
-    /// 外层 map 的 Mutex 只保护 map 本身,拿到 `Arc<Mutex<()>>` 后立即释放。
+    /// Q2: per-session-id striped lock serializing the whole get→modify→update sequence of
+    /// `chat`/`clear`/`archive`, so concurrent chats on the same session do not overwrite each
+    /// other and lose messages. The outer map's Mutex only guards the map itself; the
+    /// `Arc<Mutex<()>>` is released as soon as it is obtained.
     locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 
-    /// Q3: 可选上下文窗口(消息条数)。`Some(n)` 时未挂记忆的 `chat()` 只把
-    /// 最近 n 条消息喂给 LLM;`None` 保持原行为(完整历史)。
+    /// Q3: optional context window (message count). With `Some(n)`, a `chat()` without memory
+    /// only feeds the most recent n messages to the LLM; `None` keeps the original behavior
+    /// (full history).
     max_context_messages: Option<usize>,
 }
 
 impl SessionManager {
-    /// 使用指定的存储创建一个新的会话管理器
+    /// Creates a new session manager backed by the given store
     pub fn new(store: Arc<dyn SessionStore>) -> Self {
         Self {
             store,
@@ -49,14 +51,15 @@ impl SessionManager {
         }
     }
 
-    /// Q3: 限定未挂记忆时 `chat()` 喂给 LLM 的消息窗口(最近 `n` 条)。
-    /// `n` 为消息条数而非 token 数;不调用则保持完整历史。
+    /// Q3: limits the message window fed to the LLM by `chat()` when no memory is attached
+    /// (the most recent `n` messages). `n` is a message count, not a token count; without
+    /// calling this the full history is kept.
     pub fn with_max_context_messages(mut self, n: usize) -> Self {
         self.max_context_messages = Some(n);
         self
     }
 
-    /// Q2: 获取 session id 对应的条纹锁(不存在则惰性创建)。
+    /// Q2: gets the striped lock for a session id (lazily created if absent).
     async fn session_lock(&self, id: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().await;
         locks
@@ -65,17 +68,18 @@ impl SessionManager {
             .clone()
     }
 
-    /// P2-1: 挂接记忆组件,启用记忆管理的对话上下文。
+    /// P2-1: attaches a memory component to enable memory-managed conversation context.
     ///
-    /// 挂接后 `chat()` 每轮:由记忆提供压缩后的历史 + 本轮用户消息 -> 调 LLM ->
-    /// `save_context` 记录本轮输入输出。记忆实例自定义了 input/output key 时,
-    /// 需用 [`SessionManager::with_memory_keys`] 对齐。
+    /// After attaching, each `chat()` turn: memory provides the compressed history + the current
+    /// user message -> the LLM is called -> `save_context` records this turn's input/output. When
+    /// the memory instance customizes its input/output keys, align them via
+    /// [`SessionManager::with_memory_keys`].
     pub fn with_memory(mut self, memory: Arc<Mutex<dyn BaseMemory>>) -> Self {
         self.memory = Some(memory);
         self
     }
 
-    /// P2-1: 对齐记忆实例的自定义 input/output key(默认 `"input"` / `"output"`)。
+    /// P2-1: aligns the memory instance's custom input/output keys (defaults `"input"` / `"output"`).
     pub fn with_memory_keys(
         mut self,
         input_key: impl Into<String>,
@@ -86,12 +90,12 @@ impl SessionManager {
         self
     }
 
-    /// P2-1: 是否已挂接记忆组件。
+    /// P2-1: whether a memory component is attached.
     pub fn has_memory(&self) -> bool {
         self.memory.is_some()
     }
 
-    /// 创建新会话,返回会话 ID
+    /// Creates a new session, returning its ID
     pub async fn create_session(&self) -> Result<String, SessionError> {
         let id = uuid::Uuid::new_v4().to_string();
         let session = Session::new(id.clone());
@@ -99,7 +103,7 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// 创建带用户 ID 的会话
+    /// Creates a session for a specific user ID
     pub async fn create_session_for(
         &self,
         user_id: impl Into<String>,
@@ -110,12 +114,12 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// 获取会话
+    /// Gets a session
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>, SessionError> {
         self.store.get(id).await
     }
 
-    /// 在会话中对话:追加用户消息 -> 调用 LLM -> 追加 AI 回复 -> 持久化
+    /// Chats within a session: append the user message -> call the LLM -> append the AI reply -> persist
     pub async fn chat<L: BaseChatModel>(
         &self,
         id: &str,
@@ -125,8 +129,8 @@ impl SessionManager {
     where
         L::Error: std::fmt::Display,
     {
-        // Q2: 持有本会话的条纹锁,整段 get→modify→llm→update 互斥,
-        // 并发对话不会读到彼此写入中间的中间态。
+        // Q2: hold this session's striped lock so the whole get→modify→llm→update is mutually
+        // exclusive; concurrent chats never observe each other's in-progress intermediate state.
         let lock = self.session_lock(id).await;
         let _guard = lock.lock().await;
 
@@ -137,7 +141,7 @@ impl SessionManager {
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
         session.add_message(Message::human(&user_message));
 
-        // P2-1: 挂接记忆时,LLM 上下文 = 记忆压缩历史 + 本轮用户消息;未挂接走原逻辑。
+        // P2-1: with memory attached, the LLM context = memory-compressed history + the current user message; without it the original logic runs.
         let response = if let Some(memory) = &self.memory {
             let history_messages = {
                 let mem = memory.lock().await;
@@ -155,8 +159,8 @@ impl SessionManager {
                 .await
                 .map_err(|e| SessionError::Llm(e.to_string()))?
         } else {
-            // Q3: 限定上下文窗口时只取最近 n 条消息(含本轮用户消息),
-            // 未限定则保持完整历史。
+            // Q3: when a context window is set, only the most recent n messages are taken
+            // (including the current user message); otherwise the full history is kept.
             let messages: Vec<Message> = match self.max_context_messages {
                 Some(n) => session.recent_messages(n).into_iter().cloned().collect(),
                 None => session.messages.clone(),
@@ -181,7 +185,7 @@ impl SessionManager {
         Ok(content)
     }
 
-    /// 获取会话历史
+    /// Gets the session history
     pub async fn history(&self, id: &str) -> Result<Vec<Message>, SessionError> {
         let session = self
             .store
@@ -191,9 +195,9 @@ impl SessionManager {
         Ok(session.messages)
     }
 
-    /// 清空会话历史(保留会话)
+    /// Clears the session history (keeps the session)
     pub async fn clear(&self, id: &str) -> Result<(), SessionError> {
-        // Q2: 与 chat 走同一把条纹锁,避免与并发对话交错。
+        // Q2: take the same striped lock as chat to avoid interleaving with concurrent chats.
         let lock = self.session_lock(id).await;
         let _guard = lock.lock().await;
         let mut session = self
@@ -205,7 +209,7 @@ impl SessionManager {
         self.store.update(&session).await
     }
 
-    /// 归档会话
+    /// Archives a session
     pub async fn archive(&self, id: &str) -> Result<(), SessionError> {
         let lock = self.session_lock(id).await;
         let _guard = lock.lock().await;
@@ -218,7 +222,7 @@ impl SessionManager {
         self.store.update(&session).await
     }
 
-    /// 软删除会话(Q4:置为 `Deleted`,记录保留但不再出现在列表中)。
+    /// Soft-deletes a session (Q4: marks it `Deleted`; the record is kept but no longer appears in listings).
     pub async fn delete_session(&self, id: &str) -> Result<(), SessionError> {
         let lock = self.session_lock(id).await;
         let _guard = lock.lock().await;
@@ -231,7 +235,7 @@ impl SessionManager {
         self.store.update(&session).await
     }
 
-    /// 获取用户所有会话
+    /// Gets all sessions of a user
     pub async fn list_by_user(&self, user_id: &str) -> Result<Vec<Session>, SessionError> {
         self.store.list_by_user(user_id).await
     }
@@ -254,7 +258,7 @@ mod tests {
         SessionManager::new(Arc::new(MemorySessionStore::new()))
     }
 
-    // ---- mock LLM:记录收到的消息,返回固定回复 ----
+    // ---- mock LLM: records received messages, returns a fixed reply ----
 
     #[derive(Debug)]
     struct MockSessionLlmError(String);
@@ -350,7 +354,7 @@ mod tests {
         }
     }
 
-    // ---- mock 记忆:返回固定历史文本,记录 save_context ----
+    // ---- mock memory: returns a fixed history text, records save_context ----
 
     #[derive(Clone)]
     struct RecordingMemory {
@@ -486,8 +490,8 @@ mod tests {
         assert_eq!(mgr.memory_output_key, "answer");
     }
 
-    /// P2-1: 挂接记忆后,LLM 上下文 = 记忆历史(system)+ 本轮用户消息,
-    /// 轮后记忆 `save_context` 被调用并记录本轮输入输出。
+    /// P2-1: with memory attached, the LLM context = memory history (system) + the current user
+    /// message; after the turn, memory `save_context` is called and records this turn's I/O.
     #[tokio::test]
     async fn test_chat_with_memory_feeds_history_and_saves() {
         let llm = MockSessionLlm::new("你好,我是 AI");
@@ -498,7 +502,7 @@ mod tests {
         let reply = mgr.chat(&id, &llm, "你好".to_string()).await.unwrap();
         assert_eq!(reply, "你好,我是 AI");
 
-        // LLM 收到的上下文:记忆历史 + 本轮用户消息
+        // LLM context received: memory history + the current user message
         let received = llm.received().await;
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].len(), 2);
@@ -507,13 +511,13 @@ mod tests {
         assert_eq!(received[0][1].message_type, MessageType::Human);
         assert_eq!(received[0][1].content, "你好");
 
-        // 记忆被写入本轮输入输出
+        // memory was written with this turn's input/output
         let saved = rec.lock().await.saved.lock().await.clone();
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0], ("你好".to_string(), "你好,我是 AI".to_string()));
     }
 
-    /// P2-1: 未挂接记忆时走原逻辑 —— LLM 收到完整 session 历史(含本轮用户消息)。
+    /// P2-1: without memory the original logic runs — the LLM receives the full session history (including the current user message).
     #[tokio::test]
     async fn test_chat_without_memory_uses_full_history() {
         let llm = MockSessionLlm::new("回复");
@@ -525,15 +529,16 @@ mod tests {
 
         let received = llm.received().await;
         assert_eq!(received.len(), 2);
-        // 第二轮应携带第一轮的用户+AI 消息
+        // the second round should carry the first round's user + AI messages
         assert_eq!(received[1].len(), 3);
         assert_eq!(received[1][0].content, "第一句");
         assert_eq!(received[1][1].content, "回复");
         assert_eq!(received[1][2].content, "第二句");
     }
 
-    /// Q3: 未挂记忆 + `with_max_context_messages(n)` 时,LLM 只收到最近 n 条消息。
-    /// 第三轮会话历史已满 4 条,窗口 2 只取最近 2 条(上轮 AI + 本轮用户)。
+    /// Q3: without memory + `with_max_context_messages(n)`, the LLM only receives the most
+    /// recent n messages. The third round's history has 4 messages; window 2 takes only the last
+    /// 2 (previous AI + current user).
     #[tokio::test]
     async fn test_chat_respects_context_window() {
         let llm = MockSessionLlm::new("回复");
@@ -546,16 +551,16 @@ mod tests {
 
         let received = llm.received().await;
         assert_eq!(received.len(), 3);
-        // 第一轮:1 条;第二轮:2 条(上轮 AI + 本轮用户)
+        // first round: 1; second round: 2 (previous AI + current user)
         assert_eq!(received[0].len(), 1);
         assert_eq!(received[1].len(), 2);
-        // 第三轮:窗口 2 → 只取最近 2 条,不再携带完整历史
+        // third round: window 2 → only the last 2, no longer carrying the full history
         assert_eq!(received[2].len(), 2);
         assert_eq!(received[2][0].content, "回复");
         assert_eq!(received[2][1].content, "第三句");
     }
 
-    /// Q4: 软删除会话后状态为 Deleted,记录保留但不再出现在用户列表。
+    /// Q4: after soft-deleting a session its status is Deleted; the record is kept but no longer appears in the user's list.
     #[tokio::test]
     async fn test_delete_session() {
         let mgr = manager();
@@ -566,11 +571,11 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Deleted);
         assert!(mgr.list_by_user("u1").await.unwrap().is_empty());
 
-        // 删除不存在的会话 → NotFound
+        // deleting a nonexistent session → NotFound
         assert!(mgr.delete_session("nope").await.is_err());
     }
 
-    // ---- mock 失败的 LLM:验证 LLM 错误被映射为 SessionError::Llm 而非 StoreError ----
+    // ---- mock failing LLM: verifies LLM errors map to SessionError::Llm, not StoreError ----
 
     #[derive(Clone)]
     struct MockFailLlm;
@@ -632,7 +637,7 @@ mod tests {
         }
     }
 
-    /// Q1: LLM 调用失败必须映射为 `SessionError::Llm`,不能伪装成存储错误。
+    /// Q1: an LLM failure must map to `SessionError::Llm`, never masquerade as a storage error.
     #[tokio::test]
     async fn test_chat_maps_llm_error() {
         let llm = MockFailLlm;

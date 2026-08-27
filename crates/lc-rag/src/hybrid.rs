@@ -1,19 +1,20 @@
 // src/retrieval/hybrid.rs
-//! 混合检索模块
+//! Hybrid retrieval module
 //!
-//! 结合 BM25 关键词检索 + 向量语义检索
+//! Combines BM25 keyword retrieval + vector semantic retrieval
 
 use lc_vector_stores::Document;
 use std::collections::HashMap;
 
-/// RRF 融合算法中的 k 参数（默认 60）。
+/// The k parameter in the RRF fusion algorithm (default 60).
 pub const RRF_K: usize = 60;
 
 /// Generate a stable document ID from content hash to avoid collisions (H46).
 ///
-/// P2-3: 用 FNV-1a 64 替代 `DefaultHasher`。`DefaultHasher` 的算法是 std 内部
-/// 实现细节,不保证跨进程/跨版本稳定;FNV-1a 是完全指定的确定性哈希,同一
-/// 内容的 `doc.id` 缺失时融合去重不会漂移。
+/// P2-3: Replaces `DefaultHasher` with FNV-1a 64-bit. `DefaultHasher`'s algorithm is an
+/// internal std implementation detail, not guaranteed stable across processes/versions;
+/// FNV-1a is a fully-specified deterministic hash, so when `doc.id` is missing, fusion
+/// dedup does not drift across processes/versions.
 fn doc_content_hash(doc: &Document) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = fnv::FnvHasher::default();
@@ -21,49 +22,50 @@ fn doc_content_hash(doc: &Document) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// 检索结果（带分数）
+/// Retrieval result (with score)
 #[derive(Debug, Clone)]
 pub struct RetrievedDocument {
-    /// 文档内容
+    /// Document content
     pub document: Document,
-    /// 融合后的分数
+    /// Fused score
     pub score: f64,
-    /// 检索来源（BM25 / 向量 / 混合）
+    /// Retrieval source (BM25 / vector / hybrid)
     pub source: RetrievalSource,
 }
 
-/// 检索来源
+/// Retrieval source
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RetrievalSource {
-    /// 来自 BM25 关键词检索
+    /// From BM25 keyword retrieval
     BM25,
-    /// 来自向量语义检索
+    /// From vector semantic retrieval
     Vector,
-    /// 来自 RRF 融合结果
+    /// From RRF fusion
     Hybrid,
 }
 
-/// 按最小分数过滤检索结果(P1-2)。
+/// Filters retrieval results by a minimum score (P1-2).
 ///
-/// 消除 `score > 0.0` 幽灵阈值在 `unified_hybrid` / `graph_rag::matcher`
-/// 两处的重复实现。`min_score` 在**原始分数尺度**上比较:
-/// 默认 0.0 保持旧行为(只保留正相似度)。余弦相似度范围 [-1,1],
-/// 非归一化嵌入模型下相关文档的余弦可能为负,不同模型可自行调低阈值。
+/// Eliminates the duplicated `score > 0.0` ghost-threshold implementation across
+/// `unified_hybrid` / `graph_rag::matcher`. `min_score` is compared on the **raw score scale**:
+/// the default 0.0 keeps the old behavior (only positive similarities are kept). Cosine
+/// similarity ranges over [-1, 1]; with non-normalized embedding models the cosine of a
+/// relevant document can be negative, so different models may lower the threshold.
 pub fn filter_by_score<T, S: PartialOrd>(scored: Vec<(T, S)>, min_score: S) -> Vec<(T, S)> {
     scored.into_iter().filter(|(_, s)| *s > min_score).collect()
 }
 
-/// RRF 融合算法
+/// RRF fusion algorithm
 ///
-/// 公式: RRF_score(d) = Σ 1/(k + rank(d))
+/// Formula: RRF_score(d) = Σ 1/(k + rank(d))
 ///
-/// 参数:
-/// - bm25_results: BM25 检索结果，按分数降序排列
-/// - vector_results: 向量检索结果，按相似度降序排列
-/// - k: RRF 参数，通常为 60
+/// Arguments:
+/// - bm25_results: BM25 retrieval results, sorted by score descending
+/// - vector_results: vector retrieval results, sorted by similarity descending
+/// - k: the RRF parameter, usually 60
 ///
-/// 返回:
-/// - 融合后的文档列表，按 RRF 分数降序排列
+/// Returns:
+/// - the fused document list, sorted by RRF score descending
 pub fn reciprocal_rank_fusion(
     bm25_results: Vec<Document>,
     vector_results: Vec<Document>,
@@ -71,7 +73,7 @@ pub fn reciprocal_rank_fusion(
 ) -> Vec<RetrievedDocument> {
     let mut rrf_scores: HashMap<String, (f64, Document)> = HashMap::new();
 
-    // BM25 结果处理
+    // Process BM25 results
     for (rank, doc) in bm25_results.iter().enumerate() {
         let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
@@ -84,7 +86,7 @@ pub fn reciprocal_rank_fusion(
             .or_insert((rrf_contribution, doc.clone()));
     }
 
-    // 向量结果处理
+    // Process vector results
     for (rank, doc) in vector_results.iter().enumerate() {
         let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
@@ -97,7 +99,7 @@ pub fn reciprocal_rank_fusion(
             .or_insert((rrf_contribution, doc.clone()));
     }
 
-    // 按 RRF 分数排序
+    // Sort by RRF score
     let mut results: Vec<RetrievedDocument> = rrf_scores
         .into_iter()
         .map(|(_, (score, doc))| RetrievedDocument {
@@ -146,33 +148,34 @@ mod tests {
             );
         }
 
-        // doc1 在两个列表都出现，分数应该最高
+        // doc1 appears in both lists, so its score should be highest
         let first_doc_id = results[0].document.id.clone().unwrap_or_default();
         println!("最高分文档: {}", first_doc_id);
     }
 
-    /// P1-2: 共享 filter_by_score 工具函数——默认 0.0 只保留正相似度,
-    /// 调低阈值可保留负相似度文档(非归一化嵌入模型下相关文档余弦可为负)。
+    /// P1-2: Shares the filter_by_score utility — the default 0.0 keeps only positive
+    /// similarities; lowering the threshold keeps negative-similarity documents (with
+    /// non-normalized embedding models a relevant document's cosine can be negative).
     #[test]
     fn test_filter_by_score() {
         let scored = vec![("a", 0.9_f32), ("b", 0.2), ("c", -0.3), ("d", 0.0)];
 
-        // 默认阈值 0.0: 严格大于才保留(与旧 `score > 0.0` 行为一致)
+        // Default threshold 0.0: keep only strictly-greater scores (matches the old `score > 0.0` behavior)
         let filtered = filter_by_score(scored.clone(), 0.0);
         let ids: Vec<&str> = filtered.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec!["a", "b"]);
 
-        // 调低阈值可保留负相似度
+        // Lowering the threshold keeps negative similarities
         let relaxed = filter_by_score(scored.clone(), -0.5);
         assert_eq!(relaxed.len(), 4);
 
-        // 调高阈值更严格
+        // Raising the threshold is stricter
         let strict = filter_by_score(scored.clone(), 0.5);
         let ids: Vec<&str> = strict.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec!["a"]);
     }
 
-    /// P1-2: filter_by_score 对 f64 分数同样适用。
+    /// P1-2: filter_by_score also works for f64 scores.
     #[test]
     fn test_filter_by_score_f64() {
         let scored = vec![("x", 0.8_f64), ("y", 0.0), ("z", -0.5)];
@@ -181,8 +184,9 @@ mod tests {
         assert_eq!(ids, vec!["x"]);
     }
 
-    /// P2-3: `doc_content_hash` 为确定性哈希——同内容多次调用结果一致,
-    /// 不同内容结果不同。FNV-1a 完全指定,跨进程/跨版本不漂移。
+    /// P2-3: `doc_content_hash` is a deterministic hash — the same content yields the same
+    /// result across calls, different content yields different results. FNV-1a is fully
+    /// specified and does not drift across processes/versions.
     #[test]
     fn test_doc_content_hash_stable() {
         let content = "Rust 系统编程与并发";

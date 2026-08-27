@@ -1,9 +1,11 @@
 // lc-rag/src/bm25/retriever.rs
-//! BM25 检索器
+//! BM25 retriever
 //!
-//! 关键词统计检索(中文英文都行,纯内存)。v0.15.0 起收敛到 `ChunkedBM25Index`:
-//! 文档原文只落在 lc-vector-stores 的 `ChunkedDocumentStoreTrait`,检索结果按
-//! parent 聚合返回(旧自持 `Vec<Document>` 的 `BM25Index` 已删除,消除第二落点)。
+//! Keyword-statistical retrieval (works for both Chinese and English, pure in-memory).
+//! Since v0.15.0 this converges on `ChunkedBM25Index`: document text lives only in
+//! lc-vector-stores' `ChunkedDocumentStoreTrait`, and retrieval results are aggregated by
+//! parent (the old self-held `Vec<Document>` `BM25Index` is gone, eliminating the second
+//! storage location).
 
 use super::chunked::{ChunkedBM25Retriever, ChunkedSearchResult};
 use crate::retriever::{RetrieverError, RetrieverTrait};
@@ -12,21 +14,22 @@ use lc_vector_stores::document_store::{ChunkedDocumentStore, ChunkedDocumentStor
 use lc_vector_stores::{Document, SearchResult, VectorStoreError};
 use std::sync::{Arc, Mutex};
 
-/// 关键词统计检索器。
+/// Keyword-statistical retriever.
 ///
-/// P3-1: 内部持 `ChunkedBM25Retriever`(其索引即 `ChunkedBM25Index`),与
-/// `UnifiedHybridIndex` 共用同一套 store 落点,不再自持文档原文。
+/// P3-1: internally holds a `ChunkedBM25Retriever` (whose index is a `ChunkedBM25Index`),
+/// sharing the same store storage location as `UnifiedHybridIndex` instead of holding the
+/// document text itself.
 pub struct BM25Retriever<S: ChunkedDocumentStoreTrait = ChunkedDocumentStore> {
     retriever: Mutex<ChunkedBM25Retriever<S>>,
 }
 
 impl BM25Retriever<ChunkedDocumentStore> {
-    /// 创建检索器(内部自持一个内存 store,无需外部参数)。
+    /// Creates a retriever (internally holds an in-memory store; no external arguments needed).
     pub fn new() -> Self {
         Self::with_store(Arc::new(ChunkedDocumentStore::new()))
     }
 
-    /// 使用自定义 BM25 参数(k1, b),内部自持内存 store。
+    /// Uses custom BM25 parameters (k1, b), internally holding an in-memory store.
     pub fn with_params(k1: f64, b: f64) -> Self {
         Self {
             retriever: Mutex::new(ChunkedBM25Retriever::with_params(
@@ -39,20 +42,21 @@ impl BM25Retriever<ChunkedDocumentStore> {
 }
 
 impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
-    /// 使用共享 store 创建(与 `UnifiedHybridIndex` 等共用文档落点)。
+    /// Creates with a shared store (sharing the document storage location with `UnifiedHybridIndex` and others).
     pub fn with_store(store: Arc<S>) -> Self {
         Self {
             retriever: Mutex::new(ChunkedBM25Retriever::new(store)),
         }
     }
 
-    /// 添加单篇文档(切块后索引,文档原文进 store)。
+    /// Adds a single document (chunks it, then indexes; the document text goes into the store).
     pub fn add_document(&self, document: Document) -> Result<(), VectorStoreError> {
         let mut retriever = self.retriever.lock().unwrap_or_else(|e| e.into_inner());
         retriever.add_document(document)
     }
 
-    /// 批量添加文档(同步;单篇失败记 error 日志并在末尾汇总失败数,保持原 `()` 签名)。
+    /// Adds documents in batch (sync; per-document failures are logged as errors and counted
+    /// at the end, keeping the original `()` signature).
     pub fn add_documents_sync(&self, documents: Vec<Document>) {
         let total = documents.len();
         let mut failed = 0usize;
@@ -73,7 +77,7 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
         }
     }
 
-    /// 关键词检索,返回 parent 级结果(文档 id 为 parent_id)。
+    /// Keyword retrieval, returning parent-level results (the document id is the parent_id).
     pub fn search(&self, query: &str, k: usize) -> Vec<SearchResult> {
         let mut retriever = self.retriever.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -87,7 +91,7 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
             .collect()
     }
 
-    /// 已索引的 chunk 数(每篇文档至少一个 chunk)。
+    /// The number of indexed chunks (each document contributes at least one chunk).
     pub fn len(&self) -> usize {
         self.retriever
             .lock()
@@ -95,13 +99,13 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
             .len()
     }
 
-    /// 检索器是否为空（尚未索引任何文档）。
+    /// Whether the retriever is empty (no documents indexed yet).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// 清空 BM25 索引。共享 store 时,store 中的文档由调用方自行清空
-    /// (`ChunkedDocumentStoreTrait::clear`),与本检索器无关。
+    /// Clears the BM25 index. With a shared store, the store's documents are cleared by the
+    /// caller (`ChunkedDocumentStoreTrait::clear`), unrelated to this retriever.
     pub fn clear(&self) {
         self.retriever
             .lock()
@@ -110,8 +114,8 @@ impl<S: ChunkedDocumentStoreTrait> BM25Retriever<S> {
     }
 }
 
-/// P0-1: `BM25Retriever` 实现 `RetrieverTrait`,可与其他检索器统一通过
-/// `Arc<dyn RetrieverTrait>` 使用。
+/// P0-1: `BM25Retriever` implements `RetrieverTrait`, so it can be used uniformly with
+/// other retrievers through `Arc<dyn RetrieverTrait>`.
 #[async_trait]
 impl<S: ChunkedDocumentStoreTrait> RetrieverTrait for BM25Retriever<S> {
     async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {

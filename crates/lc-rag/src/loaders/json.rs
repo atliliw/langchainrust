@@ -1,35 +1,35 @@
 // src/retrieval/loaders/json.rs
-//! JSON 文档加载器实现
+//! JSON document loader implementation
 //!
-//! 提供从 JSON 文件加载内容的功能，支持指定字段作为文档内容。
+//! Loads content from JSON files, supporting a designated field as the document content.
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// JSON 文档加载器
+/// JSON document loader
 ///
-/// 支持加载 JSON 文件，可以指定某个字段作为文档内容。
-/// - 对于 JSON 数组，每个元素生成一个文档
-/// - 对于 JSON 对象，整个对象作为一个文档（或指定字段）
+/// Supports loading JSON files, optionally using a specific field as the document content.
+/// - For a JSON array, each element becomes one document
+/// - For a JSON object, the whole object becomes one document (or a specified field)
 pub struct JSONLoader {
-    /// JSON 文件路径
+    /// JSON file path
     pub path: PathBuf,
 
-    /// 作为文档内容的字段名（可选）
-    /// 如果指定，则提取该字段值作为 content
+    /// The field name used as the document content (optional)
+    /// If specified, that field's value is extracted as the content
     pub content_key: Option<String>,
 
-    /// 是否保留原始 JSON 作为元数据
+    /// Whether to keep the raw JSON as metadata
     pub preserve_raw: bool,
 }
 
 impl JSONLoader {
-    /// 创建新的 JSON 加载器
+    /// Creates a new JSON loader
     ///
-    /// # 参数
-    /// * `path` - JSON 文件路径
+    /// # Arguments
+    /// * `path` - the JSON file path
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -38,11 +38,11 @@ impl JSONLoader {
         }
     }
 
-    /// 创建带内容字段的 JSON 加载器
+    /// Creates a JSON loader with a content field
     ///
-    /// # 参数
-    /// * `path` - JSON 文件路径
-    /// * `content_key` - 作为文档内容的字段名
+    /// # Arguments
+    /// * `path` - the JSON file path
+    /// * `content_key` - the field name used as the document content
     pub fn new_with_content_key(path: impl Into<PathBuf>, content_key: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -51,7 +51,7 @@ impl JSONLoader {
         }
     }
 
-    /// 设置是否保留原始 JSON
+    /// Sets whether to keep the raw JSON
     pub fn with_preserve_raw(mut self, preserve: bool) -> Self {
         self.preserve_raw = preserve;
         self

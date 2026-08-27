@@ -1,5 +1,5 @@
 // lc-vector-stores/src/qdrant.rs
-//! Qdrant 向量存储实现
+//! Qdrant vector store implementation
 
 use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 use async_trait::async_trait;
@@ -15,27 +15,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Qdrant 配置
+/// Qdrant configuration
 #[derive(Debug, Clone)]
 pub struct QdrantConfig {
-    /// Qdrant 服务地址
+    /// Qdrant server URL
     pub url: String,
-    /// 集合名称
+    /// Collection name
     pub collection_name: String,
-    /// 向量维度
+    /// Vector dimension
     pub vector_size: usize,
-    /// 距离度量方式
+    /// Distance metric
     pub distance: QdrantDistance,
 }
 
-/// Qdrant 距离度量类型
+/// Qdrant distance metric type
 #[derive(Debug, Clone, Copy)]
 pub enum QdrantDistance {
-    /// 余弦相似度
+    /// Cosine similarity
     Cosine,
-    /// 欧几里得距离
+    /// Euclidean distance
     Euclid,
-    /// 点积
+    /// Dot product
     Dot,
 }
 
@@ -61,7 +61,7 @@ impl Default for QdrantConfig {
 }
 
 impl QdrantConfig {
-    /// 使用服务地址和集合名创建配置,其余字段取默认值。
+    /// Creates a config from a server URL and collection name; remaining fields use defaults.
     pub fn new(url: impl Into<String>, collection_name: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -70,27 +70,27 @@ impl QdrantConfig {
         }
     }
 
-    /// 设置向量维度。
+    /// Sets the vector dimension.
     pub fn with_vector_size(mut self, size: usize) -> Self {
         self.vector_size = size;
         self
     }
 
-    /// 设置距离度量方式。
+    /// Sets the distance metric.
     pub fn with_distance(mut self, distance: QdrantDistance) -> Self {
         self.distance = distance;
         self
     }
 }
 
-/// Qdrant 向量存储
+/// Qdrant vector store
 pub struct QdrantVectorStore {
     client: Arc<Qdrant>,
     config: QdrantConfig,
 }
 
 impl QdrantVectorStore {
-    /// 根据配置连接 Qdrant,若集合不存在则自动创建。
+    /// Connects to Qdrant per the config, auto-creating the collection if it does not exist.
     pub async fn new(config: QdrantConfig) -> Result<Self, VectorStoreError> {
         let client = Qdrant::from_url(&config.url).build().map_err(|e| {
             VectorStoreError::ConnectionError(format!("failed to connect to Qdrant: {}", e))
@@ -124,7 +124,7 @@ impl QdrantVectorStore {
         Ok(Self { client, config })
     }
 
-    /// 从环境变量 `QDRANT_URL` 和 `QDRANT_COLLECTION` 读取配置创建存储。
+    /// Creates a store from the `QDRANT_URL` and `QDRANT_COLLECTION` environment variables.
     pub async fn from_env() -> Result<Self, VectorStoreError> {
         let url =
             std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string());
@@ -134,7 +134,7 @@ impl QdrantVectorStore {
         Self::new(QdrantConfig::new(url, collection_name)).await
     }
 
-    /// 按 metadata 键值匹配删除点,返回实际删除数量。
+    /// Deletes points matching a metadata key-value pair, returning the actual deleted count.
     pub async fn delete_by_metadata(
         &self,
         key: &str,
@@ -142,8 +142,8 @@ impl QdrantVectorStore {
     ) -> Result<usize, VectorStoreError> {
         let filter = Filter::must([Condition::matches(key, value.to_string())]);
 
-        // Q4: 先按 metadata 过滤统计匹配点,再删除,返回真实删除数。
-        // 旧实现删完直接 Ok(0) —— 无论删除是否生效,上层都误以为"没删任何数据"。
+        // Q4: count matching points by metadata first, then delete, returning the true deleted count.
+        // the old implementation returned Ok(0) after deleting — callers wrongly assumed "nothing was deleted".
         let total = self.count().await as u64;
         let matched = self
             .client
@@ -181,10 +181,10 @@ impl QdrantVectorStore {
         Ok(deleted)
     }
 
-    /// 构造相似度查询的 builder,可选附加 metadata 过滤(S3)。
+    /// Builds the similarity-query builder, optionally attaching a metadata filter (S3).
     ///
-    /// 普通检索与过滤检索共用同一套结果解析,这里只负责把 [`MetadataFilter`]
-    /// 翻译成 Qdrant payload `Filter` 挂到 builder 上。
+    /// Plain and filtered retrieval share the same result parsing; this only translates
+    /// [`MetadataFilter`] into a Qdrant payload `Filter` attached to the builder.
     fn build_query_builder(
         &self,
         query_embedding: &[f32],
@@ -211,7 +211,7 @@ impl QdrantVectorStore {
         Ok(builder)
     }
 
-    /// 执行查询并解析 payload → [`SearchResult`](普通与过滤检索共用)。
+    /// Runs the query and parses the payload → [`SearchResult`] (shared by plain and filtered retrieval).
     async fn search_impl(
         &self,
         builder: QueryPointsBuilder,
@@ -265,14 +265,15 @@ impl QdrantVectorStore {
 }
 
 // ============================================================================
-// S3: MetadataFilter → Qdrant payload Filter 翻译
+// S3: MetadataFilter → Qdrant payload Filter translation
 // ============================================================================
 
-/// 单个标量值的匹配条件:字符串/整数/布尔直接走 `Match`,其余返回
-/// [`UnsupportedFilter`](VectorStoreError::UnsupportedFilter)。
+/// Match condition for a single scalar value: strings/integers/booleans go through `Match`
+/// directly, anything else returns [`UnsupportedFilter`](VectorStoreError::UnsupportedFilter).
 ///
-/// Qdrant 的 `Match` 只支持整数精确匹配(无浮点);整数形式的浮点(如 `2020.0`)
-/// 归一化到 i64,真正的小数无法精确表达,如实报错。
+/// Qdrant's `Match` only supports integer exact matching (no floats); floats with an integral
+/// value (e.g. `2020.0`) are normalized to i64, and true decimals cannot be expressed exactly,
+/// so they error out honestly.
 fn match_condition(key: &str, value: &Value) -> Result<Condition, VectorStoreError> {
     match value {
         Value::String(s) => Ok(Condition::matches(key, s.clone())),
@@ -294,11 +295,11 @@ fn match_condition(key: &str, value: &Value) -> Result<Condition, VectorStoreErr
     }
 }
 
-/// 单字段条件 → Qdrant `Condition`。
+/// Single-field condition → Qdrant `Condition`.
 ///
-/// - `Eq` → `must` 匹配;`Ne` → `must_not` 匹配。
-/// - `Gt/Gte/Lt/Lte` → 数值区间 [`Condition::range`]。
-/// - `In` → `should` 一组匹配(任一命中);`Nin` → `must_not` 一组匹配(全部排除)。
+/// - `Eq` → a `must` match; `Ne` → a `must_not` match.
+/// - `Gt/Gte/Lt/Lte` → numeric range [`Condition::range`].
+/// - `In` → a `should` set of matches (any hit); `Nin` → a `must_not` set (all excluded).
 fn field_to_condition(
     key: &str,
     op: FilterOp,
@@ -332,7 +333,7 @@ fn field_to_condition(
                     op
                 ))
             })?;
-            // Qdrant 的空 should 视为恒真,无法表达"恒假"的空 In;显式拒绝。
+            // Qdrant treats an empty should as always-true, so an empty In ("always false") cannot be expressed; reject explicitly.
             if set.is_empty() && op == FilterOp::In {
                 return Err(VectorStoreError::UnsupportedFilter(
                     "Qdrant In condition with an empty array cannot be expressed".to_string(),
@@ -349,11 +350,12 @@ fn field_to_condition(
     }
 }
 
-/// [`MetadataFilter`] 子树 → 单个 `Condition`(And/Or 用嵌套 Filter 表达)。
+/// [`MetadataFilter`] subtree → a single `Condition` (And/Or expressed as nested Filters).
 ///
-/// Qdrant 的 `Condition` 原生支持 `Filter` 变体(`From<Filter> for Condition`),
-/// 因此任意布尔嵌套都能正确落到底层 payload filter,而不是简单地把 should 向量
-/// 拼到顶层(那会在 AND(OR, OR) 场景丢语义)。
+/// Qdrant's `Condition` natively supports a `Filter` variant (`From<Filter> for Condition`),
+/// so arbitrary boolean nesting lands correctly in the underlying payload filter, rather than
+/// simply concatenating a should vector at the top level (which would lose semantics in
+/// AND(OR, OR) scenarios).
 fn to_condition(filter: &MetadataFilter) -> Result<Condition, VectorStoreError> {
     match filter {
         MetadataFilter::Field { key, op, value } => field_to_condition(key, *op, value),
@@ -368,9 +370,10 @@ fn to_condition(filter: &MetadataFilter) -> Result<Condition, VectorStoreError> 
     }
 }
 
-/// [`MetadataFilter`] → Qdrant payload `Filter`。
+/// [`MetadataFilter`] → Qdrant payload `Filter`.
 ///
-/// 顶层统一用 `must` 包裹(空 `And` 恒真、单条件直接命中、`Or` 通过嵌套 should)。
+/// The top level is always wrapped in `must` (an empty `And` is always true, a single condition
+/// matches directly, `Or` goes through a nested should).
 pub fn filter_to_qdrant(filter: &MetadataFilter) -> Result<Filter, VectorStoreError> {
     Ok(Filter::must([to_condition(filter)?]))
 }
@@ -408,13 +411,13 @@ impl VectorStore for QdrantVectorStore {
         for (doc, embedding) in documents.into_iter().zip(embeddings) {
             let user_id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
 
-            // Qdrant PointId 只接受 UUID 或数字，所以生成内部 UUID
+            // Qdrant PointId only accepts a UUID or a number, so generate an internal UUID
             let internal_uuid = Uuid::new_v4();
             let point_id = PointId::from(internal_uuid.to_string());
 
             let mut payload = Payload::new();
             payload.insert("content", doc.content.clone());
-            payload.insert("doc_id", user_id.clone()); // 用户 ID 存在 payload 中
+            payload.insert("doc_id", user_id.clone()); // the user ID is stored in the payload
 
             for (key, value) in &doc.metadata {
                 payload.insert(key.clone(), value.clone());
@@ -447,7 +450,7 @@ impl VectorStore for QdrantVectorStore {
         self.search_impl(builder).await
     }
 
-    /// S3: 带元数据过滤的相似度检索 —— 过滤交给服务端(payload filter)。
+    /// S3: similarity search with metadata filtering — filtering is delegated to the server (payload filter).
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -611,7 +614,7 @@ mod tests {
         assert!(matches!(config.distance, QdrantDistance::Euclid));
     }
 
-    /// S3: 单字段 Eq → must 匹配条件。
+    /// S3: single-field Eq → must match condition.
     #[test]
     fn test_filter_to_qdrant_eq() {
         let f = filter_to_qdrant(&MetadataFilter::field("lang", FilterOp::Eq, "rust")).unwrap();
@@ -619,7 +622,7 @@ mod tests {
         assert_eq!(f, expected);
     }
 
-    /// S3: 整数形式的浮点归一化到 i64;Ne → must_not。
+    /// S3: integral floats normalized to i64; Ne → must_not.
     #[test]
     fn test_filter_to_qdrant_ne_number() {
         let f = filter_to_qdrant(&MetadataFilter::field("year", FilterOp::Ne, 2020.0)).unwrap();
@@ -629,7 +632,7 @@ mod tests {
         assert_eq!(f, expected);
     }
 
-    /// S3: Gt/Gte/Lt/Lte → 数值区间。
+    /// S3: Gt/Gte/Lt/Lte → numeric range.
     #[test]
     fn test_filter_to_qdrant_range() {
         let f = filter_to_qdrant(&MetadataFilter::field("year", FilterOp::Gte, 2020)).unwrap();
@@ -643,7 +646,7 @@ mod tests {
         assert_eq!(f, expected);
     }
 
-    /// S3: In → should 一组匹配;Nin → must_not 一组匹配。
+    /// S3: In → a should set of matches; Nin → a must_not set.
     #[test]
     fn test_filter_to_qdrant_in_nin() {
         let f =
@@ -662,7 +665,7 @@ mod tests {
         assert_eq!(f, expected);
     }
 
-    /// S3: AND/OR 组合 → 嵌套 Filter 条件(而非拍平,保住 AND(OR,OR) 语义)。
+    /// S3: AND/OR combination → nested Filter conditions (not flattened, preserving AND(OR,OR) semantics).
     #[test]
     fn test_filter_to_qdrant_and_or() {
         let f = MetadataFilter::and(vec![
@@ -691,24 +694,24 @@ mod tests {
         assert_eq!(filter_to_qdrant(&f).unwrap(), expected);
     }
 
-    /// S3: 无法表达的构造如实报 UnsupportedFilter。
+    /// S3: inexpressible constructs honestly report UnsupportedFilter.
     #[test]
     fn test_filter_to_qdrant_unsupported() {
-        // Qdrant Match 不支持浮点精确匹配。
+        // Qdrant Match does not support float exact matching.
         let float_eq = filter_to_qdrant(&MetadataFilter::field("score", FilterOp::Eq, 0.5));
         assert!(matches!(
             float_eq,
             Err(VectorStoreError::UnsupportedFilter(_))
         ));
 
-        // 区间条件要求数值。
+        // range conditions require a numeric value.
         let range_on_str = filter_to_qdrant(&MetadataFilter::field("year", FilterOp::Gt, "abc"));
         assert!(matches!(
             range_on_str,
             Err(VectorStoreError::UnsupportedFilter(_))
         ));
 
-        // 空 In 无法表达(Qdrant 空 should 恒真)。
+        // an empty In cannot be expressed (Qdrant treats an empty should as always-true).
         let empty_in = filter_to_qdrant(&MetadataFilter::field(
             "tag",
             FilterOp::In,

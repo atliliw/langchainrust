@@ -1,5 +1,5 @@
 // src/language_models/providers/qwen.rs
-//! Alibaba Qwen (通义千问) API 实现 (OpenAI 兼容)
+//! Alibaba Qwen API implementation (OpenAI-compatible)
 
 use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
@@ -15,20 +15,20 @@ use serde::de::DeserializeOwned;
 use std::env;
 use std::pin::Pin;
 
-/// Qwen API 端点 (DashScope)
+/// Qwen API endpoint (DashScope)
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
-/// Qwen 模型列表
+/// Qwen model list
 pub const QWEN_MODELS: [&str; 6] = [
-    "qwen-turbo",           // 快速版
-    "qwen-plus",            // Plus 版本
-    "qwen-max",             // Max 版本
-    "qwen-max-longcontext", // 长文本
-    "qwen2.5-72b-instruct", // Qwen2.5 开源版
-    "qwen-coder-plus",      // 代码专用
+    "qwen-turbo",           // fast tier
+    "qwen-plus",            // Plus version
+    "qwen-max",             // Max version
+    "qwen-max-longcontext", // long-context
+    "qwen2.5-72b-instruct", // Qwen2.5 open-source
+    "qwen-coder-plus",      // code-specialized
 ];
 
-/// Qwen 配置
+/// Qwen config
 #[derive(Debug, Clone)]
 pub struct QwenConfig {
     /// Qwen API key.
@@ -111,7 +111,7 @@ impl QwenConfig {
         self
     }
 
-    /// 转换为 OpenAI 配置 (复用 OpenAI 实现)
+    /// Converts into an OpenAI config (reuses the OpenAI implementation)
     pub fn into_openai_config(self) -> OpenAIConfig {
         OpenAIConfig {
             api_key: self.api_key,
@@ -130,7 +130,7 @@ impl QwenConfig {
     }
 }
 
-/// Qwen 聊天客户端
+/// Qwen chat client
 #[derive(Clone)]
 pub struct QwenChat {
     inner: OpenAIChat,

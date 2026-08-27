@@ -184,7 +184,7 @@ async fn test_judge_eval_parse_error() {
     assert!(matches!(err, EvalError::ParseError(_)));
 }
 
-/// P0-1: 支持 bind_tools 的模型走结构化输出(score 工具),不再依赖文本解析。
+/// P0-1: models supporting bind_tools use structured output (the score tool), no longer relying on text parsing.
 #[tokio::test]
 async fn test_judge_eval_structured_score() {
     use crate::test_support::ToolJudge;
@@ -195,7 +195,7 @@ async fn test_judge_eval_structured_score() {
     assert!((s.value - 0.8).abs() < 1e-9);
 }
 
-/// P0-1: 结构化 score 越界(12 > max 10)应被 clamp 到 1.0,而非文本解析错乱。
+/// P0-1: an out-of-range structured score (12 > max 10) should be clamped to 1.0 rather than misparsed as text.
 #[tokio::test]
 async fn test_judge_eval_structured_score_clamped() {
     use crate::test_support::ToolJudge;
@@ -210,12 +210,12 @@ fn test_judge_name() {
     assert_eq!(judge.name(), "llm_as_judge");
 }
 
-/// P1-1: PairwiseJudge 作为 `PairwiseEvaluator` 进 EvalRunner 统一报告。
+/// P1-1: PairwiseJudge runs as a `PairwiseEvaluator` in EvalRunner with a unified report.
 #[tokio::test]
 async fn test_runner_with_pairwise_evaluator() {
     use crate::test_support::ToolJudge;
-    // compare 内部 swap 跑两次:例 0 回复 ["a","b"] → AWins(1.0);
-    // 例 1 回复 ["tie","*"] → Tie(0.5),均值 0.75。
+    // compare internally swaps and runs twice: example 0 replies ["a","b"] -> AWins (1.0);
+    // example 1 replies ["tie","*"] -> Tie (0.5), mean 0.75.
     let judge = PairwiseJudge::new(ToolJudge::sequence(vec![
         r#"{"verdict": "a", "reason": "预测更好"}"#.into(),
         r#"{"verdict": "b", "reason": "交换后仍预测更好"}"#.into(),
@@ -228,13 +228,13 @@ async fn test_runner_with_pairwise_evaluator() {
     let s = report.summary.get("pairwise").unwrap();
     assert_eq!(s.count, 2);
     assert!((s.mean - 0.75).abs() < 1e-9);
-    // 成对分数进 per_example,带原文便于追溯
+    // pairwise scores go into per_example with the original text for traceability
     assert_eq!(report.per_example[0].input, "q1");
     assert_eq!(report.per_example[0].prediction, "P");
     assert_eq!(report.per_example[0].reference, "R1");
 }
 
-/// P1-3: 单条 predict 失败只记 failures,其它样例照常出结果。
+/// P1-3: a single predict failure is recorded in failures only; other examples still produce results.
 #[tokio::test]
 async fn test_runner_per_item_predict_failure() {
     struct FlakyPredictor;
@@ -251,7 +251,7 @@ async fn test_runner_per_item_predict_failure() {
     let runner = EvalRunner::new(vec![Box::new(ExactMatch)]);
     let dataset = Dataset::new(vec![Example::new("good", "ok"), Example::new("bad", "ok")]);
     let report = runner.run(&dataset, &FlakyPredictor).await.unwrap();
-    assert_eq!(report.per_example.len(), 1); // 只算成功那条
+    assert_eq!(report.per_example.len(), 1); // only the successful one is counted
     assert_eq!(report.failures.len(), 1);
     assert_eq!(report.failures[0].index, 1);
     assert_eq!(report.failures[0].stage, "predict");
@@ -260,7 +260,7 @@ async fn test_runner_per_item_predict_failure() {
     assert!((s.mean - 1.0).abs() < 1e-9);
 }
 
-/// P1-3: 某评测器打分失败只记 failures,其它评测器照常出分。
+/// P1-3: one evaluator scoring failure is recorded in failures only; other evaluators still score.
 #[tokio::test]
 async fn test_runner_evaluator_failure_is_tolerated() {
     struct FailingEvaluator;
@@ -283,7 +283,7 @@ async fn test_runner_evaluator_failure_is_tolerated() {
     assert!(!report.summary.contains_key("failing"));
 }
 
-/// P1-4: Report 携带原文并可反序列化(落盘后二次分析)。
+/// P1-4: Report carries the original text and can be deserialized (for post-hoc analysis after persisting).
 #[tokio::test]
 async fn test_report_serde_roundtrip() {
     let runner = EvalRunner::new(vec![Box::new(ExactMatch)]);

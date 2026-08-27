@@ -1,55 +1,142 @@
 // lc-agents/src/executor/budget.rs
-//! 预算门(§4.2):`BudgetConfig` 硬上限配置 + `BudgetExceeded` 超限详情。
+//! Budget gates (§4.2): `BudgetConfig` hard-limit configuration + `BudgetExceeded`
+//! over-limit details + three gate-check functions (shared by the invoke / stream paths).
 //!
-//! `AgentExecutor` 控制循环默认全关(两个字段均为 `None`),存量行为不变;
-//! 通过 `.with_budget(BudgetConfig { .. })` 开启后,任一上限被触发即返回
-//! [`super::AgentError::BudgetExceeded`],调用方可捕获该错误区分"预算截停"
-//! 与"模型未收敛"。
+//! The `AgentExecutor` control loop is all-off by default (`None` field = unlimited) and
+//! existing behavior is unchanged; once enabled via `.with_budget(BudgetConfig { .. })`,
+//! hitting any limit returns [`super::AgentError::BudgetExceeded`], letting the caller
+//! distinguish a budget stop from the model not converging. The gate functions are called
+//! with the same semantics in `run_agent_loop_from` (invoke) and `stream`, so the two
+//! paths cannot diverge.
 
-use std::time::Duration;
+use super::AgentError;
+use crate::metrics::AgentMetrics;
+use std::time::{Duration, Instant};
 
-/// Agent 控制循环的硬预算。`None` 字段 = 该项不限。
+/// Hard budget for the agent control loop. A `None` field means that item is unlimited.
 #[derive(Debug, Clone, Default)]
 pub struct BudgetConfig {
-    /// 累计工具调用次数上限(含并行,超过即停)。
+    /// Cumulative tool-call cap (parallel calls included; stops when exceeded).
     pub max_tool_calls: Option<usize>,
-    /// 累计 LLM 输出 token 上限(读 `AgentMetrics.total_tokens`;agent 不上报
-    /// token 时该项自然不生效)。
+    /// Cumulative LLM output-token cap (reads `AgentMetrics.total_tokens`; has no effect
+    /// when the agent does not report tokens).
     pub max_tokens: Option<usize>,
-    /// 循环总时长上限(从 `run_agent_loop` 起表)。
+    /// Loop wall-clock cap (timed from `run_agent_loop`).
     pub max_duration: Option<Duration>,
-    /// 迭代次数上限(收紧 `AgentExecutor::max_iterations`;超出返回错误而非
-    /// 走到迭代上限的占位返回路径)。
+    /// Iteration cap (tightens `AgentExecutor::max_iterations`; hitting it returns an error
+    /// instead of the placeholder return path used at the iteration limit).
     pub max_iterations: Option<usize>,
 }
 
-/// 预算超限详情。
+/// Details of a budget over-limit.
 #[derive(Debug, Clone)]
 pub enum BudgetExceeded {
-    /// 累计工具调用次数超限。
+    /// Cumulative tool-call count exceeded.
     ToolCalls {
-        /// 配置的上限。
+        /// Configured limit.
         limit: usize,
-        /// 触发时的实际累计次数。
+        /// Actual cumulative count at trigger time.
         actual: usize,
     },
-    /// 累计 LLM 输出 token 超限。
+    /// Cumulative LLM output-token count exceeded.
     Tokens {
-        /// 配置的上限。
+        /// Configured limit.
         limit: usize,
-        /// 触发时的实际累计 token。
+        /// Actual cumulative tokens at trigger time.
         actual: usize,
     },
-    /// 循环总时长超限。
+    /// Loop wall-clock duration exceeded.
     Duration {
-        /// 配置的上限。
+        /// Configured limit.
         limit: Duration,
-        /// 触发时的实际已用时长。
+        /// Actual elapsed time at trigger time.
         elapsed: Duration,
     },
-    /// 迭代次数超限。
+    /// Iteration count exceeded.
     Iterations {
-        /// 生效的上限(已与 `AgentExecutor::max_iterations` 取小)。
+        /// Effective limit (already `min`'d with `AgentExecutor::max_iterations`).
         limit: usize,
     },
+}
+
+/// Budget gate (§4.2): iteration-level check (iteration count + wall-clock). Returns an
+/// error when a limit is exceeded.
+///
+/// `max_iterations` uses `min(self.max_iterations, budget.max_iterations)` as the
+/// effective limit — when the budget is tighter than the default it hard-stops on
+/// exceeding; when looser, `max_iterations` backs it up without changing the original
+/// placeholder return path. Shared by invoke / stream.
+pub(crate) fn budget_iteration_gate(
+    budget: Option<&BudgetConfig>,
+    max_iterations: usize,
+    iteration: usize,
+    loop_start: Instant,
+) -> Option<AgentError> {
+    let budget = budget?;
+    if let Some(limit) = budget.max_iterations {
+        let effective = limit.min(max_iterations);
+        if iteration >= effective {
+            return Some(AgentError::BudgetExceeded(BudgetExceeded::Iterations {
+                limit: effective,
+            }));
+        }
+    }
+    if let Some(limit) = budget.max_duration {
+        let elapsed = loop_start.elapsed();
+        if elapsed >= limit {
+            return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
+                limit,
+                elapsed,
+            }));
+        }
+    }
+    None
+}
+
+/// Budget gate (§4.2): cumulative-token check after an LLM call. No effect when the
+/// agent does not report tokens.
+pub(crate) fn budget_token_gate(
+    budget: Option<&BudgetConfig>,
+    metrics: &AgentMetrics,
+) -> Option<AgentError> {
+    let budget = budget?;
+    let limit = budget.max_tokens?;
+    let actual = metrics.total_tokens.unwrap_or(0);
+    if actual >= limit {
+        return Some(AgentError::BudgetExceeded(BudgetExceeded::Tokens {
+            limit,
+            actual,
+        }));
+    }
+    None
+}
+
+/// Budget gate (§4.2): checks cumulative call count and wall-clock before a tool runs.
+///
+/// `metrics.tool_calls` is already incremented, so the check uses `> limit` — allowing
+/// exactly `limit` tool executions, with the `limit + 1`-th triggering the hard stop.
+pub(crate) fn budget_tool_gate(
+    budget: Option<&BudgetConfig>,
+    metrics: &AgentMetrics,
+    loop_start: Instant,
+) -> Option<AgentError> {
+    let budget = budget?;
+    if let Some(limit) = budget.max_tool_calls {
+        if metrics.tool_calls > limit {
+            return Some(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
+                limit,
+                actual: metrics.tool_calls,
+            }));
+        }
+    }
+    if let Some(limit) = budget.max_duration {
+        let elapsed = loop_start.elapsed();
+        if elapsed >= limit {
+            return Some(AgentError::BudgetExceeded(BudgetExceeded::Duration {
+                limit,
+                elapsed,
+            }));
+        }
+    }
+    None
 }

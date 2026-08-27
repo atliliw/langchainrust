@@ -83,7 +83,8 @@ pub type ChainStream = Pin<Box<dyn Stream<Item = Result<StreamToken, ChainError>
 /// String-form history is wrapped as a `System` message, matching the convention
 /// used by `ConversationSummaryMemory` (summary.rs wraps its buffer as System).
 pub(crate) fn variables_to_messages(vars: &HashMap<String, Value>) -> Vec<Message> {
-    // P2-1: 统一收敛到 lc-memory 的公共转换,避免两处实现漂移。
+    // P2-1: converge on the shared converter in lc-memory to avoid the two
+    // implementations drifting apart.
     lc_memory::memory_variables_to_messages(vars)
 }
 

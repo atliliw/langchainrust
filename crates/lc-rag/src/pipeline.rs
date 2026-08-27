@@ -1,8 +1,8 @@
 // lc-rag/src/pipeline.rs
-//! RAGPipeline & RAGPipelineBuilder — 一行搞定 RAG 管线
+//! RAGPipeline & RAGPipelineBuilder — a complete RAG pipeline in one line
 //!
-//! 提供流畅的 Builder API，将 LLM + Embeddings + VectorStore + Retriever
-//! 组装成完整的 RAG 管线。
+//! Provides a fluent Builder API that assembles LLM + Embeddings + VectorStore + Retriever
+//! into a complete RAG pipeline.
 //!
 //! # Example
 //!
@@ -27,20 +27,20 @@ use crate::retriever::{RetrieverError, RetrieverTrait, SimilarityRetriever};
 
 use std::sync::Arc;
 
-/// RAG Pipeline — 切分 + 嵌入 + 存储 + 检索 + 生成
+/// RAG Pipeline — chunking + embedding + storage + retrieval + generation
 ///
-/// 将 LLM 与一个 `RetrieverTrait` 实现(BM25、向量相似度、混合检索等)组装成
-/// 完整的 RAG 管线，提供 `index_documents()`、`query()`、`query_with_sources()`
-/// 三个核心方法。
+/// Assembles an LLM with a `RetrieverTrait` implementation (BM25, vector similarity,
+/// hybrid retrieval, etc.) into a complete RAG pipeline, exposing three core methods:
+/// `index_documents()`, `query()`, `query_with_sources()`.
 ///
-/// P0-2: 检索路径收敛到 `Arc<dyn RetrieverTrait>`,不再直接依赖
-/// `Embeddings + VectorStore`,可无缝切换任意检索器。
+/// P0-2: The retrieval path converges on `Arc<dyn RetrieverTrait>` instead of depending
+/// directly on `Embeddings + VectorStore`, so any retriever can be swapped in seamlessly.
 pub struct RAGPipeline {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
     retriever: Arc<dyn RetrieverTrait>,
-    /// 检索文档数量
+    /// Number of documents to retrieve
     retrieve_k: usize,
-    /// 系统提示词
+    /// System prompt
     system_prompt: String,
 }
 
@@ -55,31 +55,32 @@ impl std::fmt::Debug for RAGPipeline {
 }
 
 impl RAGPipeline {
-    /// 索引文档
+    /// Indexes documents
     ///
-    /// P0-2: 委托给 `RetrieverTrait::add_documents`(嵌入 + 存储由检索器内部完成)。
+    /// P0-2: Delegates to `RetrieverTrait::add_documents` (embedding + storage are handled
+    /// internally by the retriever).
     pub async fn index_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
         self.retriever.add_documents(documents).await
     }
 
-    /// 查询：检索 + 生成回答
+    /// Query: retrieve + generate an answer
     ///
-    /// 1. 将问题嵌入向量
-    /// 2. 从 VectorStore 检索相似文档
-    /// 3. 将检索结果作为上下文，让 LLM 生成回答
+    /// 1. Embed the question
+    /// 2. Retrieve similar documents from the VectorStore
+    /// 3. Use the retrieved results as context and let the LLM generate the answer
     pub async fn query(&self, question: &str) -> Result<String, RetrieverError> {
         let result = self.query_with_sources(question).await?;
         Ok(result.answer)
     }
 
-    /// 查询并返回来源文档
+    /// Queries and returns the source documents
     ///
-    /// 返回生成的答案和检索到的源文档列表。
+    /// Returns the generated answer and the list of retrieved source documents.
     pub async fn query_with_sources(
         &self,
         question: &str,
     ) -> Result<RAGQueryResult, RetrieverError> {
-        // 1. 检索相关文档(P0-2: 委托给 RetrieverTrait)
+        // 1. Retrieve relevant documents (P0-2: delegated to RetrieverTrait)
         let search_results = self
             .retriever
             .retrieve_with_scores(question, self.retrieve_k)
@@ -87,7 +88,7 @@ impl RAGPipeline {
 
         let sources: Vec<Document> = search_results.iter().map(|r| r.document.clone()).collect();
 
-        // 3. 构建上下文
+        // 3. Build the context
         let context = if sources.is_empty() {
             "No relevant documents found.".to_string()
         } else {
@@ -99,7 +100,7 @@ impl RAGPipeline {
                 .join("\n\n")
         };
 
-        // 4. 生成回答
+        // 4. Generate the answer
         let messages = vec![
             Message::system(format!(
                 "{}\n\nUse the following context to answer the question. If the context doesn't contain the answer, say so.",
@@ -121,12 +122,12 @@ impl RAGPipeline {
     }
 }
 
-/// RAG 查询结果
+/// RAG query result
 #[derive(Debug, Clone)]
 pub struct RAGQueryResult {
-    /// 生成的答案
+    /// The generated answer
     pub answer: String,
-    /// 检索到的源文档
+    /// The retrieved source documents
     pub sources: Vec<Document>,
 }
 
@@ -134,7 +135,7 @@ pub struct RAGQueryResult {
 // RAGPipelineBuilder
 // ---------------------------------------------------------------------------
 
-/// RAG Pipeline Builder — 流畅 API 创建 RAG 管线
+/// RAG Pipeline Builder — fluent API for creating a RAG pipeline
 ///
 /// # Example
 ///
@@ -149,14 +150,15 @@ pub struct RAGPipelineBuilder {
     llm: Option<Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>>,
     embeddings: Option<Arc<dyn Embeddings + Send + Sync>>,
     vector_store: Option<Arc<dyn VectorStore + Send + Sync>>,
-    /// P0-2: 显式传入的检索器(优先);未提供时用 embeddings + vector_store 构建
+    /// P0-2: An explicitly passed-in retriever (takes priority); when absent, one is built
+    /// from embeddings + vector_store
     retriever: Option<Arc<dyn RetrieverTrait>>,
     retrieve_k: usize,
     system_prompt: Option<String>,
 }
 
 impl RAGPipelineBuilder {
-    /// 创建新的 RAGPipelineBuilder
+    /// Creates a new RAGPipelineBuilder
     pub fn new() -> Self {
         Self {
             llm: None,
@@ -168,7 +170,7 @@ impl RAGPipelineBuilder {
         }
     }
 
-    /// 设置 LLM（任何实现了 `BaseChatModel` 的类型）
+    /// Sets the LLM (any type implementing `BaseChatModel`)
     pub fn llm<L>(mut self, llm: L) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -178,7 +180,7 @@ impl RAGPipelineBuilder {
         self
     }
 
-    /// 设置 LLM（从已包装的 `Arc<dyn BaseChatModel>`）
+    /// Sets the LLM (from an already-wrapped `Arc<dyn BaseChatModel>`)
     pub fn llm_from_arc(
         mut self,
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
@@ -187,30 +189,30 @@ impl RAGPipelineBuilder {
         self
     }
 
-    /// 设置 LLM（从 `LLMClient`）
+    /// Sets the LLM (from an `LLMClient`)
     pub fn llm_client(mut self, client: lc_providers::LLMClient) -> Self {
         let provider_arc = client.into_inner();
         self.llm = Some(provider_arc);
         self
     }
 
-    /// 设置 Embeddings
+    /// Sets the Embeddings
     pub fn embeddings<E: Embeddings + Send + Sync + 'static>(mut self, embeddings: E) -> Self {
         self.embeddings = Some(Arc::new(embeddings));
         self
     }
 
-    /// 设置 VectorStore
+    /// Sets the VectorStore
     pub fn vector_store<V: VectorStore + Send + Sync + 'static>(mut self, store: V) -> Self {
         self.vector_store = Some(Arc::new(store));
         self
     }
 
-    /// 设置自定义检索器(任何实现了 `RetrieverTrait` 的类型,
-    /// 如 BM25、UnifiedHybridIndex 等)
+    /// Sets a custom retriever (any type implementing `RetrieverTrait`,
+    /// such as BM25, UnifiedHybridIndex, etc.)
     ///
-    /// P0-2: 显式检索器优先于 `.embeddings() + .vector_store()` 构建的
-    /// 相似度检索器。
+    /// P0-2: An explicit retriever takes priority over the similarity retriever built from
+    /// `.embeddings() + .vector_store()`.
     pub fn retriever<R>(mut self, retriever: R) -> Self
     where
         R: RetrieverTrait + Send + Sync + 'static,
@@ -219,29 +221,29 @@ impl RAGPipelineBuilder {
         self
     }
 
-    /// 设置检索器(从已包装的 `Arc<dyn RetrieverTrait>`)
+    /// Sets the retriever (from an already-wrapped `Arc<dyn RetrieverTrait>`)
     pub fn retriever_from_arc(mut self, retriever: Arc<dyn RetrieverTrait>) -> Self {
         self.retriever = Some(retriever);
         self
     }
 
-    /// 设置检索文档数量
+    /// Sets the number of documents to retrieve
     pub fn retrieve_k(mut self, k: usize) -> Self {
         self.retrieve_k = k;
         self
     }
 
-    /// 设置系统提示词
+    /// Sets the system prompt
     pub fn system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
-    /// 构建 RAGPipeline
+    /// Builds the RAGPipeline
     ///
     /// # Errors
     ///
-    /// 如果缺少 LLM、Embeddings 或 VectorStore，返回错误。
+    /// Returns an error if the LLM, Embeddings, or VectorStore is missing.
     pub fn build(self) -> Result<RAGPipeline, RetrieverError> {
         let llm = self.llm.ok_or_else(|| {
             RetrieverError::EmbeddingError(
@@ -249,8 +251,8 @@ impl RAGPipelineBuilder {
             )
         })?;
 
-        // P0-2: 优先使用显式检索器;否则回退到 embeddings + vector_store
-        // 构建 SimilarityRetriever,兼容旧用法。
+        // P0-2: Prefer the explicit retriever; otherwise fall back to building a
+        // SimilarityRetriever from embeddings + vector_store for backward compatibility.
         let retriever = match self.retriever {
             Some(r) => r,
             None => {
@@ -361,8 +363,8 @@ mod tests {
         assert!(builder.llm.is_none());
     }
 
-    /// P0-2: 支持通过 `.retriever()` 注入自定义 `RetrieverTrait` 实现(BM25),
-    /// `index_documents` 委托给该检索器,无需 Embeddings/VectorStore。
+    /// P0-2: Supports injecting a custom `RetrieverTrait` implementation (BM25) via
+    /// `.retriever()`; `index_documents` delegates to it without needing Embeddings/VectorStore.
     #[tokio::test]
     async fn test_builder_with_custom_retriever() {
         use crate::bm25::BM25Retriever;

@@ -1,17 +1,18 @@
 // lc-vector-stores/src/file_store.rs
-//! 文件持久化向量存储
+//! File-persistent vector store
 //!
-//! 将文档和向量持久化到本地文件(JSON 序列化),适用于个人知识库和离线场景。
-//! 填补 InMemory(不持久)与外部数据库(太重)之间的空缺,类似 SQLite 之于 MySQL。
+//! Persists documents and vectors to a local file (JSON serialization), suitable for personal
+//! knowledge bases and offline scenarios. Fills the gap between InMemory (not persistent) and
+//! external databases (too heavy), similar to SQLite vs MySQL.
 //!
-//! # 使用方式
+//! # Usage
 //! ```ignore
 //! use lc_vector_stores::FileVectorStore;
 //! use std::path::PathBuf;
 //!
 //! let store = FileVectorStore::new(PathBuf::from("./my_vectors.json"), 1536).unwrap();
-//! // add_documents / similarity_search 与 InMemoryVectorStore 接口一致
-//! // 每次增删后自动持久化到磁盘
+//! // add_documents / similarity_search share the same interface as InMemoryVectorStore
+//! // every insert/delete is automatically persisted to disk
 //! ```
 
 use crate::{
@@ -24,36 +25,37 @@ use std::path::PathBuf;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// 持久化数据结构(序列化为 JSON)
+/// Persistent data structure (serialized as JSON)
 #[derive(serde::Serialize, serde::Deserialize)]
 struct FileStoreData {
-    /// 向量维度(用于校验)
+    /// Vector dimension (for validation)
     dimension: usize,
-    /// 文档 + 向量
+    /// Documents + vectors
     documents: HashMap<String, VectorDocument>,
 }
 
-/// 文件持久化向量存储
+/// File-persistent vector store
 ///
-/// 向量 + 元数据序列化为 JSON 写入磁盘,启动时加载,增删后自动写回。
-/// 使用 `RwLock` 保证并发安全:读操作用读锁,写操作用写锁 + 持久化。
+/// Vectors + metadata are serialized to JSON on disk, loaded at startup, and written back
+/// automatically after inserts/deletes. Uses `RwLock` for concurrency safety: read operations
+/// take a read lock, write operations take a write lock plus persistence.
 pub struct FileVectorStore {
-    /// 存储文件路径
+    /// Storage file path
     path: PathBuf,
-    /// 向量维度
+    /// Vector dimension
     dimension: usize,
-    /// 内存中的数据(与文件同步)
+    /// In-memory data (kept in sync with the file)
     data: RwLock<FileStoreData>,
 }
 
 impl FileVectorStore {
-    /// 创建或加载文件向量存储
+    /// Creates or loads a file vector store
     ///
-    /// 如果文件已存在,加载其中数据;否则创建空存储。
+    /// If the file already exists, loads its data; otherwise creates an empty store.
     ///
     /// # Arguments
-    /// * `path` - 存储文件路径(建议 `.json` 后缀)
-    /// * `dimension` - 向量维度(用于校验,已有文件时以文件为准)
+    /// * `path` - storage file path (a `.json` extension is recommended)
+    /// * `dimension` - vector dimension (for validation; when a file exists the file wins)
     pub async fn new(path: PathBuf, dimension: usize) -> Result<Self, VectorStoreError> {
         let data = if path.exists() {
             let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
@@ -63,7 +65,7 @@ impl FileVectorStore {
                 VectorStoreError::StorageError(format!("failed to parse file: {}", e))
             })?
         } else {
-            // 确保父目录存在
+            // ensure the parent directory exists
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
                     tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -75,7 +77,7 @@ impl FileVectorStore {
                 dimension,
                 documents: HashMap::new(),
             };
-            // 首次创建时也持久化空文件,确保 path.exists() 为 true
+            // persist an empty file on first creation so path.exists() is true
             Self::persist(&data, &path).await?;
             data
         };
@@ -87,11 +89,11 @@ impl FileVectorStore {
         })
     }
 
-    /// 持久化当前数据到磁盘
+    /// Persists the current data to disk
     async fn persist(data: &FileStoreData, path: &PathBuf) -> Result<(), VectorStoreError> {
         let json = serde_json::to_string(data)
             .map_err(|e| VectorStoreError::StorageError(format!("failed to serialize: {}", e)))?;
-        // 先写临时文件,再 rename,避免写一半断电损坏
+        // write to a temporary file first, then rename, to avoid corruption from a mid-write power loss
         let tmp_path = path.with_extension("json.tmp");
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
             VectorStoreError::StorageError(format!("failed to write temporary file: {}", e))
@@ -102,12 +104,12 @@ impl FileVectorStore {
         Ok(())
     }
 
-    /// 返回向量维度
+    /// Returns the vector dimension
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
-    /// 返回存储文件路径
+    /// Returns the storage file path
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
@@ -130,7 +132,7 @@ impl VectorStore for FileVectorStore {
         let mut ids = Vec::new();
 
         for (doc, embedding) in documents.into_iter().zip(embeddings.into_iter()) {
-            // 校验维度
+            // validate the dimension
             if !embedding.is_empty() && embedding.len() != data.dimension {
                 return Err(VectorStoreError::StorageError(format!(
                     "embedding dimension {} does not match storage dimension {}",
@@ -184,7 +186,7 @@ impl VectorStore for FileVectorStore {
         Ok(results.into_iter().take(k).collect())
     }
 
-    /// S3: 文件存储元数据过滤 —— 与内存存储同款"先过滤再算相似度"语义。
+    /// S3: file-store metadata filtering — the same "filter first, then compute similarity" semantics as the in-memory store.
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -299,7 +301,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = test_store_path(&dir);
 
-        // 第一个实例:写入
+        // first instance: write
         {
             let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             let doc = Document::new("persistent doc").with_id("p1");
@@ -309,7 +311,7 @@ mod tests {
                 .unwrap();
         }
 
-        // 第二个实例:加载并验证
+        // second instance: load and verify
         {
             let store = FileVectorStore::new(path.clone(), 3).await.unwrap();
             assert_eq!(store.count().await, 1);
@@ -361,7 +363,7 @@ mod tests {
         let store = FileVectorStore::new(path, 3).await.unwrap();
 
         let doc = Document::new("wrong dim");
-        let wrong_embedding = vec![1.0, 0.0]; // 维度 2,存储维度 3
+        let wrong_embedding = vec![1.0, 0.0]; // dimension 2, storage dimension 3
         let result = store.add_documents(vec![doc], vec![wrong_embedding]).await;
         assert!(result.is_err());
     }
@@ -403,7 +405,7 @@ mod tests {
         assert!((cosine_similarity(&a, &b).unwrap() - 0.0).abs() < 0.0001);
     }
 
-    /// S3: 文件存储元数据过滤 —— 单条件 + AND 组合。
+    /// S3: file-store metadata filtering — single condition + AND combination.
     #[tokio::test]
     async fn test_metadata_filter() {
         use crate::FilterOp;
@@ -447,7 +449,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.len(), 1);
 
-        // filter: None 与 similarity_search 一致
+        // filter: None behaves identically to similarity_search
         let none = store
             .similarity_search_with_filter(&query, 5, None)
             .await

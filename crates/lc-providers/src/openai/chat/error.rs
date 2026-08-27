@@ -3,15 +3,15 @@
 
 use crate::ProviderError;
 
-/// OpenAI 错误类型
+/// OpenAI error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpenAIError {
-    /// HTTP 请求错误
+    /// HTTP request error
     Http(String),
-    /// API 返回错误
+    /// API-returned error
     Api(String),
-    /// 响应解析错误
+    /// Response parse error
     Parse(String),
     /// Configuration error (missing/malformed environment variables, etc.).
     Config(String),

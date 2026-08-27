@@ -1,39 +1,43 @@
 // lc-rag/src/structured.rs
-//! 结构化输出辅助(P2-1)
+//! Structured-output helpers (P2-1)
 //!
-//! GraphRAG 实体提取 / MultiQuery 查询生成此前依赖 LLM 文本 JSON/行解析,
-//! LLM 偶发夹带解释/编号/代码块就解析失败。这里统一(复用 lc-agents 已证明
-//! 的 bind_tools 路径,跨 crate 落地同款教训):
+//! GraphRAG entity extraction / MultiQuery query generation previously relied on LLM text
+//! JSON/line parsing, which failed when the LLM occasionally smuggled in explanations,
+//! numbering, or code blocks. This unifies that (reusing the bind_tools path proven in
+//! lc-agents, applying the same lesson across crates):
 //!
-//! - 优先 `bind_tools` 强制结构化输出(tool_calls 参数即结构化结果)。
-//! - Provider 不支持工具绑定(如 mock / 纯文本模型)时,回落同一响应的文本,
-//!   由调用方沿用原有文本解析逻辑。一次 LLM 调用,不回退重试。
+//! - Prefer `bind_tools` to force structured output (the tool_calls arguments are the
+//!   structured result).
+//! - When the provider does not support tool binding (e.g. mock / plain-text models), fall
+//!   back to the same response's text, leaving the caller to reuse its existing text-parsing
+//!   logic. One LLM call, no retry.
 
 use lc_core::language_models::{BaseChatModel, LLMResult};
 use lc_core::tools::ToolDefinition;
 use lc_schema::Message;
 use serde_json::Value;
 
-/// 结构化调用结果:要么带工具参数(首选),要么带文本(回落)。
+/// Structured call result: either carries tool arguments (preferred) or text (fallback).
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredChatResult {
-    /// LLM 返回的文本内容(无 tool_calls 时的回落解析源)。
+    /// The text content returned by the LLM (the fallback parse source when there are no tool_calls).
     pub content: String,
-    /// 首个 tool_call 的参数 JSON(存在则优先使用)。
+    /// The first tool_call's argument JSON (used in preference when present).
     pub tool_args: Option<Value>,
 }
 
-/// 结构化调用错误。
+/// Structured call error.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StructuredError {
     #[error("{0}")]
     Msg(String),
 }
 
-/// 绑定 `tool` 后调用 LLM,优先结构化输出;不支持绑定则普通文本调用。
+/// Calls the LLM with `tool` bound, preferring structured output; falls back to a plain text call when binding is unsupported.
 ///
-/// 只发一次请求:模型返回 tool_calls 就提取参数,否则把 `content` 交给
-/// 调用方做文本解析。错误统一包成 `StructuredError::Msg`(调用方各自映射到自身错误类型)。
+/// Makes a single request: if the model returns tool_calls, extract the arguments; otherwise
+/// hand `content` to the caller for text parsing. Errors are uniformly wrapped as
+/// `StructuredError::Msg` (each caller maps them to its own error type).
 pub(crate) async fn chat_structured<M>(
     llm: &M,
     tool: Option<ToolDefinition>,
@@ -61,7 +65,7 @@ where
     Ok(extract_structured(&result))
 }
 
-/// 从 LLM 结果提取首个 tool_call 的参数 JSON。
+/// Extracts the first tool_call's argument JSON from an LLM result.
 pub(crate) fn extract_structured(result: &LLMResult) -> StructuredChatResult {
     let tool_args = result
         .tool_calls
@@ -123,7 +127,7 @@ mod tests {
             thinking_content: None,
         };
         let structured = extract_structured(&result);
-        // 参数解析失败 → 回落 content
+        // Argument parsing failed -> fall back to content
         assert!(structured.tool_args.is_none());
         assert_eq!(structured.content, "fallback text");
     }

@@ -1,31 +1,32 @@
-//! 静态层 + 动态层工具发现(P2-3)。
+//! Static + dynamic layered tool discovery (P2-3).
 //!
-//! 100+ Server 全量声明几十万 token,超模型上下文窗口。因此不把所有工具一股脑
-//! 注入 Agent,而是分两层:
+//! Declaring all tools from 100+ Servers would cost hundreds of thousands of tokens, exceeding the model's
+//! context window. So instead of injecting every tool into the Agent, we split them into two layers:
 //!
-//! - **静态层**:20-50 个高频常驻工具,每次调用固定注入(`pin` 标记);
-//! - **动态层**:按 query 相关性取 top-k 个工具临时注入(工具发现,类比 RAG 的
-//!   检索,把"查工具"当"查文档"处理)。
+//! - **Static layer**: 20-50 high-frequency resident tools, injected fixedly on every call (`pin` mark);
+//! - **Dynamic layer**: top-k tools injected temporarily by query relevance (tool discovery, analogous to RAG
+//!   retrieval — treating "looking up tools" as "looking up documents").
 //!
-//! 相关性评分走 [`ToolScorer`] trait 的 [`KeywordScorer`] 默认实现
-//! (词元重叠,零额外依赖);需要向量检索时自行实现 `ToolScorer`(如用 lc-embeddings
-//! 算 query / tool 相似度)替换,`with_scorer` 注入。
+//! Relevance scoring goes through the [`ToolScorer`] trait's default [`KeywordScorer`] implementation
+//! (token overlap, zero extra dependencies); for vector retrieval, implement `ToolScorer` yourself
+//! (e.g. computing query / tool similarity with lc-embeddings) and inject it via `with_scorer`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::types::MCPToolDefinition;
 
-/// 工具相关性评分器(P2-3)。
+/// Tool relevance scorer (P2-3).
 ///
-/// 动态层按 `query` 与工具的 `name + description` 计算相关分。默认用
-/// [`KeywordScorer`];向量检索场景自行实现并 `with_scorer` 注入。
+/// The dynamic layer scores the relevance of `query` against a tool's `name + description`. Defaults to
+/// [`KeywordScorer`]; for vector-retrieval scenarios implement `ToolScorer` yourself and inject it via
+/// `with_scorer`.
 pub trait ToolScorer: Send + Sync {
-    /// 计算 query 与单个工具的相关性,越高越相关。
+    /// Computes the relevance of `query` to a single tool; higher means more relevant.
     fn score(&self, query: &str, tool: &MCPToolDefinition) -> f64;
 }
 
-/// 默认关键词评分器:query 词元在工具名 + 描述中的命中比例。
+/// Default keyword scorer: hit ratio of query tokens in the tool name + description.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct KeywordScorer;
 
@@ -57,17 +58,18 @@ impl ToolScorer for KeywordScorer {
     }
 }
 
-/// 静态层 + 动态层工具选择器(P2-3)。
+/// Static + dynamic layered tool selector (P2-3).
 ///
-/// `register` 收录全量工具;`pin` 把高频工具加入静态层常驻注入;`select` 按
-/// `static_limit` + `top_k` 返回"静态层固定工具 + 动态层按 query 检索的工具",
-/// 动态层自动排除已在静态层的工具(去重)。
+/// `register` collects the full tool set; `pin` puts high-frequency tools into the static resident layer;
+/// `select` returns "static-layer fixed tools + dynamic-layer tools retrieved by query" per
+/// `static_limit` + `top_k`, and the dynamic layer automatically excludes tools already in the static layer
+/// (dedup).
 pub struct ToolDiscovery {
-    /// 全量工具:`name` → 定义。
+    /// The full tool set: `name` → definition.
     tools: HashMap<String, MCPToolDefinition>,
-    /// 静态层常驻工具名(有序,注入顺序稳定)。
+    /// Resident static-layer tool names (ordered, stable injection order).
     pinned: Vec<String>,
-    /// 动态层相关性评分器。
+    /// Dynamic-layer relevance scorer.
     scorer: Arc<dyn ToolScorer>,
 }
 
@@ -78,7 +80,7 @@ impl Default for ToolDiscovery {
 }
 
 impl ToolDiscovery {
-    /// 空发现器,使用默认关键词评分器。
+    /// An empty discovery, using the default keyword scorer.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -87,7 +89,7 @@ impl ToolDiscovery {
         }
     }
 
-    /// 自定义评分器(向量检索等)。
+    /// A custom scorer (vector retrieval, etc.).
     pub fn with_scorer(scorer: Arc<dyn ToolScorer>) -> Self {
         Self {
             tools: HashMap::new(),
@@ -96,12 +98,13 @@ impl ToolDiscovery {
         }
     }
 
-    /// 收录一个工具;同名覆盖。
+    /// Registers a tool; same-name registration overwrites.
     pub fn register(&mut self, def: MCPToolDefinition) {
         self.tools.insert(def.name.clone(), def);
     }
 
-    /// 把工具加入静态层(高频常驻注入)。工具未注册时返回 `false`。
+    /// Puts a tool into the static layer (high-frequency resident injection). Returns `false` if the tool is
+    /// not registered.
     pub fn pin(&mut self, name: &str) -> bool {
         if !self.tools.contains_key(name) {
             return false;
@@ -112,12 +115,12 @@ impl ToolDiscovery {
         true
     }
 
-    /// 从静态层移除工具(仍保留在动态层)。
+    /// Removes a tool from the static layer (still kept in the dynamic layer).
     pub fn unpin(&mut self, name: &str) {
         self.pinned.retain(|n| n != name);
     }
 
-    /// 静态层:固定注入的常驻工具定义(最多 `limit` 个,保持 pin 顺序)。
+    /// Static layer: resident tools injected fixedly (at most `limit` of them, keeping the pin order).
     pub fn static_layer(&self, limit: usize) -> Vec<MCPToolDefinition> {
         self.pinned
             .iter()
@@ -126,10 +129,10 @@ impl ToolDiscovery {
             .collect()
     }
 
-    /// 动态层:按 query 相关性降序取 top-k 个工具临时注入。
+    /// Dynamic layer: takes the top-k tools by query relevance descending for temporary injection.
     ///
-    /// `exclude` 中已有的工具跳过(通常传静态层已注入的工具名去重)。
-    /// query 为空或 top_k 为 0 时返回空。
+    /// Tools already in `exclude` are skipped (usually the static-layer tool names already injected, for dedup).
+    /// An empty query or `top_k == 0` returns nothing.
     pub fn dynamic_layer(
         &self,
         query: &str,
@@ -153,10 +156,11 @@ impl ToolDiscovery {
             .collect()
     }
 
-    /// 全量注入:静态层 + 动态层合并,动态层排除静态层已注入的工具。
+    /// Full injection: static + dynamic layers merged, the dynamic layer excluding tools already injected by
+    /// the static layer.
     pub fn select(&self, query: &str, top_k: usize, static_limit: usize) -> Vec<MCPToolDefinition> {
         let static_tools = self.static_layer(static_limit);
-        // 转成持有所有权的名字集,避免借用 static_tools(随后被 move)。
+        // Build an owned name set to avoid borrowing static_tools (subsequently moved).
         let exclude: Vec<String> = static_tools.iter().map(|t| t.name.clone()).collect();
         let exclude_refs: Vec<&str> = exclude.iter().map(String::as_str).collect();
         let mut out = static_tools;
@@ -164,12 +168,12 @@ impl ToolDiscovery {
         out
     }
 
-    /// 已收录的工具总数。
+    /// Total number of registered tools.
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
-    /// 是否为空。
+    /// Whether it is empty.
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -196,7 +200,6 @@ mod tests {
         assert!(!d.pin("ghost"), "未注册工具不能 pin");
         assert!(!d.pin(""), "空名不能 pin");
     }
-
     #[test]
     fn test_static_layer_returns_pinned_in_order() {
         let mut d = ToolDiscovery::new();
@@ -266,14 +269,14 @@ mod tests {
         let mut d = ToolDiscovery::new();
         d.register(tool("search_db", "query the sql database"));
         d.register(tool("get_time", "get current time"));
-        d.pin("get_time"); // 静态层常驻
+        d.pin("get_time"); // static-layer resident
 
         let picked = d.select("query the database", 5, usize::MAX);
         let names: Vec<&str> = picked.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names.len(), 2, "静态层 + 动态层去重合并");
         assert!(names.contains(&"get_time"));
         assert!(names.contains(&"search_db"));
-        // 动态层不重复注入静态层工具
+        // the dynamic layer does not re-inject static-layer tools
         assert_eq!(
             names.len(),
             names.iter().collect::<std::collections::HashSet<_>>().len()
@@ -301,7 +304,8 @@ mod tests {
         }
         let mut d = ToolDiscovery::with_scorer(Arc::new(AlwaysZero));
         d.register(tool("search_db", "query the sql database"));
-        // 自定义评分器返回全 0 → 动态层仍返回(排序稳定),不依赖内置关键词实现。
+        // The custom scorer returns all 0s → the dynamic layer still returns (stable ordering), not relying on
+        // the built-in keyword implementation.
         let picks = d.dynamic_layer("query the database", 1, &[]);
         assert_eq!(picks.len(), 1);
     }

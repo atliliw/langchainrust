@@ -1,16 +1,20 @@
 // lc-rag/src/self_query.rs
-//! SelfQueryRetriever — 自查询检索器
+//! SelfQueryRetriever — a self-querying retriever
 //!
-//! 让 LLM 把自然语言查询拆成 `{ query, filter }`:清洗后的查询词走向量检索,
-//! 解析出的 [`MetadataFilter`] 交给 `vector_store.similarity_search_with_filter`
-//! 做元数据过滤(依赖 S3 的统一过滤能力)。拆解走 [`lc_core::judge::structured_call`]
-//! (绑定工具拿结构化参数,模型不支持时回落文本解析),与 Guardrails / Evaluation
-//! 同一执行路径;`allowed_attributes` 白名单拦截 LLM 用不存在的字段过滤。
+//! Lets an LLM split a natural-language query into `{ query, filter }`: the cleaned query
+//! goes to vector retrieval, and the parsed [`MetadataFilter`] is handed to
+//! `vector_store.similarity_search_with_filter` for metadata filtering (relying on S3's
+//! unified filtering capability). The split goes through [`lc_core::judge::structured_call`]
+//! (binds a tool to get structured arguments, falling back to text parsing when the model
+//! does not support it), the same execution path as Guardrails / Evaluation; the
+//! `allowed_attributes` whitelist blocks the LLM from filtering on fields that do not exist.
 //!
-//! **不静默降级**:过滤器引用了白名单外字段时显式返回
-//! [`RetrieverError::InvalidFilter`],绝不丢弃过滤器回落无过滤检索——那会让
-//! 本该被过滤排除的数据被返回(数据面过曝)。空白名单 = 过滤整体禁用,过滤器
-//! 一律忽略并记 warning(这是「禁用过滤」的既定模式,不是静默降级)。
+//! **No silent degradation**: when a filter references a field outside the whitelist, it
+//! explicitly returns [`RetrieverError::InvalidFilter`] rather than dropping the filter and
+//! falling back to an unfiltered search — that would return data that should have been
+//! filtered out (data-plane over-exposure). An empty whitelist = filtering is entirely
+//! disabled: filters are always ignored with a warning (this is the established "disable
+//! filtering" pattern, not silent degradation).
 
 use std::sync::Arc;
 
@@ -25,22 +29,22 @@ use serde::Deserialize;
 
 use crate::retriever::{RetrieverError, RetrieverTrait};
 
-/// LLM 拆解出的结构化参数:清洗后的查询词 + 可选元数据过滤。
+/// Structured parameters parsed by the LLM: the cleaned query + an optional metadata filter.
 ///
-/// `filter` 直接以 [`MetadataFilter`] 反序列化(filter.rs 对 JSON 形状做了宽松
-/// 处理,兼容 LLM 输出差异);缺省为无过滤。
+/// `filter` is deserialized directly as [`MetadataFilter`] (filter.rs is lenient about
+/// the JSON shape to tolerate LLM output variance); the default is no filter.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SelfQueryArgs {
-    /// 清洗掉过滤约束后的纯语义查询词。
+    /// The pure semantic query with the filtering constraints stripped out.
     pub query: String,
-    /// 元数据过滤条件(可选)。
+    /// Metadata filter (optional).
     #[serde(default)]
     pub filter: Option<MetadataFilter>,
 }
 
-/// 自查询检索器:LLM 拆解查询 → 白名单校验 → 过滤相似度检索。
+/// Self-querying retriever: LLM splits the query -> whitelist validation -> filtered similarity search.
 ///
-/// 实现 [`RetrieverTrait`],可被 [`crate::RetrieverRunnable`] 包进 LCEL 链。
+/// Implements [`RetrieverTrait`] and can be wrapped into an LCEL chain by [`crate::RetrieverRunnable`].
 pub struct SelfQueryRetriever<M: BaseChatModel> {
     llm: Arc<M>,
     store: Arc<dyn VectorStore>,
@@ -49,14 +53,17 @@ pub struct SelfQueryRetriever<M: BaseChatModel> {
 }
 
 impl<M: BaseChatModel> SelfQueryRetriever<M> {
-    /// 创建自查询检索器。
+    /// Creates a self-querying retriever.
     ///
-    /// - `llm`:负责拆解自然语言查询的模型(支持结构化输出,或可文本回落)。
-    /// - `store` / `embeddings`:过滤相似度检索用的向量存储与嵌入模型。
-    /// - `allowed_attributes`:允许出现在过滤字段的白名单;**空白名单 = 过滤整体
-    ///   禁用**(LLM 返回的 filter 一律忽略并记 warning);**非空白名单下,过滤器
-    ///   引用白名单外字段会显式返回 [`RetrieverError::InvalidFilter`]**,不静默
-    ///   丢弃后回落无过滤检索。
+    /// - `llm`: the model responsible for splitting the natural-language query (supports
+    ///   structured output, or falls back to text).
+    /// - `store` / `embeddings`: the vector store and embedding model used for the filtered
+    ///   similarity search.
+    /// - `allowed_attributes`: the whitelist of attributes allowed in filter fields;
+    ///   **an empty whitelist disables filtering entirely** (LLM-returned filters are always
+    ///   ignored with a warning); **with a non-empty whitelist, a filter referencing a field
+    ///   outside the whitelist explicitly returns [`RetrieverError::InvalidFilter`]** rather
+    ///   than silently dropping it and falling back to an unfiltered search.
     pub fn new(
         llm: impl Into<Arc<M>>,
         store: Arc<dyn VectorStore>,
@@ -71,7 +78,7 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         }
     }
 
-    /// 自查询工具定义:让 LLM 以 `{ query, filter }` 结构化返回。
+    /// Self-query tool definition: lets the LLM return `{ query, filter }` structurally.
     fn self_query_tool() -> ToolDefinition {
         ToolDefinition::new(
             "self_query",
@@ -93,7 +100,7 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         }))
     }
 
-    /// 构建提示词:告诉 LLM 可用字段与输出格式。
+    /// Builds the prompt: tells the LLM the available fields and the output format.
     fn build_prompt(&self, query: &str) -> String {
         let allowed = if self.allowed_attributes.is_empty() {
             "无(本检索器不启用元数据过滤,filter 必须为 null)".to_string()
@@ -110,7 +117,7 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         )
     }
 
-    /// 调用 LLM 拆解查询(结构化或文本回落)。
+    /// Calls the LLM to split the query (structured or text fallback).
     async fn parse_query(&self, query: &str) -> Result<SelfQueryArgs, RetrieverError> {
         let messages = vec![Message::human(self.build_prompt(query))];
         structured_call(
@@ -123,13 +130,16 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         .map_err(|e| RetrieverError::LlmError(e.to_string()))
     }
 
-    /// 白名单校验。
+    /// Whitelist validation.
     ///
-    /// - 无过滤器 → `Ok(None)`。
-    /// - 空白名单 = 过滤整体禁用:过滤器一律忽略(这是「禁用过滤」的既定模式,
-    ///   不是静默降级),记 warning 后 `Ok(None)`。
-    /// - 非空白名单下,过滤器引用白名单外字段 → `Err(InvalidFilter)`。绝不丢弃
-    ///   过滤器回落无过滤检索,否则本该被过滤排除的数据会被返回(数据面过曝)。
+    /// - No filter -> `Ok(None)`.
+    /// - Empty whitelist = filtering is entirely disabled: filters are always ignored (this
+    ///   is the established "disable filtering" pattern, not silent degradation), logging a
+    ///   warning and returning `Ok(None)`.
+    /// - With a non-empty whitelist, a filter referencing a field outside the whitelist ->
+    ///   `Err(InvalidFilter)`. It never drops the filter to fall back to an unfiltered search,
+    ///   otherwise data that should have been filtered out would be returned (data-plane
+    ///   over-exposure).
     fn validated_filter(
         &self,
         filter: &Option<MetadataFilter>,
@@ -153,7 +163,8 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         Ok(filter.clone())
     }
 
-    /// 第一个引用白名单外字段的 key,遍历嵌套的 And/Or 组合;全部在列则 `None`。
+    /// The first key referencing a field outside the whitelist, traversing nested And/Or
+    /// combinations; returns `None` when all fields are listed.
     fn disallowed_field<'a>(filter: &'a MetadataFilter, allowed: &[String]) -> Option<&'a String> {
         match filter {
             MetadataFilter::Field { key, .. } => {
@@ -170,7 +181,8 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
     }
 }
 
-/// 文本回落解析:优先尝试整段 JSON(LLM 输出结构时);否则把整段文本当查询词。
+/// Text fallback parsing: tries the whole JSON first (when the LLM outputs structured);
+/// otherwise treats the whole text as the query.
 fn parse_text_fallback(raw: &str) -> Result<SelfQueryArgs, StructuredJudgeError> {
     let trimmed = raw.trim();
     if !trimmed.is_empty() {
@@ -244,7 +256,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// 固定回复的 mock 聊天模型(走文本回落路径,不实现 bind_tools)。
+    /// A mock chat model with a fixed reply (exercises the text fallback path; does not implement bind_tools).
     struct MockChatModel {
         reply: String,
         calls: AtomicUsize,
@@ -322,7 +334,7 @@ mod tests {
         }
     }
 
-    /// 造一个带 metadata 的内存向量存储 + mock 嵌入,返回 store 供断言。
+    /// Builds an in-memory vector store with metadata + a mock embedding, returning the store for assertions.
     async fn store_with_docs() -> Arc<InMemoryVectorStore> {
         let store = Arc::new(InMemoryVectorStore::new());
         let embeddings = Arc::new(MockEmbeddings::new(64));
@@ -350,7 +362,7 @@ mod tests {
         )
     }
 
-    /// S4: 拆出的 filter 正确落到检索 —— 只返回匹配 source=docs 的文档。
+    /// S4: the parsed filter correctly reaches the search — only docs matching source=docs are returned.
     #[tokio::test]
     async fn test_self_query_filter_reaches_search() {
         let store = store_with_docs().await;
@@ -370,7 +382,7 @@ mod tests {
         );
     }
 
-    /// S2: 非法字段被白名单拦截 —— 显式报错,不静默丢弃过滤器回落无过滤检索。
+    /// S2: a disallowed field is blocked by the whitelist — explicit error, not a silent filter drop into an unfiltered search.
     #[tokio::test]
     async fn test_self_query_rejects_disallowed_attribute() {
         let store = store_with_docs().await;
@@ -384,7 +396,7 @@ mod tests {
         assert!(err.to_string().contains("nonexistent"));
     }
 
-    /// S2: 嵌套 And/Or 里出现白名单外字段同样显式报错。
+    /// S2: a whitelist-outside field inside a nested And/Or also errors out explicitly.
     #[tokio::test]
     async fn test_self_query_rejects_disallowed_attribute_in_nested_and() {
         let store = store_with_docs().await;
@@ -398,7 +410,7 @@ mod tests {
         assert!(err.to_string().contains("private"));
     }
 
-    /// S2: 空白名单 = 过滤整体禁用 —— filter 忽略并返回全部文档,不报错。
+    /// S2: empty whitelist = filtering entirely disabled — filter ignored and all docs returned, no error.
     #[tokio::test]
     async fn test_self_query_empty_whitelist_ignores_filter() {
         let store = store_with_docs().await;
@@ -411,7 +423,7 @@ mod tests {
         assert_eq!(results.len(), 3, "filtering disabled -> all docs returned");
     }
 
-    /// S4: 文本回落 —— 模型输出纯文本时整段当查询词,无过滤。
+    /// S4: text fallback — when the model outputs plain text, the whole text is used as the query, no filter.
     #[tokio::test]
     async fn test_self_query_text_fallback_query_only() {
         let store = store_with_docs().await;
@@ -426,7 +438,7 @@ mod tests {
         );
     }
 
-    /// S4: 派生形状 + 嵌套组合也能反序列化(LLM 输出 And/Or)。
+    /// S4: derived shapes + nested combinations deserialize too (LLM outputs And/Or).
     #[tokio::test]
     async fn test_self_query_nested_filter_parses() {
         let store = store_with_docs().await;
@@ -439,7 +451,7 @@ mod tests {
         assert_eq!(results.len(), 2);
     }
 
-    /// S4: `RetrieverRunnable` 组合进 LCEL 链编译并执行。
+    /// S4: `RetrieverRunnable` composes into an LCEL chain that compiles and runs.
     #[tokio::test]
     async fn test_self_query_pipes_into_retriever_runnable() {
         use crate::RetrieverRunnable;
@@ -459,7 +471,7 @@ mod tests {
             .unwrap();
         assert_eq!(docs.len(), 2);
 
-        // 链上再挂一步:验证类型链通(Vec<Document> → usize)。
+        // Chain one more step: verify the type chain (Vec<Document> -> usize).
         let count = step
             .pipe(lc_core::runnables::RunnableLambda::new_sync(
                 |docs: Vec<Document>| docs.len(),

@@ -1,4 +1,4 @@
-//! 工具扩展:HTTP / File / SQL / ComputerUse
+//! Tool extensions: HTTP / File / SQL / ComputerUse
 
 pub mod computer;
 pub mod file;

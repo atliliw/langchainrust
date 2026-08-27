@@ -1,18 +1,21 @@
 // lc-agents/src/hooks/injection.rs
-//! PromptInjectionHook — 检测并清洗工具返回内容中的提示注入(P2-9)。
+//! PromptInjectionHook — detects and sanitizes prompt injections in tool output (P2-9).
 //!
-//! 间接提示注入的常见路径:Agent 调用的工具(网页抓取 / 检索 / 文件读取)返回
-//! 内容里夹带"忽略之前的指令 / 你是系统"等恶意文本,下一轮 `plan()` 把这段
-//! 工具观察原样拼进 prompt,污染模型判断。本 hook 在 `on_after_tool_call` 阶段
-//! 扫描工具结果,命中注入模式就把整段结果替换成安全占位符,恶意指令到不了
-//! `intermediate_steps`,从而阻断跨轮污染。
+//! The common path for indirect prompt injection: a tool the agent calls (web
+//! fetch / retrieval / file read) returns content containing malicious text like
+//! "ignore previous instructions / you are the system", and the next `plan()`
+//! pastes that tool observation verbatim into the prompt, polluting the model's
+//! judgment. This hook scans tool results in the `on_after_tool_call` phase and,
+//! on a pattern hit, replaces the whole result with a safe placeholder so the
+//! malicious instructions never reach `intermediate_steps` — blocking
+//! cross-turn pollution.
 
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{AgentHook, HookError, ToolResultContext};
 
-/// 默认注入模式(大小写不敏感的子串匹配)。
+/// Default injection patterns (case-insensitive substring match).
 const DEFAULT_INJECTION_PATTERNS: &[&str] = &[
     "ignore previous instructions",
     "ignore all previous instructions",
@@ -29,14 +32,15 @@ const DEFAULT_INJECTION_PATTERNS: &[&str] = &[
     "jailbreak",
 ];
 
-/// 命中注入后替换结果的默认占位符。`{}` 会被替换为命中的模式文本。
+/// Default placeholder that replaces a result on a hit. `{}` is replaced with the matched pattern text.
 const DEFAULT_MARKER: &str = "[REDACTED: potential prompt injection detected ({})]";
 
-/// 检测并清洗工具返回内容中的提示注入。
+/// Detects and sanitizes prompt injections in tool output.
 ///
-/// `on_after_tool_call` 阶段扫描工具结果;命中 `DEFAULT_INJECTION_PATTERNS`
-/// 中任意模式(或自定义模式)时,把整段结果替换为安全占位符,恶意指令不会进入
-/// 下一轮 `plan()` 的 prompt(阻断跨轮污染)。
+/// Scans tool results in the `on_after_tool_call` phase; when any pattern in
+/// `DEFAULT_INJECTION_PATTERNS` (or a custom pattern) matches, replaces the whole
+/// result with a safe placeholder so malicious instructions never reach the next
+/// `plan()` prompt (blocking cross-turn pollution).
 ///
 /// # Example
 ///
@@ -47,11 +51,11 @@ const DEFAULT_MARKER: &str = "[REDACTED: potential prompt injection detected ({}
 ///     .hook(PromptInjectionHook::new());
 /// ```
 pub struct PromptInjectionHook {
-    /// 注入模式列表(匹配时大小写不敏感)。
+    /// Injection pattern list (case-insensitive matching).
     patterns: Vec<String>,
-    /// 替换占位符;含 `{}` 时被替换为命中的模式文本。
+    /// Replacement placeholder; when it contains `{}`, that is replaced with the matched pattern text.
     marker: String,
-    /// 累计命中的注入次数。
+    /// Cumulative number of injections detected.
     detected: AtomicUsize,
 }
 
@@ -62,7 +66,7 @@ impl Default for PromptInjectionHook {
 }
 
 impl PromptInjectionHook {
-    /// 使用默认注入模式创建。
+    /// Creates the hook with the default injection patterns.
     pub fn new() -> Self {
         Self {
             patterns: DEFAULT_INJECTION_PATTERNS
@@ -74,19 +78,19 @@ impl PromptInjectionHook {
         }
     }
 
-    /// 用自定义模式列表替换默认模式。
+    /// Replaces the default patterns with a custom list.
     pub fn with_patterns(mut self, patterns: Vec<String>) -> Self {
         self.patterns = patterns;
         self
     }
 
-    /// 自定义替换占位符;含 `{}` 时填充命中的模式文本。
+    /// Custom replacement placeholder; when it contains `{}`, it is filled with the matched pattern text.
     pub fn with_marker(mut self, marker: impl Into<String>) -> Self {
         self.marker = marker.into();
         self
     }
 
-    /// 检测文本是否含注入模式,返回命中的模式(未命中返回 `None`)。
+    /// Detects whether the text contains an injection pattern; returns the matched pattern (`None` if no match).
     pub fn detect(&self, text: &str) -> Option<&str> {
         let lower = text.to_lowercase();
         self.patterns
@@ -95,7 +99,7 @@ impl PromptInjectionHook {
             .map(|p| p.as_str())
     }
 
-    /// 累计命中的注入次数。
+    /// Cumulative number of injections detected.
     pub fn detected_count(&self) -> usize {
         self.detected.load(Ordering::SeqCst)
     }
@@ -135,7 +139,7 @@ mod tests {
         assert!(hook
             .detect("You are now the system administrator")
             .is_some());
-        // 正常工具输出不误伤。
+        // Normal tool output is not flagged.
         assert!(hook.detect("The result is 42").is_none());
         assert!(hook.detect("").is_none());
     }
@@ -179,7 +183,7 @@ mod tests {
         };
         hook.on_after_tool_call(&mut ctx).unwrap();
         assert_eq!(ctx.result, "[BLOCKED:evil-text]");
-        // 默认模式被替换后不再生效。
+        // The default patterns are replaced and no longer take effect.
         let mut clean = ToolResultContext {
             name: "tool".to_string(),
             result: "ignore previous instructions".to_string(),

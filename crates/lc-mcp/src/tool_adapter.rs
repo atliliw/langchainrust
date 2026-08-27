@@ -1,4 +1,4 @@
-//! MCP 工具适配器 - 将 MCP Tool 转为 BaseTool
+//! MCP tool adapter - wraps MCP Tools as `BaseTool`s
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,10 +12,10 @@ use super::types::{MCPToolDefinition, MCPToolResult};
 use lc_core::tools::ToolError;
 use lc_core::BaseTool;
 
-/// 把 MCP 传输层错误映射为 [`ToolError::McpError`],保留 code/message/data(P1-6)。
+/// Maps an MCP transport-layer error to [`ToolError::McpError`], preserving code/message/data (P1-6).
 ///
-/// 不再一律降级为 `ExecutionFailed`,上层可据 `code` 区分错误类别。
-/// `pub(crate)`:Gateway(P2-8)统一调用入口复用同一映射。
+/// No longer degrades everything to `ExecutionFailed`; upper layers can distinguish error categories by `code`.
+/// `pub(crate)`: the Gateway (P2-8) unified call entry reuses the same mapping.
 pub(crate) fn from_mcp_error(e: MCPError) -> ToolError {
     ToolError::McpError {
         code: e.code,
@@ -24,11 +24,11 @@ pub(crate) fn from_mcp_error(e: MCPError) -> ToolError {
     }
 }
 
-/// 把工具调用结果转为文本;服务器侧 `is_error=true` 时显式报错(P1-6)。
+/// Turns a tool-call result into text; explicitly errors when the server side has `is_error=true` (P1-6).
 ///
-/// MCP 协议中服务器工具执行失败以"成功的 JSON-RPC 响应 + `is_error` 标记"
-/// 表达,旧实现会把它当成功吞掉,这里转为显式 `ExecutionFailed`。
-/// `pub(crate)`:Gateway(P2-8)统一调用入口复用同一转换。
+/// In MCP a server tool execution failure is expressed as "a successful JSON-RPC response + the `is_error`
+/// flag"; the old implementation swallowed it as a success, here it becomes an explicit `ExecutionFailed`.
+/// `pub(crate)`: the Gateway (P2-8) unified call entry reuses the same conversion.
 pub(crate) fn result_to_string_or_error(result: &MCPToolResult) -> Result<String, ToolError> {
     if result.is_error {
         Err(ToolError::ExecutionFailed(result.text()))
@@ -37,23 +37,25 @@ pub(crate) fn result_to_string_or_error(result: &MCPToolResult) -> Result<String
     }
 }
 
-/// MCP 工具适配器 - 把 MCP Server 暴露的工具包装为 `BaseTool`
+/// MCP tool adapter - wraps the tools a MCP Server exposes as `BaseTool`s
 pub struct MCPToolAdapter {
     client: MCPClient,
     definition: MCPToolDefinition,
-    /// 对外工具名(P2-2):命名空间化后为 `server_name:tool_name`;
-    /// 未命名空间时等于原始工具名。LLM 看到的是它,实际调用仍走原始名。
+    /// The externally visible tool name (P2-2): after namespacing it is `server_name:tool_name`;
+    /// without namespacing it equals the original tool name. The LLM sees this; the actual call still uses
+    /// the original name.
     display_name: String,
-    /// per-tool 超时(P2-4):`None` 用默认;`Some(spec)` 走
-    /// progress 重置 + 硬上限的计时调用。
+    /// per-tool timeout (P2-4): `None` uses the default; `Some(spec)` uses the
+    /// progress-reset + hard-cap timed call.
     timeout_spec: Option<ToolSpec>,
-    /// per-Server 安全沙箱(P2-6):`Some` 时 `run()` 发请求前先过参数最小权限
-    /// 校验,拦截则返回错误并记审计。同一 Server 的多个适配器共享一份沙箱。
+    /// per-Server security sandbox (P2-6): when `Some`, `run()` runs parameter least-privilege validation
+    /// before sending the request; a block returns an error and records the audit. Multiple adapters of the
+    /// same Server share one sandbox.
     sandbox: Option<Arc<ServerSandbox>>,
 }
 
 impl MCPToolAdapter {
-    /// 基于原始工具名创建适配器(不进行命名空间化)。
+    /// Creates an adapter from the original tool name (no namespacing).
     pub fn new(client: MCPClient, definition: MCPToolDefinition) -> Self {
         let display_name = definition.name.clone();
         Self {
@@ -65,12 +67,12 @@ impl MCPToolAdapter {
         }
     }
 
-    /// 命名空间化适配器(P2-2):LLM 看到的工具名为 `server_name:tool_name`,
-    /// 调用时自动剥掉前缀走 Server 侧原始工具名。
+    /// Namespaced adapter (P2-2): the LLM sees the tool name as `server_name:tool_name`; the call strips the
+    /// prefix automatically and uses the Server-side original tool name.
     ///
-    /// 与 [`crate::ToolNamespace::qualify`] 配套,用于 100+ Server 场景下同名
-    /// 工具的唯一化路由:多个 Server 都有 `read_file` 时,各自对外名
-    /// `fs:read_file` / `db:read_file`,但调用都走各自的 `read_file`。
+    /// Pairs with [`crate::ToolNamespace::qualify`] for unique routing of same-named tools in the 100+ Server
+    /// scenario: when several Servers all have `read_file`, each exposes `fs:read_file` / `db:read_file`, but
+    /// the calls all go through their own `read_file`.
     pub fn namespaced(client: MCPClient, server: &str, definition: MCPToolDefinition) -> Self {
         let display_name = format!("{server}:{}", definition.name);
         Self {
@@ -82,21 +84,22 @@ impl MCPToolAdapter {
         }
     }
 
-    /// 给该工具挂 per-tool 超时(P2-4):超时/进度重置/硬上限语义见
-    /// [`ToolSpec`] 与 [`call_tool_with_timeout`]。
+    /// Attaches a per-tool timeout (P2-4): the timeout/progress-reset/hard-cap semantics are in
+    /// [`ToolSpec`] and [`call_tool_with_timeout`].
     pub fn with_timeout(mut self, spec: ToolSpec) -> Self {
         self.timeout_spec = Some(spec);
         self
     }
 
-    /// 挂 per-Server 安全沙箱(P2-6):`run()` 发请求前先过参数级最小权限校验,
-    /// 拦截返回 [`ToolError::InvalidInput`] 并记审计;放行才真正调用 Server。
+    /// Attaches a per-Server security sandbox (P2-6): `run()` runs parameter-level least-privilege validation
+    /// before sending the request; a block returns [`ToolError::InvalidInput`] and records the audit; only
+    /// allowed calls actually reach the Server.
     pub fn with_sandbox(mut self, sandbox: Arc<ServerSandbox>) -> Self {
         self.sandbox = Some(sandbox);
         self
     }
 
-    /// 对外展示的工具名(P2-2):命名空间化后为 `server:tool`,否则等于原始名。
+    /// The externally visible tool name (P2-2): `server:tool` after namespacing, otherwise the original name.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
@@ -119,7 +122,7 @@ impl BaseTool for MCPToolAdapter {
     async fn run(&self, input: String) -> Result<String, ToolError> {
         let args: Value = serde_json::from_str(&input)
             .map_err(|e| ToolError::ExecutionFailed(format!("Invalid JSON input: {}", e)))?;
-        // per-Server 安全沙箱(P2-6):发请求前先做参数级最小权限校验。
+        // per-Server security sandbox (P2-6): run parameter-level least-privilege validation before sending.
         if let Some(sandbox) = &self.sandbox {
             sandbox
                 .check_call(&self.definition.name, &args)
@@ -155,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_from_mcp_error_preserves_fields() {
-        // P1-6:code/message/data 原样保留,不降级为无结构 ExecutionFailed。
+        // P1-6: code/message/data are preserved as-is, not degraded to a structureless ExecutionFailed.
         let e = MCPError {
             code: -32001,
             message: "timeout".to_string(),
@@ -184,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_result_is_error_returns_execution_failed() {
-        // 服务器侧工具失败(is_error=true)→ 显式 Err,而非被当成功吞掉。
+        // A server-side tool failure (is_error=true) → explicit Err, not swallowed as a success.
         let result = MCPToolResult {
             content: vec![MCPContent::Text {
                 text: "server exploded".to_string(),
@@ -214,7 +217,8 @@ mod tests {
         assert_eq!(result_to_string_or_error(&result).unwrap(), "a\nb");
     }
 
-    /// 沙箱拦截:违规参数在发请求前被拦截(P2-6),不进 Server。
+    /// Sandbox block: violating parameters are intercepted before the request is sent (P2-6), never reaching
+    /// the Server.
     #[tokio::test]
     async fn test_adapter_sandbox_blocks_before_call() {
         let server = start_fake_sse_server(PostMode::Quiet).await;
@@ -237,7 +241,7 @@ mod tests {
         );
     }
 
-    /// 沙箱放行:合规参数真正到达 Server(P2-6)。
+    /// Sandbox allow: compliant parameters really reach the Server (P2-6).
     #[tokio::test]
     async fn test_adapter_sandbox_allows_and_reaches_server() {
         let server = start_fake_sse_server(PostMode::Quiet).await;

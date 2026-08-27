@@ -1,4 +1,4 @@
-//! Planner - 用 LLM 生成 / 重规划执行计划
+//! Planner - generates / replans execution plans with the LLM
 
 use lc_core::language_models::BaseChatModel;
 use lc_core::tools::ToolDefinition;
@@ -11,7 +11,7 @@ use crate::AgentError;
 
 use std::sync::Arc;
 
-/// 规划工具的 JSON Schema:强制 LLM 输出结构化步骤数组(P1-3)。
+/// JSON Schema for the planning tool: forces the LLM to emit a structured steps array (P1-3).
 fn plan_tool() -> ToolDefinition {
     ToolDefinition::new(
         "generate_plan",
@@ -30,25 +30,25 @@ fn plan_tool() -> ToolDefinition {
     }))
 }
 
-/// 从 tool_call 参数中取出 steps 数组,序列化回 `["a", "b"]` 供 parse_plan 复用。
+/// Extracts the steps array from the tool_call args, serializing it back to `["a", "b"]` for parse_plan to reuse.
 fn steps_to_json_string(args: &Value) -> String {
     args.get("steps")
         .and_then(|v| serde_json::to_string(v).ok())
         .unwrap_or_default()
 }
 
-/// 规划器:调用 LLM 生成步骤列表
+/// Planner: calls the LLM to generate a step list
 pub struct Planner {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 }
 
 impl Planner {
-    /// 创建新的规划器。
+    /// Creates a new planner.
     pub fn new(llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>) -> Self {
         Self { llm }
     }
 
-    /// 生成执行计划
+    /// Generates an execution plan
     pub async fn plan(&self, objective: &str) -> Result<Plan, AgentError> {
         let prompt = format!(
             "为以下目标制定执行计划,输出 JSON 字符串数组,每项是一个步骤描述。\n\
@@ -77,7 +77,7 @@ impl Planner {
         self.parse_plan(objective, &content)
     }
 
-    /// 重新规划(当步骤失败时)
+    /// Replans (when a step fails)
     pub async fn replan(
         &self,
         objective: &str,
@@ -120,10 +120,10 @@ impl Planner {
     }
 }
 
-/// 从 LLM 输出提取 JSON 数组(容忍 markdown 代码块)
+/// Extracts a JSON array from LLM output (tolerates markdown code fences)
 fn extract_json_array(content: &str) -> String {
     let trimmed = content.trim();
-    // 去除 markdown ```json ... ```
+    // Strip markdown ```json ... ```
     let stripped = if trimmed.starts_with("```") {
         trimmed
             .strip_prefix("```json")
@@ -135,7 +135,7 @@ fn extract_json_array(content: &str) -> String {
     } else {
         trimmed
     };
-    // 截取第一个 [ 到最后一个 ]
+    // Take from the first [ to the last ]
     if let Some(start) = stripped.find('[') {
         if let Some(end) = stripped.rfind(']') {
             if end > start {
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_parse_plan() {
-        // 不依赖 LLM,直接测 parse 逻辑(通过 extract)
+        // No LLM needed: test the parse logic directly (through extract)
         let content = r#"["搜索资料", "总结"]"#;
         let json = extract_json_array(content);
         let descs: Vec<String> = serde_json::from_str(&json).unwrap();
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_steps_to_json_string() {
-        // P1-3:tool_call 的 steps 数组序列化回 parse_plan 可吃的 JSON 数组。
+        // P1-3: the tool_call's steps array serializes back to a JSON array that parse_plan can consume.
         let args = serde_json::json!({"steps": ["a", "b"]});
         assert_eq!(steps_to_json_string(&args), r#"["a","b"]"#);
     }

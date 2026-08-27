@@ -1,31 +1,35 @@
-//! 显式 Agent 任务定义(P2-5)
+//! Explicit agent task definition (P2-5)
 //!
-//! 把多 Agent 派发时的"任务"从裸 `String` 提成显式类型 [`AgentTask`]:
-//! 目标(`objective`)、预期输出(`expected_output`)、允许工具(`allowed_tools`)
-//! 一起传给子 Agent,替代"只给一句话"的裸输入,让派发方和消费方对齐任务契约。
+//! Promotes the "task" in multi-agent dispatch from a bare `String` to an
+//! explicit type [`AgentTask`]: objective, expected output, and allowed tools
+//! travel together to the child agent, replacing the bare "just give a
+//! sentence" input so dispatcher and consumer agree on the task contract.
 
 use serde::{Deserialize, Serialize};
 
-/// 子 Agent 任务(P2-5)
+/// Child agent task (P2-5)
 ///
-/// 派发给子 Agent 的显式任务,比裸 `String` 多携带两层约束:
-/// - `expected_output`:预期产出,供子 Agent 对齐结果形态;
-/// - `allowed_tools`:子 Agent 可用的工具白名单(实际装配由消费方负责)。
+/// An explicit task dispatched to a child agent, carrying two layers of
+/// constraint beyond a bare `String`:
+/// - `expected_output`: the expected deliverable, so the child agent aligns its
+///   result shape;
+/// - `allowed_tools`: the child agent's tool allowlist (actual assembly is the
+///   consumer's responsibility).
 ///
-/// 可经 [`From<AgentTask>` for `String`] 退化为裸目标文本,供 `Input=String`
-/// 的编排器 / 执行器消费。
+/// Can degrade to a bare objective string via [`From<AgentTask>` for `String`]
+/// for `Input=String` orchestrators / executors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTask {
-    /// 任务目标:一句话说清要做什么。
+    /// Task objective: a one-sentence description of what to do.
     pub objective: String,
-    /// 预期输出(可选):结果的形态 / 要点,供子 Agent 对齐。
+    /// Expected output (optional): the result's shape / key points, for the child agent to align to.
     pub expected_output: Option<String>,
-    /// 允许工具白名单(空 = 不限制)。
+    /// Allowed tool allowlist (empty = no restriction).
     pub allowed_tools: Vec<String>,
 }
 
 impl AgentTask {
-    /// 只带目标创建任务。
+    /// Creates a task with only an objective.
     pub fn new(objective: impl Into<String>) -> Self {
         Self {
             objective: objective.into(),
@@ -34,13 +38,13 @@ impl AgentTask {
         }
     }
 
-    /// 声明预期输出。
+    /// Declares the expected output.
     pub fn with_expected_output(mut self, expected_output: impl Into<String>) -> Self {
         self.expected_output = Some(expected_output.into());
         self
     }
 
-    /// 声明允许工具白名单(覆盖式设置)。
+    /// Declares the allowed-tool allowlist (overwrite semantics).
     pub fn with_allowed_tools(
         mut self,
         tools: impl IntoIterator<Item = impl Into<String>>,
@@ -49,28 +53,28 @@ impl AgentTask {
         self
     }
 
-    /// 任务目标。
+    /// Task objective.
     pub fn objective(&self) -> &str {
         &self.objective
     }
 
-    /// 预期输出(若有)。
+    /// Expected output, if any.
     pub fn expected_output(&self) -> Option<&str> {
         self.expected_output.as_deref()
     }
 
-    /// 允许工具白名单。
+    /// Allowed-tool allowlist.
     pub fn allowed_tools(&self) -> &[String] {
         &self.allowed_tools
     }
 
-    /// 是否限制了工具(白名单非空)。
+    /// Whether tools are restricted (allowlist non-empty).
     pub fn is_tool_restricted(&self) -> bool {
         !self.allowed_tools.is_empty()
     }
 }
 
-/// 退化为裸目标文本:把 `AgentTask` 交给只认 `String` 的编排器 / 执行器。
+/// Degrades to a bare objective string: passes an `AgentTask` to orchestrators / executors that only accept `String`.
 impl From<AgentTask> for String {
     fn from(task: AgentTask) -> Self {
         task.objective

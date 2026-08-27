@@ -6,15 +6,15 @@ use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
 use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
-/// 字符串输出解析器
+/// String output parser
 ///
-/// 最简单的解析器，直接将 LLM 输出作为字符串返回。
-/// 相当于 Python LangChain 的 `StrOutputParser`。
+/// The simplest parser: returns the LLM output as a string verbatim.
+/// Equivalent to Python LangChain's `StrOutputParser`.
 ///
-/// 作为 `Runnable` 时接收 `LLMResult`，取其 `content` 字段后原样返回，
-/// 使 `llm.pipe(StrOutputParser)` 成为 LCEL 链的尾段。
+/// As a `Runnable` it receives an `LLMResult`, returns its `content` field unchanged,
+/// making `llm.pipe(StrOutputParser)` the tail of an LCEL chain.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::output_parsers::StrOutputParser;
 ///
@@ -25,7 +25,7 @@ use crate::runnables::{Runnable, RunnableConfig};
 pub struct StrOutputParser;
 
 impl StrOutputParser {
-    /// 创建字符串输出解析器。
+    /// Creates a string output parser.
     pub fn new() -> Self {
         Self
     }

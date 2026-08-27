@@ -1,17 +1,18 @@
-//! MCP SSE 服务器:把 `MCPServer` 暴露为 HTTP/SSE 网络服务。
+//! MCP SSE server: exposes `MCPServer` as an HTTP/SSE network service.
 //!
-//! `MCPServer` 本身是纯请求处理器(`handle_request`),这一层负责把它接到真实
-//! 网络上,让任何 MCP 客户端(`MCPClient::connect(MCPConfig::sse(...))` / Cursor /
-//! Claude Desktop 等)都能连上来调用注册的工具。协议按客户端行为实现:
-//! - `GET /sse` → 200 + SSE 长连接:先发 `event: endpoint` 告知 POST 地址,
-//!   再周期发 `: keep-alive` 心跳保持连接(客户端超时会断开重连);
-//! - `POST /message` → 有 `id` 的 JSON-RPC 请求交给 `MCPServer::handle_request`
-//!   处理并直接回 JSON(客户端优先解析直接响应);无 `id` 的通知(如
-//!   `notifications/initialized`)分发给 `handle_notification` 后回 202。
+//! `MCPServer` itself is a pure request handler (`handle_request`); this layer wires it to a real network so any
+//! MCP client (`MCPClient::connect(MCPConfig::sse(...))` / Cursor / Claude Desktop etc.) can connect and call the
+//! registered tools. The protocol follows client behavior:
+//! - `GET /sse` → 200 + SSE long connection: first sends `event: endpoint` announcing the POST address,
+//!   then periodically sends a `: keep-alive` heartbeat to hold the connection (a timed-out client disconnects
+//!   and reconnects);
+//! - `POST /message` → JSON-RPC requests with an `id` go to `MCPServer::handle_request`, processed and answered
+//!   directly with JSON (clients prefer parsing the direct response); notifications without an `id` (such as
+//!   `notifications/initialized`) are dispatched to `handle_notification` then answered with 202.
 //!
-//! 部署场景:调用方负责绑好 listener——本地联调绑 `127.0.0.1:0`,
-//! 远程部署绑 `0.0.0.0:PORT`,并把客户端真能访问的 `public_base` 传进来
-//! (详见 [`MCPServer::serve_sse`](crate::MCPServer::serve_sse))。
+//! Deployment: the caller is responsible for binding the listener — bind `127.0.0.1:0` for local debugging,
+//! `0.0.0.0:PORT` for remote deployment, and pass in a `public_base` the clients can really reach
+//! (see [`MCPServer::serve_sse`](crate::MCPServer::serve_sse)).
 
 use crate::protocol::{MCPError, MCPRequest, MCPResponse};
 use crate::server::MCPServer;
@@ -22,14 +23,15 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// 在一个已绑定的 TCP listener 上提供 MCP SSE 服务,返回客户端要连的 SSE 入口 URL。
+/// Serves MCP over SSE on an already-bound TCP listener, returning the SSE entry URL clients connect to.
 ///
-/// - `listener`:已绑定好地址的 listener(测试绑 `127.0.0.1:0`,部署绑 `0.0.0.0:PORT`);
-/// - `public_base`:客户端访问本服务器的基地址(如 `http://your-server-ip:8788`)。
-///   服务端发给客户端的 POST 地址由它拼出,部署在远程时必须是客户端真能访问的地址,
-///   否则客户端收到 `endpoint` 事件后无法回连 POST。
+/// - `listener`: a listener already bound to an address (tests bind `127.0.0.1:0`, deployment binds
+///   `0.0.0.0:PORT`);
+/// - `public_base`: the base address clients use to reach this server (e.g. `http://your-server-ip:8788`).
+///   The POST address the server sends to clients is built from it; when deployed remotely it must be an address
+///   clients can really reach, otherwise they cannot call back to POST after receiving the `endpoint` event.
 ///
-/// 启动后立即返回,接收循环在后台任务里运行直到进程退出。
+/// Returns immediately after startup; the accept loop runs on a background task until the process exits.
 pub(crate) fn serve(server: Arc<MCPServer>, listener: TcpListener, public_base: String) -> String {
     let sse_url = format!("{public_base}/sse");
     let message_url = format!("{public_base}/message");
@@ -51,7 +53,7 @@ pub(crate) fn serve(server: Arc<MCPServer>, listener: TcpListener, public_base: 
     sse_url
 }
 
-/// 处理一条连接:按请求行分派到 SSE 长连接或 POST 处理。
+/// Handles one connection: dispatches by request line to the SSE long connection or POST handling.
 async fn handle_connection(server: Arc<MCPServer>, mut sock: TcpStream, message_url: &str) {
     let (first_line, body) = read_http_request(&mut sock).await;
     if first_line.starts_with("GET ") {
@@ -61,7 +63,8 @@ async fn handle_connection(server: Arc<MCPServer>, mut sock: TcpStream, message_
     }
 }
 
-/// SSE 长连接:先发 200 + endpoint 事件(告知 POST 地址),再周期心跳保持。
+/// SSE long connection: first sends 200 + the endpoint event (announcing the POST address), then holds with
+/// periodic heartbeats.
 async fn serve_sse_stream(sock: &mut TcpStream, message_url: &str) {
     if sock
         .write_all(
@@ -84,13 +87,14 @@ async fn serve_sse_stream(sock: &mut TcpStream, message_url: &str) {
     }
 }
 
-/// POST:有 `id` 的请求交给 `MCPServer` 处理并直接回 JSON;无 `id` 的通知回 202。
+/// POST: requests with an `id` go to `MCPServer`, processed and answered directly with JSON; notifications
+/// without an `id` are answered with 202.
 async fn handle_post(server: &MCPServer, sock: &mut TcpStream, body: &str) {
-    // 宽松解析:通知无 id、请求有 id,与 `serve_stdio` 的 ServerMessage 一致
+    // Lenient parse: notifications have no id, requests have one, matching `serve_stdio`'s ServerMessage
     let msg: InboundMessage = match serde_json::from_str(body) {
         Ok(m) => m,
         Err(e) => {
-            // JSON-RPC 2.0:请求无法解析时,响应 id 必须为 null
+            // JSON-RPC 2.0: when the request could not be parsed, the response id MUST be null
             let resp = MCPResponse {
                 jsonrpc: "2.0".to_string(),
                 id: None,
@@ -103,7 +107,7 @@ async fn handle_post(server: &MCPServer, sock: &mut TcpStream, body: &str) {
     };
 
     let Some(id) = msg.id else {
-        // 通知(无 id):客户端只看发送是否成功 → 202
+        // Notification (no id): the client only cares whether it was sent → 202
         server.handle_notification(&msg.method, msg.params).await;
         let _ = sock
             .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
@@ -121,7 +125,7 @@ async fn handle_post(server: &MCPServer, sock: &mut TcpStream, body: &str) {
     write_json_response(sock, &resp).await;
 }
 
-/// 把一个 JSON-RPC 响应包成 HTTP 200 JSON 响应写回。
+/// Wraps a JSON-RPC response as an HTTP 200 JSON response and writes it back.
 async fn write_json_response(sock: &mut TcpStream, resp: &MCPResponse) {
     let resp_body = match serde_json::to_string(resp) {
         Ok(s) => s,
@@ -137,26 +141,27 @@ async fn write_json_response(sock: &mut TcpStream, resp: &MCPResponse) {
     let _ = sock.write_all(out.as_bytes()).await;
 }
 
-/// HTTP 请求头上限:超过即断开(防 slowloris 无限累积内存)。
+/// HTTP header cap: connections exceeding it are dropped (prevents slowloris from accumulating memory without bound).
 const MAX_HEADER_SIZE: usize = 64 * 1024;
-/// HTTP body 上限:超过声明的 Content-Length 即拒绝。
+/// HTTP body cap: bodies exceeding the declared Content-Length are rejected.
 const MAX_BODY_SIZE: usize = 1024 * 1024;
-/// 单次读超时:客户端迟迟不发字节即断开。
+/// Single-read timeout: a client that stops sending bytes is disconnected.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 读取一个 HTTP 请求,返回 (请求行, body)。
+/// Reads one HTTP request, returning (request line, body).
 ///
-/// 简化实现:先读到 `\r\n\r\n`,再按 `Content-Length` 读全 body。
-/// 带大小上限与读超时:恶意客户端只发少量字节不结束、或声明超大
-/// Content-Length 后慢速发送时,连接被断开而不是无限累积(DoS 防护)。
-/// 任一防护触发均返回空串,调用方不匹配 GET/POST 即自然关闭连接。
+/// Simplified implementation: first reads up to `\r\n\r\n`, then reads the full body by `Content-Length`.
+/// With size caps and a read timeout: a malicious client that sends a few bytes and never finishes, or declares a
+/// huge Content-Length and sends slowly, gets disconnected instead of accumulating without bound (DoS protection).
+/// Any protection triggered returns empty strings; the caller closes the connection naturally when GET/POST does
+/// not match.
 async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
         let n = match tokio::time::timeout(READ_TIMEOUT, sock.read(&mut tmp)).await {
             Ok(Ok(n)) => n,
-            // 读超时 / 读错误 → 断开
+            // Read timeout / read error → disconnect
             _ => return (String::new(), String::new()),
         };
         if n == 0 {
@@ -164,7 +169,7 @@ async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
         }
         buf.extend_from_slice(&tmp[..n]);
         if buf.len() > MAX_HEADER_SIZE {
-            return (String::new(), String::new()); // 请求头超限
+            return (String::new(), String::new()); // header over the cap
         }
         if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             let header = String::from_utf8_lossy(&buf[..pos]).to_string();
@@ -176,7 +181,7 @@ async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
                         .map(|v| v.trim().parse::<usize>().unwrap_or(0))
                 })
                 .unwrap_or(0);
-            // 超大 body 声明直接拒绝
+            // An oversized body declaration is rejected outright
             if content_length > MAX_BODY_SIZE {
                 return (String::new(), String::new());
             }
@@ -199,7 +204,7 @@ async fn read_http_request(sock: &mut TcpStream) -> (String, String) {
     }
 }
 
-/// 宽松入站消息:通知无 id
+/// A lenient inbound message: notifications have no id
 #[derive(Deserialize)]
 struct InboundMessage {
     #[serde(default)]
@@ -214,7 +219,7 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    /// 建一条 loopback 客户端/服务端连接对。
+    /// Builds a loopback client/server connection pair.
     async fn tcp_pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -227,8 +232,8 @@ mod tests {
         let (mut client, mut server) = tcp_pair().await;
         client.set_nodelay(true).unwrap();
 
-        // 发送超过 MAX_HEADER_SIZE 的请求头且不含 \r\n\r\n:
-        // read_http_request 应在缓冲超限时立即返回空,而不是无限累积。
+        // Send a header over MAX_HEADER_SIZE with no \r\n\r\n:
+        // read_http_request should return empty immediately once the buffer exceeds the cap, not accumulate.
         let junk = vec![b'a'; MAX_HEADER_SIZE + 16];
         let (write_res, read_res) =
             tokio::join!(client.write_all(&junk), read_http_request(&mut server));

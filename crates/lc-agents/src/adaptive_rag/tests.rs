@@ -131,7 +131,8 @@ impl BaseChatModel for MockLLM {
     }
 }
 
-/// P1-3:chat() 直接返回结构化 tool_call 决策的 mock(不走 bind_tools)。
+/// P1-3: mock whose chat() directly returns a structured tool_call decision
+/// (does not go through bind_tools).
 #[derive(Clone)]
 struct MockToolCallLLM {
     decision: String,
@@ -312,7 +313,8 @@ fn test_parse_decision_invalid() {
 
 #[tokio::test]
 async fn test_route_uses_tool_call_decision() {
-    // P1-3:LLM 以 tool_calls 返回结构化决策,route 应直接采用,不靠文本关键字。
+    // P1-3: the LLM returns a structured decision via tool_calls; route should
+    // use it directly rather than relying on text keywords.
     let llm = MockToolCallLLM {
         decision: "multi_query".to_string(),
     };

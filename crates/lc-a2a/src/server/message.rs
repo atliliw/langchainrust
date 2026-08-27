@@ -34,11 +34,12 @@ pub(crate) fn extract_message(params: &Value) -> A2AMessage {
     }
 }
 
-/// 从 message 的 `content` 里提取可读文本。
+/// Extract readable text from a message's `content`.
 ///
-/// 兼容纯字符串 `"hi"` 与 A2A 2.0 结构化内容对象 `{"type":"text","text":"hi"}`:
-/// 对象优先取 `text` / `content` 字段;仍取不到时整体 JSON 序列化作为内容,
-/// 避免把结构化 content 静默当成空串。
+/// Handles both plain strings `"hi"` and A2A 2.0 structured content objects
+/// `{"type":"text","text":"hi"}`: the object form prefers the `text` / `content`
+/// fields; when neither is present, the whole JSON is serialized as content,
+/// avoiding silently treating structured content as an empty string.
 pub(crate) fn extract_content_text(content: Option<&Value>) -> String {
     match content {
         None => String::new(),

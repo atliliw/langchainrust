@@ -26,8 +26,9 @@
 
 pub mod adapter;
 pub mod adaptive_rag;
-/// 人审门(§4.2):工具执行前的异步审批闸。调用方实现 [`ApprovalHandler`] 并
-/// 通过 [`AgentExecutor::with_approval`] 注入;默认关。
+/// Approval gate (§4.2): asynchronous approval gate before tool execution.
+/// Implement [`ApprovalHandler`] and inject it via [`AgentExecutor::with_approval`];
+/// off by default.
 pub mod approval;
 pub mod executor;
 /// Module alias preserving the historical `lc_agents::base` path.
@@ -47,10 +48,11 @@ pub use orchestrator as orchestration;
 pub mod plan_execute;
 pub mod policy;
 pub mod react;
-/// 跨进程 resume(§4.2 人审/预算门):挂起状态落盘 + 恢复。框架在审批前后
-/// 落/清挂起点([`ResumeStore`]),新进程用 [`AgentExecutor::pending_approval`]
-/// 查看、[`AgentExecutor::resume`] 续跑。默认关(不配置 [`ResumeStore`] 即无
-/// 序列化,存量行为不变)。
+/// Cross-process resume (§4.2 approval/budget gate): suspend-state persistence +
+/// recovery. The framework writes/clears checkpoints ([`ResumeStore`]) around
+/// approvals; a new process inspects via [`AgentExecutor::pending_approval`] and
+/// resumes via [`AgentExecutor::resume`]. Off by default (no [`ResumeStore`] ⇒ no
+/// serialization; existing behavior unchanged).
 pub mod resume;
 pub mod retry;
 pub mod streaming;

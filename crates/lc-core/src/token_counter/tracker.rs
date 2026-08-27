@@ -1,4 +1,4 @@
-//! Token 追踪 LLM 包装器与成本估算
+//! Token-tracking LLM wrapper and cost estimation
 
 use std::sync::Arc;
 
@@ -11,10 +11,10 @@ use super::counter::{TokenCounter, TrackerTokenUsage};
 use super::tiktoken::TiktokenCounter;
 use super::TokenCounterError;
 
-/// 带 Token 统计的 LLM 包装器
+/// LLM wrapper with token statistics
 ///
-/// 包装任意 `BaseChatModel`,自动累计 prompt / completion token 用量,
-/// 优先使用 LLM 返回的真实 usage,无则用 tiktoken 估算。
+/// Wraps any `BaseChatModel`, accumulating prompt / completion token usage automatically,
+/// preferring the real usage returned by the LLM, falling back to tiktoken estimates.
 pub struct TokenTrackingLLM<L: BaseChatModel> {
     llm: L,
     counter: Arc<dyn TokenCounter>,
@@ -22,7 +22,7 @@ pub struct TokenTrackingLLM<L: BaseChatModel> {
 }
 
 impl<L: BaseChatModel> TokenTrackingLLM<L> {
-    /// 用自定义计数器包装 LLM。
+    /// Wraps an LLM with a custom counter.
     pub fn new(llm: L, counter: Arc<dyn TokenCounter>) -> Self {
         Self {
             llm,
@@ -31,13 +31,13 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         }
     }
 
-    /// 用 Tiktoken(cl100k_base)计数器包装
+    /// Wraps with a Tiktoken (cl100k_base) counter
     pub fn for_openai(llm: L) -> Result<Self, TokenCounterError> {
         let counter = TiktokenCounter::new()?;
         Ok(Self::new(llm, Arc::new(counter)))
     }
 
-    /// 调用 LLM 并统计 token
+    /// Calls the LLM and counts tokens
     pub async fn chat(
         &self,
         messages: Vec<Message>,
@@ -46,9 +46,9 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         let estimated_prompt = self.counter.count_messages(&messages);
         let result = self.llm.chat(messages, config).await?;
 
-        // 优先用 LLM 返回的真实 usage,否则用估算。
-        // `TrackerTokenUsage` 与 `language_models::TokenUsage` 同为 usize，
-        // 无需精度损失转换（Q6）。
+        // prefer the real usage returned by the LLM, otherwise use the estimate.
+        // `TrackerTokenUsage` and `language_models::TokenUsage` are both usize,
+        // so no precision-loss conversion is needed (Q6).
         let (prompt, completion) = result
             .token_usage
             .as_ref()
@@ -62,33 +62,33 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         Ok(result)
     }
 
-    /// 获取累计用量
+    /// Returns the cumulative usage
     pub async fn get_usage(&self) -> TrackerTokenUsage {
         self.usage.lock().await.clone()
     }
 
-    /// 重置统计
+    /// Resets the statistics
     pub async fn reset(&self) {
         self.usage.lock().await.reset();
     }
 
-    /// 估算成本(美元)
+    /// Estimates the cost (USD)
     pub async fn estimate_cost(&self, pricing: &ModelPricing) -> f64 {
         let usage = self.get_usage().await;
         pricing.calculate(usage.prompt_tokens, usage.completion_tokens)
     }
 }
 
-/// 模型定价(每 1K token 价格,美元)
+/// Model pricing (per 1K tokens, USD)
 pub struct ModelPricing {
-    /// 每 1K prompt token 价格(美元)
+    /// Per-1K prompt token price (USD)
     pub prompt_price_per_1k: f64,
-    /// 每 1K completion token 价格(美元)
+    /// Per-1K completion token price (USD)
     pub completion_price_per_1k: f64,
 }
 
 impl ModelPricing {
-    /// 创建自定义模型定价。
+    /// Creates custom model pricing.
     pub fn new(prompt: f64, completion: f64) -> Self {
         Self {
             prompt_price_per_1k: prompt,
@@ -96,17 +96,17 @@ impl ModelPricing {
         }
     }
 
-    /// gpt-4o-mini 定价(美元/1K token)
+    /// gpt-4o-mini pricing (USD / 1K tokens)
     pub fn gpt4o_mini() -> Self {
         Self::new(0.15, 0.60)
     }
 
-    /// gpt-4o 定价(美元/1K token)
+    /// gpt-4o pricing (USD / 1K tokens)
     pub fn gpt4o() -> Self {
         Self::new(2.50, 10.00)
     }
 
-    /// 计算成本
+    /// Calculates the cost
     pub fn calculate(&self, prompt: usize, completion: usize) -> f64 {
         (prompt as f64 / 1000.0) * self.prompt_price_per_1k
             + (completion as f64 / 1000.0) * self.completion_price_per_1k

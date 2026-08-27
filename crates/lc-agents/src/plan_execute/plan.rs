@@ -1,41 +1,41 @@
-//! Plan / PlanStep 类型
+//! Plan / PlanStep types
 
 use serde::{Deserialize, Serialize};
 
-/// 步骤状态
+/// Step status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum StepStatus {
-    /// 等待执行
+    /// Awaiting execution
     #[default]
     Pending,
-    /// 正在执行
+    /// Running
     Running,
-    /// 已完成
+    /// Completed
     Completed,
-    /// 执行失败
+    /// Execution failed
     Failed {
-        /// 失败原因
+        /// Failure reason
         error: String,
     },
 }
 
-/// 执行计划步骤
+/// An execution-plan step
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
-    /// 步骤 ID
+    /// Step ID
     pub id: usize,
-    /// 步骤描述
+    /// Step description
     pub description: String,
-    /// 步骤状态
+    /// Step status
     #[serde(default)]
     pub status: StepStatus,
-    /// 步骤执行结果
+    /// Step execution result
     #[serde(default)]
     pub result: Option<String>,
 }
 
 impl PlanStep {
-    /// 创建新的计划步骤,初始状态为 Pending。
+    /// Creates a new plan step, initially Pending.
     pub fn new(id: usize, description: impl Into<String>) -> Self {
         Self {
             id,
@@ -46,17 +46,17 @@ impl PlanStep {
     }
 }
 
-/// 执行计划
+/// Execution plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
-    /// 计划目标
+    /// Plan objective
     pub objective: String,
-    /// 步骤列表
+    /// Step list
     pub steps: Vec<PlanStep>,
 }
 
 impl Plan {
-    /// 创建新的执行计划。
+    /// Creates a new execution plan.
     pub fn new(objective: impl Into<String>, steps: Vec<PlanStep>) -> Self {
         Self {
             objective: objective.into(),
@@ -64,7 +64,7 @@ impl Plan {
         }
     }
 
-    /// 从步骤描述列表构造(id 从 0 递增)
+    /// Constructs from a list of step descriptions (ids increment from 0)
     pub fn from_descriptions(objective: impl Into<String>, descs: Vec<String>) -> Self {
         let steps = descs
             .into_iter()
@@ -74,17 +74,17 @@ impl Plan {
         Self::new(objective, steps)
     }
 
-    /// 下一个 pending 步骤
+    /// The next pending step
     pub fn next_pending(&self) -> Option<&PlanStep> {
         self.steps.iter().find(|s| s.status == StepStatus::Pending)
     }
 
-    /// 是否全部完成
+    /// Whether all steps are completed
     pub fn is_complete(&self) -> bool {
         self.steps.iter().all(|s| s.status == StepStatus::Completed)
     }
 
-    /// 将指定步骤标记为已完成并记录结果。
+    /// Marks the given step as completed and records the result.
     pub fn mark_completed(&mut self, id: usize, result: impl Into<String>) {
         if let Some(s) = self.steps.iter_mut().find(|s| s.id == id) {
             s.status = StepStatus::Completed;
@@ -92,7 +92,7 @@ impl Plan {
         }
     }
 
-    /// 将指定步骤标记为失败并记录错误信息。
+    /// Marks the given step as failed and records the error.
     pub fn mark_failed(&mut self, id: usize, error: impl Into<String>) {
         if let Some(s) = self.steps.iter_mut().find(|s| s.id == id) {
             s.status = StepStatus::Failed {

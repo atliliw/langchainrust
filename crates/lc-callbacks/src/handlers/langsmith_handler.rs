@@ -20,7 +20,7 @@ impl LangSmithHandler {
     pub fn new(config: LangSmithConfig) -> Self {
         Self {
             client: Arc::new(LangSmithClient::new(config)),
-            async_mode: false, // 默认同步模式，确保请求完成
+            async_mode: false, // default to sync mode so the request completes
         }
     }
 

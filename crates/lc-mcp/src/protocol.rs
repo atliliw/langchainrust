@@ -1,61 +1,61 @@
-//! MCP 协议定义(JSON-RPC 2.0)
+//! MCP protocol definitions (JSON-RPC 2.0)
 //!
-//! MCP 基于 JSON-RPC 2.0,本模块定义请求/响应/错误类型。
+//! MCP is built on JSON-RPC 2.0; this module defines the request/response/error types.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// MCP 协议版本(本库当前实现的版本,`initialize` 时作为请求版本)。
+/// MCP protocol version (the version this library currently implements, sent as the requested version at `initialize`).
 pub const MCP_VERSION: &str = "2024-11-05";
 
-/// 本库支持的协议版本列表(P2-10)。
+/// Protocol versions supported by this library (P2-10).
 ///
-/// 握手时按序识别;列表首项为当前实现版本。随协议演进追加新版本,
-/// 保留旧版本以便与旧 Server 兼容(降级);不在列表内的版本由
-/// [`VersionPolicy`] 决定降级还是拒绝。
+/// Recognized in order during the handshake; the first entry is the currently implemented version. New versions
+/// are appended as the protocol evolves while old ones are kept for compatibility with older servers (degradation);
+/// versions not in the list are handled by [`VersionPolicy`] — degrade or reject.
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_VERSION];
 
-/// 协议版本协商策略(P2-10):Server 声明版本不在支持列表时怎么处理。
+/// Protocol version negotiation policy (P2-10): what to do when a server declares a version outside the support list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VersionPolicy {
-    /// 降级到本库实现版本继续用(兼容声明了新 / 旧协议的 Server)。
+    /// Degrade to the library's implemented version and keep going (compatible with servers declaring a newer/older protocol).
     #[default]
     Degrade,
-    /// 严格模式:版本不受支持则握手失败、拒绝连接。
+    /// Strict mode: an unsupported version fails the handshake and rejects the connection.
     Reject,
 }
 
-/// 一次握手的版本协商结果(P2-10)。
+/// The version negotiation result of one handshake (P2-10).
 ///
-/// 握手完成后由客户端锁定(连接后锁版本),`protocol_info()` 可随时读取。
+/// Locked by the client once the handshake completes (the version is pinned after connecting); `protocol_info()` can read it at any time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolInfo {
-    /// 客户端在 `initialize` 请求中声明的版本。
+    /// Version declared by the client in the `initialize` request.
     pub requested: String,
-    /// Server 在 `initialize` 响应中声明的版本。
+    /// Version declared by the server in the `initialize` response.
     pub server_version: String,
-    /// 实际协商生效的版本(连接后锁定;降级时为本库实现版本)。
+    /// The version that actually takes effect after negotiation (pinned after connecting; the library's implemented version when degraded).
     pub negotiated: String,
-    /// Server 声明版本是否在本库支持列表内。
+    /// Whether the version the server declared is inside this library's support list.
     pub supported: bool,
 }
 
-/// JSON-RPC 请求
+/// JSON-RPC request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPRequest {
-    /// JSON-RPC 版本标识(固定 `"2.0"`)
+    /// JSON-RPC version identifier (fixed `"2.0"`)
     pub jsonrpc: String,
-    /// 请求 ID(用于匹配响应)
+    /// Request ID (used to match responses)
     pub id: u64,
-    /// 方法名
+    /// Method name
     pub method: String,
-    /// 可选的请求参数
+    /// Optional request parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl MCPRequest {
-    /// 构造新的 JSON-RPC 请求。
+    /// Builds a new JSON-RPC request.
     pub fn new(id: u64, method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -66,28 +66,28 @@ impl MCPRequest {
     }
 }
 
-/// JSON-RPC 响应
+/// JSON-RPC response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPResponse {
-    /// JSON-RPC 版本标识(固定 `"2.0"`)
+    /// JSON-RPC version identifier (fixed `"2.0"`)
     pub jsonrpc: String,
     /// Per JSON-RPC 2.0 spec, `id` is `null` when the request could not be parsed.
     pub id: Option<u64>,
-    /// 成功时的结果(错误响应为 `None`)
+    /// The result on success (`None` on error responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    /// 错误信息(成功响应为 `None`)
+    /// Error info (`None` on success responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<MCPError>,
 }
 
 impl MCPResponse {
-    /// 是否为错误响应
+    /// Whether this is an error response
     pub fn is_error(&self) -> bool {
         self.error.is_some()
     }
 
-    /// 取 result(错误时返回 MCPError)
+    /// Extracts `result` (returns the `MCPError` on error)
     pub fn into_result(self) -> Result<Value, MCPError> {
         if let Some(err) = self.error {
             return Err(err);
@@ -96,20 +96,20 @@ impl MCPResponse {
     }
 }
 
-/// JSON-RPC 错误
+/// JSON-RPC error
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPError {
-    /// JSON-RPC 错误码
+    /// JSON-RPC error code
     pub code: i32,
-    /// 错误描述消息
+    /// Error description message
     pub message: String,
-    /// 可选的附加错误数据
+    /// Optional extra error data
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
 
 impl MCPError {
-    /// 构造 JSON-RPC 错误。
+    /// Builds a JSON-RPC error.
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -118,24 +118,24 @@ impl MCPError {
         }
     }
 
-    /// 标准错误:方法不存在
+    /// Standard error: method not found
     pub fn method_not_found() -> Self {
         Self::new(-32601, "Method not found")
     }
 
-    /// 标准错误:无效参数
+    /// Standard error: invalid params
     pub fn invalid_params(msg: impl Into<String>) -> Self {
         Self::new(-32602, msg)
     }
 
-    /// 传输层连接断开(子进程退出 / SSE 长连接中断)。
+    /// Transport connection dropped (child process exited / SSE long connection broken).
     ///
-    /// 上层收到此错误后应触发重连流程并重新握手。
+    /// Layers above receive this error and should trigger the reconnect flow and re-handshake.
     pub fn connection_lost() -> Self {
         Self::new(-32000, "MCP connection lost")
     }
 
-    /// 是否为连接断开错误。
+    /// Whether this is a connection-dropped error.
     pub fn is_connection_lost(&self) -> bool {
         self.code == -32000
     }

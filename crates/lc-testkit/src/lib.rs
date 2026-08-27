@@ -1,10 +1,11 @@
-//! lc-testkit — 测试录播/回放 harness。
+//! lc-testkit — a record/replay harness for the framework.
 //!
-//! 让框架"没 key 也能自测":
-//! - [`RecordingProvider`]:包裹任意 `BaseChatModel`,真实调用一次后把请求/响应对追加到 JSONL。
-//! - [`ReplayProvider`]:从录制文件按 FIFO 顺序回放,零网络。
+//! Lets the framework self-test without an API key:
+//! - [`RecordingProvider`]: wraps any `BaseChatModel`, makes one real call, then appends the
+//!   request/response pair to a JSONL file.
+//! - [`ReplayProvider`]: replays from the recording file in FIFO order, zero network.
 //!
-//! 数据格式与使用方式见 `docs/internal/v0.16.0/HARNESS_DESIGN.md` Part A。
+//! Data format and usage are described in `docs/internal/v0.16.0/HARNESS_DESIGN.md` Part A.
 
 mod error;
 mod recording;

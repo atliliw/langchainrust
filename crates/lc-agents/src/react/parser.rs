@@ -1,66 +1,67 @@
 // src/agents/react/parser.rs
-//! ReAct 输出解析器
+//! ReAct output parser
 //!
-//! 解析 LLM 的 ReAct 格式输出。
+//! Parses the LLM's ReAct-format output.
 
 use crate::{AgentAction, AgentError, AgentFinish, AgentOutput, ToolInput};
 use regex::Regex;
 
-/// ReAct 输出解析器
+/// ReAct output parser
 ///
-/// 解析格式：
+/// Parsed format:
 /// ```text
-/// Thought: 思考内容
-/// Action: 工具名称
-/// Action Input: 工具输入
+/// Thought: thought content
+/// Action: tool name
+/// Action Input: tool input
 /// ```
-/// 或
+/// or
 /// ```text
-/// Thought: 思考内容
-/// Final Answer: 最终答案
+/// Thought: thought content
+/// Final Answer: final answer
 /// ```
 pub struct ReActOutputParser {
-    /// Action 正则表达式
+    /// Action regex
     action_regex: Regex,
-    /// Final Answer 标记
+    /// Final Answer marker
     final_answer_marker: &'static str,
 }
 
 impl ReActOutputParser {
-    /// 创建新的解析器
+    /// Creates a new parser
     pub fn new() -> Self {
         Self {
-            // 匹配: Action: xxx\nAction Input: yyy
+            // Matches: Action: xxx\nAction Input: yyy
             action_regex: Regex::new(r"Action\s*:\s*(.*?)\s*\nAction\s*Input\s*:\s*(.*?)(?:\n|$)")
                 .expect("Invalid regex"),
             final_answer_marker: "Final Answer:",
         }
     }
 
-    /// 解析 LLM 输出
+    /// Parses LLM output
     ///
-    /// # 参数
-    /// * `text` - LLM 的输出文本
+    /// # Parameters
+    /// * `text` - the LLM's output text
     ///
-    /// # 返回
-    /// * `AgentOutput::Action` - 需要执行动作(有 Action 优先于 Final Answer)
-    /// * `AgentOutput::Finish` - 最终答案(取最后一次出现之后的内容)
+    /// # Returns
+    /// * `AgentOutput::Action` - the action to execute (Action takes priority over Final Answer)
+    /// * `AgentOutput::Finish` - the final answer (content after the last occurrence)
     pub fn parse(&self, text: &str) -> Result<AgentOutput, AgentError> {
         let text = text.trim();
 
-        // F6:先试 Action——有 Action 就以 Action 为准。模型可能在 Thought 里
-        // 提到"Final Answer:"字样(解释格式 / 举例),但随后真正要调工具;
-        // 旧逻辑先 `contains` 命中即判收尾,会跳过后面的 Action。
+        // F6: try Action first — if there is an Action, it wins. The model may
+        // mention "Final Answer:" in its Thought (explaining the format / giving
+        // an example) but then actually call a tool; the old logic treated any
+        // `contains` hit as the end and would skip the following Action.
         if let Some(action) = self.parse_action(text)? {
             return Ok(AgentOutput::Action(action));
         }
 
-        // 无 Action 再看 Final Answer,取最后一次出现之后的内容。
+        // No Action: check Final Answer, take the content after the last occurrence.
         if text.contains(self.final_answer_marker) {
             return self.parse_final_answer(text);
         }
 
-        // 无法解析
+        // Unparseable
         Err(AgentError::OutputParsingError(format!(
             "failed to parse output. Use one of the following formats:\n\
              Thought: <your reasoning>\n\
@@ -74,7 +75,7 @@ impl ReActOutputParser {
         )))
     }
 
-    /// 解析 Final Answer
+    /// Parses the Final Answer
     fn parse_final_answer(&self, text: &str) -> Result<AgentOutput, AgentError> {
         let parts: Vec<&str> = text.split(self.final_answer_marker).collect();
 
@@ -84,8 +85,9 @@ impl ReActOutputParser {
             ));
         }
 
-        // F6:取最后一次出现之后的内容,而不是第一处(模型可能在中间多次
-        // 引用该字样;真正的答案在最后)。
+        // F6: take the content after the last occurrence, not the first (the
+        // model may reference the marker several times mid-output; the real
+        // answer is at the end).
         let answer = parts.last().unwrap_or(&"").trim().to_string();
 
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -94,7 +96,7 @@ impl ReActOutputParser {
         )))
     }
 
-    /// 解析 Action
+    /// Parses an Action
     fn parse_action(&self, text: &str) -> Result<Option<AgentAction>, AgentError> {
         if let Some(caps) = self.action_regex.captures(text) {
             let tool = caps
@@ -109,7 +111,7 @@ impl ReActOutputParser {
                     AgentError::OutputParsingError("missing Action Input".to_string())
                 })?;
 
-            // 解析工具输入
+            // Parse the tool input
             let tool_input = self.parse_tool_input(&tool_input_str);
 
             return Ok(Some(AgentAction {
@@ -122,18 +124,18 @@ impl ReActOutputParser {
         Ok(None)
     }
 
-    /// 解析工具输入
+    /// Parses a tool input
     fn parse_tool_input(&self, input: &str) -> ToolInput {
         let input = input.trim();
 
-        // 尝试解析为 JSON
+        // Try to parse as JSON
         if input.starts_with('{') || input.starts_with('[') {
             if let Ok(value) = serde_json::from_str(input) {
                 return ToolInput::Object { value };
             }
         }
 
-        // 移除引号
+        // Strip surrounding quotes
         let cleaned = input.trim_matches('"').trim_matches('\'');
 
         ToolInput::String {
@@ -221,8 +223,8 @@ Action Input: 北京"#;
 
     #[test]
     fn test_action_preferred_when_final_answer_mentioned_in_thought() {
-        // F6:Thought 里出现"Final Answer:"字样(解释格式)但随后确有 Action
-        // → 必须解析为 Action,而不是误判收尾。
+        // F6: the Thought mentions "Final Answer:" (explaining the format) but a
+        // real Action follows — must parse as Action, not misjudge it as the end.
         let parser = ReActOutputParser::new();
 
         let text = r#"Thought: 用户要算数,不能用 Final Answer: 直接回答,需要调工具
@@ -239,7 +241,7 @@ Action Input: {"expression": "2 + 3"}"#;
 
     #[test]
     fn test_final_answer_takes_last_occurrence() {
-        // F6:多次出现 Final Answer → 取最后一次出现之后的内容。
+        // F6: multiple Final Answer occurrences → take the content after the last one.
         let parser = ReActOutputParser::new();
 
         let text = r#"Thought: 先给个草稿

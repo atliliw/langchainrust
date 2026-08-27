@@ -1,15 +1,15 @@
-//! 规则类评测器:基于确定性规则打分(无 LLM、无向量,0 成本)。
+//! Rule-based evaluators: score by deterministic rules (no LLM, no vectors, zero cost).
 //!
-//! 适合答案空间明确、可机器判定的任务(格式校验、关键词、长度约束等)。
+//! Suited for tasks with a well-defined answer space that can be machine-checked (format validation, keywords, length constraints, etc.).
 
 use async_trait::async_trait;
 use regex::Regex;
 
 use super::{EvalError, Evaluator, Score};
 
-/// 关键词包含评测器:检查预测是否包含指定关键词。
+/// Keyword-contains evaluator: checks whether the prediction contains the given keywords.
 ///
-/// `all_required = true`(默认)需全部包含才得分;`false` 包含任一即得分。
+/// `all_required = true` (default) requires all keywords to score; `false` scores on any.
 pub struct ContainsKeyword {
     keywords: Vec<String>,
     case_sensitive: bool,
@@ -17,7 +17,7 @@ pub struct ContainsKeyword {
 }
 
 impl ContainsKeyword {
-    /// 创建关键词包含评测器。
+    /// Creates a keyword-contains evaluator.
     pub fn new(keywords: Vec<String>) -> Self {
         Self {
             keywords,
@@ -26,13 +26,13 @@ impl ContainsKeyword {
         }
     }
 
-    /// 大小写敏感(默认不敏感)
+    /// Case sensitive (case-insensitive by default)
     pub fn case_sensitive(mut self, v: bool) -> Self {
         self.case_sensitive = v;
         self
     }
 
-    /// true=全部包含才得分(默认);false=包含任一即得分
+    /// true=all keywords must be contained to score (default); false=any one scores
     pub fn all_required(mut self, v: bool) -> Self {
         self.all_required = v;
         self
@@ -81,13 +81,13 @@ impl Evaluator for ContainsKeyword {
     }
 }
 
-/// 正则匹配评测器:检查预测是否匹配正则。
+/// Regex-match evaluator: checks whether the prediction matches the regex.
 pub struct RegexMatch {
     pattern: Regex,
 }
 
 impl RegexMatch {
-    /// 创建正则匹配评测器(正则非法返回 `ParseError`)。
+    /// Creates a regex-match evaluator (an invalid regex returns `ParseError`).
     pub fn new(pattern: &str) -> Result<Self, EvalError> {
         Ok(Self {
             pattern: Regex::new(pattern).map_err(|e| EvalError::ParseError(e.to_string()))?,
@@ -118,7 +118,7 @@ impl Evaluator for RegexMatch {
     }
 }
 
-/// 长度检查评测器:预测长度(按字符)是否落在 [min, max] 范围。
+/// Length-check evaluator: whether the prediction length (in chars) falls within [min, max].
 pub struct LengthCheck {
     min: Option<usize>,
     max: Option<usize>,
@@ -131,7 +131,7 @@ impl Default for LengthCheck {
 }
 
 impl LengthCheck {
-    /// 创建长度检查评测器(默认不限长度)。
+    /// Creates a length-check evaluator (no limits by default).
     pub fn new() -> Self {
         Self {
             min: None,
@@ -139,13 +139,13 @@ impl LengthCheck {
         }
     }
 
-    /// 最小长度(含)
+    /// Minimum length (inclusive)
     pub fn min(mut self, m: usize) -> Self {
         self.min = Some(m);
         self
     }
 
-    /// 最大长度(含)
+    /// Maximum length (inclusive)
     pub fn max(mut self, m: usize) -> Self {
         self.max = Some(m);
         self
@@ -182,7 +182,7 @@ mod tests {
     async fn test_contains_all_required() {
         let ev = ContainsKeyword::new(vec!["巴黎".into(), "法国".into()]);
         assert_eq!(ev.eval("", "巴黎是法国首都", "").await.unwrap().value, 1.0);
-        assert_eq!(ev.eval("", "巴黎很大", "").await.unwrap().value, 0.0); // 缺"法国"
+        assert_eq!(ev.eval("", "巴黎很大", "").await.unwrap().value, 0.0); // missing the "France" keyword
     }
 
     #[tokio::test]
@@ -214,13 +214,13 @@ mod tests {
     #[tokio::test]
     async fn test_length_check() {
         let ev = LengthCheck::new().min(2).max(5);
-        assert_eq!(ev.eval("", "你好", "").await.unwrap().value, 1.0); // 2 字符,在 [2,5]
-        assert_eq!(ev.eval("", "你好世界测试", "").await.unwrap().value, 0.0); // 6 字符,超 5
+        assert_eq!(ev.eval("", "你好", "").await.unwrap().value, 1.0); // 2 chars, within [2,5]
+        assert_eq!(ev.eval("", "你好世界测试", "").await.unwrap().value, 0.0); // 6 chars, exceeds 5
     }
 
     #[tokio::test]
     async fn test_length_default_passes() {
-        // 不设 min/max,任何长度都通过
+        // without min/max, any length passes
         let ev = LengthCheck::new();
         assert_eq!(ev.eval("", "任意长度", "").await.unwrap().value, 1.0);
         assert_eq!(ev.eval("", "", "").await.unwrap().value, 1.0);

@@ -1,5 +1,5 @@
 // crates/lc-prompts/src/prompt_template.rs
-//! 简单字符串模板
+//! Simple string template
 
 use crate::error::PromptsError;
 use crate::template_parser::{
@@ -9,21 +9,22 @@ use async_trait::async_trait;
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
 use std::collections::HashMap;
 
-/// 提示词模板
+/// Prompt template
 ///
-/// 使用 `{variable}` 格式的模板，支持变量替换；`{{` 与 `}}` 可转义字面花括号。
+/// A template using `{variable}` format with variable substitution; `{{` and `}}` escape
+/// literal braces.
 pub struct PromptTemplate {
     template: String,
     segments: Vec<TemplateSegment>,
 }
 
 impl PromptTemplate {
-    /// 创建新的提示词模板
+    /// Creates a new prompt template
     ///
-    /// # 参数
-    /// * `template` - 模板字符串，使用 `{variable}` 标记变量
+    /// # Arguments
+    /// * `template` - Template string, using `{variable}` markers
     ///
-    /// # 示例
+    /// # Example
     /// ```ignore
     /// let template = PromptTemplate::new("你好，{name}！今天是{day}。");
     /// let mut vars = HashMap::new();
@@ -37,29 +38,29 @@ impl PromptTemplate {
         Self { template, segments }
     }
 
-    /// 格式化模板，替换所有变量
+    /// Formats the template, replacing all variables
     ///
-    /// # 参数
-    /// * `variables` - 变量映射表
+    /// # Arguments
+    /// * `variables` - Variable mapping
     ///
-    /// # 返回
-    /// 替换后的字符串，或缺失变量的错误
+    /// # Returns
+    /// The replaced string, or a missing-variable error
     ///
-    /// # 错误
-    /// 如果模板中有变量但 `variables` 中没有提供对应的值，返回错误
+    /// # Errors
+    /// Returns an error if the template has a variable with no matching value in `variables`
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<String, PromptsError> {
         format_template(&self.template, &self.segments, variables)
     }
 
-    /// 获取模板中需要的所有变量名
+    /// Returns all variable names the template needs
     ///
-    /// # 返回
-    /// 变量名列表
+    /// # Returns
+    /// The variable-name list
     pub fn variables(&self) -> Vec<String> {
         template_variables(&self.segments)
     }
 
-    /// 获取原始模板字符串
+    /// Returns the raw template string
     pub fn template(&self) -> &str {
         &self.template
     }
@@ -71,9 +72,9 @@ impl std::fmt::Display for PromptTemplate {
     }
 }
 
-// Runnable 形态:让提示词能进 LCEL 链,`prompt.pipe(...)` 成立。
-// 接收 owned 变量表(HashMap<String, String>),转引用委托给 `format`。
-// 与 `ChatPromptTemplate` 一致,错误走 `LcelError::Chain`。
+// Runnable form: lets the prompt join an LCEL chain, so `prompt.pipe(...)` works.
+// Receives an owned variable map (HashMap<String, String>), converting to references and
+// delegating to `format`. Same as `ChatPromptTemplate`; errors go through `LcelError::Chain`.
 #[async_trait]
 impl Runnable<HashMap<String, String>, String> for PromptTemplate {
     type Error = LcelError;
@@ -83,7 +84,7 @@ impl Runnable<HashMap<String, String>, String> for PromptTemplate {
         input: HashMap<String, String>,
         _config: Option<RunnableConfig>,
     ) -> Result<String, LcelError> {
-        // `format` 收 &HashMap<&str, &str>,这里从 owned map 转引用
+        // `format` takes &HashMap<&str, &str>; convert from the owned map to references here
         let vars: HashMap<&str, &str> = input
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))

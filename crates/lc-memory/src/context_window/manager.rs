@@ -27,8 +27,9 @@ pub struct ContextWindow<M: BaseChatModel> {
 impl<M: BaseChatModel> ContextWindow<M> {
     /// Creates a new ContextWindow with the Truncate strategy and default TiktokenCounter.
     ///
-    /// P1-4: 返回 `Result` 而非 panic——tiktoken 模型下载/加载失败(离线/缺模型)
-    /// 时返回 [`MemoryError`],库构造器不再因本地环境崩溃。
+    /// P1-4: returns `Result` instead of panicking — a tiktoken model download/load failure
+    /// (offline / missing model) returns [`MemoryError`], so the library constructor no longer
+    /// crashes on a bad local environment.
     pub fn new(max_tokens: usize) -> Result<Self, MemoryError> {
         Self::build(max_tokens, Strategy::Truncate)
     }
@@ -70,16 +71,18 @@ impl<M: BaseChatModel> ContextWindow<M> {
     /// - If total tokens are within `max_tokens`, returns messages as-is.
     /// - If over, applies the `Strategy` (truncate or summarize).
     ///
-    /// # Budget semantics (P1-4 契约)
+    /// # Budget semantics (P1-4 contract)
     ///
-    /// **`Strategy::Truncate`**: System 消息恒保留且**不占预算**(M7);若 System
-    /// 消息自身超过 `max_tokens`,原样返回(结果可能超预算)。即使预算小到一条
-    /// 对话都放不下,也至少保留最新一条非 System 消息,不静默清空历史(H7)。
-    /// 调用方不应假设 `fit` 的返回结果一定在预算内。
+    /// **`Strategy::Truncate`**: System messages are always kept and do **not** consume budget
+    /// (M7); if the System messages alone exceed `max_tokens`, they are returned as-is (the
+    /// result may exceed the budget). Even when the budget is too small for a single
+    /// conversation message, at least the newest non-System message is kept — history is never
+    /// silently emptied (H7). Callers must not assume `fit`'s result is always within budget.
     ///
-    /// **`Strategy::Summarize`**: 摘要占位计入预算,但 LLM 实际产出的摘要 token
-    /// 数未知——预算语义与 Truncate 不同,两者在 System 消息上口径不一致是有意为之,
-    /// 各策略自行定义。
+    /// **`Strategy::Summarize`**: the summary placeholder counts toward the budget, but the LLM's
+    /// actual summary token count is unknown — the budget semantics differ from Truncate, and the
+    /// intentionally inconsistent handling of System messages between the two is deliberate; each
+    /// strategy defines its own.
     ///
     /// # Arguments
     /// * `messages` - The conversation messages to fit.
@@ -106,14 +109,16 @@ impl<M: BaseChatModel> ContextWindow<M> {
     /// until the total fits within `max_tokens`.
     ///
     /// System messages are always preserved and placed at the beginning,
-    /// and they do **not** count toward the budget (P1-4 契约): if the system
+    /// and they do **not** count toward the budget (P1-4 contract): if the system
     /// messages alone exceed `max_tokens`, they are returned as-is and the
     /// result may exceed the budget.
     ///
-    /// M7: system messages 不计入预算(base 从 0 起算),不再挤占可用上下文。
+    /// M7: system messages do not consume budget (base starts at 0), so they no longer crowd
+    /// out usable context.
     ///
-    /// H7: 即使预算小到一条对话都放不下,也至少保留最新一条非 System 消息,
-    /// 绝不静默丢光全部历史(结果可能超预算,契约允许)。
+    /// H7: even when the budget is too small for a single conversation message, at least the
+    /// newest non-System message is kept — history is never silently emptied (the result may
+    /// exceed the budget, which the contract allows).
     ///
     /// M10: Optimized from O(n^2) to O(n) by computing token counts
     /// incrementally instead of rebuilding and recounting the full candidate
@@ -131,8 +136,9 @@ impl<M: BaseChatModel> ContextWindow<M> {
             }
         }
 
-        // M7: System 消息恒保留且**不占预算**,base 从 0 起算——旧实现把
-        // `count_messages(&system_messages)` 计入 base,挤占可用上下文。
+        // M7: System messages are always kept and do **not** consume budget — base starts at 0.
+        // The old implementation counted `count_messages(&system_messages)` into base, crowding
+        // out usable context.
         let mut running_tokens: usize = 0;
 
         // Pre-compute per-message incremental cost.
@@ -160,8 +166,9 @@ impl<M: BaseChatModel> ContextWindow<M> {
                 running_tokens += cost;
                 kept.push(msg);
             } else if kept.is_empty() {
-                // H7: 预算连最新一条都放不下时,仍保留最新一条——结果可能超预算
-                // (契约允许),但绝不静默丢光全部对话历史。
+                // H7: when even the newest message cannot fit, still keep the newest one — the
+                // result may exceed the budget (contract allows), but history is never silently
+                // emptied.
                 kept.push(msg);
             } else {
                 // This message would push us over; stop adding more.
@@ -228,8 +235,9 @@ impl<M: BaseChatModel> ContextWindow<M> {
         // If we can't even fit the recent messages with a summary placeholder,
         // fall back to truncation for the recent portion.
         if keep_from_idx >= other_messages.len() {
-            // H7: 预算小到连摘要占位都放不下时,退化为截断——截断保证至少保留
-            // 最新一条;旧实现 `truncate(system_messages)` 会静默丢光全部历史。
+            // H7: when the budget is too small even for the summary placeholder, fall back to
+            // truncation — truncation guarantees at least the newest message is kept; the old
+            // implementation `truncate(system_messages)` silently emptied all history.
             let mut all = system_messages;
             all.extend(other_messages);
             return self.truncate(all);

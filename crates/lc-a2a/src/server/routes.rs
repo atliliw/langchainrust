@@ -1,7 +1,8 @@
 //! A2A task-route handlers: `tasks/send|send_continue|get|cancel|list` + `workflow/run`.
 //!
-//! 这些方法由 `A2AServer::dispatch` 分发调用,处理 A2A 任务生命周期;
-//! 与 `execution.rs`(任务运行)、`handlers.rs`(响应拼装)配合。
+//! These methods are dispatched by `A2AServer::dispatch` and drive the A2A task
+//! lifecycle; they work alongside `execution.rs` (task execution) and
+//! `handlers.rs` (response assembly).
 
 use super::*;
 

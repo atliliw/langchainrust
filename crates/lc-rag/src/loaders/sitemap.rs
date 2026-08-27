@@ -1,6 +1,6 @@
-//! Sitemap 加载器
+//! Sitemap loader
 //!
-//! 解析 sitemap.xml,批量爬取页面内容。
+//! Parses a sitemap.xml and crawls the page contents in bulk.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -16,31 +16,31 @@ use lc_vector_stores::Document;
 static LOC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap());
 
-/// H8: 默认单次 HTTP 请求超时——目标站挂起时不会永久阻塞。
+/// H8: default per-HTTP-request timeout — a hung target site will not block forever.
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Sitemap 加载器
+/// Sitemap loader
 ///
-/// 从 sitemap.xml URL 或内容加载页面,提取正文文本。
+/// Loads pages from a sitemap.xml URL or content, extracting the body text.
 pub struct SitemapLoader {
-    /// sitemap URL 或 XML 内容
+    /// Sitemap URL or XML content
     source: SitemapSource,
-    /// 最大爬取页面数
+    /// Maximum number of pages to crawl
     max_pages: usize,
-    /// H8: 单次 HTTP 请求超时,防目标站挂起导致爬虫永久阻塞
+    /// H8: per-HTTP-request timeout, preventing the crawler from blocking forever on a hung target site
     timeout: Duration,
 }
 
-/// sitemap 来源
+/// Sitemap source
 enum SitemapSource {
-    /// 从 URL 获取
+    /// Fetched from a URL
     Url(String),
-    /// 直接 XML 内容
+    /// Direct XML content
     Xml(String),
 }
 
 impl SitemapLoader {
-    /// 从 sitemap URL 创建
+    /// Creates from a sitemap URL
     pub fn from_url(url: impl Into<String>) -> Self {
         Self {
             source: SitemapSource::Url(url.into()),
@@ -49,7 +49,7 @@ impl SitemapLoader {
         }
     }
 
-    /// 从 sitemap XML 内容创建
+    /// Creates from sitemap XML content
     pub fn from_xml(xml: impl Into<String>) -> Self {
         Self {
             source: SitemapSource::Xml(xml.into()),
@@ -58,19 +58,19 @@ impl SitemapLoader {
         }
     }
 
-    /// 设置最大爬取页面数
+    /// Sets the maximum number of pages to crawl
     pub fn with_max_pages(mut self, max: usize) -> Self {
         self.max_pages = max;
         self
     }
 
-    /// 设置单次 HTTP 请求超时(H8,默认 30s)
+    /// Sets the per-HTTP-request timeout (H8, default 30s)
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// 解析 sitemap XML,提取 URL 列表
+    /// Parses sitemap XML, extracting the URL list
     fn parse_urls(xml: &str) -> Vec<String> {
         LOC_REGEX
             .captures_iter(xml)
@@ -78,7 +78,7 @@ impl SitemapLoader {
             .collect()
     }
 
-    /// 爬取单个页面
+    /// Crawls a single page
     async fn fetch_page(url: &str, timeout: Duration) -> Result<String, LoaderError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -106,13 +106,13 @@ impl SitemapLoader {
 #[async_trait]
 impl DocumentLoader for SitemapLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
-        // 获取 sitemap XML
+        // Fetch the sitemap XML
         let xml = match &self.source {
             SitemapSource::Url(url) => Self::fetch_page(url, self.timeout).await?,
             SitemapSource::Xml(content) => content.clone(),
         };
 
-        // 解析 URL 列表
+        // Parse the URL list
         let urls = Self::parse_urls(&xml);
         let mut documents = Vec::new();
 
@@ -195,9 +195,9 @@ mod tests {
         <urlset>
             <url><loc>https://example.com/</loc></url>
         </urlset>"#;
-        // 这个测试会尝试真实爬取,但 max_pages=0 可以跳过
+        // This test would actually crawl, but max_pages=0 skips the crawl
         let loader = SitemapLoader::from_xml(xml).with_max_pages(0);
         let docs = loader.load().await.unwrap();
-        assert!(docs.is_empty()); // max_pages=0,不爬任何页面
+        assert!(docs.is_empty()); // max_pages=0, no pages are crawled
     }
 }

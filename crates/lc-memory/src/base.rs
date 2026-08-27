@@ -55,9 +55,9 @@ pub trait BaseMemory: Send + Sync {
     /// * `outputs` - System output
     ///
     /// # Contract
-    /// 缺失 `input` / `output` key 时返回 [`MemoryError::SaveError`]。
-    /// 所有内置实现(Buffer / Window / Summary / SummaryBuffer)行为一致,
-    /// 不做静默空串兜底。
+    /// Missing `input` / `output` keys return [`MemoryError::SaveError`].
+    /// All built-in implementations (Buffer / Window / Summary / SummaryBuffer) behave
+    /// consistently, with no silent empty-string fallback.
     async fn save_context(
         &mut self,
         inputs: &HashMap<String, String>,
@@ -72,9 +72,9 @@ pub trait BaseMemory: Send + Sync {
 ///
 /// Memory specifically for chat scenarios.
 ///
-/// P0-1: 让持有 `ChatMessageHistory` 的记忆类型可直接实现(内部仍用
-/// 具体 history,只加 impl 不改存储),从而支持泛型记忆代码
-/// `fn answer_with<T: BaseChatMemory>(m: &mut T)`。
+/// P0-1: lets memory types holding a `ChatMessageHistory` implement this directly
+/// (internally still using the concrete history — only adds an impl, no storage change),
+/// enabling generic memory code like `fn answer_with<T: BaseChatMemory>(m: &mut T)`.
 pub trait BaseChatMemory: BaseMemory {
     /// Get chat message list
     fn messages(&self) -> &[Message];
@@ -184,13 +184,14 @@ impl Default for ChatMessageHistory {
 
 /// Convert `load_memory_variables` output into a message list for LLM consumption.
 ///
-/// 记忆组件按变量产出两种形状:
-/// - `Value::Array`(`return_messages = true`):数组元素是序列化的 [`Message`],
-///   逐个反序列化;非 `Message` 的字符串元素包装为 `System` 消息;
-/// - `Value::String`(`return_messages = false` / summary / vectorstore):整段历史
-///   文本,包装为 `System` 消息。
+/// Memory components produce two shapes depending on the variable:
+/// - `Value::Array` (`return_messages = true`): array elements are serialized [`Message`]s,
+///   deserialized one by one; a non-`Message` string element is wrapped as a `System` message;
+/// - `Value::String` (`return_messages = false` / summary / vectorstore): the whole history
+///   text, wrapped as a `System` message.
 ///
-/// 供 `lc-sessions` 桥接、`lc-chains` 等把记忆变量灌进 LLM 上下文时复用。
+/// Reused by the `lc-sessions` bridge, `lc-chains`, and others to feed memory variables into the
+/// LLM context.
 pub fn memory_variables_to_messages(vars: &HashMap<String, serde_json::Value>) -> Vec<Message> {
     let mut messages = Vec::new();
     for value in vars.values() {
@@ -251,10 +252,10 @@ mod tests {
         assert!(history.is_empty());
     }
 
-    /// P2-1: `memory_variables_to_messages` 转换两种记忆变量形状。
+    /// P2-1: `memory_variables_to_messages` converts both memory-variable shapes.
     #[test]
     fn test_memory_variables_to_messages() {
-        // 形状一:Value::Array(return_messages = true) -> 反序列化为 Message
+        // shape one: Value::Array (return_messages = true) -> deserialize into a Message
         let msg = Message::ai("你好");
         let mut vars = HashMap::new();
         vars.insert(
@@ -265,7 +266,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "你好");
 
-        // 形状二:Value::String(return_messages = false / summary) -> 包装为 System
+        // shape two: Value::String (return_messages = false / summary) -> wrapped as System
         let mut vars = HashMap::new();
         vars.insert(
             "history".to_string(),

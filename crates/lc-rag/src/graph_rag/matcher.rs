@@ -25,25 +25,27 @@ pub trait EntityMatcher: Send + Sync {
 // KeywordMatcher
 // ---------------------------------------------------------------------------
 
-/// 查询词来源类型:P2-4 用于给不同来源的命中施加不同衰减权重。
+/// Query term source kind: P2-4 uses this to apply different decay weights to hits from
+/// different sources.
 #[derive(Debug, Clone, Copy)]
 enum TermKind {
-    /// 查询词直接命中(权重 1.0)。
+    /// Direct query-term hit (weight 1.0).
     Direct,
-    /// 同义词扩展命中(衰减 `synonym_weight`)。
+    /// Synonym-expansion hit (decayed by `synonym_weight`).
     Synonym,
-    /// CJK 二元组命中(衰减 `cjk_bigram_weight`)。
+    /// CJK bigram hit (decayed by `cjk_bigram_weight`).
     Bigram,
 }
 
-/// 一个待匹配查询词:文本 + 来源类型。
+/// A query term to match: text + source kind.
 struct Term {
     text: String,
     kind: TermKind,
 }
 
-/// 中英混合归一化(P2-4):全角字符转半角(全角 ASCII 与半角差 0xFEE0),
-/// 使 "Ｒｕｓｔ" 归一化为 "rust",与实体名的小写形式一致。
+/// Chinese-English mixed normalization (P2-4): full-width characters are converted to
+/// half-width (full-width ASCII differs from half-width by 0xFEE0), so the full-width form
+/// of "Rust" normalizes to "rust", consistent with the lowercased entity names.
 fn normalize_text(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -57,7 +59,7 @@ fn normalize_text(s: &str) -> String {
         .collect()
 }
 
-/// 是否为 CJK 表意字符(中文/日文汉字等)。
+/// Whether the character is a CJK ideograph (Chinese/Japanese kanji, etc.).
 fn is_cjk(c: char) -> bool {
     matches!(
         c,
@@ -65,8 +67,9 @@ fn is_cjk(c: char) -> bool {
     )
 }
 
-/// 中文无空格,取 CJK 字符的相邻二元组补召回(如 "机器学习" → 机器/器学/学习),
-/// 使长中文查询能命中短实体名。
+/// Chinese has no spaces, so adjacent bigrams of CJK characters recover recall (e.g. a long
+/// Chinese query splits into character pairs), letting long Chinese queries hit short entity
+/// names.
 fn cjk_bigrams(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().filter(|c| is_cjk(*c)).collect();
     if chars.len() < 2 {
@@ -81,14 +84,17 @@ fn cjk_bigrams(s: &str) -> Vec<String> {
 /// keywords and scores each entity based on how many keywords match the
 /// entity's name, type, and description. Name matches are weighted highest.
 ///
-/// P2-4: 在固定 name+3/type+2/desc+1 权重之上加入三项改进,修复拍脑袋权重
-/// 与子串匹配对同义词/多义词/中英混杂的漏召回:
-/// - **同义词表扩展** `synonyms`:查询词命中同义词键时按等价词追加匹配
-///   (命中衰减 `synonym_weight`,默认 0.7)。
-/// - **中英混合归一化**:全角→半角 + 中文长查询拆 CJK 二元组,解决无空格
-///   中文单 token 无法命中短实体名的问题。
-/// - **TF-IDF 加权**:每个查询词按其在实体语料中的逆文档频率加权,常见词
-///   (如 "Technology") 区分度小、贡献小,稀有词贡献大;`use_tfidf` 可关闭。
+/// P2-4: on top of the fixed name+3/type+2/desc+1 weights, three improvements fix the
+/// arbitrary weights and the recall gaps of substring matching for synonyms, polysemes, and
+/// Chinese-English mixed text:
+/// - **Synonym-table expansion** `synonyms`: when a query term hits a synonym key, the
+///   equivalent words are matched too (each hit decayed by `synonym_weight`, default 0.7).
+/// - **Chinese-English mixed normalization**: full-width -> half-width plus splitting long
+///   Chinese queries into CJK bigrams, fixing the problem that a space-free Chinese single
+///   token cannot hit a short entity name.
+/// - **TF-IDF weighting**: each query term is weighted by its inverse document frequency in
+///   the entity corpus; common words (e.g. "Technology") discriminate little and contribute
+///   little, while rare words contribute more; `use_tfidf` can disable it.
 pub struct KeywordMatcher {
     /// Weight for name matches (default: 3).
     pub name_weight: usize,
@@ -96,14 +102,16 @@ pub struct KeywordMatcher {
     pub type_weight: usize,
     /// Weight for description matches (default: 1).
     pub desc_weight: usize,
-    /// 同义词表:查询词(归一化后的小写/半角形式)→ 等价词列表,等价词同样
-    /// 填归一化形式。命中等价词时按等价词再匹配一次,贡献乘 `synonym_weight`。
+    /// Synonym table: query term (normalized lowercase/half-width form) -> list of equivalent
+    /// words, also in normalized form. When an equivalent word is hit, it is matched once more
+    /// with the contribution multiplied by `synonym_weight`.
     pub synonyms: HashMap<String, Vec<String>>,
-    /// 是否启用 TF-IDF 加权(默认 true)。关闭后回落到固定权重。
+    /// Whether TF-IDF weighting is enabled (default true). When disabled, falls back to the
+    /// fixed weights.
     pub use_tfidf: bool,
-    /// 同义词命中衰减系数(默认 0.7)。
+    /// Decay factor for synonym hits (default 0.7).
     pub synonym_weight: f64,
-    /// CJK 二元组命中衰减系数(默认 0.5)。
+    /// Decay factor for CJK bigram hits (default 0.5).
     pub cjk_bigram_weight: f64,
 }
 
@@ -127,19 +135,20 @@ impl KeywordMatcher {
         Self::default()
     }
 
-    /// 配置同义词表(查询词 → 等价词列表)。
+    /// Configures the synonym table (query term -> equivalent word list).
     pub fn with_synonyms(mut self, synonyms: HashMap<String, Vec<String>>) -> Self {
         self.synonyms = synonyms;
         self
     }
 
-    /// 开关 TF-IDF 加权(默认开启)。
+    /// Toggles TF-IDF weighting (enabled by default).
     pub fn with_tfidf(mut self, enabled: bool) -> Self {
         self.use_tfidf = enabled;
         self
     }
 
-    /// 把查询拆成待匹配词序列(P2-4):直接词 + 同义词扩展 + CJK 二元组,按文本去重。
+    /// Splits the query into a term sequence (P2-4): direct terms + synonym expansion +
+    /// CJK bigrams, deduplicated by text.
     fn build_terms(&self, query: &str) -> Vec<Term> {
         let normalized = normalize_text(query).to_lowercase();
         let tokens: Vec<String> = normalized
@@ -151,10 +160,11 @@ impl KeywordMatcher {
         let mut terms: Vec<Term> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for tok in tokens {
-            // 直接词优先,避免同义词与直接词文本相同时被误判成同义词。
+            // Direct terms come first, avoiding a synonym identical to a direct term being
+            // misclassified as a synonym.
             Self::push_term(&mut terms, &mut seen, tok.clone(), TermKind::Direct);
 
-            // 同义词扩展:键也做归一化,容忍用户键带全角/大小写。
+            // Synonym expansion: keys are normalized too, tolerating full-width/case in user keys.
             let syns = self
                 .synonyms
                 .iter()
@@ -166,7 +176,7 @@ impl KeywordMatcher {
                 }
             }
 
-            // 中文无空格,长查询拆 CJK 二元组补召回。
+            // Chinese has no spaces; split long queries into CJK bigrams to recover recall.
             if tok.chars().any(is_cjk) {
                 for bg in cjk_bigrams(&tok) {
                     Self::push_term(&mut terms, &mut seen, bg, TermKind::Bigram);
@@ -182,10 +192,11 @@ impl KeywordMatcher {
         }
     }
 
-    /// 计算每个查询词在实体语料中的平滑 IDF(P2-4)。
+    /// Computes a smoothed IDF for each query term over the entity corpus (P2-4).
     ///
-    /// `idf = ln((N+1)/(df+1)) + 1`,df = 命中该词的实体数。常见词 df 大、IDF 小,
-    /// 稀有词 IDF 大。平滑项保证 df == N 时不归零。
+    /// `idf = ln((N+1)/(df+1)) + 1`, where df = the number of entities containing the term.
+    /// Common terms have a large df and small IDF; rare terms have a large IDF. The smoothing
+    /// term keeps df == N from zeroing out.
     fn compute_idf(&self, terms: &[Term], store: &GraphStore) -> HashMap<String, f64> {
         let n = store.all_entities().len() as f64;
         let mut df: HashMap<String, usize> = HashMap::new();
@@ -215,7 +226,8 @@ impl KeywordMatcher {
         idf
     }
 
-    /// 单个查询词对单个实体的得分:字段权重 × TF-IDF 权重 × 来源衰减。
+    /// Score of a single query term against a single entity: field weight x TF-IDF weight x
+    /// source decay.
     fn match_score(
         &self,
         term: &Term,
@@ -249,7 +261,8 @@ impl EntityMatcher for KeywordMatcher {
             return Vec::new();
         }
 
-        // P2-4: 预计算 TF-IDF,每个查询词按语料逆文档频率加权。
+        // P2-4: precompute TF-IDF; each query term is weighted by its corpus inverse document
+        // frequency.
         let idf = if self.use_tfidf {
             Some(self.compute_idf(&terms, store))
         } else {
@@ -296,7 +309,7 @@ pub struct EmbeddingMatcher<E: Embeddings> {
     embeddings: E,
     /// Cached entity vectors: entity_id → embedding.
     cache: std::sync::Mutex<HashMap<String, Vec<f32>>>,
-    /// 嵌入相似度最小阈值(P1-2),默认 0.0 保持旧行为。
+    /// Minimum embedding-similarity threshold (P1-2), default 0.0 keeps the old behavior.
     min_score: f64,
 }
 
@@ -310,7 +323,8 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
         }
     }
 
-    /// 设置嵌入相似度最小阈值(P1-2),默认 0.0 保持旧行为。
+    /// Sets the minimum embedding-similarity threshold (P1-2), default 0.0 keeps the old
+    /// behavior.
     pub fn with_min_score(mut self, min_score: f64) -> Self {
         self.min_score = min_score;
         self
@@ -336,7 +350,8 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
                 Some(vec)
             }
             Err(e) => {
-                // 实体嵌入失败:该实体从图匹配中排除,记日志暴露降级
+                // Entity embedding failed: the entity is excluded from graph matching, with a
+                // log exposing the degradation
                 log::warn!(
                     "entity `{}` embedding failed; excluded from graph matching: {}",
                     entity_id,
@@ -350,13 +365,15 @@ impl<E: Embeddings> EmbeddingMatcher<E> {
 
 impl<E: Embeddings + 'static> EntityMatcher for EmbeddingMatcher<E> {
     fn find_relevant(&self, query: &str, _store: &GraphStore, _top_k: usize) -> Vec<String> {
-        // P1-4: 不再静默降级到 KeywordMatcher。
+        // P1-4: no longer silently degrades to KeywordMatcher.
         //
-        // 同步 trait 方法调不了 async `embed_query`,旧实现悄悄回落关键词匹配,
-        // 用户以为在用向量匹配、实际是关键词,零提示——比报错更危险。
-        // 这里拒绝静默降级:返回空结果并 `log::warn`,让失败可见。
-        // 需要嵌入匹配请调用 `find_relevant_async`(GraphRAG 的 query 路径),
-        // 或显式配置 `KeywordMatcher`。
+        // A sync trait method cannot call the async `embed_query`; the old implementation
+        // quietly fell back to keyword matching, so users thought they were using vector
+        // matching while it was actually keywords, with zero warning — more dangerous than an
+        // error. Here we refuse silent degradation: return empty results and `log::warn`,
+        // making the failure visible.
+        // For embedding matching call `find_relevant_async` (the GraphRAG query path), or
+        // explicitly configure `KeywordMatcher`.
         log::warn!(
             "EmbeddingMatcher::find_relevant (sync) cannot run embedding matching and no longer \
              silently falls back to keyword matching; returning empty results for query '{}'. \
@@ -373,9 +390,10 @@ impl<E: Embeddings + 'static> EmbeddingMatcher<E> {
     /// This is the preferred method when using embedding-based matching,
     /// since embedding computation is inherently async.
     ///
-    /// P0-2: 不再静默降级/静默 0 分——embedding 失败或向量维度错乱会显式报错,
-    /// 让调用方知道语义匹配不可用或数据有缺陷,而不是悄悄回落 keyword
-    /// 或把"维度错乱"当成"不相似"。
+    /// P0-2: no more silent degradation / silent 0 scores — embedding failures or vector
+    /// dimension mismatches now error out explicitly, letting callers know semantic matching
+    /// is unavailable or the data is defective, instead of quietly falling back to keyword or
+    /// treating "dimension mismatch" as "dissimilar".
     pub async fn find_relevant_async(
         &self,
         query: &str,
@@ -399,8 +417,8 @@ impl<E: Embeddings + 'static> EmbeddingMatcher<E> {
                     Ok(score) => {
                         scored.push((id.clone(), score as f64));
                     }
-                    // 向量维度不等是数据缺陷(如中途换 embedding 模型),
-                    // 报错而非当成"不相似"静默放行。
+                    // A vector dimension mismatch is a data defect (e.g. switching embedding
+                    // models midway); error out rather than treating it as "dissimilar".
                     Err(lc_core::math::MathError::LengthMismatch(a, b)) => {
                         return Err(GraphRAGError::QueryError(format!(
                             "EmbeddingMatcher: vector dimension mismatch {} vs {} (embedding model changed?)",
@@ -493,9 +511,10 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// P1-4: 同步 `find_relevant` 不再静默降级——"Rust" 在 store 中
-    /// 明明命中 KeywordMatcher(e1),但 EmbeddingMatcher 同步路径必须返回空,
-    /// 拒绝悄悄回落关键词匹配,让"嵌入匹配不可用"可见。
+    /// P1-4: the sync `find_relevant` no longer silently degrades — "Rust" clearly hits
+    /// KeywordMatcher (e1) in the store, yet the EmbeddingMatcher sync path must return
+    /// empty, refusing to quietly fall back to keyword matching so that "embedding matching
+    /// unavailable" is visible.
     #[test]
     fn test_embedding_matcher_sync_returns_empty_not_keyword_fallback() {
         let store = make_test_store();
@@ -507,10 +526,12 @@ mod tests {
         );
     }
 
-    /// P1-4: 嵌入匹配请走 async 路径——它仍返回真正的相似实体。
+    /// P1-4: embedding matching goes through the async path — it still returns the truly
+    /// similar entities.
     ///
-    /// MockEmbeddings 对相同文本产出相同向量,因此 query 与实体文本完全一致时
-    /// 余弦 = 1.0 > min_score(0.0),必被召回,断言确定。
+    /// MockEmbeddings produces identical vectors for identical text, so when the query and
+    /// the entity text match exactly, cosine = 1.0 > min_score (0.0), guaranteed to be
+    /// recalled; the assertion is deterministic.
     #[tokio::test]
     async fn test_embedding_matcher_async_still_works() {
         let mut store = GraphStore::new();
@@ -543,7 +564,8 @@ mod tests {
         assert_eq!(results[0], "e1");
     }
 
-    /// P2-4: 同义词表扩展——查询词命中同义词键时按等价词匹配,补漏召回。
+    /// P2-4: synonym-table expansion — a query term hitting a synonym key matches via the
+    /// equivalent words, recovering missed recall.
     #[test]
     fn test_keyword_matcher_synonym_expansion() {
         let mut store = GraphStore::new();
@@ -564,7 +586,8 @@ mod tests {
             HashMap::from([("数据库".to_string(), vec!["database".to_string()])]);
         let matcher = KeywordMatcher::new().with_synonyms(synonyms);
 
-        // "数据库" 直接子串命中不了 PostgreSQL,靠同义词 "database" 命中 type/desc。
+        // The query term cannot directly substring-match "PostgreSQL"; the synonym
+        // "database" hits type/desc instead.
         let results = matcher.find_relevant("数据库", &store, 10);
         assert!(
             results.contains(&"e1".to_string()),
@@ -572,7 +595,8 @@ mod tests {
         );
     }
 
-    /// P2-4: 中英混合归一化——全角字符转半角后能匹配实体名。
+    /// P2-4: Chinese-English mixed normalization — full-width characters converted to
+    /// half-width can match entity names.
     #[test]
     fn test_keyword_matcher_fullwidth_normalization() {
         let mut store = GraphStore::new();
@@ -584,12 +608,14 @@ mod tests {
         });
 
         let matcher = KeywordMatcher::new();
-        // "Ｒｕｓｔ" 全角 → 归一化 "rust"。
+        // Full-width letters are normalized to their half-width lowercase form, e.g. matching
+        // "rust".
         let results = matcher.find_relevant("Ｒｕｓｔ", &store, 10);
         assert_eq!(results, vec!["e1".to_string()]);
     }
 
-    /// P2-4: 中文无空格,长查询拆 CJK 二元组,能命中短实体名。
+    /// P2-4: Chinese has no spaces; a long query split into CJK bigrams can hit short entity
+    /// names.
     #[test]
     fn test_keyword_matcher_cjk_bigram_recall() {
         let mut store = GraphStore::new();
@@ -601,7 +627,7 @@ mod tests {
         });
 
         let matcher = KeywordMatcher::new();
-        // 直接子串 "机器学习算法" ⊄ "机器学习",靠二元组 "机器"/"器学"/"学习" 召回。
+        // The full query is not a substring of the entity name; bigrams recover the match.
         let results = matcher.find_relevant("机器学习算法", &store, 10);
         assert!(
             results.contains(&"e1".to_string()),
@@ -609,7 +635,7 @@ mod tests {
         );
     }
 
-    /// P2-4: TF-IDF 属性——常见词的 IDF 低于稀有词。
+    /// P2-4: TF-IDF property — the IDF of a common term is lower than that of a rare term.
     #[test]
     fn test_keyword_matcher_tfidf_common_lower_than_rare() {
         let mut store = GraphStore::new();
@@ -626,7 +652,7 @@ mod tests {
         let terms = matcher.build_terms("rust technology");
         let idf = matcher.compute_idf(&terms, &store);
 
-        // "technology" 出现在 3 个实体的 type → IDF 低;"rust" 只在 e1 → IDF 高。
+        // "technology" appears in the type of 3 entities -> low IDF; "rust" only in e1 -> high IDF.
         let tech_idf = idf["technology"];
         let rust_idf = idf["rust"];
         assert!(
@@ -637,7 +663,7 @@ mod tests {
         );
     }
 
-    /// P2-4: TF-IDF 改变排序——固定权重并列时,稀有词命中方优先。
+    /// P2-4: TF-IDF changes the ordering — when fixed weights tie, the rare-term hit wins.
     #[test]
     fn test_keyword_matcher_tfidf_breaks_fixed_weight_tie() {
         let mut store = GraphStore::new();
@@ -661,13 +687,14 @@ mod tests {
         });
 
         let matcher = KeywordMatcher::new();
-        // 固定权重下 e1/e2 并列(4 分);TF-IDF 下 "learning" 更稀有(只 2 实体),
-        // e2 的 name 命中稀有词 → 应优先。
+        // With fixed weights e1/e2 tie (4 points); with TF-IDF, "learning" is rarer (only 2
+        // entities), and e2's name hits the rare term -> it should win.
         let results = matcher.find_relevant("data learning", &store, 10);
         assert_eq!(results[0], "e2");
     }
 
-    /// P0-2: 收敛到 lc-core 单一实现(Result<f32, MathError> 契约)。
+    /// P0-2: converges on the single lc-core implementation (the Result<f32, MathError>
+    /// contract).
     #[test]
     fn test_cosine_similarity_identical() {
         let v = vec![1.0, 0.0, 0.0];
@@ -693,12 +720,13 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_zero_norm() {
-        // 零向量不是维度错误——lc-core 返回 Ok(0.0)。
+        // A zero vector is not a dimension error — lc-core returns Ok(0.0).
         let sim = cosine_similarity(&[], &[]).unwrap();
         assert_eq!(sim, 0.0);
     }
 
-    /// P0-2: 维度不等必须报错,不再是静默 0.0(否则"维度错乱"被当成"不相似")。
+    /// P0-2: dimension mismatches must error, no longer a silent 0.0 (otherwise "dimension
+    /// mismatch" is taken as "dissimilar").
     #[test]
     fn test_cosine_similarity_different_lengths_errors() {
         let a = vec![1.0];

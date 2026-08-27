@@ -1,23 +1,23 @@
 // src/retrieval/loaders/pdf.rs
-//! PDF 文档加载器实现
+//! PDF document loader implementation
 //!
-//! 提供从 PDF 文件加载文本内容的功能。
+//! Provides text-content loading from PDF files.
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-/// PDF 文档加载器
+/// PDF document loader
 pub struct PDFLoader {
-    /// PDF 文件路径
+    /// PDF file path
     pub path: PathBuf,
 }
 
 impl PDFLoader {
-    /// 创建新的 PDF 加载器
+    /// Creates a new PDF loader
     ///
-    /// # 参数
-    /// * `path` - PDF 文件路径
+    /// # Arguments
+    /// * `path` - the PDF file path
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
@@ -26,7 +26,7 @@ impl PDFLoader {
 #[async_trait]
 impl DocumentLoader for PDFLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
-        // 验证文件存在
+        // Verify the file exists
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
                 "PDF file does not exist: {}",
@@ -34,11 +34,11 @@ impl DocumentLoader for PDFLoader {
             )));
         }
 
-        // 使用 pdf_extract 库提取文本
+        // Extract text using the pdf_extract library
         let text = pdf_extract::extract_text(&self.path)
             .map_err(|e| LoaderError::PdfError(format!("PDF parse failed: {}", e)))?;
 
-        // 创建文档对象，包含元数据
+        // Create the document object, including metadata
         let mut document = Document::new(text);
         document = document.with_metadata("source".to_string(), self.path.display().to_string());
         document = document.with_metadata("format".to_string(), "pdf".to_string());

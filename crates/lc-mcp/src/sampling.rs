@@ -1,7 +1,7 @@
-//! MCP Sampling - 采样类型与 `sampling/createMessage` 处理
+//! MCP Sampling - sampling types and `sampling/createMessage` handling
 //!
-//! MCP Sampling 允许 Server 请求 Host(即 LLM Client)执行 LLM 推理,
-//! Server 可借此利用 Host 的模型能力完成子任务。
+//! MCP Sampling lets a Server ask the Host (i.e. the LLM Client) to run LLM inference,
+//! letting the Server use the Host's model capabilities to complete sub-tasks.
 
 use crate::protocol::MCPError;
 use async_trait::async_trait;
@@ -10,146 +10,147 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-/// 采样消息内容(内联枚举)
+/// Sampling message content (inline enum)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SamplingContent {
-    /// 文本内容
+    /// Text content
     #[serde(rename = "text")]
     Text {
-        /// 文本数据
+        /// Text data
         text: String,
     },
-    /// 图片内容
+    /// Image content
     #[serde(rename = "image")]
     Image {
-        /// 图片数据(base64 编码)
+        /// Image data (base64-encoded)
         data: String,
-        /// 图片 MIME 类型
+        /// Image MIME type
         mime_type: String,
     },
 }
 
-/// 采样消息
+/// Sampling message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingMessage {
-    /// 消息角色
+    /// Message role
     pub role: SamplingRole,
-    /// 消息内容
+    /// Message content
     pub content: SamplingContent,
 }
 
-/// 消息角色
+/// Message role
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SamplingRole {
-    /// 用户角色
+    /// User role
     User,
-    /// 助手角色
+    /// Assistant role
     Assistant,
 }
 
-/// 模型偏好提示
+/// Model preference hints
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPreferences {
-    /// 成本优先级(0~1)
+    /// Cost priority (0~1)
     #[serde(rename = "costPriority", skip_serializing_if = "Option::is_none")]
     pub cost_priority: Option<f64>,
-    /// 速度优先级(0~1)
+    /// Speed priority (0~1)
     #[serde(rename = "speedPriority", skip_serializing_if = "Option::is_none")]
     pub speed_priority: Option<f64>,
-    /// 智能优先级(0~1)
+    /// Intelligence priority (0~1)
     #[serde(
         rename = "intelligencePriority",
         skip_serializing_if = "Option::is_none"
     )]
     pub intelligence_priority: Option<f64>,
-    /// 模型提示列表(可选)
+    /// Model hint list (optional)
     #[serde(rename = "hints", skip_serializing_if = "Option::is_none")]
     pub hints: Option<Vec<ModelHint>>,
 }
 
-/// 模型提示
+/// Model hint
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelHint {
-    /// 建议使用的模型名称(可选)
+    /// Suggested model name (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
-/// `sampling/createMessage` 请求参数
+/// `sampling/createMessage` request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingRequest {
-    /// 采样消息列表
+    /// List of sampling messages
     pub messages: Vec<SamplingMessage>,
-    /// 允许生成的最大 token 数
+    /// Maximum number of tokens to generate
     #[serde(rename = "maxTokens")]
     pub max_tokens: usize,
-    /// 可选的系统提示词
+    /// Optional system prompt
     #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// 可选的模型偏好
+    /// Optional model preferences
     #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<ModelPreferences>,
-    /// 可选的采样温度
+    /// Optional sampling temperature
     #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
-    /// 可选的停止序列
+    /// Optional stop sequences
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
-    /// 可选的上下文包含策略(参考 MCP 规范)
+    /// Optional context inclusion policy (see the MCP spec)
     #[serde(rename = "includeContext", skip_serializing_if = "Option::is_none")]
     pub include_context: Option<Value>,
-    /// 可选的附加元数据
+    /// Optional extra metadata
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
 
-/// `sampling/createMessage` 响应
+/// `sampling/createMessage` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingResult {
-    /// 生成消息的角色
+    /// Role of the generated message
     pub role: SamplingRole,
-    /// 生成的消息内容
+    /// Content of the generated message
     pub content: SamplingContent,
-    /// 使用的模型名称(可选)
+    /// Name of the model used (optional)
     #[serde(rename = "model", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 停止原因(可选)
+    /// Stop reason (optional)
     #[serde(rename = "stopReason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
 }
 
-/// Sampling 处理者(server→host 方向)。
+/// Sampling handler (server→host direction).
 ///
-/// 按 MCP 语义,`sampling/createMessage` 由 Server 发起、Host 执行 LLM 推理。
-/// 框架层不连接具体传输,由宿主注入本回调;回调内部负责把请求送达 Host
-/// 并取回响应。未注入时 [`crate::MCPServer::create_message`] 返回明确错误。
+/// Per MCP semantics, `sampling/createMessage` is initiated by the Server and the Host runs the LLM inference.
+/// The framework layer does not connect to any concrete transport; the host injects this callback, which is
+/// responsible for delivering the request to the Host and retrieving the response. Without an injected handler,
+/// [`crate::MCPServer::create_message`] returns a clear error.
 #[async_trait]
 pub trait SamplingHandler: Send + Sync {
-    /// 执行一次采样,返回 Host 的推理结果。
+    /// Runs one sampling call, returning the Host's inference result.
     async fn create_message(&self, request: &SamplingRequest) -> Result<SamplingResult, MCPError>;
 }
 
-/// Sampling 递归防护错误(P2-7)。
+/// Sampling recursion guard error (P2-7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SamplingGuardError {
-    /// 嵌套深度超过 `max_depth`(默认 3)。
+    /// Nesting depth exceeds `max_depth` (default 3).
     TooDeep {
-        /// 当前嵌套深度
+        /// Current nesting depth
         depth: usize,
-        /// 允许的最大嵌套深度
+        /// Maximum allowed nesting depth
         max_depth: usize,
     },
-    /// 整条采样链累计 token 超过总预算。
+    /// Cumulative tokens across the whole sampling chain exceed the total budget.
     TokenBudgetExceeded {
-        /// 已累计使用的 token 数
+        /// Tokens used so far
         tokens_used: usize,
-        /// 总 token 预算
+        /// Total token budget
         total_budget: usize,
     },
-    /// 整条采样链超过总时长(超时)。
+    /// The whole sampling chain exceeded the total duration (timeout).
     Timeout,
 }
 
@@ -178,18 +179,18 @@ impl std::fmt::Display for SamplingGuardError {
 
 impl std::error::Error for SamplingGuardError {}
 
-/// Sampling 递归防护(P2-7)。
+/// Sampling recursion guard (P2-7).
 ///
-/// MCP 场景存在"Agent 调工具 → 工具请求 Sampling → LLM 调工具 → 工具请求
-/// Sampling"的递归环,`SamplingRequest` 本身无防护,递归可以无限加深。本结构在
-/// Host 侧给整条采样链加三重约束:
+/// MCP scenarios have a recursion loop of "Agent calls tool → tool requests Sampling → LLM calls tool → tool
+/// requests Sampling"; `SamplingRequest` itself has no protection, so recursion can deepen without bound. This
+/// structure adds three constraints on the Host side over the whole sampling chain:
 ///
-/// - **深度限制**:嵌套 Sampling 不得超过 `max_depth`(默认 3)层;
-/// - **总 token 预算**:整条链按每次请求的 `max_tokens` 累计,超预算即拒绝;
-/// - **超时**:整条链总时长不得超过 `total_timeout`(或显式 `deadline`)。
+/// - **Depth limit**: nested Sampling must not exceed `max_depth` (default 3) levels;
+/// - **Total token budget**: the chain accumulates each request's `max_tokens`; over-budget is rejected;
+/// - **Timeout**: the chain's total duration must not exceed `total_timeout` (or an explicit `deadline`).
 ///
-/// 用法:每次执行 `sampling/createMessage` 前 `enter(request.max_tokens)`,拿到的
-/// [`SamplingLease`] 在采样调用期间持有(跨 `await` 安全),结束自动释放深度。
+/// Usage: call `enter(request.max_tokens)` before each `sampling/createMessage`; the returned [`SamplingLease`]
+/// is held during the sampling call (safe across `await`) and releases the depth automatically when it ends.
 ///
 /// ```no_run
 /// use lc_mcp::{SamplingGuard, SamplingRequest};
@@ -207,16 +208,16 @@ pub struct SamplingGuard {
     max_depth: usize,
     total_token_budget: usize,
     deadline: Option<Instant>,
-    /// 当前嵌套深度(原子,跨 await 安全)。
+    /// Current nesting depth (atomic, safe across `await`).
     depth: AtomicUsize,
-    /// 已累计 token。
+    /// Accumulated tokens.
     tokens_used: AtomicUsize,
 }
 
 impl SamplingGuard {
-    /// 创建采样递归防护。
+    /// Creates a sampling recursion guard.
     ///
-    /// 默认无超时;`total_token_budget` 为整条链累计上限。
+    /// No timeout by default; `total_token_budget` is the chain-wide cumulative cap.
     pub fn new(max_depth: usize, total_token_budget: usize) -> Self {
         Self {
             max_depth: max_depth.max(1),
@@ -227,30 +228,30 @@ impl SamplingGuard {
         }
     }
 
-    /// 整条采样链总时长上限(从创建时刻起算)。
+    /// Cap on the whole sampling chain's total duration (counted from creation time).
     pub fn with_timeout(mut self, total_timeout: Duration) -> Self {
         self.deadline = Some(Instant::now() + total_timeout);
         self
     }
 
-    /// 显式设置总时长截止时刻(更精确的绝对时间)。
+    /// Explicitly sets the total-duration deadline (a more precise absolute time).
     pub fn with_deadline(mut self, deadline: Instant) -> Self {
         self.deadline = Some(deadline);
         self
     }
 
-    /// 进入一次采样:校验超时 / 深度 / token 预算。
+    /// Enters one sampling call: checks timeout / depth / token budget.
     ///
-    /// 成功返回 [`SamplingLease`],在采样调用期间持有、结束 Drop 自动释放深度;
-    /// 任一约束超限返回对应错误,不占用深度与预算。
+    /// On success returns a [`SamplingLease`] held during the sampling call; the depth is released automatically
+    /// on Drop; any constraint exceeded returns the matching error without consuming depth or budget.
     pub fn enter(&self, request_tokens: usize) -> Result<SamplingLease<'_>, SamplingGuardError> {
-        // 超时:整条链总时长。
+        // Timeout: the chain's total duration.
         if let Some(deadline) = self.deadline {
             if Instant::now() >= deadline {
                 return Err(SamplingGuardError::Timeout);
             }
         }
-        // 深度:嵌套层数 +1,超限回滚。
+        // Depth: nesting level +1, rolled back when over the limit.
         let depth = self.depth.fetch_add(1, Ordering::SeqCst) + 1;
         if depth > self.max_depth {
             self.depth.fetch_sub(1, Ordering::SeqCst);
@@ -259,7 +260,7 @@ impl SamplingGuard {
                 max_depth: self.max_depth,
             });
         }
-        // token 预算:累计 +1 次请求的 max_tokens,超限回滚(深度一并回滚)。
+        // Token budget: accumulate the request's max_tokens; over the limit, roll back (depth rolls back too).
         let used = self.tokens_used.fetch_add(request_tokens, Ordering::SeqCst) + request_tokens;
         if used > self.total_token_budget {
             self.tokens_used.fetch_sub(request_tokens, Ordering::SeqCst);
@@ -272,12 +273,12 @@ impl SamplingGuard {
         Ok(SamplingLease { guard: self })
     }
 
-    /// 当前嵌套深度。
+    /// Current nesting depth.
     pub fn depth(&self) -> usize {
         self.depth.load(Ordering::SeqCst)
     }
 
-    /// 已累计的 token 预算。
+    /// Accumulated token budget.
     pub fn tokens_used(&self) -> usize {
         self.tokens_used.load(Ordering::SeqCst)
     }
@@ -294,9 +295,9 @@ impl std::fmt::Debug for SamplingGuard {
     }
 }
 
-/// 一次采样占用的防护令牌(P2-7)。
+/// A guard token held by one sampling call (P2-7).
 ///
-/// 持有期间占用一层嵌套深度;Drop 时自动释放,使兄弟/后续采样可继续进入。
+/// Occupies one nesting level while held; released automatically on Drop, letting sibling/subsequent samplings continue.
 #[derive(Debug)]
 pub struct SamplingLease<'a> {
     guard: &'a SamplingGuard,
@@ -432,7 +433,7 @@ mod tests {
         assert!(!json.contains("intelligencePriority"));
     }
 
-    /// 深度限制:超过 max_depth 层的嵌套采样被拒绝,已占用的层数不变。
+    /// Depth limit: nested sampling beyond max_depth layers is rejected, and the occupied depth is unchanged.
     #[test]
     fn test_guard_limits_depth() {
         let guard = SamplingGuard::new(3, 1000);
@@ -456,7 +457,7 @@ mod tests {
         );
     }
 
-    /// Lease Drop 释放深度:并行/顺序的兄弟采样仍可进入。
+    /// Lease Drop releases depth: parallel/sequential sibling samplings can still enter.
     #[test]
     fn test_lease_drop_releases_depth() {
         let guard = SamplingGuard::new(1, 1000);
@@ -469,7 +470,7 @@ mod tests {
             .expect("should be able to enter again after release");
     }
 
-    /// 总 token 预算:整条链按每次请求的 max_tokens 累计,超预算拒绝。
+    /// Total token budget: the chain accumulates each request's max_tokens; over-budget is rejected.
     #[test]
     fn test_token_budget_accumulates() {
         let guard = SamplingGuard::new(5, 30);
@@ -492,7 +493,7 @@ mod tests {
         );
     }
 
-    /// 超时:整条链超过总时长后拒绝新采样。
+    /// Timeout: new samplings are rejected after the chain exceeds the total duration.
     #[test]
     fn test_timeout_rejects_after_deadline() {
         let guard =
@@ -501,7 +502,7 @@ mod tests {
         assert_eq!(guard.depth(), 0);
     }
 
-    /// 错误 Display:三类错误信息可读。
+    /// Error Display: all three error kinds read clearly.
     #[test]
     fn test_error_display() {
         assert!(SamplingGuardError::TooDeep {
@@ -519,7 +520,7 @@ mod tests {
         assert!(SamplingGuardError::Timeout.to_string().contains("timeout"));
     }
 
-    /// 充足预算下,释放后可反复进入(深度不泄漏)。
+    /// With enough budget, one can keep re-entering after release (no depth leak).
     #[test]
     fn test_reenter_after_completion() {
         let guard = SamplingGuard::new(3, 1000);

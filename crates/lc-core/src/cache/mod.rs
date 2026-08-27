@@ -1,8 +1,8 @@
 // src/core/cache/mod.rs
-//! LLM 调用缓存
+//! LLM call cache
 //!
-//! 提供内存缓存功能，减少重复 LLM 调用。
-//! 支持 TTL（过期时间）和最大条目数限制。
+//! In-memory caching to reduce repeated LLM calls.
+//! Supports TTL (expiry) and a maximum-entry limit.
 
 pub mod llm_cache;
 

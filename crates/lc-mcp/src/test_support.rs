@@ -1,54 +1,55 @@
-//! 测试支撑:假 MCP SSE 服务器(仅测试构建编译)。
+//! Test support: a fake MCP SSE server (compiled only for test builds).
 //!
-//! 由 `transport` / `client` 的测试模块共享,覆盖:
-//! - SSE 长连接 + `endpoint` 事件发现;
-//! - POST 按 JSON-RPC 方法路由(initialize / tools/list / tools/call);
-//! - P1-1 首次 POST 失败重试;
-//! - P1-8 `tools/list_changed` 推送通知。
+//! Shared by the `transport` / `client` test modules, covering:
+//! - SSE long connection + `endpoint` event discovery;
+//! - POST routing by JSON-RPC method (initialize / tools/list / tools/call);
+//! - P1-1 retry after a failed first POST;
+//! - P1-8 `tools/list_changed` push notification.
 
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::time::Duration;
 
-/// POST 行为模式。
+/// POST behavior mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostMode {
-    /// 全部成功;SSE 周期推送 `notifications/tools/list_changed`(P1-8 用)。
+    /// All succeed; the SSE connection periodically pushes `notifications/tools/list_changed` (for P1-8).
     NotifyChanged,
-    /// 全部成功;SSE 只发心跳,不发变更通知。
+    /// All succeed; the SSE connection only sends heartbeats, no change notifications.
     Quiet,
-    /// 第一次 POST 返回 500(P1-1 缓存失效重试用)。
+    /// The first POST returns 500 (for P1-1 cache-invalidation retry).
     FailFirstPost,
-    /// 收到 POST 后吞掉请求、不回 body(F2 请求超时兜底测试用)。
+    /// Swallows the request after receiving POST, never writing a body (for the F2 request-timeout fallback test).
     HangPost,
-    /// 对 POST 回 `202 Accepted`,JSON-RPC 响应经 SSE `event: message` 推送
-    /// (F4:202 + SSE 推送型服务器的互操作用)。
+    /// Replies `202 Accepted` to POST, with the JSON-RPC response pushed over SSE as `event: message`
+    /// (for F4: interoperability with 202 + SSE-push servers).
     PushResponse,
-    /// `tools/call` 返回 `is_error=true` 内容(P1-6 用)。
+    /// `tools/call` returns `is_error=true` content (for P1-6).
     ToolError,
-    /// `tools/call` 延迟 `Duration` 后响应(per-tool 超时测试用,无 progress)。
+    /// `tools/call` responds after a `Duration` delay (for per-tool timeout tests, no progress).
     SlowCall(Duration),
-    /// 同上,但 SSE 长连接周期推送 `notifications/progress`(进度重置计时器测试用)。
+    /// As above, but the SSE long connection periodically pushes `notifications/progress`
+    /// (for progress-reset-timer tests).
     ProgressSlowCall(Duration),
-    /// 流式工具输出(P2-9):首次 `tools/call` 后,SSE 长连接沿
-    /// `notifications/tool_partial` 推送 3 个增量片段(seq 0/1/2,末段 final)。
+    /// Streaming tool output (P2-9): after the first `tools/call`, the SSE long connection pushes 3
+    /// incremental chunks over `notifications/tool_partial` (seq 0/1/2, last chunk final).
     StreamingCall,
 }
 
-/// 假 MCP SSE 服务器句柄。
+/// A fake MCP SSE server handle.
 pub struct FakeSseServer {
-    /// SSE 入口 URL(`GET` 该地址建立长连接)。
+    /// SSE entry URL (`GET` this address to open the long connection).
     pub sse_url: String,
-    /// 全部 POST 次数(P1-1 断言"清掉缓存后重试"用)。
+    /// Total POST count (for P1-1 asserting "retry after clearing the cache").
     pub post_count: Arc<AtomicUsize>,
-    /// `tools/list` 被请求次数(P1-8 断言缓存失效后重新拉取用)。
+    /// Number of times `tools/list` was requested (for P1-8 asserting a re-fetch after cache invalidation).
     pub tools_list_count: Arc<AtomicUsize>,
 }
 
-/// 读取一个 HTTP 请求,返回 (请求行, body)。
+/// Reads one HTTP request, returning (request line, body).
 ///
-/// 测试用简化实现:先读到 `\r\n\r\n`,再按 `Content-Length` 读全 body。
+/// Simplified test implementation: first reads up to `\r\n\r\n`, then reads the full body by `Content-Length`.
 async fn read_http_request(sock: &mut tokio::net::TcpStream) -> (String, String) {
     use tokio::io::AsyncReadExt;
     let mut buf: Vec<u8> = Vec::new();
@@ -86,10 +87,10 @@ async fn read_http_request(sock: &mut tokio::net::TcpStream) -> (String, String)
     (String::new(), String::new())
 }
 
-/// 启动假 MCP SSE 服务器。
+/// Starts a fake MCP SSE server.
 ///
-/// - `GET /sse` → 200 + `text/event-stream`,先发 `endpoint` 事件再保持长连接;
-/// - `POST /message` → 按 JSON-RPC 方法路由响应。
+/// - `GET /sse` → 200 + `text/event-stream`, sending the `endpoint` event first, then holding the long connection;
+/// - `POST /message` → routes the response by JSON-RPC method.
 pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
@@ -100,8 +101,8 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
     let tools_list_count = Arc::new(AtomicUsize::new(0));
     let call_seen = Arc::new(AtomicBool::new(false));
 
-    // F4:POST 侧把 JSON-RPC 响应投给 SSE 长连接推送(broadcast 多接收者,
-    // 每个 GET 连接各订阅一份;响应经 `event: message` 推送)。
+    // F4: the POST side hands JSON-RPC responses to the SSE long connections for pushing (broadcast with many
+    // receivers, each GET connection subscribes to its own copy; responses are pushed as `event: message`).
     let (push_tx, _) = tokio::sync::broadcast::channel::<String>(64);
     let push_tx_clone = push_tx.clone();
 
@@ -128,10 +129,10 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                         .await;
                     let endpoint = format!("event: endpoint\ndata: http://{}/message\n\n", addr);
                     let _ = sock.write_all(endpoint.as_bytes()).await;
-                    // 保持长连接:周期发心跳注释;NotifyChanged 模式额外推送
-                    // tools/list_changed 通知(P1-8);ProgressSlowCall 模式周期推送
-                    // progress(P2-4);StreamingCall 模式在首次 tools/call 后
-                    // 推送 3 个 tool_partial 增量片段(P2-9)。对端关闭后退出。
+                    // Hold the long connection: periodically send heartbeat comments; NotifyChanged mode
+                    // additionally pushes tools/list_changed notifications (P1-8); ProgressSlowCall mode
+                    // periodically pushes progress (P2-4); StreamingCall mode pushes 3 tool_partial incremental
+                    // chunks after the first tools/call (P2-9). Exits when the peer closes.
                     let heartbeat_ms = if matches!(
                         mode,
                         PostMode::ProgressSlowCall(_) | PostMode::StreamingCall
@@ -140,8 +141,9 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                     } else {
                         300
                     };
-                    // F4:先订阅推送通道、再发 endpoint 事件——客户端 discover 到
-                    // endpoint 后才发 POST,故订阅必然发生在推送之前,推送不丢失。
+                    // F4: subscribe to the push channel before sending the endpoint event — the client only POSTs
+                    // after discovering the endpoint, so the subscription necessarily happens before any push and
+                    // no push is lost.
                     let mut push_rx = push_tx.subscribe();
                     let mut partial_seq = 0u64;
                     let mut heartbeat = tokio::time::interval(Duration::from_millis(heartbeat_ms));
@@ -169,7 +171,8 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                                 {
                                     break;
                                 }
-                                // P2-9:首次 tools/call 后开始推流,共 3 段(seq 0/1/2,末段 final)。
+                                // P2-9: start streaming after the first tools/call, 3 chunks total
+                                // (seq 0/1/2, last chunk final).
                                 if mode == PostMode::StreamingCall
                                     && call_seen.load(Ordering::SeqCst)
                                     && partial_seq < 3
@@ -190,8 +193,8 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                                 }
                             }
                             pushed = push_rx.recv() => {
-                                // F4:POST 侧经广播投递的 JSON-RPC 响应 → SSE 推送。
-                                // Lagged / 无发送者等 `Err` 忽略,继续心跳即可。
+                                // F4: JSON-RPC responses delivered from the POST side via broadcast → SSE push.
+                                // `Err`s like Lagged / no sender are ignored, heartbeat continues.
                                 if let Ok(data) = pushed {
                                     let chunk = format!("event: message\ndata: {}\n\n", data);
                                     if sock.write_all(chunk.as_bytes()).await.is_err() {
@@ -211,8 +214,8 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                             .await;
                         return;
                     }
-                    // F2:吞掉请求不回 body——保持连接但永远不写任何字节,
-                    // 让 SseTransport 的 request_timeout 触发超时错误。
+                    // F2: swallow the request without a body — hold the connection but never write a byte, so
+                    // SseTransport's request_timeout triggers a timeout error.
                     if mode == PostMode::HangPost {
                         tokio::time::sleep(Duration::from_secs(3600)).await;
                         return;
@@ -237,7 +240,7 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                             "content": [{ "type": "text", "text": "server exploded" }],
                             "is_error": true
                         }),
-                        // 慢调用模式(P2-4):先睡 delay,再回显工具名。
+                        // Slow-call mode (P2-4): sleep for delay first, then echo the tool name.
                         "tools/call"
                             if matches!(
                                 mode,
@@ -259,11 +262,11 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                                 "is_error": false
                             })
                         }
-                        // 普通模式:回显收到的工具名,便于断言调用方剥掉了命名空间前缀,
-                        // 走的是 Server 侧原始工具名(P2-2)。
+                        // Normal mode: echo the received tool name, so assertions can confirm the caller stripped
+                        // the namespace prefix and the call uses the Server-side original tool name (P2-2).
                         "tools/call" => {
-                            // P2-9:StreamingCall 模式下,首次 tools/call 触发
-                            // SSE 循环开始推流(见 GET 分支的 partial_seq 循环)。
+                            // P2-9: in StreamingCall mode, the first tools/call triggers the SSE loop to start
+                            // streaming (see the partial_seq loop in the GET branch).
                             if mode == PostMode::StreamingCall {
                                 call_seen.store(true, Ordering::SeqCst);
                             }
@@ -281,7 +284,8 @@ pub async fn start_fake_sse_server(mode: PostMode) -> FakeSseServer {
                     };
                     let resp = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
                     if mode == PostMode::PushResponse {
-                        // F4:先经 SSE 长连接推送 JSON-RPC 响应,再回 202 Accepted。
+                        // F4: push the JSON-RPC response over the SSE long connection first, then reply
+                        // 202 Accepted.
                         let _ = push_tx.send(resp.to_string());
                         let _ = sock
                             .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")

@@ -1,7 +1,7 @@
 // lc-tools/src/wikipedia.rs
-//! Wikipedia 搜索工具
+//! Wikipedia search tool
 //!
-//! 通过 Wikipedia API 搜索和获取百科条目内容。
+//! Searches and fetches encyclopedia entry content via the Wikipedia API.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -9,47 +9,47 @@ use serde::{Deserialize, Serialize};
 
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
-/// Wikipedia 工具输入
+/// Wikipedia tool input
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WikipediaInput {
-    /// 搜索查询
+    /// The search query
     pub query: String,
-    /// 返回结果数量（默认 3）
+    /// Number of results to return (default: 3)
     pub top_k: Option<usize>,
-    /// 语言（默认 zh，支持 en/zh/ja 等）
+    /// Language (default: zh, supports en/zh/ja, etc.)
     pub lang: Option<String>,
-    /// 是否获取完整内容（默认 false，只获取摘要）
+    /// Whether to fetch full content (default false, summary only)
     pub full_content: Option<bool>,
 }
 
-/// Wikipedia 工具输出
+/// Wikipedia tool output
 #[derive(Debug, Serialize)]
 pub struct WikipediaOutput {
-    /// 查询
+    /// The query
     pub query: String,
-    /// 结果列表
+    /// The result list
     pub results: Vec<WikipediaResult>,
-    /// 结果数量
+    /// Number of results
     pub total: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct WikipediaResult {
-    /// 标题
+    /// Title
     pub title: String,
-    /// 摘要或内容
+    /// Snippet or content
     pub snippet: String,
-    /// 完整页面 URL
+    /// Full page URL
     pub url: String,
 }
 
-/// Wikipedia 搜索工具
+/// Wikipedia search tool
 pub struct WikipediaTool {
     client: reqwest::Client,
 }
 
 impl WikipediaTool {
-    /// 创建 Wikipedia 搜索工具。
+    /// Creates a Wikipedia search tool.
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -68,7 +68,7 @@ impl Default for WikipediaTool {
 }
 
 impl WikipediaTool {
-    /// 搜索 Wikipedia 条目
+    /// Searches Wikipedia entries
     async fn search(
         &self,
         query: &str,
@@ -120,7 +120,7 @@ impl WikipediaTool {
         })
     }
 
-    /// 获取条目完整内容
+    /// Fetches the full content of an entry
     async fn get_full_content(&self, title: &str, lang: &str) -> Result<String, ToolError> {
         let url = format!(
             "https://{}.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles={}&format=json",
@@ -156,7 +156,7 @@ impl WikipediaTool {
     }
 }
 
-/// 去除 HTML 标签
+/// Strips HTML tags
 fn strip_html(html: &str) -> String {
     static TAG_RE: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]+>").unwrap());
@@ -167,7 +167,7 @@ fn strip_html(html: &str) -> String {
     WHITESPACE_RE.replace_all(&result, " ").trim().to_string()
 }
 
-/// URL 编码 (using urlencoding crate for complete encoding)
+/// URL encoding (using the urlencoding crate for complete encoding)
 fn urlencoding(s: &str) -> String {
     urlencoding::encode(s).to_string()
 }

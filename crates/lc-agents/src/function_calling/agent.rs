@@ -1,8 +1,8 @@
 // src/agents/function_calling/agent.rs
-//! Function Calling Agent 实现
+//! Function Calling Agent implementation
 //!
-//! 使用 LLM 原生 Function Calling 的 Agent，不依赖文本解析。
-//! 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+//! An agent that uses the LLM's native Function Calling, without text parsing.
+//! Supports any LLM provider that implements `BaseChatModel`.
 
 use crate::{AgentAction, AgentError, AgentFinish, AgentOutput, AgentStep, BaseAgent, ToolInput};
 use async_trait::async_trait;
@@ -18,40 +18,40 @@ use std::sync::Arc;
 
 /// Function Calling Agent
 ///
-/// 使用 LLM 原生 Function Calling 的 Agent。
-/// 不依赖文本解析，直接处理 tool_calls。
-/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+/// An agent that uses the LLM's native Function Calling.
+/// Does not rely on text parsing; handles `tool_calls` directly.
+/// Supports any LLM provider that implements `BaseChatModel`.
 pub struct FunctionCallingAgent {
-    /// LLM 客户端（已绑定工具）
+    /// LLM client (with tools bound)
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 
-    /// 可用工具列表
+    /// Available tools
     tools: Vec<Arc<dyn BaseTool>>,
 
-    /// 自定义系统提示词
+    /// Custom system prompt
     system_prompt: Option<String>,
 
-    /// 最近一次 `plan()` 的 token 用量(P1-5)。
+    /// Token usage from the most recent `plan()` call (P1-5).
     last_token_usage: std::sync::Mutex<Option<TokenUsage>>,
 }
 
 impl FunctionCallingAgent {
-    /// 创建新的 Function Calling Agent
+    /// Creates a new Function Calling Agent
     ///
-    /// # 参数
-    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
-    /// * `tools` - 可用工具列表
-    /// * `system_prompt` - 自定义系统提示词（可选）
+    /// # Parameters
+    /// * `llm` - LLM client (any type implementing `BaseChatModel`)
+    /// * `tools` - available tools
+    /// * `system_prompt` - custom system prompt (optional)
     ///
-    /// # 向后兼容
-    /// 旧代码 `FunctionCallingAgent::new(openai_chat, tools, None)` 仍然可用，
-    /// 因为 `OpenAIChat: BaseChatModel` 且 `OpenAIError: Into<Error>`。
+    /// # Backward compatibility
+    /// Legacy code `FunctionCallingAgent::new(openai_chat, tools, None)` still works,
+    /// because `OpenAIChat: BaseChatModel` and `OpenAIError: Into<Error>`.
     pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>, system_prompt: Option<String>) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
         L::Error: Into<ProviderError>,
     {
-        // 先包装 LLM，将错误类型统一为 ProviderError
+        // Wrap the LLM first, unifying the error type to ProviderError
         let wrapped = lc_providers::ChatModelWrapper::new(llm);
 
         let tool_definitions: Vec<ToolDefinition> = tools
@@ -59,8 +59,8 @@ impl FunctionCallingAgent {
             .map(|t| to_tool_definition(t.as_ref()))
             .collect();
 
-        // 优先用 trait bind_tools（返回 Box<dyn BaseChatModel<Error = ProviderError>>）
-        // Provider 不支持则直接用包装后的 LLM
+        // Prefer the trait bind_tools (returns Box<dyn BaseChatModel<Error = ProviderError>>)
+        // Fall back to the wrapped LLM if the provider does not support it
         let llm_with_tools: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync> = wrapped
             .bind_tools(tool_definitions)
             .map(|boxed| {
@@ -76,9 +76,9 @@ impl FunctionCallingAgent {
         }
     }
 
-    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    /// Creates an agent from an already-wrapped `Arc<dyn BaseChatModel>`
     ///
-    /// 适用于已通过 `wrap_chat_model()` 或 `LLMClient` 创建的 LLM 实例。
+    /// For LLM instances already created via `wrap_chat_model()` or `LLMClient`.
     pub fn from_arc(
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         tools: Vec<Arc<dyn BaseTool>>,
@@ -104,17 +104,17 @@ impl FunctionCallingAgent {
         }
     }
 
-    /// 获取工具数量
+    /// Returns the number of tools
     pub fn tools_count(&self) -> usize {
         self.tools.len()
     }
 
-    /// 获取系统提示词
+    /// Returns the system prompt
     pub fn system_prompt(&self) -> Option<&str> {
         self.system_prompt.as_deref()
     }
 
-    /// 构建消息
+    /// Builds the messages
     fn build_messages(
         &self,
         inputs: &HashMap<String, String>,
@@ -209,17 +209,22 @@ impl BaseAgent for FunctionCallingAgent {
         )))
     }
 
-    /// 流式规划(S2):走 `stream_chat` 逐 token 转发模型文本 + 累积 usage。
+    /// Streaming plan (S2): goes through `stream_chat`, forwarding model text
+    /// token by token and accumulating usage.
     ///
-    /// 函数调用 Agent 的**最终答案**以文本逐 token 流出(打字机效果);但
-    /// **工具调用步骤**模型不回文本(内容为空、tool_calls 在增量里),而当前
-    /// `stream_chat` 的 chunk 只携带文本与 usage、不携带 tool_calls —— 流式路径
-    /// 无法重构工具调用,故累积文本为空时回退非流式 [`BaseAgent::plan`] 拿原生
-    /// `tool_calls`,避免"空文本 → 空 Finish"的假流式把 agent 循环提前终止。
-    /// `stream_chat` 立即可用即失败时同样回退非流式 `plan()`。
-    /// 诚实边界:模型在单个步骤同时输出文本与工具调用时,当前只保留文本
-    /// (工具调用丢失)——与 provider 层 chunk 不带 tool_calls 的现状一致,已在
-    /// v0.18 计划书 "chunk 内携带 thinking / tool_calls 增量" 留作后续演进。
+    /// The function-calling agent's **final answer** streams out as text token by
+    /// token (typewriter effect); but on **tool-call steps** the model returns no
+    /// text (content is empty, `tool_calls` arrive in increments), and the current
+    /// `stream_chat` chunks only carry text and usage, not `tool_calls` — so the
+    /// streaming path cannot reconstruct tool calls. When the accumulated text is
+    /// empty it falls back to non-streaming [`BaseAgent::plan`] to get the native
+    /// `tool_calls`, avoiding a fake "empty text → empty Finish" stream that would
+    /// end the agent loop early. If `stream_chat` fails immediately, it likewise
+    /// falls back to non-streaming `plan()`.
+    /// Honest boundary: when the model emits both text and a tool call in a single
+    /// step, only the text is kept (the tool call is lost) — consistent with the
+    /// provider layer's chunks not carrying `tool_calls`; the v0.18 plan document
+    /// leaves "chunks carrying thinking / tool_calls increments" as future work.
     async fn plan_stream(
         &self,
         intermediate_steps: &[AgentStep],
@@ -243,7 +248,7 @@ impl BaseAgent for FunctionCallingAgent {
             }
         };
 
-        // 逐 token:转发非空文本,累积完整文本 + 最后一个非 None 的 usage。
+        // Token by token: forward non-empty text, accumulate the full text + the last non-None usage.
         let mut full = String::new();
         let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
@@ -260,8 +265,9 @@ impl BaseAgent for FunctionCallingAgent {
             *guard = usage;
         }
 
-        // 工具调用步骤模型不回文本:流式 chunk 拿不到 tool_calls,回退非流式
-        // plan() 拿原生工具调用,保证 agent 循环不因"空 Finish"提前终止。
+        // Tool-call steps produce no model text: the streaming chunks carry no
+        // tool_calls, so fall back to non-streaming plan() to get the native tool
+        // calls, keeping the agent loop from ending early on an "empty Finish".
         if full.trim().is_empty() {
             log::debug!(
                 "streamed plan produced no text (likely a tool call), \
@@ -406,9 +412,11 @@ mod tests {
         assert_eq!(agent.system_prompt, Some("test".to_string()));
     }
 
-    /// S2 流式 mock:可配置 `stream_chat` 返回(正常 chunks / 立即失败)与 `chat`
-    /// 返回(工具调用 / 最终答案),并记录方法调用序列,验证 FunctionCallingAgent
-    /// 的 `plan_stream` 覆写:逐 token 转发、空流回退非流式 plan、立即失败回退。
+    /// S2 streaming mock: configurable `stream_chat` returns (normal chunks /
+    /// immediate failure) and `chat` returns (tool call / final answer), and it
+    /// records the call sequence, to verify FunctionCallingAgent's `plan_stream`
+    /// override: token-by-token forwarding, empty-stream fallback to
+    /// non-streaming plan, and immediate-failure fallback.
     struct MockFuncLLM {
         stream_chunks: Option<Vec<StreamChunk>>,
         chat_result: LLMResult,
@@ -535,7 +543,7 @@ mod tests {
         (agent, arc)
     }
 
-    /// S2:最终答案逐 token 流出(Text 事件),并记录流式用量供预算门。
+    /// S2: the final answer streams out token by token (Text events), and the streaming usage is recorded for the budget gate.
     #[tokio::test]
     async fn test_function_calling_plan_stream_streams_final_answer() {
         let llm = MockFuncLLM::new(
@@ -574,15 +582,16 @@ mod tests {
         ));
         let usage = agent.last_token_usage().expect("streaming usage recorded");
         assert_eq!(usage.total_tokens, 15);
-        // 走的是流式路径:只调了 stream_chat,没有回退 chat。
+        // Took the streaming path: only stream_chat was called, no chat fallback.
         assert_eq!(llm.calls(), vec!["stream_chat"]);
     }
 
-    /// S2:工具调用步骤模型不回文本,流式 chunk 拿不到 tool_calls —— `plan_stream`
-    /// 回退非流式 `plan()` 拿原生工具调用,不产生"空 Finish"假流式。
+    /// S2: tool-call steps produce no model text and streaming chunks carry no
+    /// tool_calls — `plan_stream` falls back to non-streaming `plan()` to get the
+    /// native tool calls, without a fake "empty Finish" stream.
     #[tokio::test]
     async fn test_function_calling_plan_stream_falls_back_for_tool_call() {
-        // 模拟工具调用步骤:流只回传空文本 + usage 块。
+        // Simulate a tool-call step: the stream only returns empty text + usage chunks.
         let llm = MockFuncLLM::new(
             Some(vec![StreamChunk {
                 text: String::new(),
@@ -614,15 +623,16 @@ mod tests {
             "tool-call step must return Action"
         );
         assert!(emitted.is_empty(), "tool-call step emits no free text");
-        // 回退路径的用量来自非流式 plan()(预算门仍能拿到真实用量)。
+        // The fallback path's usage comes from non-streaming plan() (the budget gate still gets real usage).
         let usage = agent.last_token_usage().expect("usage via fallback plan");
         assert_eq!(usage.total_tokens, 15);
-        // 工具调用步骤:先启动流(空文本),再回退非流式 chat 拿原生 tool_calls。
+        // Tool-call step: start the stream (empty text) first, then fall back to non-streaming chat for native tool_calls.
         assert_eq!(llm.calls(), vec!["stream_chat", "chat"]);
     }
 
-    /// S2:`stream_chat` 立即可用即失败时,`plan_stream` 回退非流式 `plan()`,
-    /// 最终答案作为单个 Text 事件转发(与旧非流式路径一致)。
+    /// S2: when `stream_chat` fails immediately, `plan_stream` falls back to
+    /// non-streaming `plan()`, forwarding the final answer as a single Text event
+    /// (consistent with the old non-streaming path).
     #[tokio::test]
     async fn test_function_calling_plan_stream_falls_back_on_immediate_error() {
         let llm = MockFuncLLM::new(None, text_result("Final Answer: 42"));
@@ -643,7 +653,7 @@ mod tests {
 
         assert_eq!(received, "Final Answer: 42");
         assert!(matches!(output, AgentOutput::Finish(_)));
-        // stream_chat 立即可用即失败 → 回退非流式 chat,整段答案作为单个 Text 事件。
+        // stream_chat fails immediately → fall back to non-streaming chat, the whole answer forwarded as a single Text event.
         assert_eq!(llm.calls(), vec!["stream_chat", "chat"]);
     }
 }

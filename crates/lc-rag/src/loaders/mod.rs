@@ -1,8 +1,8 @@
 // src/retrieval/loaders/mod.rs
-//! 文档加载器实现
+//! Document loader implementations
 //!
-//! 提供从不同格式文件加载文档的功能，包括 PDF、CSV、Text、JSON、Markdown、HTML 等。
-//! v0.4.1 新增: WebScraper、Sitemap、Docx 加载器。
+//! Provides document loading from files in various formats, including PDF, CSV, Text, JSON,
+//! Markdown, HTML, etc. v0.4.1 added the WebScraper, Sitemap, and Docx loaders.
 
 mod csv;
 mod docx;
@@ -27,27 +27,27 @@ pub use web_scraper::WebScraperLoader;
 use async_trait::async_trait;
 use lc_vector_stores::Document;
 
-/// 文档加载器错误类型
+/// Document loader error type
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LoaderError {
-    /// IO 错误
+    /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    /// CSV 解析错误
+    /// CSV parse error
     #[error("CSV parse error: {0}")]
     CsvError(String),
 
-    /// PDF 解析错误
+    /// PDF parse error
     #[error("PDF parse error: {0}")]
     PdfError(String),
 
-    /// JSON 解析错误
+    /// JSON parse error
     #[error("JSON parse error: {0}")]
     JsonError(String),
 
-    /// 未知错误
+    /// Unknown error
     #[error("unknown error: {0}")]
     Other(String),
 }
@@ -58,14 +58,14 @@ impl From<pdf_extract::Error> for LoaderError {
     }
 }
 
-/// 文档加载器 trait
+/// Document loader trait
 ///
-/// 定义从源加载文档的通用接口。
+/// Defines the common interface for loading documents from a source.
 #[async_trait]
 pub trait DocumentLoader: Send + Sync {
-    /// 从源加载文档
+    /// Loads documents from the source
     ///
-    /// # 返回
-    /// 加载的文档列表
+    /// # Returns
+    /// The loaded documents
     async fn load(&self) -> Result<Vec<Document>, LoaderError>;
 }

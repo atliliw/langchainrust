@@ -1,37 +1,38 @@
 // lc-memory/src/with_history.rs
-//! LCEL 组合用的"带记忆的 LLM 封装"。
+//! LCEL-composable "LLM wrapper with memory".
 //!
-//! 把"读记忆 → 拼用户输入 → 调 LLM → 写回记忆"这一组合封装成单个
-//! `Runnable<String, LLMResult>`,让"LLM + 记忆"可以直接进入 LCEL 管道
-//! (pipe 成链、batch、stream 等),不用在业务代码里手写记忆胶水。
+//! Packages the "read memory → compose user input → call LLM → write back memory"
+//! composition into a single `Runnable<String, LLMResult>`, so "LLM + memory" can
+//! go straight into an LCEL pipeline (pipe into chains, batch, stream, etc.) without
+//! hand-writing memory glue in business code.
 //!
-//! # 两种记忆来源
+//! # Two memory sources
 //!
-//! - `new(llm, memory)` —— 注入一个具体记忆对象(单会话,原有行为不变)。
-//! - `with_session_history(llm, factory)` —— 注入 **session 回调**(对齐 Python
-//!   `RunnableWithMessageHistory(llm, get_session_history)`):每次调用从
-//!   `config.configurable["session_id"]` 取槽,同一 session 共享历史,不同
-//!   session 互不串扰;缺失 `session_id` 返回 `LcelError::Chain`。
+//! - `new(llm, memory)` — injects a concrete memory object (single session; original behavior).
+//! - `with_session_history(llm, factory)` — injects a **session callback** (mirrors Python's
+//!   `RunnableWithMessageHistory(llm, get_session_history)`): each call picks a slot from
+//!   `config.configurable["session_id"]`; the same session shares history, different sessions
+//!   never cross; a missing `session_id` returns `LcelError::Chain`.
 //!
-//! # 语义
+//! # Semantics
 //!
-//! `invoke(user_input)` 依次执行:
-//! 1. 按模式选定记忆(Shared 直接取;Sessions 按 session_id 取/建槽);
-//! 2. 从记忆读取历史,转成消息(`memory_variables_to_messages`);
-//! 3. 把用户输入作为 Human 消息追加到末尾;
-//! 4. 交给 `llm.chat`(可选 `RunnableConfig` 透传);
-//! 5. 把「用户输入 / 模型回答」写回记忆;
-//! 6. 返回完整 `LLMResult`。
+//! `invoke(user_input)` runs in order:
+//! 1. select the memory by mode (Shared takes it directly; Sessions picks/creates a slot by session_id);
+//! 2. read history from memory, convert to messages (`memory_variables_to_messages`);
+//! 3. append the user input as a Human message;
+//! 4. hand to `llm.chat` (optional `RunnableConfig` passthrough);
+//! 5. write "user input / model answer" back to memory;
+//! 6. return the full `LLMResult`.
 //!
-//! LLM 错误通过 `L::Error: Into<LcelError>` 进入管道错误;记忆读写错误
-//! 收敛为 `LcelError::Chain`。
+//! LLM errors enter the pipeline error via `L::Error: Into<LcelError>`; memory read/write
+//! errors converge to `LcelError::Chain`.
 //!
-//! # 泛型
+//! # Generics
 //!
-//! `L` 是任意实现 `BaseChatModel` 的模型(原生 Provider / `LLMClient` 均可),
-//! 只要其错误类型能转进 `LcelError`(`LLMClient` 天然满足;原生 Provider 见
-//! lc-providers 的 `From<...> for LcelError`)。记忆以 trait 对象持有,任意
-//! `BaseMemory`(Buffer / Window / Summary / SummaryBuffer 等)都可用。
+//! `L` is any model implementing `BaseChatModel` (native Provider / `LLMClient` both work),
+//! as long as its error type can convert into `LcelError` (`LLMClient` satisfies it naturally;
+//! native Providers see `From<...> for LcelError` in lc-providers). Memory is held as a trait
+//! object; any `BaseMemory` (Buffer / Window / Summary / SummaryBuffer, etc.) works.
 
 use crate::base::{memory_variables_to_messages, BaseMemory};
 use crate::buffer::ConversationBufferMemory;
@@ -43,42 +44,42 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 记忆句柄:任意 `BaseMemory` 的共享可变引用。
+/// Memory handle: a shared mutable reference to any `BaseMemory`.
 pub type SharedMemory = Arc<Mutex<Box<dyn BaseMemory>>>;
 
-/// Session 缓存默认上限:防异常/恶意 session_id 无限增长占满内存(M2a)。
+/// Default cap for the session cache: prevents runaway/malicious session_id growth from filling memory (M2a).
 const DEFAULT_MAX_SESSIONS: usize = 100;
 
-/// 带记忆的 LLM 封装,作为单个 Runnable 参与 LCEL 组合。
+/// LLM wrapper with memory, participating in LCEL composition as a single Runnable.
 pub struct RunnableWithMessageHistory<L> {
     llm: Arc<L>,
     mode: HistoryMode,
 }
 
-/// 记忆来源:共享单槽(SHARED)或按 session 分槽(SESSIONS)。
+/// Memory source: a shared single slot (SHARED) or per-session slots (SESSIONS).
 enum HistoryMode {
-    /// 构造时注入的单一记忆对象,所有调用共享。
+    /// A single memory object injected at construction; all calls share it.
     Shared(SharedMemory),
-    /// 按 `configurable.session_id` 分槽:factory 建新槽,缓存复用已建槽。
+    /// Per-slot by `configurable.session_id`: the factory builds new slots, the cache reuses existing ones.
     Sessions {
         factory: Arc<dyn Fn(&str) -> SharedMemory + Send + Sync>,
-        /// 槽缓存:同一 session 复用同一份记忆(其锁同时串行化同槽并发 invoke)。
+        /// Slot cache: the same session reuses the same memory (its lock also serializes concurrent invokes on the same slot).
         cache: Mutex<SessionCache>,
-        /// 缓存上限:超过即淘汰最旧 session,防 session_id 无限增长的内存 DoS(M2a)。
+        /// Cache cap: evicts the oldest session when exceeded, preventing a memory DoS from unbounded session_id growth (M2a).
         max_sessions: usize,
-        /// 仅用于 `memory()` 访问器的占位记忆(Sessions 模式下实际槽不唯一)。
+        /// Placeholder memory used only by the `memory()` accessor (in Sessions mode the real slot is not unique).
         default: SharedMemory,
     },
 }
 
-/// Session 槽缓存:`slots` 按 session_id 取槽,`order` 记录插入顺序供上限淘汰。
+/// Session slot cache: `slots` looks up by session_id, `order` records insertion order for cap-based eviction.
 struct SessionCache {
     slots: HashMap<String, SharedMemory>,
     order: VecDeque<String>,
 }
 
 impl<L> RunnableWithMessageHistory<L> {
-    /// 用 LLM + 单个记忆对象构造封装(所有调用共享这一份记忆)。
+    /// Builds the wrapper from an LLM + a single memory object (all calls share this memory).
     pub fn new(llm: L, memory: impl BaseMemory + 'static) -> Self {
         Self {
             llm: Arc::new(llm),
@@ -86,11 +87,11 @@ impl<L> RunnableWithMessageHistory<L> {
         }
     }
 
-    /// 用 LLM + session 回调构造封装(对齐 Python
-    /// `RunnableWithMessageHistory(llm, get_session_history)`)。
+    /// Builds the wrapper from an LLM + a session callback (mirrors Python's
+    /// `RunnableWithMessageHistory(llm, get_session_history)`).
     ///
-    /// `factory(session_id)` 为一个 session 槽建出记忆对象;每次调用按
-    /// `config.configurable["session_id"]` 选槽,同一 session 复用已建槽。
+    /// `factory(session_id)` builds a memory object for one session slot; each call selects the
+    /// slot by `config.configurable["session_id"]`, and the same session reuses its built slot.
     ///
     /// # Example
     ///
@@ -121,8 +122,9 @@ impl<L> RunnableWithMessageHistory<L> {
         }
     }
 
-    /// 设置 session 缓存上限(Sessions 模式)。超过上限后,新 session 会淘汰最旧
-    /// 的槽,防 session_id 无限增长的内存 DoS(M2a)。默认 `DEFAULT_MAX_SESSIONS`。
+    /// Sets the session-cache cap (Sessions mode). When exceeded, a new session evicts the
+    /// oldest slot, preventing a memory DoS from unbounded session_id growth (M2a).
+    /// Defaults to `DEFAULT_MAX_SESSIONS`.
     pub fn with_max_sessions(mut self, max: usize) -> Self {
         if let HistoryMode::Sessions { max_sessions, .. } = &mut self.mode {
             *max_sessions = max.max(1);
@@ -130,10 +132,12 @@ impl<L> RunnableWithMessageHistory<L> {
         self
     }
 
-    /// 暴露内部记忆句柄,便于读取已保存的历史(调试、展示、验证写回等)。
+    /// Exposes the internal memory handle for reading saved history (debugging, display,
+    /// verifying write-back, etc.).
     ///
-    /// Sessions 模式下槽不唯一,返回的是占位记忆(不会参与管道读写);
-    /// 要检查真实历史请从管道内部或业务侧记忆对象读取。
+    /// In Sessions mode the slot is not unique, so a placeholder memory is returned (it does
+    /// not participate in pipeline reads/writes); to inspect real history, read from the
+    /// pipeline internals or the business-side memory object.
     pub fn memory(&self) -> SharedMemory {
         match &self.mode {
             HistoryMode::Shared(m) => m.clone(),
@@ -141,7 +145,7 @@ impl<L> RunnableWithMessageHistory<L> {
         }
     }
 
-    /// 按模式选定本次调用要用的记忆槽。
+    /// Selects the memory slot this call will use, by mode.
     async fn select_memory(
         &self,
         config: &Option<RunnableConfig>,
@@ -168,7 +172,7 @@ impl<L> RunnableWithMessageHistory<L> {
                 if let Some(memory) = cache.slots.get(session_id) {
                     return Ok(memory.clone());
                 }
-                // M2a: 缓存有上限,先淘汰最旧的 session,再建新槽。
+                // M2a: the cache has a cap — evict the oldest session first, then build the new slot.
                 if cache.slots.len() >= *max_sessions {
                     if let Some(oldest) = cache.order.pop_front() {
                         cache.slots.remove(&oldest);
@@ -196,15 +200,17 @@ where
         input: String,
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, LcelError> {
-        // 0. 选定记忆槽(Sessions 模式读 configurable.session_id)
+        // 0. select the memory slot (Sessions mode reads configurable.session_id)
         let memory = self.select_memory(&config).await?;
 
-        // M2b: 整个「读记忆 → 调 LLM → 写回」持锁执行,串行化同一记忆槽的并发
-        // invoke。旧实现读后即放锁,两个并发 invoke 都读到旧历史、写回互相覆盖
-        // 丢历史。代价是同槽调用串行,但带记忆的对话本就应串行。
+        // M2b: hold the lock across the whole "read memory → call LLM → write back", serializing
+        // concurrent invokes on the same memory slot. The old implementation released the lock
+        // right after reading, so two concurrent invokes both read stale history and overwrote
+        // each other's write-back, losing history. The cost is that same-slot calls serialize,
+        // but memory-backed conversation should be serial anyway.
         let mut memory = memory.lock().await;
 
-        // 1. 读记忆 → 转消息
+        // 1. read memory → convert to messages
         let mut messages = {
             let vars = memory
                 .load_memory_variables(&HashMap::new())
@@ -213,14 +219,14 @@ where
             memory_variables_to_messages(&vars)
         };
 
-        // 2. 拼上用户输入
+        // 2. append the user input
         messages.push(Message::human(&input));
 
-        // 3. 调 LLM(持锁等待:同槽串行,避免并发丢历史)
+        // 3. call the LLM (holding the lock: same-slot calls serialize, avoiding concurrent history loss)
         let result = self.llm.chat(messages, config).await.map_err(Into::into)?;
 
-        // 4. 写回记忆:失败不丢弃模型答案(否则调用方拿 Err 重试会重复调 LLM),
-        //    记 warn 暴露记忆层降级
+        // 4. write back to memory: on failure the model answer is not discarded (otherwise the
+        //    caller retrying on Err would re-invoke the LLM); log a warn to expose the memory-layer degradation
         let inputs = HashMap::from([("input".to_string(), input)]);
         let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
         if let Err(e) = memory.save_context(&inputs, &outputs).await {
@@ -242,7 +248,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Mutex as StdMutex;
 
-    /// 测试 LLM:记录每次收到的消息,并把最后一条用户消息包成回答。
+    /// Test LLM: records every received message and wraps the last user message as the reply.
     struct TestChatModel {
         seen: Arc<StdMutex<Vec<Vec<Message>>>>,
     }
@@ -310,7 +316,7 @@ mod tests {
         }
     }
 
-    /// session 回调:每次建一个空的 Buffer 记忆(return_messages = true)。
+    /// Session callback: builds an empty Buffer memory per session (return_messages = true).
     fn session_factory(_session_id: &str) -> SharedMemory {
         Arc::new(Mutex::new(
             Box::new(ConversationBufferMemory::new().with_return_messages(true))
@@ -318,31 +324,31 @@ mod tests {
         ))
     }
 
-    /// 读记忆 → LLM → 写回:第二轮调用时,LLM 应看到第一轮的完整对话。
+    /// Read memory → LLM → write back: on the second call, the LLM should see the first turn's full conversation.
     #[tokio::test]
     async fn reads_memory_writes_back_round_trip() {
         // Arrange
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let llm = TestChatModel { seen: seen.clone() };
-        // return_messages = true:历史以消息数组返回,方便断言每轮消息构成
+        // return_messages = true: history returns as a message array, making per-turn message composition easy to assert
         let memory = ConversationBufferMemory::new().with_return_messages(true);
         let pipe = RunnableWithMessageHistory::new(llm, memory);
 
-        // Act 第一轮:无历史
+        // Act turn 1: no history
         let r1 = pipe.invoke("我叫什么名字".to_string(), None).await.unwrap();
         assert_eq!(r1.content, "reply to: 我叫什么名字");
 
-        // Act 第二轮:历史应已写回
+        // Act turn 2: history should have been written back
         let r2 = pipe.invoke("再问一次".to_string(), None).await.unwrap();
         assert_eq!(r2.content, "reply to: 再问一次");
 
         // Assert
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 2, "model should be called twice");
-        // 第一轮:只有用户消息
+        // Turn 1: only the user message
         assert_eq!(calls[0].len(), 1);
         assert_eq!(calls[0][0].content, "我叫什么名字");
-        // 第二轮:user + ai + 新 user(记忆已写回)
+        // Turn 2: user + ai + new user (memory written back)
         assert_eq!(calls[1].len(), 3);
         assert_eq!(calls[1][0].content, "我叫什么名字");
         assert!(matches!(calls[1][0].message_type, MessageType::Human));
@@ -350,7 +356,7 @@ mod tests {
         assert_eq!(calls[1][2].content, "再问一次");
     }
 
-    /// 记忆写回持久化在封装内:构造新封装、复用同一记忆类型,历史仍在。
+    /// Memory write-back persists inside the wrapper: a new wrapper reusing the same memory type still has the history.
     #[tokio::test]
     async fn memory_accumulates_across_invocations() {
         // Arrange
@@ -359,19 +365,19 @@ mod tests {
         let memory = ConversationBufferMemory::new().with_return_messages(true);
         let pipe = RunnableWithMessageHistory::new(llm, memory);
 
-        // Act 三轮连续调用
+        // Act three consecutive turns
         for turn in ["你好", "你在吗", "再见"] {
             pipe.invoke(turn.to_string(), None).await.unwrap();
         }
 
-        // Assert 第三轮应看到前两轮完整四段对话
+        // Assert turn 3 should see the full four messages of turns 1-2
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2].len(), 5); // 2 轮 * 2 段 + 当前用户消息
+        assert_eq!(calls[2].len(), 5); // 2 turns * 2 messages + the current user message
         assert_eq!(calls[2][4].content, "再见");
     }
 
-    /// session 模式:同一 session_id 两轮调用共享历史。
+    /// Session mode: two calls with the same session_id share history.
     #[tokio::test]
     async fn session_history_same_session_shares_memory() {
         // Arrange
@@ -380,7 +386,7 @@ mod tests {
         let pipe = RunnableWithMessageHistory::with_session_history(llm, session_factory);
         let cfg = RunnableConfig::new().with_configurable("session_id", json!("s1"));
 
-        // Act 同一 session 两轮
+        // Act two turns on the same session
         let r1 = pipe
             .invoke("我叫什么名字".to_string(), Some(cfg.clone()))
             .await
@@ -392,7 +398,7 @@ mod tests {
             .unwrap();
         assert_eq!(r2.content, "reply to: 再问一次");
 
-        // Assert 第二轮看到第一轮完整对话(user + ai + user)
+        // Assert turn 2 sees turn 1's full conversation (user + ai + user)
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].len(), 3);
@@ -400,7 +406,7 @@ mod tests {
         assert!(matches!(calls[1][1].message_type, MessageType::AI));
     }
 
-    /// session 模式:不同 session_id 互不串扰。
+    /// Session mode: different session_ids never cross-contaminate.
     #[tokio::test]
     async fn session_history_different_sessions_isolated() {
         // Arrange
@@ -410,7 +416,7 @@ mod tests {
         let cfg_s1 = RunnableConfig::new().with_configurable("session_id", json!("s1"));
         let cfg_s2 = RunnableConfig::new().with_configurable("session_id", json!("s2"));
 
-        // Act s1 两轮 + s2 一轮
+        // Act s1 two turns + s2 one turn
         pipe.invoke("我是 s1".to_string(), Some(cfg_s1.clone()))
             .await
             .unwrap();
@@ -421,14 +427,14 @@ mod tests {
             .await
             .unwrap();
 
-        // Assert s2 第一轮无历史(1 条),s1 第二轮有历史(3 条)
+        // Assert s2's first turn has no history (1 message); s1's second turn has history (3 messages)
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1].len(), 3, "s1 second turn should see history");
         assert_eq!(calls[2].len(), 1, "s2 first turn should have no history");
     }
 
-    /// session 模式:缺失 configurable.session_id → LcelError::Chain。
+    /// Session mode: missing configurable.session_id → LcelError::Chain.
     #[tokio::test]
     async fn session_history_missing_session_id_errors() {
         // Arrange
@@ -436,7 +442,7 @@ mod tests {
         let llm = TestChatModel { seen };
         let pipe = RunnableWithMessageHistory::with_session_history(llm, session_factory);
 
-        // Act 无 config / 无 session_id
+        // Act no config / no session_id
         let err = pipe.invoke("你好".to_string(), None).await.unwrap_err();
         assert!(matches!(err, LcelError::Chain(_)));
 
@@ -448,8 +454,8 @@ mod tests {
         assert!(matches!(err, LcelError::Chain(_)));
     }
 
-    /// 可阻塞的测试 LLM:第一次 chat 通知 `entered` 并阻塞在 `release`,用于在
-    /// 并发测试中制造「已持锁、模型调用中」的确定性窗口(M2b)。
+    /// Blockable test LLM: the first chat notifies `entered` and blocks on `release`, used to
+    /// create a deterministic "lock held, model in-flight" window in concurrency tests (M2b).
     struct BlockingChatModel {
         seen: Arc<StdMutex<Vec<Vec<Message>>>>,
         entered: Arc<tokio::sync::Notify>,
@@ -533,7 +539,7 @@ mod tests {
         }
     }
 
-    /// session 缓存有上限:超过后淘汰最旧 session,防 session_id 无限增长的内存 DoS(M2a)。
+    /// The session cache has a cap: the oldest session is evicted when exceeded, preventing a memory DoS from unbounded session_id growth (M2a).
     #[tokio::test]
     async fn session_cache_evicts_oldest_when_over_capacity() {
         // Arrange
@@ -546,7 +552,7 @@ mod tests {
         let cfg_s2 = RunnableConfig::new().with_configurable("session_id", json!("s2"));
         let cfg_s3 = RunnableConfig::new().with_configurable("session_id", json!("s3"));
 
-        // Act s1、s2 占满缓存;s3 触发淘汰最旧的 s1。
+        // Act s1 and s2 fill the cache; s3 triggers eviction of the oldest, s1.
         pipe.invoke("s1-turn1".to_string(), Some(cfg_s1.clone()))
             .await
             .unwrap();
@@ -556,7 +562,7 @@ mod tests {
         pipe.invoke("s3-turn1".to_string(), Some(cfg_s3))
             .await
             .unwrap();
-        // s1 已被淘汰 → 重入 s1 是全新会话。
+        // s1 was evicted → re-entering s1 starts a fresh session.
         pipe.invoke("s1-turn2".to_string(), Some(cfg_s1))
             .await
             .unwrap();
@@ -571,8 +577,9 @@ mod tests {
         );
     }
 
-    /// 同一记忆槽的并发 invoke 必须串行化:读→LLM→写整段持锁,避免并发都读到
-    /// 旧历史、写回互相覆盖丢上下文(M2b)。
+    /// Concurrent invokes on the same memory slot must serialize: hold the lock across the whole
+    /// read→LLM→write, so concurrent calls cannot both read stale history and overwrite each
+    /// other's write-back, losing context (M2b).
     #[tokio::test]
     async fn concurrent_same_session_invokes_do_not_lose_history() {
         // Arrange
@@ -591,16 +598,16 @@ mod tests {
             ConversationBufferMemory::new().with_return_messages(true),
         ));
 
-        // Act 第一轮 invoke:进入模型调用后阻塞,期间必须持有记忆锁。
+        // Act first invoke: blocks after entering the model call — the memory lock must be held meanwhile.
         let p1 = pipe.clone();
         let h1 = tokio::spawn(async move { p1.invoke("第一轮".to_string(), None).await });
         entered.notified().await;
 
-        // 第二轮 invoke:若读→LLM→写没有整段持锁,此刻会读到空历史(丢上下文)。
+        // Second invoke: if read→LLM→write were not lock-held end-to-end, this call would read empty history (lost context).
         let p2 = pipe.clone();
         let h2 = tokio::spawn(async move { p2.invoke("第二轮".to_string(), None).await });
 
-        // 放行第一轮:写回后才释放锁,第二轮才能读到第一轮完整对话。
+        // Release the first turn: the lock is only released after write-back, so the second turn reads the first turn's full conversation.
         release.notify_one();
         let r1 = h1.await.unwrap().unwrap();
         let r2 = h2.await.unwrap().unwrap();

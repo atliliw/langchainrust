@@ -1,5 +1,5 @@
 // lc-vector-stores/src/sqlite_store.rs
-//! SQLite 文档存储实现
+//! SQLite document store implementation
 
 use async_trait::async_trait;
 use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{Document, VectorStoreError};
 
-/// 解析 metadata 列;损坏时记日志并回退空映射,不再静默吞错。
+/// Parses the metadata column; on corruption, logs and falls back to an empty map instead of silently swallowing the error.
 fn parse_metadata_or_default(raw: &str) -> std::collections::HashMap<String, serde_json::Value> {
     serde_json::from_str(raw).unwrap_or_else(|e| {
         log::warn!(
@@ -22,10 +22,10 @@ fn parse_metadata_or_default(raw: &str) -> std::collections::HashMap<String, ser
     })
 }
 
-/// SQLite 文档存储配置
+/// SQLite document store configuration
 #[derive(Debug, Clone)]
 pub struct SQLiteStoreConfig {
-    /// SQLite 数据库文件路径
+    /// SQLite database file path
     pub db_path: String,
 }
 
@@ -38,7 +38,7 @@ impl Default for SQLiteStoreConfig {
 }
 
 impl SQLiteStoreConfig {
-    /// 使用数据库文件路径创建配置。
+    /// Creates a config from a database file path.
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             db_path: path.into(),
@@ -46,13 +46,13 @@ impl SQLiteStoreConfig {
     }
 }
 
-/// SQLite 文档存储实现
+/// SQLite document store implementation
 pub struct SQLiteDocumentStore {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl SQLiteDocumentStore {
-    /// 打开 SQLite 数据库并创建所需表与索引。
+    /// Opens the SQLite database and creates the required tables and indexes.
     pub fn new(config: SQLiteStoreConfig) -> Result<Self, VectorStoreError> {
         let conn = Connection::open(&config.db_path)
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -75,10 +75,11 @@ impl SQLiteDocumentStore {
         })
     }
 
-    /// 显式触发落盘。
+    /// Explicitly triggers persistence to disk.
     ///
-    /// C3: 原 `ChunkedDocumentStoreTrait::save` 假默认方法已从 trait 删除;SQLite
-    /// 每次写入即自动持久化,本方法为兼容性 no-op(与 Redis 的 `save_to_disk` 对齐)。
+    /// C3: the fake default `ChunkedDocumentStoreTrait::save` has been removed from the trait;
+    /// SQLite persists automatically on every write, so this method is a compatibility no-op
+    /// (aligned with Redis's `save_to_disk`).
     pub async fn save(&self) -> Result<(), VectorStoreError> {
         Ok(())
     }
@@ -158,8 +159,9 @@ impl DocumentStore for SQLiteDocumentStore {
         let conn = self.conn.lock().await;
         match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
             Ok(count) => count,
-            // M3: trait 返回 usize 无法传播错误——不再静默吞错返回 0,
-            // 记 error 暴露存储故障,与文件内"不再静默丢行"的既有模式一致。
+            // M3: the trait returns usize so errors cannot propagate — stop silently swallowing
+            // errors and returning 0; log an error to surface storage failures, consistent with
+            // the "no silent row drops" pattern already used in this file.
             Err(e) => {
                 log::error!("SQLite count(documents) query failed, returning 0: {}", e);
                 0
@@ -275,7 +277,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             .filter_map(|r| match r {
                 Ok(chunk) => Some(chunk),
                 Err(e) => {
-                    // 不再静默丢行:记录到日志,暴露存储降级
+                    // stop silently dropping rows: log to surface storage degradation
                     log::error!(
                         "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e
@@ -307,7 +309,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         let conn = self.conn.lock().await;
         match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
             Ok(count) => count,
-            // M3: 不静默吞错返回 0,记 error 暴露存储故障。
+            // M3: do not silently swallow errors and return 0; log an error to surface storage failures.
             Err(e) => {
                 log::error!("SQLite parent_count query failed, returning 0: {}", e);
                 0
@@ -319,7 +321,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         let conn = self.conn.lock().await;
         match conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)) {
             Ok(count) => count,
-            // M3: 不静默吞错返回 0,记 error 暴露存储故障。
+            // M3: do not silently swallow errors and return 0; log an error to surface storage failures.
             Err(e) => {
                 log::error!("SQLite chunk_count query failed, returning 0: {}", e);
                 0
@@ -346,7 +348,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             .filter_map(|r| match r {
                 Ok(chunk) => Some(chunk),
                 Err(e) => {
-                    // 不再静默丢行:记录到日志,暴露存储降级
+                    // stop silently dropping rows: log to surface storage degradation
                     log::error!(
                         "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e
@@ -463,7 +465,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             .filter_map(|r| match r {
                 Ok(chunk) => Some(chunk),
                 Err(e) => {
-                    // 不再静默丢行:记录到日志,暴露存储降级
+                    // stop silently dropping rows: log to surface storage degradation
                     log::error!(
                         "SQLite store: a row failed to deserialize and was dropped from the query result: {}",
                         e

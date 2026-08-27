@@ -1,7 +1,7 @@
-//! `ReplayProvider`:从录制文件按 FIFO 顺序回放,零网络。
+//! `ReplayProvider`: replays from the recording file in FIFO order, zero network.
 //!
-//! 回放**不做消息匹配**(LLMChain 渲染出的 prompt 逐次可变),只按顺序弹出录播。
-//! 队列耗尽返回 [`TestkitError::ReplayExhausted`]。
+//! Replay does **not match messages** (the prompt an LLMChain renders varies per call); it only
+//! pops recordings in order. An exhausted queue returns [`TestkitError::ReplayExhausted`].
 
 use std::collections::VecDeque;
 use std::io::BufRead;
@@ -19,48 +19,54 @@ use lc_schema::Message;
 use crate::error::TestkitError;
 use crate::recording::RecordedExchange;
 
-/// 回放策略:决定并发/乱序场景下一条请求取哪条录播。
+/// Replay strategy: decides which recording a request takes in concurrent/out-of-order scenarios.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplayStrategy {
-    /// 并发 FIFO:按录制顺序弹出,原子 pop 无 UB,但"哪条请求拿到哪条响应"不确定。
+    /// Concurrent FIFO: pops in recording order, atomic pop has no UB, but "which request gets
+    /// which response" is not deterministic.
     ///
-    /// 适合串行/顺序稳定的链;并行场景配**顺序无关断言**(只断言回放全部耗尽、
-    /// 各响应结构非空),不断言"第 N 条是工具 A 的响应"。
+    /// Suits serial/order-stable chains; parallel scenarios use **order-independent assertions**
+    /// (only assert that replay is fully drained and each response is structurally non-empty),
+    /// never "the Nth response is tool A's".
     #[default]
     Fifo,
-    /// 按工具名路由:绑定工具时携带名字(`bind_tools`),回放时从队列里挑
-    /// 工具名匹配的第一条录播(请求侧 `exchange.tools` 或响应侧 `tool_calls`)。
+    /// Routes by tool name: tools carry a name when bound (`bind_tools`), replay picks the first
+    /// recording in the queue whose tool name matches (request-side `exchange.tools` or
+    /// response-side `tool_calls`).
     ///
-    /// 覆盖"不同工具响应不同、需要精确对应"的并行场景——每个并行分支各绑
-    /// 各的工具,拿到各自正确的响应。比"整段消息签名匹配"弱但可复现。
+    /// Covers parallel scenarios where "different tools return different responses and need exact
+    /// correspondence" — each parallel branch binds its own tool and gets its own correct response.
+    /// Weaker than full message-signature matching, but reproducible.
     ByToolName,
-    /// 按请求消息**完整签名**精确匹配:请求 `messages` 与录播 `exchange.messages`
-    /// **逐条完全相等**(`Message` 的 `PartialEq` 全字段,含 `content` /
-    /// `message_type` / `name` / `additional_kwargs` / `tool_calls` 等)才命中。
+    /// Matches the request messages by **full signature**: the request `messages` must be
+    /// **element-wise exactly equal** to `exchange.messages` (`Message`'s `PartialEq` over all
+    /// fields, including `content` / `message_type` / `name` / `additional_kwargs` / `tool_calls`).
     ///
-    /// 并行乱序下每个请求精确取到自己的响应;录播中无匹配 → 返回明确
-    /// [`TestkitError::ReplayNoMatch`],**不做静默 FIFO 兜底**(避免"拿错响应"
-    /// 伪装成成功)。适合"同一消息序列必定复现同一响应"的确定性重放——录播
-    /// 与请求在任意字段上不一致(如运行时给 `id` 赋了每次不同的值)都会视为
-    /// 不匹配,fixture 需保证这些字段稳定。
+    /// Under parallel out-of-order traffic each request exactly gets its own response; a recording
+    /// with no match returns an explicit [`TestkitError::ReplayNoMatch`], **never a silent FIFO
+    /// fallback** (which would disguise "wrong response" as success). Suits deterministic replays
+    /// where "the same message sequence always reproduces the same response" — any field drift
+    /// between the recording and the request (e.g. a runtime-assigned `id` that differs each time)
+    /// counts as no-match, so fixtures must keep those fields stable.
     Exact,
 }
 
-/// 从录制文件回放的零网络 `BaseChatModel`。
+/// Zero-network `BaseChatModel` that replays from a recording file.
 ///
-/// 队列用 `Arc<Mutex<VecDeque>>` 共享,`bind_tools` 返回携带工具集的新实例
-/// 时与原件共享同一队列(FIFO 顺序在分支间一致)。
+/// The queue is shared via `Arc<Mutex<VecDeque>>`; `bind_tools` returns a new instance
+/// carrying a tool set and sharing the same queue with the original (FIFO order stays
+/// consistent across branches).
 #[derive(Clone)]
 pub struct ReplayProvider {
     queue: Arc<Mutex<VecDeque<RecordedExchange>>>,
     model_name: String,
     strategy: ReplayStrategy,
-    /// 本实例绑定的工具定义(`ByToolName` 路由的匹配键)。
+    /// Tool definitions bound on this instance (the matching key for `ByToolName` routing).
     tools: Option<Vec<ToolDefinition>>,
 }
 
 impl ReplayProvider {
-    /// 读 JSONL 录制文件(缺文件/坏行 → `Err`)。
+    /// Reads a JSONL recording file (missing file / bad line → `Err`).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TestkitError> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
@@ -86,7 +92,7 @@ impl ReplayProvider {
         })
     }
 
-    /// 内存构造(手写录播 = MockProvider 的等价物)。
+    /// In-memory construction (hand-written recordings = the equivalent of a MockProvider).
     pub fn from_exchanges(exchanges: Vec<RecordedExchange>) -> Self {
         Self {
             queue: Arc::new(Mutex::new(exchanges.into())),
@@ -96,7 +102,7 @@ impl ReplayProvider {
         }
     }
 
-    /// 单一固定响应:任意请求都返回同一 `response`(最简 mock)。
+    /// A single fixed response: every request returns the same `response` (simplest mock).
     pub fn single(response: LLMResult) -> Self {
         Self::from_exchanges(vec![RecordedExchange {
             messages: Vec::new(),
@@ -105,17 +111,17 @@ impl ReplayProvider {
         }])
     }
 
-    /// 设置回放策略(默认 FIFO;`ByToolName` 按工具名路由)。
+    /// Sets the replay strategy (default FIFO; `ByToolName` routes by tool name).
     pub fn with_strategy(mut self, strategy: ReplayStrategy) -> Self {
         self.strategy = strategy;
         self
     }
 
-    /// 绑定工具:返回携带该工具集的新实例(共享同一回放队列)。
+    /// Binds tools: returns a new instance carrying that tool set (sharing the same replay queue).
     ///
-    /// 回放侧绑工具只是让 agent"绑了工具的循环"前提成立——录播里已含
-    /// 请求侧 `tools` 与响应侧 `tool_calls`,回放逻辑无需改。`ByToolName`
-    /// 策略下,`tools` 同时是路由的匹配键。
+    /// Binding tools on the replay side only satisfies the agent's "tools-bound loop" precondition —
+    /// the recording already contains the request-side `tools` and response-side `tool_calls`, so the
+    /// replay logic needs no change. Under `ByToolName`, `tools` also serves as the routing key.
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
         Self {
             queue: self.queue.clone(),
@@ -125,18 +131,19 @@ impl ReplayProvider {
         }
     }
 
-    /// 剩余录播条数。
+    /// Number of remaining recordings.
     pub fn len(&self) -> usize {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// 是否已无剩余录播。
+    /// Whether no recordings remain.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-/// `ByToolName` 的匹配:请求侧绑定的工具名或响应侧请求的工具调用名命中即真。
+/// `ByToolName` matching: true when either the request-side bound tool name or the
+/// response-side requested tool-call name hits.
 fn exchange_matches(exchange: &RecordedExchange, tool_name: &str) -> bool {
     if let Some(tools) = &exchange.tools {
         if tools.iter().any(|t| t.function.name == tool_name) {
@@ -151,10 +158,12 @@ fn exchange_matches(exchange: &RecordedExchange, tool_name: &str) -> bool {
     false
 }
 
-/// `Exact` 的匹配:请求消息序列与录播消息序列**逐条完全相等**。
+/// `Exact` matching: the request message sequence and the recorded message sequence are
+/// **element-wise exactly equal**.
 ///
-/// `Vec<Message>` 的 `PartialEq` 按长度 + 逐元素比较,等价于"消息条数与每条
-/// 消息的全部字段(含 `id` / `name` / `additional_kwargs` / `tool_calls`)一致"。
+/// `Vec<Message>`'s `PartialEq` compares length + each element, equivalent to "the message
+/// count and every field of every message (including `id` / `name` / `additional_kwargs` /
+/// `tool_calls`) match".
 fn messages_match(request: &[Message], recorded: &[Message]) -> bool {
     request == recorded
 }
@@ -178,7 +187,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for ReplayProvider {
     }
 
     fn get_num_tokens(&self, text: &str) -> usize {
-        // 估算:约 4 字符/ token。
+        // Estimate: about 4 characters per token.
         text.chars().count() / 4 + 1
     }
 
@@ -215,7 +224,7 @@ impl BaseChatModel for ReplayProvider {
                     .as_ref()
                     .and_then(|tools| tools.first().map(|t| t.function.name.clone()));
                 match want {
-                    // 按工具名从队列里挑匹配录播;未绑定工具 → 退化为 FIFO。
+                    // Pick the matching recording from the queue by tool name; no bound tool → fall back to FIFO.
                     Some(name) => queue
                         .iter()
                         .position(|ex| exchange_matches(ex, &name))
@@ -224,8 +233,8 @@ impl BaseChatModel for ReplayProvider {
                 }
             }
             ReplayStrategy::Exact => {
-                // 按完整消息签名精确匹配,允许并行乱序;无匹配 → 明确报错,
-                // 绝不静默 FIFO 兜底(否则"拿错响应"会伪装成成功)。
+                // Match exactly by full message signature, allowing parallel out-of-order; no match →
+                // explicit error, never a silent FIFO fallback (otherwise "wrong response" would look like success).
                 match queue
                     .iter()
                     .position(|ex| messages_match(&messages, &ex.messages))
@@ -263,7 +272,7 @@ impl BaseChatModel for ReplayProvider {
         &self,
         tools: Vec<ToolDefinition>,
     ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
-        // 委托给 inherent `bind_tools`:共享队列、记录工具集、返回新实例。
+        // Delegate to the inherent `bind_tools`: share the queue, record the tool set, return a new instance.
         Some(Box::new(self.bind_tools(tools)))
     }
 }
@@ -291,7 +300,7 @@ mod tests {
         }
     }
 
-    /// 带响应侧工具调用名的录播(模拟模型请求调用某工具)。
+    /// A recording with a response-side tool-call name (simulates the model requesting a tool).
     fn exchange_with_tool_call(tool_name: &str, content: &str) -> RecordedExchange {
         let mut response = exchange(content).response;
         response.tool_calls = Some(vec![ToolCall::builder("call_1")
@@ -304,7 +313,7 @@ mod tests {
         }
     }
 
-    /// 带请求侧工具定义名的录播(模拟绑定了某工具后发起请求)。
+    /// A recording with a request-side bound tool name (simulates a request issued after binding a tool).
     fn exchange_with_bound_tool(tool_name: &str, content: &str) -> RecordedExchange {
         RecordedExchange {
             tools: Some(vec![ToolDefinition::new(tool_name, "a tool")]),
@@ -357,21 +366,22 @@ mod tests {
     #[test]
     fn bind_tools_returns_some_and_carries_tools() {
         let provider = ReplayProvider::from_exchanges(vec![exchange("x")]);
-        // inherent bind_tools 返回携带工具集的新实例(共享队列)。
+        // The inherent bind_tools returns a new instance carrying the tool set (shared queue).
         let bound = provider.bind_tools(vec![ToolDefinition::new("calculator", "calc")]);
         assert!(bound.tools.is_some());
         assert_eq!(bound.tools.as_ref().unwrap()[0].function.name, "calculator");
         assert_eq!(provider.len(), 1);
         assert_eq!(bound.len(), 1);
-        // trait bind_tools(agent 通过 `Box<dyn BaseChatModel>` 调用)恒为 Some。
+        // The trait bind_tools (called by agents through `Box<dyn BaseChatModel>`) is always Some.
         let trait_bound = BaseChatModel::bind_tools(&provider, vec![ToolDefinition::new("x", "y")]);
         assert!(trait_bound.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn parallel_replay_fifo_is_order_independent() {
-        // 并发 FIFO:两条请求同时到达,哪条拿哪条响应不确定,但都能拿到、
-        // 且队列最终耗尽。断言用"集合相等"而非"第 N 条是 xx"。
+        // Concurrent FIFO: two requests arrive simultaneously; which gets which response is
+        // nondeterministic, but both succeed and the queue drains. Assert with "set equality"
+        // rather than "the Nth is xx".
         let provider = ReplayProvider::from_exchanges(vec![
             exchange("first"),
             exchange("second"),
@@ -406,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn by_tool_name_routes_to_matching_exchange() {
-        // 每个并行分支各绑各的工具,应各拿到各自正确的响应——顺序无关。
+        // Each parallel branch binds its own tool and should get its own correct response — order-independent.
         let provider = ReplayProvider::from_exchanges(vec![
             exchange_with_tool_call("search", "search result"),
             exchange_with_tool_call("calc", "calc result"),
@@ -428,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn by_tool_name_matches_request_side_tools() {
-        // 请求侧 `exchange.tools` 也参与匹配(录制自绑定工具后发起的请求)。
+        // The request-side `exchange.tools` also participates in matching (recorded from requests issued after binding tools).
         let provider = ReplayProvider::from_exchanges(vec![
             exchange_with_bound_tool("weather", "sunny"),
             exchange_with_bound_tool("news", "headlines"),
@@ -445,7 +455,7 @@ mod tests {
         assert_eq!(res.content, "sunny");
     }
 
-    /// 指定请求消息序列的录播(供 `Exact` 策略按完整签名匹配)。
+    /// A recording with a specific request message sequence (for `Exact` strategy full-signature matching).
     fn exchange_with_messages(messages: Vec<Message>, content: &str) -> RecordedExchange {
         RecordedExchange {
             messages,
@@ -455,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_strategy_matches_by_full_signature_out_of_order() {
-        // 两条请求消息序列不同;乱序到达,各自精确取到自己的响应。
+        // The two request message sequences differ; arriving out of order, each exactly gets its own response.
         let provider = ReplayProvider::from_exchanges(vec![
             exchange_with_messages(vec![Message::system("ping")], "pong"),
             exchange_with_messages(vec![Message::human("hello")], "hi"),
@@ -478,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_strategy_matches_full_message_sequence() {
-        // 多轮对话历史(系统 + 用户 + AI)作为整体签名,按完整序列命中。
+        // Multi-turn history (system + user + AI) acts as one whole signature, matched by the full sequence.
         let msgs = vec![
             Message::system("You are a calculator."),
             Message::human("2 + 2"),
@@ -496,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_strategy_no_match_returns_explicit_error() {
-        // 请求签名在录播中无匹配 → 明确报错(不是静默 FIFO 取错响应)。
+        // No recording matches the request signature → explicit error (not a silent FIFO mispick).
         let provider = ReplayProvider::from_exchanges(vec![exchange_with_messages(
             vec![Message::system("ping")],
             "pong",
@@ -515,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_strategy_distinguishes_message_type() {
-        // 相同文本、不同消息类型 = 不同签名。
+        // Same text, different message type = different signature.
         let provider = ReplayProvider::from_exchanges(vec![
             exchange_with_messages(vec![Message::human("q")], "human response"),
             exchange_with_messages(vec![Message::system("q")], "system response"),
@@ -537,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_strategy_distinguishes_tool_calls() {
-        // 携带工具调用的消息与纯文本消息 = 不同签名。
+        // A message carrying tool calls and a plain-text message = different signatures.
         let call = ToolCall::builder("call_1")
             .name("weather")
             .arguments("{}".to_string())

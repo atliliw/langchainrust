@@ -1,34 +1,38 @@
 // src/retrieval/semantic_splitter.rs
-//! 语义分块器
+//! Semantic chunking
 //!
-//! 按语义相关性切分文本:先分句并嵌入,在相邻句向量相似度骤降处断块,
-//! 相比字符级分割能更好保留语义完整性,提升检索质量。
+//! Splits text by semantic relevance: sentences are embedded first, and a chunk boundary is
+//! cut where the cosine similarity between adjacent sentences drops sharply. Compared to
+//! character-level splitting this preserves semantic integrity better and improves retrieval.
 //!
-//! 注:嵌入是异步操作,而 `TextSplitter` trait 是同步签名。为不破坏现有同步 trait,
-//! 本分块器提供独立的异步接口 `split_text` / `split_document`,不实现同步 `TextSplitter`。
+//! Note: embedding is an async operation while the `TextSplitter` trait has a sync signature.
+//! To keep the existing sync trait intact, this chunker exposes standalone async interfaces
+//! `split_text` / `split_document` instead of implementing the sync `TextSplitter`.
 
 use lc_embeddings::{cosine_similarity, EmbeddingError, Embeddings};
 use lc_vector_stores::Document;
 
-/// 语义分块器
+/// Semantic chunker
 ///
-/// 在相邻句相似度低于 `breakpoint_threshold` 处断块;
-/// 累积长度超过 `max_chunk_size` 时强制断。
+/// Cuts a chunk where the similarity between adjacent sentences drops below
+/// `breakpoint_threshold`; forces a break when the accumulated length exceeds
+/// `max_chunk_size`.
 pub struct SemanticSplitter<E> {
     embeddings: E,
-    /// 相邻句相似度低于此阈值则断块
+    /// Break a chunk when adjacent-sentence similarity drops below this threshold
     breakpoint_threshold: f32,
-    /// 单块最大字符数,超出强制断
+    /// Maximum characters per chunk; exceeding it forces a break
     max_chunk_size: usize,
 }
 
 impl<E: Embeddings> SemanticSplitter<E> {
-    /// 创建语义分块器
+    /// Creates a semantic chunker
     ///
-    /// # 参数
-    /// * `embeddings` - 嵌入模型
-    /// * `breakpoint_threshold` - 相邻句相似度断点阈值(0.0–1.0,越低越不易断)
-    /// * `max_chunk_size` - 单块最大字符数
+    /// # Arguments
+    /// * `embeddings` - the embedding model
+    /// * `breakpoint_threshold` - the breakpoint threshold for adjacent-sentence similarity
+    ///   (0.0–1.0; lower is harder to break)
+    /// * `max_chunk_size` - the maximum characters per chunk
     pub fn new(embeddings: E, breakpoint_threshold: f32, max_chunk_size: usize) -> Self {
         Self {
             embeddings,
@@ -37,12 +41,12 @@ impl<E: Embeddings> SemanticSplitter<E> {
         }
     }
 
-    /// 使用默认参数创建(threshold=0.5, max=1000)
+    /// Creates with default parameters (threshold=0.5, max=1000)
     pub fn with_defaults(embeddings: E) -> Self {
         Self::new(embeddings, 0.5, 1000)
     }
 
-    /// 分句:支持中文(`。!?;`)与英文(`.!?\n`)
+    /// Splits into sentences: supports Chinese and English sentence-final punctuation
     fn split_sentences(text: &str) -> Vec<String> {
         let mut sentences = Vec::new();
         let mut current = String::new();
@@ -63,7 +67,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
         sentences
     }
 
-    /// 异步分块
+    /// Chunks text asynchronously
     pub async fn split_text(&self, text: &str) -> Result<Vec<String>, EmbeddingError> {
         let sentences = Self::split_sentences(text);
         if sentences.is_empty() {
@@ -73,7 +77,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
             return Ok(vec![sentences.into_iter().next().unwrap_or_default()]);
         }
 
-        // 批量嵌入
+        // Embed in batch
         let refs: Vec<&str> = sentences.iter().map(|s| s.as_str()).collect();
         let embeddings = self.embeddings.embed_documents(&refs).await?;
 
@@ -98,7 +102,7 @@ impl<E: Embeddings> SemanticSplitter<E> {
         Ok(chunks)
     }
 
-    /// 异步分块文档,保留 metadata(写入 chunk 序号)
+    /// Chunks a document asynchronously, preserving metadata (writes the chunk index)
     pub async fn split_document(
         &self,
         document: &Document,
@@ -126,7 +130,7 @@ mod tests {
     use async_trait::async_trait;
     use lc_embeddings::{EmbeddingError, Embeddings, MockEmbeddings};
 
-    /// 总是失败的嵌入,用于测试回退路径
+    /// An embedding that always fails, used to test the error path
     struct FailingEmbeddings;
     #[async_trait]
     impl Embeddings for FailingEmbeddings {
@@ -164,7 +168,7 @@ mod tests {
         let text = "苹果是一种水果。香蕉是黄色的。樱桃很小。";
         let chunks = s.split_text(text).await.unwrap();
         assert!(!chunks.is_empty());
-        // 无论怎么断,每句都应出现在某个 chunk 中
+        // However it splits, every sentence should appear in some chunk
         let joined = chunks.join("");
         assert!(joined.contains("苹果是一种水果"));
         assert!(joined.contains("香蕉是黄色的"));
@@ -173,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_chunk_size_enforces_break() {
-        // max_chunk 设很小,多句必然被强制断成多块
+        // max_chunk is tiny, so multiple sentences are necessarily forced into several chunks
         let s = splitter(0.0, 5);
         let text = "AAAA。BBBB。CCCC。";
         let chunks = s.split_text(text).await.unwrap();

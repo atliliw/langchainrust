@@ -1,24 +1,24 @@
-//! MCP Roots - 根目录类型与 `roots/list` 处理
+//! MCP Roots - root-directory types and `roots/list` handling
 //!
-//! MCP Roots 允许 Host 向 Server 声明可访问的根目录(工作区),
-//! Server 可据此了解文件系统边界。
+//! MCP Roots lets a Host declare accessible root directories (workspaces) to a Server,
+//! so the Server understands the filesystem boundaries.
 
 use serde::{Deserialize, Serialize};
 
-/// 根目录描述(来自 `roots/list`)
+/// Root-directory description (from `roots/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Root {
-    /// 根目录 URI
+    /// Root-directory URI
     pub uri: String,
-    /// 根目录的可选名称
+    /// Optional name of the root directory
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
-/// `roots/list` 响应
+/// `roots/list` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListRootsResult {
-    /// 根目录列表
+    /// List of root directories
     pub roots: Vec<Root>,
 }
 

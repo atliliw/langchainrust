@@ -1,11 +1,11 @@
 // lc-providers/src/providers/gemini/mod.rs
 //! Google Gemini API implementation (native API format).
 //!
-//! 实现了 Google Gemini 原生 API 的调用，支持：
-//! - 文本对话 (generateContent)
-//! - 流式输出 (streamGenerateContent)
-//! - 工具调用（Function Calling）
-//! - Token 用量统计
+//! Implements calling Google's native Gemini API, supporting:
+//! - text chat (generateContent)
+//! - streaming (streamGenerateContent)
+//! - function calling
+//! - token usage statistics
 
 mod error;
 #[cfg(test)]
@@ -35,20 +35,20 @@ use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
 use lc_schema::{Message, MessageType};
 
-/// Gemini API 基础端点
+/// Gemini API base endpoint
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-/// Gemini 模型列表
+/// Gemini model list
 pub const GEMINI_MODELS: [&str; 6] = [
-    "gemini-2.0-flash",      // Gemini 2.0 Flash（最新快速模型）
-    "gemini-2.0-flash-lite", // Gemini 2.0 Flash Lite（轻量版）
-    "gemini-1.5-pro",        // Gemini 1.5 Pro（强大推理）
-    "gemini-1.5-flash",      // Gemini 1.5 Flash（快速平衡）
-    "gemini-1.5-flash-8b",   // Gemini 1.5 Flash 8B（更小更快）
-    "gemini-2.0-flash-exp",  // Gemini 2.0 Flash 实验版
+    "gemini-2.0-flash",      // Gemini 2.0 Flash (newest fast model)
+    "gemini-2.0-flash-lite", // Gemini 2.0 Flash Lite (lightweight)
+    "gemini-1.5-pro",        // Gemini 1.5 Pro (strong reasoning)
+    "gemini-1.5-flash",      // Gemini 1.5 Flash (fast and balanced)
+    "gemini-1.5-flash-8b",   // Gemini 1.5 Flash 8B (smaller, faster)
+    "gemini-2.0-flash-exp",  // Gemini 2.0 Flash experimental
 ];
 
-/// Gemini 配置
+/// Gemini config
 #[derive(Debug, Clone)]
 pub struct GeminiConfig {
     /// Gemini API key.
@@ -153,7 +153,7 @@ impl GeminiConfig {
     }
 }
 
-/// Gemini 聊天客户端
+/// Gemini chat client
 #[derive(Clone, Debug)]
 pub struct GeminiChat {
     config: GeminiConfig,
@@ -231,7 +231,7 @@ impl GeminiChat {
         }
     }
 
-    /// 构建 Gemini API 的 contents 数组
+    /// Builds the contents array for the Gemini API
     fn build_contents(&self, messages: Vec<Message>) -> (Vec<GeminiContent>, Option<String>) {
         let mut contents = Vec::new();
         let mut system_prompt: Option<String> = None;
@@ -286,7 +286,7 @@ impl GeminiChat {
         (contents, system_prompt)
     }
 
-    /// 构建 API 请求体
+    /// Builds the API request body
     fn build_request(&self, messages: Vec<Message>) -> GeminiRequest {
         let (contents, system_text) = self.build_contents(messages);
 
@@ -349,13 +349,13 @@ impl GeminiChat {
         }
     }
 
-    /// 解析 Gemini API 响应为 LLMResult
+    /// Parses a Gemini API response into an LLMResult
     fn parse_response(
         &self,
         response: GeminiResponse,
         model: &str,
     ) -> Result<LLMResult, GeminiError> {
-        // 检查 safety feedback
+        // Check the safety feedback
         if let Some(feedback) = &response.prompt_feedback {
             if let Some(block_reason) = feedback.get("blockReason").and_then(|v| v.as_str()) {
                 return Err(GeminiError::SafetyBlock(block_reason.to_string()));
@@ -408,7 +408,7 @@ impl GeminiChat {
         })
     }
 
-    /// 内部调用：发送请求到 Gemini API
+    /// Internal call: sends the request to the Gemini API
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, GeminiError> {
         let url = format!(
             "{}/models/{}:generateContent",
@@ -452,7 +452,7 @@ impl GeminiChat {
         self.parse_response(gemini_response, &self.config.model)
     }
 
-    /// 流式调用
+    /// Streaming call
     async fn stream_chat_internal(
         &self,
         messages: Vec<Message>,
@@ -544,8 +544,8 @@ impl GeminiChat {
                                         }
                                     }
                                 }
-                                // Gemini 在最后一个 chunk 携带 usageMetadata;有则发出
-                                // usage chunk,流式路径即可拿到整次调用用量。
+                                // Gemini carries usageMetadata on the last chunk; if present,
+                                // emit a usage chunk so the streaming path gets the whole call's usage.
                                 if let Some(usage) = resp.usage_metadata {
                                     let token_usage = TokenUsage {
                                         prompt_tokens: usage.prompt_token_count.unwrap_or(0)
@@ -628,7 +628,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for GeminiChat {
 
     fn get_num_tokens(&self, text: &str) -> usize {
         lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
-            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            // If the encoder fails to load, overestimate by byte length (better slightly high than silently counting 0, which would mislead routing/truncation)
             log::warn!("Token counting failed, falling back to byte-length estimation: {e}");
             text.len()
         })

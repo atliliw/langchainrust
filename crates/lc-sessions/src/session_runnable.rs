@@ -1,5 +1,5 @@
 // lc-sessions/src/session_runnable.rs
-//! SessionManagerRunnable — 持久会话的 LCEL Runnable 适配器
+//! SessionManagerRunnable — an LCEL Runnable adapter over persistent sessions
 
 use async_trait::async_trait;
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
@@ -8,21 +8,21 @@ use std::sync::Arc;
 
 use super::manager::SessionManager;
 
-/// 把 [`SessionManager`] 的"会话内对话"包成 `Runnable<(session_id, 用户消息), 回复文本>`。
+/// Wraps [`SessionManager`]'s "chat within a session" as a `Runnable<(session_id, user message), reply text>`.
 ///
-/// 输入是一个二元组 `(String, String)`:会话 id + 用户消息;输出是 LLM 回复文本。
-/// 会话由 `SessionManager` 的 `SessionStore` 持久化管理 —— 调用前需先用
-/// [`SessionManager::create_session`] 创建会话,`invoke` 时同一会话 id 的
-/// 多轮对话自动累积历史。
+/// The input is a `(String, String)` tuple: session id + user message; the output is the LLM's
+/// reply text. Sessions are persisted by [`SessionManager`]'s `SessionStore` — create the session
+/// with [`SessionManager::create_session`] first; at `invoke` time, multi-turn conversations under
+/// the same session id accumulate history automatically.
 ///
-/// # 与 `RunnableWithMessageHistory` 的分工
+/// # Division of labor with `RunnableWithMessageHistory`
 ///
-/// [`RunnableWithMessageHistory`](lc_memory::RunnableWithMessageHistory) 是
-/// "LLM + `BaseMemory`" 的会话 Runnable:用 `config` 里的 `session_id` 定位,
-/// 每轮自动读/写记忆,返回 `LLMResult`;它是内存层的能力。本适配器则是
-/// **持久会话存储**层的入口:显式管理会话生命周期(创建/归档/清除),
-/// 返回 String 回复。需要完整会话生命周期时用本类型;只需要"带记忆的
-/// 单轮 LLM"时用 `RunnableWithMessageHistory`。
+/// [`RunnableWithMessageHistory`](lc_memory::RunnableWithMessageHistory) is a session Runnable
+/// for "LLM + `BaseMemory`": it locates by `session_id` from `config`, reads/writes memory each
+/// turn, and returns an `LLMResult`; it lives in the memory layer. This adapter, by contrast, is
+/// the **persistent session storage** entry point: it explicitly manages the session lifecycle
+/// (create/archive/clear) and returns a String reply. Use this type when a full session lifecycle
+/// is needed; use `RunnableWithMessageHistory` when only a "single-turn LLM with memory" is needed.
 ///
 /// # Example
 ///
@@ -32,9 +32,9 @@ use super::manager::SessionManager;
 /// use std::sync::Arc;
 ///
 /// let manager = Arc::new(SessionManager::new(Arc::new(MemorySessionStore::new())));
-/// let llm = Arc::new(openai_chat_model); // 任意实现 BaseChatModel 的模型
+/// let llm = Arc::new(openai_chat_model); // any model implementing BaseChatModel
 /// let step = SessionManagerRunnable::new(manager.clone(), llm);
-/// let chain = step.pipe(prompt).pipe(parser); // 可进 RunnableSequence
+/// let chain = step.pipe(prompt).pipe(parser); // can join a RunnableSequence
 /// ```
 pub struct SessionManagerRunnable<L: BaseChatModel> {
     manager: Arc<SessionManager>,
@@ -42,9 +42,9 @@ pub struct SessionManagerRunnable<L: BaseChatModel> {
 }
 
 impl<L: BaseChatModel> SessionManagerRunnable<L> {
-    /// 创建会话 Runnable。
+    /// Creates a session Runnable.
     ///
-    /// `manager` 承载持久会话存储与生命周期;`llm` 负责实际对话生成。
+    /// `manager` holds persistent session storage and lifecycle; `llm` handles the actual conversation.
     pub fn new(manager: Arc<SessionManager>, llm: Arc<L>) -> Self {
         Self { manager, llm }
     }
@@ -187,7 +187,7 @@ mod tests {
         (manager, step, llm)
     }
 
-    /// E2 验证:同一会话 id 连续两轮对话,第二轮能看到第一轮的累积历史。
+    /// E2 verification: two consecutive turns under the same session id — the second turn sees the first turn's accumulated history.
     #[tokio::test]
     async fn session_runnable_accumulates_two_turns() {
         let (manager, step, llm) = test_step();
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(received[1][2].content, "第二句");
     }
 
-    /// 不同的会话 id 互不影响:历史按会话隔离。
+    /// Different session ids do not affect each other: history is isolated per session.
     #[tokio::test]
     async fn session_runnable_isolates_different_sessions() {
         let (manager, step, llm) = test_step();
@@ -246,7 +246,7 @@ mod tests {
         );
     }
 
-    /// 会话不存在时返回错误(映射为 LcelError,不 panic)。
+    /// A missing session returns an error (mapped to LcelError, no panic).
     #[tokio::test]
     async fn session_runnable_reports_missing_session() {
         let (_, step, _) = test_step();
@@ -257,7 +257,7 @@ mod tests {
         assert!(err.to_string().contains("session"), "got: {err}");
     }
 
-    /// E2 验证:会话 Runnable 能作为 LCEL 链的一步参与 `pipe` 组合。
+    /// E2 verification: the session Runnable can join an LCEL chain as a step via `pipe`.
     #[tokio::test]
     async fn session_runnable_pipes_into_sequence() {
         let (manager, step, _) = test_step();

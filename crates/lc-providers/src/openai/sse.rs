@@ -1,36 +1,36 @@
 // src/language_models/openai/sse.rs
-//! SSE (Server-Sent Events) 解析器
+//! SSE (Server-Sent Events) parser
 //!
-//! 用于解析 OpenAI 流式响应
+//! Used to parse OpenAI streaming responses
 
 use serde::Deserialize;
 
-/// SSE 解析器
+/// SSE parser
 pub struct SSEParser {
     buffer: String,
 }
 
 impl SSEParser {
-    /// 创建新的 SSE 解析器
+    /// Creates a new SSE parser
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
         }
     }
 
-    /// 解析 SSE 数据块
+    /// Parses an SSE data chunk
     ///
-    /// # 参数
-    /// * `chunk` - 接收到的数据块
+    /// # Arguments
+    /// * `chunk` - The received data chunk
     ///
-    /// # 返回
-    /// 完整的事件列表
+    /// # Returns
+    /// The list of complete events
     pub fn parse(&mut self, chunk: &str) -> Vec<SSEEvent> {
         self.buffer.push_str(chunk);
 
         let mut events = Vec::new();
 
-        // SSE 事件以双换行分隔
+        // SSE events are separated by a double newline
         while let Some(pos) = self.buffer.find("\n\n") {
             let event_text = self.buffer[..pos].to_string();
             self.buffer.drain(..=pos + 1);
@@ -43,7 +43,7 @@ impl SSEParser {
         events
     }
 
-    /// 解析单个 SSE 事件
+    /// Parses a single SSE event
     fn parse_event(&self, text: &str) -> Option<SSEEvent> {
         let mut event_type = None;
         let mut data = None;
@@ -56,7 +56,7 @@ impl SSEParser {
             }
         }
 
-        // 如果只有 data 字段，也算有效事件
+        // an event with only a data field still counts as valid
         if data.is_some() {
             Some(SSEEvent {
                 event: event_type,
@@ -74,23 +74,23 @@ impl Default for SSEParser {
     }
 }
 
-/// SSE 事件
+/// SSE event
 #[derive(Debug, Clone)]
 pub struct SSEEvent {
-    /// 事件类型
+    /// Event type
     pub event: Option<String>,
 
-    /// 事件数据
+    /// Event data
     pub data: String,
 }
 
 impl SSEEvent {
-    /// 检查是否为结束事件
+    /// Checks whether this is the end event
     pub fn is_done(&self) -> bool {
         self.data == "[DONE]"
     }
 
-    /// 解析 OpenAI 流式响应数据
+    /// Parses OpenAI streaming response data
     pub fn parse_openai_chunk(&self) -> Result<Option<OpenAIStreamChunk>, serde_json::Error> {
         if self.is_done() {
             return Ok(None);
@@ -101,55 +101,55 @@ impl SSEEvent {
     }
 }
 
-/// OpenAI 流式响应块
+/// OpenAI streaming response chunk
 #[derive(Debug, Deserialize)]
 pub struct OpenAIStreamChunk {
-    /// 块 ID
+    /// Chunk ID
     pub id: String,
-    /// 对象类型
+    /// Object type
     pub object: String,
-    /// 创建时间戳
+    /// Creation timestamp
     pub created: i64,
-    /// 模型名称
+    /// Model name
     pub model: String,
-    /// 流式选择列表
+    /// Streaming choices
     pub choices: Vec<StreamChoice>,
-    /// 整次调用的 token 用量。OpenAI 在流末尾(通常为 `[DONE]` 前最后一个
-    /// chunk)携带;中间 chunk 该字段缺省。
+    /// Total token usage for the whole call. OpenAI carries it at the end of the
+    /// stream (usually in the last chunk before `[DONE]`); intermediate chunks omit it.
     #[serde(default)]
     pub usage: Option<StreamUsage>,
 }
 
-/// 流式响应携带的 token 用量(OpenAI 兼容接口)。
+/// Token usage carried by a streaming response (OpenAI-compatible interface).
 #[derive(Debug, Deserialize, Clone)]
 pub struct StreamUsage {
-    /// 输入 token 数
+    /// Input token count
     pub prompt_tokens: usize,
-    /// 输出 token 数
+    /// Output token count
     pub completion_tokens: usize,
-    /// 总 token 数
+    /// Total token count
     pub total_tokens: usize,
 }
 
-/// 流式响应中的选择项
+/// Choice in a streaming response
 #[derive(Debug, Deserialize)]
 pub struct StreamChoice {
-    /// 选择索引
+    /// Choice index
     pub index: i32,
-    /// 增量内容
+    /// Incremental content
     pub delta: Delta,
-    /// 结束原因
+    /// Finish reason
     #[serde(default)]
     pub finish_reason: Option<String>,
 }
 
-/// 流式增量内容
+/// Streaming incremental content
 #[derive(Debug, Deserialize)]
 pub struct Delta {
-    /// 角色
+    /// Role
     #[serde(default)]
     pub role: Option<String>,
-    /// 内容
+    /// Content
     #[serde(default)]
     pub content: Option<String>,
 }

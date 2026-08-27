@@ -1,9 +1,9 @@
-//! Handoffs 多 Agent 交接
+//! Handoffs multi-agent handoff
 //!
-//! 参考 OpenAI Agents SDK,实现 Agent 间任务委托:
-//! 主 Agent 可通过 HandoffTool 将任务交给专业 Agent。
+//! Modeled on the OpenAI Agents SDK, it implements task delegation between agents:
+//! the primary agent can hand tasks to specialist agents via `HandoffTool`.
 //!
-//! # 示例
+//! # Example
 //! ```no_run
 //! use lc_agents::handoffs::HandoffManager;
 //! use std::sync::Arc;
@@ -12,7 +12,7 @@
 //! let mgr = HandoffManager::new();
 //! // mgr.register_agent("writer", executor).await?;
 //! // mgr.set_primary("writer")?;
-//! // let result = mgr.run("写文章".to_string()).await?;
+//! // let result = mgr.run("write an article".to_string()).await?;
 //! # Ok(())
 //! # }
 //! ```

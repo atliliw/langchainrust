@@ -1,8 +1,8 @@
 // src/core/cache/llm_cache.rs
-//! LLM 调用缓存实现
+//! LLM call cache implementation.
 //!
-//! 基于内存的 LRU 缓存，缓存重复的 LLM 调用结果。
-//! 支持可选的 TTL 过期和最大条目限制。
+//! In-memory LRU cache that memoizes repeated LLM call results.
+//! Supports optional TTL expiry and a maximum-entry limit.
 
 use crate::language_models::LLMResult;
 use lc_schema::Message;
@@ -19,23 +19,23 @@ pub enum CacheError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// 缓存的 LLM 结果，包含过期时间
+/// Cached LLM result, with its expiry time
 #[derive(Debug, Clone)]
 pub struct CachedLLMResult {
-    /// LLM 返回结果
+    /// The LLM result
     pub result: LLMResult,
-    /// 缓存时间戳
+    /// When it was cached
     pub cached_at: Instant,
 }
 
-/// 缓存配置
+/// Cache configuration
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
-    /// 最大缓存条目数（0 表示不限制）
+    /// Maximum cache entries (0 = unlimited)
     pub max_entries: usize,
-    /// TTL 过期时间（None 表示永不过期）
+    /// TTL expiry (None = never expires)
     pub ttl: Option<Duration>,
-    /// 是否启用
+    /// Whether the cache is enabled
     pub enabled: bool,
 }
 
@@ -43,48 +43,48 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             max_entries: 1000,
-            ttl: Some(Duration::from_secs(3600)), // 默认 1 小时过期
+            ttl: Some(Duration::from_secs(3600)), // expires after 1 hour by default
             enabled: true,
         }
     }
 }
 
 impl CacheConfig {
-    /// 使用默认配置创建缓存配置。
+    /// Creates a cache config with default settings.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 禁用 TTL（永不过期）
+    /// Disables TTL (never expires)
     pub fn no_ttl(mut self) -> Self {
         self.ttl = None;
         self
     }
 
-    /// 设置 TTL
+    /// Sets the TTL
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
-    /// 设置最大条目数
+    /// Sets the maximum entry count
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self
     }
 
-    /// 禁用缓存
+    /// Disables the cache
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
     }
 }
 
-/// LLM 调用缓存
+/// LLM call cache
 ///
-/// 缓存 LLM 调用的输入输出，避免相同请求重复调用 API。
+/// Caches LLM call inputs/outputs, avoiding duplicate API calls for identical requests.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::core::cache::LLMCache;
 ///
@@ -101,12 +101,12 @@ pub struct LLMCache {
 }
 
 impl LLMCache {
-    /// 创建使用默认配置的缓存。
+    /// Creates a cache with default configuration.
     pub fn new() -> Self {
         Self::with_config(CacheConfig::default())
     }
 
-    /// 使用指定配置创建缓存。
+    /// Creates a cache with the given configuration.
     pub fn with_config(config: CacheConfig) -> Self {
         Self {
             config,
@@ -114,20 +114,20 @@ impl LLMCache {
         }
     }
 
-    /// 从消息列表生成缓存键
+    /// Builds a cache key from a message list.
     ///
-    /// 将消息列表序列化为 JSON 字符串作为键。
-    /// 包含 model 名称以确保不同模型的调用不互相影响。
-    /// 如果序列化失败，返回错误而非回退到空字符串（M34）。
+    /// Serializes the message list to a JSON string as the key.
+    /// Includes the model name so calls to different models do not affect each other.
+    /// On serialization failure, returns an error instead of falling back to an empty string (M34).
     pub fn build_key(messages: &[Message], model: &str) -> Result<String, CacheError> {
         let serialized = serde_json::to_string(messages).map_err(CacheError::Serialization)?;
         Ok(format!("{}:{}", model, serialized))
     }
 
-    /// 获取缓存结果
+    /// Fetches a cached result.
     ///
-    /// 如果发现过期条目，会立即删除（H36）。命中时会刷新 `cached_at`，
-    /// 使缓存保持真 LRU 语义（Q7：命中后该条目成为最近使用）。
+    /// An expired entry is removed immediately (H36). A hit refreshes `cached_at`,
+    /// keeping the cache in true LRU semantics (Q7: a hit makes the entry the most-recently used).
     pub async fn get(&self, key: &str) -> Option<CachedLLMResult> {
         if !self.config.enabled {
             return None;
@@ -136,10 +136,10 @@ impl LLMCache {
         let store = self.store.read().await;
         let entry = store.get(key)?;
 
-        // 检查 TTL
+        // check TTL
         if let Some(ttl) = self.config.ttl {
             if entry.cached_at.elapsed() > ttl {
-                // H36: 过期条目需要删除，先释放读锁再获取写锁
+                // H36: expired entries must be removed; drop the read lock first, then take the write lock
                 drop(store);
                 let mut store = self.store.write().await;
                 // Double-check after acquiring write lock
@@ -154,7 +154,7 @@ impl LLMCache {
 
         let result = entry.clone();
 
-        // Q7: 命中后刷新 LRU 时间戳。释放读锁后取写锁更新。
+        // Q7: refresh the LRU timestamp on a hit. Drop the read lock, then take the write lock to update.
         drop(store);
         let mut store = self.store.write().await;
         if let Some(entry) = store.get_mut(key) {
@@ -164,7 +164,7 @@ impl LLMCache {
         Some(result)
     }
 
-    /// 存入缓存结果
+    /// Stores a cached result
     pub async fn put(&self, key: impl Into<String>, result: LLMResult) {
         if !self.config.enabled {
             return;
@@ -172,9 +172,9 @@ impl LLMCache {
 
         let mut store = self.store.write().await;
 
-        // 检查是否需要淘汰
+        // check whether eviction is needed
         if self.config.max_entries > 0 && store.len() >= self.config.max_entries {
-            // 移除最早的一条
+            // evict the oldest entry
             if let Some(oldest_key) = store
                 .iter()
                 .min_by_key(|(_, v)| v.cached_at)
@@ -193,24 +193,24 @@ impl LLMCache {
         );
     }
 
-    /// 清除缓存
+    /// Clears the cache
     pub async fn clear(&self) {
         let mut store = self.store.write().await;
         store.clear();
     }
 
-    /// 获取缓存大小
+    /// Returns the cache size
     pub async fn len(&self) -> usize {
         let store = self.store.read().await;
         store.len()
     }
 
-    /// 缓存是否为空
+    /// Whether the cache is empty
     pub async fn is_empty(&self) -> bool {
         self.len().await == 0
     }
 
-    /// 移除过期条目
+    /// Removes expired entries
     pub async fn evict_expired(&self) -> usize {
         if let Some(ttl) = self.config.ttl {
             let mut store = self.store.write().await;
@@ -297,7 +297,7 @@ mod tests {
         cache.put("key".to_string(), make_result("test")).await;
         assert!(cache.get("key").await.is_some());
 
-        // 等待过期
+        // wait for expiry
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(cache.get("key").await.is_none());
     }
@@ -312,10 +312,10 @@ mod tests {
         cache.put("c".to_string(), make_result("3")).await;
         assert_eq!(cache.len().await, 3);
 
-        // 超过限制，淘汰最早的一条
+        // past the cap: evict the oldest entry
         cache.put("d".to_string(), make_result("4")).await;
         assert_eq!(cache.len().await, 3);
-        // a 应该被淘汰
+        // "a" should have been evicted
         assert!(cache.get("a").await.is_none());
     }
 
@@ -346,14 +346,14 @@ mod tests {
 
         cache.put("key".to_string(), make_result("persist")).await;
 
-        // 即使等待许久也不应过期
+        // should not expire even after a long wait
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(cache.get("key").await.is_some());
     }
 
     #[tokio::test]
     async fn test_cache_evict_expired() {
-        // 用 0 TTL 确保立即过期
+        // 0 TTL forces immediate expiry
         let config = CacheConfig::new().with_ttl(Duration::from_millis(0));
         let cache = LLMCache::with_config(config);
 

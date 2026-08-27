@@ -14,18 +14,18 @@ use uuid::Uuid;
 // InMemoryDocumentStore
 // ============================================================================
 
-/// 内存文档存储
+/// In-memory document store
 ///
-/// Q5: 用 `tokio::sync::RwLock`(与 InMemoryVectorStore 一致),方法内直接 `.await`,
-/// 不会阻塞 executor;且没有同步 `_blocking` 方法在 async 上下文中被调用,不存在
-/// `blocking_read/write` 会 panic 的约束。
+/// Q5: uses `tokio::sync::RwLock` (consistent with InMemoryVectorStore), methods `.await`
+/// directly without blocking the executor; and there are no synchronous `_blocking` methods
+/// called from async contexts, so there is no `blocking_read/write` panic constraint.
 pub struct InMemoryDocumentStore {
-    /// 文档集合
+    /// Document collection
     documents: Arc<RwLock<HashMap<String, Document>>>,
 }
 
 impl InMemoryDocumentStore {
-    /// 创建新的内存文档存储
+    /// Creates a new in-memory document store
     pub fn new() -> Self {
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
@@ -112,8 +112,9 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         let mut chunks = lock_error(self.chunks.write())?;
 
-        // S3: chunk 继承父文档的 metadata,否则 get_chunk_document 返回的
-        // 文档元数据为空,chunked 后端的元数据过滤(以及任何按元数据检索)都会失配。
+        // S3: chunks inherit the parent document's metadata; otherwise the document metadata
+        // returned by get_chunk_document is empty and chunked-backend metadata filtering (and
+        // any metadata-based retrieval) would mismatch.
         let chunk = ChunkDocument::new(id.clone(), id.clone(), document.content.clone(), 0)
             .with_metadata_map(document.metadata.clone());
 

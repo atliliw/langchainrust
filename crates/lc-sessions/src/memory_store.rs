@@ -1,4 +1,4 @@
-//! 内存 Session 存储
+//! In-memory session storage
 
 use std::collections::HashMap;
 use tokio::sync::Mutex;
@@ -8,13 +8,13 @@ use async_trait::async_trait;
 use super::session::{Session, SessionStatus};
 use super::store::{SessionError, SessionStore};
 
-/// 内存 Session 存储(用于测试与单进程场景)
+/// In-memory session storage (for tests and single-process scenarios)
 pub struct MemorySessionStore {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
 impl MemorySessionStore {
-    /// 创建新的内存会话存储
+    /// Creates a new in-memory session store
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
@@ -42,8 +42,9 @@ impl SessionStore for MemorySessionStore {
 
     async fn update(&self, session: &Session) -> Result<(), SessionError> {
         let mut sessions = self.sessions.lock().await;
-        // Q4: 更新必须作用于已存在的会话 —— 无条件 insert 会把 "会话不存在"
-        // 误当成 "覆盖成功"。更新不存在的会话应显式报 NotFound。
+        // Q4: update must target an existing session — an unconditional insert would mistake
+        // "session missing" for "overwrite succeeded". Updating a nonexistent session must
+        // explicitly return NotFound.
         if !sessions.contains_key(&session.id) {
             return Err(SessionError::NotFound(session.id.clone()));
         }
@@ -114,7 +115,7 @@ mod tests {
         assert!(store.get("nope").await.unwrap().is_none());
     }
 
-    /// Q4: 更新不存在的会话必须报 NotFound,而不是静默地当 insert 成功。
+    /// Q4: updating a nonexistent session must return NotFound, not silently behave like a successful insert.
     #[tokio::test]
     async fn test_update_nonexistent_errors() {
         let store = MemorySessionStore::new();
@@ -123,7 +124,7 @@ mod tests {
         assert!(matches!(err, SessionError::NotFound(id) if id == "s1"));
     }
 
-    /// Q4: 软删除的会话不出现在 list_by_user 中,但记录仍可通过 get 取得(便于审计/恢复)。
+    /// Q4: a soft-deleted session does not appear in list_by_user, but the record is still retrievable via get (for audit/recovery).
     #[tokio::test]
     async fn test_deleted_session_hidden_from_list_but_kept_in_store() {
         let store = MemorySessionStore::new();

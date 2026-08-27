@@ -1,7 +1,7 @@
-//! 审计持久化 sink(P1-7)
+//! Audit persistence sink (P1-7)
 //!
-//! 每次 Guardrail 违规发生时,`GuardrailRunner` 把违规记录写入配置的审计 sink,
-//! 供事后审计、告警或合规分析。
+//! On every Guardrail violation, `GuardrailRunner` writes the violation record to the configured
+//! audit sink, for post-hoc auditing, alerting, or compliance analysis.
 
 use std::path::PathBuf;
 
@@ -9,26 +9,26 @@ use async_trait::async_trait;
 
 use crate::runner::GuardrailViolation;
 
-/// 审计 sink:异步持久化违规记录。
+/// Audit sink: asynchronously persists violation records.
 ///
-/// 实现必须自包含错误处理:记录失败仅写日志,绝不向调用方抛错——
-/// 审计不应阻塞或破坏主流程。
+/// Implementations must handle errors self-contained: a failed record only writes a log and never
+/// throws to the caller — auditing must not block or break the main flow.
 #[async_trait]
 pub trait AuditSink: Send + Sync {
-    /// 审计 sink 的名称。
+    /// The audit sink's name.
     fn name(&self) -> &str;
 
-    /// 记录一条违规。
+    /// Records a violation.
     async fn record(&self, violation: &GuardrailViolation);
 }
 
-/// 追加式 JSON Lines 审计 sink:每条违规一行 JSON,便于离线解析。
+/// Append-only JSON Lines audit sink: one JSON line per violation, easy to parse offline.
 pub struct FileAuditSink {
     path: PathBuf,
 }
 
 impl FileAuditSink {
-    /// 创建一个写入指定路径的 JSON Lines 审计 sink。
+    /// Creates a JSON Lines audit sink writing to the given path.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }

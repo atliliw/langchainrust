@@ -1,9 +1,10 @@
-//! MCP 传输层:Stdio + SSE
+//! MCP transport layer: Stdio + SSE
 //!
-//! P0 修复:
-//! - P0-1: SSE 由一次性 `text()` 读 body 改为长连接 + 后台逐行流式读取,
-//!   持续消费服务器推送事件(progress/logging 等)。
-//! - P0-2: Stdio 子进程崩溃后后台监控 + 指数退避自动重连,连接状态可查询。
+//! P0 fixes:
+//! - P0-1: SSE changed from a one-shot `text()` body read to a long connection + background line-by-line
+//!   streaming read, continuously consuming server-pushed events (progress/logging, etc.).
+//! - P0-2: after a Stdio child-process crash, background monitoring + exponential-backoff auto-reconnect, with
+//!   queryable connection state.
 
 mod sse;
 mod stdio;
@@ -21,48 +22,48 @@ use async_trait::async_trait;
 /// Default timeout for SSE endpoint discovery (30 seconds).
 const SSE_DISCOVER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// SSE 心跳间隔:读循环在此时长内未收到任何数据(含 `: keep-alive` 注释行)
-/// 即判定连接断开,触发重连(P1-2)。
+/// SSE heartbeat interval: when the read loop receives no data (including `: keep-alive` comment lines) within
+/// this duration, the connection is judged broken and a reconnect is triggered (P1-2).
 const SSE_HEARTBEAT: Duration = Duration::from_secs(30);
 
-/// 子进程重连退避上限(秒)。
+/// Child-process reconnect backoff cap (ms).
 const MAX_RECONNECT_BACKOFF_MS: u64 = 30_000;
 
-/// MCP 传输层事件(服务器推送 / 连接状态变化)。
+/// MCP transport-layer events (server pushes / connection state changes).
 #[derive(Debug, Clone)]
 pub enum MCPEvent {
-    /// 连接已建立。
+    /// The connection has been established.
     Connected,
-    /// 连接已断开(子进程退出 / SSE 中断)。
+    /// The connection has been lost (child process exited / SSE interrupted).
     Disconnected,
-    /// 服务器主动推送的消息(SSE `event:`/`data:` 行)。
+    /// A message pushed by the server (SSE `event:`/`data:` lines).
     Message {
-        /// SSE 事件名,如 `logging`、`progress`。
+        /// The SSE event name, e.g. `logging`, `progress`.
         method: String,
-        /// 解析后的 data(若可解析为 JSON)。
+        /// The parsed data (when it parses as JSON).
         params: Option<serde_json::Value>,
     },
 }
 
-/// MCP 传输层抽象
+/// MCP transport abstraction
 #[async_trait]
 pub trait MCPTransport: Send + Sync {
-    /// 发送请求并等待响应
+    /// Sends a request and waits for the response
     async fn request(&self, req: MCPRequest) -> Result<MCPResponse, MCPError>;
-    /// 发送通知(不等响应)
+    /// Sends a notification (does not wait for a response)
     async fn notify(&self, method: &str, params: Option<serde_json::Value>)
         -> Result<(), MCPError>;
-    /// 关闭连接
+    /// Closes the connection
     async fn close(&self) -> Result<(), MCPError>;
-    /// 连接是否存活(子进程存活 / SSE 长连接保持)。
+    /// Whether the connection is alive (child process alive / SSE long connection held).
     fn is_connected(&self) -> bool;
-    /// 重连并等待恢复(断连后由上层触发)。
+    /// Reconnects and waits for recovery (triggered by upper layers after a disconnect).
     async fn reconnect(&self) -> Result<(), MCPError>;
-    /// 订阅服务器推送事件。
+    /// Subscribes to server-pushed events.
     fn subscribe_events(&self) -> broadcast::Receiver<MCPEvent>;
 }
 
-/// 子进程重连指数退避:0.5s → 1s → 2s → 4s → ... 上限 30s。
+/// Child-process reconnect exponential backoff: 0.5s → 1s → 2s → 4s → ... cap 30s.
 fn backoff_delay(attempt: u32) -> Duration {
     let ms = 500u64
         .checked_shl(attempt.min(6))
@@ -70,25 +71,26 @@ fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_millis(ms.min(MAX_RECONNECT_BACKOFF_MS))
 }
 
-/// 进程内传输:把 [`MCPClient`](crate::client::MCPClient) 直接接到一个
-/// [`MCPServer`](crate::MCPServer) 上,
-/// 不走子进程 / 网络,便于嵌入式集成与测试(P2-6)。
+/// In-process transport: connects a [`MCPClient`](crate::client::MCPClient) directly to an
+/// [`MCPServer`](crate::MCPServer), without child process / network — convenient for embedded integration and
+/// testing (P2-6).
 ///
-/// 请求经 [`MCPServer::handle_request`](crate::MCPServer::handle_request) 原地处理;通知(`notifications/initialized`
-/// 等)无需响应,直接忽略;事件通道仅广播一次 `Connected`(没有服务器推送)。
+/// Requests are handled in place via [`MCPServer::handle_request`](crate::MCPServer::handle_request);
+/// notifications (`notifications/initialized` etc.) need no response and are ignored; the event channel only
+/// broadcasts `Connected` once (no server pushes).
 pub struct InMemoryTransport {
     server: Arc<crate::MCPServer>,
     event_tx: broadcast::Sender<MCPEvent>,
 }
 
 impl InMemoryTransport {
-    /// 包住一个进程内的 MCP Server。
+    /// Wraps an in-process MCP Server.
     pub fn new(server: Arc<crate::MCPServer>) -> Self {
         let (event_tx, _) = broadcast::channel(64);
         let _ = event_tx.send(MCPEvent::Connected);
-        // P2-9 流式工具输出:订阅 server 的 `publish_partial`,把每个增量
-        // 片段转成 `notifications/tool_partial` 推送事件,客户端事件监听
-        // 路由给 `subscribe_tool_stream`。无客户端监听时静默丢弃。
+        // P2-9 streaming tool output: subscribe to the server's `publish_partial`, turn each incremental
+        // chunk into a `notifications/tool_partial` push event, which the client event listener routes to
+        // `subscribe_tool_stream`. Silently dropped when no client is listening.
         let mut partial_rx = server.subscribe_partials();
         let fwd = event_tx.clone();
         tokio::spawn(async move {

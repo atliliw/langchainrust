@@ -1,4 +1,4 @@
-//! PlanExecuteAgent - 规划-执行-重规划
+//! PlanExecuteAgent - plan - execute - replan
 
 use std::sync::Arc;
 
@@ -10,25 +10,25 @@ use lc_providers::ProviderError;
 use super::plan::StepStatus;
 use super::planner::Planner;
 
-/// Plan-Execute Agent 错误类型
+/// Plan-Execute Agent error type
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PlanExecuteError {
-    /// 规划失败
+    /// Planning failed
     #[error("Planning failed: {0}")]
     PlanningError(String),
-    /// 步骤执行失败
+    /// Step execution failed
     #[error("Step execution failed: {0}")]
     StepExecutionError(String),
-    /// 达到最大重规划次数
+    /// Max replan count reached
     #[error("Max replans reached: step [{step}] failed: {reason}")]
     MaxReplansReached {
-        /// 失败的步骤
+        /// The failed step
         step: String,
-        /// 失败原因
+        /// Failure reason
         reason: String,
     },
-    /// 计划未完成
+    /// The plan is incomplete
     #[error("Plan incomplete after all replans")]
     PlanIncomplete,
 }
@@ -39,26 +39,26 @@ impl From<AgentError> for PlanExecuteError {
     }
 }
 
-/// Plan-Execute Agent:先规划,逐步执行,失败时重规划
+/// Plan-Execute Agent: plans first, executes step by step, and replans on failure.
 ///
-/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+/// Supports any LLM provider that implements `BaseChatModel`.
 pub struct PlanExecuteAgent {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
     tools: Vec<Arc<dyn BaseTool>>,
     max_replans: usize,
-    /// 每步执行 Agent 的工厂(P1-2)。缺省回落 `FunctionCallingAgent`。
+    /// Factory for the per-step execution agent (P1-2). Defaults to `FunctionCallingAgent`.
     agent_factory: Option<Arc<dyn Fn() -> Arc<dyn BaseAgent> + Send + Sync>>,
 }
 
 impl PlanExecuteAgent {
-    /// 创建新的 Plan-Execute Agent
+    /// Creates a new Plan-Execute Agent
     ///
-    /// # 参数
-    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
-    /// * `tools` - 可用工具列表
+    /// # Parameters
+    /// * `llm` - LLM client (any type implementing `BaseChatModel`)
+    /// * `tools` - available tools
     ///
-    /// # 向后兼容
-    /// 旧代码 `PlanExecuteAgent::new(openai_chat, tools)` 仍然可用。
+    /// # Backward compatibility
+    /// Legacy code `PlanExecuteAgent::new(openai_chat, tools)` still works.
     pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -72,7 +72,7 @@ impl PlanExecuteAgent {
         }
     }
 
-    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    /// Creates an agent from an already-wrapped `Arc<dyn BaseChatModel>`
     pub fn from_arc(
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         tools: Vec<Arc<dyn BaseTool>>,
@@ -85,17 +85,17 @@ impl PlanExecuteAgent {
         }
     }
 
-    /// 设置最大重规划次数。
+    /// Sets the maximum number of replans.
     pub fn with_max_replans(mut self, n: usize) -> Self {
         self.max_replans = n;
         self
     }
 
-    /// 自定义每步执行 Agent 的工厂(P1-2)。
+    /// Custom factory for the per-step execution agent (P1-2).
     ///
-    /// 工厂返回的 `BaseAgent` 将用于 PlanExecute 的每个 `execute_step`。
-    /// 缺省回落 `FunctionCallingAgent`。适用于需要给执行 Agent 注入
-    /// ReAct / Streaming / 自研 Agent 的场景。
+    /// The `BaseAgent` returned by the factory is used for each `execute_step`
+    /// of the PlanExecute. Defaults to `FunctionCallingAgent`. Useful for
+    /// injecting ReAct / Streaming / custom agents as the execution agent.
     pub fn with_agent_factory(
         mut self,
         factory: Arc<dyn Fn() -> Arc<dyn BaseAgent> + Send + Sync>,
@@ -104,7 +104,7 @@ impl PlanExecuteAgent {
         self
     }
 
-    /// 运行完整任务:规划 -> 执行每步 -> 失败重规划 -> 汇总
+    /// Runs the full task: plan -> execute each step -> replan on failure -> summarize
     pub async fn run(&self, objective: &str) -> Result<String, PlanExecuteError> {
         let planner = Planner::new(self.llm.clone());
         let mut plan = planner
@@ -175,7 +175,7 @@ impl PlanExecuteAgent {
         Err(PlanExecuteError::PlanIncomplete)
     }
 
-    /// 执行单步:优先用 `agent_factory` 产出的 Agent,缺省回落 FunctionCallingAgent(P1-2)
+    /// Executes a single step: prefers the agent from `agent_factory`, falling back to FunctionCallingAgent (P1-2)
     async fn execute_step(&self, step: &str) -> Result<String, PlanExecuteError> {
         let agent: Arc<dyn BaseAgent> = match &self.agent_factory {
             Some(factory) => factory(),
@@ -202,7 +202,7 @@ mod tests {
     use lc_providers::{OpenAIChat, OpenAIConfig};
     use std::collections::HashMap;
 
-    /// 可离线的 mock agent:直接返回 Finish,用于验证 agent_factory 生效(P1-2)。
+    /// Offline-capable mock agent: returns Finish directly, to verify that agent_factory takes effect (P1-2).
     struct FakeAgent;
 
     #[async_trait]
@@ -219,7 +219,7 @@ mod tests {
         }
     }
 
-    /// P1-2:execute_step 应使用 agent_factory 产出的 Agent,而非硬编码 FunctionCallingAgent。
+    /// P1-2: execute_step should use the agent from agent_factory, not a hardcoded FunctionCallingAgent.
     #[tokio::test]
     async fn test_execute_step_uses_agent_factory() {
         let agent = PlanExecuteAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![])

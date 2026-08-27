@@ -1,18 +1,18 @@
 // src/retrieval/reranking.rs
-//! Reranking（重排序）实现
+//! Reranking implementation
 //!
-//! 使用评分函数对检索结果重新排序，提升检索精确度。
+//! Re-ranks retrieval results with a scoring function, improving retrieval precision.
 
 use lc_vector_stores::{Document, SearchResult};
 use std::collections::HashMap;
 
-/// Reranking 错误类型
+/// Reranking error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RerankingError {
-    /// 评分计算错误
+    /// Scoring error
     ScoringError(String),
-    /// 输入无效错误
+    /// Invalid input error
     InvalidInput(String),
 }
 
@@ -27,15 +27,15 @@ impl std::fmt::Display for RerankingError {
 
 impl std::error::Error for RerankingError {}
 
-/// Reranking 配置
+/// Reranking configuration
 pub struct RerankingConfig {
-    /// 最终返回的文档数量
+    /// Number of documents returned in the final result
     pub top_n: usize,
 
-    /// 最小分数阈值（可选）
+    /// Minimum score threshold (optional)
     pub min_score: Option<f32>,
 
-    /// 是否保留原始分数
+    /// Whether to preserve the original score
     pub preserve_original_score: bool,
 }
 
@@ -50,51 +50,51 @@ impl Default for RerankingConfig {
 }
 
 impl RerankingConfig {
-    /// 创建使用默认配置的 `RerankingConfig`
+    /// Creates a `RerankingConfig` with default configuration
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 设置最终返回的文档数量
+    /// Sets the number of documents returned in the final result
     pub fn with_top_n(mut self, n: usize) -> Self {
         self.top_n = n;
         self
     }
 
-    /// 设置最小分数阈值
+    /// Sets the minimum score threshold
     pub fn with_min_score(mut self, score: f32) -> Self {
         self.min_score = Some(score);
         self
     }
 
-    /// 设置是否保留原始分数
+    /// Sets whether to preserve the original score
     pub fn with_preserve_original_score(mut self, preserve: bool) -> Self {
         self.preserve_original_score = preserve;
         self
     }
 }
 
-/// Reranking 评分器 trait
+/// Reranking scorer trait
 pub trait Reranker: Send + Sync {
-    /// 对给定文档列表评分，返回与文档一一对应的分数数组
+    /// Scores the given document list, returning a score array that maps one-to-one to the documents
     fn score(&self, query: &str, documents: &[Document]) -> Result<Vec<f32>, RerankingError>;
 }
 
-/// 基于关键词匹配的简单 Reranker
+/// A simple keyword-matching Reranker
 pub struct KeywordReranker {
-    /// 关键词权重（可选）
+    /// Keyword weights (optional)
     keyword_weights: HashMap<String, f32>,
 }
 
 impl KeywordReranker {
-    /// 创建默认的关键词 Reranker
+    /// Creates a default keyword Reranker
     pub fn new() -> Self {
         Self {
             keyword_weights: HashMap::new(),
         }
     }
 
-    /// 设置关键词权重映射
+    /// Sets the keyword-weight mapping
     pub fn with_keyword_weights(mut self, weights: HashMap<String, f32>) -> Self {
         self.keyword_weights = weights;
         self
@@ -149,14 +149,14 @@ impl Reranker for KeywordReranker {
     }
 }
 
-/// Reranker 执行器
+/// Reranker executor
 pub struct RerankingExecutor {
     reranker: Box<dyn Reranker>,
     config: RerankingConfig,
 }
 
 impl RerankingExecutor {
-    /// 创建 Reranker 执行器
+    /// Creates a reranker executor
     pub fn new(reranker: Box<dyn Reranker>) -> Self {
         Self {
             reranker,
@@ -164,31 +164,31 @@ impl RerankingExecutor {
         }
     }
 
-    /// 设置 Reranking 配置
+    /// Sets the reranking configuration
     pub fn with_config(mut self, config: RerankingConfig) -> Self {
         self.config = config;
         self
     }
 
-    /// 设置最终返回的文档数量
+    /// Sets the number of documents returned in the final result
     pub fn with_top_n(mut self, n: usize) -> Self {
         self.config.top_n = n;
         self
     }
 
-    /// 设置最小分数阈值
+    /// Sets the minimum score threshold
     pub fn with_min_score(mut self, score: f32) -> Self {
         self.config.min_score = Some(score);
         self
     }
 
-    /// 设置是否保留原始分数
+    /// Sets whether to preserve the original score
     pub fn with_preserve_original_score(mut self, preserve: bool) -> Self {
         self.config.preserve_original_score = preserve;
         self
     }
 
-    /// 对检索结果进行重排序，返回重排后的带分数结果
+    /// Re-ranks the retrieval results, returning the reranked scored results
     pub fn rerank(
         &self,
         query: &str,
@@ -250,7 +250,7 @@ impl RerankingExecutor {
         Ok(reranked)
     }
 
-    /// 对文档列表直接评分并重排序，返回带分数的结果
+    /// Scores and re-ranks a document list directly, returning scored results
     pub fn rerank_documents(
         &self,
         query: &str,
@@ -287,19 +287,19 @@ impl RerankingExecutor {
     }
 }
 
-/// BM25-style Reranker（简化版）
+/// BM25-style Reranker (simplified)
 pub struct BM25Reranker {
     k1: f32,
     b: f32,
 }
 
 impl BM25Reranker {
-    /// 创建默认参数的 BM25 Reranker
+    /// Creates a BM25 Reranker with default parameters
     pub fn new() -> Self {
         Self { k1: 1.5, b: 0.75 }
     }
 
-    /// 设置 BM25 参数 k1 和 b
+    /// Sets the BM25 parameters k1 and b
     pub fn with_params(mut self, k1: f32, b: f32) -> Self {
         self.k1 = k1;
         self.b = b;

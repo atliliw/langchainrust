@@ -1,7 +1,7 @@
-//! DOCX 文档加载器
+//! DOCX document loader
 //!
-//! 从 .docx 文件加载文档内容(纯文本提取)。
-//! 不依赖外部 crate,使用 ZIP 解压 + XML 解析提取文本。
+//! Loads document content from .docx files (plain-text extraction).
+//! No external crate required: uses ZIP decompression + XML parsing to extract text.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -17,31 +17,31 @@ use lc_vector_stores::Document;
 static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<w:t[^>]*>(.*?)</w:t>").unwrap());
 static PARA_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"</w:p>").unwrap());
 
-/// DOCX 文档加载器
+/// DOCX document loader
 ///
-/// 从 .docx 文件路径加载文档,提取正文文本。
-/// DOCX 本质是 ZIP 包,正文在 `word/document.xml` 中。
+/// Loads documents from a .docx file path, extracting the body text.
+/// A DOCX file is a ZIP package; the body lives in `word/document.xml`.
 pub struct DocxLoader {
-    /// 文件路径
+    /// File path
     path: String,
 }
 
 impl DocxLoader {
-    /// 从文件路径创建加载器
+    /// Creates a loader from a file path
     pub fn new(path: impl Into<String>) -> Self {
         Self { path: path.into() }
     }
 
-    /// 从 DOCX 字节流提取文本
+    /// Extracts text from DOCX bytes
     ///
-    /// DOCX 是 ZIP 格式,正文在 `word/document.xml` 中,
-    /// 文本在 `<w:t>` 标签内。
+    /// A DOCX file is a ZIP package; the body lives in `word/document.xml`,
+    /// with the text inside `<w:t>` tags.
     fn extract_text_from_bytes(data: &[u8]) -> Result<String, LoaderError> {
         let reader = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(reader)
             .map_err(|e| LoaderError::Other(format!("DOCX is not a valid ZIP: {}", e)))?;
 
-        // 读取 word/document.xml
+        // Read word/document.xml
         let mut xml_content = String::new();
         let mut found = false;
         for i in 0..archive.len() {
@@ -63,11 +63,11 @@ impl DocxLoader {
             ));
         }
 
-        // 提取 <w:t> 标签内容
+        // Extract the <w:t> tag content
         Self::extract_text_from_xml(&xml_content)
     }
 
-    /// 从 document.xml 提取文本
+    /// Extracts text from document.xml
     fn extract_text_from_xml(xml: &str) -> Result<String, LoaderError> {
         // M60: use pre-compiled regexes from LazyLock
         let mut result = String::new();
@@ -77,12 +77,12 @@ impl DocxLoader {
             let Some(m) = cap.get(1) else {
                 continue;
             };
-            // 检查这个 <w:t> 之前是否有 </w:p>(新段落)
+            // Check whether a </w:p> (new paragraph) precedes this <w:t>
             let before = &xml[last_end..m.start()];
             if PARA_REGEX.is_match(before) && !result.is_empty() {
                 result.push('\n');
             } else if !result.is_empty() {
-                // 同一段落内的连续文本
+                // Consecutive text within the same paragraph
             }
             result.push_str(m.as_str());
             last_end = m.end();
@@ -92,9 +92,9 @@ impl DocxLoader {
     }
 }
 
-// zip crate 在 dev-dependencies 中,我们需要在 features 中处理
-// 但为简单起见,直接添加为依赖
-// 注:此处使用 std::io + zip 最小依赖
+// The zip crate is in dev-dependencies; normally we would handle it via features,
+// but for simplicity it is added directly as a dependency.
+// Note: only std::io + zip are used here as the minimal dependency set.
 
 #[async_trait]
 impl DocumentLoader for DocxLoader {
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_extract_text_from_xml_with_xml_space() {
-        // w:t 可能带 xml:space="preserve" 属性
+        // w:t may carry an xml:space="preserve" attribute
         let xml = r#"<w:p><w:r><w:t xml:space="preserve">  spaced  </w:t></w:r></w:p>"#;
         let text = DocxLoader::extract_text_from_xml(xml).unwrap();
         assert_eq!(text, "  spaced  ");

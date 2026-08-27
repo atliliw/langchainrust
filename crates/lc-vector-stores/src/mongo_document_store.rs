@@ -1,11 +1,11 @@
 // lc-vector-stores/src/mongo_document_store.rs
-//! MongoDB 文档存储实现
+//! MongoDB document store implementation
 //!
-//! 生产环境推荐使用 MongoDB 作为 ChunkedDocumentStore 后端：
-//! - 支持持久化
-//! - 支持分片和复制集
-//! - 文档结构天然匹配
-//! - 支持索引查询
+//! MongoDB is recommended as a ChunkedDocumentStore backend in production:
+//! - persistent by nature
+//! - supports sharding and replica sets
+//! - document structure matches naturally
+//! - supports indexed queries
 
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait};
 use crate::{Document, VectorStoreError};
@@ -80,16 +80,16 @@ impl From<ChunkDocument> for MongoChunkDoc {
     }
 }
 
-/// MongoDB 存储配置
+/// MongoDB storage configuration
 #[derive(Debug, Clone)]
 pub struct MongoStoreConfig {
-    /// MongoDB 连接地址
+    /// MongoDB connection URI
     pub uri: String,
-    /// 数据库名称
+    /// Database name
     pub database: String,
-    /// 父文档集合名称
+    /// Parent document collection name
     pub parent_collection: String,
-    /// 分块集合名称
+    /// Chunk collection name
     pub chunk_collection: String,
 }
 
@@ -105,7 +105,7 @@ impl Default for MongoStoreConfig {
 }
 
 impl MongoStoreConfig {
-    /// 使用连接地址和数据库名创建配置,集合名使用默认值。
+    /// Creates a config from a URI and database name, using default collection names.
     pub fn new(uri: impl Into<String>, database: impl Into<String>) -> Self {
         Self {
             uri: uri.into(),
@@ -115,7 +115,7 @@ impl MongoStoreConfig {
         }
     }
 
-    /// 设置父文档集合和分块集合的名称。
+    /// Sets the parent and chunk collection names.
     pub fn with_collections(mut self, parent: impl Into<String>, chunk: impl Into<String>) -> Self {
         self.parent_collection = parent.into();
         self.chunk_collection = chunk.into();
@@ -123,7 +123,7 @@ impl MongoStoreConfig {
     }
 }
 
-/// MongoDB ChunkedDocumentStore 实现
+/// MongoDB ChunkedDocumentStore implementation
 pub struct MongoChunkedDocumentStore {
     client: Client,
     parent_collection: Collection<MongoParentDoc>,
@@ -131,7 +131,7 @@ pub struct MongoChunkedDocumentStore {
 }
 
 impl MongoChunkedDocumentStore {
-    /// 根据配置连接 MongoDB 并创建存储实例。
+    /// Connects to MongoDB per the config and creates a store instance.
     pub async fn new(config: MongoStoreConfig) -> Result<Self, VectorStoreError> {
         let client_options = ClientOptions::parse(&config.uri)
             .await
@@ -151,7 +151,7 @@ impl MongoChunkedDocumentStore {
         })
     }
 
-    /// 在分块集合上创建 `parent_id` 索引以加速查询。
+    /// Creates a `parent_id` index on the chunk collection to speed up queries.
     pub async fn create_indexes(&self) -> Result<(), VectorStoreError> {
         self.chunk_collection
             .create_index(
@@ -166,7 +166,7 @@ impl MongoChunkedDocumentStore {
         Ok(())
     }
 
-    /// 返回底层 MongoDB 客户端引用。
+    /// Returns a reference to the underlying MongoDB client.
     pub fn client(&self) -> &Client {
         &self.client
     }

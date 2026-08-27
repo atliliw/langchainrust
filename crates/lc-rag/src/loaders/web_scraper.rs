@@ -1,7 +1,7 @@
-//! 网页爬取加载器
+//! Web page scraper loader
 //!
-//! 从 URL 爬取网页内容,提取正文文本,支持递归链接跟踪。
-//! 基于 HTMLLoader 的文本提取逻辑,增加链接发现与批量爬取能力。
+//! Crawls web page content from URLs, extracting the body text and supporting recursive link following.
+//! Built on HTMLLoader's text-extraction logic, adding link discovery and bulk crawling.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
 
-/// H8: 默认单次 HTTP 请求超时——目标站挂起时爬虫不会永久阻塞。
+/// H8: default per-HTTP-request timeout — a hung target site will not block the crawler forever.
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // M9: Pre-compile regexes once instead of on every call.
@@ -23,24 +23,24 @@ static DOMAIN_RE: LazyLock<regex::Regex> =
 static DOMAIN_PREFIX_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"https?://[^/]+").unwrap());
 
-/// 网页爬取加载器
+/// Web page scraper loader
 ///
-/// 从 URL 爬取网页,提取正文文本。可选递归跟踪同域链接。
+/// Crawls web pages from a URL, extracting the body text. Optionally follows same-domain links recursively.
 pub struct WebScraperLoader {
-    /// 起始 URL
+    /// The starting URL
     url: String,
-    /// 最大递归深度(0 = 仅爬起始页)
+    /// Maximum recursion depth (0 = only the starting page)
     max_depth: usize,
-    /// 最大爬取页面数
+    /// Maximum number of pages to crawl
     max_pages: usize,
-    /// 是否在爬取失败时返回错误(默认 false,跳过失败页面)
+    /// Whether to return an error when crawling fails (default false, skips failed pages)
     fail_on_error: bool,
-    /// H8: 单次 HTTP 请求超时,防目标站挂起导致爬虫永久阻塞
+    /// H8: per-HTTP-request timeout, preventing the crawler from blocking forever on a hung target site
     timeout: Duration,
 }
 
 impl WebScraperLoader {
-    /// 从 URL 创建加载器(仅爬取指定页面)
+    /// Creates a loader from a URL (crawls only the given page)
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -51,36 +51,36 @@ impl WebScraperLoader {
         }
     }
 
-    /// 设置最大递归深度
+    /// Sets the maximum recursion depth
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = depth;
         self
     }
 
-    /// 设置最大爬取页面数
+    /// Sets the maximum number of pages to crawl
     pub fn with_max_pages(mut self, pages: usize) -> Self {
         self.max_pages = pages;
         self
     }
 
-    /// 设置爬取失败时是否返回错误(默认跳过失败页面)
+    /// Sets whether to return an error on crawl failure (default: skip failed pages)
     pub fn with_fail_on_error(mut self, fail: bool) -> Self {
         self.fail_on_error = fail;
         self
     }
 
-    /// 设置单次 HTTP 请求超时(H8,默认 30s)
+    /// Sets the per-HTTP-request timeout (H8, default 30s)
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// 从 HTML 提取纯文本(复用 HTMLLoader 的逻辑)
+    /// Extracts plain text from HTML (reuses HTMLLoader's logic)
     fn extract_text(html: &str) -> String {
         super::HTMLLoader::extract_text(html)
     }
 
-    /// 从 HTML 提取链接
+    /// Extracts links from HTML
     fn extract_links(html: &str, base_url: &str) -> Vec<String> {
         let base_domain = Self::extract_domain(base_url);
         HREF_RE
@@ -92,7 +92,7 @@ impl WebScraperLoader {
             .collect()
     }
 
-    /// 提取域名
+    /// Extracts the domain
     fn extract_domain(url: &str) -> String {
         DOMAIN_RE
             .captures(url)
@@ -100,22 +100,22 @@ impl WebScraperLoader {
             .unwrap_or_default()
     }
 
-    /// 解析相对 URL 为绝对 URL
+    /// Resolves a relative URL to an absolute URL
     fn resolve_url(base: &str, href: &str) -> Option<String> {
         if href.starts_with("http://") || href.starts_with("https://") {
             Some(href.to_string())
         } else if href.starts_with('/') {
-            // 找到 scheme://domain 部分
+            // Find the scheme://domain part
             let domain = DOMAIN_PREFIX_RE.find(base)?.as_str();
             Some(format!("{}{}", domain, href))
         } else {
-            // 相对路径
+            // Relative path
             let base_dir = base.rfind('/').map(|i| &base[..=i]).unwrap_or(base);
             Some(format!("{}{}", base_dir, href))
         }
     }
 
-    /// 爬取单个页面
+    /// Crawls a single page
     async fn fetch_page(url: &str, timeout: Duration) -> Result<(String, String), LoaderError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -162,7 +162,7 @@ impl DocumentLoader for WebScraperLoader {
                     if self.fail_on_error {
                         return Err(e);
                     }
-                    // 跳过失败页面,继续爬取其他(经日志门面暴露,便于宿主捕获)
+                    // Skip failed pages and continue crawling the rest (exposed via the log facade so hosts can capture it)
                     log::warn!("Failed to crawl {} (failure #{}): {}", url, failed_count, e);
                     continue;
                 }
@@ -180,7 +180,7 @@ impl DocumentLoader for WebScraperLoader {
                 id: None,
             });
 
-            // 递归跟踪链接
+            // Recursively follow links
             if depth < self.max_depth {
                 let links = Self::extract_links(&html, &fetched_url);
                 for link in links {
@@ -213,7 +213,7 @@ mod tests {
         let links = WebScraperLoader::extract_links(html, "https://example.com/");
         assert!(links.contains(&"https://example.com/about".to_string()));
         assert!(links.contains(&"https://example.com/contact".to_string()));
-        // # 链接应被过滤
+        // # links should be filtered
         assert!(!links.iter().any(|l| l.contains('#')));
     }
 

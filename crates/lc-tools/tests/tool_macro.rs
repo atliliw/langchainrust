@@ -82,9 +82,9 @@ async fn tool_macro_optional_param() {
     assert!(result.contains("Hello, Dr Alice!"));
 }
 
-/// 强制序列化失败的类型(F5 测试用):`Serialize` 实现恒返回错误,
-/// 运行期必然触发 `serde_json::to_string` 失败,且不要求 `Debug` 兜底。
-/// 生成工具结构体暴露 `Output = FailingSerialize`,故需 `pub`。
+/// A type that forces serialization to fail (for the F5 test): the `Serialize` impl always
+/// returns an error, so at runtime `serde_json::to_string` is guaranteed to fail, without a
+/// `Debug` fallback. The generated tool struct exposes `Output = FailingSerialize`, hence `pub`.
 pub struct FailingSerialize;
 
 impl serde::Serialize for FailingSerialize {
@@ -98,8 +98,8 @@ impl serde::Serialize for FailingSerialize {
     }
 }
 
-/// F5 测试:输出类型序列化必失败。`run()` 必须返回 `ExecutionFailed`,
-/// 而不是静默回退成 Debug 文本喂给 LLM。
+/// F5 test: the output type's serialization must always fail. `run()` must return
+/// `ExecutionFailed`, not silently fall back to Debug text fed to the LLM.
 #[tool(description = "Outputs a type whose Serialize impl always fails")]
 fn failing_output() -> Result<FailingSerialize, ToolError> {
     Ok(FailingSerialize)
@@ -119,8 +119,9 @@ async fn tool_macro_run_errors_on_unserializable_output() {
     );
 }
 
-/// F5 测试:函数返回 `Result<_, ToolError>` 时,`invoke()` 直接透传原错误,
-/// 错误类型保持 `InvalidInput`,而不是被压平成 `ExecutionFailed`。
+/// F5 test: when the function returns `Result<_, ToolError>`, `invoke()` passes the original
+/// error through directly, keeping the error type as `InvalidInput` instead of flattening it
+/// into `ExecutionFailed`.
 #[tool(description = "Guards against 'bad' input")]
 fn guarded(#[param(desc = "The value to check")] value: String) -> Result<String, ToolError> {
     if value == "bad" {

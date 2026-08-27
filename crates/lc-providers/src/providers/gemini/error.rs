@@ -1,19 +1,19 @@
 // lc-providers/src/providers/gemini/error.rs
 //! Error types for the Gemini provider.
 
-/// Gemini 错误类型
+/// Gemini error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GeminiError {
-    /// Gemini API 返回错误
+    /// Gemini API-returned error
     ApiError(String),
-    /// HTTP 请求错误
+    /// HTTP request error
     HttpError(String),
-    /// 响应解析错误
+    /// Response parse error
     ParseError(String),
-    /// 无响应
+    /// No response
     NoResponse,
-    /// 安全过滤器拦截
+    /// Blocked by safety filter
     SafetyBlock(String),
 }
 

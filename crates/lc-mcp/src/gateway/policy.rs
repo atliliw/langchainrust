@@ -1,4 +1,4 @@
-//! Server 策略与 Gateway 登记声明。
+//! Server policies and Gateway registration declarations.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,46 +9,46 @@ use crate::tool_namespace::ToolConflict;
 use crate::tool_timeout::ToolSpec;
 use crate::types::MCPConfig;
 
-/// 单个 Server 的 Gateway 策略(冲突 / 超时 / 沙箱 / 静态层)。
+/// A single server's Gateway policy (conflict / timeout / sandbox / static layer).
 ///
-/// 速率限制不在策略里:限流器运行时状态存 `rate_limiters`,策略只需在 register
-/// 时据此建限流器即可,无需重复存储。
+/// Rate limiting is not part of the policy: the limiter's runtime state lives in `rate_limiters`,
+/// so the policy only needs to build the limiter from it at register time; no duplicate storage.
 #[derive(Debug, Clone)]
 pub(crate) struct ServerPolicy {
     pub(crate) conflict: ToolConflict,
     pub(crate) timeout: Option<ToolSpec>,
     pub(crate) sandbox: Option<Arc<ServerSandbox>>,
-    /// 该 Server 全部工具自动进静态层(P2-3)。
+    /// All tools of this server go into the static layer automatically (P2-3).
     pub(crate) pin_all: bool,
 }
 
-/// Gateway 登记一个 Server 的完整声明(P2-8)。
+/// A complete declaration for registering one server with the Gateway (P2-8).
 #[derive(Debug, Clone)]
 pub struct GatewayServerSpec {
-    /// Server 名称(注册表 key / 工具命名空间前缀)。
+    /// Server name (registry key / tool-namespace prefix).
     pub name: String,
-    /// 连接配置(Stdio / SSE)。
+    /// Connection config (Stdio / SSE).
     pub config: MCPConfig,
-    /// 有状态 Server:空闲不回收(默认 false)。
+    /// Stateful server: not reaped when idle (default false).
     pub keep_alive: bool,
-    /// 空闲回收阈值。
+    /// Idle-reap threshold.
     pub max_idle: Duration,
-    /// 健康熔断阈值(默认 3)。
+    /// Health-breaker threshold (default 3).
     pub max_failures: u32,
-    /// 工具命名冲突策略(默认 [`ToolConflict::Prefix`])。
+    /// Tool-name conflict policy (default [`ToolConflict::Prefix`]).
     pub conflict: ToolConflict,
-    /// per-tool 默认超时(P2-4):该 Server 所有工具统一挂。
+    /// Default per-tool timeout (P2-4): applied uniformly to all tools of this server.
     pub default_timeout: Option<ToolSpec>,
-    /// per-Server 安全沙箱(P2-6)。
+    /// Per-server security sandbox (P2-6).
     pub sandbox: Option<Arc<ServerSandbox>>,
-    /// 速率限制(P2-8):`(max_calls, window)`,`None` 不限流。
+    /// Rate limit (P2-8): `(max_calls, window)`; `None` means no limit.
     pub rate_limit: Option<(usize, Duration)>,
-    /// 该 Server 全部工具进静态层常驻注入(P2-3)。
+    /// All tools of this server go into the static layer for persistent injection (P2-3).
     pub pin_all: bool,
 }
 
 impl GatewayServerSpec {
-    /// 创建一个 Gateway Server 声明。
+    /// Creates a Gateway server declaration.
     pub fn new(name: impl Into<String>, config: MCPConfig) -> Self {
         Self {
             name: name.into(),
@@ -64,55 +64,55 @@ impl GatewayServerSpec {
         }
     }
 
-    /// 标记有状态 Server:空闲不回收。
+    /// Marks the server stateful: not reaped when idle.
     pub fn keep_alive(mut self) -> Self {
         self.keep_alive = true;
         self
     }
 
-    /// 设置空闲回收阈值。
+    /// Sets the idle-reap threshold.
     pub fn with_max_idle(mut self, max_idle: Duration) -> Self {
         self.max_idle = max_idle;
         self
     }
 
-    /// 设置健康熔断阈值。
+    /// Sets the health-breaker threshold.
     pub fn with_max_failures(mut self, max_failures: u32) -> Self {
         self.max_failures = max_failures.max(1);
         self
     }
 
-    /// 设置工具命名冲突策略。
+    /// Sets the tool-name conflict policy.
     pub fn with_conflict(mut self, conflict: ToolConflict) -> Self {
         self.conflict = conflict;
         self
     }
 
-    /// 挂 per-tool 默认超时(P2-4),该 Server 所有工具生效。
+    /// Attaches a per-tool default timeout (P2-4), effective for all tools of this server.
     pub fn with_timeout(mut self, spec: ToolSpec) -> Self {
         self.default_timeout = Some(spec);
         self
     }
 
-    /// 挂 per-Server 安全沙箱(P2-6)。
+    /// Attaches a per-server security sandbox (P2-6).
     pub fn with_sandbox(mut self, sandbox: Arc<ServerSandbox>) -> Self {
         self.sandbox = Some(sandbox);
         self
     }
 
-    /// 挂固定窗口速率限制(P2-8):`window` 内最多 `max_calls` 次。
+    /// Attaches a fixed-window rate limit (P2-8): at most `max_calls` per `window`.
     pub fn with_rate_limit(mut self, max_calls: usize, window: Duration) -> Self {
         self.rate_limit = Some((max_calls, window));
         self
     }
 
-    /// 该 Server 全部工具进静态层常驻注入(P2-3)。
+    /// All tools of this server go into the static layer for persistent injection (P2-3).
     pub fn pin_all_tools(mut self) -> Self {
         self.pin_all = true;
         self
     }
 
-    /// 转成底层连接管理器的 ServerSpec(借用字段,config 克隆)。
+    /// Converts into the underlying connection manager's ServerSpec (borrows fields, clones config).
     pub(crate) fn to_server_spec(&self) -> ServerSpec {
         let mut spec = ServerSpec::new(&self.name, self.config.clone())
             .with_max_idle(self.max_idle)

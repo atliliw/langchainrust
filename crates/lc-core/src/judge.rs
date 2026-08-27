@@ -1,9 +1,10 @@
-//! 共享 LLM 裁判基础设施:让 LLM 以结构化参数返回判定。
+//! Shared LLM judge infrastructure: lets an LLM return a verdict via structured arguments.
 //!
-//! 被 `lc-evaluation`(打分 / 成对 / 忠实度裁判)与 `lc-guardrails`(LLM 校验器)
-//! 复用:优先走 `bind_tools` 拿 `tool_calls` 结构化参数,模型不支持工具绑定或
-//! 仍返回纯文本时,回落调用方提供的文本解析。两个 crate 各自构造 prompt 与
-//! 解析规则,共享的是"绑定工具 → 拿结构化参数 → 回落文本"这条通用执行路径。
+//! Reused by `lc-evaluation` (scoring / pairwise / faithfulness judges) and `lc-guardrails`
+//! (LLM validators): prefer `bind_tools` for structured `tool_calls` arguments; when the model
+//! does not support tool binding or still returns plain text, fall back to the caller-provided
+//! text parsing. Each crate builds its own prompts and parse rules; what is shared is the common
+//! execution path "bind tool → take structured arguments → fall back to text".
 
 use lc_schema::Message;
 use serde::de::DeserializeOwned;
@@ -11,30 +12,30 @@ use serde::de::DeserializeOwned;
 use crate::language_models::BaseChatModel;
 use crate::tools::ToolDefinition;
 
-/// 结构化裁判调用的错误:区分"LLM 调用失败"与"结构化解析失败",
-/// 由调用方映射到自己的错误域(如 `EvalError::PredictorError` /
-/// `EvalError::ParseError`)。
+/// Structured judge-call errors: distinguishes "LLM call failure" from "structured parse failure",
+/// mapped by the caller into its own error domain (e.g. `EvalError::PredictorError` /
+/// `EvalError::ParseError`).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StructuredJudgeError {
-    /// 底层 LLM 调用失败(网络 / 限流 / 返回异常)。
+    /// Underlying LLM call failure (network / rate limit / abnormal reply).
     #[error("LLM call failed: {0}")]
     Call(String),
-    /// 工具调用参数无法按目标类型反序列化,或 tool_calls 为空。
+    /// Tool-call arguments cannot be deserialized into the target type, or tool_calls is empty.
     #[error("structured parse failed: {0}")]
     Parse(String),
 }
 
-/// 单次 LLM 调用,让裁判以结构化参数(T)返回判定。
+/// One LLM call, letting the judge return a verdict as structured arguments (T).
 ///
-/// 流程:
-/// 1. 若模型支持 `bind_tools`,绑定判定工具;响应含 `tool_calls` 则解析参数返回。
-/// 2. 绑定了工具但仍返回纯文本 → 用同一次响应的文本走 `text_fallback`。
-/// 3. 模型不支持 `bind_tools` → 回落文本解析(`text_fallback`),并 `log::warn!`。
-/// 4. 绑定了工具但 `tool_calls` 参数无法解析 → 显式 `StructuredJudgeError::Parse`,
-///    绝不静默默认。
+/// Flow:
+/// 1. If the model supports `bind_tools`, bind the verdict tool; parse and return the arguments when the reply has `tool_calls`.
+/// 2. Tool bound but still plain text → run the same reply's text through `text_fallback`.
+/// 3. Model without `bind_tools` → fall back to text parsing (`text_fallback`) and `log::warn!`.
+/// 4. Tool bound but `tool_calls` arguments cannot be parsed → explicit `StructuredJudgeError::Parse`,
+///    never a silent default.
 ///
-/// 保证每次判定最多一次 LLM 往返:绑定路径不额外重打一次无工具调用。
+/// Guarantees at most one LLM round trip per verdict: the bound path does not re-issue a tool-less call.
 pub async fn structured_call<M, T, F>(
     judge: &M,
     tool: ToolDefinition,
@@ -81,7 +82,7 @@ where
     }
 }
 
-/// 截断长文本用于错误信息,避免把整段 LLM 回复塞进错误。
+/// Truncates long text for error messages, avoiding stuffing a whole LLM reply into an error.
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -113,7 +114,7 @@ mod tests {
     }
     impl std::error::Error for JudgeError {}
 
-    /// 依次返回预设回复的 mock 裁判,记录收到的消息供断言。
+    /// Mock judge returning preset replies in order, recording received messages for assertions
     struct SeqMockJudge {
         replies: Vec<String>,
         call: Arc<AtomicUsize>,
@@ -193,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_on_text_only_model() {
-        // SeqMockJudge 不实现 bind_tools → 走文本回落,closure 解析纯文本。
+        // SeqMockJudge does not implement bind_tools → text fallback; the closure parses plain text.
         let judge = SeqMockJudge::new(vec!["yes".into()]);
         let messages = vec![Message::human("判断")];
         let out = structured_call(&judge, mock_tool(), messages, |raw| {
@@ -208,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_error_raised_not_silently_defaulted() {
-        // 文本回落解析失败 → 显式 Parse,不静默默认。
+        // text-fallback parse failure → explicit Parse, no silent default.
         let judge = SeqMockJudge::new(vec!["没法判断".into()]);
         let messages = vec![Message::human("判断")];
         let err = structured_call(

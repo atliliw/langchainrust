@@ -9,12 +9,13 @@ use lc_schema::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// P2-9: LLM 调用前跑一遍 completion hooks(限流/配额)。
+/// P2-9: run completion hooks before each LLM call (rate limiting / quota).
 ///
-/// 构造 [`CompletionContext`] 后逐个调用 `on_before_completion`:
-/// - `Continue` → 放行;
-/// - `Modify` → 执行器无法改写 Agent 自建 prompt,记 warn 后继续;
-/// - `Reject { reason }` → 转为 `AgentError` 中止本轮。
+/// Builds a [`CompletionContext`] then calls `on_before_completion` on each hook:
+/// - `Continue` → allow;
+/// - `Modify` → the executor cannot rewrite the Agent's own prompt, so it logs a warn
+///   and continues;
+/// - `Reject { reason }` → converted into an `AgentError` that aborts this round.
 pub(crate) fn run_before_completion_hooks(
     hooks: &[Arc<dyn AgentHook>],
     inputs: &HashMap<String, String>,
@@ -47,10 +48,11 @@ pub(crate) fn run_before_completion_hooks(
     Ok(())
 }
 
-/// P2-9: LLM 调用后跑一遍 completion hooks(累计 token 用量)。
+/// P2-9: run completion hooks after each LLM call (accumulate token usage).
 ///
-/// 构造 [`CompletionResult`] 后逐个调用 `on_after_completion`;hook 报错只记
-/// warn 不中止执行(与 `on_after_tool_call` 的容错策略一致)。
+/// Builds a [`CompletionResult`] then calls `on_after_completion` on each hook; a hook
+/// error only logs a warn and does not abort execution (same tolerance policy as
+/// `on_after_tool_call`).
 pub(crate) fn run_after_completion_hooks(
     hooks: &[Arc<dyn AgentHook>],
     output: &AgentOutput,

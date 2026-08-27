@@ -1,129 +1,130 @@
-//! Guardrail trait、结果类型、配置、错误
+//! Guardrail trait, result types, configuration, and errors
 
 use async_trait::async_trait;
 use std::sync::Arc;
 
-/// 输入 Guardrail 验证结果
+/// Input Guardrail validation result
 ///
-/// 输入侧不允许 `Modify`:输入护栏要么放行、要么拦截。
-/// 与 [`OutputGuardrailResult`] 分离后,类型系统强制"Modify 仅输出侧",
-/// 输入护栏在编译期就无法返回改写结果。
+/// The input side does not allow `Modify`: an input guardrail either passes or blocks.
+/// Split from [`OutputGuardrailResult`], the type system enforces "Modify is output-only",
+/// so an input guardrail cannot return a rewritten result at compile time.
 #[derive(Debug, Clone)]
 pub enum InputGuardrailResult {
-    /// 通过
+    /// Pass
     Pass,
-    /// 拦截
+    /// Block
     Block {
-        /// 拦截原因
+        /// Block reason
         reason: String,
     },
 }
 
 impl InputGuardrailResult {
-    /// 是否通过。
+    /// Whether it passed.
     pub fn is_pass(&self) -> bool {
         matches!(self, InputGuardrailResult::Pass)
     }
-    /// 是否被拦截。
+    /// Whether it was blocked.
     pub fn is_block(&self) -> bool {
         matches!(self, InputGuardrailResult::Block { .. })
     }
 }
 
-/// 输出 Guardrail 验证结果
+/// Output Guardrail validation result
 ///
-/// `Modify` 是输出侧专属:输出护栏可以改写结果后放行。
+/// `Modify` is output-side only: an output guardrail can rewrite the result before passing it.
 #[derive(Debug, Clone)]
 pub enum OutputGuardrailResult {
-    /// 通过
+    /// Pass
     Pass,
-    /// 拦截
+    /// Block
     Block {
-        /// 拦截原因
+        /// Block reason
         reason: String,
     },
-    /// 修改后通过(仅输出侧)
+    /// Passed after modification (output side only)
     Modify {
-        /// 修改后的新值
+        /// The new value after modification
         new_value: String,
     },
 }
 
 impl OutputGuardrailResult {
-    /// 是否通过。
+    /// Whether it passed.
     pub fn is_pass(&self) -> bool {
         matches!(self, OutputGuardrailResult::Pass)
     }
-    /// 是否被拦截。
+    /// Whether it was blocked.
     pub fn is_block(&self) -> bool {
         matches!(self, OutputGuardrailResult::Block { .. })
     }
-    /// 是否被修改后放行。
+    /// Whether it was modified and then passed.
     pub fn is_modify(&self) -> bool {
         matches!(self, OutputGuardrailResult::Modify { .. })
     }
 }
 
-/// 输入 Guardrail trait
+/// Input Guardrail trait
 ///
-/// 返回 [`InputGuardrailResult`](没有 `Modify` 变体),输入侧天然无法改写。
+/// Returns [`InputGuardrailResult`] (no `Modify` variant), so the input side cannot rewrite by construction.
 #[async_trait]
 pub trait InputGuardrail: Send + Sync {
-    /// 护栏名称。
+    /// The guardrail's name.
     fn name(&self) -> &str;
-    /// 验证输入并返回结果。
+    /// Validates the input and returns a result.
     async fn validate(&self, input: &str) -> InputGuardrailResult;
 }
 
-/// 输出 Guardrail trait
+/// Output Guardrail trait
 ///
-/// 返回 [`OutputGuardrailResult`](含 `Modify` 变体),是改写的唯一合法入口。
+/// Returns [`OutputGuardrailResult`] (with the `Modify` variant); this is the only legal entry point for rewriting.
 #[async_trait]
 pub trait OutputGuardrail: Send + Sync {
-    /// 护栏名称。
+    /// The guardrail's name.
     fn name(&self) -> &str;
-    /// 验证输出并返回结果。
+    /// Validates the output and returns a result.
     async fn validate(&self, output: &str) -> OutputGuardrailResult;
 }
 
-/// 流式块动作
+/// Streaming chunk action
 ///
-/// 流式护栏对单个 chunk 的处置结果(P1-4)。
+/// The streaming guardrail's disposition for a single chunk (P1-4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkAction {
-    /// 放行
+    /// Pass
     Pass,
-    /// 改写后放行
+    /// Passed after rewriting
     Replace(String),
-    /// 拦截丢弃
+    /// Blocked and dropped
     Block,
 }
 
-/// 流式输出护栏 trait(P1-4)
+/// Streaming output guardrail trait (P1-4)
 ///
-/// 第一阶段:对每个增量 chunk 做快速检查,在敏感信息展示给用户之前拦截。
-/// 调用方维护滑动窗口(`tail + chunk`)以避免跨块切断关键词(如 `"passwo" + "rd"`)。
-/// 完整输出后的二次复查由 [`OutputGuardrail`] 承担(`GuardrailRunner::validate_output`)。
+/// Phase one: quickly check each incremental chunk, blocking sensitive information before it is
+/// shown to the user. The caller maintains a sliding window (`tail + chunk`) to avoid keywords
+/// split across chunks (e.g. `"passwo" + "rd"`). The second re-check after the full output is
+/// handled by [`OutputGuardrail`] (`GuardrailRunner::validate_output`).
 #[async_trait]
 pub trait StreamingOutputGuardrail: Send + Sync {
-    /// 护栏名称。
+    /// The guardrail's name.
     fn name(&self) -> &str;
-    /// 增量检查一个 chunk(可能是 `tail + chunk` 的组合串)。
+    /// Incrementally checks a chunk (possibly a `tail + chunk` combined string).
     async fn validate_chunk(&self, chunk: &str) -> ChunkAction;
 }
 
-/// Guardrails 配置
+/// Guardrails configuration
 #[derive(Clone)]
 pub struct GuardrailsConfig {
-    /// 输入护栏列表
+    /// Input guardrail list
     pub input_guardrails: Vec<Arc<dyn InputGuardrail>>,
-    /// 输出护栏列表
+    /// Output guardrail list
     pub output_guardrails: Vec<Arc<dyn OutputGuardrail>>,
-    /// 流式护栏:流式输出时逐块增量检查(P1-4)。
+    /// Streaming guardrails: incrementally check each chunk during streaming output (P1-4).
     pub streaming_guardrails: Vec<Arc<dyn StreamingOutputGuardrail>>,
-    /// 审计持久化 sink(P1-7)。
+    /// Audit persistence sink (P1-7).
     pub audit_sink: Option<Arc<dyn crate::audit::AuditSink>>,
-    /// 是否快速失败(遇到第一个拦截即停止)
+    /// Whether to fail fast (stop at the first block)
     pub fail_fast: bool,
 }
 
@@ -140,66 +141,66 @@ impl Default for GuardrailsConfig {
 }
 
 impl GuardrailsConfig {
-    /// 创建默认配置。
+    /// Creates a default configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 添加一个输入护栏。
+    /// Adds an input guardrail.
     pub fn with_input(mut self, g: Arc<dyn InputGuardrail>) -> Self {
         self.input_guardrails.push(g);
         self
     }
 
-    /// 添加一个输出护栏。
+    /// Adds an output guardrail.
     pub fn with_output(mut self, g: Arc<dyn OutputGuardrail>) -> Self {
         self.output_guardrails.push(g);
         self
     }
 
-    /// 添加一个流式护栏(两阶段流式检查的第一阶段)。
+    /// Adds a streaming guardrail (phase one of the two-phase streaming check).
     pub fn with_streaming(mut self, g: Arc<dyn StreamingOutputGuardrail>) -> Self {
         self.streaming_guardrails.push(g);
         self
     }
 
-    /// 配置审计持久化 sink:每次违规记录时同步写入(P1-7)。
+    /// Configures the audit persistence sink: written synchronously on every violation record (P1-7).
     pub fn with_audit_sink(mut self, sink: Arc<dyn crate::audit::AuditSink>) -> Self {
         self.audit_sink = Some(sink);
         self
     }
 
-    /// 设置是否快速失败。
+    /// Sets whether to fail fast.
     pub fn fail_fast(mut self, v: bool) -> Self {
         self.fail_fast = v;
         self
     }
 }
 
-/// Guardrail 错误
+/// Guardrail error
 ///
-/// `Blocked` 携带拦截原因 + 已处理部分 + 面向用户的建议(P1-1/P1-6),
-/// 让上层能给用户"被拦截"而非"系统错误"的反馈。
+/// `Blocked` carries the block reason + the already-handled part + a user-facing suggestion
+/// (P1-1/P1-6), letting the upper layer tell the user "blocked" rather than "system error".
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GuardrailError {
-    /// 被 Guardrail 拦截
+    /// Blocked by a Guardrail
     Blocked {
-        /// 拦截原因(护栏侧说明)
+        /// Block reason (explanation from the guardrail side)
         reason: String,
-        /// 拦截前已处理的部分内容(供上层展示局部结果 / 决定是否重生成)
+        /// The part already processed before blocking (for the upper layer to show partial results / decide whether to regenerate)
         partial: Option<String>,
-        /// 面向用户的建议(如何重述输入 / 修正输出)
+        /// User-facing suggestion (how to rephrase the input / fix the output)
         suggestion: Option<String>,
     },
-    /// Agent 执行错误
+    /// Agent execution error
     AgentError(String),
-    /// 敏感泄露裁判错误(P2-3):LLM 裁判无法作出判定时返回。
+    /// Sensitive-leak judge error (P2-3): returned when the LLM judge cannot make a decision.
     Judge(String),
 }
 
 impl GuardrailError {
-    /// 从 `OutputValidation::Blocked` 构造带用户建议的 `GuardrailError`。
+    /// Constructs a `GuardrailError` with a user suggestion from `OutputValidation::Blocked`.
     pub(crate) fn from_blocked(reason: String, partial: String, suggestion: String) -> Self {
         GuardrailError::Blocked {
             reason,

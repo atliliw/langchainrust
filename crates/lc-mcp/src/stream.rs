@@ -1,13 +1,13 @@
-//! 流式工具输出(P2-9):长任务工具"边跑边推"增量片段。
+//! Streaming tool output (P2-9): incremental chunks for long-running tools "streaming while they run".
 //!
-//! 服务器把长任务的部分结果拆成多个片段,经 `notifications/tool_partial`
-//! 推送;客户端 [`subscribe_tool_stream`](crate::MCPClient::subscribe_tool_stream)
-//! 订阅后按序接收增量,直至收到 `final: true` 的片段。
+//! The server splits a long task's partial results into chunks, pushed via `notifications/tool_partial`;
+//! the client subscribes with [`subscribe_tool_stream`](crate::MCPClient::subscribe_tool_stream) and receives
+//! the increments in order until a chunk with `final: true` arrives.
 //!
-//! 配合 P1-7 多类型内容:每个片段携带独立的 [`MCPContent`]
-//! (文本 / 图片 / 资源),`render_text` 统一渲染,非文本内容以占位描述代表。
+//! Works with P1-7 multi-type content: each chunk carries its own [`MCPContent`]
+//! (text / image / resource), `render_text` renders uniformly, non-text content is represented by a placeholder.
 //!
-//! ## 推送格式(`notifications/tool_partial` 的 params)
+//! ## Push format (`notifications/tool_partial` params)
 //!
 //! ```json
 //! {
@@ -27,39 +27,40 @@ use tokio::time::{timeout, Duration};
 
 use super::types::MCPContent;
 
-/// 流式工具输出的一个增量片段(P2-9)。
+/// One incremental chunk of streaming tool output (P2-9).
 ///
-/// 字段对应 `notifications/tool_partial` 推送的 params;`seq` 单调递增,
-/// 供排序 / 去重 / 断点续传;`is_final` 标记最后一个片段,`collect` 据此终止。
+/// Fields map to the `notifications/tool_partial` push params; `seq` is monotonically increasing, for
+/// sorting / dedup / resume; `is_final` marks the last chunk and `collect` terminates on it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartialContent {
-    /// 所属工具名。
+    /// The owning tool name.
     pub tool: String,
-    /// 片段序号(单调递增,0 起)。
+    /// Chunk sequence number (monotonically increasing, starting at 0).
     pub seq: u64,
-    /// 片段内容(P1-7 多类型:文本 / 图片 / 资源)。
+    /// Chunk content (P1-7 multi-type: text / image / resource).
     pub content: MCPContent,
-    /// 可选进度(0.0~1.0)。
+    /// Optional progress (0.0~1.0).
     pub progress: Option<f32>,
-    /// 是否最后一个片段(服务器推送 `final: true`)。
+    /// Whether this is the last chunk (the server pushes `final: true`).
     #[serde(rename = "final", default)]
     pub is_final: bool,
 }
 
 impl PartialContent {
-    /// 渲染本片段为文本(配合 P1-7):文本原样;图片 / 资源用占位描述代表。
+    /// Renders this chunk as text (works with P1-7): text as-is; images / resources are represented by a
+    /// placeholder description.
     pub fn render_text(&self) -> String {
         self.content.render_text()
     }
 }
 
-/// 流式订阅的错误类别(P2-9)。
+/// Error kinds for streaming subscription (P2-9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ToolStreamError {
-    /// 广播缓冲区积压导致丢帧(推送太快,消费不及)。
+    /// Broadcast buffer backlog dropped frames (pushed too fast for the consumer).
     Lagged,
-    /// `collect` 在限定时间内未收到 `final` 片段。
+    /// `collect` did not receive a `final` chunk within the deadline.
     Timeout,
 }
 
@@ -77,12 +78,13 @@ impl fmt::Display for ToolStreamError {
 
 impl std::error::Error for ToolStreamError {}
 
-/// 某个工具的流式增量订阅(P2-9)。
+/// Streaming incremental subscription for one tool (P2-9).
 ///
-/// 由 [`MCPClient::subscribe_tool_stream`](crate::MCPClient::subscribe_tool_stream)
-/// 创建;只投递属于本工具名的增量,其他工具的推送被过滤。
+/// Created by [`MCPClient::subscribe_tool_stream`](crate::MCPClient::subscribe_tool_stream); only delivers
+/// increments belonging to this tool name, other tools' pushes are filtered out.
 ///
-/// 广播通道只投递给"订阅时刻之后"的推送,因此应**先订阅再调用工具**。
+/// A broadcast channel only delivers pushes that arrive "after the subscription moment", so one should
+/// **subscribe first, then call the tool**.
 pub struct ToolStream {
     rx: broadcast::Receiver<PartialContent>,
     tool: String,
@@ -93,26 +95,27 @@ impl ToolStream {
         Self { rx, tool }
     }
 
-    /// 等待下一个属于本工具的增量片段。
+    /// Waits for the next incremental chunk belonging to this tool.
     ///
-    /// - `Ok(Some(chunk))` — 收到一个增量;
-    /// - `Ok(None)` — 通道已关闭(连接关闭),流结束;
-    /// - `Err(Lagged)` — 推送过快导致丢帧,增量不连续。
+    /// - `Ok(Some(chunk))` — one increment received;
+    /// - `Ok(None)` — the channel closed (connection closed), the stream ended;
+    /// - `Err(Lagged)` — pushed too fast, frames dropped, increments are discontinuous.
     pub async fn next(&mut self) -> Result<Option<PartialContent>, ToolStreamError> {
         loop {
             match self.rx.recv().await {
                 Ok(c) if c.tool == self.tool => return Ok(Some(c)),
-                Ok(_) => continue, // 其他工具的推送,过滤
+                Ok(_) => continue, // another tool's push, filtered
                 Err(broadcast::error::RecvError::Lagged(_)) => return Err(ToolStreamError::Lagged),
                 Err(broadcast::error::RecvError::Closed) => return Ok(None),
             }
         }
     }
 
-    /// 收集到 `final` 片段为止的全部增量;返回的最后一个片段 `is_final == true`。
+    /// Collects all increments up to and including the `final` chunk; the returned last chunk has
+    /// `is_final == true`.
     ///
-    /// 若流在收到 final 前关闭,返回已收集的片段(不报错);若 `deadline`
-    /// 期限内未收到 final,返回 [`ToolStreamError::Timeout`]。
+    /// If the stream closes before receiving final, returns the collected chunks (no error); if no final arrives
+    /// within `deadline`, returns [`ToolStreamError::Timeout`].
     pub async fn collect(
         &mut self,
         deadline: Duration,
@@ -133,10 +136,10 @@ impl ToolStream {
     }
 }
 
-/// 把 `notifications/tool_partial` 的 params 解析为 [`PartialContent`]。
+/// Parses `notifications/tool_partial` params into a [`PartialContent`].
 ///
-/// 客户端事件监听器复用;字段缺失 / 内容不可解析返回 `None`(静默丢弃,
-/// 不因一个畸形片段打断流)。
+/// Reused by the client event listener; missing fields / unparsable content return `None` (silently dropped,
+/// a malformed chunk must not break the stream).
 pub(crate) fn parse_partial_notification(params: Option<Value>) -> Option<PartialContent> {
     let p = params?;
     let tool = p.get("tool")?.as_str()?.to_string();
@@ -162,7 +165,7 @@ mod tests {
     use lc_core::BaseTool;
     use std::sync::Arc;
 
-    /// 测试用工具:回显输入(供 in-memory 端到端流式测试)。
+    /// A test tool that echoes its input (for in-memory end-to-end streaming tests).
     struct EchoTool;
     #[async_trait::async_trait]
     impl BaseTool for EchoTool {
@@ -189,7 +192,7 @@ mod tests {
         }
     }
 
-    /// params 按 wire 格式序列化后解析回原值(field ↔ JSON `final` 互转)。
+    /// params serialize in wire format then parse back to the original value (field ↔ JSON `final` roundtrip).
     #[test]
     fn test_parse_partial_notification_roundtrip() {
         let c = PartialContent {
@@ -211,7 +214,7 @@ mod tests {
         assert!(parsed.is_final);
     }
 
-    /// 畸形 params(缺字段 / content 不可解析)→ None,不 panic。
+    /// Malformed params (missing fields / unparsable content) → None, no panic.
     #[test]
     fn test_parse_partial_notification_malformed_is_none() {
         assert!(parse_partial_notification(None).is_none());
@@ -222,7 +225,7 @@ mod tests {
         .is_none());
     }
 
-    /// 过滤:只投递本工具名的增量,其他工具的推送被跳过。
+    /// Filtering: only delivers increments for this tool name, other tools' pushes are skipped.
     #[tokio::test]
     async fn test_stream_filters_by_tool() {
         let server = Arc::new(MCPServer::new().with_tool(Arc::new(EchoTool)));
@@ -232,7 +235,7 @@ mod tests {
                 .expect("in-memory connection should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
-        // 先推一个"其他工具"的片段:应被过滤,collect 不受影响。
+        // First push a chunk for "another tool": it should be filtered, collect unaffected.
         server.publish_partial(chunk("other", 0, "无关片段", false));
         server.publish_partial(chunk("echo", 0, "第一段", false));
         server.publish_partial(chunk("echo", 1, "第二段", true));
@@ -252,7 +255,8 @@ mod tests {
         assert!(chunks[1].is_final, "collect should end with a final chunk");
     }
 
-    /// 多类型内容(P1-7):片段携带图片内容时,render_text 以占位描述代表。
+    /// Multi-type content (P1-7): when a chunk carries image content, render_text represents it with a
+    /// placeholder description.
     #[tokio::test]
     async fn test_partial_multi_type_content_renders_placeholder() {
         let server = Arc::new(MCPServer::new().with_tool(Arc::new(EchoTool)));
@@ -284,7 +288,7 @@ mod tests {
         );
     }
 
-    /// collect 超时:未在期限内收到 final 片段 → ToolStreamError::Timeout。
+    /// collect timeout: no final chunk received within the deadline → ToolStreamError::Timeout.
     #[tokio::test]
     async fn test_collect_times_out_without_final() {
         let server = Arc::new(MCPServer::new().with_tool(Arc::new(EchoTool)));
@@ -294,7 +298,7 @@ mod tests {
                 .expect("in-memory connection should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
-        // 只推非 final 片段,永远等不到收尾 → 超时。
+        // Push only non-final chunks, no ending ever arrives → timeout.
         server.publish_partial(chunk("echo", 0, "卡住", false));
         let err = stream
             .collect(Duration::from_millis(100))
@@ -303,8 +307,8 @@ mod tests {
         assert_eq!(err, ToolStreamError::Timeout);
     }
 
-    /// SSE 路径端到端:StreamingCall 假服务器在首次 tools/call 后沿 SSE
-    /// 长连接推送 3 个增量片段,客户端 subscribe 全部收到。
+    /// SSE path end-to-end: the StreamingCall fake server pushes 3 incremental chunks over the SSE long
+    /// connection after the first tools/call, and the client's subscribe receives all of them.
     #[tokio::test]
     async fn test_subscribe_collects_partials_via_sse() {
         let fake = crate::test_support::start_fake_sse_server(PostMode::StreamingCall).await;
@@ -313,7 +317,7 @@ mod tests {
             .expect("connecting to fake SSE server should succeed");
         let mut stream = client.subscribe_tool_stream("echo");
 
-        // call_seen 门控:触发服务器开始沿 SSE 推流(见 test_support)。
+        // call_seen gate: triggers the server to start streaming over SSE (see test_support).
         let out = client
             .call_tool("echo", serde_json::json!({"msg": "hi"}))
             .await;

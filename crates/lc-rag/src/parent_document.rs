@@ -1,5 +1,5 @@
 // lc-rag/src/parent_document.rs
-//! ParentDocumentRetriever — 父子文档检索器
+//! ParentDocumentRetriever — a parent/child document retriever
 
 use async_trait::async_trait;
 use lc_vector_stores::{ChunkedDocumentStore, ChunkedDocumentStoreTrait, Document, SearchResult};
@@ -9,17 +9,19 @@ use tokio::sync::RwLock;
 use crate::bm25::{AutoMergingConfig, ChunkedBM25Retriever};
 use crate::retriever::{RetrieverError, RetrieverTrait};
 
-/// 父子文档检索器。
+/// A parent/child document retriever.
 ///
-/// 文档入库时被切成小块(leaf)索引,查询命中任意小块就返回**整篇父文档**。
-/// 这与 [`ChunkedBM25Retriever`] 的 AutoMerging(按命中比例门控,阈值不足
-/// 返回小块)不同:ParentDocument 是"小块召回、整文喂给 LLM"的经典 RAG
-/// 模式 —— 小块负责精确命中,整篇父文档负责给 LLM 提供完整上下文。
+/// On ingestion, documents are split into small chunks (leaves) for indexing; any leaf hit
+/// returns the **entire parent document**. This differs from [`ChunkedBM25Retriever`]'s
+/// AutoMerging (gated by hit ratio; returns leaf chunks when the threshold is not met):
+/// ParentDocument is the classic RAG pattern of "small-chunk recall, full document fed to
+/// the LLM" — the leaf chunks provide precise hits, while the whole parent document gives
+/// the LLM complete context.
 ///
-/// 内部用 `RwLock` 包一层 [`ChunkedBM25Retriever`]:检索走读锁、入库走写锁,
-/// 因此能实现 [`RetrieverTrait`] (其方法全为
-/// `&self`)。配合 [`RetrieverRunnable`](crate::RetrieverRunnable) 可以直接进
-/// LCEL 链:
+/// Internally it wraps a [`ChunkedBM25Retriever`] in an `RwLock`: retrieval takes the read
+/// lock, ingestion takes the write lock, so it can implement [`RetrieverTrait`] (whose
+/// methods all take `&self`). Combined with
+/// [`RetrieverRunnable`](crate::RetrieverRunnable) it can plug directly into an LCEL chain:
 ///
 /// ```rust,ignore
 /// let retriever = Arc::new(ParentDocumentRetriever::new(store));
@@ -30,27 +32,29 @@ pub struct ParentDocumentRetriever<S: ChunkedDocumentStoreTrait = ChunkedDocumen
 }
 
 impl<S: ChunkedDocumentStoreTrait> ParentDocumentRetriever<S> {
-    /// 使用默认配置创建检索器。
+    /// Creates a retriever with the default configuration.
     pub fn new(store: Arc<S>) -> Self {
         Self {
             inner: RwLock::new(ChunkedBM25Retriever::new(store)),
         }
     }
 
-    /// 使用指定 AutoMerging 配置创建检索器。
+    /// Creates a retriever with the specified AutoMerging configuration.
     ///
-    /// 配置中的 `leaf_chunk_size` 决定小块切分粒度;`merge_threshold` 在
-    /// ParentDocument 语义下不参与命中判定(命中任意小块即返回父文档),但
-    /// 仍用于约束底层索引的切分行为。
+    /// `leaf_chunk_size` in the config determines the leaf-chunk granularity; under the
+    /// ParentDocument semantics `merge_threshold` does not take part in hit decisions
+    /// (any leaf hit returns the parent document), but it still constrains how the
+    /// underlying index is chunked.
     pub fn with_config(store: Arc<S>, config: AutoMergingConfig) -> Self {
         Self {
             inner: RwLock::new(ChunkedBM25Retriever::with_config(store, config)),
         }
     }
 
-    /// 返回内部检索器引用,需要直接访问底层索引时使用。
+    /// Returns the inner retriever reference, for direct access to the underlying index.
     ///
-    /// 例如只读检索用 `retriever.inner().read().await`,入库用 `.write().await`。
+    /// For example, read-only retrieval uses `retriever.inner().read().await`; ingestion
+    /// uses `.write().await`.
     pub fn inner(&self) -> &RwLock<ChunkedBM25Retriever<S>> {
         &self.inner
     }
@@ -106,7 +110,7 @@ mod tests {
     use std::collections::HashMap;
     use std::pin::Pin;
 
-    /// 一段跨多个 leaf 的父文档内容(> leaf_chunk_size 400,含独特词 `zebra`)。
+    /// A parent-document content spanning multiple leaves (> leaf_chunk_size 400, with the distinctive word `zebra`).
     fn multi_leaf_parent_content() -> String {
         let filler =
             "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
@@ -133,7 +137,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 查询只出现在某个 leaf 里的词:命中小块 → 返回整篇父文档。
+        // Query a word that appears in only one leaf: a leaf hit returns the entire parent document.
         let docs = retriever.retrieve("zebra", 1).await.unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(
@@ -158,8 +162,9 @@ mod tests {
         assert_eq!(results[0].document.content, content);
     }
 
-    /// E3 验证:ParentDocument → prompt → LLM 整条链。
-    /// 检索器命中小块返回整篇父文档,拼进 prompt,喂给 mock LLM 生成回复。
+    /// E3 verification: the full ParentDocument → prompt → LLM chain.
+    /// The retriever returns the whole parent document on a leaf hit, which is composed
+    /// into the prompt and fed to the mock LLM to generate a reply.
     #[tokio::test]
     async fn parent_document_chains_into_prompt_and_llm() {
         let retriever = test_retriever();
@@ -170,7 +175,7 @@ mod tests {
             .unwrap();
 
         let step = RetrieverRunnable::new(Arc::new(retriever), 1);
-        // 文档 → 模板变量:把检索结果拼成 `context`。
+        // Documents → template variables: join the retrieved results into `context`.
         let to_context = RunnableLambda::new_sync(|docs: Vec<Document>| {
             HashMap::from([(
                 "context".to_string(),
@@ -194,7 +199,7 @@ mod tests {
         );
     }
 
-    /// 最小 mock 聊天模型:把最后一条人类消息的长度回显,证明上下文流到了模型侧。
+    /// Minimal mock chat model: echoes the length of the last human message, proving context reached the model.
     #[derive(Debug)]
     struct MockChat;
 

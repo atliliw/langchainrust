@@ -1,4 +1,4 @@
-//! StreamingFunctionCallingAgent - 流式输出 Agent
+//! StreamingFunctionCallingAgent - streaming output agent
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -13,20 +13,20 @@ use lc_schema::Message;
 
 use super::state::AgentStreamEvent;
 
-/// 流式 Function Calling Agent
+/// Streaming Function Calling Agent
 ///
-/// 流式输出 LLM 文本(token),结束后发 FinalAnswer。
-/// 工具调用状态通过 `AgentStreamEvent::ToolCall` 暴露。
-/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+/// Streams LLM text (token by token), then emits FinalAnswer at the end.
+/// Tool-call state is exposed via `AgentStreamEvent::ToolCall`.
+/// Works with any LLM provider implementing `BaseChatModel`.
 pub struct StreamingFunctionCallingAgent {
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 }
 
 impl StreamingFunctionCallingAgent {
-    /// 创建新的流式 Function Calling Agent
+    /// Creates a new Streaming Function Calling Agent
     ///
-    /// # 向后兼容
-    /// 旧代码 `StreamingFunctionCallingAgent::new(openai_chat)` 仍然可用。
+    /// # Backward compatibility
+    /// Old code `StreamingFunctionCallingAgent::new(openai_chat)` still works.
     pub fn new<L>(llm: L) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -37,12 +37,12 @@ impl StreamingFunctionCallingAgent {
         }
     }
 
-    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    /// Creates an agent from a wrapped `Arc<dyn BaseChatModel>`
     pub fn from_arc(llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>) -> Self {
         Self { llm }
     }
 
-    /// 流式执行:返回事件流
+    /// Streams execution: returns an event stream
     pub async fn invoke_stream(
         &self,
         input: String,

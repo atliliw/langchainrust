@@ -89,9 +89,10 @@ pub fn detect_communities(store: &GraphStore, num_tiers: usize) -> Vec<Community
 
 /// Assigns size-tier buckets to communities.
 ///
-/// 注意:这是**大小分桶**——按社区大小排名均分为 `num_tiers` 档,
-/// `Community::level` 的含义是"第几档大小",**不是**经典的层级社区
-/// (逐层合并出父-子包含关系)。命名已诚实化(P1-3)。
+/// Note: this is **size bucketing** — communities are ranked by size and split evenly into
+/// `num_tiers` tiers. `Community::level` means "which size tier", **not** the classic
+/// hierarchical community level (parent-child containment built by merging layers). The
+/// naming has been made honest (P1-3).
 fn assign_size_tiers(communities: &mut [Community], num_tiers: usize) {
     if communities.is_empty() || num_tiers <= 1 {
         return;
@@ -134,7 +135,8 @@ pub async fn summarize_community<M: BaseChatModel>(
         .map(|e| format!("- {} ({}): {}", e.name, e.entity_type, e.description))
         .collect();
 
-    // M55(P1-5): HashSet 只在链外构建一次,而非 filter 闭包内每条 relation 重建。
+    // M55(P1-5): the HashSet is built once outside the chain, not rebuilt per relation
+    // inside the filter closure.
     let entity_set: HashSet<&String> = community.entities.iter().collect();
 
     let relation_lines: Vec<String> = community

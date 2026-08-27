@@ -1,9 +1,9 @@
 #![warn(missing_docs)]
-//! Guardrails 安全护栏
+//! Guardrails — safety guardrails
 //!
-//! 提供输入/输出验证,保护生产环境的 Agent:防恶意输入、防敏感信息泄露。
+//! Provides input/output validation to protect agents in production: defend against malicious input and sensitive-information leaks.
 //!
-//! # 示例
+//! # Example
 //! ```no_run
 //! use lc_guardrails::{
 //!     GuardrailsConfig, MaxLengthGuardrail, SensitiveInfoGuardrail,

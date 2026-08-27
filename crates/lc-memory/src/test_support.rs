@@ -1,8 +1,9 @@
 // lc-memory/src/test_support.rs
-//! 测试共享工具:可注入失败的 mock LLM。
+//! Shared test utilities: a mock LLM with injectable failures.
 //!
-//! 仅 `#[cfg(test)]` 编译。供 `summary.rs` / `summary_buffer.rs` 等测试模块
-//! 复用以驱动"摘要 LLM 调用失败"路径,无需真实 API,也不重复造 mock。
+//! Compiled only under `#[cfg(test)]`. Reused by test modules like `summary.rs` /
+//! `summary_buffer.rs` to drive the "summary LLM call fails" path — no real API needed,
+//! and no mock duplication.
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -13,7 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// mock 错误:模拟摘要 LLM 调用失败。
+/// Mock error: simulates a summary LLM call failure.
 #[derive(Debug)]
 pub struct MockLlmError(pub String);
 
@@ -25,10 +26,10 @@ impl std::fmt::Display for MockLlmError {
 
 impl std::error::Error for MockLlmError {}
 
-/// 逐次消费预设响应的 mock LLM。
+/// Mock LLM that consumes preset responses one at a time.
 ///
-/// 每个元素为 `Result<总结文本, 失败原因>`;`pop` 消费,耗尽后兜底返回 "Summary"。
-/// 返回 `Err` 时即模拟摘要 LLM 调用失败。
+/// Each element is `Result<summary text, failure reason>`; `pop` consumes them, and an empty
+/// queue falls back to returning "Summary". Returning `Err` simulates a failed summary LLM call.
 #[derive(Clone)]
 pub struct MockLlm {
     responses: Arc<Mutex<Vec<Result<String, String>>>>,

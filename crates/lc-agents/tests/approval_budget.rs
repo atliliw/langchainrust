@@ -1,9 +1,10 @@
-//! 人审门 + 预算门(§4.2)的集成测试:Allow / Deny / Modify / resume(Deny→Allow) /
-//! 三预算(max_tool_calls / max_tokens / max_duration / max_iterations) /
-//! 默认关行为不变。
+//! Integration tests for the approval gate + budget gates (§4.2): Allow / Deny /
+//! Modify / resume (Deny→Allow) / the four budgets (max_tool_calls / max_tokens /
+//! max_duration / max_iterations) / default-off behavior unchanged.
 //!
-//! 通过公开 API 驱动真实 `AgentExecutor` 决策循环;工具调用用 `Arc` 共享计数,
-//! 断言"是否真的执行 / 用哪个参数执行",不依赖任何网络。
+//! Drives a real `AgentExecutor` decision loop through the public API; tool
+//! calls share counters via `Arc`, asserting "did it really execute / with which
+//! arguments", without any network.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,13 +14,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use lc_agents::types::{AgentAction, AgentFinish, AgentOutput, AgentStep, ToolInput};
 use lc_agents::{
-    AgentError, AgentExecutor, AllowAll, ApprovalDecision, ApprovalHandler, BaseAgent,
-    BudgetConfig, BudgetExceeded,
+    AgentError, AgentExecutor, AgentStreamEvent, AllowAll, ApprovalDecision, ApprovalHandler,
+    BaseAgent, BudgetConfig, BudgetExceeded,
 };
 use lc_core::language_models::TokenUsage;
 use lc_core::tools::{BaseTool, ToolError};
 
-/// 记录调用次数与入参的工具:让测试断言"真的执行了 / 用哪个参数执行"。
+/// Records call counts and arguments: lets tests assert "it really executed / with which arguments".
 struct RecordingTool {
     calls: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<String>>>,
@@ -43,7 +44,7 @@ impl BaseTool for RecordingTool {
     }
 }
 
-/// 计划一次 `recorder` 调用后收尾的 agent(标准 plan→act→observe 形状)。
+/// Agent that plans one `recorder` call then finishes (standard plan→act→observe shape).
 struct ActOnceAgent;
 
 #[async_trait]
@@ -69,7 +70,7 @@ impl BaseAgent for ActOnceAgent {
     }
 }
 
-/// 无限计划 `recorder` 调用的 agent(预算测试用:永不主动收尾)。
+/// Agent that plans `recorder` calls forever (for budget tests: never finishes on its own).
 struct LoopAgent;
 
 #[async_trait]
@@ -89,7 +90,7 @@ impl BaseAgent for LoopAgent {
     }
 }
 
-/// 每次 plan 上报固定 token 用量的 agent(max_tokens 预算测试用)。
+/// Agent reporting a fixed token usage on every plan (for the max_tokens budget test).
 struct TokenLoopAgent;
 
 #[async_trait]
@@ -116,7 +117,7 @@ impl BaseAgent for TokenLoopAgent {
     }
 }
 
-/// Deny 后继续尝试同一工具的 agent(resume 语义测试用:看见 DENIED 观察就重试)。
+/// Agent that keeps trying the same tool after a Deny (for resume-semantics tests: retries when it sees a DENIED observation).
 struct ResumeAgent;
 
 #[async_trait]
@@ -154,7 +155,7 @@ impl BaseAgent for ResumeAgent {
     }
 }
 
-/// 拒绝一切。
+/// Denies everything.
 struct DenyAll {
     reason: String,
 }
@@ -168,7 +169,7 @@ impl ApprovalHandler for DenyAll {
     }
 }
 
-/// 改成固定参数。
+/// Rewrites to fixed arguments.
 struct ModifyAll {
     arguments: serde_json::Value,
     note: String,
@@ -184,7 +185,7 @@ impl ApprovalHandler for ModifyAll {
     }
 }
 
-/// 首轮 Deny、后续 Allow(模拟"挂起等待审批信号 → 信号到续跑")。
+/// Denies the first round, allows subsequent ones (simulating "suspended waiting for an approval signal → the signal arrives and it resumes").
 struct DenyOnceThenAllow {
     count: AtomicUsize,
 }
@@ -215,9 +216,9 @@ fn recorder_harness(
     (executor, calls, inputs)
 }
 
-// ── 人审门 ──────────────────────────────────────────────────────────────
+// ── Approval gate ────────────────────────────────────────────────────────
 
-/// Allow:工具原样执行,agent 正常收尾。
+/// Allow: the tool executes as-is and the agent finishes normally.
 #[tokio::test]
 async fn approval_allow_runs_tool() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(ActOnceAgent));
@@ -227,7 +228,7 @@ async fn approval_allow_runs_tool() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-/// Deny:工具不执行,理由作为 observation 喂回循环,agent 下一轮收尾。
+/// Deny: the tool does not execute; the reason feeds back into the loop as an observation, and the agent finishes next round.
 #[tokio::test]
 async fn approval_deny_skips_tool() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(ActOnceAgent));
@@ -239,7 +240,7 @@ async fn approval_deny_skips_tool() {
     assert_eq!(calls.load(Ordering::SeqCst), 0, "被拒工具不得执行");
 }
 
-/// Modify:用审批后的参数执行。
+/// Modify: executes with the post-approval arguments.
 #[tokio::test]
 async fn approval_modify_rewrites_arguments() {
     let (executor, calls, inputs) = recorder_harness(Arc::new(ActOnceAgent));
@@ -259,7 +260,7 @@ async fn approval_modify_rewrites_arguments() {
     );
 }
 
-/// resume:首轮 Deny 挂起、信号到后 Allow,工具最终执行,循环连续。
+/// resume: first round Deny suspends, then Allow arrives, the tool finally executes, and the loop stays continuous.
 #[tokio::test]
 async fn approval_resume_after_deny_then_allow() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(ResumeAgent));
@@ -275,9 +276,9 @@ async fn approval_resume_after_deny_then_allow() {
     );
 }
 
-// ── 预算门 ──────────────────────────────────────────────────────────────
+// ── Budget gates ──────────────────────────────────────────────────────────
 
-/// max_tool_calls:允许恰好 limit 次执行,第 limit+1 次硬停并报错。
+/// max_tool_calls: exactly `limit` executions allowed; the limit+1-th hard-stops with an error.
 #[tokio::test]
 async fn budget_max_tool_calls_stops() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
@@ -299,7 +300,7 @@ async fn budget_max_tool_calls_stops() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "应恰好执行 2 次后停");
 }
 
-/// max_tokens:每次 plan 累计 6 token,上限 10 → 第 2 次 plan 后硬停。
+/// max_tokens: 6 tokens accumulate per plan; cap 10 → hard-stops after the 2nd plan.
 #[tokio::test]
 async fn budget_max_tokens_stops() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(TokenLoopAgent));
@@ -321,7 +322,7 @@ async fn budget_max_tokens_stops() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-/// max_duration:起表即超限(0 时长) → 首个迭代硬停。
+/// max_duration: over the limit the moment the clock starts (0 duration) → hard-stops at the first iteration.
 #[tokio::test]
 async fn budget_max_duration_stops() {
     let (executor, _calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
@@ -339,7 +340,7 @@ async fn budget_max_duration_stops() {
     );
 }
 
-/// max_iterations:收紧默认迭代上限,超限返回错误而非占位串。
+/// max_iterations: tightens the default iteration cap; exceeding it returns an error rather than a placeholder string.
 #[tokio::test]
 async fn budget_max_iterations_stops() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
@@ -362,11 +363,157 @@ async fn budget_max_iterations_stops() {
     );
 }
 
-/// 默认关:不带任何闸,行为与存量一致。
+/// Default-off: with no gates attached, behavior matches existing behavior.
 #[tokio::test]
 async fn defaults_off_behavior_unchanged() {
     let (executor, calls, _inputs) = recorder_harness(Arc::new(ActOnceAgent));
     let answer = executor.invoke("go".to_string()).await.unwrap();
     assert_eq!(answer, "done");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+// ── Streaming budget gates ────────────────────────────────────────────────
+// Before the 0.18.2 fix, `stream()`'s closure capture list lacked `budget`, so
+// the four budget gates were only checked on the invoke path — streaming budget
+// protection was completely inert (the 0.18.0 Added section's claim was false).
+// The tests below lock the streaming path to the same semantics as invoke:
+// over-limit terminates by sending `Err(BudgetExceeded)` through the channel.
+
+/// Drains the whole stream, keeping the `Err(BudgetExceeded)` terminal event (no unwrap panic).
+async fn stream_events(
+    executor: &AgentExecutor,
+    input: &str,
+) -> Vec<Result<AgentStreamEvent, AgentError>> {
+    use futures_util::StreamExt;
+    let mut stream = executor.stream(input.to_string());
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event);
+    }
+    events
+}
+
+/// Streaming max_tool_calls: exactly `limit` executions allowed; the limit+1-th terminates with Err via the channel.
+#[tokio::test]
+async fn stream_budget_tool_calls() {
+    let (executor, calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
+    let executor = executor.with_budget(BudgetConfig {
+        max_tool_calls: Some(2),
+        ..Default::default()
+    });
+    let events = stream_events(&executor, "go").await;
+
+    let tool_ends = events
+        .iter()
+        .filter(|e| matches!(e, Ok(AgentStreamEvent::ToolEnd { .. })))
+        .count();
+    assert_eq!(tool_ends, 2, "流式应恰好执行 2 次工具后停");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(
+        matches!(
+            events.last(),
+            Some(Err(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
+                limit: 2,
+                actual: 3
+            })))
+        ),
+        "流式最后一个事件应为 Err(BudgetExceeded::ToolCalls),got: {:?}",
+        events.last()
+    );
+}
+
+/// Streaming max_iterations: tightens the default iteration cap; exceeding it terminates with Err instead of a placeholder FinalAnswer.
+#[tokio::test]
+async fn stream_budget_iterations() {
+    let (executor, calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
+    let executor = executor.with_max_iterations(10).with_budget(BudgetConfig {
+        max_iterations: Some(1),
+        ..Default::default()
+    });
+    let events = stream_events(&executor, "go").await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "第 1 次迭代执行,第 2 次迭代被预算截停"
+    );
+    assert!(
+        matches!(
+            events.last(),
+            Some(Err(AgentError::BudgetExceeded(
+                BudgetExceeded::Iterations { limit: 1 }
+            )))
+        ),
+        "应为 Err(BudgetExceeded::Iterations) 终止而非占位 FinalAnswer,got: {:?}",
+        events.last()
+    );
+}
+
+/// Streaming max_tokens: 6 tokens accumulate per plan; cap 10 → Err after the 2nd plan.
+#[tokio::test]
+async fn stream_budget_tokens() {
+    let (executor, calls, _inputs) = recorder_harness(Arc::new(TokenLoopAgent));
+    let executor = executor.with_budget(BudgetConfig {
+        max_tokens: Some(10),
+        ..Default::default()
+    });
+    let events = stream_events(&executor, "go").await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        matches!(
+            events.last(),
+            Some(Err(AgentError::BudgetExceeded(BudgetExceeded::Tokens {
+                limit: 10,
+                actual: 12
+            })))
+        ),
+        "got: {:?}",
+        events.last()
+    );
+}
+
+/// Streaming max_duration: over the limit the moment the clock starts (0 duration) → immediate Err at the top of the loop, zero tool executions.
+#[tokio::test]
+async fn stream_budget_duration() {
+    let (executor, _calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
+    let executor = executor.with_budget(BudgetConfig {
+        max_duration: Some(Duration::ZERO),
+        ..Default::default()
+    });
+    let events = stream_events(&executor, "go").await;
+
+    assert_eq!(events.len(), 1, "首个事件即 Err(Duration),got: {events:?}");
+    assert!(
+        matches!(
+            &events[0],
+            Err(AgentError::BudgetExceeded(BudgetExceeded::Duration { .. }))
+        ),
+        "got: {:?}",
+        events[0]
+    );
+}
+
+/// Streaming metrics publishing: after the stream drains, `last_metrics()` is Some (publish happens before the terminal event, no race).
+#[tokio::test]
+async fn stream_publishes_metrics() {
+    let (executor, calls, _inputs) = recorder_harness(Arc::new(ActOnceAgent));
+    let events = stream_events(&executor, "go").await;
+
+    assert!(
+        matches!(
+            events.last(),
+            Some(Ok(AgentStreamEvent::FinalAnswer { .. }))
+        ),
+        "工具调用 + Finish 应正常收尾,got: {:?}",
+        events.last()
+    );
+
+    let m = executor
+        .last_metrics()
+        .expect("stream 收完后 metrics 应已发布");
+    assert_eq!(m.tool_calls, 1);
+    assert_eq!(m.llm_calls, 2);
+    assert!(m.duration > Duration::ZERO);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

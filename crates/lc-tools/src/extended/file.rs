@@ -1,4 +1,4 @@
-//! File 工具(沙箱安全)
+//! File tool (sandbox-safe)
 
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use lc_core::tools::ToolError;
 use lc_core::BaseTool;
 
-/// 文件读写工具(限制在 base_path 沙箱内,扩展名白名单,大小限制)
+/// File read/write tool (confined to the base_path sandbox, extension whitelist, size limit)
 pub struct FileTool {
     base_path: PathBuf,
     allowed_extensions: Vec<String>,
@@ -18,7 +18,7 @@ pub struct FileTool {
 }
 
 impl FileTool {
-    /// 创建文件工具(沙箱根目录为 `base_path`)。
+    /// Creates a file tool (sandbox root is `base_path`).
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             base_path,
@@ -32,13 +32,13 @@ impl FileTool {
         }
     }
 
-    /// 设置扩展名白名单(builder 风格)。
+    /// Sets the extension whitelist (builder style).
     pub fn with_allowed_extensions(mut self, exts: Vec<String>) -> Self {
         self.allowed_extensions = exts;
         self
     }
 
-    /// 设置最大文件大小(字节,builder 风格)。
+    /// Sets the maximum file size (bytes, builder style).
     pub fn with_max_size(mut self, size: usize) -> Self {
         self.max_size = size;
         self
@@ -59,7 +59,7 @@ impl FileTool {
             ));
         }
 
-        // 扩展名检查
+        // Extension check
         if let Some(ext) = target.extension().and_then(|e| e.to_str()) {
             if !self.allowed_extensions.iter().any(|a| a == ext) {
                 return Err(ToolError::InvalidInput(format!(
@@ -69,7 +69,7 @@ impl FileTool {
             }
         }
 
-        // 路径越界检查
+        // Path escape check
         let canon = target
             .canonicalize()
             .or_else(|_| {
@@ -92,7 +92,7 @@ impl FileTool {
         Ok(canon)
     }
 
-    /// 读取沙箱内文件内容(受路径越界与大小限制)。
+    /// Reads a file inside the sandbox (bounded by path-escape and size checks).
     pub async fn read(&self, path: &str) -> Result<String, ToolError> {
         let p = self.safe_path(path)?;
         let metadata = fs::metadata(&p)
@@ -109,7 +109,7 @@ impl FileTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     }
 
-    /// 写入内容到沙箱内文件(自动创建父目录)。
+    /// Writes content to a file inside the sandbox (auto-creates parent directories).
     pub async fn write(&self, path: &str, content: &str) -> Result<(), ToolError> {
         if content.len() > self.max_size {
             return Err(ToolError::InvalidInput(format!(
@@ -132,7 +132,7 @@ impl FileTool {
         Ok(())
     }
 
-    /// 列出沙箱内目录下的条目名。
+    /// Lists the entries under a directory inside the sandbox.
     pub async fn list(&self, dir: &str) -> Result<Vec<String>, ToolError> {
         let base = self
             .base_path

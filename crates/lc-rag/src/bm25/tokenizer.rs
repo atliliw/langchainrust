@@ -1,24 +1,24 @@
 // src/retrieval/bm25/tokenizer.rs
-//! 分词器实现
+//! Tokenizer implementation
 //!
-//! 支持英文和中文的简单分词
+//! Provides simple tokenization for both English and Chinese
 
 use std::collections::HashSet;
 
-/// 分词器
+/// Tokenizer
 pub struct Tokenizer {
-    /// 是否保留停用词
+    /// Whether to keep stopwords
     keep_stopwords: bool,
 
-    /// 英文停用词表
+    /// English stopword list
     stopwords_en: HashSet<String>,
 
-    /// 中文停用词表
+    /// Chinese stopword list
     stopwords_zh: HashSet<String>,
 }
 
 impl Tokenizer {
-    /// 创建新的分词器（过滤停用词）
+    /// Creates a new tokenizer (filtering stopwords)
     pub fn new() -> Self {
         Self {
             keep_stopwords: false,
@@ -27,7 +27,7 @@ impl Tokenizer {
         }
     }
 
-    /// 创建保留停用词的分词器
+    /// Creates a tokenizer that keeps stopwords
     pub fn with_stopwords() -> Self {
         Self {
             keep_stopwords: true,
@@ -36,7 +36,7 @@ impl Tokenizer {
         }
     }
 
-    /// 默认英文停用词
+    /// Default English stopwords
     fn default_stopwords_en() -> HashSet<String> {
         [
             "a",
@@ -170,7 +170,7 @@ impl Tokenizer {
         .collect()
     }
 
-    /// 默认中文停用词
+    /// Default Chinese stopwords
     fn default_stopwords_zh() -> HashSet<String> {
         [
             "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上",
@@ -184,7 +184,7 @@ impl Tokenizer {
         .collect()
     }
 
-    /// 分词（自动检测语言）
+    /// Tokenizes text (auto-detects the language)
     pub fn tokenize(&self, text: &str) -> Vec<String> {
         let mut terms = Vec::new();
 
@@ -197,7 +197,7 @@ impl Tokenizer {
         terms
     }
 
-    /// 中英文混合分词
+    /// Tokenizes mixed English/Chinese text
     fn tokenize_mixed(&self, text: &str) -> Vec<String> {
         let mut terms = Vec::new();
         let mut current_english = String::new();
@@ -205,23 +205,23 @@ impl Tokenizer {
 
         for ch in text.chars() {
             if ch.is_ascii_alphabetic() || ch.is_ascii_digit() {
-                // 英文/数字字符
+                // English/digit characters
                 if !current_chinese.is_empty() {
-                    // 先处理累积的中文
+                    // First flush the accumulated Chinese
                     terms.extend(self.tokenize_chinese_segment(&current_chinese));
                     current_chinese.clear();
                 }
                 current_english.push(ch.to_ascii_lowercase());
             } else if Self::is_chinese_char(ch) {
-                // 中文字符
+                // Chinese character
                 if !current_english.is_empty() {
-                    // 先处理累积的英文
+                    // First flush the accumulated English
                     terms.push(current_english.clone());
                     current_english.clear();
                 }
                 current_chinese.push(ch);
             } else {
-                // 其他字符（标点、空格等）
+                // Other characters (punctuation, whitespace, etc.)
                 if !current_english.is_empty() {
                     terms.push(current_english.clone());
                     current_english.clear();
@@ -233,7 +233,7 @@ impl Tokenizer {
             }
         }
 
-        // 处理剩余字符
+        // Flush remaining characters
         if !current_english.is_empty() {
             terms.push(current_english);
         }
@@ -244,27 +244,27 @@ impl Tokenizer {
         terms
     }
 
-    /// 判断是否为中文字符
+    /// Checks whether a character is Chinese
     fn is_chinese_char(ch: char) -> bool {
-        // CJK 统一汉字范围
+        // CJK unified ideographs
         ('\u{4E00}'..='\u{9FFF}').contains(&ch) ||
-        // CJK 扩展A
+        // CJK Extension A
         ('\u{3400}'..='\u{4DBF}').contains(&ch) ||
-        // 中文标点
+        // Chinese punctuation
         ('\u{3000}'..='\u{303F}').contains(&ch)
     }
 
-    /// 中文简单分词（单字 + 双字组合）
+    /// Simple Chinese tokenization (single characters + bigrams)
     fn tokenize_chinese_segment(&self, text: &str) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
         let mut terms = Vec::new();
 
-        // 单字
+        // Single characters
         for ch in &chars {
             terms.push(ch.to_string());
         }
 
-        // 双字组合（n-gram）
+        // Bigrams (n-gram)
         for i in 0..chars.len().saturating_sub(1) {
             let bigram = format!("{}{}", chars[i], chars[i + 1]);
             terms.push(bigram);
@@ -273,14 +273,14 @@ impl Tokenizer {
         terms
     }
 
-    /// 判断是否为停用词
+    /// Checks whether a term is a stopword
     fn is_stopword(&self, word: &str) -> bool {
-        // 先检查英文停用词
+        // Check the English stopwords first
         if self.stopwords_en.contains(word) {
             return true;
         }
 
-        // 再检查中文停用词（单字和双字）
+        // Then check the Chinese stopwords (single characters and bigrams)
         if self.stopwords_zh.contains(word) {
             return true;
         }
@@ -288,7 +288,7 @@ impl Tokenizer {
         false
     }
 
-    /// 英文分词（空格分割 + 小写化）
+    /// English tokenization (whitespace-split + lowercased)
     pub fn tokenize_english(&self, text: &str) -> Vec<String> {
         let mut terms = Vec::new();
 
@@ -309,17 +309,17 @@ impl Tokenizer {
         terms
     }
 
-    /// 中文分词（单字 + 双字）
+    /// Chinese tokenization (single characters + bigrams)
     pub fn tokenize_chinese(&self, text: &str) -> Vec<String> {
         let mut terms = Vec::new();
 
-        // 提取中文字符
+        // Extract the Chinese characters
         let chars: Vec<char> = text
             .chars()
             .filter(|ch| Self::is_chinese_char(*ch))
             .collect();
 
-        // 单字
+        // Single characters
         for ch in &chars {
             let s: String = ch.to_string();
             if self.keep_stopwords || !self.stopwords_zh.contains(&s) {
@@ -327,7 +327,7 @@ impl Tokenizer {
             }
         }
 
-        // 双字组合
+        // Bigrams
         for i in 0..chars.len().saturating_sub(1) {
             let bigram = format!("{}{}", chars[i], chars[i + 1]);
             if self.keep_stopwords || !self.stopwords_zh.contains(&bigram) {
@@ -362,7 +362,7 @@ mod tests {
         let tokenizer = Tokenizer::new();
 
         let terms = tokenizer.tokenize_english("The Rust is a programming language");
-        // "the", "is", "a" 应被过滤
+        // "the", "is", "a" should be filtered out
         assert!(!terms.contains(&"the".to_string()));
         assert!(!terms.contains(&"is".to_string()));
         assert!(!terms.contains(&"a".to_string()));
@@ -376,7 +376,7 @@ mod tests {
         let tokenizer = Tokenizer::new();
 
         let terms = tokenizer.tokenize_chinese("编程语言");
-        // 单字 + 双字组合
+        // Single characters + bigrams
         assert!(terms.contains(&"编".to_string()));
         assert!(terms.contains(&"程".to_string()));
         assert!(terms.contains(&"语".to_string()));
@@ -392,16 +392,16 @@ mod tests {
 
         let terms = tokenizer.tokenize("Rust 编程语言");
 
-        // 英文词
+        // English terms
         assert!(terms.contains(&"rust".to_string()));
 
-        // 中文单字
+        // Chinese single characters
         assert!(terms.contains(&"编".to_string()));
         assert!(terms.contains(&"程".to_string()));
         assert!(terms.contains(&"语".to_string()));
         assert!(terms.contains(&"言".to_string()));
 
-        // 中文双字
+        // Chinese bigrams
         assert!(terms.contains(&"编程".to_string()));
         assert!(terms.contains(&"语言".to_string()));
     }
@@ -421,7 +421,7 @@ mod tests {
         let tokenizer = Tokenizer::new();
 
         let terms = tokenizer.tokenize_chinese("编程的语言");
-        // "的" 应被过滤
+        // The Chinese stopword (de) should be filtered out
         assert!(!terms.contains(&"的".to_string()));
         assert!(terms.contains(&"编".to_string()));
         assert!(terms.contains(&"程".to_string()));

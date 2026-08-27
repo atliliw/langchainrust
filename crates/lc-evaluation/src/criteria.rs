@@ -1,40 +1,40 @@
-//! 评测核心类型与 trait:EvalError、Score、Example、Dataset,
-//! 以及 Evaluator / Predictor trait。
+//! Core evaluation types and traits: EvalError, Score, Example, Dataset,
+//! plus the Evaluator / Predictor traits.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// 评测错误
+/// Evaluation error
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum EvalError {
-    /// 底层 IO 错误(如文件读取失败)。
+    /// Underlying IO error (e.g. file read failure).
     #[error("IO error: {0}")]
     IoError(String),
-    /// 数据解析错误(如 JSON/JSONL 解析失败)。
+    /// Data parse error (e.g. JSON/JSONL parse failure).
     #[error("parse error: {0}")]
     ParseError(String),
-    /// 嵌入(embedding)计算错误。
+    /// Embedding computation error.
     #[error("embedding error: {0}")]
     EmbeddingError(String),
-    /// 预测器(predictor)执行错误。
+    /// Predictor execution error.
     #[error("prediction error: {0}")]
     PredictorError(String),
-    /// corpus 级评测的预测/参考样本数不一致(逐条对应)。
+    /// Prediction/reference sample counts differ in corpus-level evaluation (one-to-one).
     #[error(
         "length mismatch: {predictions} predictions vs {references} references; \
          sample counts must match"
     )]
     LengthMismatch {
-        /// 预测样本数
+        /// Prediction sample count
         predictions: usize,
-        /// 参考样本数
+        /// Reference sample count
         references: usize,
     },
 }
 
-/// P2-6: 共享裁判内核(lc-core::judge)的错误映射进评测错误域,
-/// 让 `structured_call(...).await?` 在 `Result<_, EvalError>` 上下文里直接可用。
+/// P2-6: errors from the shared judge core (lc-core::judge) map into the evaluation error domain,
+/// so `structured_call(...).await?` works directly in a `Result<_, EvalError>` context.
 impl From<lc_core::judge::StructuredJudgeError> for EvalError {
     fn from(e: lc_core::judge::StructuredJudgeError) -> Self {
         match e {
@@ -47,22 +47,22 @@ impl From<lc_core::judge::StructuredJudgeError> for EvalError {
     }
 }
 
-/// 评测分数(0.0–1.0,1.0 为最佳)
+/// Evaluation score (0.0–1.0, 1.0 is best)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Score {
-    /// 分数值(0.0–1.0)
+    /// Score value (0.0–1.0)
     pub value: f64,
-    /// 可选的分数标签
+    /// Optional score label
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
 impl Score {
-    /// 构造 0.0–1.0 之间的分数。
+    /// Constructs a score between 0.0 and 1.0.
     ///
-    /// P2-8: Rust 的 `f64::clamp(0.0, 1.0)` 对 NaN 返回 NaN,会污染
-    /// summary 均值/标准差。这里先做 NaN 前置检查,按 0.0 处理(负无穷、
-    /// 正无穷交给 `clamp` 收敛到边界)。
+    /// P2-8: Rust's `f64::clamp(0.0, 1.0)` returns NaN for NaN input, polluting
+    /// the summary mean/std. A NaN pre-check is done here, treating it as 0.0
+    /// (negative/positive infinity are left to `clamp` to converge to the bounds).
     pub fn new(value: f64) -> Self {
         let value = if value.is_nan() {
             log::warn!("Score::new received NaN, treating as 0.0");
@@ -76,24 +76,24 @@ impl Score {
         }
     }
 
-    /// 附加分数标签(builder 风格)。
+    /// Attaches a score label (builder style).
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 }
 
-/// 评测样例
+/// Evaluation example
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Example {
-    /// 评测输入
+    /// Evaluation input
     pub input: String,
-    /// 参考答案
+    /// Reference answer
     pub reference: String,
 }
 
 impl Example {
-    /// 构造评测样例。
+    /// Constructs an evaluation example.
     pub fn new(input: impl Into<String>, reference: impl Into<String>) -> Self {
         Self {
             input: input.into(),
@@ -102,22 +102,22 @@ impl Example {
     }
 }
 
-/// 数据集
+/// Dataset
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dataset {
-    /// 数据集中的评测样例列表
+    /// Evaluation examples in the dataset
     pub examples: Vec<Example>,
 }
 
 impl Dataset {
-    /// 构造数据集。
+    /// Constructs a dataset.
     pub fn new(examples: Vec<Example>) -> Self {
         Self { examples }
     }
 
-    /// 从 JSONL 文件加载(每行一个 ``{input, reference}``)。
+    /// Loads from a JSONL file (one `{input, reference}` per line).
     ///
-    /// P2-2: 异步 I/O(`tokio::fs`),避免同步阻塞落在 async 评测链路里。
+    /// P2-2: async I/O (`tokio::fs`), avoiding synchronous blocking in the async evaluation pipeline.
     pub async fn from_jsonl(path: &str) -> Result<Self, EvalError> {
         let content = tokio::fs::read_to_string(path)
             .await
@@ -135,21 +135,21 @@ impl Dataset {
         Ok(Self { examples })
     }
 
-    /// 返回样例数量。
+    /// Returns the number of examples.
     pub fn len(&self) -> usize {
         self.examples.len()
     }
 
-    /// 数据集是否为空。
+    /// Whether the dataset is empty.
     pub fn is_empty(&self) -> bool {
         self.examples.is_empty()
     }
 }
 
-/// 评测器 trait
+/// Evaluator trait
 #[async_trait]
 pub trait Evaluator: Send + Sync {
-    /// 对单条预测打分
+    /// Scores a single prediction
     async fn eval(
         &self,
         input: &str,
@@ -157,28 +157,28 @@ pub trait Evaluator: Send + Sync {
         reference: &str,
     ) -> Result<Score, EvalError>;
 
-    /// 评测器名称(用于报告汇总)
+    /// Evaluator name (used in report summaries)
     fn name(&self) -> &str;
 }
 
-/// 成对比较评测器 trait(竞技场模式):对同一输入的 A/B 两个回答判优劣。
+/// Pairwise-comparison evaluator trait (arena mode): judges which of two answers (A/B) for the same input is better.
 ///
-/// P1-1: 与单点 `Evaluator` 并列的一等公民,`EvalRunner` 同时收纳两种,
-/// 竞技场评测因此也能进统一报告。得分约定:1.0 = A 优、0.5 = 平局、0.0 = B 优。
+/// P1-1: a first-class citizen alongside the pointwise `Evaluator`; `EvalRunner` accepts both,
+/// so arena evaluation also enters the unified report. Scoring: 1.0 = A wins, 0.5 = tie, 0.0 = B wins.
 #[async_trait]
 pub trait PairwiseEvaluator: Send + Sync {
-    /// 比较 A、B 两个回答,返回 0-1 得分
-    /// (1.0 = A 优,0.5 = 平局,0.0 = B 优)。
+    /// Compares answers A and B, returning a 0-1 score
+    /// (1.0 = A wins, 0.5 = tie, 0.0 = B wins).
     async fn eval_pair(&self, input: &str, a: &str, b: &str) -> Result<Score, EvalError>;
 
-    /// 评测器名称(用于报告汇总)
+    /// Evaluator name (used in report summaries)
     fn name(&self) -> &str;
 }
 
-/// 预测器 trait(待评测的对象:LLMChain / Agent 等)
+/// Predictor trait (the object under evaluation: LLMChain / Agent, etc.)
 #[async_trait]
 pub trait Predictor: Send + Sync {
-    /// 对单条输入进行预测,返回文本结果。
+    /// Predicts on a single input, returning the text result.
     async fn predict(&self, input: &str) -> Result<String, EvalError>;
 }
 
@@ -199,15 +199,15 @@ mod tests {
         assert_eq!(Score::new(f64::NEG_INFINITY).value, 0.0);
     }
 
-    /// P2-8: NaN 不再穿透 `.clamp(0.0, 1.0)` 污染汇总统计。
+    /// P2-8: NaN no longer passes through `.clamp(0.0, 1.0)` to pollute the summary statistics.
     #[test]
     fn test_score_new_nan_guarded() {
         assert_eq!(Score::new(f64::NAN).value, 0.0);
-        // 保证 NaN 被清掉,而不是残留在统计里
+        // ensure NaN is cleaned up rather than lingering in the statistics
         assert!(Score::new(f64::NAN).value.is_finite());
     }
 
-    /// P2-2: from_jsonl 异步读文件,单行解析失败带行号。
+    /// P2-2: from_jsonl reads the file asynchronously; a per-line parse failure carries the line number.
     #[tokio::test]
     async fn test_from_jsonl_async() {
         let dir = tempfile::tempdir().unwrap();

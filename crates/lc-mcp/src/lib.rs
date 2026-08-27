@@ -1,11 +1,11 @@
 #![warn(missing_docs)]
-//! MCP (Model Context Protocol) 支持
+//! MCP (Model Context Protocol) support
 //!
-//! MCP 是 Anthropic 推出的工具协议标准,已成行业事实标准。
-//! 本模块提供 MCP Client,可连接任意 MCP Server 获取工具能力,
-//! 并将 MCP 工具适配为 `BaseTool` 供 Agent 使用。
+//! MCP is the tool protocol standard introduced by Anthropic and has become the de-facto industry standard.
+//! This module provides an MCP Client that can connect to any MCP Server to obtain tool capabilities,
+//! and adapts MCP tools into `BaseTool` for use by Agents.
 //!
-//! # 示例
+//! # Example
 //! ```no_run
 //! use lc_mcp::{MCPClient, MCPConfig};
 //!

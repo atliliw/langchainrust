@@ -420,7 +420,7 @@ mod tests {
     async fn test_datetime_weekday() {
         let tool = DateTimeTool::new();
 
-        // 2024-01-15 是星期一
+        // 2024-01-15 is a Monday
         let input = DateTimeInput {
             operation: "weekday".to_string(),
             datetime: Some("2024-01-15".to_string()),

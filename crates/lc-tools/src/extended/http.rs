@@ -21,7 +21,7 @@ impl HTTPTool {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
-                // SSRF: 禁用自动重定向,由 guarded_get 逐跳重查
+                // SSRF: disable auto-redirects, guarded_get re-checks each hop
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
@@ -64,7 +64,7 @@ impl HTTPTool {
 
     /// Sends a GET request, following redirects with SSRF checks per hop.
     pub async fn get(&self, url: &str) -> Result<String, ToolError> {
-        // SSRF: guarded_get 逐跳检查并手动跟随重定向
+        // SSRF: guarded_get checks each hop and follows redirects manually
         guarded_get(&self.client, url, !self.allow_private_ips)
             .await?
             .text()
@@ -74,7 +74,7 @@ impl HTTPTool {
 
     /// Sends a POST request with a JSON body (single-hop SSRF check).
     pub async fn post(&self, url: &str, body: Value) -> Result<String, ToolError> {
-        // POST 已禁用自动重定向(3xx 原样返回),单跳 SSRF 检查即可
+        // POST has auto-redirect disabled (3xx returned as-is), a single-hop SSRF check suffices
         self.check_ssrf(url).await?;
         self.client
             .post(url)

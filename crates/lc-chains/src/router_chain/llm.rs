@@ -302,8 +302,9 @@ impl LLMRouterChain {
             }
             Err(e) => {
                 if let Some(default) = &self.default_chain {
-                    // 路由失败走默认链:不静默,记 error 日志说明原因,
-                    // 避免调用方把 fallback 答案当成路由选择的正确结果
+                    // On routing failure, fall back to the default chain: not silently — log
+                    // an error explaining why, so callers do not mistake the fallback answer
+                    // for a correct route selection.
                     log::error!(
                         "routing failed, falling back to default chain (caller may receive an \
                          answer that does not match the input): {e}"

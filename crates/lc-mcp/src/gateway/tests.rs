@@ -7,7 +7,7 @@ use crate::tool_timeout::ToolSpec;
 use crate::types::MCPConfig;
 use serde_json::json;
 
-/// 固定窗口限流:窗口内超出上限拒绝,窗口过期后恢复。
+/// Fixed-window rate limit: over-quota calls in a window are rejected, quota restores after the window expires.
 #[test]
 fn test_rate_limiter_window_blocks_then_recovers() {
     let mut rl = RateLimiter::new(2, Duration::from_millis(30));
@@ -19,14 +19,14 @@ fn test_rate_limiter_window_blocks_then_recovers() {
     assert!(rl.allow(), "quota should be restored after window expires");
 }
 
-/// 限流器至少放行 1 次。
+/// The limiter allows at least 1 call.
 #[test]
 fn test_rate_limiter_min_one() {
     let mut rl = RateLimiter::new(0, Duration::from_secs(60));
     assert!(rl.allow(), "max_calls must be at least 1");
 }
 
-/// register 惰性:不建连、不拉工具;统一注册表为空。
+/// register is lazy: no connection, no tool pull; the unified registry stays empty.
 #[tokio::test]
 async fn test_register_is_lazy_and_empty_registry() {
     let gw = MCPGateway::new();
@@ -43,7 +43,7 @@ async fn test_register_is_lazy_and_empty_registry() {
     );
 }
 
-/// 重复登记同名 Server 报错。
+/// Re-registering the same server name errors out.
 #[tokio::test]
 async fn test_register_duplicate_rejected() {
     let gw = MCPGateway::new();
@@ -55,7 +55,7 @@ async fn test_register_duplicate_rejected() {
     assert!(err.to_string().contains("already registered"), "{}", err);
 }
 
-/// sync 从假 SSE Server 拉工具,统一注册表出现 `server:tool`。
+/// sync pulls tools from a fake SSE server, and `server:tool` appears in the unified registry.
 #[tokio::test]
 async fn test_sync_populates_namespaced_registry() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -75,7 +75,7 @@ async fn test_sync_populates_namespaced_registry() {
     assert_eq!(tools[0].full_name, "fs:echo");
 }
 
-/// sync 幂等:重复 sync 不重复入表。
+/// sync is idempotent: re-syncing does not duplicate registry entries.
 #[tokio::test]
 async fn test_sync_is_idempotent() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -94,7 +94,7 @@ async fn test_sync_is_idempotent() {
     assert_eq!(gw.tools().await.len(), 1);
 }
 
-/// 统一入口:call("server:tool") 按原始名路由到 Server(未手动 sync 时自动同步)。
+/// Unified entry: call("server:tool") routes to the server by raw name (auto-syncs when not manually synced).
 #[tokio::test]
 async fn test_call_dispatches_with_auto_sync() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -113,7 +113,7 @@ async fn test_call_dispatches_with_auto_sync() {
     );
 }
 
-/// 未注册的工具返回 ToolNotFound。
+/// An unregistered tool returns ToolNotFound.
 #[tokio::test]
 async fn test_call_unknown_tool_not_found() {
     let gw = MCPGateway::new();
@@ -125,7 +125,7 @@ async fn test_call_unknown_tool_not_found() {
     );
 }
 
-/// 沙箱拦截:违规参数在 Gateway 入口被拦,不进 Server,并记审计。
+/// Sandbox blocks: violating parameters are caught at the Gateway entry, never reach the server, and are audited.
 #[tokio::test]
 async fn test_call_sandbox_blocks_and_audits() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -159,7 +159,7 @@ async fn test_call_sandbox_blocks_and_audits() {
         .contains("least-privilege"));
 }
 
-/// 速率限制:窗口内超限拒绝并记审计,放行与拦截各一条。
+/// Rate limit: over-quota calls in a window are rejected and audited; one record for allow, one for block.
 #[tokio::test]
 async fn test_call_rate_limit_blocks_and_audits() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -183,7 +183,7 @@ async fn test_call_rate_limit_blocks_and_audits() {
     assert!(log[1].reason.as_deref().unwrap().contains("rate limit"));
 }
 
-/// 静态层 + 动态层:pin 后 select 命中全名工具。
+/// Static layer + dynamic layer: after pin, select hits the full-name tool.
 #[tokio::test]
 async fn test_select_over_synced_registry() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -209,7 +209,7 @@ async fn test_select_over_synced_registry() {
     );
 }
 
-/// 转 BaseTool:适配器带命名空间 + 超时 + 沙箱,可正常调用。
+/// Convert to BaseTool: adapters carry the namespace + timeout + sandbox and can be called normally.
 #[tokio::test]
 async fn test_as_base_tools_builds_adapters() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -235,7 +235,7 @@ async fn test_as_base_tools_builds_adapters() {
     assert_eq!(out, "echo");
 }
 
-/// 熔断委托:健康探活 -> Down,reap_unhealthy 摘除。
+/// Breaker delegation: health probe -> Down, reap_unhealthy removes it.
 #[tokio::test]
 async fn test_gateway_health_and_reap() {
     let gw = MCPGateway::new();
@@ -259,7 +259,7 @@ async fn test_gateway_health_and_reap() {
     assert_eq!(removed, vec!["bad".to_string()]);
 }
 
-/// 审计环形上限:只保留最新 max_audit 条。
+/// Audit ring cap: only the newest max_audit entries are kept.
 #[tokio::test]
 async fn test_audit_cap_keeps_newest() {
     let fake = start_fake_sse_server(PostMode::Quiet).await;

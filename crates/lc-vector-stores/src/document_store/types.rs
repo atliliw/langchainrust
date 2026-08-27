@@ -19,129 +19,129 @@ pub use lc_shared::document::ChunkDocument;
 // DocumentStore Trait
 // ============================================================================
 
-/// 文档存储 trait
+/// Document store trait
 #[async_trait]
 pub trait DocumentStore: Send + Sync {
-    /// 添加文档
+    /// Adds a document
     async fn add_document(&self, document: Document) -> Result<String, VectorStoreError>;
 
-    /// 批量添加文档
+    /// Adds documents in bulk
     async fn add_documents(
         &self,
         documents: Vec<Document>,
     ) -> Result<Vec<String>, VectorStoreError>;
 
-    /// 获取文档
+    /// Gets a document
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError>;
 
-    /// 删除文档
+    /// Deletes a document
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError>;
 
-    /// 获取文档数量
+    /// Gets the document count
     async fn count(&self) -> usize;
 
-    /// 清空存储
+    /// Clears the store
     async fn clear(&self) -> Result<(), VectorStoreError>;
 }
 
 // ============================================================================
-// ChunkedDocumentStore Trait（抽象接口，支持多种存储后端）
+// ChunkedDocumentStore Trait (abstract interface, supporting multiple storage backends)
 // ============================================================================
 
-/// 支持 Parent-Child 结构的文档存储 trait
+/// Document store trait supporting a parent-child structure
 ///
-/// 此 trait 定义了回表存储的统一接口，支持：
-/// - MongoDB（生产环境）
-/// - InMemory（开发/测试）
-/// - Redis（缓存层，预留）
-/// - SQLite（本地存储，预留）
+/// This trait defines a unified interface for the back-reference store, supporting:
+/// - MongoDB (production)
+/// - InMemory (development/test)
+/// - Redis (cache layer, reserved)
+/// - SQLite (local storage, reserved)
 #[async_trait]
 pub trait ChunkedDocumentStoreTrait: Send + Sync {
-    /// 添加 Parent 文档并自动分割为 chunks
+    /// Adds a Parent document and automatically splits it into chunks
     ///
-    /// # 参数
-    /// - `document`: 原始文档
-    /// - `chunk_size`: 每个 chunk 的字符大小
+    /// # Arguments
+    /// - `document`: the original document
+    /// - `chunk_size`: the character size of each chunk
     ///
-    /// # 返回
-    /// - `(parent_id, chunk_ids)`: Parent ID 和生成的 Chunk ID 列表
+    /// # Returns
+    /// - `(parent_id, chunk_ids)`: the Parent ID and the generated Chunk ID list
     async fn add_parent_document(
         &self,
         document: Document,
         chunk_size: usize,
     ) -> Result<(String, Vec<String>), VectorStoreError>;
 
-    /// 批量添加 Parent 文档
+    /// Adds Parent documents in bulk
     async fn add_parent_documents(
         &self,
         documents: Vec<Document>,
         chunk_size: usize,
     ) -> Result<Vec<(String, Vec<String>)>, VectorStoreError>;
 
-    /// 获取 Parent 文档
+    /// Gets a Parent document
     async fn get_parent_document(
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError>;
 
-    /// 获取单个 Chunk
+    /// Gets a single Chunk
     async fn get_chunk(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError>;
 
-    /// 获取单个 Chunk（转为 Document）
+    /// Gets a single Chunk (as a Document)
     async fn get_chunk_document(
         &self,
         chunk_id: &str,
     ) -> Result<Option<Document>, VectorStoreError>;
 
-    /// 获取 Parent 的所有 Chunks
+    /// Gets all Chunks of a Parent
     async fn get_chunks_for_parent(
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError>;
 
-    /// 获取 Parent 的所有 Chunks（转为 Document）
+    /// Gets all Chunks of a Parent (as Documents)
     async fn get_chunk_documents_for_parent(
         &self,
         parent_id: &str,
     ) -> Result<Vec<Document>, VectorStoreError>;
 
-    /// 删除 Parent 文档及其所有 Chunks
+    /// Deletes a Parent document and all of its Chunks
     async fn delete_parent_document(&self, parent_id: &str) -> Result<(), VectorStoreError>;
 
-    /// 获取 Parent 文档数量
+    /// Gets the Parent document count
     async fn parent_count(&self) -> usize;
 
-    /// 获取 Chunk 文档数量
+    /// Gets the Chunk document count
     async fn chunk_count(&self) -> usize;
 
-    /// 获取所有 Chunks
+    /// Gets all Chunks
     async fn get_all_chunks(&self) -> Result<Vec<ChunkDocument>, VectorStoreError>;
 
-    /// 清空所有数据
+    /// Clears all data
     async fn clear(&self) -> Result<(), VectorStoreError>;
 
     // ========================================================================
-    // Blocking 方法（同步版本，用于 BM25 等同步检索场景）
+    // Blocking methods (synchronous versions, used in synchronous retrieval scenarios such as BM25)
     // ========================================================================
 
-    /// 添加 Parent 文档（阻塞版本）
+    /// Adds a Parent document (blocking version)
     fn add_parent_document_blocking(
         &self,
         document: Document,
         chunk_size: usize,
     ) -> Result<(String, Vec<String>), VectorStoreError>;
 
-    /// 获取 Parent 文档（阻塞版本）
+    /// Gets a Parent document (blocking version)
     fn get_parent_document_blocking(
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError>;
 
-    /// 获取单个 Chunk（阻塞版本）
+    /// Gets a single Chunk (blocking version)
     fn get_chunk_blocking(&self, chunk_id: &str)
         -> Result<Option<ChunkDocument>, VectorStoreError>;
 
-    /// 获取 Parent 的所有 Chunks（阻塞版本）
+    /// Gets all Chunks of a Parent (blocking version)
     fn blocking_get_chunks_for_parent(
         &self,
         parent_id: &str,

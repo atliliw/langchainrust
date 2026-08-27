@@ -1,8 +1,8 @@
-//! 忠实度评测器:检测回答是否忠于参考上下文(幻觉检测)。
+//! Faithfulness evaluator: detects whether an answer is faithful to the reference context (hallucination detection).
 //!
-//! 思路来自 Ragas 的 faithfulness:把回答拆成原子陈述,
-//! 逐条判断能否从参考上下文推导出来,通过率即为忠实度。
-//! 这里 reference 充当"上下文/检索内容",prediction 是待检测的回答。
+//! The idea comes from Ragas' faithfulness: the answer is split into atomic claims,
+//! each judged for whether it can be derived from the reference context; the pass rate is the faithfulness score.
+//! Here `reference` acts as the "context / retrieved content" and `prediction` is the answer under test.
 
 use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
@@ -15,28 +15,28 @@ use lc_schema::Message;
 
 use super::{EvalError, Evaluator, Score};
 
-/// P1-5: 单次评测最多同时打给 judge 的陈述验证并发数(防限流 N 路全挂)。
+/// P1-5: maximum concurrent claim-verification calls to the judge in a single eval (prevents N paths all dying to rate limits).
 const MAX_CONCURRENT_VERIFY: usize = 4;
 
-/// P2-5: 单条陈述的裁判 prompt 里参考上下文的字符上限。
-/// 完整长参考只截一次、N 条陈述复用,避免每条重复传输整段上下文。
+/// P2-5: character cap for the reference context in a single claim's judge prompt.
+/// The full long reference is truncated once and reused by N claims, avoiding re-sending the whole context per claim.
 const DEFAULT_MAX_CONTEXT_CHARS: usize = 2000;
 
-/// 忠实度评测器(幻觉检测):回答有多忠于参考上下文。
+/// Faithfulness evaluator (hallucination detection): how faithful an answer is to the reference context.
 ///
-/// 把 prediction 拆成原子陈述,逐条问裁判能否从 reference 推导,
-/// 通过率 = 能推导的陈述数 / 总陈述数。
+/// Splits `prediction` into atomic claims and asks the judge per claim whether it can be derived from `reference`;
+/// pass rate = derivable claims / total claims.
 pub struct Faithfulness<M: BaseChatModel> {
     judge: M,
-    /// 用 LLM 拆原子陈述(默认 false,用规则按标点拆)
+    /// Whether to split claims with the LLM (default false: rule-based split on punctuation)
     llm_split: bool,
-    /// 空预测(无可验证陈述)的得分,默认 0.0(没回答=不忠实)。
+    /// Score for an empty prediction (no verifiable claims), default 0.0 (no answer = not faithful).
     empty_score: f64,
-    /// 参考上下文单条传输上限(字符,默认 [`DEFAULT_MAX_CONTEXT_CHARS`])。
+    /// Per-claim reference-context transmission cap (chars, default [`DEFAULT_MAX_CONTEXT_CHARS`]).
     max_context_chars: usize,
 }
 
-/// 把回答拆成原子陈述(按句号、问号、感叹号、分号、换行切分)。
+/// Splits an answer into atomic claims (split on period, question mark, exclamation mark, semicolon, newline).
 fn split_claims(prediction: &str) -> Vec<String> {
     prediction
         .split(['。', '.', '!', '?', '；', ';', '\n'])
@@ -46,35 +46,35 @@ fn split_claims(prediction: &str) -> Vec<String> {
 }
 
 impl<M: BaseChatModel> Faithfulness<M> {
-    /// 创建忠实度评测器。
+    /// Creates a faithfulness evaluator.
     pub fn new(judge: M) -> Self {
         Self {
             judge,
             llm_split: false,
-            empty_score: 0.0, // P0-2: 空预测默认 0 分(没回答=不忠实)
+            empty_score: 0.0, // P0-2: empty prediction defaults to 0 (no answer = not faithful)
             max_context_chars: DEFAULT_MAX_CONTEXT_CHARS,
         }
     }
 
-    /// 用 LLM 拆原子陈述(默认按标点规则拆;LLM 拆能处理逗号复合句)
+    /// Splits claims with the LLM (default: rule-based on punctuation; LLM split handles comma compound sentences)
     pub fn with_llm_split(mut self, v: bool) -> Self {
         self.llm_split = v;
         self
     }
 
-    /// 空预测的得分:默认 0.0(没回答=不忠实),可设 1.0 表示"没编造即忠实"
+    /// Score for an empty prediction: default 0.0 (no answer = not faithful); can be set to 1.0 for "not fabricating is faithful"
     pub fn with_empty_score(mut self, score: f64) -> Self {
         self.empty_score = score;
         self
     }
 
-    /// 参考上下文单条传输上限(字符)。P2-5: 默认 2000,防止长参考被每条陈述重复完整塞进 prompt。
+    /// Per-claim reference-context transmission cap (chars). P2-5: default 2000, preventing a long reference from being fully stuffed into the prompt once per claim.
     pub fn with_max_context_chars(mut self, max: usize) -> Self {
         self.max_context_chars = max;
         self
     }
 
-    /// 问裁判:单条陈述能否从上下文推导。
+    /// Asks the judge whether a single claim can be derived from the context.
     async fn verify_claim(&self, context: &str, claim: &str) -> Result<bool, EvalError> {
         let system =
             "你是事实核查员。判断给定的陈述能否从参考上下文中推导出来。调用 check_claim 工具提交判定。"
@@ -83,7 +83,7 @@ impl<M: BaseChatModel> Faithfulness<M> {
             format!("参考上下文:\n{context}\n\n陈述:\n{claim}\n\n这条陈述能从上下文推导出来吗?");
         let messages = vec![Message::system(system), Message::human(user)];
 
-        // P0-1: 优先结构化输出(verdict 布尔);不支持工具绑定的模型走文本解析回落。
+        // P0-1: prefer structured output (boolean verdict); models without tool binding fall back to text parsing.
         let args: VerdictArgs = structured_call(&self.judge, verdict_tool(), messages, |raw| {
             let verdict = parse_yes_no(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
@@ -100,7 +100,7 @@ impl<M: BaseChatModel> Faithfulness<M> {
         Ok(args.verdict)
     }
 
-    /// 用 LLM 把回答拆成原子陈述(每行一条),处理规则拆不动的复合句。
+    /// Splits the answer into atomic claims with the LLM (one per line), handling compound sentences the rule-based split cannot.
     async fn split_claims_llm(&self, prediction: &str) -> Result<Vec<String>, EvalError> {
         let system =
             "你是文本分析助手。把回答拆成原子陈述,每条一行,只输出陈述本身,不要编号不要解释。"
@@ -136,12 +136,12 @@ impl<M: BaseChatModel> Evaluator for Faithfulness<M> {
         if claims.is_empty() {
             return Ok(Score::new(self.empty_score).with_label("no_claims"));
         }
-        // P2-5: 参考上下文只截取一次,各陈述复用同一份(避免完整长参考被 N 条重复传输)。
+        // P2-5: the reference context is truncated once and reused by all claims (avoiding a full long reference transmitted N times).
         let context = truncate(reference, self.max_context_chars);
-        // 并发验证各陈述(每条一次 LLM 调用),但用 buffer_unordered 限流:
-        // P1-5——join_all 无上限并发打同一个 judge,命中限流会 N 路全挂。
-        // `ctx` 是 Copy 的引用,闭包可反复捕获;若直接捕获 `context` 会被 async move
-        // 逐条 move 出去,map(FnMut) 编译不过。
+        // verify claims concurrently (one LLM call each) but throttle with buffer_unordered:
+        // P1-5 — join_all would fire unlimited concurrency at one judge; hitting a rate limit kills all N.
+        // `ctx` is a Copy reference so the closure can capture it repeatedly; capturing `context`
+        // directly would be moved out claim by claim by async move, and map(FnMut) would not compile.
         let ctx = &context;
         let total = claims.len();
         let results: Vec<Result<bool, EvalError>> = stream::iter(claims)
@@ -164,17 +164,17 @@ impl<M: BaseChatModel> Evaluator for Faithfulness<M> {
     }
 }
 
-/// 结构化判定参数(经 tool_calls 返回)。
+/// Structured verdict arguments (returned via tool_calls).
 #[derive(Debug, Deserialize)]
 struct VerdictArgs {
     verdict: bool,
-    /// 让 LLM 附上简短理由(改善判定质量),当前不消费。
+    /// Asks the LLM to attach a brief reason (improves judgment quality); currently unused.
     #[serde(default)]
     #[allow(dead_code)]
     reason: String,
 }
 
-/// 构建判定工具:让 LLM 以 `{"verdict": bool, "reason": "..."}` 提交判定。
+/// Builds the verdict tool: lets the LLM submit a verdict as `{"verdict": bool, "reason": "..."}`.
 fn verdict_tool() -> ToolDefinition {
     ToolDefinition::new(
         "check_claim",
@@ -190,11 +190,11 @@ fn verdict_tool() -> ToolDefinition {
     }))
 }
 
-/// 解析"是/否"。无任何是/否标记时返回 `None`(解析失败,由调用方报错),
-/// 而非静默默认 false——避免 LLM 跑题回复被当成"不忠实"。
+/// Parses "yes/no". With no yes/no marker returns `None` (parse failure, reported by the caller),
+/// rather than silently defaulting to false — so an off-topic LLM reply is not read as "unfaithful".
 fn parse_yes_no(raw: &str) -> Option<bool> {
     let lower = raw.to_lowercase();
-    // 先判否定(避免"不是""不能"被"是""能"误判;否定词优先于肯定词)
+    // check negatives first (so negated phrasings are not caught by the positive keywords; negatives take precedence over positives)
     if lower.contains("否")
         || lower.contains("no")
         || lower.contains("不能")
@@ -361,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_faithfulness_empty_prediction() {
-        // P0-2: 空预测默认 0 分(没回答=不忠实)
+        // P0-2: empty prediction defaults to 0 (no answer = not faithful)
         let judge = Faithfulness::new(SeqMockJudge::new(vec![]));
         let s = judge.eval("", "", "ctx").await.unwrap();
         assert!((s.value - 0.0).abs() < 1e-9);
@@ -370,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_faithfulness_empty_score_configurable() {
-        // 可显式配成 1.0(没编造即忠实)
+        // can be explicitly configured to 1.0 (not fabricating is faithful)
         let judge = Faithfulness::new(SeqMockJudge::new(vec![])).with_empty_score(1.0);
         let s = judge.eval("", "", "ctx").await.unwrap();
         assert!((s.value - 1.0).abs() < 1e-9);
@@ -378,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_faithfulness_llm_split() {
-        // 逗号复合句规则拆只算 1 条;LLM 拆能拆成 2 条分别验证
+        // rule split counts a comma compound as 1 claim; LLM split divides it into 2 and verifies each
         let judge = Faithfulness::new(SeqMockJudge::new(vec![
             "巴黎是法国首都\n伦敦是英国首都".into(),
             "是".into(),
@@ -400,15 +400,15 @@ mod tests {
         assert_eq!(parse_yes_no("no"), Some(false));
         assert_eq!(parse_yes_no("不是"), Some(false));
         assert_eq!(parse_yes_no("不能"), Some(false));
-        // 无任何是/否标记 = 解析失败,不应静默默认
+        // no yes/no marker = parse failure, must not silently default
         assert_eq!(parse_yes_no("我不会告诉你"), None);
     }
 
-    /// P0-1: 支持 bind_tools 的模型走结构化输出(verdict 布尔),不再依赖文本解析。
+    /// P0-1: models supporting bind_tools use structured output (boolean verdict), no longer relying on text parsing.
     #[tokio::test]
     async fn test_faithfulness_structured_verdict() {
         use crate::test_support::ToolJudge;
-        // 两条陈述:一条支持、一条不支持 → 忠实度 0.5
+        // two claims: one supported, one not -> faithfulness 0.5
         let judge = Faithfulness::new(ToolJudge::sequence(vec![
             r#"{"verdict": true, "reason": "能从上下文推导"}"#.into(),
             r#"{"verdict": false, "reason": "无法推导"}"#.into(),
@@ -420,7 +420,7 @@ mod tests {
         assert!((s.value - 0.5).abs() < 1e-9);
     }
 
-    /// P0-1: 全部不支持 → 0 分。
+    /// P0-1: all unsupported -> 0 score.
     #[tokio::test]
     async fn test_faithfulness_structured_all_false() {
         use crate::test_support::ToolJudge;
@@ -434,7 +434,7 @@ mod tests {
         assert!((s.value - 0.0).abs() < 1e-9);
     }
 
-    /// P2-5: 长参考上下文只截取一次,N 条陈述复用同一份,不重复整段发送。
+    /// P2-5: a long reference context is truncated once and reused by N claims, not re-sent in full.
     #[tokio::test]
     async fn test_faithfulness_reference_truncated_once() {
         let judge = SeqMockJudge::new(vec!["是".into(), "是".into()]);
@@ -448,7 +448,7 @@ mod tests {
             .unwrap();
         assert!((s.value - 1.0).abs() < 1e-9);
         let sent = f.judge.last_user_content();
-        // 参考上下文被截到预算内:首部仍在、远在预算外的尾巴不会被发出去
+        // the reference context is truncated to budget: the head remains, the far-beyond-budget tail is not sent
         assert!(sent.contains("这是一段非常长"), "actual sent: {sent}");
         assert!(
             !sent.contains("不该被完整发送"),

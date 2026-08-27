@@ -1,8 +1,8 @@
-//! 录播落地:真 `LLMChain` + `ReplayProvider`,离线、确定性,不依赖任何 key。
+//! Recording lands: a real `LLMChain` + `ReplayProvider`, offline, deterministic, no key needed.
 //!
-//! 对应 EXECUTION_PLAN §4.4「至少 1 类已知在线失败(如 chains 的 AccessDenied)
-//! 转为录播回放通过」:在线版 `chains::f01` 需要真实模型(无 key 跳过),
-//! 这里用录制 fixture 把同一条链离线跑通。
+//! Corresponds to EXECUTION_PLAN §4.4 "turn at least 1 kind of known online failure (e.g. chains'
+//! AccessDenied) into a pass via record/replay": the online `chains::f01` needs a real model
+//! (skipped without a key); here a recorded fixture runs the same chain offline.
 
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ use lc_testkit::ReplayProvider;
 
 #[tokio::test]
 async fn chain_replay_answers_offline() {
-    // cargo test 的 CWD = crates/lc-testkit,fixture 用包内相对路径
+    // cargo test's CWD = crates/lc-testkit; fixtures use a package-relative path
     let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")
         .expect("fixture 存在: fixtures/llm_chain_f01.jsonl");
     let chain = LLMChain::new(llm, "用一句话回答:{question}");

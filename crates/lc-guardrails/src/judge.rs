@@ -1,15 +1,18 @@
-//! 敏感泄露 LLM 裁判(P2-3)
+//! Sensitive-leak LLM judge (P2-3)
 //!
-//! `SensitiveInfoGuardrail` 的高误报"提及"词(如 password/密码)上下文敏感命中后,
-//! 是否真泄露由 LLM 裁判二次判断——"真实的密钥/凭证值"拦截,"如何安全保存密码"
-//! 这类正常提及放行,以此降低误报。
+//! When `SensitiveInfoGuardrail`'s high-false-positive "mention" keywords (e.g. password/token)
+//! hit context-sensitively, the LLM judge makes the final call on whether a real leak occurred —
+//! real key/credential values are blocked, while normal mentions such as "how to store passwords
+//! safely" pass, lowering false positives.
 //!
-//! 复用 [`lc_core::judge::structured_call`] 这条共享裁判基础设施(与 lc-evaluation
-//! 的 Faithfulness / Pairwise 裁判同源,evaluation P2-6):优先走 `bind_tools`
-//! 拿 `tool_calls` 结构化参数,模型不支持工具绑定或返回纯文本时回落文本解析。
+//! Reuses the shared judge infrastructure [`lc_core::judge::structured_call`] (same lineage as
+//! lc-evaluation's Faithfulness / Pairwise judges, evaluation P2-6): it prefers `bind_tools`
+//! for structured `tool_calls` arguments, falling back to text parsing when the model does not
+//! support tool binding or returns plain text.
 //!
-//! 这也是 P2-4 死依赖处理的一部分:`lc-core` 此前在 lc-guardrails 的 src 零引用,
-//! 经此真实连接(计划书"要么移除,要么实际连接"的实际连接路线)。
+//! This is also part of the P2-4 dead-dependency handling: `lc-core` had zero references in
+//! lc-guardrails' src, and this real connection is the "actually connect" route from the plan
+//! (either remove it, or actually connect it).
 
 use async_trait::async_trait;
 
@@ -20,28 +23,29 @@ use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
 use lc_schema::Message;
 
-/// 敏感泄露裁判:对疑似敏感输出做"真实泄露 vs 正常提及"的二次判断。
+/// Sensitive-leak judge: makes the "real leak vs normal mention" second determination for suspected sensitive output.
 ///
-/// `judge` 返回 `true` = 判定为真实泄露(应拦截);`false` = 正常提及(应放行)。
+/// `judge` returns `true` = judged a real leak (should block); `false` = normal mention (should pass).
 #[async_trait]
 pub trait SensitiveJudge: Send + Sync {
-    /// 裁判名称。
+    /// The judge's name.
     fn name(&self) -> &str;
 
-    /// 判断一段文本是否泄露真实的敏感信息。
+    /// Determines whether a text leaks real sensitive information.
     async fn judge(&self, text: &str) -> Result<bool, GuardrailError>;
 }
 
-/// 基于共享 LLM 裁判基础设施的敏感泄露裁判。
+/// Sensitive-leak judge based on the shared LLM judge infrastructure.
 ///
-/// 用 [`structured_call`] 让裁判以结构化参数提交 `{"is_leak": bool, "reason": "..."}`;
-/// 模型不支持工具绑定或返回纯文本时,回落 `parse_leak_text` 的文本解析。
+/// Uses [`structured_call`] to have the judge submit `{"is_leak": bool, "reason": "..."}` as
+/// structured arguments; when the model does not support tool binding or returns plain text,
+/// falls back to `parse_leak_text` text parsing.
 pub struct LlmSensitiveJudge<M: BaseChatModel> {
     judge: M,
 }
 
 impl<M: BaseChatModel> LlmSensitiveJudge<M> {
-    /// 用给定的 LLM 创建裁判。
+    /// Creates a judge from the given LLM.
     pub fn new(judge: M) -> Self {
         Self { judge }
     }
@@ -80,18 +84,18 @@ impl<M: BaseChatModel> SensitiveJudge for LlmSensitiveJudge<M> {
     }
 }
 
-/// 结构化判定参数(经 tool_calls 返回)。
+/// Structured judgment arguments (returned via tool_calls).
 #[derive(Debug, serde::Deserialize)]
 struct LeakArgs {
     #[serde(default)]
     is_leak: bool,
-    /// 让 LLM 附上简短理由(改善判定质量),当前不消费。
+    /// Asks the LLM to attach a brief reason (improves judgment quality); currently unused.
     #[serde(default)]
     #[allow(dead_code)]
     reason: String,
 }
 
-/// 构建判定工具:让 LLM 以 `{"is_leak": bool, "reason": "..."}` 提交判定。
+/// Builds the judgment tool: lets the LLM submit the verdict as `{"is_leak": bool, "reason": "..."}`.
 fn leak_tool() -> ToolDefinition {
     ToolDefinition::new(
         "check_leak",
@@ -107,11 +111,12 @@ fn leak_tool() -> ToolDefinition {
     }))
 }
 
-/// 解析"是/否泄露"。无任何是/否标记时返回 `None`(解析失败,由调用方报错),
-/// 而非静默默认——避免 LLM 跑题回复被当成"未泄露"。
+/// Parses a yes/no leak verdict. Returns `None` (parse failure, reported by the caller) when no
+/// yes/no marker is present, rather than silently defaulting — so an off-topic LLM reply is not
+/// treated as "no leak".
 fn parse_leak_text(raw: &str) -> Option<bool> {
     let lower = raw.to_lowercase();
-    // 先判否定(避免"不是""不能"被"是""能"误判;否定词优先于肯定词)。
+    // check negatives first (negatives take precedence over positives, so "not"/"cannot" are not misjudged by "yes"/"can").
     if lower.contains("否")
         || lower.contains("no")
         || lower.contains("不能")
@@ -150,8 +155,8 @@ mod tests {
     }
     impl std::error::Error for MockJudgeError {}
 
-    /// 依次返回预设回复的 mock 裁判:不实现 `bind_tools`,
-    /// 走 `structured_call` 的文本回落路径(P2-3 与 evaluation 同源的可测路径)。
+    /// Mock judge returning preset replies in sequence: it does not implement `bind_tools`,
+    /// exercising `structured_call`'s text fallback path (the testable path shared with evaluation, P2-3).
     struct SeqMockJudge {
         replies: Vec<String>,
         call: Arc<AtomicUsize>,
@@ -254,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_judge_parse_failure_errors() {
-        // 文本回落解析失败 → 显式 Err,不静默默认。
+        // text-fallback parse failure -> explicit Err, no silent default.
         let mock = SeqMockJudge::new(vec!["无法判断".into()]);
         let judge = LlmSensitiveJudge::new(mock);
         let result = judge.judge("text").await;
@@ -281,7 +286,7 @@ mod tests {
         assert_eq!(parse_leak_text("否"), Some(false));
         assert_eq!(parse_leak_text("no"), Some(false));
         assert_eq!(parse_leak_text("不是"), Some(false));
-        // 无任何是/否标记 = 解析失败,不应静默默认
+        // no yes/no marker = parse failure, must not silently default
         assert_eq!(parse_leak_text("我看不出"), None);
     }
 }

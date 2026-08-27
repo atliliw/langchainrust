@@ -77,7 +77,7 @@ pub use error::Error;
 /// A2A: Agent-to-Agent protocol for inter-agent communication.
 pub mod a2a;
 
-// 重新导出常用类型
+// Re-export the commonly used types
 pub use agents::{
     parse_review_verdict, review_envelope, task_adapter, AdaptiveRAG, AdaptiveRAGError,
     AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError, AgentEventRunnable, AgentExecutor,
@@ -181,7 +181,7 @@ pub use embeddings::{
     DeepSeekEmbeddingsConfig, EmbeddingError, Embeddings, MockEmbeddings, OpenAIEmbeddings,
     OpenAIEmbeddingsConfig, QwenEmbeddings, QwenEmbeddingsConfig,
 };
-// 1.0:无 `local-embeddings` feature 时 `LocalEmbeddings` 不可用(降级别名已移除)。
+// 1.0: without the `local-embeddings` feature, `LocalEmbeddings` is unavailable (the deprecated alias was removed).
 #[cfg(feature = "local-embeddings")]
 pub use embeddings::LocalEmbeddings;
 
@@ -198,8 +198,8 @@ pub use vector_stores::{RedisDocumentStore, RedisStoreConfig};
 #[cfg(feature = "sqlite-storage")]
 pub use vector_stores::{SQLiteDocumentStore, SQLiteStoreConfig};
 
-// PGVector 类型化存储:开启 `pgvector-storage` feature 后可用(sqlx + pgvector 依赖
-// 由 feature 拉入,无需用户自配)。模块路径与类型路径同时暴露。
+// Typed PGVector storage: available once the `pgvector-storage` feature is enabled (the sqlx + pgvector
+// dependencies come in via the feature; no user-side setup needed). Both the module path and the type path are exposed.
 #[cfg(feature = "pgvector-storage")]
 pub use vector_stores::pgvector;
 #[cfg(feature = "pgvector-storage")]

@@ -110,17 +110,17 @@ pub enum ToolError {
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
 
-    /// MCP 传输层错误(经 `MCPToolAdapter` 适配),保留 code/message/data(P1-6)。
+    /// MCP transport-layer error (adapted via `MCPToolAdapter`), preserving code/message/data (P1-6).
     ///
-    /// 不静默降级为 `ExecutionFailed`,上层可据 `code` 区分连接断开 / 方法不存在 /
-    /// 参数错误等场景。
+    /// Not silently downgraded to `ExecutionFailed`: the caller can distinguish connection drop /
+    /// method-not-found / argument errors by `code`.
     #[error("MCP error [{code}]: {message}")]
     McpError {
-        /// MCP 错误码
+        /// MCP error code
         code: i32,
-        /// MCP 错误消息
+        /// MCP error message
         message: String,
-        /// 附加错误数据(可选)
+        /// Additional error data (optional)
         data: Option<Value>,
     },
 }
@@ -150,8 +150,8 @@ pub fn to_tool_definition(tool: &dyn BaseTool) -> ToolDefinition {
     )
 }
 
-// Runnable 形态:让工具能进 LCEL 链,`tool.pipe(...)` 成立。
-// 接收 String(通常是 JSON 输入),委托给 `run`,错误经 `From<ToolError>` 进 `LcelError::Tool`。
+// Runnable form: lets a tool enter an LCEL chain, so `tool.pipe(...)` works.
+// Receives a String (usually JSON input), delegates to `run`; errors go into `LcelError::Tool` via `From<ToolError>`.
 #[async_trait]
 impl Runnable<String, String> for Arc<dyn BaseTool> {
     type Error = LcelError;
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    /// 简单回显工具:返回 `echo: {input}`。
+    /// Simple echo tool: returns `echo: {input}`.
     struct EchoTool;
 
     #[async_trait]

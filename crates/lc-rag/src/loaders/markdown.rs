@@ -1,7 +1,7 @@
 // src/retrieval/loaders/markdown.rs
-//! Markdown 文档加载器实现
+//! Markdown document loader implementation
 //!
-//! 提供从 Markdown 文件加载内容的功能，支持按标题分割。
+//! Loads content from Markdown files, supporting splitting by heading.
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
@@ -21,27 +21,27 @@ fn heading_regex(level: usize) -> &'static regex::Regex {
     &HEADING_RE[level.saturating_sub(1).min(5)]
 }
 
-/// Markdown 文档加载器
+/// Markdown document loader
 ///
-/// 支持加载 Markdown 文件，可按标题分割为多个文档。
+/// Supports loading Markdown files, optionally splitting them into multiple documents by heading.
 pub struct MarkdownLoader {
-    /// Markdown 文件路径
+    /// Markdown file path
     pub path: PathBuf,
 
-    /// 是否按标题分割
-    /// 如果为 true，按 `#` 标题分割为多个文档
+    /// Whether to split by heading
+    /// If true, splits into multiple documents by `#` heading
     pub split_by_heading: bool,
 
-    /// 分割的标题级别（1-6）
-    /// 例如 heading_level=2 表示按 `##` 分割
+    /// The heading level to split on (1-6)
+    /// For example, heading_level=2 splits on `##`
     pub heading_level: usize,
 }
 
 impl MarkdownLoader {
-    /// 创建新的 Markdown 加载器
+    /// Creates a new Markdown loader
     ///
-    /// # 参数
-    /// * `path` - Markdown 文件路径
+    /// # Arguments
+    /// * `path` - the Markdown file path
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -50,11 +50,11 @@ impl MarkdownLoader {
         }
     }
 
-    /// 创建按标题分割的 Markdown 加载器
+    /// Creates a heading-splitting Markdown loader
     ///
-    /// # 参数
-    /// * `path` - Markdown 文件路径
-    /// * `heading_level` - 分割的标题级别（1-6）
+    /// # Arguments
+    /// * `path` - the Markdown file path
+    /// * `heading_level` - the heading level to split on (1-6)
     pub fn new_with_heading_split(path: impl Into<PathBuf>, heading_level: usize) -> Self {
         Self {
             path: path.into(),
@@ -63,13 +63,13 @@ impl MarkdownLoader {
         }
     }
 
-    /// 设置是否按标题分割
+    /// Sets whether to split by heading
     pub fn with_split_by_heading(mut self, split: bool) -> Self {
         self.split_by_heading = split;
         self
     }
 
-    /// 设置标题级别
+    /// Sets the heading level
     pub fn with_heading_level(mut self, level: usize) -> Self {
         self.heading_level = level.clamp(1, 6);
         self

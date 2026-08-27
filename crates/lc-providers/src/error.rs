@@ -161,10 +161,10 @@ impl From<ProviderError> for lc_core::LcelError {
 
 /// Allow `OpenAIError` to convert into `LcelError` for LCEL pipeline compatibility.
 ///
-/// `OpenAIChat` 的 `Runnable` 直接以 `OpenAIError` 作为 `Error` 类型;不桥接的话
-/// `OpenAIChat` 无法直接进 `pipe()` 链(需要 `R2::Error: Into<LcelError>`)。
-/// Qwen / DeepSeek 走 OpenAI 兼容端点,但它们把 `OpenAIError` 包进 `ProviderError`
-/// 再桥接,已由上面的 impl 覆盖。
+/// `OpenAIChat`'s `Runnable` uses `OpenAIError` directly as its `Error` type; without the
+/// bridge, `OpenAIChat` cannot enter a `pipe()` chain (which needs `R2::Error: Into<LcelError>`).
+/// Qwen / DeepSeek go through OpenAI-compatible endpoints, but they wrap `OpenAIError` into
+/// `ProviderError` and bridge from there, already covered by the impl above.
 impl From<OpenAIError> for lc_core::LcelError {
     fn from(err: OpenAIError) -> Self {
         lc_core::LcelError::Provider(err.to_string())
@@ -175,7 +175,7 @@ impl From<OpenAIError> for lc_core::LcelError {
 mod tests {
     use super::*;
 
-    /// 原生 OpenAIChat 错误可平滑进 LcelError,`openai.pipe(...)` 第二段才编译得过。
+    /// Native OpenAIChat errors convert cleanly into LcelError, so `openai.pipe(...)` compiles as the second pipe step.
     #[test]
     fn openai_error_into_lcel_error() {
         let e = OpenAIError::Api("rate limited".to_string());
@@ -186,7 +186,7 @@ mod tests {
         ));
     }
 
-    /// Qwen/DeepSeek 复用 OpenAIError,但经 ProviderError 桥接,同样进 LcelError。
+    /// Qwen/DeepSeek reuse OpenAIError, but bridge through ProviderError, equally into LcelError.
     #[test]
     fn qwen_provider_error_into_lcel_error() {
         let e = ProviderError::Qwen(OpenAIError::Http("timeout".to_string()));

@@ -1,9 +1,9 @@
 // src/retrieval/splitter.rs
-//! 文本分割器实现
+//! Text splitter implementation
 //!
-//! 将长文档分割成较小的块，便于处理和检索。
-//! TextSplitter trait 和 RecursiveCharacterSplitter 已移至 lc-shared crate，
-//! 此处保留 re-export 以维持向后兼容。
+//! Splits long documents into smaller chunks for easier processing and retrieval.
+//! The `TextSplitter` trait and `RecursiveCharacterSplitter` have moved to the lc-shared crate;
+//! a re-export is kept here for backward compatibility.
 
 // Re-export shared splitter types from lc-shared
 pub use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
@@ -22,7 +22,7 @@ mod tests {
 
         assert!(!chunks.is_empty());
         for chunk in &chunks {
-            assert!(chunk.len() <= 60); // 允许一些余量
+            assert!(chunk.len() <= 60); // allow some slack
         }
     }
 

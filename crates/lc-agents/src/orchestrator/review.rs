@@ -1,9 +1,11 @@
-//! 自省/验证评审编排器 `ReviewOrchestrator`(P2-8)。
+//! Introspection/validation review orchestrator `ReviewOrchestrator` (P2-8).
 //!
-//! 借鉴 DeepResearch 的 gap 检查思路泛化:worker 产出 → 评审 Agent 检验 →
-//! 不达标则带着评审反馈重做,直到达标或尝试耗尽。评审 Agent 本身也是一个
-//! [`Orchestrator`]:输入为 JSON 信封(目标 + 预期输出 + 产出,见
-//! [`review_envelope`]),输出为评审结论(格式见 [`parse_review_verdict`])。
+//! Generalizes DeepResearch's gap-check idea: worker produces → reviewer Agent
+//! inspects → if not passing, redo with review feedback until passing or out of
+//! attempts. The reviewer Agent is itself an [`Orchestrator`]: its input is a
+//! JSON envelope (objective + expected output + produced output, see
+//! [`review_envelope`]), and its output is a review verdict (format per
+//! [`parse_review_verdict`]).
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -13,17 +15,17 @@ use super::{Orchestrator, RunContext};
 use crate::task::AgentTask;
 use crate::AgentError;
 
-/// 评审结论:是否达标 + 不达标时的修订反馈。
+/// Review verdict: whether it passes + revision feedback when it does not.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewVerdict {
-    /// 是否达标。
+    /// Whether the output passes.
     pub passed: bool,
-    /// 不达标时给 worker 的修订反馈(达标时为空)。
+    /// Revision feedback given to the worker when it does not pass (empty when it passes).
     pub feedback: String,
 }
 
 impl ReviewVerdict {
-    /// 达标结论。
+    /// Passing verdict.
     pub fn pass() -> Self {
         Self {
             passed: true,
@@ -31,7 +33,7 @@ impl ReviewVerdict {
         }
     }
 
-    /// 不达标结论,携带修订反馈。
+    /// Failing verdict, carrying revision feedback.
     pub fn fail(feedback: impl Into<String>) -> Self {
         Self {
             passed: false,
@@ -40,8 +42,9 @@ impl ReviewVerdict {
     }
 }
 
-/// 构造评审 Agent 的输入信封:把任务(目标 / 预期输出)连同产出打包成 JSON,
-/// 评审 Agent 据此判断产出是否达标。
+/// Builds the reviewer Agent's input envelope: packs the task (objective /
+/// expected output) together with the produced output into JSON, which the
+/// reviewer Agent uses to judge whether the output passes.
 pub fn review_envelope(task: &AgentTask, output: &str) -> String {
     serde_json::json!({
         "objective": task.objective,
@@ -51,13 +54,14 @@ pub fn review_envelope(task: &AgentTask, output: &str) -> String {
     .to_string()
 }
 
-/// 解析评审 Agent 的结论文本为 [`ReviewVerdict`]。
+/// Parses the reviewer Agent's conclusion text into a [`ReviewVerdict`].
 ///
-/// LLM 输出各异,逐级回退支持三种形态:
-/// 1. JSON:`{"passed": true}` 或 `{"passed": false, "feedback": "..."}`;
-/// 2. 定界符:`<<<VERDICT>>>PASS|FAIL<<<END_VERDICT>>>`,反馈可选包在
-///    `<<<FEEDBACK>>>...<<<END_FEEDBACK>>>`;
-/// 3. 纯文本:以 `PASS` / `FAIL` 开头(大小写不敏感),`FAIL` 后接反馈文本。
+/// LLM output varies, so this falls back through three formats:
+/// 1. JSON: `{"passed": true}` or `{"passed": false, "feedback": "..."}`;
+/// 2. Delimiters: `<<<VERDICT>>>PASS|FAIL<<<END_VERDICT>>>`, with optional
+///    feedback wrapped in `<<<FEEDBACK>>>...<<<END_FEEDBACK>>>`;
+/// 3. Plain text: starting with `PASS` / `FAIL` (case-insensitive), with
+///    feedback text following `FAIL`.
 pub fn parse_review_verdict(text: &str) -> Option<ReviewVerdict> {
     let text = text.trim();
 
@@ -73,7 +77,7 @@ pub fn parse_review_verdict(text: &str) -> Option<ReviewVerdict> {
         }
     }
 
-    // 2. 定界符
+    // 2. Delimiters
     if let Some(inner) = between(text, "<<<VERDICT>>>", "<<<END_VERDICT>>>") {
         if inner.eq_ignore_ascii_case("PASS") || inner.eq_ignore_ascii_case("FAIL") {
             let passed = inner.eq_ignore_ascii_case("PASS");
@@ -84,7 +88,7 @@ pub fn parse_review_verdict(text: &str) -> Option<ReviewVerdict> {
         }
     }
 
-    // 3. 纯文本
+    // 3. Plain text
     let upper = text.to_uppercase();
     if upper.starts_with("PASS") {
         return Some(ReviewVerdict::pass());
@@ -102,7 +106,7 @@ pub fn parse_review_verdict(text: &str) -> Option<ReviewVerdict> {
     None
 }
 
-/// 取两个标记之间的文本(含 trim),标记缺失返回 `None`。
+/// Returns the text between two markers (trimmed), or `None` if a marker is missing.
 fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let s = text.find(start)?;
     let rest = &text[s + start.len()..];
@@ -110,16 +114,19 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
     Some(rest[..e].trim())
 }
 
-/// 自省/验证评审编排器(P2-8)。
+/// Introspection/validation review orchestrator (P2-8).
 ///
-/// 组合模式:worker 产出输出 → 评审 Agent(`reviewer`)检验 → 不达标就把评审
-/// 反馈拼进任务目标重做,直到达标或尝试耗尽。默认尝试耗尽仍未达标返回
-/// `AgentError`(宁可失败也不把未过审的产出当结果);[`Self::keep_last_output`]
-/// 可改为返回最近一次产出(对应 DeepResearch "轮数用完即收"的语义)。
+/// Composition pattern: worker produces output → reviewer Agent (`reviewer`)
+/// inspects → if not passing, the review feedback is folded into the task
+/// objective and redone, until passing or out of attempts. By default, when
+/// attempts are exhausted without passing it returns an `AgentError` (better to
+/// fail than to return an unapproved output as the result);
+/// [`Self::keep_last_output`] instead returns the latest output (matching
+/// DeepResearch's "collect when rounds run out" semantics).
 ///
-/// worker / reviewer 都是 [`Orchestrator`],本组合器自身也实现 [`Orchestrator`],
-/// 因此可再嵌进 `FanOutFanIn` / `SequentialPipeline`(评审委员会、流水线里
-/// 校验某阶段等)。
+/// Both worker and reviewer are [`Orchestrator`]s, and this compositor itself
+/// also implements [`Orchestrator`], so it can be nested into `FanOutFanIn` /
+/// `SequentialPipeline` (review panels, validating a stage in a pipeline, etc.).
 pub struct ReviewOrchestrator {
     worker: Arc<dyn Orchestrator<Input = AgentTask, Output = String>>,
     reviewer: Arc<dyn Orchestrator<Input = String, Output = String>>,
@@ -128,13 +135,14 @@ pub struct ReviewOrchestrator {
 }
 
 impl ReviewOrchestrator {
-    /// 构造评审编排器。
+    /// Builds the review orchestrator.
     ///
     /// # Arguments
-    /// * `worker` — 产出方(接受 [`AgentTask`] 派发,输出待评审文本)。
-    /// * `reviewer` — 评审方(输入 [`review_envelope`] 信封,输出可被
-    ///   [`parse_review_verdict`] 解析的结论)。
-    /// * `max_attempts` — 最多"产出 + 评审"轮数(至少 1)。
+    /// * `worker` — the producer (accepts an [`AgentTask`] dispatch, outputs
+    ///   text to review).
+    /// * `reviewer` — the reviewer (takes the [`review_envelope`] envelope,
+    ///   outputs a conclusion parseable by [`parse_review_verdict`]).
+    /// * `max_attempts` — maximum number of "produce + review" rounds (at least 1).
     pub fn new(
         worker: Arc<dyn Orchestrator<Input = AgentTask, Output = String>>,
         reviewer: Arc<dyn Orchestrator<Input = String, Output = String>>,
@@ -148,19 +156,19 @@ impl ReviewOrchestrator {
         }
     }
 
-    /// 调整最大轮数(至少 1)。
+    /// Adjusts the maximum number of rounds (at least 1).
     pub fn with_max_attempts(mut self, max_attempts: usize) -> Self {
         self.max_attempts = max_attempts.max(1);
         self
     }
 
-    /// 尝试耗尽仍未达标时返回最近一次产出,而不是报错。
+    /// Returns the latest output when attempts are exhausted without passing, instead of erroring.
     pub fn keep_last_output(mut self) -> Self {
         self.fail_on_unresolved = false;
         self
     }
 
-    /// 最大轮数。
+    /// The maximum number of rounds.
     pub fn max_attempts(&self) -> usize {
         self.max_attempts
     }
@@ -236,7 +244,7 @@ impl Orchestrator for ReviewOrchestrator {
                 break;
             }
 
-            // 带着评审反馈重做:目标追加修订指令,任务级约束沿链保留。
+            // Redo with review feedback: append the revision directive to the objective, keeping task-level constraints along the chain.
             let feedback_suffix = if verdict.feedback.trim().is_empty() {
                 "[评审未通过,请修订输出质量]".to_string()
             } else {

@@ -1,16 +1,17 @@
 // lc-tools/src/python_repl.rs
-//! Python 代码执行工具
+//! Python code execution tool
 //!
-//! 调用系统 Python 解释器执行代码并返回结果。
-//! 需要系统中已安装 Python。
+//! Invokes the system Python interpreter to run code and return the result.
+//! Python must be installed on the system.
 //!
-//! # 安全警告
-//! 此工具默认**禁用**，必须调用 `with_dangerously_allow(true)` 显式启用。
-//! 启用后会执行任意 Python 代码，仅应在受控/沙箱环境中使用。
+//! # Security warning
+//! This tool is **disabled** by default; call `with_dangerously_allow(true)` to enable it explicitly.
+//! Once enabled it executes arbitrary Python code and should only be used in controlled/sandboxed environments.
 //!
-//! 内置的"危险 import 黑名单"只是**噪音过滤，不是安全边界**——它挡不住
-//! `__import__`/`eval`/`exec`/字符串拼接等编码混淆，也会误伤字符串字面量。
-//! 真正的隔离必须走沙箱（[`crate::sandbox`]），黑名单只用于减少误入沙箱的噪音。
+//! The built-in "dangerous import blacklist" is only **noise filtering, not a security boundary** —
+//! it cannot stop encoding obfuscation such as `__import__`/`eval`/`exec`/string concatenation,
+//! and it also has false positives on string literals.
+//! Real isolation must go through the sandbox ([`crate::sandbox`]); the blacklist only reduces noise reaching it.
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -20,25 +21,25 @@ use tokio::process::Command;
 
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
-/// Python REPL 工具输入
+/// Python REPL tool input
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PythonREPLInput {
-    /// 要执行的 Python 代码
+    /// The Python code to execute
     pub code: String,
-    /// 超时时间（秒，默认 30）
+    /// Timeout in seconds (default: 30)
     pub timeout_seconds: Option<u64>,
 }
 
-/// Python REPL 工具输出
+/// Python REPL tool output
 #[derive(Debug, Serialize)]
 pub struct PythonREPLOutput {
-    /// 执行的代码
+    /// The code that was executed
     pub code: String,
-    /// 标准输出
+    /// Standard output
     pub stdout: String,
-    /// 标准错误
+    /// Standard error
     pub stderr: String,
-    /// 退出码
+    /// Exit code
     pub exit_code: i32,
 }
 
@@ -67,7 +68,7 @@ const BLOCKED_IMPORTS: &[&str] = &[
     "antigravity",
 ];
 
-/// 常见绕过 import 黑名单的危险内建调用（单词边界 + 函数调用形式）。
+/// Common dangerous builtin calls that bypass the import blacklist (word boundary + function-call form).
 const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
     "__import__",
     "import_module",
@@ -77,11 +78,12 @@ const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
     "compile",
 ];
 
-/// 匹配 `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(` 等危险调用。
+/// Matches dangerous calls like `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(`.
 ///
-/// `\b` 保证不会误伤 `evaluate(` / `execute(` / `length(` 这类含子串的普通词；
-/// 但仍会误伤字符串字面量里的 `"eval(...)"` 字样——这是字符串级拦截的固有局限，
-/// 详见 [`contains_dangerous_code`] 的安全定位说明。
+/// `\b` prevents false positives on ordinary words that contain these as substrings, such as
+/// `evaluate(` / `execute(` / `length(`; however it still matches the literal text `"eval(...)"`
+/// inside string literals — an inherent limitation of string-level interception,
+/// see the security-positioning note on [`contains_dangerous_code`].
 static DANGEROUS_CALL_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(&format!(
         r"\b(?:{})\s*\(",
@@ -92,19 +94,20 @@ static DANGEROUS_CALL_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::n
 
 /// Check if Python code contains dangerous imports or builtin calls.
 ///
-/// **安全定位**：这是噪音过滤层，**不是安全边界**。逐行子串/正则匹配永远可以被
-/// unicode 混淆、`"o"+"s"` 拼接、`().__class__` 反射等绕过，也会误伤字符串字面量。
-/// 不可信代码必须走沙箱（[`crate::sandbox`]）。
+/// **Security positioning**: this is a noise-filter layer, **not a security boundary**.
+/// Line-by-line substring/regex matching can always be bypassed by unicode obfuscation,
+/// `"o"+"s"` concatenation, `().__class__` reflection, etc., and it also has false
+/// positives on string literals. Untrusted code must go through the sandbox ([`crate::sandbox`]).
 fn contains_dangerous_code(code: &str) -> Option<String> {
     for line in code.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
             continue;
         }
-        // 去掉行内注释（# 之后的部分），避免注释内容误伤。
+        // Strip the inline comment (the part after `#`) so comment content does not cause false positives.
         let code_part = trimmed.split('#').next().unwrap_or(trimmed);
 
-        // 1) 危险 import 检查（BLOCKED_IMPORTS）
+        // 1) Dangerous import check (BLOCKED_IMPORTS)
         if code_part.contains("import") {
             for blocked in BLOCKED_IMPORTS {
                 if code_part.contains(&format!("import {}", blocked))
@@ -117,7 +120,7 @@ fn contains_dangerous_code(code: &str) -> Option<String> {
             }
         }
 
-        // 2) 危险内建调用检查（__import__ / import_module / eval / exec / compile 等常见绕过）
+        // 2) Dangerous builtin-call check (common bypasses like __import__ / import_module / eval / exec / compile)
         if let Some(call) = DANGEROUS_CALL_REGEX.find(code_part) {
             return Some(call.as_str().to_string());
         }
@@ -125,24 +128,24 @@ fn contains_dangerous_code(code: &str) -> Option<String> {
     None
 }
 
-/// Python 代码执行工具
+/// Python code execution tool
 ///
-/// 在本地 Python 环境中执行代码并返回结果。
-/// 适用于数学计算、数据处理等需要 Python 生态的场景。
+/// Executes code in a local Python environment and returns the result.
+/// Suitable for scenarios needing the Python ecosystem, such as math and data processing.
 ///
-/// # 安全警告
-/// 此工具默认**禁用**。必须调用 [`PythonREPLTool::with_dangerously_allow`]
-/// 才能执行代码。在生产环境中使用时应确保在沙箱环境中运行。
+/// # Security warning
+/// This tool is **disabled** by default. Call [`PythonREPLTool::with_dangerously_allow`]
+/// to enable code execution. In production, ensure it runs inside a sandboxed environment.
 pub struct PythonREPLTool {
     python_path: String,
-    /// 是否允许执行代码（默认 false，必须显式 opt-in）
+    /// Whether code execution is allowed (default false, must explicitly opt in)
     dangerously_allow: bool,
-    /// 是否启用危险 import 检查（默认 true）
+    /// Whether the dangerous-import check is enabled (default true)
     check_dangerous_imports: bool,
 }
 
 impl PythonREPLTool {
-    /// 创建 Python 代码执行工具(默认禁用执行)。
+    /// Creates a Python code execution tool (execution disabled by default).
     pub fn new() -> Self {
         Self {
             python_path: Self::find_python(),
@@ -151,7 +154,7 @@ impl PythonREPLTool {
         }
     }
 
-    /// 使用自定义 Python 路径
+    /// Uses a custom Python path
     pub fn with_python_path(path: impl Into<String>) -> Self {
         Self {
             python_path: path.into(),
@@ -160,7 +163,7 @@ impl PythonREPLTool {
         }
     }
 
-    /// 显式启用代码执行（默认禁用）
+    /// Explicitly enables code execution (disabled by default)
     pub fn with_dangerously_allow(mut self, allow: bool) -> Self {
         self.dangerously_allow = allow;
         self
@@ -172,7 +175,7 @@ impl PythonREPLTool {
         self
     }
 
-    /// 自动查找系统 Python
+    /// Automatically finds the system Python
     fn find_python() -> String {
         for candidate in &["python3", "python"] {
             if std::process::Command::new(candidate)
@@ -384,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_dangerous_builtin_calls_detected() {
-        // 常见绕过：不经过 import 语句，直接调用内建/导入函数
+        // Common bypass: call builtin/imported functions directly without an import statement
         assert!(contains_dangerous_code("__import__('os').system('ls')").is_some());
         assert!(contains_dangerous_code("importlib.import_module('os')").is_some());
         assert!(contains_dangerous_code("eval('os')").is_some());
@@ -395,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_dangerous_builtin_calls_no_false_positive_on_words() {
-        // 单词边界：不误伤 evaluate / execute / length 等含子串的普通词
+        // Word boundary: no false positives on ordinary words containing these as substrings, like evaluate / execute / length
         assert!(contains_dangerous_code("print('evaluate the result')").is_none());
         assert!(contains_dangerous_code("result = execute_query()").is_none());
         assert!(contains_dangerous_code("print(len([1, 2, 3]))").is_none());

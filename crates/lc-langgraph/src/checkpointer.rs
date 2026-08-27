@@ -122,8 +122,8 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
             .values()
             .map(|d| (d.timestamp, d.seq, d.id.clone()))
             .collect();
-        // H5: 旧的 HashMap.keys() 顺序不定;改为按 (timestamp, seq) 升序,
-        // 调用方取 .last() 即得到最近的 checkpoint。
+        // H5: the old HashMap.keys() order was nondeterministic; sort by (timestamp, seq)
+        // ascending instead, so callers taking `.last()` get the most recent checkpoint.
         items.sort();
         Ok(items.into_iter().map(|(_, _, id)| id).collect())
     }
@@ -190,7 +190,7 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
             .values()
             .map(|d| (d.timestamp, d.seq, d.id.clone()))
             .collect();
-        // H5: 按 (timestamp, seq) 升序,取 .last() 为最近 checkpoint。
+        // H5: sort by (timestamp, seq) ascending; `.last()` is the most recent checkpoint.
         items.sort();
         Ok(items.into_iter().map(|(_, _, id)| id).collect())
     }
@@ -278,7 +278,7 @@ impl<S: StateSchema> FileCheckpointer<S> {
                 items.push((data.timestamp, data.seq, id));
             }
         }
-        // H5: 按 (timestamp, seq) 升序;seq 打破同一秒内的并列。
+        // H5: sort by (timestamp, seq) ascending; seq breaks ties within the same second.
         items.sort();
         Ok(items)
     }
@@ -301,9 +301,9 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| GraphError::CheckpointError(format!("Serialize error: {}", e)))?;
 
-        // 原子写:先写 `{id}.json.tmp` 再 rename 到正式文件,避免崩溃/中断在
-        // 半截 JSON 时损坏 checkpoint(与 FileResumeStore 同一模式)。`.tmp`
-        // 扩展名不会被 sorted_ids 的 `.json` 过滤读到。
+        // Atomic write: write `{id}.json.tmp` first, then rename over the real file, so a
+        // crash or interrupt mid-JSON cannot corrupt the checkpoint (same pattern as
+        // FileResumeStore). The `.tmp` extension is never picked up by sorted_ids' `.json` filter.
         let tmp_path = self.directory.join(format!("{id}.json.tmp"));
         tokio::fs::write(&tmp_path, &json)
             .await
@@ -421,7 +421,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 主文件完整且可解析;`.tmp` 无残留(rename 已清理)。
+        // The main file is complete and parseable; no `.tmp` leftover (rename cleaned it up).
         let main = temp_dir.path().join(format!("{id}.json"));
         assert!(main.exists(), "checkpoint file must exist");
         let json = tokio::fs::read_to_string(&main).await.unwrap();
@@ -434,7 +434,7 @@ mod tests {
             "tmp file must be renamed away, not left behind"
         );
 
-        // 残留的 `.tmp` 文件不被 list() 读到(扩展名过滤)。
+        // A stale `.tmp` file must not be read by list() (extension filter).
         std::fs::write(temp_dir.path().join("stale.json.tmp"), b"{}").unwrap();
         let list = checkpointer.list().await.unwrap();
         assert_eq!(list, vec![id]);
@@ -500,7 +500,7 @@ mod tests {
 
         let list = checkpointer.list().await.unwrap();
         assert_eq!(list.len(), 3);
-        // H5: 最后一个 id 必须是最后一次 save 的(而非 HashMap 乱序)。
+        // H5: the last id must be the most recent save (not HashMap arbitrary order).
         let (state, _) = checkpointer.last().await.unwrap().unwrap();
         assert_eq!(state.input, "third");
     }
@@ -517,7 +517,7 @@ mod tests {
             .await
             .unwrap();
 
-        // M6: last() 返回最近一次 save 的 recursion_count
+        // M6: last() returns the recursion_count of the most recent save
         let (state, recursion_count) = checkpointer.last().await.unwrap().unwrap();
         assert_eq!(state.input, "b");
         assert_eq!(recursion_count, 12);

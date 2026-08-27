@@ -1,36 +1,43 @@
 // lc-agents/src/resume.rs
-//! 跨进程 resume(§4.2 人审/预算门):挂起状态落盘 + 恢复。
+//! Cross-process resume (§4.2 approval/budget gate): suspend-state persistence + recovery.
 //!
-//! 人审门 [`ApprovalHandler`](crate::approval::ApprovalHandler) 的 `approve`
-//! 是纯 async —— 同进程内 future 挂起等待审批信号天然成立,但**进程死亡会
-//! 丢失挂起点**:等待审批时进程被杀,审批信号永远不会到,agent 循环也无法
-//! 继续。本模块把"等待审批的工具调用 + 恢复 agent loop 所需的上下文"序列化
-//! 落盘,进程重启后从挂起点续跑,而不是从头重放整个对话。
+//! The approval gate's [`ApprovalHandler`](crate::approval::ApprovalHandler)
+//! `approve` is purely async — suspending a future to wait for an approval
+//! signal works naturally within one process, but **a process death loses the
+//! suspension point**: if the process is killed while waiting for approval, the
+//! signal never arrives and the agent loop cannot continue. This module
+//! serializes "the tool call awaiting approval + the context needed to resume
+//! the agent loop" to disk, so a restarted process resumes from the checkpoint
+//! instead of replaying the whole conversation.
 //!
-//! 分工:
+//! Division of labor:
 //!
-//! - [`PendingApproval`]:待审批工具 + 输入 / 中间步骤 / 迭代序号 / 预算累计
-//!   快照,`Serialize + Deserialize`。
-//! - [`ResumeStore`]:挂起点存取接口。
-//! - [`FileResumeStore`]:磁盘实现(JSON + 原子写),真实跨进程恢复用。
-//! - [`MemoryResumeStore`]:内存实现,测试 / 单进程演示用。
+//! - [`PendingApproval`]: the pending tool + a snapshot of inputs /
+//!   intermediate steps / iteration / budget totals, `Serialize + Deserialize`.
+//! - [`ResumeStore`]: checkpoint persistence interface.
+//! - [`FileResumeStore`]: disk implementation (JSON + atomic write), for real
+//!   cross-process recovery.
+//! - [`MemoryResumeStore`]: in-memory implementation, for tests / single-process
+//!   demos.
 //!
-//! 框架接入点(见 `executor/agent_loop.rs::execute_tool_inner`):每次工具调用
-//! 进入人审门等待审批**之前**,把 [`PendingApproval`] 写入 store;审批决定
-//! **落地之后**清除。崩溃时挂起点留在磁盘,新进程用 [`AgentExecutor::pending_approval`]
-//! 查看、[`AgentExecutor::resume`] 续跑。
+//! Framework integration point (see `executor/agent_loop.rs::execute_tool_inner`):
+//! before each tool call enters the approval gate to wait for approval, the
+//! [`PendingApproval`] is written to the store; it is cleared once the approval
+//! decision is finalized. On a crash the checkpoint stays on disk; a new process
+//! inspects it via [`AgentExecutor::pending_approval`] and resumes via
+//! [`AgentExecutor::resume`].
 //!
-//! 恢复(进程 B):
+//! Recovery (process B):
 //!
 //! ```rust,ignore
-//! // 进程 B:重建与进程 A 相同的 executor(相同 agent / tools / store 目录)。
+//! // Process B: rebuild the same executor as process A (same agent / tools / store dir).
 //! let store = Arc::new(FileResumeStore::new("/var/checkpoints/app")?);
 //! let executor = AgentExecutor::new(agent, tools)
 //!     .with_resume_store(store)
 //!     .with_approval(handler);
 //!
 //! if let Some(pending) = executor.pending_approval().await? {
-//!     // 向操作员展示 pending.tool_name / pending.arguments,收集审批决定。
+//!     // Show the operator pending.tool_name / pending.arguments and collect the decision.
 //!     let answer = executor.resume(decision).await?;
 //! }
 //! ```
@@ -42,71 +49,77 @@ use std::path::PathBuf;
 
 use crate::types::AgentStep;
 
-/// 跨进程 resume 错误。
+/// Cross-process resume error.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ResumeError {
-    /// 文件系统 I/O 错误(创建目录 / 读 / 写 / 删除)。
+    /// Filesystem I/O error (create dir / read / write / delete).
     #[error("resume store I/O error: {0}")]
     Io(String),
-    /// 挂起点序列化 / 反序列化错误。
+    /// Checkpoint serialization / deserialization error.
     #[error("resume store serialization error: {0}")]
     Serialize(String),
 }
 
-/// 待审批的工具调用 + 恢复 agent loop 所需的上下文快照。
+/// The tool call awaiting approval + the context snapshot needed to resume the agent loop.
 ///
-/// 框架在 `execute_tool` 内、调用审批 handler **之前**落盘(此时同步 hook
-/// 已跑完,`tool_name` / `arguments` 是审批真正看到的最终值);审批决定落地后
-/// 清除。进程崩溃时挂起点留在磁盘,新进程加载后重新进入审批流程(或直接用
-/// 给定决定续跑),而非从头重放已完成的中间步骤。
+/// The framework persists it inside `execute_tool`, **before** calling the
+/// approval handler (at that point the sync hooks have finished and `tool_name` /
+/// `arguments` are the final values the approval actually sees); it is cleared
+/// once the approval decision is finalized. On a process crash the checkpoint
+/// stays on disk; a new process loads it and re-enters the approval flow (or
+/// resumes directly with the given decision) instead of replaying the completed
+/// intermediate steps from scratch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingApproval {
-    /// 待审批工具名(同步 hook 修改后的最终值)。
+    /// Tool name awaiting approval (final value after sync hooks).
     pub tool_name: String,
-    /// 待审批工具参数(JSON;同步 hook 修改后的最终值)。
+    /// Tool arguments awaiting approval (JSON; final value after sync hooks).
     pub arguments: serde_json::Value,
-    /// 工具调用 id(function-calling 风格;无则空串)。
+    /// Tool call id (function-calling style; empty string if none).
     pub tool_id: String,
-    /// 恢复 agent loop 的输入变量(prompt 变量,含 `input`)。
+    /// Input variables to resume the agent loop (prompt variables, including `input`).
     pub inputs: HashMap<String, String>,
-    /// 已完成的中介步骤(此前所有工具 action + 观察)。恢复后从中继续,不重放。
+    /// Completed intermediate steps (all prior tool actions + observations). Recovery continues from here without replaying.
     pub steps: Vec<AgentStep>,
-    /// 挂起时的迭代序号。恢复后从该迭代继续,迭代预算不间断。
+    /// Iteration number at suspension. Recovery continues from this iteration so the iteration budget stays unbroken.
     pub iteration: usize,
-    /// 预算:已消耗的工具调用次数(含本次待审批工具)。
+    /// Budget: tool calls consumed so far (including the pending tool).
     pub tool_calls_consumed: usize,
-    /// 预算:已消耗的 LLM token(agent 不上报则为 None)。
+    /// Budget: LLM tokens consumed (None if the agent does not report).
     pub tokens_consumed: Option<usize>,
-    /// 原运行 trace_id(恢复后沿用,保持追踪连续)。
+    /// Original run trace_id (reused after recovery to keep tracing continuous).
     pub trace_id: Option<String>,
 }
 
-/// 挂起点存储接口。
+/// Checkpoint storage interface.
 ///
-/// 框架在审批 handler 前后调用 [`save_pending`](Self::save_pending) /
-/// [`clear_pending`](Self::clear_pending);新进程用 [`load_pending`](Self::load_pending)
-/// 读取挂起点。实现需 `Send + Sync`(跨任务 / 跨进程共享)。
+/// The framework calls [`save_pending`](Self::save_pending) /
+/// [`clear_pending`](Self::clear_pending) around the approval handler; a new
+/// process reads the checkpoint via [`load_pending`](Self::load_pending).
+/// Implementations must be `Send + Sync` (shared across tasks / processes).
 #[async_trait]
 pub trait ResumeStore: Send + Sync {
-    /// 持久化一个待审批挂起点。
+    /// Persists a pending-approval checkpoint.
     async fn save_pending(&self, pending: &PendingApproval) -> Result<(), ResumeError>;
-    /// 读取当前挂起点;无则返回 `None`。
+    /// Reads the current checkpoint; returns `None` if absent.
     async fn load_pending(&self) -> Result<Option<PendingApproval>, ResumeError>;
-    /// 清除挂起点(审批决定已落地 / 挂起点已被认领)。不存在时视为成功。
+    /// Clears the checkpoint (decision finalized / checkpoint claimed). Treats absence as success.
     async fn clear_pending(&self) -> Result<(), ResumeError>;
 }
 
-/// 磁盘挂起点存储:JSON 落盘 + 原子写。
+/// Disk checkpoint storage: JSON persistence + atomic write.
 ///
-/// 原子写:先写 `pending.json.tmp` 再 `rename`,崩溃不产生半截 checkpoint。
-/// 目录由调用方指定,**并发 executor 须用各自独立目录**,避免互相覆盖挂起点。
+/// Atomic write: write `pending.json.tmp` first, then `rename`, so a crash never
+/// leaves a partial checkpoint. The directory is chosen by the caller;
+/// **concurrent executors must use separate directories** to avoid overwriting
+/// each other's checkpoints.
 pub struct FileResumeStore {
     dir: PathBuf,
 }
 
 impl FileResumeStore {
-    /// 创建挂起点存储。目录不存在时自动创建(含父目录)。
+    /// Creates a checkpoint store; auto-creates the directory (and parents) if missing.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, ResumeError> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)
@@ -152,21 +165,21 @@ impl ResumeStore for FileResumeStore {
         let path = self.pending_path();
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
-            // 挂起点本就不存在:幂等清除,视为成功。
+            // Checkpoint already absent: idempotent clear, treated as success.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(ResumeError::Io(format!("remove {}: {}", path.display(), e))),
         }
     }
 }
 
-/// 内存挂起点存储(测试 / 单进程演示用;进程死亡不持久)。
+/// In-memory checkpoint store (for tests / single-process demos; not persistent across process death).
 #[derive(Default)]
 pub struct MemoryResumeStore {
     pending: tokio::sync::Mutex<Option<PendingApproval>>,
 }
 
 impl MemoryResumeStore {
-    /// 新建空的内存挂起点存储。
+    /// Creates an empty in-memory checkpoint store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -224,7 +237,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = FileResumeStore::new(dir.path()).unwrap();
 
-        // 空目录:无挂起点。
+        // Empty directory: no checkpoint.
         assert!(store.load_pending().await.unwrap().is_none());
 
         let pending = sample_pending();
@@ -247,7 +260,7 @@ mod tests {
     async fn test_file_store_clear_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let store = FileResumeStore::new(dir.path()).unwrap();
-        // 无挂起点时 clear 不报错(幂等)。
+        // clear with no checkpoint does not error (idempotent).
         store.clear_pending().await.unwrap();
         store.clear_pending().await.unwrap();
     }
@@ -258,7 +271,7 @@ mod tests {
         let store = FileResumeStore::new(dir.path()).unwrap();
         store.save_pending(&sample_pending()).await.unwrap();
 
-        // 原子写:保存完成后无 .tmp 残留。
+        // Atomic write: no .tmp leftover after a successful save.
         let entries: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
@@ -301,7 +314,7 @@ mod tests {
         assert!(e.to_string().contains("bad json"));
     }
 
-    /// 便捷断言:`FileResumeStore::new` 自动创建目录。
+    /// Convenience assertion: `FileResumeStore::new` auto-creates the directory.
     #[tokio::test]
     async fn test_file_store_creates_dir() {
         let dir = tempfile::tempdir().unwrap();

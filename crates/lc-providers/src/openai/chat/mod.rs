@@ -225,7 +225,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for OpenAIChat {
 
     fn get_num_tokens(&self, text: &str) -> usize {
         lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
-            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            // If the encoder fails to load, overestimate by byte length (better slightly high than silently counting 0, which would mislead routing/truncation)
             log::warn!("Token counting failed, falling back to byte-length estimation: {e}");
             text.len()
         })
@@ -550,8 +550,8 @@ impl OpenAIChat {
                     if event.is_done() {
                         break;
                     }
-                    // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
-                    // 避免流式回复因单条坏数据被截断却毫无提示
+                    // Failed SSE chunks are no longer silently dropped: log an error,
+                    // so a streaming reply truncated by one bad datum is not left unexplained.
                     match event.parse_openai_chunk() {
                         Ok(Some(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
@@ -561,9 +561,10 @@ impl OpenAIChat {
                                     }
                                 }
                             }
-                            // OpenAI 在流末尾(通常是 `[DONE]` 前最后一个 chunk)携带 usage。
-                            // 把它作为独立 chunk 发出:文本为空、token_usage 填充,消费方
-                            // 从流式路径即可拿到整次调用的 token 用量。
+                            // OpenAI carries usage at the end of the stream (usually in the
+                            // last chunk before `[DONE]`). Emit it as a standalone chunk: empty
+                            // text, token_usage filled, so the consumer gets the whole call's
+                            // token usage from the streaming path.
                             if let Some(usage) = chunk.usage {
                                 let token_usage = TokenUsage {
                                     prompt_tokens: usage.prompt_tokens,
@@ -611,7 +612,7 @@ impl OpenAIChat {
     }
 }
 
-/// OpenAI 响应结构
+/// OpenAI response structure
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct OpenAIChatResponse {
@@ -636,7 +637,7 @@ struct OpenAIChoice {
 struct OpenAIMessage {
     role: String,
     content: Option<String>,
-    /// 推理模型的思维链内容(如 glm-5.2, DeepSeek-R1 等)
+    /// Reasoning chain-of-thought content from reasoning models (e.g. glm-5.2, DeepSeek-R1)
     reasoning_content: Option<String>,
     tool_calls: Option<Vec<lc_core::tools::ToolCall>>,
 }

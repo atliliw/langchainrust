@@ -1,16 +1,16 @@
 // lc-embeddings/src/test_support.rs
-//! 测试辅助：极简 HTTP stub 服务，返回 OpenAI/DeepSeek/Qwen/Cohere 兼容的
-//! embeddings JSON 响应，用于不依赖真实网络的批量对齐测试（P0-1）。
+//! Test helpers: a minimal HTTP stub server returning OpenAI/DeepSeek/Qwen/Cohere-compatible
+//! embeddings JSON responses, for batch-alignment tests that do not rely on a real network (P0-1).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// 极简 HTTP stub：前 `failures_before_success` 次请求返回 `transient_status`，
-/// 之后返回 `success_status`（body 为 `success_body`）。返回 `(base_url, 已接收请求数)`。
+/// Minimal HTTP stub: the first `failures_before_success` requests return `transient_status`,
+/// then `success_status` (with `success_body`). Returns `(base_url, received request count)`.
 ///
-/// 用于 P2-5 重试语义测试（429/5xx 重试、4xx 不重试、重试耗尽）以及
-/// provider 层的重试接线测试。
+/// Used for P2-5 retry-semantics tests (429/5xx retried, 4xx not retried, retries exhausted)
+/// and provider-level retry wiring tests.
 pub async fn spawn_status_stub(
     transient_status: u16,
     failures_before_success: usize,
@@ -21,16 +21,16 @@ pub async fn spawn_status_stub(
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicUsize::new(0));
     let r = requests.clone();
-    // 转为 owned,才能随任务逃出本函数（success_body 的生命周期不满足 'static）。
+    // Convert to owned so it can escape this function with the task (success_body's lifetime is not 'static).
     let success_body = success_body.to_string();
 
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
             let r = r.clone();
-            // 每个连接都可能用到成功 body,需 clone 进各自的 handler 任务。
+            // Every connection may use the success body, so clone it into each handler task.
             let success_body = success_body.clone();
             tokio::spawn(async move {
-                // 读 header 区到 \r\n\r\n
+                // Read the header section up to \r\n\r\n
                 let mut header = Vec::new();
                 let mut byte = [0u8; 1];
                 while header.len() < 64 * 1024 {
@@ -42,7 +42,7 @@ pub async fn spawn_status_stub(
                         break;
                     }
                 }
-                // 读 body（丢弃,只数请求）
+                // Read the body (discarded; only counting requests)
                 let header_str = String::from_utf8_lossy(&header).to_lowercase();
                 let content_length: usize = header_str
                     .lines()
@@ -87,11 +87,11 @@ pub async fn spawn_status_stub(
     (format!("http://{}", addr), requests)
 }
 
-/// 启动一个返回 OpenAI 风格 embeddings 响应的 HTTP stub。
+/// Starts an HTTP stub returning OpenAI-style embeddings responses.
 ///
-/// `n_vectors(input_count)` 决定每个请求返回的向量数量，便于模拟
-/// 正常返回（`|n| n`）、少返回（`|n| n.saturating_sub(1)`）、
-/// 超量返回（`|_| 100`）等批量对齐场景。
+/// `n_vectors(input_count)` decides how many vectors each request returns, simulating
+/// normal returns (`|n| n`), short returns (`|n| n.saturating_sub(1)`), excess returns
+/// (`|_| 100`), and other batch-alignment scenarios.
 pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send + Sync>) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -105,7 +105,7 @@ pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send 
             };
             let n_vectors = n_vectors.clone();
             tokio::spawn(async move {
-                // 读 header 区（到 \r\n\r\n 结束）
+                // Read the header section (up to \r\n\r\n)
                 let mut header = Vec::new();
                 let mut byte = [0u8; 1];
                 while header.len() < 64 * 1024 {
@@ -125,14 +125,14 @@ pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send 
                     .and_then(|v| v.trim().parse().ok())
                     .unwrap_or(0);
 
-                // 读 body
+                // Read the body
                 let mut body = vec![0u8; content_length];
                 if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
                     return;
                 }
                 let body_str = String::from_utf8_lossy(&body);
 
-                // 解析请求文本：OpenAI/DeepSeek/Qwen 用 "input"，Cohere 用 "texts"
+                // Parse the request text: OpenAI/DeepSeek/Qwen use "input", Cohere uses "texts"
                 let inputs: Vec<String> = serde_json::from_str::<serde_json::Value>(&body_str)
                     .ok()
                     .and_then(|v| v.get("input").cloned().or_else(|| v.get("texts").cloned()))
@@ -147,13 +147,14 @@ pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send 
                     .unwrap_or_default();
                 let input_count = inputs.len();
 
-                // 每个请求返回前 n 个输入的向量;每个向量由文本字节和编码,
-                // 便于测试验证文本↔向量对齐。超出输入数量的部分用合成向量填充。
+                // Each request returns vectors for the first n inputs; each vector is encoded
+                // from the text bytes, letting tests verify text↔vector alignment. Entries
+                // beyond the input count are filled with synthetic vectors.
                 let n = n_vectors(input_count);
                 let data: Vec<serde_json::Value> = (0..n)
                     .map(|i| {
-                        // P2-8: 向量 [sum, 1.0] 归一化后仍随文本不同而不同,
-                        // 让对齐测试在归一化语义下仍能区分每条文本。
+                        // P2-8: vector [sum, 1.0] still differs per text after normalization,
+                        // so alignment tests can distinguish each text under normalization semantics.
                         let embedding = match inputs.get(i) {
                             Some(s) => vec![s.bytes().map(|b| b as f32).sum::<f32>(), 1.0_f32],
                             None => vec![i as f32 + 1000.0, 0.0_f32],

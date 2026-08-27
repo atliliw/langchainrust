@@ -1,10 +1,11 @@
 // lc-tools/src/ssrf.rs
-//! SSRF 防护——单一实现,禁止复制。
+//! SSRF protection — a single shared implementation, no copies allowed.
 //!
-//! `is_private_ip` / `url_points_to_private_ip` 是安全关键逻辑,必须在全 crate 只有
-//! 一份实现,供 [`crate::url_fetch`] 与 [`crate::extended::http`] 复用(评审 Q1)。
-//! 任何规则演化(补 CGNAT 100.64.0.0/10、新 IPv6 特殊段等)都只能在此处修改,
-//! 否则两个入口会规则分叉:"URLFetch 拦住内网、HTTP 工具放行内网"。
+//! `is_private_ip` / `url_points_to_private_ip` are security-critical; the whole crate must
+//! have exactly one implementation, reused by [`crate::url_fetch`] and [`crate::extended::http`]
+//! (review Q1). Any rule evolution (adding CGNAT 100.64.0.0/10, new IPv6 special ranges, etc.)
+//! must only change here, otherwise the two entry points would diverge: "URLFetch blocks
+//! intranet, HTTP tool allows intranet".
 
 use std::net::IpAddr;
 
@@ -23,8 +24,9 @@ pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
                 || *v4 == std::net::Ipv4Addr::UNSPECIFIED
         }
         IpAddr::V6(v6) => {
-            // IPv4-mapped IPv6 (::ffff:a.b.c.d) 直连的是 IPv4 端点,必须转回 V4 判定,
-            // 否则 ::ffff:127.0.0.1 / ::ffff:169.254.169.254 这类地址会绕过防护
+            // IPv4-mapped IPv6 (::ffff:a.b.c.d) targets an IPv4 endpoint directly, so it must
+            // be converted back to a V4 check; otherwise addresses like ::ffff:127.0.0.1 /
+            // ::ffff:169.254.169.254 would bypass the protection
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private_ip(&IpAddr::V4(v4));
             }
@@ -68,17 +70,18 @@ pub(crate) async fn url_points_to_private_ip(url: &str) -> Result<bool, ToolErro
     Ok(addrs.iter().any(is_private_ip))
 }
 
-/// 手动跟随重定向的最大跳数(与 reqwest 默认一致)。
+/// Maximum number of hops for manual redirect following (matches the reqwest default).
 pub(crate) const MAX_REDIRECTS: usize = 10;
 
-/// 带 SSRF 逐跳检查的 GET 请求,手动跟随重定向。
+/// GET request with per-hop SSRF checks, following redirects manually.
 ///
-/// reqwest 默认跟随 30x 但不会重查重定向目标,是"检查首跳放行、重定向进内网"
-/// 这条 SSRF 绕过的根源。这里每一跳都先做 `url_points_to_private_ip` 再发送,
-/// 重定向目标用 Location 解析(支持相对 URL),且拒绝非 http(s) 协议。
+/// reqwest follows 30x by default but does not re-check the redirect target, which is the
+/// root of the "first hop checked, redirect into the intranet" SSRF bypass. Here every hop
+/// runs `url_points_to_private_ip` before sending, the redirect target is resolved via the
+/// Location header (relative URLs supported), and non-http(s) protocols are rejected.
 ///
-/// `check_ssrf = false` 时跳过 SSRF 检查(对应 `with_allow_private_ips(true)`),
-/// 但保留手动重定向跟随行为。
+/// When `check_ssrf = false`, the SSRF check is skipped (corresponding to
+/// `with_allow_private_ips(true)`), but manual redirect following is preserved.
 pub(crate) async fn guarded_get(
     client: &reqwest::Client,
     url: &str,
@@ -104,7 +107,7 @@ pub(crate) async fn guarded_get(
             return Ok(resp);
         }
 
-        // 有 Location 才继续跟随;没有则把 3xx 响应原样交给调用方
+        // Follow only when a Location header is present; otherwise hand the 3xx response back as-is
         let Some(location) = resp
             .headers()
             .get(reqwest::header::LOCATION)
@@ -120,7 +123,7 @@ pub(crate) async fn guarded_get(
     )))
 }
 
-/// 把 Location 头(可能相对)解析为绝对 URL,拒绝非 http(s) 协议。
+/// Resolves the Location header (possibly relative) into an absolute URL, rejecting non-http(s) protocols.
 fn resolve_redirect(base: &str, location: &str) -> Result<String, ToolError> {
     let joined = url::Url::parse(base)
         .and_then(|base_url| base_url.join(location))

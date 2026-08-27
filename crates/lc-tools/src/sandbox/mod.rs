@@ -7,11 +7,12 @@
 //!
 //! # Backends
 //!
-//! - **[`LocalSandbox`]**: 当前唯一后端,子进程 + 超时。
+//! - **[`LocalSandbox`]**: the current only backend, a subprocess + timeout.
 //!
-//! > 曾有的 `WasmSandbox` / `E2BSandbox` 是"接口齐全但实现恒 not implemented"的空壳
-//! > (评审 Q2),已连同 `sandbox-wasm` / `sandbox-e2b` feature 一起删除——承诺了但做不到
-//! > 的后端最伤信任,等真正实现了再放出来。
+//! > The former `WasmSandbox` / `E2BSandbox` were hollow shells with a complete interface but
+//! > a permanent "not implemented" body (review Q2). They were removed together with the
+//! > `sandbox-wasm` / `sandbox-e2b` features — a backend that promises but cannot deliver
+//! > damages trust the most; they will come back once actually implemented.
 
 mod local;
 

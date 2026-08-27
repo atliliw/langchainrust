@@ -1,25 +1,27 @@
-//! lc-testkit 的错误类型与到 `ProviderError` 的桥接。
+//! lc-testkit error types and the bridge to `ProviderError`.
 
 use lc_providers::ProviderError;
 
-/// lc-testkit 统一错误。
+/// Unified lc-testkit error.
 ///
-/// 通过 [`From<TestkitError> for ProviderError`] 桥接,让录播/回放 provider
-/// 可以直接喂给 chains 等要求 `L::Error: Into<ProviderError>` 的泛型入口。
+/// Bridges via [`From<TestkitError> for ProviderError`], so the record/replay provider
+/// can be fed directly into generic entry points like chains that require
+/// `L::Error: Into<ProviderError>`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TestkitError {
-    /// 录制/回放过程中的 IO 错误(读文件、写文件等)。
+    /// IO error during recording/replaying (reading/writing files, etc.).
     #[error("io error while recording/replaying: {0}")]
     Io(#[from] std::io::Error),
-    /// 回放队列耗尽:请求条数超过录制条数。
+    /// Replay queue exhausted: more requests than recorded exchanges.
     #[error("replay queue exhausted (requested {requested} messages, no recording left)")]
     ReplayExhausted { requested: usize },
-    /// `ReplayStrategy::Exact` 下请求消息签名在录播中无匹配(显式报错,不做
-    /// 静默 FIFO 兜底);`left` 为队列剩余条数,便于排查录播与请求的字段漂移。
+    /// No recording matches the request message signature under `ReplayStrategy::Exact`
+    /// (explicit error, no silent FIFO fallback); `left` is the remaining queue length,
+    /// useful for debugging field drift between the recording and the request.
     #[error("replay has no recording matching request messages (strategy=Exact, {left} exchange(s) left)")]
     ReplayNoMatch { left: usize },
-    /// 内层模型错误,无损透传真实 provider 错误。
+    /// Inner model error, passed through losslessly from the real provider error.
     #[error("inner model error: {0}")]
     Inner(#[from] ProviderError),
 }
@@ -27,9 +29,9 @@ pub enum TestkitError {
 impl From<TestkitError> for ProviderError {
     fn from(e: TestkitError) -> Self {
         match e {
-            // 无损透传真实 provider 错误。
+            // Pass the real provider error through losslessly.
             TestkitError::Inner(p) => p,
-            // 其余为 testkit 自身错误 → 经 From<String> 落到 ProviderError::Testkit。
+            // Other errors are testkit's own; they land in `ProviderError::Testkit` via `From<String>`.
             other => other.to_string().into(),
         }
     }

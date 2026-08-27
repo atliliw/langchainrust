@@ -1,55 +1,56 @@
-//! MCP Server 健康检查 + 熔断器(P2-5)。
+//! MCP Server health checks + circuit breaker (P2-5).
 //!
-//! 100+ Server 中任意一个都可能随时挂掉。本模块提供:
+//! Any one of 100+ servers may die at any moment. This module provides:
 //!
-//! - **心跳探活**:`list_tools` 即探活——能列出工具说明 Server 活着;
-//! - **熔断摘除**:`CircuitBreaker` 连续 `N` 次失败后 Open(熔断),`client()`
-//!   快速失败不再往坏 Server 上打请求;
-//! - **指数退避重连**:熔断后按 0.5s → 1s → 2s → …(上限 30s)退避,退避结束
-//!   进入半开探测窗口——`allow_request` 放行一次,成功即恢复、失败则下一档退避。
+//! - **Heartbeat probe**: `list_tools` is the probe — being able to list tools means the server is alive;
+//! - **Breaker removal**: after `N` consecutive failures `CircuitBreaker` goes Open (trips), and `client()`
+//!   fails fast without hitting the unhealthy server;
+//! - **Exponential backoff reconnect**: after tripping, back off 0.5s → 1s → 2s → … (cap 30s); when the
+//!   backoff ends it enters a half-open probe window — `allow_request` lets one through; success recovers,
+//!   failure advances to the next backoff step.
 //!
-//! [`ServerHealth`] 是单次健康快照,`ConnectionManager::health(name)` 返回它;
-//! [`CircuitBreaker`] 是持久化的熔断状态机,挂在每个被托管的 Server 上。
+//! [`ServerHealth`] is a single health snapshot, returned by `ConnectionManager::health(name)`;
+//! [`CircuitBreaker`] is the persistent breaker state machine, one per managed server.
 
 use std::time::{Duration, Instant};
 
 use crate::client::MCPClient;
 use crate::protocol::MCPError;
 
-/// 指数退避基数(0.5s)。
+/// Exponential backoff base (0.5s).
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
-/// 退避上限:防等待时间无限增长。
+/// Backoff cap: prevents the wait time from growing without bound.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Server 健康状态。
+/// Server health status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
-    /// 正常(无失败)。
+    /// Healthy (no failures).
     Healthy,
-    /// 出现过失败但仍可用(未达摘除阈值)。
+    /// Has seen failures but is still usable (below the removal threshold).
     Degraded,
-    /// 连续失败已达阈值,被熔断摘除。
+    /// Consecutive failures hit the threshold; tripped and removed by the breaker.
     Down,
 }
 
-/// 单个 Server 的健康快照(P2-5)。
+/// A single server's health snapshot (P2-5).
 ///
-/// 由 [`ConnectionManager::health`](crate::connection_manager::ConnectionManager::health) 返回;`last_check` 为最近一次探活时间,
-/// `failures` 为连续失败次数,`max_failures` 为触发 Down 的阈值。
+/// Returned by [`ConnectionManager::health`](crate::connection_manager::ConnectionManager::health); `last_check` is the most recent
+/// probe time, `failures` the consecutive failure count, `max_failures` the threshold that triggers Down.
 #[derive(Debug, Clone)]
 pub struct ServerHealth {
-    /// 当前健康状态。
+    /// Current health status.
     pub status: HealthStatus,
-    /// 连续失败次数(探活 + 建连失败累计)。
+    /// Consecutive failure count (accumulated from probes + connection failures).
     pub failures: u32,
-    /// 最近一次探活时间(尚未探过则为 `None`)。
+    /// Most recent probe time (`None` if never probed).
     pub last_check: Option<Instant>,
-    /// 连续失败 N 次判 Down(摘除阈值)。
+    /// N consecutive failures trips Down (removal threshold).
     pub max_failures: u32,
 }
 
 impl ServerHealth {
-    /// 构造初始健康快照。
+    /// Builds an initial health snapshot.
     pub fn new(max_failures: u32) -> Self {
         Self {
             status: HealthStatus::Healthy,
@@ -59,14 +60,14 @@ impl ServerHealth {
         }
     }
 
-    /// 记录一次探活成功:恢复健康。
+    /// Records a successful probe: restores health.
     pub fn record_success(&mut self) {
         self.status = HealthStatus::Healthy;
         self.failures = 0;
         self.last_check = Some(Instant::now());
     }
 
-    /// 记录一次探活失败:递增失败计数,达阈值转 Down,否则 Degraded。
+    /// Records a failed probe: increments the failure count; at the threshold goes Down, otherwise Degraded.
     pub fn record_failure(&mut self) {
         self.failures += 1;
         self.last_check = Some(Instant::now());
@@ -77,22 +78,22 @@ impl ServerHealth {
         };
     }
 
-    /// 是否已熔断摘除。
+    /// Whether it has been tripped and removed.
     pub fn is_down(&self) -> bool {
         self.status == HealthStatus::Down
     }
 }
 
-/// 熔断器状态。
+/// Breaker state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakerState {
-    /// 正常放行。
+    /// Normal, requests allowed.
     Closed,
-    /// 熔断:拒绝请求,直到退避时间到(进入半开探测窗口)。
+    /// Tripped: requests are rejected until the backoff time elapses (enters a half-open probe window).
     Open,
 }
 
-/// 指数退避:0.5s → 1s → 2s → 4s → … 上限 30s。
+/// Exponential backoff: 0.5s → 1s → 2s → 4s → … capped at 30s.
 fn backoff_delay(step: u32) -> Duration {
     let ms = (BASE_BACKOFF.as_millis() as u64)
         .checked_shl(step.min(6))
@@ -101,29 +102,29 @@ fn backoff_delay(step: u32) -> Duration {
     Duration::from_millis(ms)
 }
 
-/// 熔断器(P2-5):连续失败熔断 + 指数退避 + 半开探测。
+/// Circuit breaker (P2-5): trips on consecutive failures + exponential backoff + half-open probe.
 ///
-/// 由 [`ConnectionManager`](crate::connection_manager::ConnectionManager) 内每个 `ManagedServer` 持有一个。请求放行规则:
+/// One per `ManagedServer` inside [`ConnectionManager`](crate::connection_manager::ConnectionManager). Request allow rules:
 ///
-/// - `Closed`:放行(可正常建连/调用);
-/// - `Open` 且未到退避时间:拒绝(快速失败,不打坏 Server);
-/// - `Open` 且已到退避时间(半开窗口):放行一次探测,成功恢复、失败推进退避。
+/// - `Closed`: allowed (can connect/call normally);
+/// - `Open` before the backoff time: rejected (fail fast, don't hammer the bad server);
+/// - `Open` after the backoff time (half-open window): one probe allowed; success recovers, failure advances the backoff.
 pub struct CircuitBreaker {
-    /// 连续失败 N 次熔断。
+    /// Trips after N consecutive failures.
     max_failures: u32,
-    /// 当前连续失败次数。
+    /// Current consecutive failure count.
     failures: u32,
     state: BreakerState,
-    /// 下次允许探测的时间(退避截止)。
+    /// Next time a probe is allowed (backoff deadline).
     next_retry_at: Option<Instant>,
-    /// 最近一次熔断已武装的退避时长(指数退避)。
+    /// Backoff duration armed by the most recent trip (exponential backoff).
     backoff: Duration,
-    /// 下一档退避步数(每次熔断递增,指数增长)。
+    /// Next backoff step (increments on each trip, growing exponentially).
     backoff_step: u32,
 }
 
 impl CircuitBreaker {
-    /// 创建熔断器。
+    /// Creates a circuit breaker.
     pub fn new(max_failures: u32) -> Self {
         Self {
             max_failures: max_failures.max(1),
@@ -135,19 +136,19 @@ impl CircuitBreaker {
         }
     }
 
-    /// 当前熔断状态。
+    /// Current breaker state.
     pub fn state(&self) -> BreakerState {
         self.state
     }
 
-    /// 当前连续失败次数。
+    /// Current consecutive failure count.
     pub fn failures(&self) -> u32 {
         self.failures
     }
 
-    /// 是否允许发起请求。
+    /// Whether a request may be sent.
     ///
-    /// `Closed` 恒放行;`Open` 仅在退避时间已过(半开探测窗口)时放行一次。
+    /// `Closed` always allows; `Open` allows once only after the backoff time has passed (half-open probe window).
     pub fn allow_request(&self) -> bool {
         match self.state {
             BreakerState::Closed => true,
@@ -158,7 +159,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// 记录一次成功:恢复 `Closed`,重置失败计数与退避步数。
+    /// Records a success: back to `Closed`, resets the failure count and backoff steps.
     pub fn record_success(&mut self) {
         self.state = BreakerState::Closed;
         self.failures = 0;
@@ -167,9 +168,9 @@ impl CircuitBreaker {
         self.next_retry_at = None;
     }
 
-    /// 记录一次失败:递增失败计数;达阈值 → Open + 记下次退避重试时间。
+    /// Records a failure: increments the failure count; at the threshold → Open + schedules the next backoff retry time.
     ///
-    /// 半开探测失败时(已 Open),重新 Open 并推进退避步数(指数增长)。
+    /// On a failed half-open probe (already Open), re-opens and advances the backoff step (exponential growth).
     pub fn record_failure(&mut self) {
         self.failures += 1;
         if self.failures >= self.max_failures {
@@ -180,26 +181,26 @@ impl CircuitBreaker {
         }
     }
 
-    /// 当前已武装的退避时长(最近一次熔断采用的指数退避)。
+    /// Currently armed backoff duration (the exponential backoff used by the most recent trip).
     pub fn backoff(&self) -> Duration {
         self.backoff
     }
 
-    /// 由当前熔断状态推导健康状态。
+    /// Derives the health status from the current breaker state.
     pub fn health_status(&self) -> HealthStatus {
         to_status(self.state, self.failures)
     }
 }
 
-/// 心跳探活:`list_tools` 即探活(P2-5)。
+/// Heartbeat probe: `list_tools` is the probe (P2-5).
 ///
-/// 能列出工具说明该 Server 至少能响应请求;探活失败由调用方
-/// ([`CircuitBreaker::record_failure`]) 记入熔断计数。
+/// Being able to list tools means the server can at least respond to requests; a failed probe is
+/// recorded by the caller ([`CircuitBreaker::record_failure`]) into the breaker count.
 pub async fn probe_health(client: &MCPClient) -> Result<(), MCPError> {
     client.list_tools().await.map(|_| ())
 }
 
-/// 由熔断状态推导健康状态。
+/// Derives the health status from the breaker state.
 fn to_status(state: BreakerState, failures: u32) -> HealthStatus {
     match state {
         BreakerState::Open => HealthStatus::Down,
@@ -214,7 +215,7 @@ mod tests {
     use crate::test_support::{start_fake_sse_server, PostMode};
     use crate::MCPConfig;
 
-    /// `ServerHealth` 状态流转:Healthy → Degraded → Down → 恢复 Healthy。
+    /// `ServerHealth` state flow: Healthy → Degraded → Down → back to Healthy.
     #[test]
     fn test_server_health_transitions() {
         let mut health = ServerHealth::new(2);
@@ -231,17 +232,17 @@ mod tests {
         assert_eq!(health.failures, 0);
     }
 
-    /// 熔断器:达阈值才 Open;Open 后未到退避时间拒绝放行。
+    /// Breaker: only opens at the threshold; once Open, requests are rejected before the backoff time.
     #[test]
     fn test_circuit_breaker_trips_and_blocks() {
         let mut cb = CircuitBreaker::new(2);
         assert!(cb.allow_request());
         cb.record_failure();
-        // 未达阈值,仍 Closed。
+        // Below the threshold, still Closed.
         assert_eq!(cb.state(), BreakerState::Closed);
         assert!(cb.allow_request());
         cb.record_failure();
-        // 达阈值 → Open,退避期内拒绝。
+        // Threshold reached → Open, rejected within the backoff period.
         assert_eq!(cb.state(), BreakerState::Open);
         assert!(
             !cb.allow_request(),
@@ -249,26 +250,26 @@ mod tests {
         );
     }
 
-    /// 指数退避:每档翻倍,上限 30s。
+    /// Exponential backoff: doubles per step, capped at 30s.
     #[test]
     fn test_circuit_breaker_exponential_backoff() {
         let mut cb = CircuitBreaker::new(1);
         cb.record_failure();
         assert_eq!(cb.backoff(), Duration::from_millis(500));
-        cb.record_failure(); // 半开探测失败 → 下一档
+        cb.record_failure(); // failed half-open probe → next step
         assert_eq!(cb.backoff(), Duration::from_millis(1000));
         cb.record_failure();
         assert_eq!(cb.backoff(), Duration::from_millis(2000));
         cb.record_failure();
         assert_eq!(cb.backoff(), Duration::from_millis(4000));
-        // 步数 6 → 500 << 6 = 32000 → 封顶 30000。
+        // step 6 → 500 << 6 = 32000 → capped at 30000.
         for _ in 0..4 {
             cb.record_failure();
         }
         assert_eq!(cb.backoff(), MAX_BACKOFF);
     }
 
-    /// 恢复:成功调用关闭熔断,允许请求。
+    /// Recovery: a successful call closes the breaker and allows requests.
     #[test]
     fn test_circuit_breaker_recovers_on_success() {
         let mut cb = CircuitBreaker::new(1);
@@ -280,7 +281,7 @@ mod tests {
         assert_eq!(cb.failures(), 0);
     }
 
-    /// 最小阈值下限为 1。
+    /// The minimum threshold floor is 1.
     #[test]
     fn test_circuit_breaker_max_failures_min_one() {
         let mut cb = CircuitBreaker::new(0);
@@ -292,7 +293,7 @@ mod tests {
         );
     }
 
-    /// 探活:对假 SSE Server 执行 list_tools 成功。
+    /// Probe: list_tools against a fake SSE server succeeds.
     #[tokio::test]
     async fn test_probe_health_with_fake_server() {
         let server = start_fake_sse_server(PostMode::Quiet).await;

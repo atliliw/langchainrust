@@ -1,4 +1,4 @@
-//! GuardedAgent - 带 Guardrails 的 Agent 包装器
+//! GuardedAgent — an Agent wrapper with Guardrails
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -12,29 +12,29 @@ use lc_chains::BaseChain;
 use super::guardrail::{ChunkAction, GuardrailError, GuardrailsConfig};
 use super::runner::{GuardrailRunner, GuardrailViolation, OutputValidation};
 
-/// Guardable 执行单元的错误类型。
+/// Error type for Guardable execution units.
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-/// 流式输出块:单次吐出的文本 + 是否结尾。
+/// Streaming output chunk: the text emitted in one step + whether it is the final one.
 #[derive(Debug)]
 pub struct GuardableChunk {
-    /// 单次吐出的文本
+    /// The text emitted in one step
     pub token: String,
-    /// 是否为结尾块
+    /// Whether this is the final chunk
     pub is_final: bool,
 }
 
-/// GuardedAgent 可包装的执行单元(P1-3 解耦)。
+/// The execution unit `GuardedAgent` can wrap (P1-3 decoupling).
 ///
-/// 只依赖此 trait,不直接耦合 `AgentExecutor`:
-/// - [`AgentExecutor`] 直接实现
-/// - 任意 [`BaseChain`] 通过 [`ChainGuardable`] 适配器获得实现
+/// It depends only on this trait, not directly on `AgentExecutor`:
+/// - [`AgentExecutor`] implements it directly
+/// - any [`BaseChain`] gets an implementation via the [`ChainGuardable`] adapter
 #[async_trait]
 pub trait Guardable: Send + Sync {
-    /// 字符串进、字符串出。
+    /// String in, string out.
     async fn invoke_str(&self, input: &str) -> Result<String, DynError>;
 
-    /// 流式输出;不支持的实现返回错误,`GuardedAgent` 回退为一次性 `invoke_str`。
+    /// Streaming output; implementations that do not support it return an error, and `GuardedAgent` falls back to a one-shot `invoke_str`.
     async fn stream_str(
         &self,
         input: &str,
@@ -57,8 +57,8 @@ impl Guardable for AgentExecutor {
         use futures_util::StreamExt;
         use lc_agents::streaming::state::AgentStreamEvent;
 
-        // 把 Agent 事件流映射为面向用户的输出块:只保留 FinalAnswer,
-        // ToolStart / ToolEnd 属中间过程,不进入护栏检查面。
+        // map the Agent event stream into user-facing output chunks: keep only FinalAnswer,
+        // ToolStart / ToolEnd are intermediate steps and do not enter the guardrail check surface.
         let stream = self
             .stream(input.to_string())
             .filter_map(|event| async move {
@@ -76,18 +76,19 @@ impl Guardable for AgentExecutor {
     }
 }
 
-/// `BaseChain` 的 Guardable 适配器(P1-3 解耦)。
+/// Guardable adapter for `BaseChain` (P1-3 decoupling).
 ///
-/// 用 `input_keys()[0]` / `output_keys()[0]` 做字符串收发;
-/// 输出键缺失或非字符串时返回显式错误,不静默吞掉。
+/// Uses `input_keys()[0]` / `output_keys()[0]` for string I/O; a missing or non-string output
+/// key returns an explicit error instead of being silently swallowed.
 ///
-/// 为什么需要 adapter 而非 `impl Guardable for dyn BaseChain` / blanket:
-/// - blanket `impl<T: BaseChain> Guardable for T` 与 `impl Guardable for AgentExecutor`
-///   因相干性冲突(rustc 无法排除 AgentExecutor 未来实现 BaseChain)而无法共存;
-/// - `dyn BaseChain` → `dyn Guardable` 的非 supertrait 强转不存在(`Unsize` 不满足),
-///   无法自动把 `Arc<dyn BaseChain>` 塞进 `Arc<dyn Guardable>`。
+/// Why an adapter instead of `impl Guardable for dyn BaseChain` / a blanket impl:
+/// - a blanket `impl<T: BaseChain> Guardable for T` cannot coexist with
+///   `impl Guardable for AgentExecutor` due to coherence (rustc cannot rule out AgentExecutor
+///   implementing BaseChain in the future);
+/// - there is no non-supertrait cast from `dyn BaseChain` to `dyn Guardable` (`Unsize` is not
+///   satisfied), so `Arc<dyn BaseChain>` cannot be automatically coerced into `Arc<dyn Guardable>`.
 ///
-/// 因此用 `ChainGuardable` 显式桥接,`GuardedAgent::from_chain` 提供入口。
+/// Hence `ChainGuardable` bridges explicitly, and `GuardedAgent::from_chain` provides the entry point.
 pub struct ChainGuardable(pub Arc<dyn BaseChain>);
 
 #[async_trait]
@@ -154,17 +155,17 @@ impl Guardable for ChainGuardable {
     }
 }
 
-/// 带 Guardrails 的 Agent 包装器
+/// Agent wrapper with Guardrails
 ///
-/// `invoke` 时:验证输入 -> 执行 Guardable -> 验证输出。
-/// `invoke_stream` 时:两阶段流式护栏(P1-4)。
+/// On `invoke`: validate input -> run Guardable -> validate output.
+/// On `invoke_stream`: two-phase streaming guardrails (P1-4).
 pub struct GuardedAgent {
     inner: Arc<dyn Guardable>,
     runner: GuardrailRunner,
 }
 
 impl GuardedAgent {
-    /// 用任意 [`Guardable`] 构造。`Arc<AgentExecutor>` 会自动强转为 `Arc<dyn Guardable>`。
+    /// Constructs from any [`Guardable`]. `Arc<AgentExecutor>` auto-coerces to `Arc<dyn Guardable>`.
     pub fn new(inner: Arc<dyn Guardable>, config: GuardrailsConfig) -> Self {
         Self {
             inner,
@@ -172,18 +173,18 @@ impl GuardedAgent {
         }
     }
 
-    /// 用任意 [`BaseChain`] 构造(P1-3 解耦)。
+    /// Constructs from any [`BaseChain`] (P1-3 decoupling).
     ///
-    /// `Arc<dyn BaseChain>` 无法直接强转为 `Arc<dyn Guardable>`(非 supertrait),
-    /// 因此经 [`ChainGuardable`] 适配器桥接。`Arc<EchoChain>` 之类的具体链
-    /// 会先自动强转为 `Arc<dyn BaseChain>` 再包装。
+    /// `Arc<dyn BaseChain>` cannot be coerced directly to `Arc<dyn Guardable>` (not a supertrait),
+    /// so it is bridged through the [`ChainGuardable`] adapter. Concrete chains such as `Arc<EchoChain>`
+    /// are first auto-coerced to `Arc<dyn BaseChain>` and then wrapped.
     pub fn from_chain(chain: Arc<dyn BaseChain>, config: GuardrailsConfig) -> Self {
         Self::new(Arc::new(ChainGuardable(chain)), config)
     }
 
-    /// 执行:验输入 -> Guardable -> 验输出。
+    /// Executes: validate input -> Guardable -> validate output.
     ///
-    /// 拦截时返回带部分输出 + 用户建议的 [`GuardrailError::Blocked`](P1-1/P1-6)。
+    /// On blocking, returns [`GuardrailError::Blocked`] carrying partial output + a user suggestion (P1-1/P1-6).
     pub async fn invoke(&mut self, input: String) -> Result<String, GuardrailError> {
         if let Err(e) = self.runner.validate_input(&input).await {
             return Err(match e {
@@ -213,11 +214,12 @@ impl GuardedAgent {
         }
     }
 
-    /// 两阶段流式执行(P1-4)。
+    /// Two-phase streaming execution (P1-4).
     ///
-    /// 阶段一:每个输出块过流式护栏(带滑动窗口,防跨块切断关键词);
-    /// 阶段二:流结束后对完整输出复查 [`GuardrailRunner::validate_output`]。
-    /// 输入护栏在流启动前同步验证。
+    /// Phase one: each output chunk goes through the streaming guardrails (with a sliding window
+    /// to prevent keywords split across chunks); phase two: after the stream ends, re-check the
+    /// full output via [`GuardrailRunner::validate_output`]. Input guardrails are validated
+    /// synchronously before the stream starts.
     pub async fn invoke_stream(
         &mut self,
         input: String,
@@ -235,11 +237,11 @@ impl GuardedAgent {
             .await
             .map_err(|e| GuardrailError::AgentError(e.to_string()))?;
 
-        // 两阶段各自持有一份 runner 克隆,避免把 `self` 借进返回的流。
+        // each phase holds its own runner clone to avoid borrowing `self` into the returned stream.
         let mut phase2_runner = self.runner.clone();
-        // 阶段一的状态(滑动窗口 tail、违规累积 runner、累积输出 full)跨 chunk 共享。
-        // `then` 的闭包是 FnMut:每次调用同步 clone 一份 Arc move 进 async 块,
-        // 状态本体留在 Arc 里,跨 chunk 持久。
+        // phase-one state (sliding-window tail, violation-accumulating runner, accumulated output full) is shared across chunks.
+        // `then`'s closure is FnMut: each invocation clones an Arc and moves it into the async block,
+        // while the state itself stays in the Arc, persisting across chunks.
         let tail = Arc::new(tokio::sync::Mutex::new(String::new()));
         let phase1_runner = Arc::new(tokio::sync::Mutex::new(self.runner.clone()));
         let full = Arc::new(tokio::sync::Mutex::new(String::new()));
@@ -253,7 +255,7 @@ impl GuardedAgent {
             async move {
                 let chunk = item.map_err(|e| GuardrailError::AgentError(e.to_string()))?;
                 let token = chunk.token;
-                // 滑动窗口探测:tail + chunk,跨块切断的关键词也能被命中。
+                // sliding-window probe: tail + chunk, so keywords split across chunks are still detected.
                 let probe = {
                     let t = tail.lock().await;
                     format!("{}{}", *t, token)
@@ -275,7 +277,7 @@ impl GuardedAgent {
                     }
                 };
                 full.lock().await.push_str(&emitted);
-                // 更新滑动窗口:只保留最近 TAIL_WINDOW 个字符。
+                // update the sliding window: keep only the most recent TAIL_WINDOW characters.
                 let new_tail: String = emitted
                     .chars()
                     .rev()
@@ -295,8 +297,8 @@ impl GuardedAgent {
         let finalize = futures_util::stream::once(async move {
             let full_text = finalize_full.lock().await.clone();
             match phase2_runner.validate_output(&full_text).await {
-                // 阶段一已把(可能改写过的)全部块发完,消费者拼接即得完整输出;
-                // 阶段二通过时只发空 token 的结束标记,不重复输出。
+                // phase one has already emitted all (possibly rewritten) chunks, so concatenating them yields the full output;
+                // when phase two passes, emit only an empty-token end marker without re-outputting.
                 OutputValidation::Passed(_value) => Ok(GuardableChunk {
                     token: String::new(),
                     is_final: true,
@@ -313,12 +315,12 @@ impl GuardedAgent {
         Ok(Box::pin(phase1.chain(finalize)))
     }
 
-    /// 获取违规记录快照(含流式路径的记录:两阶段 runner 与 `self.runner` 共享日志)。
+    /// Returns a snapshot of violation records (including streaming-path records: the two-phase runner shares the log with `self.runner`).
     pub fn violations(&self) -> Vec<GuardrailViolation> {
         self.runner.violations()
     }
 
-    /// 清理违规记录(P1-2)。
+    /// Clears violation records (P1-2).
     pub fn clear_violations(&mut self) {
         self.runner.clear_violations();
     }
@@ -347,12 +349,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_blocks_long_input_before_agent() {
-        // 输入超过 3 字符,被 MaxLength 拦截,不调用 Agent(不触网)
+        // input over 3 characters is blocked by MaxLength without calling the Agent (no network)
         let mut g = guarded_with_maxlen(3);
         let result = g.invoke("this is too long input".to_string()).await;
         assert!(result.is_err());
         assert_eq!(g.violations().len(), 1);
-        // 确认是 Blocked(携带 partial + suggestion)而非 AgentError
+        // confirm it is Blocked (carrying partial + suggestion), not AgentError
         match result.unwrap_err() {
             GuardrailError::Blocked {
                 partial,
@@ -366,7 +368,7 @@ mod tests {
         }
     }
 
-    /// 简单的 echo Chain:input -> "echo:{input}"。
+    /// Simple echo Chain: input -> "echo:{input}".
     struct EchoChain;
     #[async_trait]
     impl BaseChain for EchoChain {
@@ -385,7 +387,7 @@ mod tests {
         }
     }
 
-    /// 分块输出的 Chain:模拟逐 token 流。
+    /// Chunked-output Chain: simulates a token-by-token stream.
     struct TokenChain;
     #[async_trait]
     impl BaseChain for TokenChain {
@@ -415,7 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_guardable_chain_invoke() {
-        // 任意 Arc<dyn BaseChain> 经 ChainGuardable 适配(P1-3 解耦)。
+        // any Arc<dyn BaseChain> goes through the ChainGuardable adapter (P1-3 decoupling).
         let chain: Arc<dyn BaseChain> = Arc::new(EchoChain);
         let mut g = GuardedAgent::from_chain(chain, GuardrailsConfig::new());
         let result = g.invoke("hi".to_string()).await.unwrap();
@@ -424,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_stream_two_phase_passes() {
-        // 无护栏:两阶段流式正常走完,最终输出 = 所有块拼接。
+        // no guardrails: the two-phase stream completes normally, final output = concatenation of all chunks.
         let chain: Arc<dyn BaseChain> = Arc::new(TokenChain);
         let mut g = GuardedAgent::from_chain(chain, GuardrailsConfig::new());
         let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
@@ -443,7 +445,7 @@ mod tests {
         assert_eq!(finals, 1);
     }
 
-    /// 命中 "world" 即 Block 的本地流式护栏。
+    /// Local streaming guardrail that blocks when "world" is matched.
     struct BlockOnWorld;
     #[async_trait]
     impl crate::guardrail::StreamingOutputGuardrail for BlockOnWorld {
@@ -461,7 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_stream_blocks_keyword() {
-        // 阶段一流式护栏命中关键词 → 流中途返回 Blocked(携带已输出部分)。
+        // phase-one streaming guardrail hits the keyword -> Blocked returned mid-stream (carrying the already-emitted part).
         let chain: Arc<dyn BaseChain> = Arc::new(TokenChain);
         let config = GuardrailsConfig::new().with_streaming(
             Arc::new(BlockOnWorld) as Arc<dyn crate::guardrail::StreamingOutputGuardrail>

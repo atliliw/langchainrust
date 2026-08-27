@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn from_output_parser_error() {
-        // 解析器错误可平滑进入 LcelError(不 panic),pipe 第二段才编译得过
+        // parser errors must convert cleanly into LcelError (no panic) so the parser compiles as the second pipe step
         let e = OutputParserError::JsonError("bad json".to_string());
         let lcel: LcelError = e.into();
         assert!(matches!(
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn from_tool_error() {
-        // 工具错误可平滑进入 LcelError(不 panic),`tool.pipe(...)` 才编译得过
+        // tool errors must convert cleanly into LcelError (no panic) so `tool.pipe(...)` compiles
         use crate::tools::ToolError;
         let e = ToolError::InvalidInput("bad input".to_string());
         let lcel: LcelError = e.into();

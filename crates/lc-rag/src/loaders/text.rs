@@ -1,29 +1,29 @@
 // src/retrieval/loaders/text.rs
-//! Text 文档加载器实现
+//! Text document loader implementation
 //!
-//! 提供从纯文本文件加载内容的功能。
+//! Provides loading content from plain-text files.
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-/// Text 文档加载器
+/// Text document loader
 ///
-/// 支持加载纯文本文件（.txt），将整个文件内容作为一个文档。
+/// Supports loading plain-text files (.txt), treating the entire file content as one document.
 pub struct TextLoader {
-    /// 文本文件路径
+    /// Text file path
     pub path: PathBuf,
 
-    /// 是否按行分割（可选）
-    /// 如果为 true，每行作为一个独立文档
+    /// Whether to split by line (optional)
+    /// If true, each line is returned as a separate document
     pub split_by_line: bool,
 }
 
 impl TextLoader {
-    /// 创建新的 Text 加载器
+    /// Creates a new Text loader
     ///
-    /// # 参数
-    /// * `path` - 文本文件路径
+    /// # Arguments
+    /// * `path` - the text file path
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -31,12 +31,12 @@ impl TextLoader {
         }
     }
 
-    /// 创建按行分割的 Text 加载器
+    /// Creates a line-splitting Text loader
     ///
-    /// 每行文本将作为独立文档返回。
+    /// Each line is returned as a separate document.
     ///
-    /// # 参数
-    /// * `path` - 文本文件路径
+    /// # Arguments
+    /// * `path` - the text file path
     pub fn new_with_line_split(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -44,7 +44,7 @@ impl TextLoader {
         }
     }
 
-    /// 设置是否按行分割
+    /// Sets whether to split by line
     pub fn with_split_by_line(mut self, split: bool) -> Self {
         self.split_by_line = split;
         self
@@ -54,7 +54,7 @@ impl TextLoader {
 #[async_trait]
 impl DocumentLoader for TextLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
-        // 验证文件存在
+        // Verify the file exists
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
                 "text file does not exist: {}",
@@ -62,11 +62,11 @@ impl DocumentLoader for TextLoader {
             )));
         }
 
-        // 读取文件内容
+        // Read the file content
         let content = std::fs::read_to_string(&self.path)?;
 
         if self.split_by_line {
-            // 按行分割
+            // Split by line
             let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
             let documents = lines
                 .iter()
@@ -82,7 +82,7 @@ impl DocumentLoader for TextLoader {
 
             Ok(documents)
         } else {
-            // 整个文件作为一个文档
+            // Treat the entire file as one document
             let mut document = Document::new(content);
             document =
                 document.with_metadata("source".to_string(), self.path.display().to_string());
@@ -162,6 +162,6 @@ mod tests {
 
         assert!(result.is_ok());
         let docs = result.unwrap();
-        assert_eq!(docs.len(), 2); // 空行被跳过
+        assert_eq!(docs.len(), 2); // empty lines are skipped
     }
 }

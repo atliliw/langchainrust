@@ -1,9 +1,9 @@
 // lc-embeddings/src/deepseek.rs
 //! DeepSeek embeddings implementation.
 //!
-//! DeepSeek 走 OpenAI 兼容 `/embeddings` 协议，复用
-//! [`crate::openai_compat`] 公共基类（P1-5），本文件只配置规格
-//! （URL / 模型 / 维度 / 批量大小）。
+//! DeepSeek speaks the OpenAI-compatible `/embeddings` protocol and reuses
+//! the [`crate::openai_compat`] shared base class (P1-5); this file only configures
+//! the spec (URL / model / dimension / batch size).
 
 use crate::openai_compat::{CompatConfigAccess, CompatSpec, OpenAICompatEmbeddings};
 use crate::EmbeddingError;
@@ -107,8 +107,9 @@ impl CompatSpec for DeepSeekEmbeddingsConfig {
 
 /// DeepSeek embeddings client for generating vector embeddings.
 ///
-/// 复用 OpenAI 兼容协议公共基类（P1-5）：构造时 fail fast 校验 API key 非空
-/// 与模型维度已知（P1-2/P1-3），批量对齐显式报错（P0-1），错误体不吞错（P1-4）。
+/// Reuses the OpenAI-compatible-protocol shared base class (P1-5): fails fast at construction
+/// validating a non-empty API key and known model dimension (P1-2/P1-3), batch alignment errors
+/// explicitly (P0-1), and error bodies are not swallowed (P1-4).
 pub type DeepSeekEmbeddings = OpenAICompatEmbeddings<DeepSeekEmbeddingsConfig>;
 
 #[cfg(test)]
@@ -120,7 +121,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    /// P0-1: 服务端少返回 → 显式 `EmptyVectorInBatch`，而非静默空向量。
+    /// P0-1: provider returns fewer entries → explicit `EmptyVectorInBatch`, not a silent empty vector.
     #[tokio::test]
     async fn test_embed_documents_truncated_errors() {
         let base_url = spawn_embeddings_stub(Arc::new(|n| n.saturating_sub(1))).await;
@@ -139,7 +140,7 @@ mod tests {
         );
     }
 
-    /// P2-5: DeepSeek（复用 OpenAI 兼容基类）同样接线 429 重试。
+    /// P2-5: DeepSeek (reusing the OpenAI-compatible base class) also wires in 429 retry.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
         let success_body = r#"{"data":[{"embedding":[0.6,0.8],"index":0}],"model":"stub","usage":{"prompt_tokens":0,"total_tokens":0}}"#;
@@ -156,13 +157,13 @@ mod tests {
             .await
             .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
-        // P2-8: 返回向量应已归一化。
+        // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
         assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
-    /// P1-3: API key 为空 → 构造期 fail fast 报 `Config`，而非拖到发请求才 401。
+    /// P1-3: an empty API key → `Config` error at construction (fail fast), not a delayed 401.
     #[test]
     fn test_new_rejects_empty_api_key() {
         let config = DeepSeekEmbeddingsConfig {
@@ -174,7 +175,7 @@ mod tests {
         assert!(matches!(err, EmbeddingError::Config(_)));
     }
 
-    /// P1-2: 未知模型 → 构造期报错，不得回落默认 1536 撒谎。
+    /// P1-2: unknown model → construction-time error, never lying with a default 1536.
     #[test]
     fn test_new_rejects_unknown_model() {
         let config = DeepSeekEmbeddingsConfig {

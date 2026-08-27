@@ -6,15 +6,15 @@ use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
 use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
-/// 逗号分隔列表输出解析器
+/// Comma-separated list output parser
 ///
-/// 将 LLM 输出的逗号分隔文本解析为字符串列表。
-/// 支持中文逗号（，）和英文逗号（,）。
-/// 自动去除每个项目的空白字符和空项目。
+/// Parses the LLM's comma-separated text into a list of strings.
+/// Supports both the fullwidth comma (U+FF0C) and the ASCII comma (,).
+/// Automatically strips whitespace and empty items.
 ///
-/// 相当于 Python LangChain 的 `CommaSeparatedListOutputParser`。
+/// Equivalent to Python LangChain's `CommaSeparatedListOutputParser`.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::output_parsers::CommaSeparatedListOutputParser;
 ///
@@ -25,7 +25,7 @@ use crate::runnables::{Runnable, RunnableConfig};
 pub struct CommaSeparatedListOutputParser;
 
 impl CommaSeparatedListOutputParser {
-    /// 创建逗号分隔列表输出解析器。
+    /// Creates a comma-separated list output parser.
     pub fn new() -> Self {
         Self
     }
@@ -45,7 +45,7 @@ impl BaseOutputParser<Vec<String>> for CommaSeparatedListOutputParser {
             return Ok(Vec::new());
         }
 
-        // 支持中文逗号和英文逗号
+        // support Chinese and English commas
         let items: Vec<String> = text
             .split(',')
             .flat_map(|item| item.split('，'))

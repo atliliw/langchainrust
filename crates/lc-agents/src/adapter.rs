@@ -135,14 +135,15 @@ impl Runnable<String, AgentStreamEvent> for AgentEventRunnable {
 
 /// Adapter that wraps an [`Orchestrator`] (P1-1) as a `Runnable`.
 ///
-/// 让 PlanExecute / AdaptiveRAG / CorrectiveRAG / DeepResearch 等高层编排器
-/// 能进 LCEL 管道。`config.metadata["trace_id"]` 会贯通到 [`RunContext`]。
+/// Lets high-level orchestrators (PlanExecute / AdaptiveRAG / CorrectiveRAG /
+/// DeepResearch) participate in LCEL pipelines. `config.metadata["trace_id"]`
+/// flows through to [`RunContext`].
 pub struct OrchestratorRunnable<O: Orchestrator> {
     orchestrator: O,
 }
 
 impl<O: Orchestrator> OrchestratorRunnable<O> {
-    /// 包装一个编排器。
+    /// Wrap an orchestrator.
     pub fn new(orchestrator: O) -> Self {
         Self { orchestrator }
     }
@@ -210,8 +211,8 @@ mod tests {
         }
     }
 
-    /// P1-8: AgentEventRunnable::stream 保留全部事件(Text + FinalAnswer),
-    /// 而非像 AgentRunnable 那样 filter_map 成单个字符串。
+    /// P1-8: AgentEventRunnable::stream preserves all events (Text + FinalAnswer),
+    /// instead of filter_map'ing to a single string like AgentRunnable.
     #[tokio::test]
     async fn agent_event_runnable_preserves_all_events() {
         use futures_util::StreamExt;
@@ -233,7 +234,7 @@ mod tests {
         assert!(matches!(events[1], AgentStreamEvent::FinalAnswer { .. }));
     }
 
-    /// P1-8: 非流式 invoke 返回单个 FinalAnswer 事件。
+    /// P1-8: non-streaming invoke returns a single FinalAnswer event.
     #[tokio::test]
     async fn agent_event_runnable_invoke_returns_final_answer() {
         let executor = Arc::new(crate::base::AgentExecutor::new(

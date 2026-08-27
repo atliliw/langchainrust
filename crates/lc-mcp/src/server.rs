@@ -1,10 +1,11 @@
-//! MCP Server - 把本地 `BaseTool` 暴露为 MCP Server,供其他 Host(Claude Desktop/Cursor 等)调用
+//! MCP Server - exposes local `BaseTool`s as an MCP Server for other Hosts (Claude Desktop/Cursor etc.) to call
 //!
-//! 与 `MCPClient` 对称:Client 连别人的 Server 用工具,Server 把自己的工具暴露给别人。
-//! 支持 `initialize` 握手、`tools/list`、`tools/call`,以及注册制原语
-//! `resources/*` / `prompts/*` / `completion/complete`(未注册仍返回
-//! `method_not_found`,诚实边界)与 server→host 方向 `sampling::create_message` /
-//! `elicitation::create`(需注入回调)。
+//! Symmetric to `MCPClient`: the Client connects to another's Server to use tools, the Server exposes its own
+//! tools to others.
+//! Supports the `initialize` handshake, `tools/list`, `tools/call`, plus registration-based primitives
+//! `resources/*` / `prompts/*` / `completion/complete` (still returning `method_not_found` when unregistered,
+//! an honest boundary) and the server→host direction `sampling::create_message` /
+//! `elicitation::create` (requires an injected callback).
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,28 +25,28 @@ use super::stream::PartialContent;
 use super::types::{MCPContent, MCPToolDefinition, MCPToolResult};
 use lc_core::BaseTool;
 
-/// MCP Server - 暴露一组 `BaseTool` 为 MCP 工具
+/// MCP Server - exposes a set of `BaseTool`s as MCP tools
 pub struct MCPServer {
     tools: Vec<Arc<dyn BaseTool>>,
     server_name: String,
     server_version: String,
-    /// 流式工具输出广播(P2-9):`publish_partial` 推送增量片段,
-    /// `InMemoryTransport` 等传输层订阅后转发给客户端。
+    /// Streaming tool-output broadcast (P2-9): `publish_partial` pushes incremental chunks,
+    /// and transport layers such as `InMemoryTransport` subscribe and forward them to the client.
     partial_tx: broadcast::Sender<PartialContent>,
-    /// 可选资源提供者(S10):注册后启用 `resources/list` / `resources/read`。
+    /// Optional resource provider (S10): once registered, enables `resources/list` / `resources/read`.
     resources: Option<Arc<dyn ResourceProvider>>,
-    /// 可选提示词提供者(S10):注册后启用 `prompts/list` / `prompts/get`。
+    /// Optional prompt provider (S10): once registered, enables `prompts/list` / `prompts/get`.
     prompts: Option<Arc<dyn PromptProvider>>,
-    /// 可选补全提供者(S10):注册后启用 `completion/complete`。
+    /// Optional completion provider (S10): once registered, enables `completion/complete`.
     completion: Option<Arc<dyn CompletionProvider>>,
-    /// 可选 sampling 回调(S10,server→host 方向):注入后 `create_message` 才能发起。
+    /// Optional sampling callback (S10, server→host direction): once injected, `create_message` can fire.
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
-    /// 可选 elicitation 回调(S10,server→host 方向):注入后 `create_elicitation` 才能发起。
+    /// Optional elicitation callback (S10, server→host direction): once injected, `create_elicitation` can fire.
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
 }
 
 impl MCPServer {
-    /// 创建空 server
+    /// Creates an empty server
     pub fn new() -> Self {
         Self {
             tools: Vec::new(),
@@ -60,80 +61,80 @@ impl MCPServer {
         }
     }
 
-    /// 注册一个工具
+    /// Registers a tool
     pub fn with_tool(mut self, tool: Arc<dyn BaseTool>) -> Self {
         self.tools.push(tool);
         self
     }
 
-    /// 设置 serverInfo(名称/版本)
+    /// Sets serverInfo (name/version)
     pub fn with_server_info(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
         self.server_name = name.into();
         self.server_version = version.into();
         self
     }
 
-    /// 注册资源提供者,启用 `resources/list` / `resources/read`(S10)。
+    /// Registers a resource provider, enabling `resources/list` / `resources/read` (S10).
     ///
-    /// 未注册时两个原语仍返回 `method_not_found`(诚实边界)。
+    /// When unregistered, both primitives still return `method_not_found` (an honest boundary).
     pub fn with_resource_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
         self.resources = Some(provider);
         self
     }
 
-    /// 注册提示词提供者,启用 `prompts/list` / `prompts/get`(S10)。
+    /// Registers a prompt provider, enabling `prompts/list` / `prompts/get` (S10).
     ///
-    /// 未注册时两个原语仍返回 `method_not_found`(诚实边界)。
+    /// When unregistered, both primitives still return `method_not_found` (an honest boundary).
     pub fn with_prompt_provider(mut self, provider: Arc<dyn PromptProvider>) -> Self {
         self.prompts = Some(provider);
         self
     }
 
-    /// 注册补全提供者,启用 `completion/complete`(S10)。
+    /// Registers a completion provider, enabling `completion/complete` (S10).
     ///
-    /// 未注册时该原语仍返回 `method_not_found`(诚实边界)。
+    /// When unregistered, the primitive still returns `method_not_found` (an honest boundary).
     pub fn with_completion_provider(mut self, provider: Arc<dyn CompletionProvider>) -> Self {
         self.completion = Some(provider);
         self
     }
 
-    /// 注入 sampling 回调(server→host 方向),启用 [`Self::create_message`]。
+    /// Injects a sampling callback (server→host direction), enabling [`Self::create_message`].
     ///
-    /// 回调负责把 `sampling/createMessage` 送达已连接的 Host 并取回响应;
-    /// 未注入时 `create_message` 返回明确错误。
+    /// The callback delivers `sampling/createMessage` to the connected Host and retrieves the response;
+    /// without it, `create_message` returns a clear error.
     pub fn with_sampling_handler(mut self, handler: Arc<dyn SamplingHandler>) -> Self {
         self.sampling_handler = Some(handler);
         self
     }
 
-    /// 注入 elicitation 回调(server→host 方向),启用 [`Self::create_elicitation`]。
+    /// Injects an elicitation callback (server→host direction), enabling [`Self::create_elicitation`].
     ///
-    /// 回调负责把 `elicitation/create` 送达已连接的 Host(经其 UI 向用户收集输入)
-    /// 并取回响应;未注入时 `create_elicitation` 返回明确错误。
+    /// The callback delivers `elicitation/create` to the connected Host (collecting input from the user via its
+    /// UI) and retrieves the response; without it, `create_elicitation` returns a clear error.
     pub fn with_elicitation_handler(mut self, handler: Arc<dyn ElicitationHandler>) -> Self {
         self.elicitation_handler = Some(handler);
         self
     }
 
-    /// 推送一个流式工具输出增量片段(P2-9)。
+    /// Pushes one streaming tool-output incremental chunk (P2-9).
     ///
-    /// 长任务工具"边跑边推":执行期间把部分结果拆成多个片段,逐个
-    /// `publish_partial` 推给已连接的 Host(`InMemoryTransport` 等传输层
-    /// 订阅后经 `notifications/tool_partial` 转发给客户端)。无订阅者时
-    /// 静默丢弃——增量是预览,最终结果仍由 `tools/call` 响应承载。
+    /// Long-running tools "stream while they run": during execution they split partial results into chunks and
+    /// push each via `publish_partial` to connected Hosts (transport layers such as `InMemoryTransport` subscribe
+    /// and forward them to the client as `notifications/tool_partial`). With no subscribers the chunk is silently
+    /// dropped — the incremental output is a preview, the final result is still carried by the `tools/call` response.
     pub fn publish_partial(&self, partial: PartialContent) {
         let _ = self.partial_tx.send(partial);
     }
 
-    /// 订阅本 server 推送的流式增量片段(P2-9)。
+    /// Subscribes to the incremental streaming chunks this server pushes (P2-9).
     ///
-    /// 供传输层(如 [`InMemoryTransport`](crate::InMemoryTransport))把
-    /// server 侧的 `publish_partial` 转成客户端可见的推送事件。
+    /// For transport layers (such as [`InMemoryTransport`](crate::InMemoryTransport)) to turn the server-side
+    /// `publish_partial` into client-visible push events.
     pub fn subscribe_partials(&self) -> broadcast::Receiver<PartialContent> {
         self.partial_tx.subscribe()
     }
 
-    /// 从 BaseTool 构造 MCP 工具定义
+    /// Builds an MCP tool definition from a BaseTool
     fn tool_definition(tool: &dyn BaseTool) -> MCPToolDefinition {
         MCPToolDefinition {
             name: tool.name().to_string(),
@@ -144,13 +145,13 @@ impl MCPServer {
         }
     }
 
-    /// 处理一条 JSON-RPC 请求,返回响应
+    /// Handles one JSON-RPC request, returning the response
     ///
-    /// 供单元测试直接调用;`serve_stdio` 内部也用它处理每行请求。
+    /// For direct calls from unit tests; `serve_stdio` also uses it to process each request line.
     pub async fn handle_request(&self, req: MCPRequest) -> MCPResponse {
         match req.method.as_str() {
-            // P2-10 版本协商:客户端请求的版本在支持列表内则回显,否则降级到
-            // 本实现版本(Server 永远只回复自己支持的版本)。
+            // P2-10 version negotiation: echo the requested version when it is in the support list, otherwise
+            // degrade to this implementation's version (a Server only ever replies with a version it supports).
             "initialize" => {
                 let requested = req
                     .params
@@ -161,8 +162,8 @@ impl MCPServer {
                     Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v.to_string(),
                     _ => MCP_VERSION.to_string(),
                 };
-                // S10 能力声明:client→server 原语按实际注册项补齐;
-                // sampling/elicitation 是 client 能力,不进 server capabilities。
+                // S10 capability declaration: client→server primitives are added per actual registration;
+                // sampling/elicitation are client capabilities and do not go into server capabilities.
                 let mut capabilities = json!({ "tools": {} });
                 if self.resources.is_some() {
                     capabilities["resources"] = json!({});
@@ -200,7 +201,7 @@ impl MCPServer {
                 }
             }
             "tools/call" => self.handle_tools_call(req).await,
-            // S10 五个 client→server 原语:注册后返回正确结构,未注册 method_not_found。
+            // S10 five client→server primitives: registered → correct structure, unregistered → method_not_found.
             "resources/list" => self.handle_resources_list(req).await,
             "resources/read" => self.handle_resources_read(req).await,
             "prompts/list" => self.handle_prompts_list(req).await,
@@ -210,7 +211,7 @@ impl MCPServer {
         }
     }
 
-    /// `resources/list`:列出已注册资源。
+    /// `resources/list`: lists the registered resources.
     async fn handle_resources_list(&self, req: MCPRequest) -> MCPResponse {
         match &self.resources {
             Some(provider) => match provider.list_resources().await {
@@ -225,7 +226,7 @@ impl MCPServer {
         }
     }
 
-    /// `resources/read`:按 URI 读取资源内容。
+    /// `resources/read`: reads a resource's content by URI.
     async fn handle_resources_read(&self, req: MCPRequest) -> MCPResponse {
         let provider = match &self.resources {
             Some(p) => p,
@@ -248,7 +249,7 @@ impl MCPServer {
         }
     }
 
-    /// `prompts/list`:列出已注册提示词。
+    /// `prompts/list`: lists the registered prompts.
     async fn handle_prompts_list(&self, req: MCPRequest) -> MCPResponse {
         match &self.prompts {
             Some(provider) => match provider.list_prompts().await {
@@ -263,7 +264,7 @@ impl MCPServer {
         }
     }
 
-    /// `prompts/get`:按名称 + 参数生成提示词消息。
+    /// `prompts/get`: generates prompt messages by name + arguments.
     async fn handle_prompts_get(&self, req: MCPRequest) -> MCPResponse {
         let provider = match &self.prompts {
             Some(p) => p,
@@ -286,7 +287,7 @@ impl MCPServer {
         }
     }
 
-    /// `completion/complete`:为提示词参数 / 资源 URI 提供补全建议。
+    /// `completion/complete`: provides completion suggestions for prompt arguments / resource URIs.
     async fn handle_completion_complete(&self, req: MCPRequest) -> MCPResponse {
         let provider = match &self.completion {
             Some(p) => p,
@@ -311,12 +312,12 @@ impl MCPServer {
         }
     }
 
-    /// 发起一次 sampling 请求(server→host 方向,S10)。
+    /// Fires one sampling request (server→host direction, S10).
     ///
-    /// 按 MCP 语义,`sampling/createMessage` 由 Server 发起、Host 执行 LLM 推理。
-    /// 本方法把请求转给注入的 [`SamplingHandler`];未注入 handler 时返回明确
-    /// 错误,不静默。真实交互依赖宿主环境的 UI/模型,由使用者经
-    /// [`Self::with_sampling_handler`] 接入。
+    /// Per MCP semantics, `sampling/createMessage` is initiated by the Server and the Host runs the LLM inference.
+    /// This method hands the request to the injected [`SamplingHandler`]; without an injected handler it returns
+    /// a clear error, never silently. Real interaction depends on the host environment's UI/models and is wired
+    /// in by the user via [`Self::with_sampling_handler`].
     pub async fn create_message(
         &self,
         request: &SamplingRequest,
@@ -331,12 +332,12 @@ impl MCPServer {
         }
     }
 
-    /// 发起一次 elicitation 请求(server→host 方向,S10)。
+    /// Fires one elicitation request (server→host direction, S10).
     ///
-    /// 按 MCP 语义,`elicitation/create` 由 Server 发起、Host 通过 UI 向用户
-    /// 收集输入。本方法把请求转给注入的 [`ElicitationHandler`];未注入 handler
-    /// 时返回明确错误,不静默。真实交互依赖宿主 UI,由使用者经
-    /// [`Self::with_elicitation_handler`] 接入。
+    /// Per MCP semantics, `elicitation/create` is initiated by the Server and the Host collects input from the
+    /// user via its UI. This method hands the request to the injected [`ElicitationHandler`]; without an injected
+    /// handler it returns a clear error, never silently. Real interaction depends on the host UI and is wired in
+    /// by the user via [`Self::with_elicitation_handler`].
     pub async fn create_elicitation(
         &self,
         request: &ElicitationRequest,
@@ -351,7 +352,7 @@ impl MCPServer {
         }
     }
 
-    /// 构造成功响应。
+    /// Builds a success response.
     fn ok_response(id: u64, result: Value) -> MCPResponse {
         MCPResponse {
             jsonrpc: "2.0".to_string(),
@@ -361,7 +362,7 @@ impl MCPServer {
         }
     }
 
-    /// 构造带 JSON-RPC 错误的响应。
+    /// Builds a response carrying a JSON-RPC error.
     fn error_response(id: u64, error: MCPError) -> MCPResponse {
         MCPResponse {
             jsonrpc: "2.0".to_string(),
@@ -371,12 +372,12 @@ impl MCPServer {
         }
     }
 
-    /// 构造 `method_not_found`(-32601)响应:未注册的能力 / 未知方法共用。
+    /// Builds a `method_not_found` (-32601) response: shared by unregistered capabilities / unknown methods.
     fn method_not_found_response(id: u64) -> MCPResponse {
         Self::error_response(id, MCPError::method_not_found())
     }
 
-    /// 构造 `invalid_params`(-32602)响应。
+    /// Builds an `invalid_params` (-32602) response.
     fn invalid_params_response(id: u64, msg: impl Into<String>) -> MCPResponse {
         Self::error_response(id, MCPError::invalid_params(msg))
     }
@@ -432,9 +433,10 @@ impl MCPServer {
         }
     }
 
-    /// 在 stdio 上运行 server:从 stdin 读 JSON-RPC,处理后写回 stdout
+    /// Runs the server on stdio: reads JSON-RPC from stdin, processes it, writes responses back to stdout
     ///
-    /// 通知(无 id 的消息,如 `notifications/initialized`)被忽略;请求(有 id)返回响应。
+    /// Notifications (messages without an id, such as `notifications/initialized`) are ignored; requests
+    /// (with an id) get a response.
     pub async fn serve_stdio(&self) -> Result<(), MCPError> {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
@@ -454,7 +456,7 @@ impl MCPServer {
                 continue;
             }
 
-            // 用宽松结构解析:通知无 id,请求有 id
+            // Parse leniently: notifications have no id, requests have one
             let msg: ServerMessage = match serde_json::from_str(trimmed) {
                 Ok(m) => m,
                 Err(e) => {
@@ -476,7 +478,7 @@ impl MCPServer {
                 }
             };
 
-            // 通知(无 id):P0-4 分发给 handle_notification,不再直接丢弃
+            // Notification (no id): P0-4 dispatches to handle_notification instead of dropping
             let id = match msg.id {
                 Some(id) => id,
                 None => {
@@ -501,20 +503,21 @@ impl MCPServer {
         Ok(())
     }
 
-    /// 在已绑定的 TCP listener 上提供 MCP SSE 网络服务,返回客户端要连的 SSE 入口 URL。
+    /// Serves MCP over an SSE network service on an already-bound TCP listener, returning the SSE entry URL
+    /// clients connect to.
     ///
-    /// 这是"可部署的 MCP server"的入口:把本 server 暴露为 HTTP/SSE 服务,
-    /// 任何 MCP 客户端(`MCPClient::connect(MCPConfig::sse(...))` / Cursor /
-    /// Claude Desktop 等)都能连上来用注册的工具。SSE 帧格式与
-    /// `MCPClient`(SseTransport)客户端行为对齐。
+    /// This is the "deployable MCP server" entry point: it exposes this server as an HTTP/SSE service that any
+    /// MCP client (`MCPClient::connect(MCPConfig::sse(...))` / Cursor / Claude Desktop etc.) can connect to and
+    /// use the registered tools. The SSE frame format aligns with the `MCPClient` (SseTransport) client behavior.
     ///
-    /// - `listener`:已绑定好地址的 `TcpListener`。本地联调绑 `127.0.0.1:0`,
-    ///   部署到远程服务器绑 `0.0.0.0:PORT`。
-    /// - `public_base`:客户端访问本服务器的基地址(如 `http://your-server-ip:8788`)。
-    ///   服务端发给客户端的 POST 地址由它拼出,部署在远程时必须是客户端真能访问的
-    ///   地址(不能用 `0.0.0.0`)。
+    /// - `listener`: a `TcpListener` already bound to an address. For local debugging bind `127.0.0.1:0`;
+    ///   for remote deployment bind `0.0.0.0:PORT`.
+    /// - `public_base`: the base address clients use to reach this server (e.g. `http://your-server-ip:8788`).
+    ///   The POST address the server sends to clients is built from it; when deployed remotely it must be an
+    ///   address clients can really reach (not `0.0.0.0`).
     ///
-    /// 启动后立即返回 SSE URL,接收循环在后台任务运行直到进程退出。
+    /// Returns the SSE URL immediately after startup; the accept loop runs on a background task until the
+    /// process exits.
     pub fn serve_sse(
         self: Arc<Self>,
         listener: tokio::net::TcpListener,
@@ -523,24 +526,24 @@ impl MCPServer {
         crate::sse::serve(self, listener, public_base.into())
     }
 
-    /// 处理服务器收到的通知(无 id 的消息)。
+    /// Handles a notification the server receives (a message without an id).
     ///
-    /// P0-4: 对 MCP 标准通知显式分发处理,而不是直接丢弃:
-    /// - `notifications/cancelled` —— 客户端请求取消某个工具调用
-    /// - `notifications/progress` —— 客户端上报工具执行进度
-    /// - `notifications/roots/list_changed` —— 根目录列表变化
-    /// - `notifications/initialized` —— 客户端完成握手
+    /// P0-4: explicitly dispatches MCP standard notifications instead of dropping them:
+    /// - `notifications/cancelled` — the client requests cancelling a tool call
+    /// - `notifications/progress` — the client reports tool execution progress
+    /// - `notifications/roots/list_changed` — the roots list changed
+    /// - `notifications/initialized` — the client finished the handshake
     ///
-    /// 当前实现记录日志并预留扩展点;后续可在派生类型中覆盖以接入
-    /// 取消/进度回调。
+    /// The current implementation logs and leaves extension points; derived types can override it later to hook
+    /// in cancel/progress callbacks.
     pub async fn handle_notification(&self, method: &str, params: Option<Value>) {
         match method {
             "notifications/cancelled" => {
-                // 携带 requestId,指向要取消的请求
+                // Carries requestId, pointing at the request to cancel
                 log::info!("MCP received cancelled notification: {:?}", params);
             }
             "notifications/progress" => {
-                // 携带 token + progress/estimatedTotal
+                // Carries token + progress/estimatedTotal
                 log::info!("MCP received progress notification: {:?}", params);
             }
             "notifications/roots/list_changed" => {
@@ -562,7 +565,7 @@ impl Default for MCPServer {
     }
 }
 
-/// 宽松的入站消息:通知无 id
+/// A lenient inbound message: notifications have no id
 #[derive(Deserialize)]
 struct ServerMessage {
     #[serde(default)]
@@ -589,7 +592,7 @@ mod tests {
     use crate::sampling::{SamplingContent, SamplingMessage, SamplingRole};
     use lc_core::tools::ToolError;
 
-    /// 测试用工具:回显输入
+    /// A test tool that echoes its input
     struct EchoTool;
     #[async_trait::async_trait]
     impl BaseTool for EchoTool {
@@ -624,7 +627,8 @@ mod tests {
         assert!(result.get("serverInfo").is_some());
     }
 
-    /// P2-10 版本协商:请求受支持版本时回显,无请求版本时回复本实现版本。
+    /// P2-10 version negotiation: echoes when a supported version is requested, replies with the current
+    /// implementation version when none is requested.
     #[tokio::test]
     async fn test_initialize_echoes_supported_version() {
         let server = server_with_echo();
@@ -641,8 +645,8 @@ mod tests {
         assert_eq!(version.as_deref(), Some(MCP_VERSION));
     }
 
-    /// P2-10 版本协商:请求不受支持的版本时降级到本实现版本(Server 只回复
-    /// 自己支持的版本,不回显未知版本)。
+    /// P2-10 version negotiation: degrades to the current implementation version when an unsupported version is
+    /// requested (a Server only replies with a version it supports, never echoing an unknown version).
     #[tokio::test]
     async fn test_initialize_degrades_unsupported_version() {
         let server = server_with_echo();
@@ -687,7 +691,7 @@ mod tests {
         assert!(!resp.is_error());
         let mcp_result: MCPToolResult = serde_json::from_value(resp.result.unwrap()).unwrap();
         assert!(!mcp_result.is_error);
-        // echo 返回输入(arguments 的 JSON 串)
+        // echo returns the input (the JSON string of arguments)
         assert_eq!(mcp_result.text(), r#"{"text":"hello"}"#);
     }
 
@@ -723,7 +727,7 @@ mod tests {
     }
 
     // ============================================================================
-    // S10 五个 client→server 原语:注册后返回正确结构,未注册 method_not_found
+    // S10 five client→server primitives: registered → correct structure, unregistered → method_not_found
     // ============================================================================
 
     struct MockResources;
@@ -789,7 +793,7 @@ mod tests {
             &self,
             request: &CompletionRequest,
         ) -> Result<CompletionResult, MCPError> {
-            // 按前缀过滤出候选(真实补全的常见形态)。
+            // Filter candidates by prefix (the common shape of real completion).
             let prefix = &request.argument.value;
             let candidates = ["rust", "ruby", "python"];
             let values: Vec<CompletionValue> = candidates
@@ -994,7 +998,7 @@ mod tests {
     }
 
     // ============================================================================
-    // S10 两个 server→host 原语:注入 mock 回调发起成功;无回调明确报错
+    // S10 two server→host primitives: injected mock callbacks succeed; without a callback, a clear error
     // ============================================================================
 
     struct MockSampling;
@@ -1105,7 +1109,7 @@ mod tests {
 
     #[test]
     fn test_server_message_notification_has_no_id() {
-        // 通知(无 id)应解析为 id=None
+        // A notification (no id) should parse as id=None
         let json = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         let msg: ServerMessage = serde_json::from_str(json).unwrap();
         assert!(msg.id.is_none());
@@ -1122,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_notification_known_and_unknown() {
         let server = server_with_echo();
-        // 标准通知应被处理(不 panic)
+        // Standard notifications should be handled (no panic)
         server
             .handle_notification("notifications/cancelled", Some(json!({"requestId": 1})))
             .await;
@@ -1138,7 +1142,7 @@ mod tests {
         server
             .handle_notification("notifications/initialized", None)
             .await;
-        // 未知通知应被忽略
+        // Unknown notifications should be ignored
         server.handle_notification("foo/bar", None).await;
     }
 }

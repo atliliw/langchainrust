@@ -1,18 +1,18 @@
-//! Gateway 统一审计记录。
+//! Gateway unified audit records.
 
 use std::time::SystemTime;
 
-/// Gateway 统一审计记录(P2-8):入口层一次放行/拦截。
+/// Gateway unified audit record (P2-8): one allow/block decision at the entry layer.
 #[derive(Debug, Clone)]
 pub struct GatewayAuditRecord {
-    /// 目标 Server。
+    /// Target server.
     pub server: String,
-    /// 调用的工具全名(`server:tool`)。
+    /// Full name of the tool called (`server:tool`).
     pub tool: String,
-    /// 是否放行(拦截 = 速率限制 / 沙箱 / 熔断 / 未同步)。
+    /// Whether the call was allowed (blocked = rate limit / sandbox / breaker / unsynced).
     pub allowed: bool,
-    /// 拦截原因(`allowed` 为 false 时有值)。
+    /// Reason for blocking (present when `allowed` is false).
     pub reason: Option<String>,
-    /// 记录时间。
+    /// Record timestamp.
     pub at: SystemTime,
 }

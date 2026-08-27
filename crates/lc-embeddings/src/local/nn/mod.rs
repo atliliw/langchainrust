@@ -3,49 +3,52 @@ use ort::value::Tensor;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
-// ⚠️ 未验证声明（P2-2/3/4）：
+// ⚠️ Unverified statement (P2-2/3/4):
 //
-// 本机（Windows，无 MSVC Build Tools，GNU 链上 ort-sys 无 x86_64-pc-windows-gnu
-// 预编译产物）无法编译 `local-embeddings` feature。以下代码全部按 vendored 的
-// ort 2.0.0-rc.13 与 tokenizers 0.22.2 源码逐项核对 API 写成，但**未经编译器验证**。
-// 请在支持 ort 的环境执行：
+// This machine (Windows, no MSVC Build Tools, no x86_64-pc-windows-gnu prebuilt artifacts
+// for ort-sys on the GNU toolchain) cannot compile the `local-embeddings` feature. All code
+// below was written by cross-checking the API against the vendored ort 2.0.0-rc.13 and
+// tokenizers 0.22.2 sources, but is **not verified by the compiler**. Run on a machine that
+// supports ort:
 //
 //   cargo test -p lc-embeddings --features local-embeddings --lib
 //   cargo clippy -p lc-embeddings --features local-embeddings --lib
 //
-// 已核对的关键 API：
-// - ort::session::Session::builder().commit_from_memory(&[u8])（impl_commit.rs:93）
-// - Session::run(impl Into<SessionInputs>) 需 &mut self；SessionInputs: From<Vec<(K,V)>>
-//   其中 K: Into<Cow<str>>, V: Into<SessionInputValue>（input.rs:62）
-// - Tensor::from_array((Vec<i64>, Vec<i64>))；try_extract_tensor::<f32>()
+// Key APIs cross-checked:
+// - ort::session::Session::builder().commit_from_memory(&[u8]) (impl_commit.rs:93)
+// - Session::run(impl Into<SessionInputs>) requires &mut self; SessionInputs: From<Vec<(K,V)>>
+//   where K: Into<Cow<str>>, V: Into<SessionInputValue> (input.rs:62)
+// - Tensor::from_array((Vec<i64>, Vec<i64>)); try_extract_tensor::<f32>()
 // - tokenizers::Tokenizer::from_file/encode_batch(..., add_special_tokens)
-// - Encoding::get_ids/get_attention_mask/get_type_ids；tokenizer.get_padding()/token_to_id()
+// - Encoding::get_ids/get_attention_mask/get_type_ids; tokenizer.get_padding()/token_to_id()
 
-/// 动态 batch 模型的默认单批文本数上限。
+/// Default per-batch text count cap for dynamic-batch models.
 const DEFAULT_MAX_BATCH: usize = 32;
-/// 序列维为动态时，单条文本 token 数的默认截断上限（超出截断）。
+/// Default truncation cap (in tokens per text) when the sequence dimension is dynamic (excess truncated).
 const DEFAULT_MAX_SEQ_LEN: usize = 512;
 
-/// 默认会话池大小：与 CPU 逻辑核数对齐但封顶 8，避免多个 ONNX session
-/// 各自持有整份模型权重导致内存失控。
+/// Default session pool size: aligned with the CPU logical core count but capped at 8,
+/// avoiding memory blow-up from many ONNX sessions each holding the full model weights.
 fn default_pool_size() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().clamp(1, 8))
         .unwrap_or(2)
 }
 
-/// 锁中毒时映射为 `ApiError`（内部状态异常，显式报错而非 panic）。
+/// Maps lock poisoning to `ApiError` (abnormal internal state; explicit error instead of panic).
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> EmbeddingError {
     EmbeddingError::ApiError("session pool lock poisoned".to_string())
 }
 
-/// 有界 ONNX Session 并发池（P2-3）。
+/// Bounded ONNX Session concurrency pool (P2-3).
 ///
-/// 每个 `ort::session::Session` 持有独立的 ORT 运行环境；`Session::run` 要求
-/// `&mut self`，多线程并发推理不能共享单个 session，池让并发请求复用至多
-/// `capacity` 个会话。模型以字节保存在内存中，会话按需 `commit_from_memory`
-/// 惰性创建——既避免模型文件事后被删除导致 `commit_from_file` 失效，也让池
-/// 完全自持、可跨线程共享。`acquire` 超容量时经 Condvar 阻塞等待。
+/// Each `ort::session::Session` holds its own ORT runtime environment; `Session::run`
+/// requires `&mut self`, so concurrent inference across threads cannot share a single session.
+/// The pool lets concurrent requests reuse up to `capacity` sessions. The model is kept in
+/// memory as bytes, and sessions are created lazily via `commit_from_memory` on demand — this
+/// avoids `commit_from_file` invalidating if the model file is later deleted, and keeps the
+/// pool fully self-contained and shareable across threads. `acquire` blocks on a Condvar when
+/// over capacity.
 struct SessionPool {
     model_bytes: Arc<Vec<u8>>,
     idle: Mutex<Vec<ort::session::Session>>,
@@ -55,7 +58,7 @@ struct SessionPool {
 }
 
 impl SessionPool {
-    /// 预建第一个会话（live=1），后续会话按需惰性创建。
+    /// Pre-builds the first session (live=1); later sessions are created lazily on demand.
     fn new(model_bytes: Vec<u8>, capacity: usize) -> Result<Arc<Self>, EmbeddingError> {
         let capacity = capacity.max(1);
         let pool = Arc::new(Self {
@@ -82,10 +85,11 @@ impl SessionPool {
             })
     }
 
-    /// 借出一个会话。空闲队列有现成的直接拿；池未满则惰性新建一个；满则
-    /// Condvar 阻塞等待归还。调用方应在 `spawn_blocking` 线程内使用本方法。
+    /// Lends out a session. Takes an idle one if available; lazily creates a new one if the
+    /// pool is not full; otherwise blocks on the Condvar until one is returned. Callers should
+    /// use this from within a `spawn_blocking` thread.
     fn acquire(self: &Arc<Self>) -> Result<SessionGuard, EmbeddingError> {
-        // 快速路径：空闲队列非空。
+        // Fast path: the idle queue is non-empty.
         {
             let mut idle = self.idle.lock().map_err(lock_error)?;
             if let Some(session) = idle.pop() {
@@ -95,10 +99,10 @@ impl SessionPool {
                 });
             }
         }
-        // 慢速路径：需要新建会话，或等待其他调用方归还。
+        // Slow path: need to build a session, or wait for another caller to return one.
         let mut live = self.live.lock().map_err(lock_error)?;
         loop {
-            // 等待期间可能有会话被归还，重新检查空闲队列。
+            // A session may have been returned while waiting; re-check the idle queue.
             {
                 let mut idle = self.idle.lock().map_err(lock_error)?;
                 if let Some(session) = idle.pop() {
@@ -118,7 +122,7 @@ impl SessionPool {
                         });
                     }
                     Err(e) => {
-                        // 回滚 live 计数并唤醒等待者，让其他人有机会重试。
+                        // Roll back the live count and wake a waiter so others can retry.
                         *live -= 1;
                         self.notify.notify_one();
                         return Err(e);
@@ -129,7 +133,7 @@ impl SessionPool {
         }
     }
 
-    /// 归还会话：入空闲队列并唤醒一个等待者。锁中毒时直接丢弃会话。
+    /// Returns a session: pushes it to the idle queue and wakes one waiter. Drops the session if the lock is poisoned.
     fn release(&self, session: ort::session::Session) {
         let Ok(mut idle) = self.idle.lock() else {
             return;
@@ -140,7 +144,7 @@ impl SessionPool {
     }
 }
 
-/// RAII 会话借出句柄：离开作用域（含 `?` 提前返回）自动归还池，不泄漏 session。
+/// RAII session loan handle: returning it to the pool automatically on scope exit (including `?` early returns) without leaking a session.
 struct SessionGuard {
     pool: Arc<SessionPool>,
     session: Option<ort::session::Session>,
@@ -162,10 +166,11 @@ impl Drop for SessionGuard {
     }
 }
 
-/// 内部共享状态：池 + tokenizer + 静态元信息。
+/// Internal shared state: pool + tokenizer + static metadata.
 ///
-/// 用 `Arc` 包一层，让 `spawn_blocking` 闭包捕获 owned 引用（满足 `'static`），
-/// 修掉旧实现 `move || self.embed_single(&text)` 捕获 `&self` 导致的潜伏编译错误。
+/// Wrapped in `Arc` so `spawn_blocking` closures capture an owned reference (satisfying
+/// `'static`), fixing the latent compile error in the old `move || self.embed_single(&text)`
+/// capturing `&self`.
 struct LocalInner {
     pool: Arc<SessionPool>,
     tokenizer: tokenizers::Tokenizer,
@@ -176,18 +181,18 @@ struct LocalInner {
 }
 
 impl LocalInner {
-    /// 真实 tokenizers 编码（P2-2）：加载 HuggingFace WordPiece/BPE tokenizer，
-    /// 产出 `input_ids + attention_mask + token_type_ids` 三件套。
+    /// Real tokenizers encoding (P2-2): loads a HuggingFace WordPiece/BPE tokenizer, producing
+    /// the `input_ids + attention_mask + token_type_ids` triple.
     fn tokenize(&self, texts: &[String]) -> Result<Vec<tokenizers::Encoding>, EmbeddingError> {
         self.tokenizer
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| EmbeddingError::Config(format!("Tokenizer failed to encode input: {e}")))
     }
 
-    /// 把一批 encodings 整理成按 batch 内最长序列 pad 对齐的张量数据（P2-4）。
+    /// Packs a batch of encodings into tensor data padded to the batch's longest sequence (P2-4).
     ///
-    /// 返回 `(input_ids, attention_mask, token_type_ids, 对齐后序列长 max_len)`。
-    /// 纯逻辑、不依赖 ONNX 会话，可直接单测。pad 位置 mask=0、type_id=0。
+    /// Returns `(input_ids, attention_mask, token_type_ids, aligned sequence length max_len)`.
+    /// Pure logic with no ONNX session dependency, directly unit-testable. Pad positions get mask=0, type_id=0.
     fn build_batch_tensors(
         encodings: &[tokenizers::Encoding],
         seq_limit: usize,
@@ -218,7 +223,7 @@ impl LocalInner {
         (input_ids, attention_mask, token_type_ids, max_len)
     }
 
-    /// 批量推理：pad 对齐喂入，masked mean pooling 出每行向量，L2 归一化（P2-4）。
+    /// Batch inference: feeds pad-aligned tensors, extracts per-row vectors via masked mean pooling, L2-normalizes (P2-4).
     fn infer_rows(
         &self,
         encodings: &[tokenizers::Encoding],
@@ -259,7 +264,7 @@ impl LocalInner {
                 .map(|o| o.name().to_string())
                 .collect()
         };
-        // 只喂模型声明存在的输入，按名对齐；未知输入名显式报错而非静默跳过（P2-2）。
+        // Feed only the inputs the model declares, aligned by name; unknown input names error explicitly rather than being silently skipped (P2-2).
         let mut input_ids_slot = Some(input_tensor);
         let mut attention_slot = Some(attention_tensor);
         let mut type_slot = Some(type_tensor);
@@ -316,12 +321,13 @@ impl LocalInner {
         Ok(rows)
     }
 
-    /// 从输出张量提取每行向量。
+    /// Extracts per-row vectors from the output tensor.
     ///
-    /// - 3D `[batch, seq, dim]`：按喂入的 attention_mask 做 masked mean pooling
-    ///   （mask=0 的 pad 位置不参与均值）；输出序列长与喂入长不同时取较小者。
-    /// - 2D `[batch, dim]`：直接按行切。
-    /// - batch 行数与输入不一致 → 显式 `BatchMismatch`（P0-1 对齐契约）。
+    /// - 3D `[batch, seq, dim]`: masked mean pooling over the fed attention_mask
+    ///   (pad positions with mask=0 do not participate in the mean); when the output sequence
+    ///   length differs from the fed one, take the smaller.
+    /// - 2D `[batch, dim]`: split by row directly.
+    /// - Batch row count != input → explicit `BatchMismatch` (P0-1 alignment contract).
     fn pool_rows(
         shape: &[usize],
         data: &[f32],
@@ -347,7 +353,7 @@ impl LocalInner {
                     let mut count = 0usize;
                     for s in 0..seq {
                         if s >= mask.len() || mask[s] == 0 {
-                            continue; // pad 位置不参与均值
+                            continue; // pad positions do not participate in the mean
                         }
                         count += 1;
                         let base = (b * out_seq + s) * dim;
@@ -386,7 +392,7 @@ impl LocalInner {
         }
     }
 
-    /// 批量执行完整嵌入管线（chunk 内逐批 pad 对齐推理）。
+    /// Runs the full embedding pipeline for a batch (per-chunk pad-aligned inference).
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -399,7 +405,7 @@ impl LocalInner {
         Ok(results)
     }
 
-    /// 单条文本嵌入。
+    /// Embeds a single text.
     fn embed_single(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         let mut rows = self.embed_batch(&[text.to_string()])?;
         rows.pop().ok_or_else(|| {
@@ -407,7 +413,7 @@ impl LocalInner {
         })
     }
 
-    /// 推断输出维度（取输出 shape 最后一个正维度，同旧实现）。
+    /// Infers the output dimension (last positive dimension of the output shape, as the old implementation).
     fn infer_dimension(session: &ort::session::Session) -> Result<usize, EmbeddingError> {
         let outputs = session.outputs();
         if outputs.is_empty() {
@@ -432,12 +438,12 @@ impl LocalInner {
         Ok(dim)
     }
 
-    /// 从模型第一个输入的静态 shape 推断 batch 上限与序列截断上限（P2-4）。
+    /// Infers the batch cap and sequence truncation cap from the first input's static shape (P2-4).
     ///
-    /// - 静态 batch=1 → 只能顺序执行（batch_cap=1）；
-    /// - 静态 batch=N → 单批上限 `min(N, max_batch)`；
-    /// - 动态 batch（-1）→ 直接用 `max_batch`。
-    /// 序列维同理：静态给值则取该值，动态取 `max_seq_len`。
+    /// - static batch=1 → only sequential execution (batch_cap=1);
+    /// - static batch=N → per-batch cap `min(N, max_batch)`;
+    /// - dynamic batch (-1) → use `max_batch` directly.
+    /// Same for the sequence dimension: static uses the value, dynamic uses `max_seq_len`.
     fn infer_input_capability(
         session: &ort::session::Session,
         max_batch: usize,
@@ -465,8 +471,8 @@ impl LocalInner {
         Ok((batch_cap, seq_limit))
     }
 
-    /// 解析 pad token id：优先 tokenizer 显式 padding 配置，其次词表 `[PAD]`，
-    /// 最后回退 0（[UNK]/[PAD] 之外的保守选择）。
+    /// Resolves the pad token id: prefers the tokenizer's explicit padding config, then the
+    /// `[PAD]` vocab entry, finally falls back to 0 (a conservative choice beyond [UNK]/[PAD]).
     fn resolve_pad_id(tokenizer: &tokenizers::Tokenizer) -> u32 {
         tokenizer
             .get_padding()
@@ -476,7 +482,7 @@ impl LocalInner {
     }
 }
 
-/// 在模型同目录发现 tokenizer.json：`<模型名>.json` 优先，其次 `tokenizer.json`。
+/// Discovers tokenizer.json next to the model: `<model-name>.json` first, then `tokenizer.json`.
 fn discover_tokenizer(model_path: &Path) -> Result<PathBuf, EmbeddingError> {
     let dir = model_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = model_path
@@ -501,13 +507,13 @@ fn discover_tokenizer(model_path: &Path) -> Result<PathBuf, EmbeddingError> {
 
 /// ONNX Runtime-based local neural network embedding
 ///
-/// 从 ONNX 模型 + HuggingFace `tokenizers`（WordPiece/BPE）加载，本地推理，
-/// 无外部 API 调用，适合隐私敏感或离线场景。
+/// Loads from an ONNX model + HuggingFace `tokenizers` (WordPiece/BPE), infers locally with
+/// no external API calls — suitable for privacy-sensitive or offline scenarios.
 ///
-/// P2-2：以真实 tokenizer 替换旧的字节 hash 伪 tokenizer，组齐
-/// `input_ids + attention_mask + token_type_ids`。
-/// P2-3：`RwLock<Session>` 改为有界 Session 并发池，支持多线程并发推理。
-/// P2-4：改为按最长序列 pad 对齐的批量推理 + masked mean pooling。
+/// P2-2: replaces the old byte-hash fake tokenizer with a real one, producing the
+/// `input_ids + attention_mask + token_type_ids` triple.
+/// P2-3: replaces `RwLock<Session>` with a bounded Session concurrency pool for multi-threaded inference.
+/// P2-4: switches to pad-aligned batch inference + masked mean pooling.
 ///
 /// # Example
 ///
@@ -522,13 +528,13 @@ pub struct LocalEmbeddings {
 }
 
 impl LocalEmbeddings {
-    /// 从 ONNX 模型文件加载；自动在模型同目录发现 tokenizer.json
-    /// （`<模型名>.json` 或 `tokenizer.json`，见 [`LocalEmbeddingsBuilder`]）。
+    /// Loads from an ONNX model file; auto-discovers tokenizer.json next to the model
+    /// (`<model-name>.json` or `tokenizer.json`, see [`LocalEmbeddingsBuilder`]).
     pub fn from_file(model_path: impl AsRef<Path>) -> Result<Self, EmbeddingError> {
         Self::builder().model_path(model_path).build()
     }
 
-    /// 从 ONNX 模型 + 显式 tokenizer.json 加载。
+    /// Loads from an ONNX model + an explicit tokenizer.json.
     pub fn from_file_with_tokenizer(
         model_path: impl AsRef<Path>,
         tokenizer_path: impl AsRef<Path>,
@@ -539,7 +545,7 @@ impl LocalEmbeddings {
             .build()
     }
 
-    /// 创建构建器，可定制会话池大小 / 批量上限 / 序列截断上限。
+    /// Creates a builder to customize session pool size / batch cap / sequence truncation cap.
     pub fn builder() -> LocalEmbeddingsBuilder {
         LocalEmbeddingsBuilder {
             model_path: None,
@@ -551,7 +557,7 @@ impl LocalEmbeddings {
     }
 }
 
-/// [`LocalEmbeddings`] 构建器，用于定制 ONNX 会话池与批量策略。
+/// Builder for [`LocalEmbeddings`], for customizing the ONNX session pool and batching strategy.
 pub struct LocalEmbeddingsBuilder {
     model_path: Option<PathBuf>,
     tokenizer_path: Option<PathBuf>,
@@ -561,37 +567,37 @@ pub struct LocalEmbeddingsBuilder {
 }
 
 impl LocalEmbeddingsBuilder {
-    /// 设置 ONNX 模型路径（必填）。
+    /// Sets the ONNX model path (required).
     pub fn model_path(mut self, path: impl AsRef<Path>) -> Self {
         self.model_path = Some(path.as_ref().to_path_buf());
         self
     }
 
-    /// 设置 tokenizer.json 路径；缺省时自动在模型同目录发现。
+    /// Sets the tokenizer.json path; when omitted, auto-discovers it next to the model.
     pub fn tokenizer_path(mut self, path: impl AsRef<Path>) -> Self {
         self.tokenizer_path = Some(path.as_ref().to_path_buf());
         self
     }
 
-    /// 设置 Session 并发池大小（默认 = CPU 逻辑核数，封顶 8）。
+    /// Sets the Session concurrency pool size (default = CPU logical cores, capped at 8).
     pub fn pool_size(mut self, size: usize) -> Self {
         self.pool_size = size;
         self
     }
 
-    /// 设置单次推理的最大文本数（默认 32）。
+    /// Sets the max texts per inference (default 32).
     pub fn max_batch(mut self, n: usize) -> Self {
         self.max_batch = n;
         self
     }
 
-    /// 设置序列截断上限（默认 512），超出的 token 会被截断。
+    /// Sets the sequence truncation cap (default 512); excess tokens are truncated.
     pub fn max_seq_len(mut self, n: usize) -> Self {
         self.max_seq_len = n;
         self
     }
 
-    /// 构建 `LocalEmbeddings`：加载模型字节 + tokenizer，预建会话池，推断维度与批量能力。
+    /// Builds `LocalEmbeddings`: loads the model bytes + tokenizer, pre-builds the session pool, infers dimension and batching capability.
     pub fn build(self) -> Result<LocalEmbeddings, EmbeddingError> {
         let model_path = self.model_path.ok_or_else(|| {
             EmbeddingError::Config(
@@ -625,7 +631,7 @@ impl LocalEmbeddingsBuilder {
 
         let pool = SessionPool::new(model_bytes, self.pool_size)?;
 
-        // 借用首个会话推断输出维度与输入 batch/序列能力。
+        // Borrow the first session to infer the output dimension and input batch/sequence capability.
         let (dim, max_batch, seq_limit) = {
             let mut guard = pool.acquire()?;
             let session = guard.session()?;
@@ -651,8 +657,9 @@ impl LocalEmbeddingsBuilder {
 #[async_trait]
 impl Embeddings for LocalEmbeddings {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        // ONNX 推理是 CPU 密集，放入阻塞线程池。捕获 owned `Arc<LocalInner>`
-        // 以满足 spawn_blocking 的 `'static` 约束（修掉旧实现 `&self` 捕获的潜伏错误）。
+        // ONNX inference is CPU-bound; run it in the blocking thread pool. Capture the owned
+        // `Arc<LocalInner>` to satisfy spawn_blocking's `'static` bound (fixing the latent
+        // `&self` capture error in the old implementation).
         let inner = self.inner.clone();
         let text = text.to_string();
         tokio::task::spawn_blocking(move || inner.embed_single(&text))
@@ -664,7 +671,7 @@ impl Embeddings for LocalEmbeddings {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        // P1-1: 任一空/全空白文本都报错，与 trait 默认契约一致。
+        // P1-1: any empty/all-whitespace text errors, consistent with the trait's default contract.
         if texts.iter().any(|t| t.trim().is_empty()) {
             return Err(EmbeddingError::EmptyInput);
         }

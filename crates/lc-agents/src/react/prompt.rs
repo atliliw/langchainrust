@@ -1,11 +1,11 @@
 // src/agents/react/prompt.rs
-//! ReAct Prompt 模板
+//! ReAct prompt templates
 //!
-//! 提供 ReAct Agent 使用的 prompt 模板。
+//! Provides the prompt templates used by the ReAct Agent.
 
-/// ReAct Prompt 前缀
+/// ReAct prompt prefix
 ///
-/// 描述可用工具和使用格式
+/// Describes the available tools and the expected format
 pub const REACT_PREFIX: &str = r#"回答以下问题，你可以使用以下工具：
 
 {tools}
@@ -26,16 +26,16 @@ Final Answer: 原始问题的最终答案
 Question: {input}
 Thought:{agent_scratchpad}"#;
 
-/// 构建 ReAct prompt
+/// Builds the ReAct prompt
 ///
-/// # 参数
-/// * `tools_description` - 工具描述字符串
-/// * `tool_names` - 工具名称列表
-/// * `input` - 用户问题
-/// * `scratchpad` - Agent 的思考历史
+/// # Parameters
+/// * `tools_description` - the tool descriptions string
+/// * `tool_names` - the tool name list
+/// * `input` - the user question
+/// * `scratchpad` - the agent's thought history
 ///
-/// # 返回
-/// 完整的 prompt 字符串
+/// # Returns
+/// The complete prompt string
 pub fn build_react_prompt(
     tools_description: &str,
     tool_names: &[&str],
@@ -49,13 +49,13 @@ pub fn build_react_prompt(
         .replace("{agent_scratchpad}", scratchpad)
 }
 
-/// 格式化 intermediate_steps 为 scratchpad
+/// Formats `intermediate_steps` into a scratchpad
 ///
-/// # 参数
-/// * `steps` - 已执行的步骤列表
+/// # Parameters
+/// * `steps` - the list of executed steps
 ///
-/// # 返回
-/// 格式化的思考历史字符串
+/// # Returns
+/// The formatted thought-history string
 pub fn format_scratchpad(steps: &[crate::types::AgentStep]) -> String {
     let mut scratchpad = String::new();
 

@@ -1,4 +1,4 @@
-//! SQL tool (read-only, SQLite, 支持绑定参数)
+//! SQL tool (read-only, SQLite, supports bind parameters)
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -59,9 +59,11 @@ impl SQLTool {
 
     /// Execute a SELECT query with bind parameters (read-only, single statement).
     ///
-    /// SQL 文本中的占位符 `?1` / `?2` ... 由 `params` 按位置绑定（Q5）——值不再以
-    /// 字面量拼进 SQL，注入内容只会按字面值参与匹配，不会变成新的语句。
-    /// 校验规则与 `execute` 一致：只允许单条 SELECT，禁多语句/注释/危险函数，可选表白名单。
+    /// Placeholders `?1` / `?2` ... in the SQL text are bound by position from `params` (Q5) —
+    /// values are no longer spliced into the SQL as literals, so injected content only matches
+    /// as a literal value and cannot become a new statement.
+    /// Validation rules match `execute`: only a single SELECT is allowed; multi-statements,
+    /// comments, and dangerous functions are rejected; an optional table whitelist applies.
     pub fn execute_parameterized(
         &self,
         sql: &str,
@@ -178,8 +180,8 @@ impl BaseTool for SQLTool {
     }
 }
 
-/// 解析工具输入：优先 `{"sql": "...", "params": [...]}`（参数化，Q5），
-/// 否则把整个输入当纯 SQL 文本（兼容旧接口）。
+/// Parses the tool input: prefers `{"sql": "...", "params": [...]}` (parameterized, Q5),
+/// otherwise treats the whole input as plain SQL text (compatible with the old interface).
 fn parse_sql_input(input: &str) -> Result<(String, Vec<rusqlite::types::Value>), ToolError> {
     if input.trim_start().starts_with('{') {
         let json: serde_json::Value = serde_json::from_str(input)
@@ -202,8 +204,8 @@ fn parse_sql_input(input: &str) -> Result<(String, Vec<rusqlite::types::Value>),
     }
 }
 
-/// 把 JSON 值转成 SQL 绑定参数：null → NULL，bool → 0/1，数字 → Integer/Real，
-/// 字符串 → Text，其它复合值 → NULL。
+/// Converts a JSON value into an SQL bind parameter: null → NULL, bool → 0/1,
+/// number → Integer/Real, string → Text, any other compound value → NULL.
 fn json_to_sql_value(v: &serde_json::Value) -> rusqlite::types::Value {
     use rusqlite::types::Value as SqlValue;
     match v {
@@ -233,8 +235,9 @@ mod tests {
                 .unwrap();
             conn.execute("INSERT INTO users VALUES (2, 'Bob')", [])
                 .unwrap();
-            // orders 表供多表 JOIN 的 whitelist 测试使用（此前缺失导致 prepare 报
-            // "no such table"，SQL 测试因 feature 门控从未被默认运行而一直沉睡）。
+            // The orders table is used by the multi-table JOIN whitelist tests (its earlier
+            // absence made prepare fail with "no such table", but the SQL tests were gated
+            // behind a feature so they never ran by default and stayed dormant).
             conn.execute("CREATE TABLE orders (id INTEGER, user_id INTEGER)", [])
                 .unwrap();
             conn.execute("INSERT INTO orders VALUES (1, 1)", [])
@@ -326,7 +329,7 @@ mod tests {
         assert!(tool.execute("SELECT benchmark(1, 1) FROM users").is_err());
     }
 
-    /// Q5: 绑定参数按位置生效。
+    /// Q5: bind parameters take effect by position.
     #[test]
     fn test_parameterized_query() {
         let tool = tool_with_data();
@@ -340,7 +343,8 @@ mod tests {
         assert_eq!(rows[0].get("name"), Some(&"Alice".to_string()));
     }
 
-    /// Q5: 参数值即使含注入片段,也只按字面值匹配,不构成新语句。
+    /// Q5: even if a parameter value contains an injection snippet, it only matches
+    /// as a literal value and cannot form a new statement.
     #[test]
     fn test_parameterized_prevents_injection() {
         let tool = tool_with_data();
@@ -354,7 +358,7 @@ mod tests {
             .unwrap();
         assert!(rows.is_empty(), "注入片段只应作为字面值匹配不到任何行");
 
-        // 表仍在,后续查询不受影响
+        // The table still exists; subsequent queries are unaffected
         let rows = tool.execute("SELECT COUNT(*) FROM users").unwrap();
         assert_eq!(rows.len(), 1);
     }

@@ -97,8 +97,9 @@ fn test_bow_model_name() {
     assert_eq!(e.model_name(), "local-bow");
 }
 
-// ---- 1.0:LocalEmbeddings 降级别名已移除 ----
+// ---- 1.0: the LocalEmbeddings fallback alias has been removed ----
 
-// 原 `test_local_embeddings_backward_compat`(验证无 feature 时
-// `LocalEmbeddings = BagOfWordsEmbeddings`)随降级别名一并删除:1.0 起无 feature
-// 时 `LocalEmbeddings` 名字不可用,不存在"向后兼容别名"可测。
+// The old `test_local_embeddings_backward_compat` (verifying `LocalEmbeddings =
+// BagOfWordsEmbeddings` without the feature) was removed along with the fallback alias:
+// as of 1.0 the `LocalEmbeddings` name is unavailable without the feature, so there is no
+// "backward-compatible alias" left to test.

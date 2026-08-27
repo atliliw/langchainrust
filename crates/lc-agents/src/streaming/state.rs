@@ -1,64 +1,64 @@
-//! 流式工具调用状态与事件
+//! Streaming tool-call states and events
 
 use serde_json::Value;
 
-/// 工具调用流状态
+/// Tool-call stream state
 #[derive(Debug, Clone)]
 pub enum ToolCallState {
-    /// 工具调用开始
+    /// Tool call started
     Started {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
     },
-    /// 参数正在流式传输
+    /// Arguments streaming in
     ArgumentsStreaming {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
-        /// 已流式传输的部分参数
+        /// Partial arguments streamed so far
         partial_args: String,
     },
-    /// 参数完成,准备执行
+    /// Arguments complete, ready to execute
     ArgumentsComplete {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
-        /// 完整的工具参数
+        /// Full tool arguments
         args: Value,
     },
-    /// 工具正在执行
+    /// Tool executing
     Executing {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
     },
-    /// 执行完成
+    /// Execution completed
     Completed {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
-        /// 工具执行结果
+        /// Tool execution result
         result: String,
     },
-    /// 执行失败
+    /// Execution failed
     Failed {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 调用 ID
+        /// Call ID
         call_id: String,
-        /// 失败原因
+        /// Failure reason
         error: String,
     },
 }
 
 impl ToolCallState {
-    /// 返回当前工具名称。
+    /// Returns the current tool name.
     pub fn tool_name(&self) -> &str {
         match self {
             ToolCallState::Started { tool_name, .. }
@@ -70,7 +70,7 @@ impl ToolCallState {
         }
     }
 
-    /// 返回当前工具调用 ID。
+    /// Returns the current tool-call ID.
     pub fn call_id(&self) -> &str {
         match self {
             ToolCallState::Started { call_id, .. }
@@ -83,34 +83,34 @@ impl ToolCallState {
     }
 }
 
-/// Agent 流式事件
+/// Agent streaming event
 #[derive(Debug, Clone)]
 pub enum AgentStreamEvent {
-    /// LLM 输出文本(token)
+    /// LLM output text (token)
     Text {
-        /// 输出的文本内容
+        /// Output text content
         content: String,
     },
 
-    /// 工具调用状态变化 (Function Calling 风格)
+    /// Tool-call state change (Function Calling style)
     ToolCall {
-        /// 工具调用状态
+        /// Tool-call state
         state: ToolCallState,
     },
 
-    /// ReAct 风格工具调用开始
+    /// ReAct-style tool call start
     ToolStart {
-        /// 工具名称
+        /// Tool name
         name: String,
-        /// 工具输入
+        /// Tool input
         input: String,
     },
 
-    /// ReAct 风格工具调用完成
+    /// ReAct-style tool call completion
     ToolEnd {
-        /// 工具名称
+        /// Tool name
         name: String,
-        /// 工具输出
+        /// Tool output
         output: String,
     },
 
@@ -123,15 +123,15 @@ pub enum AgentStreamEvent {
         detail: Option<String>,
     },
 
-    /// 最终答案
+    /// Final answer
     FinalAnswer {
-        /// 最终答案内容
+        /// Final answer content
         content: String,
     },
 
-    /// 流式执行错误
+    /// Streaming execution error
     Error {
-        /// 错误信息
+        /// Error message
         message: String,
     },
 }

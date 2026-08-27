@@ -200,7 +200,7 @@ where
                         return;
                     }
                 };
-                // 驱动当前元素经过 `stream`,把输出全部放出去后再拉下一个输入。
+                // drive the current item through `stream`, draining its output before pulling the next input.
                 let item_stream = match inner.stream(typed, config.clone()).await {
                     Ok(s) => s,
                     Err(e) => {
@@ -333,8 +333,9 @@ mod tests {
         assert_eq!(output, 6);
     }
 
-    /// `transform_any` 必须惰性:下游收到第一条输出时,上游流尚未产完。
-    /// 这是 `llm.pipe(parser)` 这类链能"边生成边输出"的关键。
+    /// `transform_any` must be lazy: by the time the downstream receives the first output,
+    /// the upstream stream has not finished yet. This is what lets chains like
+    /// `llm.pipe(parser)` emit output as it is generated.
     #[tokio::test]
     async fn transform_any_is_lazy_incremental() {
         use std::sync::atomic::{AtomicBool, Ordering};

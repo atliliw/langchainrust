@@ -1,7 +1,7 @@
 // src/retrieval/loaders/csv.rs
-//! CSV 文档加载器实现
+//! CSV document loader implementation
 //!
-//! 提供给定列作为文档内容的方式来加载 CSV 文件。
+//! Loads CSV files using a given column as the document content.
 
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
@@ -10,21 +10,21 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
-/// CSV 文档加载器
+/// CSV document loader
 pub struct CSVLoader {
-    /// CSV 文件路径
+    /// CSV file path
     pub path: PathBuf,
 
-    /// 作为文档内容的列名
+    /// The column name used as the document content
     pub content_column: String,
 }
 
 impl CSVLoader {
-    /// 创建新的 CSV 加载器
+    /// Creates a new CSV loader
     ///
-    /// # 参数
-    /// * `path` - CSV 文件路径
-    /// * `content_column` - 作为文档内容的列名
+    /// # Arguments
+    /// * `path` - the CSV file path
+    /// * `content_column` - the column name used as the document content
     pub fn new(path: impl Into<PathBuf>, content_column: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -36,7 +36,7 @@ impl CSVLoader {
 #[async_trait]
 impl DocumentLoader for CSVLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
-        // 验证文件存在
+        // Verify the file exists
         if !self.path.exists() {
             return Err(LoaderError::Other(format!(
                 "CSV file does not exist: {}",
@@ -44,14 +44,14 @@ impl DocumentLoader for CSVLoader {
             )));
         }
 
-        // 创建 CSV reader
+        // Create a CSV reader
         let file = File::open(&self.path)?;
         let buf_reader = BufReader::new(file);
         let mut reader = Reader::from_reader(buf_reader);
 
         let mut documents = Vec::new();
 
-        // 直接处理可能的错误
+        // Handle possible errors directly
         let headers_result = reader.headers();
         let headers = match headers_result {
             Ok(headers) => headers.clone(),
@@ -64,30 +64,30 @@ impl DocumentLoader for CSVLoader {
                 Err(e) => return Err(LoaderError::CsvError(e.to_string())),
             };
 
-            // 查找内容列的索引
+            // Find the index of the content column
             let content_idx = headers
                 .iter()
                 .position(|h| h == self.content_column.as_str());
 
             if let Some(idx) = content_idx {
-                // 获取内容
+                // Get the content
                 let content = record.get(idx).unwrap_or_default().to_string();
 
-                // 如果内容為空則跳過此行
+                // Skip this row if the content is empty
                 if content.is_empty() {
                     continue;
                 }
 
-                // 创建文档内容，包含 CSV 行的所有列
+                // Create the document content, including all columns of the CSV row
                 let mut document = Document::new(content);
 
-                // 添加所有列的值作为元数据
+                // Add the values of all columns as metadata
                 for (i, header) in headers.iter().enumerate() {
                     let value = record.get(i).unwrap_or_default().to_string();
                     document = document.with_metadata(header.to_string(), value);
                 }
 
-                // 添加文件源信息
+                // Add the file source information
                 document =
                     document.with_metadata("source".to_string(), self.path.display().to_string());
                 document = document.with_metadata("format".to_string(), "csv".to_string());
@@ -96,7 +96,7 @@ impl DocumentLoader for CSVLoader {
 
                 documents.push(document);
             } else {
-                // 如果内容列不存在，返回错误
+                // Return an error if the content column does not exist
                 return Err(LoaderError::CsvError(format!(
                     "content column '{}' does not exist in CSV file",
                     self.content_column
@@ -152,7 +152,7 @@ mod tests {
         let docs = result.unwrap();
         assert_eq!(docs.len(), 2);
 
-        // 检查第一个文档的内容和元数据
+        // Check the content and metadata of the first document
         if !docs.is_empty() {
             let doc = &docs[0];
             assert!(doc.content.contains("This is the content"));

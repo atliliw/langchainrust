@@ -1,54 +1,54 @@
-//! MCP Elicitation - 交互请求类型与 `elicitation/create` 处理
+//! MCP Elicitation - interaction-request types and `elicitation/create` handling
 //!
-//! MCP Elicitation 允许 Server 向用户请求信息(如确认、输入等),
-//! 通过 Host 的 UI 向用户展示表单并收集响应。
+//! MCP Elicitation lets a Server request information from the user (confirmation, input, etc.),
+//! displaying a form to the user through the Host's UI and collecting the response.
 
 use crate::protocol::MCPError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `elicitation/create` 请求参数
+/// `elicitation/create` request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationRequest {
-    /// 展示给用户的消息文本
+    /// Message text shown to the user
     pub message: String,
-    /// 期望用户填写的可选 JSON Schema 表单
+    /// Optional JSON Schema form the user is expected to fill in
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<Value>,
 }
 
-/// `elicitation/create` 响应
+/// `elicitation/create` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationResponse {
-    /// 用户做出的响应动作
+    /// The action the user took in response
     pub action: ElicitationAction,
-    /// 用户提交的响应内容(可选)
+    /// Content the user submitted (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Value>,
 }
 
-/// 用户响应动作
+/// User response action
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ElicitationAction {
-    /// 用户接受请求
+    /// The user accepted the request
     Accept,
-    /// 用户拒绝请求
+    /// The user rejected the request
     Decline,
-    /// 用户取消请求
+    /// The user cancelled the request
     Cancel,
 }
 
-/// 交互请求处理者(server→host 方向)。
+/// Interaction-request handler (server→host direction).
 ///
-/// 按 MCP 语义,`elicitation/create` 由 Server 发起、Host 通过 UI 向用户收集
-/// 输入。框架层不连接具体传输,由宿主注入本回调;回调内部负责把请求送达
-/// Host 并取回响应。未注入时 [`crate::MCPServer::create_elicitation`] 返回
-/// 明确错误。
+/// Per MCP semantics, `elicitation/create` is initiated by the Server and the Host collects user
+/// input through its UI. The framework layer doesn't attach to a specific transport; the host injects
+/// this callback, which is responsible for delivering the request to the Host and fetching the response.
+/// When not injected, [`crate::MCPServer::create_elicitation`] returns a clear error.
 #[async_trait]
 pub trait ElicitationHandler: Send + Sync {
-    /// 发起一次交互请求,返回用户响应。
+    /// Initiates an interaction request, returning the user's response.
     async fn create(&self, request: &ElicitationRequest) -> Result<ElicitationResponse, MCPError>;
 }
 

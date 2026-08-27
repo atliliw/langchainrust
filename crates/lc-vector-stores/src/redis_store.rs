@@ -1,5 +1,5 @@
 // lc-vector-stores/src/redis_store.rs
-//! Redis 文档存储实现
+//! Redis document store implementation
 
 use async_trait::async_trait;
 use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
@@ -7,12 +7,12 @@ use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{Document, VectorStoreError};
 
-/// Redis 文档存储配置
+/// Redis document store configuration
 #[derive(Debug, Clone)]
 pub struct RedisStoreConfig {
-    /// Redis 连接地址
+    /// Redis connection URL
     pub url: String,
-    /// 键前缀
+    /// Key prefix
     pub key_prefix: String,
 }
 
@@ -26,31 +26,31 @@ impl Default for RedisStoreConfig {
 }
 
 impl RedisStoreConfig {
-    /// 使用连接地址创建配置,键前缀取默认值。
+    /// Creates a config from a URL, using the default key prefix.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             ..Default::default()
         }
     }
-    /// 设置键前缀。
+    /// Sets the key prefix.
     pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.key_prefix = prefix.into();
         self
     }
 }
 
-/// Redis 文档存储实现
+/// Redis document store implementation
 pub struct RedisDocumentStore {
     config: RedisStoreConfig,
 }
 
 impl RedisDocumentStore {
-    /// 根据配置连接 Redis 并验证连接可用,创建存储实例。
+    /// Connects to Redis per the config, verifies the connection is usable, and creates a store instance.
     pub async fn new(config: RedisStoreConfig) -> Result<Self, VectorStoreError> {
         let client = redis::Client::open(config.url.as_str())
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-        // 验证连接(客户端不保留,后续操作按需重连)
+        // verify the connection (the client is not kept; later operations reconnect on demand)
         let _ = client
             .get_connection()
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
@@ -128,7 +128,7 @@ impl DocumentStore for RedisDocumentStore {
             Some(json) => match serde_json::from_str(&json) {
                 Ok(doc) => Ok(Some(doc)),
                 Err(e) => {
-                    // 键存在但载荷损坏/由旧 schema 写入,区别于真实 miss
+                    // the key exists but the payload is corrupted / written by an older schema, distinct from a true miss
                     log::error!(
                         "failed to parse stored payload for document `{}` (corrupted or written by an older schema): {}",
                         id,
@@ -278,10 +278,11 @@ impl RedisDocumentStore {
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
     }
 
-    /// 将 Redis 数据集持久化到磁盘 (RDB 快照,`SAVE` 命令)。
+    /// Persists the Redis dataset to disk (RDB snapshot, the `SAVE` command).
     ///
-    /// C3: 原 `ChunkedDocumentStoreTrait::save` 为假默认方法,已从 trait 删除;
-    /// Redis 的持久化语义是整库 RDB 快照,与文件路径无关,故改为无参固有方法。
+    /// C3: the original `ChunkedDocumentStoreTrait::save` was a fake default method and has been
+    /// removed from the trait; Redis persistence is a whole-database RDB snapshot unrelated to any
+    /// file path, so this is now a parameterless inherent method.
     pub async fn save_to_disk(&self) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
@@ -316,7 +317,7 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
         })
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
-        // 使用 spawn_blocking 执行所有 Redis 操作
+        // run all Redis operations via spawn_blocking
         let config = self.config.clone();
         let pid = parent_id.clone();
         let chunks = chunks_text.clone();

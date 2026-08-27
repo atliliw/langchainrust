@@ -1,4 +1,4 @@
-//! Guardrail 执行器
+//! Guardrail runner
 
 use std::sync::Arc;
 
@@ -8,51 +8,51 @@ use super::guardrail::{
     ChunkAction, GuardrailError, GuardrailsConfig, InputGuardrailResult, OutputGuardrailResult,
 };
 
-/// 违规记录上限:超过后丢弃最旧记录,防止内存无界增长(P1-2)。
+/// Violation log cap: beyond it the oldest record is dropped to prevent unbounded memory growth (P1-2).
 const MAX_VIOLATIONS: usize = 1000;
 
-/// 单次 Guardrail 违规(P1-7:可序列化,供审计持久化)。
+/// A single Guardrail violation (P1-7: serializable, for audit persistence).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailViolation {
-    /// 触发的护栏名称
+    /// Name of the guardrail that fired
     pub guardrail_name: String,
-    /// 违规阶段(input / output / stream)
+    /// Violation stage (input / output / stream)
     pub stage: String,
-    /// 违规原因
+    /// Violation reason
     pub reason: String,
 }
 
-/// 输出验证结果三态(P1-5)
+/// Three-state output validation result (P1-5)
 ///
-/// `fail_fast=false` 时,Block 不再立即抛错丢弃当前值;剩余护栏仍会执行,
-/// 后续 `Modify` 依然保留,最终把(可能被改写过的)部分输出放进
-/// `Blocked::partial`。
+/// With `fail_fast=false`, a Block no longer immediately errors out and discards the current
+/// value; the remaining guardrails still run, later `Modify`s are still kept, and the (possibly
+/// rewritten) partial output ends up in `Blocked::partial`.
 #[derive(Debug)]
 pub enum OutputValidation {
-    /// 全部通过,`value` 为最终值(可能被多个 `Modify` 改写)。
+    /// All passed; `value` is the final value (possibly rewritten by multiple `Modify`s).
     Passed(String),
-    /// 被拦截,`partial` 为拦截前的已处理输出。
+    /// Blocked; `partial` is the processed output before blocking.
     Blocked {
-        /// 拦截原因
+        /// Block reason
         reason: String,
-        /// 拦截前已处理的部分输出
+        /// The partial output processed before blocking
         partial: String,
     },
 }
 
-/// Guardrail 执行器:按配置依次执行 input / output / streaming guardrails。
+/// Guardrail runner: runs input / output / streaming guardrails in order per the config.
 #[derive(Clone)]
 pub struct GuardrailRunner {
     config: GuardrailsConfig,
-    /// 违规日志:Arc 共享,`Clone` 出的 runner 与本体记录同一份日志。
+    /// Violation log: shared via Arc; a runner produced by `Clone` records into the same log as the original.
     ///
-    /// `invoke_stream` 的两阶段各持一份 runner 克隆,流内违规即时可见于
-    /// `GuardedAgent::violations()`,无需事后合并。
+    /// Each phase of `invoke_stream` holds its own runner clone, so in-stream violations are
+    /// immediately visible via `GuardedAgent::violations()` without a later merge.
     violations: Arc<std::sync::Mutex<Vec<GuardrailViolation>>>,
 }
 
 impl GuardrailRunner {
-    /// 用指定配置创建执行器。
+    /// Creates a runner with the given config.
     pub fn new(config: GuardrailsConfig) -> Self {
         Self {
             config,
@@ -60,30 +60,30 @@ impl GuardrailRunner {
         }
     }
 
-    /// 记录违规:写入有界共享日志 + (可选)异步审计持久化(P1-2/P1-7)。
+    /// Records a violation: writes to the bounded shared log + (optional) async audit persistence (P1-2/P1-7).
     async fn record_violation(&mut self, violation: GuardrailViolation) {
         {
             let mut violations = self.violations.lock().unwrap_or_else(|e| e.into_inner());
             violations.push(violation.clone());
-            // 有界:丢弃最旧,保持固定上限。
+            // bounded: drop the oldest, keep a fixed cap.
             if violations.len() > MAX_VIOLATIONS {
                 violations.remove(0);
             }
-        } // 守卫在此释放,不跨 await 持有。
+        } // guard is released here, not held across an await.
         if let Some(sink) = &self.config.audit_sink {
             sink.record(&violation).await;
         }
     }
 
-    /// 验证输入。
+    /// Validates input.
     ///
-    /// 拦截时返回 [`GuardrailError::Blocked`](输入侧无 partial/建议)。
+    /// On blocking, returns [`GuardrailError::Blocked`] (the input side has no partial/suggestion).
     pub async fn validate_input(&mut self, input: &str) -> Result<(), GuardrailError> {
         let mut first_block: Option<String> = None;
-        // 克隆列表:避免在持有 `&self.config` 借用时调用 `&mut self` 方法。
+        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
         let guardrails = self.config.input_guardrails.clone();
         for g in &guardrails {
-            // 输入侧结果类型没有 `Modify`,这里不可能静默丢弃改写结果。
+            // the input-side result type has no `Modify`, so a rewritten result cannot be silently dropped here.
             if let InputGuardrailResult::Block { reason } = g.validate(input).await {
                 self.record_violation(GuardrailViolation {
                     guardrail_name: g.name().to_string(),
@@ -109,15 +109,15 @@ impl GuardrailRunner {
         Ok(())
     }
 
-    /// 验证输出(支持 Modify)。返回三态结果而非直接抛错:
+    /// Validates output (supports Modify). Returns a three-state result instead of erroring directly:
     ///
-    /// - `fail_fast=true`:首个 Block 即停,`partial` 为当前已处理输出。
-    /// - `fail_fast=false`:继续执行剩余护栏,后续 `Modify` 仍保留,最终以
-    ///   `Blocked::partial` 携带(可能被改写过的)部分输出。
+    /// - `fail_fast=true`: stops at the first Block; `partial` is the currently processed output.
+    /// - `fail_fast=false`: continues running the remaining guardrails, keeps later `Modify`s, and
+    ///   `Blocked::partial` carries the (possibly rewritten) partial output.
     pub async fn validate_output(&mut self, output: &str) -> OutputValidation {
         let mut current = output.to_string();
         let mut first_block: Option<String> = None;
-        // 克隆列表:避免在持有 `&self.config` 借用时调用 `&mut self` 方法。
+        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
         let guardrails = self.config.output_guardrails.clone();
         for g in &guardrails {
             match g.validate(&current).await {
@@ -137,7 +137,7 @@ impl GuardrailRunner {
                     }
                 }
                 OutputGuardrailResult::Modify { new_value } => {
-                    // Modify 是护栏干预,记录违规便于审计,同时保留改写结果。
+                    // Modify is a guardrail intervention: record the violation for auditing while keeping the rewritten result.
                     self.record_violation(GuardrailViolation {
                         guardrail_name: g.name().to_string(),
                         stage: "output".to_string(),
@@ -157,13 +157,13 @@ impl GuardrailRunner {
         }
     }
 
-    /// 两阶段流式检查的第一阶段:对增量 chunk(可能是 `tail + chunk`)逐块验证。
+    /// Phase one of the two-phase streaming check: validates each incremental chunk (possibly a `tail + chunk`).
     ///
-    /// 返回 [`ChunkAction`]:放行 / 改写后放行 / 拦截丢弃。
-    /// 完整输出的二次复查由 [`GuardrailRunner::validate_output`] 承担(P1-4)。
+    /// Returns a [`ChunkAction`]: pass / pass after rewrite / block and drop.
+    /// The second re-check of the full output is handled by [`GuardrailRunner::validate_output`] (P1-4).
     pub async fn validate_stream_chunk(&mut self, chunk: &str) -> ChunkAction {
         let mut action = ChunkAction::Pass;
-        // 克隆列表:避免在持有 `&self.config` 借用时调用 `&mut self` 方法。
+        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
         let guardrails = self.config.streaming_guardrails.clone();
         for g in &guardrails {
             match g.validate_chunk(chunk).await {
@@ -191,9 +191,9 @@ impl GuardrailRunner {
         action
     }
 
-    /// 获取违规记录快照(共享日志的克隆)。
+    /// Returns a snapshot of violation records (a clone of the shared log).
     ///
-    /// 返回 owned `Vec` 而非切片:Mutex 守卫不能跨调用存活。
+    /// Returns an owned `Vec` rather than a slice: a Mutex guard cannot outlive the call.
     pub fn violations(&self) -> Vec<GuardrailViolation> {
         self.violations
             .lock()
@@ -201,7 +201,7 @@ impl GuardrailRunner {
             .clone()
     }
 
-    /// 清理违规记录(P1-2)。共享同一日志的 runner 一起清空。
+    /// Clears violation records (P1-2). All runners sharing the same log are cleared together.
     pub fn clear_violations(&mut self) {
         self.violations
             .lock()
@@ -242,7 +242,7 @@ mod tests {
         }
     }
 
-    /// 输出侧 Modify 护栏:把邮箱替换为 [REDACTED]。
+    /// Output-side Modify guardrail: replaces emails with [REDACTED].
     struct RedactEmail;
     #[async_trait]
     impl OutputGuardrail for RedactEmail {
@@ -261,7 +261,7 @@ mod tests {
         }
     }
 
-    /// 恒 Block 的输出护栏。
+    /// Output guardrail that always blocks.
     struct AlwaysBlockOutput;
     #[async_trait]
     impl OutputGuardrail for AlwaysBlockOutput {
@@ -275,7 +275,7 @@ mod tests {
         }
     }
 
-    /// 命中关键词即 Block 的流式护栏。
+    /// Streaming guardrail that blocks on a keyword match.
     struct KeywordStreamGuard;
     #[async_trait]
     impl StreamingOutputGuardrail for KeywordStreamGuard {
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    /// 命中关键词即 Replace 的流式护栏。
+    /// Streaming guardrail that replaces on a keyword match.
     struct RedactStreamGuard;
     #[async_trait]
     impl StreamingOutputGuardrail for RedactStreamGuard {
@@ -307,7 +307,7 @@ mod tests {
         }
     }
 
-    /// 计数审计 sink。
+    /// Counting audit sink.
     struct CountingSink {
         recorded: std::sync::atomic::AtomicUsize,
     }
@@ -339,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_fail_fast_collects_one() {
-        // fail_fast=true:第一个 block 即返回,只记录 1 个
+        // fail_fast=true: returns at the first block, records only 1
         let config = GuardrailsConfig::new()
             .with_input(Arc::new(AlwaysBlock))
             .with_input(Arc::new(AlwaysBlock))
@@ -351,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_no_fail_fast_collects_all() {
-        // fail_fast=false:检查所有,记录 2 个
+        // fail_fast=false: checks all, records 2
         let config = GuardrailsConfig::new()
             .with_input(Arc::new(AlwaysBlock))
             .with_input(Arc::new(AlwaysBlock))
@@ -363,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_output_modify() {
-        // 输出护栏返回 Modify,validate_output 返回改写后的值(Passed),并记录一条违规。
+        // the output guardrail returns Modify; validate_output returns the rewritten value (Passed) and records one violation.
         let config = GuardrailsConfig::new().with_output(Arc::new(RedactEmail));
         let mut runner = GuardrailRunner::new(config);
         match runner.validate_output("contact user@example.com").await {
@@ -375,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_output_modify_then_block_fail_fast() {
-        // fail_fast=true:先 Modify 再 Block,立即返回 Blocked,partial 携带已改写值。
+        // fail_fast=true: Modify then Block -> Blocked returned immediately, partial carries the rewritten value.
         let config = GuardrailsConfig::new()
             .with_output(Arc::new(RedactEmail))
             .with_output(Arc::new(AlwaysBlockOutput))
@@ -393,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_output_blocked_preserves_later_modify_no_fail_fast() {
-        // fail_fast=false(P1-5):Block 后仍执行剩余护栏,后续 Modify 保留进 partial。
+        // fail_fast=false (P1-5): guardrails still run after a Block, and later Modify results are kept in partial.
         let config = GuardrailsConfig::new()
             .with_output(Arc::new(AlwaysBlockOutput))
             .with_output(Arc::new(RedactEmail))
@@ -413,7 +413,7 @@ mod tests {
     async fn test_runner_stream_chunk_block() {
         let config = GuardrailsConfig::new().with_streaming(Arc::new(KeywordStreamGuard));
         let mut runner = GuardrailRunner::new(config);
-        // 滑动窗口探测串内含 SECRET → Block
+        // sliding-window probe contains SECRET -> Block
         assert_eq!(
             runner.validate_stream_chunk("x SECRET y").await,
             ChunkAction::Block
@@ -434,7 +434,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_runner_violations_bounded() {
-        // 超过 MAX_VIOLATIONS 后丢弃最旧,保持有界(P1-2)。
+        // beyond MAX_VIOLATIONS the oldest is dropped, keeping it bounded (P1-2).
         let config = GuardrailsConfig::new();
         let mut runner = GuardrailRunner::new(config);
         for i in 0..(MAX_VIOLATIONS + 5) {
@@ -447,7 +447,7 @@ mod tests {
                 .await;
         }
         assert_eq!(runner.violations().len(), MAX_VIOLATIONS);
-        // 最旧记录已被丢弃
+        // the oldest record has been dropped
         assert_ne!(runner.violations()[0].guardrail_name, "g0");
     }
 

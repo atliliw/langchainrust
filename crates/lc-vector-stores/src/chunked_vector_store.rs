@@ -1,8 +1,8 @@
 // lc-vector-stores/src/chunked_vector_store.rs
-//! Chunked Vector Store - 分割文档向量存储
+//! Chunked Vector Store — split-document vector storage
 //!
-//! 只存储向量 + chunk_id 引用，内容从 DocumentStore 获取。
-//! 支持 Parent-Child 文档结构，适合长文档分割场景。
+//! Stores only vectors + chunk_id references; content is fetched from the DocumentStore.
+//! Supports the Parent-Child document structure, suitable for long-document splitting scenarios.
 
 use crate::document_store::{ChunkedDocumentStore, ChunkedDocumentStoreTrait, DocumentStore};
 use crate::{
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// 向量索引条目（只存向量 + chunk_id）
+/// Vector index entry (stores only the vector + chunk_id)
 struct VectorEntry {
     chunk_id: String,
     embedding: Vec<f32>,
@@ -28,7 +28,7 @@ pub struct ChunkedVectorStore {
 }
 
 impl ChunkedVectorStore {
-    /// 创建新的 ChunkedVectorStore
+    /// Creates a new ChunkedVectorStore
     pub fn new(document_store: Arc<ChunkedDocumentStore>, vector_size: usize) -> Self {
         Self {
             document_store,
@@ -37,7 +37,7 @@ impl ChunkedVectorStore {
         }
     }
 
-    /// 添加 chunk 向量（chunk_id + embedding）
+    /// Adds a chunk vector (chunk_id + embedding)
     pub async fn add_chunk_vector(
         &self,
         chunk_id: impl Into<String>,
@@ -64,7 +64,7 @@ impl ChunkedVectorStore {
         Ok(())
     }
 
-    /// 批量添加 chunk 向量
+    /// Adds chunk vectors in bulk
     pub async fn add_chunk_vectors(
         &self,
         chunk_ids: Vec<String>,
@@ -83,7 +83,7 @@ impl ChunkedVectorStore {
         Ok(())
     }
 
-    /// 从 Parent 文档添加（自动分割 + 向量化）
+    /// Adds from a Parent document (auto-split + vectorized)
     pub async fn add_parent_document(
         &self,
         document: Document,
@@ -109,7 +109,7 @@ impl ChunkedVectorStore {
         Ok((parent_id, chunk_ids))
     }
 
-    /// 获取 chunk_id 对应的向量 (M4: O(1) HashMap lookup)
+    /// Gets the vector for a chunk_id (M4: O(1) HashMap lookup)
     pub async fn get_embedding(
         &self,
         chunk_id: &str,
@@ -118,7 +118,7 @@ impl ChunkedVectorStore {
         Ok(vectors.get(chunk_id).map(|e| e.embedding.clone()))
     }
 
-    /// 获取向量数量
+    /// Gets the number of stored vectors
     pub async fn vector_count(&self) -> usize {
         let vectors = self.vectors.read().await;
         vectors.len()
@@ -160,8 +160,8 @@ impl VectorStore for ChunkedVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // Q2: 不再硬过滤 score > 0 —— 全负分语料下也应返回 top-k;
-        // 是否设阈值由调用方通过 similarity_search_with_min_score 显式决定。
+        // Q2: no longer hard-filters score > 0 — top-k must be returned even for all-negative
+        // corpora; whether to set a threshold is the caller's explicit choice via similarity_search_with_min_score.
         self.similarity_search_with_min_score(query_embedding, k, None)
             .await
     }
@@ -174,7 +174,7 @@ impl VectorStore for ChunkedVectorStore {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let vectors = self.vectors.read().await;
 
-        // 计算所有向量的相似度,先按阈值过滤再取 top-k (Q2)
+        // compute similarity for all vectors, filter by threshold first, then take top-k (Q2)
         let mut results: Vec<(String, f32)> = vectors
             .values()
             .filter_map(|entry| {
@@ -196,7 +196,7 @@ impl VectorStore for ChunkedVectorStore {
                 let doc = match self.document_store.get_chunk_document(chunk_id).await {
                     Ok(doc) => doc,
                     Err(e) => {
-                        // 不再静默吞错:读失败记日志,该 chunk 从 top-k 结果中缺失
+                        // stop silently swallowing errors: log read failures; the chunk is missing from the top-k results
                         log::error!(
                             "failed to read document for chunk `{}` while retrieving (chunk dropped from results): {}",
                             chunk_id,
@@ -218,25 +218,26 @@ impl VectorStore for ChunkedVectorStore {
         Ok(search_results)
     }
 
-    /// S3: 分块存储元数据过滤。
+    /// S3: chunked-store metadata filtering.
     ///
-    /// 向量索引不携带 metadata,过滤需要按 chunk_id 到 document store 取文档。
-    /// 因此语义是"全量打分 → 降序扫描、逐条按 metadata 过滤 → 收满 k 条即停",
-    /// 保证过滤后仍返回相似度最高的 top-k(而不是先截断再过滤)。
+    /// The vector index carries no metadata, so filtering requires fetching documents from the
+    /// document store by chunk_id. The semantics are "score everything → scan descending,
+    /// filtering each item by metadata → stop once k items are collected", guaranteeing the
+    /// top-k by similarity after filtering (rather than truncating first and filtering later).
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
         k: usize,
         filter: Option<&MetadataFilter>,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
-        // filter: None → 委托普通检索(不过滤)。
+        // filter: None → delegate to plain retrieval (no filtering).
         let Some(filter) = filter else {
             return self.similarity_search(query_embedding, k).await;
         };
 
         let vectors = self.vectors.read().await;
 
-        // 1. 全量打分
+        // 1. score everything
         let mut scored: Vec<(String, f32)> = vectors
             .values()
             .map(|entry| {
@@ -247,11 +248,12 @@ impl VectorStore for ChunkedVectorStore {
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // 2. 降序扫描,逐条取文档并按 metadata 过滤,收满 k 条即停。
-        //    文档缺失/读取失败记日志并跳过该候选(与 with_min_score 的处理一致)。
+        // 2. scan descending, fetch each document and filter by metadata, stopping once k items
+        //    are collected. Missing documents / read failures are logged and the candidate is
+        //    skipped (consistent with the with_min_score handling).
         let mut results: Vec<SearchResult> = Vec::new();
         for (chunk_id, score) in scored {
-            // 读取失败与 with_min_score 一致:记日志、跳过该候选,不中断整体检索。
+            // read failures are handled like with_min_score: log, skip the candidate, do not abort the whole retrieval.
             let doc = match self.document_store.get_chunk_document(&chunk_id).await {
                 Ok(doc) => doc,
                 Err(e) => {
@@ -392,8 +394,8 @@ mod tests {
         assert_eq!(vector_store.vector_count().await, chunk_ids.len());
     }
 
-    /// Q2: 全非正分语料下 similarity_search 仍返回 top-k(不再被 score>0 硬过滤清空),
-    /// 且可用 similarity_search_with_min_score 显式过滤。
+    /// Q2: similarity_search still returns top-k for an all-non-positive corpus (no longer emptied
+    /// by a hard score > 0 filter), and similarity_search_with_min_score allows explicit filtering.
     #[tokio::test]
     async fn test_negative_scores_not_dropped() {
         let doc_store = Arc::new(ChunkedDocumentStore::new());
@@ -427,7 +429,7 @@ mod tests {
         assert_eq!(filtered.len(), 2);
     }
 
-    /// S3: 分块存储元数据过滤 —— 过滤在 top-k 之前,返回匹配文档中的相似度 top-k。
+    /// S3: chunked-store metadata filtering — filtering happens before top-k, returning the similarity top-k among matching documents.
     #[tokio::test]
     async fn test_similarity_search_with_filter() {
         use crate::FilterOp;
@@ -475,7 +477,7 @@ mod tests {
 
         let query = vec![1.0, 0.0, 0.0];
 
-        // 单条件:只返回 rust 文档,且按相似度降序(chunk_001 > chunk_003)
+        // single condition: only rust documents are returned, in similarity descending order (chunk_001 > chunk_003)
         let eq = MetadataFilter::field("lang", FilterOp::Eq, "rust");
         let r = vector_store
             .similarity_search_with_filter(&query, 5, Some(&eq))
@@ -485,7 +487,7 @@ mod tests {
         assert_eq!(r[0].document.content, "rust doc");
         assert_eq!(r[1].document.content, "rust legacy");
 
-        // k 在过滤后生效
+        // k applies after filtering
         let r = vector_store
             .similarity_search_with_filter(&query, 1, Some(&eq))
             .await
@@ -493,7 +495,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].document.content, "rust doc");
 
-        // filter: None 与 similarity_search 一致
+        // filter: None behaves identically to similarity_search
         let none = vector_store
             .similarity_search_with_filter(&query, 5, None)
             .await

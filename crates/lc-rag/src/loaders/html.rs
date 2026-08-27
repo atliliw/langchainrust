@@ -1,6 +1,7 @@
-//! HTML 文档加载器
+//! HTML document loader
 //!
-//! 支持从 HTML 字符串或 URL 加载文档,去除 script/style,剥离标签,解码实体,提取纯文本。
+//! Loads documents from an HTML string or URL: strips script/style, removes tags,
+//! decodes entities, and extracts plain text.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -17,14 +18,14 @@ static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<style.*?</
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
-/// HTML 加载器:去除 script/style,剥离标签,解码实体,提取纯文本
+/// HTML loader: strips script/style, removes tags, decodes entities, extracts plain text
 pub struct HTMLLoader {
     html: Option<String>,
     url: Option<String>,
 }
 
 impl HTMLLoader {
-    /// 从 HTML 字符串创建加载器
+    /// Creates a loader from an HTML string
     pub fn new(html: impl Into<String>) -> Self {
         Self {
             html: Some(html.into()),
@@ -32,7 +33,7 @@ impl HTMLLoader {
         }
     }
 
-    /// 从 URL 创建加载器(异步抓取 HTML 后解析)
+    /// Creates a loader from a URL (fetches the HTML asynchronously, then parses it)
     pub fn from_url(url: impl Into<String>) -> Self {
         Self {
             html: None,
@@ -40,13 +41,13 @@ impl HTMLLoader {
         }
     }
 
-    /// 从 HTML 提取纯文本(纯函数,便于测试)
+    /// Extracts plain text from HTML (a pure function, convenient for testing)
     pub fn extract_text(html: &str) -> String {
         let mut text = html.to_string();
         text = SCRIPT_RE.replace_all(&text, "").to_string();
         text = STYLE_RE.replace_all(&text, "").to_string();
         text = TAG_RE.replace_all(&text, " ").to_string();
-        // 解码常见实体
+        // Decode common entities
         text = text
             .replace("&amp;", "&")
             .replace("&lt;", "<")
@@ -54,11 +55,11 @@ impl HTMLLoader {
             .replace("&nbsp;", " ")
             .replace("&quot;", "\"")
             .replace("&#39;", "'");
-        // 压缩空白
+        // Compress whitespace
         WHITESPACE_RE.replace_all(&text, " ").trim().to_string()
     }
 
-    /// 从 URL 抓取 HTML 内容
+    /// Fetches HTML content from a URL
     async fn fetch_html(url: &str) -> Result<String, LoaderError> {
         let response = reqwest::get(url)
             .await
@@ -151,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_from_url_has_source_metadata() {
         let loader = HTMLLoader::from_url("https://example.com");
-        // 不实际请求,只验证构造
+        // No actual request is made; only verify construction
         assert!(loader.url.is_some());
         assert!(loader.html.is_none());
         assert_eq!(loader.url.as_deref(), Some("https://example.com"));
@@ -168,7 +169,7 @@ mod tests {
     async fn test_load_from_html_with_source_in_metadata() {
         let loader = HTMLLoader::new("<p>hello</p>");
         let docs = loader.load().await.unwrap();
-        // 从 HTML 字符串加载时没有 source
+        // No source when loading from an HTML string
         assert!(!docs[0].metadata.contains_key("source"));
     }
 

@@ -1,110 +1,110 @@
-//! MCP Prompts - 提示词模板类型与 `prompts/list`、`prompts/get` 处理
+//! MCP Prompts - prompt-template types and `prompts/list` / `prompts/get` handling
 //!
-//! MCP Prompts 允许 Server 暴露可复用的提示词模板,Client 可带参数获取。
+//! MCP Prompts lets a Server expose reusable prompt templates that a Client can fetch with arguments.
 
 use crate::protocol::MCPError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 提示词参数定义
+/// A prompt-argument definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptArgument {
-    /// 参数名
+    /// Argument name
     pub name: String,
-    /// 参数的可选描述
+    /// Optional description of the argument
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 是否为必填参数
+    /// Whether the argument is required
     #[serde(default)]
     pub required: bool,
 }
 
-/// 提示词描述(来自 `prompts/list`)
+/// Prompt description (from `prompts/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
-    /// 提示词名称
+    /// Prompt name
     pub name: String,
-    /// 提示词的可选描述
+    /// Optional description of the prompt
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 提示词参数定义列表
+    /// List of prompt-argument definitions
     #[serde(default)]
     pub arguments: Vec<PromptArgument>,
 }
 
-/// 提示词内容(内联枚举)
+/// Prompt content (inline enum)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PromptContent {
-    /// 文本内容
+    /// Text content
     #[serde(rename = "text")]
     Text {
-        /// 文本数据
+        /// Text data
         text: String,
     },
-    /// 图片内容
+    /// Image content
     #[serde(rename = "image")]
     Image {
-        /// 图片数据(base64 编码)
+        /// Image data (base64-encoded)
         data: String,
-        /// 图片 MIME 类型
+        /// Image MIME type
         mime_type: String,
     },
-    /// 资源引用内容
+    /// Resource-reference content
     #[serde(rename = "resource")]
     Resource {
-        /// 资源 URI
+        /// Resource URI
         uri: String,
-        /// 资源名称
+        /// Resource name
         name: String,
     },
 }
 
-/// 提示词消息
+/// A prompt message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptMessage {
-    /// 消息角色(如 `user` 或 `assistant`)
+    /// Message role (e.g. `user` or `assistant`)
     pub role: String,
-    /// 消息内容
+    /// Message content
     pub content: PromptContent,
 }
 
-/// `prompts/list` 响应
+/// `prompts/list` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPromptsResult {
-    /// 提示词列表
+    /// List of prompts
     pub prompts: Vec<Prompt>,
 }
 
-/// `prompts/get` 请求参数
+/// `prompts/get` request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPromptParams {
-    /// 要获取的提示词名称
+    /// Name of the prompt to fetch
     pub name: String,
-    /// 提示词参数(JSON 对象,可选)
+    /// Prompt arguments (JSON object, optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
 }
 
-/// `prompts/get` 响应
+/// `prompts/get` response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPromptResult {
-    /// 提示词的可选描述
+    /// Optional description of the prompt
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 提示词消息列表
+    /// List of prompt messages
     pub messages: Vec<PromptMessage>,
 }
 
-/// 提示词提供者:server 注册后,`prompts/list` / `prompts/get` 才有数据源。
+/// Prompt provider: once a server registers, `prompts/list` / `prompts/get` have a data source.
 ///
-/// 未注册时对应方法仍返回 `method_not_found`(诚实边界,不假装支持)。
+/// When nothing is registered the methods still return `method_not_found` (an honest boundary, no pretending to support it).
 #[async_trait]
 pub trait PromptProvider: Send + Sync {
-    /// 返回全部提示词列表。
+    /// Returns the full list of prompts.
     async fn list_prompts(&self) -> Result<Vec<Prompt>, MCPError>;
-    /// 按名称 + 可选参数生成提示词消息。
+    /// Builds the prompt messages by name + optional arguments.
     async fn get_prompt(
         &self,
         name: &str,

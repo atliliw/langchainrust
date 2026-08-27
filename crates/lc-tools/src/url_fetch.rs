@@ -1,7 +1,7 @@
 // lc-tools/src/url_fetch.rs
-//! 网页抓取工具
+//! Web page fetching tool
 //!
-//! 提供网页内容抓取和解析功能。
+//! Provides web content fetching and parsing.
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -43,10 +43,11 @@ static KW_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         .unwrap()
 });
 
-/// 从 HTML 中提取链接并去重(保留首次出现顺序)。
+/// Extracts links from HTML and dedups them (preserving first-occurrence order).
 ///
-/// 返回 `(去重后的链接, 原始条数)`。原始条数用于 details 展示"去重前后对比"。
-/// Q4: 旧实现只给 Vec 换了个名 `unique_links`,并没有真正去重。
+/// Returns `(deduped links, raw count)`. The raw count is used by details to show
+/// "before/after dedup". Q4: the old implementation only renamed the Vec to
+/// `unique_links` without actually deduplicating.
 fn extract_unique_links(html: &str) -> (Vec<String>, usize) {
     let raw: Vec<String> = LINK_REGEX
         .captures_iter(html)
@@ -61,57 +62,57 @@ fn extract_unique_links(html: &str) -> (Vec<String>, usize) {
     (unique, raw_count)
 }
 
-/// URLFetch 工具输入
+/// URLFetch tool input
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct URLFetchInput {
-    /// 操作类型: "fetch", "extract_text", "extract_links", "extract_images", "metadata"
+    /// Operation type: "fetch", "extract_text", "extract_links", "extract_images", "metadata"
     pub operation: String,
 
-    /// URL 地址
+    /// The URL
     pub url: String,
 
-    /// 是否包含头部信息（用于 fetch 操作）
+    /// Whether to include header info (for the fetch operation)
     pub include_headers: Option<bool>,
 
-    /// 最大内容长度（字节）
+    /// Maximum content length (bytes)
     pub max_length: Option<usize>,
 }
 
-/// URLFetch 工具输出
+/// URLFetch tool output
 #[derive(Debug, Serialize)]
 pub struct URLFetchOutput {
-    /// 操作结果
+    /// Operation result
     pub result: String,
 
-    /// 操作类型
+    /// Operation type
     pub operation: String,
 
     /// URL
     pub url: String,
 
-    /// 内容长度
+    /// Content length
     pub content_length: usize,
 
-    /// 额外信息
+    /// Extra details
     pub details: Option<String>,
 }
 
-/// 网页抓取工具
+/// Web page fetching tool
 pub struct URLFetchTool {
-    /// HTTP 客户端
+    /// HTTP client
     client: reqwest::Client,
-    /// 是否允许访问内网 IP（默认 false）
+    /// Whether access to private/internal IPs is allowed (default false)
     allow_private_ips: bool,
 }
 
 impl URLFetchTool {
-    /// 创建网页抓取工具(默认启用 SSRF 防护)。
+    /// Creates a web fetching tool (SSRF protection enabled by default).
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("LangChainRust/0.1 (URL Fetch Tool)")
-                // SSRF: 禁用自动重定向,由 guarded_get 逐跳重查
+                // SSRF: disable auto-redirects, guarded_get re-checks each hop
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
@@ -125,7 +126,7 @@ impl URLFetchTool {
         self
     }
 
-    /// 抓取网页内容
+    /// Fetches web content
     async fn fetch_url(
         &self,
         url: &str,
@@ -138,7 +139,7 @@ impl URLFetchTool {
             ));
         }
 
-        // SSRF: guarded_get 逐跳检查并手动跟随重定向(首跳与每一跳都会重查内网地址)
+        // SSRF: guarded_get checks each hop and follows redirects manually (both the first hop and every redirect target are re-checked against intranet addresses)
         let response = guarded_get(&self.client, url, !self.allow_private_ips).await?;
 
         let status = response.status();
@@ -150,8 +151,9 @@ impl URLFetchTool {
             )));
         }
 
-        // Q3: include_headers = Some(true) 时,把响应头并入输出(details),不再静默忽略。
-        // 头必须在消费 response 前读出(reqwest 的 headers() 借用、text() 消费)。
+        // Q3: when include_headers = Some(true), merge the response headers into the output
+        // (details) instead of silently ignoring them. Headers must be read before consuming
+        // the response (reqwest's headers() borrows, text() consumes).
         let header_block: String = if include_headers.unwrap_or(false) {
             let mut lines: Vec<String> = response
                 .headers()
@@ -203,7 +205,7 @@ impl URLFetchTool {
         })
     }
 
-    /// 提取纯文本内容
+    /// Extracts plain text content
     async fn extract_text(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
         let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
@@ -232,7 +234,7 @@ impl URLFetchTool {
         })
     }
 
-    /// 提取链接(去重,保留首次出现顺序)
+    /// Extracts links (deduped, first-occurrence order preserved)
     async fn extract_links(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
         let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
@@ -244,7 +246,7 @@ impl URLFetchTool {
             result,
             operation: "extract_links".to_string(),
             url: url.to_string(),
-            content_length: html.len(), // Q4: 真实正文长度,而非链接条数
+            content_length: html.len(), // Q4: the real body length, not the link count
             details: Some(format!(
                 "找到 {} 个唯一链接(原始 {} 个)",
                 unique_links.len(),
@@ -253,7 +255,7 @@ impl URLFetchTool {
         })
     }
 
-    /// 提取图片链接
+    /// Extracts image links
     async fn extract_images(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
         let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
@@ -274,7 +276,7 @@ impl URLFetchTool {
         })
     }
 
-    /// 提取元数据
+    /// Extracts metadata
     async fn extract_metadata(&self, url: &str) -> Result<URLFetchOutput, ToolError> {
         let fetch_result = self.fetch_url(url, Some(50000), None).await?;
         let html = &fetch_result.result;
@@ -415,7 +417,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("http://"));
     }
 
-    /// Q4: extract_links 真正去重且保留首次出现顺序;content_length 是正文长度。
+    /// Q4: extract_links truly dedups and preserves first-occurrence order; content_length is the body length.
     #[test]
     fn test_extract_unique_links_dedups() {
         let html = r#"
@@ -433,7 +435,7 @@ mod tests {
         );
     }
 
-    /// Q1: SSRF 抽取公共模块后,URLFetch 默认仍拦截内网地址。
+    /// Q1: after SSRF was extracted into a shared module, URLFetch still blocks intranet addresses by default.
     #[tokio::test]
     async fn test_url_fetch_blocks_localhost_by_default() {
         let tool = URLFetchTool::new();
@@ -449,7 +451,7 @@ mod tests {
         assert!(err.contains("SSRF"), "expected SSRF error, got: {}", err);
     }
 
-    /// Q3: include_headers = Some(true) 时,响应头并入输出(details)。
+    /// Q3: when include_headers = Some(true), response headers are merged into the output (details).
     #[tokio::test]
     async fn test_fetch_include_headers() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -483,7 +485,7 @@ mod tests {
         let output = tool.invoke(input).await.unwrap();
         let details = output.details.unwrap();
         assert!(details.contains("响应头:"), "details: {}", details);
-        // reqwest 会把响应头名规范化为小写（HTTP 头名不区分大小写）
+        // reqwest normalizes response header names to lowercase (HTTP header names are case-insensitive)
         assert!(
             details.contains("x-test-header: hello"),
             "details: {}",
@@ -493,7 +495,7 @@ mod tests {
         server.await.unwrap();
     }
 
-    /// Q3: include_headers = false/None 时不返回响应头。
+    /// Q3: when include_headers = false/None, no response headers are returned.
     #[tokio::test]
     async fn test_fetch_without_include_headers() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

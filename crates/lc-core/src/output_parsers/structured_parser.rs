@@ -9,20 +9,20 @@ use super::base::{BaseOutputParser, OutputParserError, OutputParserResult};
 use crate::language_models::LLMResult;
 use crate::runnables::{Runnable, RunnableConfig};
 
-/// 结构化输出解析器
+/// Structured output parser
 ///
-/// 将 LLM 输出的键值对格式（每行一个 `key: value`）解析为 HashMap。
-/// 适用于 LLM 以非 JSON 格式输出结构化信息的场景。
+/// Parses the LLM's key-value output (one `key: value` per line) into a HashMap.
+/// Suited to scenarios where the LLM emits structured information in a non-JSON format.
 ///
-/// # 格式
-/// 输入格式应为每行一个 `key: value`，例如：
+/// # Format
+/// The input format should be one `key: value` per line, e.g.:
 /// ```text
 /// 姓名: 张三
 /// 年龄: 28
 /// 城市: 北京
 /// ```
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use langchainrust::output_parsers::StructuredOutputParser;
 ///
@@ -31,17 +31,17 @@ use crate::runnables::{Runnable, RunnableConfig};
 /// assert_eq!(result.get("姓名").unwrap(), "张三");
 /// ```
 pub struct StructuredOutputParser {
-    /// 键值对之间的分隔符
+    /// Separator between a key and its value
     separator: char,
 }
 
 impl StructuredOutputParser {
-    /// 创建使用默认分隔符(`:`)的结构化输出解析器。
+    /// Creates a structured output parser using the default separator (`:`).
     pub fn new() -> Self {
         Self { separator: ':' }
     }
 
-    /// 使用自定义分隔符创建解析器
+    /// Creates a parser using a custom separator
     pub fn with_separator(separator: char) -> Self {
         Self { separator }
     }
@@ -65,8 +65,8 @@ impl BaseOutputParser<HashMap<String, String>> for StructuredOutputParser {
             }
 
             if let Some(pos) = line.find(self.separator) {
-                // `pos` 是分隔符首字节的字节索引;多字节分隔符(如全角 `：`)时
-                // pos+1 会落在字符内部导致切片 panic,须按分隔符 UTF-8 宽度跳过
+                // `pos` is the byte index of the separator's first byte; with a multi-byte separator
+                // (e.g. fullwidth `：`) pos+1 would land inside a char and panic on slicing; skip by the separator's UTF-8 width
                 let sep_len = self.separator.len_utf8();
                 let key = line[..pos].trim().to_string();
                 let value = line[pos + sep_len..].trim().to_string();
@@ -114,14 +114,14 @@ impl Runnable<LLMResult, HashMap<String, String>> for StructuredOutputParser {
     }
 }
 
-/// 类型化输出解析器
+/// Typed output parser
 ///
-/// 将 LLM 输出的 JSON 字符串解析为指定的 Rust 结构体。
-/// 相当于 Python LangChain 的 `PydanticOutputParser`（使用 serde 替代 pydantic）。
+/// Parses the LLM's JSON string output into a specified Rust struct.
+/// Equivalent to Python LangChain's `PydanticOutputParser` (serde replaces pydantic).
 ///
-/// 需要目标类型实现 `serde::Deserialize`。
+/// The target type must implement `serde::Deserialize`.
 ///
-/// # 示例
+/// # Example
 /// ```ignore
 /// use serde::Deserialize;
 /// use langchainrust::output_parsers::TypedOutputParser;
@@ -141,7 +141,7 @@ pub struct TypedOutputParser<T> {
 }
 
 impl<T> TypedOutputParser<T> {
-    /// 创建类型化输出解析器。
+    /// Creates a typed output parser.
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -160,14 +160,14 @@ impl<T: DeserializeOwned + Send + Sync + 'static> BaseOutputParser<T> for TypedO
     async fn parse(&self, text: &str) -> OutputParserResult<T> {
         let text = text.trim();
 
-        // 尝试从 Markdown 代码块中提取 JSON
+        // try to extract JSON from a Markdown code block
         let json_str = Self::extract_from_markdown(text).unwrap_or(text);
 
-        // 先尝试解析为 Value 验证合法性
+        // first parse into a Value to validate it
         serde_json::from_str::<serde_json::Value>(json_str)
             .map_err(|e| OutputParserError::JsonError(format!("input is not valid JSON: {}", e)))?;
 
-        // 反序列化为目标类型
+        // deserialize into the target type
         serde_json::from_str::<T>(json_str).map_err(|e| {
             OutputParserError::TypeError(format!(
                 "type deserialization failed (check whether the JSON fields match): {}",
@@ -178,16 +178,16 @@ impl<T: DeserializeOwned + Send + Sync + 'static> BaseOutputParser<T> for TypedO
 }
 
 impl<T: DeserializeOwned> TypedOutputParser<T> {
-    /// 从 Markdown 代码块中提取 JSON 字符串
+    /// Extracts a JSON string from a Markdown code block
     fn extract_from_markdown(text: &str) -> Option<&str> {
-        // 尝试 ```json ... ```
+        // try ```json ... ```
         if let Some(start) = text.find("```json") {
             let after = &text[start + 7..];
             if let Some(end) = after.find("```") {
                 return Some(after[..end].trim());
             }
         }
-        // 尝试 ``` ... ```
+        // try ``` ... ```
         if let Some(start) = text.find("```") {
             let after = &text[start + 3..];
             let after = after.trim();
@@ -238,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_structured_parser_fullwidth_separator() {
-        // 全角冒号 3 字节:修复前按 pos+1 切片会切在字符内部 panic
+        // fullwidth colon is 3 bytes: before the fix, slicing at pos+1 landed mid-char and panicked
         let parser = StructuredOutputParser::with_separator('：');
         let map = parser.parse("姓名：张三\n年龄：28").await.unwrap();
         assert_eq!(map.get("姓名").unwrap(), "张三");

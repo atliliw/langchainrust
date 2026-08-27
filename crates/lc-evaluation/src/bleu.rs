@@ -1,19 +1,19 @@
-//! BLEU 评测器:经典机器翻译/文本生成指标。
+//! BLEU evaluator: the classic machine-translation / text-generation metric.
 //!
-//! n-gram 精率的几何平均 + 短句惩罚(brevity penalty)。
-//! 完全相同为 1.0,无任何 n-gram 匹配为 0.0。
+//! Geometric mean of n-gram precisions + a brevity penalty.
+//! Identical text scores 1.0; no n-gram overlap scores 0.0.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
 
 use super::{EvalError, Evaluator, Score};
 
-/// BLEU 评测器(默认 BLEU-4)。
+/// BLEU evaluator (BLEU-4 by default).
 pub struct Bleu {
     max_n: usize,
-    /// 字符级分词(中文等无空格语言用,每个字符一个 token)
+    /// Character-level tokenization (for whitespace-less languages such as Chinese; one token per char)
     char_level: bool,
-    /// 平滑:某阶 n-gram 无匹配时不直接归零,短句更友好
+    /// Smoothing: an n-gram order with no match gets a small value instead of a hard zero, friendlier for short sentences
     smoothing: bool,
 }
 
@@ -24,7 +24,7 @@ impl Default for Bleu {
 }
 
 impl Bleu {
-    /// 创建默认 BLEU-4 评测器。
+    /// Creates the default BLEU-4 evaluator.
     pub fn new() -> Self {
         Self {
             max_n: 4,
@@ -33,34 +33,34 @@ impl Bleu {
         }
     }
 
-    /// 使用 BLEU-n(默认 4)
+    /// Uses BLEU-n (default 4)
     pub fn with_max_n(mut self, n: usize) -> Self {
         self.max_n = n.max(1);
         self
     }
 
-    /// 字符级分词:中文等无空格语言按字符切(否则整句成一个 token,BLEU 失效)
+    /// Character-level tokenization: whitespace-less languages such as Chinese split per char (otherwise the whole sentence becomes one token and BLEU breaks)
     pub fn with_char_level(mut self, v: bool) -> Self {
         self.char_level = v;
         self
     }
 
-    /// 开启平滑:某阶 n-gram 无匹配时给小值而非整体归零,短句不被一刀切
+    /// Enables smoothing: an order with no n-gram match gets a small value instead of a whole-zero, so short sentences are not cut off wholesale
     pub fn with_smoothing(mut self, v: bool) -> Self {
         self.smoothing = v;
         self
     }
 
-    /// corpus 级 BLEU:跨多条样例聚合 n-gram 匹配计数,再整体算几何均值 +
-    /// corpus 级 brevity penalty。
+    /// Corpus-level BLEU: aggregates n-gram match counts across examples, then computes a single
+    /// geometric mean + corpus-level brevity penalty.
     ///
-    /// P2-1:句子级 BLEU 的 brevity penalty 会把短句一刀切(如 BLEU-4 下
-    /// "the cat" 直接归零);corpus 聚合用总长度算惩罚、各阶 n-gram 计数合并,
-    /// 短句的匹配仍能贡献低阶精度。开启 `with_smoothing` 后某阶无匹配给小值
-    /// 而非整体归零。
+    /// P2-1: a sentence-level brevity penalty cuts short sentences off wholesale (e.g. "the cat"
+    /// scores a hard zero under BLEU-4); corpus aggregation computes the penalty from total lengths
+    /// and merges per-order n-gram counts, so short sentences still contribute low-order precision.
+    /// With `with_smoothing`, an order with no match gets a small value instead of a whole zero.
     ///
-    /// `predictions` 与 `references` 长度必须一致(逐条对应),否则返回
-    /// [`EvalError::LengthMismatch`](crate::EvalError::LengthMismatch)。
+    /// `predictions` and `references` must have the same length (one-to-one), otherwise
+    /// [`EvalError::LengthMismatch`](crate::EvalError::LengthMismatch) is returned.
     pub fn corpus_bleu(&self, predictions: &[&str], references: &[&str]) -> Result<f64, EvalError> {
         if predictions.len() != references.len() {
             return Err(EvalError::LengthMismatch {
@@ -98,14 +98,14 @@ impl Bleu {
             let t = total[n];
             let m = matches[n];
             let p = if t == 0 {
-                // 该阶整条语料都没有 n-gram(所有预测都太短):平滑时跳过不惩罚,否则归零
+                // no n-gram at this order across the whole corpus (all predictions too short): with smoothing skip (no penalty), otherwise zero
                 if self.smoothing {
                     continue;
                 }
                 return Ok(0.0);
             } else if m == 0 {
                 if self.smoothing {
-                    // 平滑:0 匹配给小值,避免 log(0) 把整体归零
+                    // smoothing: 0 matches get a small value, avoiding log(0) zeroing the whole result
                     0.5 / t as f64
                 } else {
                     return Ok(0.0);
@@ -119,7 +119,7 @@ impl Bleu {
             return Ok(0.0);
         }
         let geo_mean = log_precisions.iter().sum::<f64>() / log_precisions.len() as f64;
-        // corpus 级 brevity penalty:总预测长度 vs 总参考长度
+        // corpus-level brevity penalty: total prediction length vs total reference length
         let bp = if pred_len > ref_len {
             1.0
         } else {
@@ -129,7 +129,7 @@ impl Bleu {
     }
 }
 
-/// 分词:默认按空白切分并小写化;char_level 时按字符切(中文用)。
+/// Tokenizes: splits on whitespace and lowercases by default; with char_level splits per char (for Chinese).
 fn tokenize(s: &str, char_level: bool) -> Vec<String> {
     if char_level {
         s.chars()
@@ -181,7 +181,7 @@ impl Evaluator for Bleu {
                 matches += c.min(r);
             }
             if total == 0 {
-                // 该阶无 n-gram(预测太短没产生):平滑时跳过不惩罚,否则归零
+                // no n-gram at this order (prediction too short): with smoothing skip (no penalty), otherwise zero
                 if self.smoothing {
                     continue;
                 }
@@ -189,7 +189,7 @@ impl Evaluator for Bleu {
             }
             let p = if matches == 0 {
                 if self.smoothing {
-                    // 平滑:0 匹配给小值,避免 log(0) 把整体归零
+                    // smoothing: 0 matches get a small value, avoiding log(0) zeroing the whole result
                     0.5 / total as f64
                 } else {
                     return Ok(Score::new(0.0).with_label("no_ngram_match"));
@@ -201,7 +201,7 @@ impl Evaluator for Bleu {
         }
 
         let geo_mean = log_precisions.iter().sum::<f64>() / log_precisions.len() as f64;
-        // brevity penalty:预测比参考短则惩罚
+        // brevity penalty: penalize when the prediction is shorter than the reference
         let bp = if plen > rlen {
             1.0
         } else {
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bleu_brevity_penalty() {
-        // 预测比参考短,即使词都匹配,bleu 也被惩罚 < 1
+        // prediction shorter than reference: even with all words matching, bleu is penalized below 1
         let ev = Bleu::new().with_max_n(1);
         let s = ev
             .eval("", "the cat", "the cat sat on the mat")
@@ -274,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bleu_char_level_chinese() {
-        // 中文无空格,默认分词整句成一个 token;字符级才能算 n-gram
+        // Chinese has no spaces; default tokenization makes the whole sentence one token; char-level is required for n-grams
         let ev = Bleu::new().with_char_level(true).with_max_n(2);
         let s = ev.eval("", "猫坐在垫子上", "猫坐在垫子上").await.unwrap();
         assert!((s.value - 1.0).abs() < 1e-9);
@@ -282,17 +282,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_bleu_smoothing_avoids_zero() {
-        // 短句(词数 < 4)默认 BLEU-4 因高阶 n-gram 缺失归零
+        // a short sentence (word count < 4) zeroes out under default BLEU-4 due to missing high-order n-grams
         let strict = Bleu::new();
         let s = strict.eval("", "the cat", "the cat").await.unwrap();
         assert!((s.value - 0.0).abs() < 1e-9);
-        // 开启平滑后不为零
+        // with smoothing enabled it is no longer zero
         let smooth = Bleu::new().with_smoothing(true);
         let s2 = smooth.eval("", "the cat", "the cat").await.unwrap();
         assert!(s2.value > 0.0);
     }
 
-    /// P2-1: corpus 级 BLEU,完全相同语料 = 1.0。
+    /// P2-1: corpus-level BLEU, identical corpora = 1.0.
     #[test]
     fn test_corpus_bleu_identical() {
         let ev = Bleu::new();
@@ -305,14 +305,14 @@ mod tests {
         assert!((v - 1.0).abs() < 1e-9);
     }
 
-    /// P2-1: corpus 聚合下,短句"the cat"不再因缺 4-gram 把整体归零。
+    /// P2-1: under corpus aggregation, the short sentence "the cat" no longer zeroes the whole result for missing 4-grams.
     #[tokio::test]
     async fn test_corpus_bleu_short_sentence_aggregated() {
-        // 句子级 strict BLEU-4:"the cat" 无 4-gram,直接归零
+        // sentence-level strict BLEU-4: "the cat" has no 4-gram, hard zero
         let strict = Bleu::new();
         let s = strict.eval("", "the cat", "the cat").await.unwrap();
         assert!((s.value - 0.0).abs() < 1e-9);
-        // corpus 级:短句的匹配贡献低阶精度,整体不再为零
+        // corpus-level: the short sentence's matches contribute low-order precision, so the whole is no longer zero
         let v = strict
             .corpus_bleu(
                 &["the cat", "the dog sat on the mat"],
@@ -322,7 +322,7 @@ mod tests {
         assert!((v - 1.0).abs() < 1e-9);
     }
 
-    /// P2-1: 某阶全语料无匹配时,strict 归零;平滑给小值而非整体归零。
+    /// P2-1: when an order has no match across the whole corpus, strict zeroes out; smoothing gives a small value instead of a whole zero.
     #[test]
     fn test_corpus_bleu_smoothing() {
         let preds = &["the cat", "completely different"];
@@ -335,14 +335,14 @@ mod tests {
         assert!((v1 - 0.5).abs() < 1e-9, "平滑后应为 0.5,实际 {v1}");
     }
 
-    /// P2-1: 空语料返回 0.0,不 panic。
+    /// P2-1: an empty corpus returns 0.0, no panic.
     #[test]
     fn test_corpus_bleu_empty() {
         let v = Bleu::new().corpus_bleu(&[], &[]).unwrap();
         assert!((v - 0.0).abs() < 1e-9);
     }
 
-    /// S6: 预测/参考样本数不一致返回 LengthMismatch,不再 panic。
+    /// S6: mismatched prediction/reference counts return LengthMismatch instead of panicking.
     #[test]
     fn test_corpus_bleu_length_mismatch_returns_err() {
         let ev = Bleu::new();

@@ -1,9 +1,9 @@
-//! 多租户隔离(P2-10):每个租户一把独立工具注册表,互不可见。
+//! Multi-tenant isolation (P2-10): each tenant gets its own independent tool registry, mutually invisible.
 //!
-//! 100+ Server 部署常由多个业务方共享同一批 Server,租户之间必须隔离:
-//! A 租户注册的工具、命名空间、发现层、限流与审计,对 B 租户不可见。
-//! [`TenantGateway`] 为每个租户持有独立的 [`MCPGateway`],
-//! 注册 / 同步 / 调用 / 审计全部按租户路由;移除租户即整体清理其注册表。
+//! 100+ Server deployments are often shared by multiple business parties; tenants must be isolated:
+//! the tools, namespaces, discovery layer, rate limits and audits registered by tenant A are invisible to tenant B.
+//! [`TenantGateway`] holds an independent [`MCPGateway`] per tenant;
+//! register / sync / call / audit all route per tenant; removing a tenant clears its whole registry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,24 +15,24 @@ use super::gateway::{GatewayAuditRecord, GatewayServerSpec, MCPGateway};
 use super::protocol::MCPError;
 use lc_core::tools::ToolError;
 
-/// 多租户 Gateway 容器(P2-10):`tenant_id` → 独立 Gateway。
+/// Multi-tenant Gateway container (P2-10): `tenant_id` → independent Gateway.
 ///
-/// 每个租户的注册表完全隔离(命名空间 / 发现 / 限流 / 审计互不可见)。
-/// Server 按租户注册——同名 Server 在不同租户各自独立;同步与调用必须
-/// 显式指定租户,杜绝跨租户泄漏。取租户是惰性的:不存在的租户创建一个
-/// 空注册表,不连接任何 Server。
+/// Each tenant's registry is fully isolated (namespaces / discovery / rate limits / audit are mutually invisible).
+/// Servers register per tenant — a same-named server in different tenants is independent; sync and call must
+/// name the tenant explicitly, preventing cross-tenant leakage. Tenants are lazy: a missing tenant creates an
+/// empty registry and connects to no server.
 #[derive(Default)]
 pub struct TenantGateway {
     tenants: RwLock<HashMap<String, Arc<MCPGateway>>>,
 }
 
 impl TenantGateway {
-    /// 空租户容器。
+    /// An empty tenant container.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 取某个租户的 Gateway;不存在则创建空注册表(惰性)。
+    /// Gets a tenant's Gateway; creates an empty registry when missing (lazy).
     pub async fn tenant(&self, tenant_id: &str) -> Arc<MCPGateway> {
         let mut map = self.tenants.write().await;
         map.entry(tenant_id.to_string())
@@ -40,22 +40,22 @@ impl TenantGateway {
             .clone()
     }
 
-    /// 已注册的租户 id(顺序不稳定)。
+    /// Registered tenant ids (order not stable).
     pub async fn tenant_ids(&self) -> Vec<String> {
         self.tenants.read().await.keys().cloned().collect()
     }
 
-    /// 向指定租户注册一个 Server(惰性:不连接,首次 sync/call 才启动)。
+    /// Registers a Server for the given tenant (lazy: no connection, first sync/call starts it).
     pub async fn register(&self, tenant_id: &str, spec: GatewayServerSpec) -> Result<(), MCPError> {
         self.tenant(tenant_id).await.register(spec).await
     }
 
-    /// 同步指定租户下的全部 Server。
+    /// Syncs all Servers under the given tenant.
     pub async fn sync_all(&self, tenant_id: &str) -> Result<usize, MCPError> {
         self.tenant(tenant_id).await.sync_all().await
     }
 
-    /// 该租户注册表里全部对外工具全名(`server:tool`)。
+    /// All externally exposed tool full names (`server:tool`) in that tenant's registry.
     pub async fn tools(&self, tenant_id: &str) -> Vec<String> {
         self.tenant(tenant_id)
             .await
@@ -66,7 +66,7 @@ impl TenantGateway {
             .collect()
     }
 
-    /// 按租户调用工具(`server:tool`);Server 已注册但未同步时自动同步。
+    /// Calls a tool by tenant (`server:tool`); auto-syncs when the Server is registered but not yet synced.
     pub async fn call(
         &self,
         tenant_id: &str,
@@ -76,12 +76,12 @@ impl TenantGateway {
         self.tenant(tenant_id).await.call(full_name, args).await
     }
 
-    /// 该租户的审计日志(与其他租户隔离)。
+    /// That tenant's audit log (isolated from other tenants).
     pub async fn audit_log(&self, tenant_id: &str) -> Vec<GatewayAuditRecord> {
         self.tenant(tenant_id).await.audit_log()
     }
 
-    /// 移除一个租户,整体清理其注册表 / 连接 / 审计。返回是否曾存在。
+    /// Removes a tenant, clearing its whole registry / connections / audit. Returns whether it existed.
     pub async fn remove_tenant(&self, tenant_id: &str) -> bool {
         self.tenants.write().await.remove(tenant_id).is_some()
     }
@@ -98,8 +98,8 @@ mod tests {
         GatewayServerSpec::new("fs", MCPConfig::sse(sse_url))
     }
 
-    /// 注册表隔离:只同步 A,工具不泄漏到 B;B 按需调用自己注册的 Server,
-    /// 由自己的 sync 填充注册表,与 A 无关。
+    /// Registry isolation: sync only A, tools do not leak into B; B calls its own registered Server on demand,
+    /// filling its registry via its own sync, independent of A.
     #[tokio::test]
     async fn test_tenants_registry_isolated() {
         let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -111,7 +111,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 只同步 A:命名空间只填充 A,不泄漏到 B。
+        // Sync only A: the namespace fills only A, does not leak into B.
         gw.sync_all("tenant_a").await.unwrap();
         assert_eq!(gw.tools("tenant_a").await, vec!["fs:echo"]);
         assert!(
@@ -119,7 +119,7 @@ mod tests {
             "B 租户注册表不应看到 A 的工具"
         );
 
-        // B 按需调用自己注册的 Server:自动同步,与 A 的注册表无关。
+        // B calls its own registered Server on demand: auto-sync, unrelated to A's registry.
         let out = gw.call("tenant_b", "fs:echo", json!({})).await;
         assert!(out.is_ok(), "B 租户的调用应成功");
         assert_eq!(out.unwrap(), "echo");
@@ -130,7 +130,7 @@ mod tests {
         );
     }
 
-    /// 审计隔离:租户 A 的调用只进 A 的审计,不污染 B。
+    /// Audit isolation: tenant A's calls go only into A's audit, not polluting B.
     #[tokio::test]
     async fn test_tenant_audit_isolated() {
         let fake = start_fake_sse_server(PostMode::Quiet).await;
@@ -145,11 +145,11 @@ mod tests {
         );
     }
 
-    /// 移除租户:整体清理;再次访问重建空注册表。
+    /// Removing a tenant: clears everything; re-accessing rebuilds an empty registry.
     #[tokio::test]
     async fn test_remove_tenant_cleans_up() {
         let gw = TenantGateway::new();
-        // register 是惰性的,不需要真实服务器。
+        // register is lazy, no real server needed.
         gw.register("a", fs_spec("http://localhost:1/sse"))
             .await
             .unwrap();
@@ -162,7 +162,7 @@ mod tests {
         );
         assert!(!gw.remove_tenant("a").await, "重复移除应返回 false");
 
-        // 移除后再次访问:重建一个空注册表(不报错)。
+        // Re-accessing after removal: rebuilds an empty registry (no error).
         assert!(gw.tools("a").await.is_empty());
     }
 }

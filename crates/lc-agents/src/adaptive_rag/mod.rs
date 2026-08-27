@@ -170,7 +170,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         let prompt = ROUTING_PROMPT.replace("{query}", query);
         let messages = vec![Message::human(&prompt)];
 
-        // P1-3:优先 tool_calls 结构化路由,不支持绑定时回落文本解析。
+        // P1-3: prefer structured routing via tool_calls, falling back to text parsing.
         let structured = crate::structured::chat_structured(
             &self.llm,
             Some(route_tool()),
@@ -337,7 +337,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// 路由工具定义:强制 LLM 输出三态决策(P1-3)。
+/// Routing tool definition: forces the LLM to emit a three-way decision (P1-3).
 fn route_tool() -> ToolDefinition {
     ToolDefinition::new(
         "route_decision",

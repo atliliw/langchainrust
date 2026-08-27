@@ -1,13 +1,13 @@
-//! per-tool 超时 + Progress 重置计时器(P2-4)。
+//! per-tool timeout + Progress reset timer (P2-4).
 //!
-//! 长任务工具可能远超默认超时;直接 `timeout` 会误杀仍在正常推进的工具。
-//! 本模块:
+//! Long-running tools can far exceed the default timeout; a plain `timeout` would wrongly kill a tool still
+//! making normal progress. This module:
 //!
-//! - **`ToolSpec{default_timeout}`**:按工具声明默认超时,超时即终止;
-//! - **Progress 重置**:调用期间收到 `notifications/progress` 把计时器重置回
-//!   `default_timeout`(工具还活着,继续给时间);
-//! - **硬上限兜底**:总时长不得超过 `max_timeout`,防止"半死不活但一直报进度"
-//!   的工具无限占用连接。
+//! - **`ToolSpec{default_timeout}`**: per-tool declared default timeout, aborting when it expires;
+//! - **Progress reset**: a `notifications/progress` received during the call resets the timer back to
+//!   `default_timeout` (the tool is still alive, keep giving it time);
+//! - **Hard cap backstop**: the total duration must not exceed `max_timeout`, preventing a
+//!   "half-dead but always reporting progress" tool from occupying the connection indefinitely.
 
 use std::time::{Duration, Instant};
 
@@ -20,22 +20,22 @@ use crate::protocol::MCPError;
 use crate::transport::MCPEvent;
 use crate::types::MCPToolResult;
 
-/// MCP 进度通知方法名。
+/// MCP progress notification method name.
 const PROGRESS_METHOD: &str = "notifications/progress";
 
-/// 单个工具的超时声明(P2-4)。
+/// A single tool's timeout declaration (P2-4).
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
-    /// 工具名(诊断信息)。
+    /// The tool name (for diagnostics).
     pub name: String,
-    /// 默认超时:超时即终止;收到 `notifications/progress` 重置回该值。
+    /// The default timeout: aborting when it expires; a `notifications/progress` resets back to this value.
     pub default_timeout: Duration,
-    /// 硬上限:无论 progress 如何,超过该时长必终止。
+    /// The hard cap: regardless of progress, it must abort beyond this duration.
     pub max_timeout: Duration,
 }
 
 impl ToolSpec {
-    /// 创建一个工具超时声明,硬上限默认 = `default_timeout * 3`。
+    /// Creates a tool timeout declaration; the hard cap defaults to `default_timeout * 3`.
     pub fn new(name: impl Into<String>, default_timeout: Duration) -> Self {
         Self {
             name: name.into(),
@@ -44,19 +44,19 @@ impl ToolSpec {
         }
     }
 
-    /// 显式设置硬上限(至少不小于默认超时)。
+    /// Sets the hard cap explicitly (at least not less than the default timeout).
     pub fn with_max_timeout(mut self, max_timeout: Duration) -> Self {
         self.max_timeout = max_timeout.max(self.default_timeout);
         self
     }
 }
 
-/// 带 per-tool 超时的工具调用(P2-4)。
+/// A tool call with a per-tool timeout (P2-4).
 ///
-/// 收到 `notifications/progress` 重置默认超时计时器;总时长超过
-/// `spec.max_timeout` 硬上限则终止。调用 future 只构造一次,`select!` 用
-/// `&mut call` 轮询——事件分支抢先时取消的是借用而非 future 本身,重新轮询
-/// 会续上在途请求,不会重复发送 `tools/call`。
+/// A `notifications/progress` resets the default-timeout timer; the total duration past the `spec.max_timeout`
+/// hard cap aborts. The call future is constructed once, `select!` polls it via `&mut call` — when an event
+/// branch wins, it cancels the borrow, not the future itself; re-polling resumes the in-flight request without
+/// re-sending `tools/call`.
 pub async fn call_tool_with_timeout(
     client: &MCPClient,
     name: &str,
@@ -67,7 +67,7 @@ pub async fn call_tool_with_timeout(
     let hard_deadline = Instant::now() + spec.max_timeout;
     let mut deadline = Instant::now() + default;
 
-    // 提前订阅 progress,避免漏掉调用期间的推送。
+    // Subscribe to progress early, so pushes during the call are not missed.
     let mut events: Option<broadcast::Receiver<MCPEvent>> = Some(client.subscribe_events());
     let is_progress = |ev: &MCPEvent| {
         matches!(
@@ -104,7 +104,8 @@ pub async fn call_tool_with_timeout(
                 return result;
             }
             _ = sleep(remain) => {
-                // 计时器到点:下一轮循环顶部判定超时(progress 重置后不会触发)。
+                // Timer expired: the timeout is judged at the top of the next loop iteration (not triggered
+                // after a progress reset).
             }
             ev = async {
                 match &mut events {
@@ -114,12 +115,13 @@ pub async fn call_tool_with_timeout(
             } => {
                 match ev {
                     Ok(e) if is_progress(&e) => {
-                        // 工具仍在推进:重置默认超时,但不越过硬上限。
+                        // The tool is still making progress: reset the default timeout, but do not cross the
+                        // hard cap.
                         deadline = (Instant::now() + default).min(hard_deadline);
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Closed) => {
-                        // 事件源关闭:停止监听,只靠计时器判定。
+                        // The event source closed: stop listening, rely only on the timer.
                         events = None;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -147,7 +149,8 @@ mod tests {
         assert!(r.is_ok(), "fast tool should return immediately");
     }
 
-    /// 无 progress:默认超时到点即终止(不等慢服务器的最终响应)。
+    /// Without progress: the default timeout expires and aborts (does not wait for the slow server's final
+    /// response).
     #[tokio::test]
     async fn test_timeout_without_progress() {
         let server = start_fake_sse_server(PostMode::SlowCall(Duration::from_secs(5))).await;
@@ -162,7 +165,8 @@ mod tests {
         assert!(err.to_string().contains("timed out"), "{}", err);
     }
 
-    /// progress 持续重置计时器:慢工具(默认超时内完不成)最终正常完成。
+    /// Progress keeps resetting the timer: a slow tool (not finishing within the default timeout) completes
+    /// normally in the end.
     #[tokio::test]
     async fn test_progress_resets_deadline_and_completes() {
         let server =
@@ -179,7 +183,8 @@ mod tests {
         );
     }
 
-    /// 硬上限:即使 progress 一直刷新,总时长到硬上限仍终止(防"半死不活")。
+    /// Hard cap: even with progress refreshing continuously, the total duration still aborts at the hard cap
+    /// (preventing "half-dead" tools).
     #[tokio::test]
     async fn test_hard_cap_bounds_despite_progress() {
         let server =
@@ -200,7 +205,7 @@ mod tests {
         let spec =
             ToolSpec::new("t", Duration::from_secs(2)).with_max_timeout(Duration::from_millis(1));
         assert!(spec.max_timeout >= spec.default_timeout);
-        // 默认:max = default * 3
+        // default: max = default * 3
         let spec2 = ToolSpec::new("t", Duration::from_secs(2));
         assert_eq!(spec2.max_timeout, Duration::from_secs(6));
     }

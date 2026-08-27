@@ -30,7 +30,7 @@ struct MongoMemoryDoc {
     metadata: HashMap<String, String>,
     created_at: String,
     updated_at: String,
-    /// P2-3: 乐观锁版本号,随每次保存 +1。旧文档缺省为 0。
+    /// P2-3: optimistic-lock version number, incremented by 1 on each save. Defaults to 0 on old documents.
     #[serde(default)]
     version: u64,
 }
@@ -64,11 +64,13 @@ impl From<MongoMemoryDoc> for MemoryData {
     }
 }
 
-/// P2-3: 乐观锁冲突合并纯函数(不依赖 DB,便于单测)。
+/// P2-3: pure merge function for optimistic-lock conflicts (no DB dependency, unit-testable).
 ///
-/// 并发写入的两个进程各自基于旧版本总结时,以"已落库"的 `remote` 为基:
-/// - 消息:追加本地快照中远程没有的新消息(按 角色+内容 去重),保留相对顺序,不丢消息;
-/// - 摘要:取两者中较长者,避免摘要回退。
+/// When two concurrent writers each summarize from an old version, `remote` (already persisted)
+/// is the base:
+/// - messages: append local-snapshot messages the remote lacks (deduped by role + content),
+///   preserving relative order, losing nothing;
+/// - summary: take the longer of the two, preventing summary regression.
 fn merge_memory_data(
     remote: &MemoryData,
     local_messages: &[Message],
@@ -96,7 +98,7 @@ fn merge_memory_data(
     (messages, summary)
 }
 
-/// 消息去重键:角色 + 内容。`MessageType` 未实现 `Hash`/`Eq`,用稳定字符串表示。
+/// Message dedup key: role + content. `MessageType` does not implement `Hash`/`Eq`, so a stable string representation is used.
 fn message_key(msg: &Message) -> (String, String) {
     let role = match msg.message_type {
         MessageType::System => "system",
@@ -109,8 +111,8 @@ fn message_key(msg: &Message) -> (String, String) {
 
 /// MongoDB Persistent Memory
 ///
-/// P0-3: 泛型化为 `M: BaseChatModel`,不再硬编码 `OpenAIChat`,可换
-/// DeepSeek/Qwen/Ollama 等任意实现 `BaseChatModel` 的 LLM。
+/// P0-3: generic over `M: BaseChatModel` instead of hard-coding `OpenAIChat`, so any LLM
+/// implementing `BaseChatModel` (DeepSeek / Qwen / Ollama, etc.) can be used.
 pub struct MongoPersistentMemory<M: BaseChatModel> {
     inner: RwLock<ConversationSummaryBufferMemory<M>>,
     database: Database,
@@ -140,7 +142,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
 
         let inner = ConversationSummaryBufferMemory::<M>::new(llm, token_limit);
 
-        // P1-3: token_limit 单一来源——构造参数与 config 同步,`with_config` 后续覆盖。
+        // P1-3: single source of truth for token_limit — the constructor arg and config stay in sync; `with_config` overrides later.
         let config = PersistenceConfig::default().with_token_limit(token_limit);
 
         Ok(Self {
@@ -154,7 +156,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
 
     /// Replaces the persistence config, keeping its token limit in sync with the inner memory.
     pub async fn with_config(mut self, config: PersistenceConfig) -> Self {
-        // P1-3: config 的 token_limit 落到 inner 的预算,不再出现"config 改了 inner 没变"。
+        // P1-3: config's token_limit lands on the inner memory's budget, so "config changed but inner did not" can no longer happen.
         self.inner.get_mut().set_max_token_limit(config.token_limit);
         *self.config.write().await = config;
         self
@@ -168,8 +170,9 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
     pub async fn create_indexes(&self) -> Result<(), MemoryError> {
         let collection = self.collection();
 
-        // P2-3: session_id 唯一索引 —— 品牌新会话并发 upsert(都按 version=0 插入)时的
-        // 最后防线,防止重复文档。用独立索引名,避免与历史部署的非唯一索引冲突。
+        // P2-3: unique index on session_id — the last line of defense against duplicate
+        // documents when concurrent upserts create brand-new sessions (both inserting with
+        // version=0). A dedicated index name avoids clashing with older non-unique indexes.
         collection
             .create_index(
                 mongodb::IndexModel::builder()
@@ -228,7 +231,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
                 }
             }
 
-            // P1-3: 回灌摘要状态,保证续写会话从上次摘要继续(而非从空摘要起步)。
+            // P1-3: restore the summary state so a continued session picks up from the last summary (rather than starting from an empty one).
             if let Some(summary) = &data.summary {
                 if !summary.trim().is_empty() {
                     inner.set_summary(summary.clone());
@@ -241,17 +244,18 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
         Ok(())
     }
 
-    /// P2-3: Mongo 乐观锁保存。
+    /// P2-3: Mongo optimistic-lock save.
     ///
-    /// 每次写入携带 `version` 并按 `{session_id, version: expected}` 替换;
-    /// 未命中说明有并发写入者先落库 -> 读取最新文档、与本地快照合并后重试。
-    /// 品牌新会话(version 0)使用 upsert,由 `session_id` 唯一索引兜底防重复。
+    /// Every write carries `version` and replaces on `{session_id, version: expected}`;
+    /// a miss means a concurrent writer landed first -> read the newest document, merge with the
+    /// local snapshot, and retry. Brand-new sessions (version 0) use upsert, with the
+    /// `session_id` unique index as the duplicate guard.
     async fn do_save_to_store(&self, session_id: &str) -> Result<(), MemoryError> {
         const MAX_ATTEMPTS: u32 = 3;
         let collection = self.collection();
 
         for _attempt in 0..MAX_ATTEMPTS {
-            // 快照当前内存状态(每次重试重新快照,合并基于最新本地状态)。
+            // snapshot the current in-memory state (re-snapshotted on every retry; merging is based on the newest local state).
             let (local_messages, local_summary) = {
                 let inner = self.inner.read().await;
                 (
@@ -260,7 +264,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
                 )
             };
 
-            // 读最新远端文档:作为版本基线 + 冲突时合并的来源。
+            // read the newest remote document: the version baseline + the merge source on conflict.
             let existing = collection
                 .find_one(doc! { "session_id": session_id }, None)
                 .await
@@ -301,7 +305,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
                 .await
                 .map_err(|e| MemoryError::SaveError(format!("MongoDB save failed: {}", e)))?;
 
-            // 命中即落库成功;未命中说明版本已前进(并发写入),进入下一轮合并重试。
+            // a match means the save landed; a miss means the version advanced (concurrent write) — retry the merge loop.
             if res.matched_count > 0 || res.upserted_id.is_some() {
                 return Ok(());
             }
@@ -421,7 +425,7 @@ where
         Ok(result.is_some())
     }
 
-    /// P0-2: 从内部字段读真实会话 ID(与 `set_session_id` 读写对称)。
+    /// P0-2: reads the real session ID from the inner field (symmetric with `set_session_id` reads/writes).
     fn current_session_id(&self) -> Option<String> {
         self.session_id
             .read()
@@ -482,7 +486,7 @@ mod tests {
         assert_eq!(data.version, 7);
     }
 
-    /// P2-3: MemoryData <-> MongoMemoryDoc 往返保留版本号。
+    /// P2-3: the MemoryData <-> MongoMemoryDoc roundtrip preserves the version number.
     #[test]
     fn test_version_roundtrip() {
         let mut data = MemoryData::new("s".to_string());
@@ -492,7 +496,7 @@ mod tests {
         assert_eq!(back.version, 42);
     }
 
-    /// P2-3: 合并时追加本地新消息(按 类型+内容 去重),保留顺序。
+    /// P2-3: merging appends new local messages (deduped by type + content), preserving order.
     #[test]
     fn test_merge_appends_new_messages() {
         let remote = MemoryData::new("s".to_string())
@@ -511,7 +515,7 @@ mod tests {
         assert_eq!(summary, "");
     }
 
-    /// P2-3: 摘要取两者中较长者,避免并发写入导致摘要回退。
+    /// P2-3: the summary takes the longer of the two, avoiding summary regression from concurrent writes.
     #[test]
     fn test_merge_prefers_longer_summary() {
         let remote = MemoryData::new("s".to_string()).with_summary("shorter".to_string());
@@ -524,7 +528,7 @@ mod tests {
         assert_eq!(summary, "longer remote summary");
     }
 
-    /// P2-3: 远端无摘要时回退到本地摘要。
+    /// P2-3: falls back to the local summary when the remote has none.
     #[test]
     fn test_merge_uses_local_summary_when_remote_none() {
         let remote = MemoryData::new("s".to_string());

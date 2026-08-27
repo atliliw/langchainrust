@@ -1,11 +1,12 @@
 // lc-rag/src/retriever_runnable.rs
-//! RetrieverRunnable — 任意检索器进 LCEL 的 Runnable 适配器
+//! RetrieverRunnable — a Runnable adapter to bring any retriever into an LCEL chain
 //!
-//! 把 `RetrieverTrait`(异步 `retrieve`)包成 `Runnable<String, Vec<Document>>`:
-//! 输入=查询文本,输出=检索到的文档。任意实现 `RetrieverTrait` 的检索器
-//! (SimilarityRetriever / BM25Retriever / UnifiedHybridIndex /
-//! ParentDocumentRetriever …)都能借此直接进 `RunnableSequence`,和
-//! prompt、LLM 组合成"检索 → 提示词 → 生成"的 LCEL 链。
+//! Wraps `RetrieverTrait` (async `retrieve`) as a `Runnable<String, Vec<Document>>`:
+//! input = query text, output = retrieved documents. Any retriever implementing
+//! `RetrieverTrait` (SimilarityRetriever / BM25Retriever / UnifiedHybridIndex /
+//! ParentDocumentRetriever …) can plug directly into a `RunnableSequence` via this
+//! adapter, composing with prompt and LLM into a "retrieval → prompt → generation"
+//! LCEL chain.
 
 use async_trait::async_trait;
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
@@ -14,10 +15,10 @@ use std::sync::Arc;
 
 use crate::retriever::RetrieverTrait;
 
-/// Runnable 适配器:把任意检索器作为 LCEL 链的一步。
+/// Runnable adapter: uses any retriever as a step in an LCEL chain.
 ///
-/// `k`(返回文档条数)在构造时固定;需要不同条数时用 [`RetrieverRunnable::with_k`]
-/// 复制调整。
+/// `k` (number of documents returned) is fixed at construction; for a different count use
+/// [`RetrieverRunnable::with_k`] to copy and adjust.
 ///
 /// # Example
 ///
@@ -32,12 +33,12 @@ pub struct RetrieverRunnable {
 }
 
 impl RetrieverRunnable {
-    /// 创建检索 Runnable,固定返回 `k` 条文档。
+    /// Creates a retrieval Runnable that returns `k` documents.
     pub fn new(retriever: Arc<dyn RetrieverTrait>, k: usize) -> Self {
         Self { retriever, k }
     }
 
-    /// 以新的 `k` 复制本适配器(返回新实例,不改动原对象)。
+    /// Copies this adapter with a new `k` (returns a new instance, leaves the original untouched).
     pub fn with_k(&self, k: usize) -> Self {
         Self {
             retriever: self.retriever.clone(),
@@ -101,7 +102,7 @@ mod tests {
         assert_eq!(step.k, 4, "with_k must not mutate the original");
     }
 
-    /// E1 验证:检索 Runnable 能作为 LCEL 链的一步参与 `pipe` 组合。
+    /// E1 verification: the retrieval Runnable can participate in `pipe` composition as an LCEL chain step.
     #[tokio::test]
     async fn retriever_runnable_pipes_into_sequence() {
         use lc_core::runnables::RunnableExt;
@@ -115,7 +116,7 @@ mod tests {
             .unwrap();
 
         let step = RetrieverRunnable::new(retriever, 1);
-        // 下一段是恒等变换:接收 Vec<Document>,返回数量(证明类型链通)。
+        // The next step is an identity transform: receives Vec<Document>, returns the count (proving the type chain holds).
         let count = step.pipe(lc_core::runnables::RunnableLambda::new_sync(
             |docs: Vec<Document>| docs.len(),
         ));

@@ -1,5 +1,5 @@
-//! 测试辅助:支持 `bind_tools` 并返回 `tool_calls` 的 mock 裁判,
-//! 用于验证 P0-1 结构化输出路径(不依赖真实网络/API)。
+//! Test helper: a mock judge that supports `bind_tools` and returns `tool_calls`,
+//! used to verify the P0-1 structured-output path (no real network/API dependency).
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// mock 裁判错误
+/// Mock judge error
 #[derive(Debug, Clone)]
 pub(crate) struct JudgeError(String);
 impl std::fmt::Display for JudgeError {
@@ -21,18 +21,18 @@ impl std::fmt::Display for JudgeError {
 }
 impl std::error::Error for JudgeError {}
 
-/// 支持 bind_tools 的 mock 裁判:每次 chat 返回预设 `arguments` 序列中的一个 tool_call
-/// (按调用次序逐条取,取尽后回空参)。
+/// Mock judge supporting bind_tools: each chat returns one tool_call from the preset `arguments` sequence
+/// (taken in call order; after exhausting, falls back to empty arguments).
 #[derive(Clone)]
 pub(crate) struct ToolJudge {
-    /// 每次 chat 返回的参数;`single` 时永远取第一份,否则按调用次序取
+    /// Arguments returned per chat; with `single` always the first, otherwise in call order
     replies: Vec<String>,
     single: bool,
     calls: Arc<AtomicUsize>,
 }
 
 impl ToolJudge {
-    /// 每次调用都返回同一份参数。
+    /// Returns the same arguments on every call.
     pub(crate) fn new(arguments: impl Into<String>) -> Self {
         Self {
             replies: vec![arguments.into()],
@@ -41,7 +41,7 @@ impl ToolJudge {
         }
     }
 
-    /// 按调用次序依次返回参数(用于 pairwise 两次 ask 返回不同判定、多 claim 逐条判定)。
+    /// Returns arguments in call order (used when pairwise asks twice with different verdicts, or multiple claims judged one by one).
     pub(crate) fn sequence(replies: Vec<String>) -> Self {
         Self {
             replies,

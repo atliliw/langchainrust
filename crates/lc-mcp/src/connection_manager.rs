@@ -1,14 +1,14 @@
-//! MCP 多 Server 连接管理(P2-1):惰性启动 + 空闲回收 + 连接池。
+//! MCP multi-Server connection management (P2-1): lazy startup + idle reaping + connection pooling.
 //!
-//! 100+ Server 直接各自 `MCPClient::connect` = 上百个子进程/长连接,内存与
-//! FD 双耗尽。本模块提供一个托管注册表:
+//! 100+ Servers each calling `MCPClient::connect` directly = hundreds of subprocesses / long
+//! connections, exhausting both memory and file descriptors. This module provides a managed registry:
 //!
-//! - **惰性启动**:`register` 只登记 `ServerSpec`,首次 `client(name)` 才真正
-//!   spawn 子进程 / 建 SSE 连接,未用到的 Server 零成本。
-//! - **空闲回收**:后台 task 周期性扫描,非 `keep_alive` 的 Server 空闲超过
-//!   `max_idle` 即 `close()` 释放连接;有状态 Server 标记 `keep_alive` 豁免。
-//! - **连接池**:同一 `ManagedServer` 的 `client()` 幂等,后续调用复用连接,
-//!   不重复 spawn。
+//! - **Lazy startup**: `register` only records the `ServerSpec`; only the first `client(name)` actually
+//!   spawns a subprocess / opens an SSE connection, so unused Servers cost nothing.
+//! - **Idle reaping**: a background task scans periodically; non-`keep_alive` Servers idle longer than
+//!   `max_idle` get `close()`d to free the connection; stateful Servers marked `keep_alive` are exempt.
+//! - **Connection pooling**: `client()` on the same `ManagedServer` is idempotent; later calls reuse the
+//!   connection, no repeated spawning.
 //!
 //! # Example
 //!
@@ -19,7 +19,7 @@
 //! manager.register(ServerSpec::new("fs", MCPConfig::stdio("npx", vec!["@anthropic/mcp-server-filesystem".into(), "/tmp".into()]))).await?;
 //! manager.register(ServerSpec::new("db", MCPConfig::sse("http://localhost:8080/sse")).keep_alive()).await?;
 //!
-//! // 首次调用才惰性启动连接
+//! // The connection is started lazily, only on first call
 //! let client = manager.client("fs").await?;
 //! ```
 
@@ -35,26 +35,26 @@ use crate::health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, Se
 use crate::protocol::MCPError;
 use crate::types::MCPConfig;
 
-/// 默认空闲回收扫描周期。
+/// Default idle-reap scan interval.
 const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// 单个托管 Server 的声明。
+/// Declaration of a single managed Server.
 #[derive(Debug, Clone)]
 pub struct ServerSpec {
-    /// Server 名称(注册表 key / 工具命名空间前缀)。
+    /// Server name (registry key / tool namespace prefix).
     pub name: String,
-    /// 连接配置(Stdio / SSE)。
+    /// Connection config (Stdio / SSE).
     pub config: MCPConfig,
-    /// 有状态 Server 标记:空闲不回收(默认 false)。
+    /// Stateful-Server flag: not reaped while idle (default false).
     pub keep_alive: bool,
-    /// 空闲回收阈值:超过该时长未被使用则关闭连接释放资源。
+    /// Idle-reap threshold: connections unused beyond this duration are closed to free resources.
     pub max_idle: Duration,
-    /// 健康熔断阈值(P2-5):连续失败 N 次熔断摘除(默认 3)。
+    /// Health-breaker threshold (P2-5): tripped and removed after N consecutive failures (default 3).
     pub max_failures: u32,
 }
 
 impl ServerSpec {
-    /// 创建一个托管 Server 声明。
+    /// Creates a managed Server declaration.
     pub fn new(name: impl Into<String>, config: MCPConfig) -> Self {
         Self {
             name: name.into(),
@@ -65,35 +65,35 @@ impl ServerSpec {
         }
     }
 
-    /// 标记有状态 Server:空闲不回收。
+    /// Marks a stateful Server: not reaped while idle.
     pub fn keep_alive(mut self) -> Self {
         self.keep_alive = true;
         self
     }
 
-    /// 设置空闲回收阈值。
+    /// Sets the idle-reap threshold.
     pub fn with_max_idle(mut self, max_idle: Duration) -> Self {
         self.max_idle = max_idle;
         self
     }
 
-    /// 设置健康熔断阈值(P2-5):连续失败 N 次后熔断,拒绝请求直到退避结束。
+    /// Sets the health-breaker threshold (P2-5): trips after N consecutive failures, refusing requests until the backoff elapses.
     pub fn with_max_failures(mut self, max_failures: u32) -> Self {
         self.max_failures = max_failures.max(1);
         self
     }
 }
 
-/// 托管 Server 的运行态:惰性连接 + 最近使用时间 + 健康熔断器。
+/// Runtime state of a managed Server: lazy connection + last-used time + health breaker.
 struct ManagedServer {
     spec: ServerSpec,
-    /// 惰性初始化:首次 `client()` 才 connect,之后复用。
+    /// Lazy init: connects only on the first `client()`, reused afterwards.
     client: tokio::sync::Mutex<Option<MCPClient>>,
-    /// 最近一次使用时间(空闲回收判定依据)。
+    /// Last-used time (basis for idle-reap decisions).
     last_used: tokio::sync::Mutex<Instant>,
-    /// 健康熔断器(P2-5):连续失败熔断 + 指数退避重试。
+    /// Health breaker (P2-5): trips on consecutive failures + exponential backoff retry.
     breaker: tokio::sync::Mutex<CircuitBreaker>,
-    /// 最近一次探活时间(P2-5)。
+    /// Time of the last health probe (P2-5).
     last_probe: tokio::sync::Mutex<Option<Instant>>,
 }
 
@@ -109,10 +109,11 @@ impl ManagedServer {
         }
     }
 
-    /// 惰性获取客户端:首次调用才建连,后续复用;同时刷新最近使用时间。
+    /// Lazily gets the client: connects on the first call, reuses afterwards; also refreshes the last-used time.
     ///
-    /// 熔断门控(P2-5):`Open` 且退避期未过 → 快速失败(不再往坏 Server 上打)。
-    /// 建连成败记入熔断器——成功恢复,失败推进失败计数。
+    /// Breaker gating (P2-5): `Open` with the backoff still running → fast-fail (no more requests to a
+    /// broken Server). Connect success/failure feeds the breaker — success recovers, failure advances the
+    /// failure count.
     async fn client(&self) -> Result<MCPClient, MCPError> {
         {
             let breaker = self.breaker.lock().await;
@@ -151,9 +152,9 @@ impl ManagedServer {
             .clone())
     }
 
-    /// 健康探活(P2-5):`list_tools` 即探活,结果记入熔断器。
+    /// Health probe (P2-5): `list_tools` acts as the probe; the result feeds the breaker.
     ///
-    /// 建连失败已在 `client()` 内记录一次,这里不重复计数。
+    /// A connect failure was already recorded inside `client()`; do not count it again here.
     async fn probe(&self) -> Result<(), MCPError> {
         *self.last_probe.lock().await = Some(Instant::now());
         let client = match self.client().await {
@@ -170,22 +171,22 @@ impl ManagedServer {
         result
     }
 
-    /// 由熔断器推导当前健康状态(P2-5)。
+    /// Derives the current health status from the breaker (P2-5).
     async fn status(&self) -> HealthStatus {
         self.breaker.lock().await.health_status()
     }
 
-    /// 空闲时长(距最近一次使用)。
+    /// Idle duration (since the last use).
     async fn idle_duration(&self) -> Duration {
         self.last_used.lock().await.elapsed()
     }
 
-    /// 关闭连接并释放客户端(空闲回收 / 显式停用)。未建连则无操作。
+    /// Closes the connection and releases the client (idle reap / explicit deactivation). No-op if not connected.
     async fn close(&self) -> Result<(), MCPError> {
         let mut guard = self.client.lock().await;
         if let Some(client) = guard.take() {
             let result = client.close().await;
-            // 释放后重置计时,避免同一轮回收里被重复计数。
+            // Reset the timer after release so it isn't counted twice in the same reap round.
             *self.last_used.lock().await = Instant::now();
             result
         } else {
@@ -194,16 +195,16 @@ impl ManagedServer {
     }
 }
 
-/// MCP 多 Server 连接管理器。
+/// MCP multi-Server connection manager.
 ///
-/// `register` 惰性登记 → `client(name)` 首次调用才建连 → 后台空闲回收。
-/// `Drop` 时向回收 task 发关闭信号,回收 task 退出。
+/// `register` lazily records → `client(name)` connects on first call → background idle reaping.
+/// On `Drop`, sends a shutdown signal to the reaper task, which then exits.
 pub struct ConnectionManager {
-    /// 注册表:name → 托管 Server。
+    /// Registry: name → managed Server.
     servers: Arc<RwLock<HashMap<String, Arc<ManagedServer>>>>,
-    /// 空闲回收扫描周期。
+    /// Idle-reap scan interval.
     _reap_interval: Duration,
-    /// 回收 task 关闭信号;`shutdown()` 或 Drop 时发送。
+    /// Reaper-task shutdown signal; sent on `shutdown()` or Drop.
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -214,12 +215,12 @@ impl Default for ConnectionManager {
 }
 
 impl ConnectionManager {
-    /// 创建连接管理器,后台启动空闲回收 task。
+    /// Creates the connection manager, starting the background idle-reap task.
     pub fn new() -> Self {
         Self::with_reap_interval(DEFAULT_REAP_INTERVAL)
     }
 
-    /// 创建连接管理器并自定义回收扫描周期。
+    /// Creates the connection manager with a custom reap scan interval.
     pub fn with_reap_interval(reap_interval: Duration) -> Self {
         let servers = Arc::new(RwLock::new(HashMap::new()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -229,7 +230,7 @@ impl ConnectionManager {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    // 关闭信号(false→管理)或发送方被 Drop(Closed → Err)都退出。
+                    // Exits on a shutdown signal (false→managed) or when the sender is dropped (Closed → Err).
                     changed = reaper_shutdown.changed() => {
                         if changed.is_err() || *reaper_shutdown.borrow() {
                             break;
@@ -249,9 +250,9 @@ impl ConnectionManager {
         }
     }
 
-    /// 登记一个托管 Server(惰性,不建连)。
+    /// Registers a managed Server (lazily; no connection yet).
     ///
-    /// 同名重复登记返回错误,防止误覆盖。
+    /// Re-registering the same name returns an error, preventing accidental overwrite.
     pub async fn register(&self, spec: ServerSpec) -> Result<(), MCPError> {
         let mut map = self.servers.write().await;
         if map.contains_key(&spec.name) {
@@ -271,7 +272,7 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// 获取某个 Server 的客户端(首次调用惰性建连,后续复用)。
+    /// Gets a Server's client (lazily connects on first call, reuses afterwards).
     pub async fn client(&self, name: &str) -> Result<MCPClient, MCPError> {
         let map = self.servers.read().await;
         let server = map
@@ -280,7 +281,7 @@ impl ConnectionManager {
         server.client().await
     }
 
-    /// 显式关闭并释放某个 Server 的连接(下次 `client` 惰性重建)。
+    /// Explicitly closes and releases a Server's connection (rebuilt lazily on the next `client`).
     pub async fn release(&self, name: &str) -> Result<(), MCPError> {
         let map = self.servers.read().await;
         if let Some(server) = map.get(name) {
@@ -290,7 +291,7 @@ impl ConnectionManager {
         }
     }
 
-    /// 注销并关闭某个 Server,从注册表移除。
+    /// Unregisters and closes a Server, removing it from the registry.
     pub async fn unregister(&self, name: &str) -> Result<(), MCPError> {
         let mut map = self.servers.write().await;
         if let Some(server) = map.remove(name) {
@@ -300,33 +301,34 @@ impl ConnectionManager {
         }
     }
 
-    /// 已登记的 Server 数量。
+    /// Number of registered Servers.
     pub async fn len(&self) -> usize {
         self.servers.read().await.len()
     }
 
-    /// 是否为空注册表。
+    /// Whether the registry is empty.
     pub async fn is_empty(&self) -> bool {
         self.len().await == 0
     }
 
-    /// 手动触发一轮空闲回收,返回回收的 Server 数。
+    /// Manually triggers one idle-reap round, returning the number of reaped Servers.
     ///
-    /// `keep_alive` 的 Server 豁免;空闲超过 `max_idle` 的关闭连接并计数。
+    /// `keep_alive` Servers are exempt; those idle beyond `max_idle` are closed and counted.
     pub async fn reap_idle(&self) -> usize {
         reap_idle(&self.servers).await
     }
 
-    /// 健康探活(P2-5):对该 Server 做一次 `list_tools` 探活并返回健康快照。
+    /// Health probe (P2-5): runs one `list_tools` probe on the Server and returns a health snapshot.
     ///
-    /// 探活结果记入熔断器——连续失败达 `max_failures` 后状态转 `Down`,
-    /// 此后 `client()` 在退避期内快速失败。未注册的 Server 返回错误。
+    /// The probe result feeds the breaker — after `max_failures` consecutive failures the status goes
+    /// `Down`, and `client()` then fast-fails while the backoff is running. Unregistered Servers return
+    /// an error.
     pub async fn health(&self, name: &str) -> Result<ServerHealth, MCPError> {
         let map = self.servers.read().await;
         let server = map
             .get(name)
             .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' is not registered")))?;
-        let _ = server.probe().await; // 触发一次探活,内部记录熔断
+        let _ = server.probe().await; // Trigger one probe; the breaker records it internally
         let status = server.status().await;
         let failures = server.breaker.lock().await.failures();
         let last_check = *server.last_probe.lock().await;
@@ -338,10 +340,10 @@ impl ConnectionManager {
         })
     }
 
-    /// 摘除所有已熔断的 Server(P2-5),返回被摘除的 Server 名列表。
+    /// Removes all tripped Servers (P2-5), returning the names of the removed Servers.
     ///
-    /// 连续失败触发熔断(`BreakerState::Open`)的 Server 从注册表移除并关闭连接;
-    /// 调用方可据名称重新登记(新注册会重置熔断计数)。
+    /// Servers tripped by consecutive failures (`BreakerState::Open`) are removed from the registry and
+    /// closed; the caller can re-register by name (a new registration resets the breaker count).
     pub async fn reap_unhealthy(&self) -> Vec<String> {
         let mut removed = Vec::new();
         {
@@ -363,7 +365,7 @@ impl ConnectionManager {
         removed
     }
 
-    /// 关闭全部连接并停止后台回收 task。
+    /// Closes all connections and stops the background reaper task.
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
         let map = self.servers.read().await;
@@ -373,7 +375,7 @@ impl ConnectionManager {
     }
 }
 
-/// 扫描注册表,回收空闲超阈值的非 `keep_alive` 连接。
+/// Scans the registry, reaping non-`keep_alive` connections idle beyond the threshold.
 async fn reap_idle(servers: &Arc<RwLock<HashMap<String, Arc<ManagedServer>>>>) -> usize {
     let mut to_reap = Vec::new();
     {
@@ -405,11 +407,11 @@ async fn reap_idle(servers: &Arc<RwLock<HashMap<String, Arc<ManagedServer>>>>) -
 mod tests {
     use super::*;
 
-    /// 惰性启动:register 不建连,连不上也无妨;首次 client() 才尝试建连。
+    /// Lazy startup: register doesn't connect (a connect failure is fine); only the first client() attempts to connect.
     #[tokio::test]
     async fn test_lazy_start_register_does_not_spawn() {
         let manager = ConnectionManager::new();
-        // 命令必然不存在——若 register 就 spawn,这里会失败。
+        // The command can't exist — if register spawned, this would fail here.
         let spec = ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]));
         manager
             .register(spec)
@@ -417,7 +419,7 @@ mod tests {
             .expect("register should not spawn a connection");
         assert_eq!(manager.len().await, 1);
 
-        // 首次 client() 才真正尝试 spawn → 命令不存在 → Err。
+        // Only the first client() actually attempts to spawn → command missing → Err.
         let result = manager.client("bad").await;
         assert!(
             result.is_err(),
@@ -425,7 +427,7 @@ mod tests {
         );
     }
 
-    /// 重复注册同名 Server 报错。
+    /// Re-registering the same Server name errors.
     #[tokio::test]
     async fn test_register_duplicate_rejected() {
         let manager = ConnectionManager::new();
@@ -438,7 +440,7 @@ mod tests {
         assert!(err.to_string().contains("already registered"), "{}", err);
     }
 
-    /// 未注册的 Server 取客户端报错。
+    /// Getting a client for an unregistered Server errors.
     #[tokio::test]
     async fn test_client_unknown_server_errors() {
         let manager = ConnectionManager::new();
@@ -449,8 +451,8 @@ mod tests {
         }
     }
 
-    /// 空闲回收:max_idle 为零的非 keep_alive Server 被回收;
-    /// keep_alive 的豁免。
+    /// Idle reaping: non-keep_alive Servers with max_idle zero are reaped;
+    /// keep_alive ones are exempt.
     #[tokio::test]
     async fn test_reap_idle_respects_keep_alive() {
         let manager = ConnectionManager::new();
@@ -470,10 +472,10 @@ mod tests {
             .await
             .expect("register keep_alive server");
 
-        // idle 未建连,close 为无操作,但仍按"空闲超阈值"计入回收。
+        // idle isn't connected, so close is a no-op, but it still counts as reaped for being idle beyond the threshold.
         let reaped = manager.reap_idle().await;
         assert_eq!(reaped, 1, "non keep_alive idle server should be reaped");
-        // keep_alive 豁免,不被回收。
+        // keep_alive is exempt, not reaped.
         assert_eq!(
             manager.len().await,
             2,
@@ -481,7 +483,7 @@ mod tests {
         );
     }
 
-    /// release 幂等:未建连的 Server release 不报错。
+    /// release is idempotent: releasing a not-yet-connected Server doesn't error.
     #[tokio::test]
     async fn test_release_unconnected_is_noop() {
         let manager = ConnectionManager::new();
@@ -502,7 +504,7 @@ mod tests {
             .expect("release of unknown server should be a no-op");
     }
 
-    /// 注册表容量与注销。
+    /// Registry capacity and unregistration.
     #[tokio::test]
     async fn test_len_and_unregister() {
         let manager = ConnectionManager::new();
@@ -519,10 +521,10 @@ mod tests {
         assert!(!manager.is_empty().await);
     }
 
-    /// 健康探活:连续失败递增 Degraded → 达阈值 Down(P2-5)。
+    /// Health probe: consecutive failures escalate Degraded → Down at the threshold (P2-5).
     ///
-    /// 不存在的命令建连即失败(快速),无需真实 Server;`max_failures=2` 时
-    /// 两次探活后状态应转 Down。
+    /// A nonexistent command fails to connect immediately (fast), no real Server needed; with
+    /// `max_failures=2` the status should turn Down after two probes.
     #[tokio::test]
     async fn test_health_probe_tracks_degraded_then_down() {
         let manager = ConnectionManager::new();
@@ -554,7 +556,7 @@ mod tests {
         assert_eq!(h2.failures, 2);
     }
 
-    /// 熔断后 `client()` 快速失败,不再向坏 Server 发起请求(P2-5)。
+    /// After tripping, `client()` fast-fails, no longer issuing requests to the broken Server (P2-5).
     #[tokio::test]
     async fn test_client_blocked_when_circuit_open() {
         let manager = ConnectionManager::new();
@@ -566,7 +568,7 @@ mod tests {
             .await
             .expect("register should succeed");
 
-        // 一次失败即熔断。
+        // One failure trips the breaker.
         let health = manager
             .health("bad")
             .await
@@ -581,11 +583,11 @@ mod tests {
         assert!(err.to_string().contains("circuit"), "{}", err);
     }
 
-    /// 摘除熔断的 Server(P2-5):健康的不受影响,熔断的被移除并返回其名。
+    /// Removes tripped Servers (P2-5): healthy ones are unaffected; tripped ones are removed and their names returned.
     #[tokio::test]
     async fn test_reap_unhealthy_removes_down_servers() {
         let manager = ConnectionManager::new();
-        // "ok" 从不探活,熔断器保持 Closed。
+        // "ok" never probes, so its breaker stays Closed.
         manager
             .register(ServerSpec::new(
                 "ok",
@@ -624,7 +626,7 @@ mod tests {
         );
     }
 
-    /// 未注册的 Server 健康探活报错。
+    /// Health-probing an unregistered Server errors.
     #[tokio::test]
     async fn test_health_unknown_server_errors() {
         let manager = ConnectionManager::new();

@@ -1,11 +1,14 @@
-//! 结构化输出工具调用辅助(P1-3)
+//! Structured-output tool-call helper (P1-3)
 //!
-//! planner / router / grader 此前靠提示词"只输出 JSON"+ 正则解析,LLM 偶发
-//! 夹带解释/代码块就解析失败。这里统一:
+//! The planner / router / grader previously relied on "output JSON only"
+//! prompts + regex parsing, which failed whenever the LLM occasionally
+//! included explanations or code fences. This unifies the approach:
 //!
-//! - 优先 `bind_tools` 强制结构化输出(tool_calls 参数即结构化结果)。
-//! - Provider 不支持工具绑定(如 mock / 纯文本模型)时,回落同一响应的文本,
-//!   由调用方沿用原有文本解析逻辑。一次 LLM 调用,不回退重试。
+//! - Prefer `bind_tools` to force structured output (tool_calls arguments are
+//!   the structured result).
+//! - When the provider cannot bind tools (e.g. mocks / plain-text models),
+//!   fall back to the same response's text and let the caller keep its existing
+//!   text-parsing logic. One LLM call, no retry/fallback round trip.
 
 use lc_core::language_models::{BaseChatModel, LLMResult};
 use lc_core::runnables::RunnableConfig;
@@ -15,19 +18,20 @@ use serde_json::Value;
 
 use crate::retry::{retry_chat, RetryConfig};
 
-/// 结构化调用结果:要么带工具参数(首选),要么带文本(回落)。
+/// Structured call result: either with tool arguments (preferred) or text (fallback).
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredChatResult {
-    /// LLM 返回的文本内容(无 tool_calls 时的回落解析源)。
+    /// Text content returned by the LLM (fallback parse source when there are no tool_calls).
     pub content: String,
-    /// 首个 tool_call 的参数 JSON(存在则优先使用)。
+    /// Argument JSON of the first tool_call (used with priority when present).
     pub tool_args: Option<Value>,
 }
 
-/// 绑定 `tool` 后调用 LLM,优先结构化输出;不支持绑定则普通文本调用。
+/// Calls the LLM with `tool` bound, preferring structured output; falls back to
+/// a plain text call when binding is unsupported.
 ///
-/// 只发一次请求:模型返回 tool_calls 就提取参数,否则把 `content` 交给
-/// 调用方做文本解析。
+/// Only one request: if the model returns tool_calls, extract the arguments;
+/// otherwise hand `content` to the caller for text parsing.
 pub(crate) async fn chat_structured<M>(
     llm: &M,
     tool: Option<ToolDefinition>,
@@ -48,7 +52,7 @@ where
     Ok(extract_structured(&result))
 }
 
-/// 从 LLM 结果提取首个 tool_call 的参数 JSON。
+/// Extracts the first tool_call's argument JSON from an LLM result.
 pub(crate) fn extract_structured(result: &LLMResult) -> StructuredChatResult {
     let tool_args = result
         .tool_calls
@@ -112,7 +116,7 @@ mod tests {
             thinking_content: None,
         };
         let structured = extract_structured(&result);
-        // 参数解析失败 → 回落 content
+        // Argument parsing failed → fall back to content
         assert!(structured.tool_args.is_none());
         assert_eq!(structured.content, "fallback text");
     }

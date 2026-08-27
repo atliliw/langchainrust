@@ -131,9 +131,9 @@ impl std::fmt::Debug for CohereEmbeddings {
 impl CohereEmbeddings {
     /// Creates a new CohereEmbeddings with the given configuration.
     ///
-    /// 构造时 fail fast（P1-3）：API key 为空立即报错。模型维度已知才构造
-    /// （P1-2）：Cohere v3.0 系列（english/multilingual）均为 1024 维，
-    /// 未知模型报错而非恒 1024 撒谎。
+    /// Fails fast at construction (P1-3): an empty API key errors immediately. Constructs only
+    /// when the model dimension is known (P1-2): the Cohere v3.0 family (english/multilingual)
+    /// is always 1024-dimensional; unknown models error rather than lying with a fixed 1024.
     pub fn new(config: CohereEmbeddingsConfig) -> Result<Self, EmbeddingError> {
         if config.api_key.trim().is_empty() {
             return Err(EmbeddingError::Config(
@@ -148,7 +148,7 @@ impl CohereEmbeddings {
         })
     }
 
-    /// 已知模型的维度表；Cohere v3.0 系列均为 1024 维（P1-2）。
+    /// Dimension table for known models; the Cohere v3.0 family is always 1024 (P1-2).
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError> {
         match model {
             "embed-english-v3.0" | "embed-multilingual-v3.0" => Ok(1024),
@@ -169,7 +169,7 @@ impl CohereEmbeddings {
 #[async_trait]
 impl Embeddings for CohereEmbeddings {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        // P1-1: 补上 Cohere 缺失的空输入检查，与其他 provider 契约一致。
+        // P1-1: add the empty-input check Cohere lacks, consistent with other providers' contract.
         if text.trim().is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
@@ -182,7 +182,7 @@ impl Embeddings for CohereEmbeddings {
             "embedding_types": ["float"],
         });
 
-        // P2-5: 429/5xx 指数退避重试。
+        // P2-5: exponential backoff retry on 429/5xx.
         let response = crate::retry::post_json_with_retry(
             &self.client,
             &url,
@@ -195,7 +195,7 @@ impl Embeddings for CohereEmbeddings {
 
         let status = response.status();
         if !status.is_success() {
-            // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
             let error_text = response.text().await.map_err(|e| {
                 EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
             })?;
@@ -215,13 +215,13 @@ impl Embeddings for CohereEmbeddings {
             .first()
             .map(|d| d.embedding.clone())
             .ok_or_else(|| EmbeddingError::ApiError("No embedding in response".to_string()))?;
-        // P2-8: 统一 L2 归一化,保证单位长度。
+        // P2-8: uniform L2 normalization, guaranteeing unit length.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
     }
 
     async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        // P1-1: 空切片不是错误（无事可做），含空/全空白文本才报错——与其他 provider 契约统一。
+        // P1-1: an empty slice is not an error (nothing to do); only empty/all-whitespace texts error — uniform with other providers.
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -237,7 +237,7 @@ impl Embeddings for CohereEmbeddings {
             "embedding_types": ["float"],
         });
 
-        // P2-5: 429/5xx 指数退避重试。
+        // P2-5: exponential backoff retry on 429/5xx.
         let response = crate::retry::post_json_with_retry(
             &self.client,
             &url,
@@ -250,7 +250,7 @@ impl Embeddings for CohereEmbeddings {
 
         let status = response.status();
         if !status.is_success() {
-            // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
             let error_text = response.text().await.map_err(|e| {
                 EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
             })?;
@@ -271,8 +271,8 @@ impl Embeddings for CohereEmbeddings {
             .map(|d| d.embedding)
             .collect();
 
-        // P0-1: Cohere 一次请求全部文本,必须校验返回量与请求量一致,
-        // 否则少返回的向量会让下游张冠李戴。
+        // P0-1: Cohere sends all texts in one request, so the returned count must match the
+        // requested count, otherwise missing vectors would silently misalign downstream.
         if embeddings.len() != texts.len() {
             return Err(EmbeddingError::BatchMismatch {
                 expected: texts.len(),
@@ -280,7 +280,7 @@ impl Embeddings for CohereEmbeddings {
             });
         }
 
-        // P2-8: 逐条统一 L2 归一化,保证单位长度。
+        // P2-8: per-item uniform L2 normalization, guaranteeing unit length.
         for v in embeddings.iter_mut() {
             crate::l2_normalize(v);
         }
@@ -304,7 +304,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    /// P2-5: Cohere 同样接线 429 重试。
+    /// P2-5: Cohere also wires in 429 retry.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
         let success_body = r#"{"data":[{"embedding":[0.6,0.8]}]}"#;
@@ -322,14 +322,14 @@ mod tests {
             .await
             .expect("should retry successfully after two 429s");
         assert_eq!(v.len(), 2);
-        // P2-8: 返回向量应已归一化。
+        // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
         assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
     }
 
-    /// P0-1: Cohere 一次性返回全部文本,少返回必须显式报 `BatchMismatch`,
-    /// 而非静默少向量让下游错位。
+    /// P0-1: Cohere returns all texts at once; a short return must explicitly report
+    /// `BatchMismatch` rather than silently giving downstream fewer vectors.
     #[tokio::test]
     async fn test_embed_documents_truncated_errors() {
         let base_url = spawn_embeddings_stub(Arc::new(|n| n.saturating_sub(1))).await;
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(embeddings.dimension(), 1024);
     }
 
-    /// P1-3: API key 为空 → 构造期 fail fast 报 `Config`，而非拖到发请求才 401。
+    /// P1-3: an empty API key → `Config` error at construction (fail fast), not a delayed 401.
     #[test]
     fn test_new_rejects_empty_api_key() {
         let config = CohereEmbeddingsConfig {
@@ -409,7 +409,7 @@ mod tests {
         assert!(matches!(err, EmbeddingError::Config(_)));
     }
 
-    /// P1-2: 未知模型 → 构造期报错，不得恒 1024 撒谎。
+    /// P1-2: unknown model → construction-time error, never lying with a fixed 1024.
     #[test]
     fn test_new_rejects_unknown_model() {
         let config = CohereEmbeddingsConfig::new("key").with_model("some-unknown-model");
@@ -417,7 +417,7 @@ mod tests {
         assert!(matches!(err, EmbeddingError::Config(_)));
     }
 
-    /// P1-1: 空文本 / 全空白文本 → `Err(EmptyInput)`；空切片 → `Ok(vec![])`。
+    /// P1-1: empty / all-whitespace text → `Err(EmptyInput)`; an empty slice → `Ok(vec![])`.
     #[tokio::test]
     async fn test_empty_input_contract() {
         let embeddings = CohereEmbeddings::new(CohereEmbeddingsConfig::new("key")).unwrap();

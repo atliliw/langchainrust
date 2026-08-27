@@ -138,8 +138,9 @@ impl<S: StateSchema> CompiledGraph<S> {
     /// Get the last checkpoint state (for interrupt recovery), together with the
     /// recursion budget consumed up to that checkpoint.
     ///
-    /// H5: 不再用 `list()` 的 HashMap 乱序 + `ids.last()` 猜"最近";直接由
-    /// checkpointer 的 `last()` 按 (timestamp, seq) 返回真正最近的 checkpoint。
+    /// H5: no longer guesses "most recent" from `list()`'s HashMap order + `ids.last()`;
+    /// instead the checkpointer's `last()` returns the truly newest checkpoint by
+    /// (timestamp, seq).
     pub async fn last_checkpoint_state(&self) -> Option<(S, usize)> {
         if let Some(ref cp) = self.checkpointer {
             let guard = cp.lock().await;
@@ -163,8 +164,9 @@ impl<S: StateSchema> CompiledGraph<S> {
             state,
             current_node: current.to_string(),
             steps: Vec::new(),
-            // M6: 续跑沿用中断前已消耗的递归预算,而不是清零重来——
-            // 否则反复 interrupt→resume 可以无限绕过 recursion_limit。
+            // M6: resume carries over the recursion budget already consumed before the
+            // interrupt, instead of restarting from zero — otherwise repeated
+            // interrupt→resume could bypass recursion_limit indefinitely.
             recursion_count,
             interrupted_at: interrupted_node.to_string(),
         })

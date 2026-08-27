@@ -1,7 +1,7 @@
-//! `RecordingProvider`:真实调用一次,把请求/响应对追加到 JSONL 录制文件。
+//! `RecordingProvider`: makes one real call, appending the request/response pair to the JSONL recording file.
 //!
-//! 录制是**旁路**:真实调用失败就返回失败、不写录播;真实调用成功但写盘失败
-//! 仅 `log::warn!`,不阻断真实结果。
+//! Recording is **pass-through**: a failed real call returns the failure without writing;
+//! a successful call whose write fails only `log::warn!`s and does not block the real result.
 
 use std::io::Write;
 use std::path::Path;
@@ -21,28 +21,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TestkitError;
 
-/// 一次录制的请求/响应对,序列化为 JSONL 一行。
+/// One recorded request/response pair, serialized as a single JSONL line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordedExchange {
-    /// 请求(含 system/user/assistant/tool 历史)。
+    /// The request (including system/user/assistant/tool history).
     pub messages: Vec<Message>,
-    /// 完整响应。
+    /// The full response.
     pub response: LLMResult,
-    /// 请求侧绑定的工具定义(`bind_tools` 绑定后非空)。
+    /// Tool definitions bound on the request side (non-empty after `bind_tools`).
     ///
-    /// `#[serde(default)]` 让旧 fixture(无 `tools` 字段)读成 `None`,零改动兼容;
-    /// `skip_serializing_if` 让未绑定工具的录播文件保持旧格式。
+    /// `#[serde(default)]` lets old fixtures (without a `tools` field) read as `None`, compatible
+    /// with zero changes; `skip_serializing_if` keeps recordings without bound tools in the old format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
 }
 
-/// 追加写录制文件的共享句柄(append 模式,std Mutex 保护)。
+/// Shared handle for append-mode writing to the recording file (protected by a std Mutex).
 pub struct Recorder {
     file: Mutex<std::fs::File>,
 }
 
 impl Recorder {
-    /// 打开/创建录制文件。打不开 → 构造期直接 `Err`(fail fast)。
+    /// Opens/creates the recording file. If it cannot be opened, construction fails fast with `Err`.
     pub fn new(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -53,7 +53,7 @@ impl Recorder {
         })
     }
 
-    /// Best-effort 追加一条录播:失败只 `log::warn!`,绝不向上传播。
+    /// Best-effort append of one recording: failure only `log::warn!`s and never propagates up.
     pub fn record(&self, exchange: &RecordedExchange) {
         let line = match serde_json::to_string(exchange) {
             Ok(line) => line,
@@ -72,17 +72,17 @@ impl Recorder {
     }
 }
 
-/// 把内层模型错误映射为 `TestkitError`(经 `ProviderError` 无损透传)。
+/// Maps an inner model error into `TestkitError` (losslessly passed through `ProviderError`).
 fn to_testkit<E: Into<ProviderError>>(e: E) -> TestkitError {
     TestkitError::Inner(e.into())
 }
 
-/// 包裹任意 `BaseChatModel`:成功响应后把请求/响应对追加到 JSONL。
+/// Wraps any `BaseChatModel`: after a successful response, appends the request/response pair to JSONL.
 pub struct RecordingProvider<M> {
     inner: M,
     recorder: Arc<Recorder>,
     model_name: String,
-    /// 当前绑定的工具定义(`bind_tools` 设置,chat 时录进 exchange)。
+    /// Currently bound tool definitions (set by `bind_tools`, recorded into the exchange on chat).
     tools: Option<Vec<ToolDefinition>>,
 }
 
@@ -91,7 +91,7 @@ where
     M: BaseChatModel + Send + Sync + 'static,
     M::Error: Into<ProviderError>,
 {
-    /// 用内层模型 + 录制文件构造。文件打不开 → `Err`。
+    /// Constructs from an inner model + recording file. An unopenable file → `Err`.
     pub fn new(inner: M, path: impl AsRef<Path>) -> std::io::Result<Self> {
         let model_name = format!("{}-recorded", inner.model_name());
         let recorder = Arc::new(Recorder::new(path)?);
@@ -103,15 +103,15 @@ where
         })
     }
 
-    /// 访问内层模型。
+    /// Accesses the inner model.
     pub fn inner(&self) -> &M {
         &self.inner
     }
 
-    /// 绑定工具:返回一个记录该工具集的新实例。
+    /// Binds tools: returns a new instance that records that tool set.
     ///
-    /// 后续 `chat` 会把工具定义录进 `RecordedExchange.tools`,让回放侧
-    /// 能按工具名路由(见 [`crate::ReplayStrategy::ByToolName`])。
+    /// Later `chat` calls record the tool definitions into `RecordedExchange.tools`, letting the
+    /// replay side route by tool name (see [`crate::ReplayStrategy::ByToolName`]).
     pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self
     where
         M: Clone,
@@ -240,7 +240,7 @@ where
         &self,
         tools: Vec<ToolDefinition>,
     ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
-        // 委托给 inherent `bind_tools`:克隆内层模型、记录工具集、返回新实例。
+        // Delegate to the inherent `bind_tools`: clone the inner model, record the tool set, return a new instance.
         Some(Box::new(self.bind_tools(tools)))
     }
 }

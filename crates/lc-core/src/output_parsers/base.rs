@@ -1,19 +1,19 @@
 use async_trait::async_trait;
 
-/// 输出解析器的统一错误类型
+/// Unified error type for output parsers
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum OutputParserError {
-    /// 解析失败：输入格式不符合预期
+    /// Parse failure: the input format does not match expectations
     #[error("Parse error: {0}")]
     ParseError(String),
-    /// JSON 格式错误
+    /// JSON format error
     #[error("JSON error: {0}")]
     JsonError(String),
-    /// 类型转换错误
+    /// Type conversion error
     #[error("Type error: {0}")]
     TypeError(String),
-    /// 自定义错误
+    /// Custom error
     #[error("{0}")]
     Custom(String),
 }
@@ -24,26 +24,27 @@ impl From<serde_json::Error> for OutputParserError {
     }
 }
 
-/// 输出解析器的结果类型
+/// Result type for output parsers
 pub type OutputParserResult<T> = Result<T, OutputParserError>;
 
-/// 输出解析器的核心 trait
+/// Core trait for output parsers
 ///
-/// 所有输出解析器必须实现此 trait。
-/// 与 `Runnable` 不同，`parse` 不接收 config 参数，
-/// 适合在 Runnable 内部调用。
+/// Every output parser must implement this trait.
+/// Unlike `Runnable`, `parse` takes no config argument,
+/// so it fits being called inside a Runnable.
 #[async_trait]
 pub trait BaseOutputParser<Output: Send + Sync + 'static>: Send + Sync {
-    /// 将原始 LLM 输出文本解析为目标类型
+    /// Parses raw LLM output text into the target type
     async fn parse(&self, text: &str) -> OutputParserResult<Output>;
 
-    /// 带重试的解析（默认实现：真正重试 `max_retries` 次）
+    /// Parsing with retry (default: genuinely retries `max_retries` times)
     ///
-    /// 对同一份文本反复调用 [`parse`](Self::parse)，最多尝试
-    /// `max_retries + 1` 次。重试同一份文本只对非确定性解析（例如内部
-    /// 依赖网络/外部服务的解析器）有意义；确定性解析器首次失败后必然
-    /// 重复失败，最终返回最后一次错误。需要基于失败原因修正输入的
-    /// 解析器应覆写此方法。
+    /// Calls [`parse`](Self::parse) repeatedly on the same text, at most
+    /// `max_retries + 1` times. Retrying the same text only makes sense for
+    /// non-deterministic parsing (e.g. a parser that depends on the network /
+    /// external services); a deterministic parser that fails once will keep
+    /// failing, and the last error is returned. Parsers that need to correct
+    /// the input based on the failure reason should override this method.
     async fn parse_with_retry(&self, text: &str, max_retries: usize) -> OutputParserResult<Output> {
         let mut last_err = None;
         for _ in 0..=max_retries {
@@ -57,7 +58,7 @@ pub trait BaseOutputParser<Output: Send + Sync + 'static>: Send + Sync {
         }))
     }
 
-    /// 获取格式指令（用于提示 LLM 按指定格式输出）
+    /// Returns format instructions (to prompt the LLM to output in the expected format)
     fn get_format_instructions(&self) -> String {
         String::new()
     }

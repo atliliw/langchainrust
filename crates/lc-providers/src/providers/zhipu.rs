@@ -1,5 +1,5 @@
 // src/language_models/providers/zhipu.rs
-//! Zhipu GLM API 实现 (OpenAI 兼容)
+//! Zhipu GLM API implementation (OpenAI-compatible)
 
 use crate::error::ProviderError;
 use crate::openai::{OpenAIChat, OpenAIConfig, OpenAIError, StructuredOutputMethod};
@@ -15,18 +15,18 @@ use serde::de::DeserializeOwned;
 use std::env;
 use std::pin::Pin;
 
-/// Zhipu API 端点
+/// Zhipu API endpoint
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
-/// Zhipu GLM 模型列表
+/// Zhipu GLM model list
 pub const ZHIPU_MODELS: [&str; 4] = [
-    "glm-4",       // GLM-4 基础模型
-    "glm-4-flash", // GLM-4 快速版
+    "glm-4",       // GLM-4 base model
+    "glm-4-flash", // GLM-4 fast tier
     "glm-4-plus",  // GLM-4 Plus
-    "glm-4-long",  // GLM-4 长文本
+    "glm-4-long",  // GLM-4 long-context
 ];
 
-/// Zhipu 配置
+/// Zhipu config
 #[derive(Debug, Clone)]
 pub struct ZhipuConfig {
     /// Zhipu API key.
@@ -109,7 +109,7 @@ impl ZhipuConfig {
         self
     }
 
-    /// 转换为 OpenAI 配置 (复用 OpenAI 实现)
+    /// Converts into an OpenAI config (reuses the OpenAI implementation)
     pub fn into_openai_config(self) -> OpenAIConfig {
         OpenAIConfig {
             api_key: self.api_key,
@@ -128,7 +128,7 @@ impl ZhipuConfig {
     }
 }
 
-/// Zhipu 聊天客户端
+/// Zhipu chat client
 #[derive(Clone)]
 pub struct ZhipuChat {
     inner: OpenAIChat,

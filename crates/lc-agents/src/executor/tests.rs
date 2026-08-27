@@ -79,9 +79,10 @@ async fn test_agent_executor_with_memory() {
     assert!(result2.contains("Zhang San"));
 }
 
-/// F7:Agent 出错时,上一轮对话仍落记忆——`invoke` 返回 Err 后,
-/// `memory.load_memory_variables` 仍含用户输入(错误文本作为上一轮输出
-/// 保留),下一轮上下文不断裂;且记忆保存失败不能覆盖 agent 的原始错误。
+/// F7: when the Agent errors, the previous round still lands in memory — after `invoke`
+/// returns `Err`, `memory.load_memory_variables` still contains the user input (the error
+/// text is kept as the previous round's output), so the next round's context is not
+/// broken; and a memory-save failure must not mask the agent's original error.
 #[tokio::test]
 async fn test_agent_executor_saves_memory_on_error() {
     struct FailingAgent;
@@ -100,7 +101,8 @@ async fn test_agent_executor_saves_memory_on_error() {
     let memory = Arc::new(tokio::sync::Mutex::new(ConversationBufferMemory::new()));
     let executor = AgentExecutor::new(Arc::new(FailingAgent), vec![]).with_memory(memory.clone());
 
-    // 该轮失败:invoke 必须返回 Err,且是 agent 的原始错误,不是记忆错误。
+    // This round fails: invoke must return Err — the agent's original error, not a
+    // memory error.
     let err = executor
         .invoke("doomed question".to_string())
         .await
@@ -111,7 +113,8 @@ async fn test_agent_executor_saves_memory_on_error() {
         err
     );
 
-    // 出错后,上一轮的用户输入仍应写回记忆。
+    // After the error, the previous round's user input should still be written back to
+    // memory.
     let mut inputs = HashMap::new();
     inputs.insert("input".to_string(), "doomed question".to_string());
     let vars = memory
@@ -128,13 +131,14 @@ async fn test_agent_executor_saves_memory_on_error() {
     );
 }
 
-// ============ P2-7: Agent 记忆增强(向量库 + 摘要压缩) ============
+// ============ P2-7: Agent memory augmentation (vector store + summary compression) ============
 
-/// 确定性嵌入:任意文本 → 固定单位向量。
+/// Deterministic embeddings: any text → a fixed unit vector.
 ///
-/// 余弦相似度恒为 1.0,绕过 `MockEmbeddings` 的伪随机向量(查询与文档向量
-/// 可能相似度 ≤ 0,被 `InMemoryVectorStore` 的 `score > 0.0` 过滤掉),
-/// 让"语义召回"在测试里可复现。
+/// Cosine similarity is always 1.0, bypassing `MockEmbeddings`' pseudo-random vectors
+/// (query and document vectors could have similarity ≤ 0 and be filtered out by
+/// `InMemoryVectorStore`'s `score > 0.0` threshold), making "semantic recall"
+/// reproducible in tests.
 #[derive(Debug, Clone)]
 struct ConstantEmbeddings;
 
@@ -144,7 +148,8 @@ impl Embeddings for ConstantEmbeddings {
         if text.trim().is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
-        // 8 维单位向量(1,0,...):与自身点积为 1,归一化后不变。
+        // 8-dim unit vector (1,0,...): dot product with itself is 1, unchanged after
+        // normalization.
         Ok(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     }
 
@@ -157,10 +162,10 @@ impl Embeddings for ConstantEmbeddings {
     }
 }
 
-/// P2-7: 会读 `history` prompt 变量的测试 Agent。
+/// P2-7: a test Agent that reads the `history` prompt variable.
 ///
-/// history 含 "Zhang San" 时答出名字(证明记忆注入 prompt 生效),
-/// 否则回显输入。
+/// Answers with the name when `history` contains "Zhang San" (proving memory injection
+/// into the prompt works); otherwise echoes the input.
 struct HistoryNameAgent;
 
 #[async_trait]
@@ -186,11 +191,13 @@ impl BaseAgent for HistoryNameAgent {
     }
 }
 
-/// P2-7: 向量检索长期记忆(VectorStoreRetrieverMemory)接入 AgentExecutor。
+/// P2-7: vector-retrieval long-term memory (VectorStoreRetrieverMemory) plugged into
+/// AgentExecutor.
 ///
-/// `AgentExecutor` 持 `Arc<dyn BaseMemory>` 而非硬编码 Buffer(呼应 memory
-/// 模块 P0-1),任何实现 `BaseMemory` 的组件都能接入。这里演示向量库记忆:
-/// 每轮对话被嵌入存入 `InMemoryVectorStore`,下一轮按语义召回注入 `history`。
+/// `AgentExecutor` holds an `Arc<dyn BaseMemory>` rather than a hardcoded Buffer
+/// (echoing P0-1 in the memory module), so any `BaseMemory` implementation can be
+/// plugged in. This demonstrates vector-store memory: each round is embedded and stored
+/// in `InMemoryVectorStore`, and the next round recalls it semantically into `history`.
 #[tokio::test]
 async fn test_agent_executor_with_vector_store_memory() {
     let memory = Arc::new(tokio::sync::Mutex::new(VectorStoreRetrieverMemory::new(
@@ -201,7 +208,8 @@ async fn test_agent_executor_with_vector_store_memory() {
 
     let executor = AgentExecutor::new(Arc::new(HistoryNameAgent), vec![]).with_memory(memory);
 
-    // 第一轮:无记忆,Agent 只回显输入;执行后本轮对话被嵌入存入向量库。
+    // First round: no memory, the Agent only echoes the input; after execution this
+    // round is embedded and stored in the vector store.
     let result1 = executor
         .invoke("My name is Zhang San".to_string())
         .await
@@ -212,7 +220,8 @@ async fn test_agent_executor_with_vector_store_memory() {
         result1
     );
 
-    // 第二轮:按语义召回上轮记忆,history 注入 prompt,Agent 读出名字。
+    // Second round: the previous round's memory is recalled semantically, `history` is
+    // injected into the prompt, and the Agent reads out the name.
     let result2 = executor
         .invoke("What is my name?".to_string())
         .await
@@ -224,10 +233,12 @@ async fn test_agent_executor_with_vector_store_memory() {
     );
 }
 
-/// P2-7: 摘要压缩记忆(ConversationSummaryBufferMemory)接入 AgentExecutor。
+/// P2-7: summary-compression memory (ConversationSummaryBufferMemory) plugged into
+/// AgentExecutor.
 ///
-/// 对话累计 token 超过预算后,旧轮次交给 LLM(测试用 MockChatModel)压缩成
-/// 摘要,`history` 以 "Summary: ..." 注入 prompt,Agent 从摘要里读出早期信息。
+/// Once accumulated conversation tokens exceed the budget, old rounds are compressed by
+/// the LLM (MockChatModel in tests) into a summary; `history` is injected into the
+/// prompt as "Summary: ...", and the Agent reads early information out of the summary.
 #[tokio::test]
 async fn test_agent_executor_with_summary_compression_memory() {
     use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
@@ -235,7 +246,7 @@ async fn test_agent_executor_with_summary_compression_memory() {
     use lc_core::token_counter::CharRatioCounter;
     use lc_schema::Message;
 
-    // 摘要 LLM:任何调用都返回带名字标记的摘要文本。
+    // Summary LLM: every call returns a summary text tagged with the name.
     #[derive(Debug, Clone)]
     struct SummaryMockLLM;
 
@@ -299,7 +310,8 @@ async fn test_agent_executor_with_summary_compression_memory() {
     }
 
     let llm = SummaryMockLLM;
-    // CharRatioCounter(4 字符/token):短消息也稳定超预算,不依赖 tiktoken 是否在线。
+    // CharRatioCounter (4 chars/token): even short messages reliably exceed the budget,
+    // without depending on whether tiktoken is online.
     let memory = Arc::new(tokio::sync::Mutex::new(
         ConversationSummaryBufferMemory::new(llm, 4)
             .with_counter(Arc::new(CharRatioCounter::new(4))),
@@ -307,7 +319,8 @@ async fn test_agent_executor_with_summary_compression_memory() {
 
     let executor = AgentExecutor::new(Arc::new(HistoryNameAgent), vec![]).with_memory(memory);
 
-    // 第一轮:信息入会话,累计 token 超预算触发摘要压缩(调用 MockChatModel)。
+    // First round: information enters the conversation, accumulated tokens exceed the
+    // budget and trigger summary compression (calling MockChatModel).
     let result1 = executor
         .invoke("My name is Zhang San".to_string())
         .await
@@ -318,7 +331,8 @@ async fn test_agent_executor_with_summary_compression_memory() {
         result1
     );
 
-    // 第二轮:摘要注入 history,Agent 从压缩摘要里读出名字。
+    // Second round: the summary is injected into `history`, and the Agent reads the name
+    // out of the compressed summary.
     let result2 = executor
         .invoke("What is my name?".to_string())
         .await
@@ -373,7 +387,8 @@ impl BaseAgent for TestToolAgent {
     }
 }
 
-/// P1-8: Executor::stream 在 Finish 阶段先融合 Text 事件,再发 FinalAnswer 终态。
+/// P1-8: Executor::stream fuses Text events in the Finish stage, then sends the
+/// FinalAnswer terminal event.
 #[tokio::test]
 async fn test_stream_fuses_text_before_final_answer() {
     use crate::streaming::AgentStreamEvent;
@@ -387,7 +402,7 @@ async fn test_stream_fuses_text_before_final_answer() {
         events.push(event.unwrap());
     }
 
-    // Text(模型文本) + FinalAnswer(终态),两者内容一致。
+    // Text (model text) + FinalAnswer (terminal event); both carry the same content.
     assert_eq!(events.len(), 2);
     match &events[0] {
         AgentStreamEvent::Text { content } => assert_eq!(content, "hello"),
@@ -399,7 +414,8 @@ async fn test_stream_fuses_text_before_final_answer() {
     }
 }
 
-/// P1-8: 工具调用路径保留 ToolStart/ToolEnd,并最终融合 Text + FinalAnswer。
+/// P1-8: the tool-call path keeps ToolStart/ToolEnd and finally fuses Text +
+/// FinalAnswer.
 #[tokio::test]
 async fn test_stream_fuses_tool_events_and_text() {
     use crate::streaming::AgentStreamEvent;
@@ -413,7 +429,7 @@ async fn test_stream_fuses_tool_events_and_text() {
         events.push(event.unwrap());
     }
 
-    // ToolStart + ToolEnd + Text + FinalAnswer,共 4 个事件。
+    // ToolStart + ToolEnd + Text + FinalAnswer: 4 events in total.
     assert_eq!(events.len(), 4);
     assert!(matches!(events[0], AgentStreamEvent::ToolStart { .. }));
     assert!(matches!(events[1], AgentStreamEvent::ToolEnd { .. }));
@@ -421,8 +437,9 @@ async fn test_stream_fuses_tool_events_and_text() {
     assert!(matches!(events[3], AgentStreamEvent::FinalAnswer { .. }));
 }
 
-/// F3:覆写 `plan_stream` 的 agent(如文本 ReAct)在 executor::stream 里逐 token
-/// 收到 `Text` 事件;Finish 阶段只发 FinalAnswer 终态,不重复整段答案。
+/// F3: an agent overriding `plan_stream` (e.g. text ReAct) receives `Text` events
+/// token by token in executor::stream; the Finish stage only sends the FinalAnswer
+/// terminal event, without repeating the whole answer.
 struct TestStreamingAgent;
 
 #[async_trait]
@@ -444,7 +461,8 @@ impl BaseAgent for TestStreamingAgent {
         _inputs: &HashMap<String, String>,
         on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
     ) -> Result<AgentOutput, AgentError> {
-        // 模拟流式 chat:整段答案拆成 4 个 token 逐个转发。
+        // Simulate streaming chat: split the whole answer into 4 tokens and forward
+        // them one by one.
         for token in ["Hel", "lo", " wor", "ld"] {
             on_token(token.to_string()).await;
         }
@@ -468,7 +486,8 @@ async fn test_stream_emits_per_token_text_for_streaming_agent() {
         events.push(event.unwrap());
     }
 
-    // 4 个逐 token Text + FinalAnswer = 5 个事件,且 FinalAnswer 不重复文本。
+    // 4 per-token Text + FinalAnswer = 5 events, and FinalAnswer does not repeat the
+    // text.
     assert_eq!(events.len(), 5);
     let texts: Vec<&String> = events
         .iter()
@@ -484,7 +503,7 @@ async fn test_stream_emits_per_token_text_for_streaming_agent() {
     }
 }
 
-/// P1-5: invoke 后 metrics 记录 llm_calls 与 duration。
+/// P1-5: metrics record `llm_calls` and `duration` after invoke.
 #[tokio::test]
 async fn test_agent_executor_metrics() {
     let executor = AgentExecutor::new(Arc::new(TestFinishAgent), vec![]);
@@ -498,7 +517,7 @@ async fn test_agent_executor_metrics() {
     assert!(metrics.duration.as_nanos() > 0);
 }
 
-/// P1-5: 走工具调用路径时统计 tool_calls。
+/// P1-5: `tool_calls` is counted on the tool-call path.
 #[tokio::test]
 async fn test_agent_executor_tool_metrics() {
     let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator)];
@@ -511,7 +530,7 @@ async fn test_agent_executor_tool_metrics() {
     assert_eq!(metrics.tool_calls, 1);
 }
 
-/// P1-4: config.metadata["trace_id"] 贯穿到 metrics。
+/// P1-4: config.metadata["trace_id"] propagates through to metrics.
 #[tokio::test]
 async fn test_invoke_with_config_trace_id() {
     let executor = AgentExecutor::new(Arc::new(TestFinishAgent), vec![]);
@@ -527,7 +546,7 @@ async fn test_invoke_with_config_trace_id() {
     assert_eq!(metrics.trace_id.as_deref(), Some(trace_id));
 }
 
-/// P1-4: 非法 trace_id 被忽略,不阻断执行。
+/// P1-4: an invalid trace_id is ignored and does not block execution.
 #[tokio::test]
 async fn test_invoke_with_config_invalid_trace_id_ignored() {
     let executor = AgentExecutor::new(Arc::new(TestFinishAgent), vec![]);
@@ -541,7 +560,8 @@ async fn test_invoke_with_config_invalid_trace_id_ignored() {
     assert!(metrics.trace_id.is_none());
 }
 
-/// 计数 Agent:每次 `plan()` 计数,返回随输入变化的确定性结果(P2-1 测试用)。
+/// Counting Agent: counts each `plan()` call and returns a deterministic result varying
+/// with the input (used for P2-1 tests).
 struct CountingAgent {
     calls: Arc<AtomicUsize>,
 }
@@ -562,7 +582,8 @@ impl BaseAgent for CountingAgent {
     }
 }
 
-/// P2-1: 相同输入第二次 invoke 命中缓存,`plan()` 不再被调用。
+/// P2-1: a second invoke with the same input hits the cache; `plan()` is not called
+/// again.
 #[tokio::test]
 async fn test_response_cache_reuses_plan() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -587,13 +608,13 @@ async fn test_response_cache_reuses_plan() {
         "second call should hit cache, plan not invoked again"
     );
 
-    // last_metrics 只反映最后一次 invoke:这次是纯缓存命中。
+    // last_metrics only reflects the last invoke: this one is a pure cache hit.
     let m2 = executor.last_metrics().unwrap();
     assert_eq!(m2.cache_hits, 1);
     assert_eq!(m2.llm_calls, 0);
 }
 
-/// P2-1: 不同输入不命中缓存。
+/// P2-1: different inputs do not hit the cache.
 #[tokio::test]
 async fn test_response_cache_different_input_misses() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -606,15 +627,16 @@ async fn test_response_cache_different_input_misses() {
     executor.invoke("a".to_string()).await.unwrap();
     executor.invoke("b".to_string()).await.unwrap();
 
-    // 不同输入必须各自调 plan:key 含 input,不会跨输入误命中。
+    // Different inputs must each call plan: the key contains the input, so there is no
+    // cross-input wrong hit.
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    // last_metrics 只反映最后一次 invoke("b" 是 miss)。
+    // last_metrics only reflects the last invoke ("b" was a miss).
     let metrics = executor.last_metrics().unwrap();
     assert_eq!(metrics.cache_hits, 0);
     assert_eq!(metrics.llm_calls, 1);
 }
 
-/// P2-1: 未配置缓存时行为不变,全部真实调用。
+/// P2-1: without a cache, behavior is unchanged — every call is a real call.
 #[tokio::test]
 async fn test_response_cache_opt_out() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -627,7 +649,8 @@ async fn test_response_cache_opt_out() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
-/// 声明工具集的 Agent(P2-2 测试用):`plan()` 计数,声明调用 `allowed` 集合。
+/// Agent declaring a tool set (used by P2-2 tests): `plan()` counts; declares the
+/// `allowed` set as the tools it may call.
 struct DeclaredToolsAgent {
     calls: Arc<AtomicUsize>,
     allowed: Vec<&'static str>,
@@ -652,7 +675,7 @@ impl BaseAgent for DeclaredToolsAgent {
     }
 }
 
-/// P2-2: 声明工具缺失时报错并列出缺失名。
+/// P2-2: a missing declared tool errors out and lists the missing name.
 #[test]
 fn test_validate_tool_registration_missing_lists_names() {
     let agent = DeclaredToolsAgent {
@@ -665,7 +688,7 @@ fn test_validate_tool_registration_missing_lists_names() {
     assert!(err.to_string().contains("missing_tool"));
 }
 
-/// P2-2: 声明工具全部注册时校验通过。
+/// P2-2: validation passes when all declared tools are registered.
 #[test]
 fn test_validate_tool_registration_ok_when_registered() {
     let agent = DeclaredToolsAgent {
@@ -676,14 +699,14 @@ fn test_validate_tool_registration_ok_when_registered() {
     assert!(executor.validate_tool_registration().is_ok());
 }
 
-/// P2-2: 未声明工具集的 Agent(默认 None)跳过校验。
+/// P2-2: an Agent that declares no tool set (default None) skips validation.
 #[test]
 fn test_validate_tool_registration_skipped_for_unrestricted() {
     let executor = AgentExecutor::new(Arc::new(TestFinishAgent), vec![]);
     assert!(executor.validate_tool_registration().is_ok());
 }
 
-/// P2-2: invoke 在工具未注册时 fail-fast,不做任何 plan() 调用。
+/// P2-2: invoke fails fast when a tool is unregistered, without any plan() call.
 #[tokio::test]
 async fn test_invoke_fails_fast_on_unregistered_tool() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -702,7 +725,8 @@ async fn test_invoke_fails_fast_on_unregistered_tool() {
     );
 }
 
-/// P2-2: stream 在工具未注册时先抛错误事件,plan 不被调用。
+/// P2-2: stream throws an error event first when a tool is unregistered; plan is not
+/// called.
 #[tokio::test]
 async fn test_stream_fails_fast_on_unregistered_tool() {
     use futures_util::StreamExt;
@@ -720,9 +744,10 @@ async fn test_stream_fails_fast_on_unregistered_tool() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
-// ============ P2-9: prompt injection 清洗 + 工具权限策略 + token 限流 ============
+// ============ P2-9: prompt-injection sanitization + tool permission policy + token rate limiting ============
 
-/// 返回内容夹带提示注入的工具(模拟被污染的网页/检索结果)。
+/// Tool whose returned content carries a prompt injection (simulates a poisoned web
+/// page / retrieval result).
 struct EchoMaliciousTool;
 
 #[async_trait]
@@ -740,8 +765,9 @@ impl BaseTool for EchoMaliciousTool {
     }
 }
 
-/// 第一轮调 echo 工具,第二轮把工具观察原样拼进 Finish 输出
-/// (暴露"跨轮污染":恶意文本若没被清洗会直达最终答案)。
+/// First round calls the echo tool; second round splices the tool observation verbatim
+/// into the Finish output (exposing cross-round pollution: if the malicious text is not
+/// sanitized, it reaches the final answer directly).
 struct InjectionProbeAgent;
 
 #[async_trait]
@@ -767,7 +793,8 @@ impl BaseAgent for InjectionProbeAgent {
     }
 }
 
-/// P2-9: PromptInjectionHook 清洗工具结果,恶意指令到不了下一轮 prompt。
+/// P2-9: PromptInjectionHook sanitizes tool results; the malicious instruction never
+/// reaches the next round's prompt.
 #[tokio::test]
 async fn test_injection_hook_blocks_cross_round_pollution() {
     let executor = AgentExecutor::new(
@@ -782,7 +809,8 @@ async fn test_injection_hook_blocks_cross_round_pollution() {
     assert!(!out.contains("reveal your secrets"), "{out}");
 }
 
-/// P2-9: 不挂注入 hook 时,恶意文本原样进入最终答案(对照组)。
+/// P2-9: without the injection hook, the malicious text reaches the final answer
+/// verbatim (control group).
 #[tokio::test]
 async fn test_injection_hook_without_hook_leaks_injection() {
     let executor = AgentExecutor::new(
@@ -794,7 +822,8 @@ async fn test_injection_hook_without_hook_leaks_injection() {
     assert!(out.contains("reveal your secrets"), "{out}");
 }
 
-/// P2-9: 危险工具未声明沙箱化时被权限策略拒绝。
+/// P2-9: a dangerous tool that is not declared sandboxed is rejected by the permission
+/// policy.
 #[tokio::test]
 async fn test_tool_policy_rejects_dangerous_unregistered() {
     let policy =
@@ -806,7 +835,8 @@ async fn test_tool_policy_rejects_dangerous_unregistered() {
     assert!(err.to_string().contains("sandboxed"), "{}", err);
 }
 
-/// P2-9: 危险工具声明沙箱化(已搬进受限环境)后放行。
+/// P2-9: a dangerous tool declared sandboxed (moved into a restricted environment) is
+/// allowed.
 #[tokio::test]
 async fn test_tool_policy_allows_sandboxed_dangerous() {
     let policy = crate::policy::ToolPolicy::new()
@@ -819,7 +849,8 @@ async fn test_tool_policy_allows_sandboxed_dangerous() {
     assert_eq!(out, "done");
 }
 
-/// P2-9: 权限分级——工具风险超过允许档位时被拒(即使已沙箱化)。
+/// P2-9: permission tiering — a tool whose risk exceeds the permitted tier is rejected
+/// (even when sandboxed).
 #[tokio::test]
 async fn test_tool_policy_tier_gate() {
     let policy = crate::policy::ToolPolicy::new()
@@ -832,7 +863,7 @@ async fn test_tool_policy_tier_gate() {
     assert!(err.to_string().contains("permission tier"), "{}", err);
 }
 
-/// P2-9: TokenBudgetHook 超调用配额时 Reject → 执行中止。
+/// P2-9: TokenBudgetHook rejects after the call quota is exceeded → execution aborts.
 #[tokio::test]
 async fn test_token_budget_hook_rejects_after_quota() {
     let executor = AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
@@ -842,7 +873,7 @@ async fn test_token_budget_hook_rejects_after_quota() {
     assert!(err.to_string().contains("quota"), "{}", err);
 }
 
-/// P2-9: TokenBudgetHook 配额充足时放行(2 次 LLM 调用 < max_calls)。
+/// P2-9: TokenBudgetHook allows within the quota (2 LLM calls < max_calls).
 #[tokio::test]
 async fn test_token_budget_hook_allows_within_budget() {
     let executor = AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
@@ -852,10 +883,12 @@ async fn test_token_budget_hook_allows_within_budget() {
     assert_eq!(out, "done");
 }
 
-// ============ S6 跨进程 resume(§4.2)============
+// ============ S6 cross-process resume (§4.2) ============
 
-/// 阻塞审批:进入 approve 时发"已落盘"信号(此刻挂起点已在磁盘),然后永久挂起,
-/// 直到 invoke 任务被 abort —— 模拟进程在等待审批时死亡,审批决定永远不会到。
+/// Blocking approval: sends a "persisted" signal when approve is entered (the checkpoint
+/// is already on disk at that moment), then hangs forever until the invoke task is
+/// aborted — simulating a process dying while awaiting approval; the approval decision
+/// never arrives.
 struct BlockingApproval {
     persisted_tx: tokio::sync::mpsc::Sender<()>,
 }
@@ -868,7 +901,8 @@ impl ApprovalHandler for BlockingApproval {
     }
 }
 
-/// 永远返回工具动作的 agent(测预算门用;永远不会 Finish)。
+/// Agent that always returns a tool action (used to test the budget gate; never
+/// Finishes).
 struct RelentlessActionAgent;
 
 #[async_trait]
@@ -888,7 +922,8 @@ impl BaseAgent for RelentlessActionAgent {
     }
 }
 
-/// 计数工具:统计执行次数(区分"从累计量继续"与"从头重算")。
+/// Counting tool: tallies executions (distinguishing "continue from accumulated" from
+/// "recount from scratch").
 struct CountingTool {
     calls: Arc<AtomicUsize>,
 }
@@ -909,14 +944,16 @@ impl BaseTool for CountingTool {
     }
 }
 
-/// S6:模拟进程重启 —— 构造 executor → 阻塞审批 → 任务 abort(进程死亡)→ 从磁盘
-/// 恢复挂起点 → 注入审批决定 → 工具执行、最终答案正确、挂起点清除。
+/// S6: simulate a process restart — build executor → block approval → abort the task
+/// (process death) → restore the checkpoint from disk → inject the approval decision →
+/// tool executes, final answer correct, checkpoint cleared.
 #[tokio::test]
 async fn test_cross_process_resume_recovers_after_crash() {
     let dir = tempfile::tempdir().unwrap();
     let store: Arc<dyn ResumeStore> = Arc::new(FileResumeStore::new(dir.path()).unwrap());
 
-    // 进程 A:阻塞审批 + resume store。审批进入前挂起点已落盘。
+    // Process A: blocking approval + resume store. The checkpoint is persisted before
+    // approval is entered.
     let (persisted_tx, mut persisted_rx) = tokio::sync::mpsc::channel(1);
     let exec_a = Arc::new(
         AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
@@ -929,17 +966,20 @@ async fn test_cross_process_resume_recovers_after_crash() {
         async move { exec.invoke("compute".to_string()).await }
     });
 
-    // 审批进入 → 挂起点已落盘(此刻 kill 进程,挂起点留在磁盘)。
+    // Approval entered → checkpoint persisted (kill the process now; the checkpoint
+    // stays on disk).
     persisted_rx
         .recv()
         .await
         .expect("approval should be entered");
 
-    // 模拟进程崩溃:abort 正在等待审批的 invoke 任务。磁盘挂起点不受影响。
+    // Simulate a process crash: abort the invoke task awaiting approval. The on-disk
+    // checkpoint is unaffected.
     task.abort();
 
-    // 进程 B:重建 executor(相同 agent / tools / store 目录)。resume 注入决定,
-    // 不重跑审批 handler,故无需再配 approval。
+    // Process B: rebuild the executor (same agent / tools / store directory). resume
+    // injects the decision without re-running the approval handler, so no approval is
+    // configured.
     let exec_b = AgentExecutor::new(Arc::new(TestToolAgent), vec![Arc::new(Calculator::new())])
         .with_resume_store(store.clone());
 
@@ -951,7 +991,8 @@ async fn test_cross_process_resume_recovers_after_crash() {
     assert_eq!(pending.tool_name, "calculator");
     assert_eq!(pending.inputs.get("input").unwrap(), "compute");
 
-    // 注入 Allow:待审批工具执行,从挂起迭代续跑 → 最终答案。
+    // Inject Allow: the pending tool executes, continuing from the suspended iteration →
+    // final answer.
     let answer = exec_b
         .resume(ApprovalDecision::Allow)
         .await
@@ -959,16 +1000,19 @@ async fn test_cross_process_resume_recovers_after_crash() {
         .expect("resume should produce an answer");
     assert_eq!(answer, "done");
 
-    // 决定落地后挂起点已清除(认领)。
+    // After the decision lands, the checkpoint is cleared (claimed).
     assert!(exec_b.pending_approval().await.unwrap().is_none());
 
-    // 工具确实执行过(预算从累计量继续:tool_calls 含挂起工具)。
+    // The tool did execute (budget continues from the accumulated count: tool_calls
+    // includes the pending tool).
     let metrics = exec_b.last_metrics().unwrap();
     assert!(metrics.tool_calls >= 1, "{metrics:?}");
 }
 
-/// S6:预算门恢复后从累计量继续 —— 挂起点记录已消耗 1 次工具调用(含待审批工具),
-/// `max_tool_calls = 1` 时 resume 在下一轮 plan 前硬停,不重复执行工具。
+/// S6: the budget gate continues from the accumulated count after resume — the
+/// checkpoint records 1 tool call already consumed (including the pending tool); with
+/// `max_tool_calls = 1`, resume hard-stops before the next plan round without re-running
+/// the tool.
 #[tokio::test]
 async fn test_resume_budget_continues_from_consumed() {
     let dir = tempfile::tempdir().unwrap();
@@ -977,7 +1021,8 @@ async fn test_resume_budget_continues_from_consumed() {
         calls: Arc::new(AtomicUsize::new(0)),
     });
 
-    // 手工构造挂起点:已消耗 1 次工具调用(含待审批的这 1 次),预算上限 1。
+    // Hand-craft the checkpoint: 1 tool call already consumed (including this pending
+    // one), budget cap 1.
     let mut inputs = HashMap::new();
     inputs.insert("input".to_string(), "compute".to_string());
     store
@@ -1002,7 +1047,8 @@ async fn test_resume_budget_continues_from_consumed() {
             ..Default::default()
         });
 
-    // resume:先执行待审批工具(累计量 1),下一轮 plan 又要工具 → 2 > 1 硬停。
+    // resume: first executes the pending tool (accumulated 1); the next plan round wants
+    // another tool → 2 > 1 hard-stop.
     let err = exec.resume(ApprovalDecision::Allow).await.unwrap_err();
     match err {
         AgentError::BudgetExceeded(BudgetExceeded::ToolCalls { limit, actual }) => {
@@ -1012,10 +1058,11 @@ async fn test_resume_budget_continues_from_consumed() {
         other => panic!("expected BudgetExceeded::ToolCalls, got {:?}", other),
     }
 
-    // 预算从累计量继续:待审批工具只执行了 1 次,后续那次被门拦下。
-    // (若从 0 重算,第二次工具会先执行,计数会是 2。)
+    // Budget continues from the accumulated count: the pending tool ran exactly once;
+    // the following one was blocked by the gate.
+    // (Recounting from 0 would have executed the second tool first, making the count 2.)
     assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
 
-    // 挂起点已认领(清除)。
+    // The checkpoint has been claimed (cleared).
     assert!(exec.pending_approval().await.unwrap().is_none());
 }

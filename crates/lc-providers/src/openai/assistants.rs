@@ -1,9 +1,10 @@
-//! OpenAI Assistants API 封装
+//! OpenAI Assistants API wrapper
 //!
-//! 封装 OpenAI 官方 Assistants / Threads / Run,支持服务端会话状态。
-//! v0.4.1: 支持 `requires_action` 工具调度 -- 当 run 需要工具调用时,
-//! 解析 tool_calls,经 ToolRegistry 执行,submit_tool_outputs 回传,继续轮询至完成。
-//! 注:需使用支持 Assistants API 的端点(OpenAI 官方);部分 compatible-mode 端点可能不支持。
+//! Wraps OpenAI's official Assistants / Threads / Run, supporting server-side conversation state.
+//! v0.4.1: supports `requires_action` tool dispatch -- when a run needs tool calls,
+//! parse the tool_calls, execute them via the ToolRegistry, report back via submit_tool_outputs,
+//! and keep polling until completion.
+//! Note: an endpoint supporting the Assistants API (official OpenAI) is required; some compatible-mode endpoints may not support it.
 
 use super::config::OpenAIConfig;
 use lc_core::tools::ToolRegistry;
@@ -11,23 +12,23 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Assistants 错误
+/// Assistants error
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum AssistantError {
-    /// HTTP 请求错误
+    /// HTTP request error
     Http(String),
-    /// API 返回错误
+    /// API-returned error
     Api(String),
-    /// 响应解析错误
+    /// Response parse error
     Parse(String),
-    /// Run 终止于非完成状态
+    /// Run ended in a non-terminal state
     RunFailed(String),
-    /// 工具执行错误
+    /// Tool execution error
     ToolExecution {
-        /// 工具名称
+        /// Tool name
         tool_name: String,
-        /// 错误信息
+        /// Error message
         error: String,
     },
     /// Polling timed out
@@ -51,14 +52,14 @@ impl std::fmt::Display for AssistantError {
 
 impl std::error::Error for AssistantError {}
 
-/// 轮询配置
+/// Polling configuration
 #[derive(Debug, Clone)]
 pub struct PollConfig {
-    /// 轮询间隔
+    /// Polling interval
     pub interval: Duration,
-    /// 最大轮询次数(0 = 无限,直到超时)
+    /// Maximum number of poll attempts (0 = unlimited, until timeout)
     pub max_attempts: u32,
-    /// 总超时
+    /// Overall timeout
     pub timeout: Duration,
 }
 
@@ -66,13 +67,13 @@ impl Default for PollConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_millis(500),
-            max_attempts: 0, // 无限,靠 timeout
+            max_attempts: 0, // unlimited, bounded by timeout
             timeout: Duration::from_secs(120),
         }
     }
 }
 
-/// OpenAI Assistant 封装
+/// OpenAI Assistant wrapper
 pub struct OpenAIAssistant {
     client: reqwest::Client,
     config: OpenAIConfig,
@@ -81,7 +82,7 @@ pub struct OpenAIAssistant {
     poll_config: PollConfig,
 }
 
-/// 判断 Run 状态是否为终态
+/// Whether the run status is terminal
 pub fn is_terminal_status(status: &str) -> bool {
     matches!(
         status,
@@ -90,7 +91,7 @@ pub fn is_terminal_status(status: &str) -> bool {
 }
 
 impl OpenAIAssistant {
-    /// 创建 Assistant(不带工具)
+    /// Creates an Assistant (without tools)
     pub async fn create(
         config: OpenAIConfig,
         model: &str,
@@ -117,7 +118,7 @@ impl OpenAIAssistant {
         })
     }
 
-    /// 创建带工具的 Assistant
+    /// Creates an Assistant with tools
     pub async fn create_with_tools(
         config: OpenAIConfig,
         model: &str,
@@ -127,7 +128,7 @@ impl OpenAIAssistant {
         let client = reqwest::Client::new();
         let url = format!("{}/assistants", config.base_url.trim_end_matches('/'));
 
-        // 构建 tools JSON(Assistants API 格式)
+        // Build the tools JSON (Assistants API format)
         let tools_json: Vec<Value> = tools
             .tools()
             .iter()
@@ -166,7 +167,7 @@ impl OpenAIAssistant {
         })
     }
 
-    /// 用已有 assistant id 构造(跳过 create)
+    /// Constructs from an existing assistant id (skips create)
     pub fn from_id(config: OpenAIConfig, assistant_id: impl Into<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -177,7 +178,7 @@ impl OpenAIAssistant {
         }
     }
 
-    /// 用已有 assistant id 构造,带工具注册表
+    /// Constructs from an existing assistant id, with a tool registry
     pub fn from_id_with_tools(
         config: OpenAIConfig,
         assistant_id: impl Into<String>,
@@ -192,34 +193,35 @@ impl OpenAIAssistant {
         }
     }
 
-    /// 获取助手 ID
+    /// Returns the assistant id
     pub fn assistant_id(&self) -> &str {
         &self.assistant_id
     }
 
-    /// 设置轮询配置
+    /// Sets the polling configuration
     pub fn with_poll_config(mut self, config: PollConfig) -> Self {
         self.poll_config = config;
         self
     }
 
-    /// 注册工具(用于 requires_action 工具调度)
+    /// Registers a tool (used for requires_action tool dispatch)
     pub fn register_tool(&mut self, tool: Arc<dyn lc_core::BaseTool>) {
         self.tools.register(tool);
     }
 
-    /// 跑一轮对话:创建 thread + 加消息 + 创建 run + 轮询 + 处理 requires_action + 取最终消息
+    /// Runs one conversation turn: create a thread + add a message + create a run + poll +
+    /// handle requires_action + fetch the final message.
     ///
-    /// 当 run 状态为 `requires_action` 时:
-    /// 1. 解析 `required_action.submit_tool_outputs.tool_calls`
-    /// 2. 经 `ToolRegistry` 执行每个 tool_call
-    /// 3. `submit_tool_outputs` 回传执行结果
-    /// 4. 继续轮询至 `completed`
+    /// When the run status is `requires_action`:
+    /// 1. Parse `required_action.submit_tool_outputs.tool_calls`
+    /// 2. Execute each tool_call via the `ToolRegistry`
+    /// 3. Report results back via `submit_tool_outputs`
+    /// 4. Keep polling until `completed`
     pub async fn run_once(&self, user_msg: &str) -> Result<String, AssistantError> {
         let base = self.config.base_url.trim_end_matches('/');
         let start = std::time::Instant::now();
 
-        // 1. 创建 thread
+        // 1. Create a thread
         let thread = Self::post(
             &self.client,
             &self.config,
@@ -232,7 +234,7 @@ impl OpenAIAssistant {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AssistantError::Parse("missing thread id".into()))?;
 
-        // 2. 加用户消息
+        // 2. Add the user message
         Self::post(
             &self.client,
             &self.config,
@@ -241,7 +243,7 @@ impl OpenAIAssistant {
         )
         .await?;
 
-        // 3. 创建 run
+        // 3. Create a run
         let run = Self::post(
             &self.client,
             &self.config,
@@ -254,14 +256,14 @@ impl OpenAIAssistant {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AssistantError::Parse("missing run id".into()))?;
 
-        // 4. 轮询 + 处理 requires_action
+        // 4. Poll + handle requires_action
         let mut attempts = 0u32;
         loop {
-            // 超时检查
+            // Timeout check
             if start.elapsed() > self.poll_config.timeout {
                 return Err(AssistantError::Timeout);
             }
-            // 最大次数检查(0 = 无限)
+            // Max-attempts check (0 = unlimited)
             if self.poll_config.max_attempts > 0 && attempts >= self.poll_config.max_attempts {
                 return Err(AssistantError::Timeout);
             }
@@ -289,7 +291,7 @@ impl OpenAIAssistant {
             }
         }
 
-        // 5. 取最终 assistant 消息(data[0] 为最新)
+        // 5. Fetch the final assistant message (data[0] is the newest)
         let messages = Self::get(
             &self.client,
             &self.config,
@@ -314,7 +316,7 @@ impl OpenAIAssistant {
         Ok(text.to_string())
     }
 
-    /// 处理 requires_action:解析 tool_calls,执行,submit_tool_outputs
+    /// Handles requires_action: parse the tool_calls, execute them, submit_tool_outputs
     async fn handle_requires_action(
         &self,
         base: &str,
@@ -322,7 +324,7 @@ impl OpenAIAssistant {
         run_id: &str,
         run_state: &Value,
     ) -> Result<(), AssistantError> {
-        // 解析 tool_calls
+        // Parse the tool_calls
         let tool_calls = run_state
             .get("required_action")
             .and_then(|ra| ra.get("submit_tool_outputs"))
@@ -335,7 +337,7 @@ impl OpenAIAssistant {
                 )
             })?;
 
-        // 逐个执行并收集 tool_outputs
+        // Execute each one and collect the tool_outputs
         let mut tool_outputs = Vec::new();
         for tc in tool_calls {
             let call_id = tc
@@ -354,12 +356,12 @@ impl OpenAIAssistant {
                 .and_then(|v| v.as_str())
                 .unwrap_or("{}");
 
-            // 执行工具
+            // Execute the tool
             let output = match self.tools.get(fn_name) {
                 Some(tool) => match tool.run(fn_args.to_string()).await as Result<String, _> {
                     Ok(result) => result,
                     Err(e) => {
-                        // 工具执行失败,返回错误信息给 Assistant
+                        // Tool execution failed, report the error back to the Assistant
                         format!("Tool execution error: {}", e)
                     }
                 },
@@ -374,7 +376,7 @@ impl OpenAIAssistant {
             }));
         }
 
-        // submit_tool_outputs
+        // Submit the tool outputs
         Self::post(
             &self.client,
             &self.config,
@@ -505,7 +507,7 @@ mod tests {
         assert_eq!(a.poll_config.max_attempts, 10);
     }
 
-    /// 用于测试的 mock 工具
+    /// Mock tool used for testing
     struct MockTool {
         name: String,
         description: String,

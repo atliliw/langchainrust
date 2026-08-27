@@ -92,7 +92,7 @@ impl BaseLanguageModel<Vec<Message>, LLMResult> for AnthropicChat {
 
     fn get_num_tokens(&self, text: &str) -> usize {
         lc_core::token_counter::count_tokens(text).unwrap_or_else(|e| {
-            // 编码器加载失败时按字节数高估(宁可略高,不静默按 0 算导致路由/截断误判)
+            // If the encoder fails to load, overestimate by byte length (better slightly high than silently counting 0, which would mislead routing/truncation)
             log::warn!("Token counting failed, falling back to byte-length estimation: {e}");
             text.len()
         })

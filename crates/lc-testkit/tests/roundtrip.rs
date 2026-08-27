@@ -1,6 +1,7 @@
-//! RecordingProvider → JSONL → ReplayProvider 往返:同一响应一致。
+//! RecordingProvider → JSONL → ReplayProvider roundtrip: the same response comes back.
 //!
-//! 这是 harness 的核心闭环:真调一次落盘,再从文件回放得到相同结果。
+//! This is the harness's core closed loop: one real call lands on disk, then replay from the file
+//! yields the same result.
 
 mod common;
 
@@ -15,7 +16,7 @@ async fn record_then_replay_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("capture.jsonl");
 
-    // 1. 真调一次(假模型),响应写入录制文件
+    // 1. Make one real call (fake model), the response is written to the recording file
     let recorded =
         RecordingProvider::new(FakeModel::new("Rust 是一门系统编程语言。"), &path).unwrap();
     let result = recorded
@@ -27,11 +28,11 @@ async fn record_then_replay_roundtrip() {
         .unwrap();
     assert_eq!(result.content, "Rust 是一门系统编程语言。");
 
-    // 2. 文件恰好 1 行合法 JSONL
+    // 2. The file has exactly 1 valid JSONL line
     let raw = std::fs::read_to_string(&path).unwrap();
     assert_eq!(raw.lines().count(), 1);
 
-    // 3. 从文件回放:内容与 token 计数一致
+    // 3. Replay from the file: content and token counts match
     let replay = ReplayProvider::from_file(&path).unwrap();
     assert_eq!(replay.len(), 1);
 
@@ -41,7 +42,7 @@ async fn record_then_replay_roundtrip() {
         .unwrap();
     assert_eq!(replayed.content, result.content);
     assert_eq!(replayed.model, result.model);
-    // 假模型的 token 计数是确定的:2 条消息输入 / 1 输出 / 3 总计
+    // The fake model's token counts are deterministic: 2 prompt / 1 completion / 3 total
     let tokens = replayed.token_usage.as_ref().expect("回放应带 token 计数");
     assert_eq!(tokens.prompt_tokens, 2);
     assert_eq!(tokens.completion_tokens, 1);
@@ -53,7 +54,7 @@ async fn record_with_bound_tools_then_replay() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tools.jsonl");
 
-    // 1. 绑定工具后录制:exchange 的 tools 字段应落盘
+    // 1. Record after binding tools: the exchange's tools field should land on disk
     let recorded = RecordingProvider::new(FakeModel::new("计算结果是 5。"), &path).unwrap();
     let bound = recorded.bind_tools(vec![ToolDefinition::new("calculator", "数学计算")]);
     let result = bound
@@ -62,14 +63,14 @@ async fn record_with_bound_tools_then_replay() {
         .unwrap();
     assert_eq!(result.content, "计算结果是 5。");
 
-    // 2. 文件里应有工具名
+    // 2. The file should contain the tool name
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(
         raw.contains("calculator"),
         "录播文件应包含绑定的工具名: {raw}"
     );
 
-    // 3. 回放:tools 保留,响应一致
+    // 3. Replay: tools preserved, response identical
     let replay = ReplayProvider::from_file(&path).unwrap();
     assert_eq!(replay.len(), 1);
     let replayed = replay
@@ -81,7 +82,7 @@ async fn record_with_bound_tools_then_replay() {
 
 #[test]
 fn old_fixture_without_tools_still_deserializes() {
-    // 旧格式 fixture(llm_chain_f01.jsonl)没有 tools 字段 → 读成 None,零改动。
+    // Old-format fixture (llm_chain_f01.jsonl) has no tools field → reads as None, zero changes.
     let line = r#"{"messages":[{"content":"q","type":"human"}],"response":{"content":"a","model":"m","token_usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}}"#;
     let exchange: lc_testkit::RecordedExchange = serde_json::from_str(line).unwrap();
     assert!(exchange.tools.is_none());

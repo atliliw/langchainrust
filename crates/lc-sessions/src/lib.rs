@@ -1,10 +1,10 @@
 #![warn(missing_docs)]
-//! Sessions 会话管理
+//! Sessions management
 //!
-//! 提供多轮对话的会话生命周期管理:创建/获取/归档会话,
-//! 在会话中对话(自动维护历史),支持可插拔存储。
+//! Manages the session lifecycle of multi-turn conversations: creating/getting/archiving
+//! sessions, chatting within a session (history auto-maintained), with pluggable storage.
 //!
-//! # 示例
+//! # Example
 //! ```no_run
 //! use lc_sessions::{SessionManager, MemorySessionStore};
 //! use lc_core::BaseChatModel;

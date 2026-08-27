@@ -1,17 +1,17 @@
 #![warn(missing_docs)]
-//! Evaluation 模块 - LLM 应用评测
+//! Evaluation module — LLM application evaluation
 //!
-//! 提供 `Evaluator` / `PairwiseEvaluator` trait、内置评测器、数据集加载与批量运行器,
-//! 用于量化 prompt/模型改动的效果。
+//! Provides the `Evaluator` / `PairwiseEvaluator` traits, built-in evaluators, dataset loading,
+//! and a batch runner, for quantifying the effect of prompt/model changes.
 //!
-//! 核心类型:
+//! Core types:
 //! - `EvalError` / `Score` / `Example` / `Dataset` / `Evaluator` / `Predictor`
-//! - `PairwiseEvaluator`(成对比较,P1-1 与单点并列的一等公民)
-//! - `EvalRunner` 与报告 `Report`(含原文 + 标准差 + 失败清单)
-//! - 内置评测器: `ExactMatch` / `StringDistance` / `EmbeddingSimilarity` / `LLMAsJudge`
-//! - 其它评测器: `Bleu` / `Faithfulness` / `PairwiseJudge` / `ContainsKeyword` / `RegexMatch`
+//! - `PairwiseEvaluator` (pairwise comparison, a first-class citizen alongside pointwise, P1-1)
+//! - `EvalRunner` and the `Report` (with original text + stddev + failure list)
+//! - built-in evaluators: `ExactMatch` / `StringDistance` / `EmbeddingSimilarity` / `LLMAsJudge`
+//! - other evaluators: `Bleu` / `Faithfulness` / `PairwiseJudge` / `ContainsKeyword` / `RegexMatch`
 //!
-//! # 示例
+//! # Example
 //! ```ignore
 //! use lc_evaluation::{EvalRunner, ExactMatch, StringDistance, Dataset, Example};
 //! let dataset = Dataset::new(vec![Example::new("2+2?", "4")]);

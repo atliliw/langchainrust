@@ -9,11 +9,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 
-/// 每个 `AgentExecutor` 实例的缓存命名空间计数器。
+/// Cache-namespace counter for each `AgentExecutor` instance.
 ///
-/// P2-1: 相同 `(inputs, intermediate_steps)` 在不同 executor 里可能被不同
-/// Agent 规划出不同动作,共享缓存会串结果。给每个实例一个唯一命名空间,
-/// 让缓存 key 天然隔离,又不妨碍同一实例多次 invoke 间的确定性命中。
+/// P2-1: the same `(inputs, intermediate_steps)` may be planned into different actions
+/// by different Agents across executors, so a shared cache would cross-contaminate
+/// results. Giving each instance a unique namespace isolates cache keys by construction,
+/// without hurting deterministic hits across multiple `invoke`s on the same instance.
 static CACHE_NS: AtomicUsize = AtomicUsize::new(0);
 
 /// Agent error types.
@@ -36,11 +37,12 @@ pub enum AgentError {
     #[error("Max iterations reached")]
     MaxIterationsReached,
 
-    /// 预算超限(人审/预算门 §4.2)。调用方捕获后区分"预算截停"与"模型未收敛"。
+    /// Budget exceeded (approval/budget gate §4.2). Callers catch it to distinguish a
+    /// "budget stop" from "the model did not converge".
     #[error("Budget exceeded: {0:?}")]
     BudgetExceeded(BudgetExceeded),
 
-    /// 跨进程 resume(§4.2):挂起点读 / 写 / 恢复失败。
+    /// Cross-process resume (§4.2): checkpoint read / write / restore failed.
     #[error("Resume error: {0}")]
     Resume(String),
 

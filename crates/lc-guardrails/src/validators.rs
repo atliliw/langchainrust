@@ -1,4 +1,4 @@
-//! 内置 Guardrail 验证器
+//! Built-in Guardrail validators
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -17,15 +17,15 @@ static EMAIL_RE: LazyLock<Regex> =
 static CREDIT_CARD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(\d[\s-]*){15,18}\d\b").unwrap());
 
-/// 高误报"提及"词(P2-2):普通提及(如"如何安全保存密码")不算泄露,
-/// 默认只 `log::warn` 不 Block;具体模式(API key / email / 信用卡)与
-/// `with_keywords` 自定义的低误报词才直接 Block。
+/// High-false-positive "mention" keywords (P2-2): plain mentions (e.g. "how to store passwords
+/// safely") do not count as leaks and by default only `log::warn`, never Block; concrete patterns
+/// (API key / email / credit card) and `with_keywords` custom low-false-positive words Block directly.
 const MENTION_KEYWORDS: &[&str] = &["password", "密码", "token", "secret"];
 
-/// 为关键词构造"上下文敏感"匹配(P2-1):只有赋值/声明结构(值相邻)才命中,
-/// 普通提及不命中。覆盖:
+/// Builds a "context-sensitive" matcher for a keyword (P2-1): only assignment/declaration
+/// structures (value adjacent) hit, while plain mentions do not. Covers:
 /// - `password=abc` / `password: abc` / `"password": "abc"` / `password is abc`
-/// - `密码是abc` / `密码为abc`
+/// - the keyword immediately followed by a Chinese copular particle (see the regex below)
 fn mention_context_re(keyword: &str) -> Regex {
     let kw = regex::escape(keyword);
     Regex::new(&format!(
@@ -41,10 +41,12 @@ static MENTION_CONTEXT_RES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new
         .collect()
 });
 
-/// 探测文本中"以赋值/声明结构出现"的第一个高误报提及词(P2-1)。
+/// Detects the first high-false-positive mention keyword appearing in an assignment/declaration
+/// structure (P2-1).
 ///
-/// 返回 `None` = 只有普通提及(如"如何安全保存密码"),这是 warn 判定与
-/// Block 判定分流的关键:普通提及直接放行(可配 LLM 裁判二次判断,见 P2-3)。
+/// Returns `None` = only a plain mention (e.g. "how to store passwords safely"); this is the
+/// branch point between the warn and Block paths: plain mentions pass directly (optionally with
+/// an LLM judge's second determination, see P2-3).
 pub(crate) fn detect_mention_context(text: &str) -> Option<&'static str> {
     for (kw, re) in MENTION_CONTEXT_RES.iter() {
         if re.is_match(text) {
@@ -54,13 +56,13 @@ pub(crate) fn detect_mention_context(text: &str) -> Option<&'static str> {
     None
 }
 
-/// 输入长度限制
+/// Input length limit
 pub struct MaxLengthGuardrail {
     max: usize,
 }
 
 impl MaxLengthGuardrail {
-    /// 创建一个最大长度限制的输入护栏。
+    /// Creates an input guardrail with a maximum length limit.
     pub fn new(max: usize) -> Self {
         Self { max }
     }
@@ -83,13 +85,13 @@ impl InputGuardrail for MaxLengthGuardrail {
     }
 }
 
-/// 禁用词检查
+/// Forbidden word check
 pub struct ForbiddenWordsGuardrail {
     words: Vec<String>,
 }
 
 impl ForbiddenWordsGuardrail {
-    /// 创建一个检查禁用词的输入护栏。
+    /// Creates an input guardrail that checks for forbidden words.
     pub fn new(words: Vec<String>) -> Self {
         Self { words }
     }
@@ -114,38 +116,38 @@ impl InputGuardrail for ForbiddenWordsGuardrail {
     }
 }
 
-/// 敏感信息检测(API key / email / 信用卡 / 关键词)
+/// Sensitive information detection (API key / email / credit card / keywords)
 ///
-/// 检测词表按误报风险分级(P2-2):
-/// - 低误报具体模式:API key(`sk-…`)、email、Luhn 校验通过的信用卡号 → 直接 Block;
-/// - 低误报自定义关键词(`with_keywords`):任何出现即 Block(用户显式选择);
-/// - 高误报提及词(password/密码/token/secret):上下文敏感命中(P2-1)后
-///   仅 `log::warn` 不 Block;配置了 [`SensitiveJudge`](P2-3) 时由 LLM 裁判
-///   二次判断"真实泄露 vs 正常提及",判泄露才 Block。
+/// The detection vocabulary is tiered by false-positive risk (P2-2):
+/// - low-false-positive concrete patterns: API key (`sk-…`), email, Luhn-valid credit card numbers -> block directly;
+/// - low-false-positive custom keywords (`with_keywords`): any occurrence blocks (the user opted in explicitly);
+/// - high-false-positive mention words (password/token/secret): after a context-sensitive hit (P2-1),
+///   only `log::warn` without blocking; when a [`SensitiveJudge`] (P2-3) is configured, the LLM judge
+///   makes the second "real leak vs normal mention" determination, blocking only on a real leak.
 pub struct SensitiveInfoGuardrail {
-    /// 低误报自定义关键词:任何出现即 Block(用户显式选择)。
+    /// Low-false-positive custom keywords: any occurrence blocks (the user opted in explicitly).
     keywords: Vec<String>,
-    /// 可选的 LLM 裁判(P2-3):高误报提及词上下文敏感命中后二次判断。
+    /// Optional LLM judge (P2-3): makes the second determination after a high-false-positive mention keyword hits context-sensitively.
     judge: Option<Arc<dyn SensitiveJudge>>,
 }
 
 impl SensitiveInfoGuardrail {
-    /// 创建敏感信息检测护栏(默认含 api_key / credential 低误报关键词)。
+    /// Creates a sensitive-information guardrail (defaults to the api_key / credential low-false-positive keywords).
     pub fn new() -> Self {
         Self {
-            // password/密码/token/secret 移到高误报提及词(仅 warn),不再默认 Block。
+            // password/token/secret moved to the high-false-positive mention words (warn only), no longer blocking by default.
             keywords: vec!["api_key".to_string(), "credential".to_string()],
             judge: None,
         }
     }
 
-    /// 追加自定义低误报关键词(任何出现即拦截)。
+    /// Appends custom low-false-positive keywords (any occurrence blocks).
     pub fn with_keywords(mut self, k: Vec<String>) -> Self {
         self.keywords.extend(k);
         self
     }
 
-    /// 挂载 LLM 裁判(P2-3):高误报提及词上下文敏感命中后二次判断真实泄露才 Block。
+    /// Attaches an LLM judge (P2-3): after a high-false-positive mention keyword hits context-sensitively, a second determination blocks only on a real leak.
     pub fn with_judge(mut self, judge: Arc<dyn SensitiveJudge>) -> Self {
         self.judge = Some(judge);
         self
@@ -188,7 +190,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
     }
 
     async fn validate(&self, output: &str) -> OutputGuardrailResult {
-        // 1) 低误报具体模式 → 直接 Block,无需裁判。
+        // 1) low-false-positive concrete patterns -> block directly, no judge needed.
         if OPENAI_KEY_RE.is_match(output) {
             return OutputGuardrailResult::Block {
                 reason: format!(
@@ -212,7 +214,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
             }
         }
 
-        // 2) 低误报自定义关键词 → 直接 Block(用户显式选择)。
+        // 2) low-false-positive custom keywords -> block directly (the user opted in explicitly).
         let lower = output.to_lowercase();
         for kw in &self.keywords {
             if lower.contains(&kw.to_lowercase()) {
@@ -222,9 +224,9 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
             }
         }
 
-        // 3) 高误报提及词:仅上下文敏感命中(P2-1)才处理。
-        //    有 LLM 裁判 → 二次判断"真实泄露 vs 正常提及",判泄露才 Block(P2-3);
-        //    无裁判 → 只 warn 不 Block(P2-2),普通提及("如何安全保存密码")直接放行。
+        // 3) high-false-positive mention words: only handled on a context-sensitive hit (P2-1).
+        //    with an LLM judge -> second "real leak vs normal mention" determination, blocking only on a leak (P2-3);
+        //    without a judge -> warn only, no block (P2-2); plain mentions pass directly.
         if let Some(kw) = detect_mention_context(output) {
             match &self.judge {
                 Some(judge) => match judge.judge(output).await {
@@ -243,7 +245,7 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
                         );
                     }
                     Err(e) => {
-                        // 裁判失败不误杀:回落到无裁判的 warn-only 行为(宁可放行并留日志)。
+                        // a judge failure must not cause a false block: fall back to the judge-less warn-only behavior (prefer passing and leaving a log).
                         log::warn!(
                             "SensitiveInfo: LLM judge call failed ({}), keywords {:?} handled as warn-only",
                             e,
@@ -273,7 +275,7 @@ mod tests {
     use crate::guardrail::GuardrailError;
     use crate::judge::SensitiveJudge;
 
-    /// 固定返回泄露/不泄露的 mock 裁判(P2-3)。
+    /// Mock judge that always returns leak/no-leak (P2-3).
     struct MockJudge {
         leak: bool,
     }
@@ -314,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensitive_info_benign_mention_passes() {
-        // P2-1/P2-2: password/密码/token/secret 是高误报"提及"词,普通提及不 Block。
+        // P2-1/P2-2: password/token/secret are high-false-positive "mention" words; plain mentions are not blocked.
         let g = SensitiveInfoGuardrail::new();
         assert!(g.validate("如何安全保存密码").await.is_pass());
         assert!(g.validate("your password is 123").await.is_pass());
@@ -324,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensitive_info_default_block_keywords() {
-        // api_key/credential 仍是低误报默认 Block 词(任何出现即 Block)。
+        // api_key/credential remain low-false-positive default block words (any occurrence blocks).
         let g = SensitiveInfoGuardrail::new();
         assert!(g.validate("配置里泄露了 credential").await.is_block());
         assert!(g.validate("api_key=abc123").await.is_block());
@@ -332,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_detect_mention_context() {
-        // 赋值/声明结构 → 命中
+        // assignment/declaration structure -> hit
         assert_eq!(
             detect_mention_context("password: hunter2"),
             Some("password")
@@ -348,7 +350,7 @@ mod tests {
         );
         assert_eq!(detect_mention_context("密码是abc123"), Some("密码"));
         assert_eq!(detect_mention_context("密码为abc"), Some("密码"));
-        // 普通提及 → 不命中
+        // plain mention -> no hit
         assert_eq!(detect_mention_context("如何安全保存密码"), None);
         assert_eq!(detect_mention_context("记住密码的注意事项"), None);
         assert_eq!(detect_mention_context("请妥善保管你的token"), None);
@@ -357,28 +359,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_sensitive_info_judge_blocks_real_leak() {
-        // P2-3: 挂载裁判,上下文敏感命中 + 裁判判泄露 → Block。
+        // P2-3: with a judge attached, context-sensitive hit + judge says leak -> Block.
         let g = SensitiveInfoGuardrail::new().with_judge(Arc::new(MockJudge { leak: true }));
         assert!(g.validate("密码是abc123").await.is_block());
     }
 
     #[tokio::test]
     async fn test_sensitive_info_judge_passes_normal_mention() {
-        // P2-3: 裁判判正常提及 → 放行。
+        // P2-3: judge says normal mention -> pass.
         let g = SensitiveInfoGuardrail::new().with_judge(Arc::new(MockJudge { leak: false }));
         assert!(g.validate("密码是abc123").await.is_pass());
     }
 
     #[tokio::test]
     async fn test_sensitive_info_judge_not_called_on_plain_mention() {
-        // 普通提及(无赋值结构)连裁判都不触发。
+        // a plain mention (no assignment structure) does not even trigger the judge.
         let g = SensitiveInfoGuardrail::new().with_judge(Arc::new(MockJudge { leak: true }));
         assert!(g.validate("如何安全保存密码").await.is_pass());
     }
 
     #[tokio::test]
     async fn test_sensitive_info_concrete_patterns_still_block_with_judge() {
-        // 低误报具体模式不经过裁判,直接 Block。
+        // low-false-positive concrete patterns bypass the judge and block directly.
         let g = SensitiveInfoGuardrail::new().with_judge(Arc::new(MockJudge { leak: false }));
         assert!(g
             .validate("key: sk-abcdefghijklmnopqrstuvwxyz123456")

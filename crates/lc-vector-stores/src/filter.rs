@@ -1,68 +1,72 @@
 // lc-vector-stores/src/filter.rs
-//! 跨后端一致的元数据过滤类型。
+//! Backend-agnostic metadata filter types.
 //!
-//! 设计目标(S3):`VectorStore` 的检索方法统一接收 [`MetadataFilter`],由每个后端
-//! 自行翻译成原生查询语法(Qdrant payload filter / Pinecone filter / Chroma where /
-//! LanceDB SQL 子句 / Cypher WHERE / 内存求值器 …)。类型形状对齐 LangChain 的
-//! `FilterType`:单字段条件 + AND/OR 组合,覆盖常用比较与集合操作符。
+//! Design goal (S3): the `VectorStore` retrieval methods uniformly accept [`MetadataFilter`],
+//! and each backend translates it into its native query syntax (Qdrant payload filter /
+//! Pinecone filter / Chroma where / LanceDB SQL clause / Cypher WHERE / in-memory
+//! evaluator …). The type shape mirrors LangChain's `FilterType`: single-field conditions
+//! plus AND/OR combinations, covering the common comparison and set operators.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-/// 单字段元数据条件的比较操作符。
+/// Comparison operator for a single-field metadata condition.
 ///
-/// `Serialize` 用派生(输出 `Eq`/`Gt`…);`Deserialize` 手工实现(见下),
-/// 除派生形状外还接受小写、符号形式(`"eq"`/`"="`/`">="`),供 SelfQuery(S4)
-/// 从 LLM 结构化输出反序列化时更鲁棒。
+/// `Serialize` uses the derived impl (outputs `Eq`/`Gt`…); `Deserialize` is
+/// hand-implemented (see below), accepting lowercase and symbolic forms
+/// (`"eq"`/`"="`/`">="`) in addition to the derived shape, so SelfQuery (S4)
+/// can deserialize LLM structured output more robustly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FilterOp {
-    /// 等于。
+    /// Equal to.
     Eq,
-    /// 不等于。
+    /// Not equal to.
     Ne,
-    /// 大于。
+    /// Greater than.
     Gt,
-    /// 大于等于。
+    /// Greater than or equal to.
     Gte,
-    /// 小于。
+    /// Less than.
     Lt,
-    /// 小于等于。
+    /// Less than or equal to.
     Lte,
-    /// 命中给定值集合之一。
+    /// In the given value set.
     In,
-    /// 命中给定值集合之外。
+    /// Not in the given value set.
     Nin,
 }
 
-/// 元数据过滤表达式:单个字段条件,或 AND/OR 组合。
+/// Metadata filter expression: a single-field condition, or an AND/OR combination.
 ///
-/// 求值语义见 [`MetadataFilter::matches`];后端各自的语法翻译(如 Qdrant /
-/// Pinecone / Chroma / LanceDB / Cypher)放在对应后端文件里,这里只承载类型与
-/// 进程内求值(供内存/文件等本地后端使用)。
+/// Evaluation semantics live in [`MetadataFilter::matches`]; each backend's syntax
+/// translation (Qdrant / Pinecone / Chroma / LanceDB / Cypher) lives in its own file.
+/// This module only carries the types and in-process evaluation (for in-memory/file
+/// and other local backends).
 ///
-/// `Serialize` 用派生;`Deserialize` 手工实现([`MetadataFilter::from_json`]),
-/// 兼容派生形状与 SelfQuery(S4) 用到的宽松单条件形状。
+/// `Serialize` uses the derived impl; `Deserialize` is hand-implemented
+/// ([`MetadataFilter::from_json`]), supporting both the derived shape and the lenient
+/// single-condition shape used by SelfQuery (S4).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum MetadataFilter {
-    /// 单个 `key op value` 条件。
+    /// A single `key op value` condition.
     Field {
-        /// 元数据字段名。
+        /// Metadata field name.
         key: String,
-        /// 比较操作符。
+        /// Comparison operator.
         op: FilterOp,
-        /// 比较值(`In`/`Nin` 时为数组)。
+        /// Comparison value (an array for `In`/`Nin`).
         value: Value,
     },
-    /// 所有子过滤都必须命中。
+    /// All sub-filters must match.
     And(Vec<MetadataFilter>),
-    /// 至少一个子过滤命中。
+    /// At least one sub-filter must match.
     Or(Vec<MetadataFilter>),
 }
 
 impl MetadataFilter {
-    /// 构造单字段条件。
+    /// Builds a single-field condition.
     pub fn field(key: impl Into<String>, op: FilterOp, value: impl Into<Value>) -> Self {
         Self::Field {
             key: key.into(),
@@ -71,21 +75,21 @@ impl MetadataFilter {
         }
     }
 
-    /// 构造 AND 组合(空列表恒为真)。
+    /// Builds an AND combination (an empty list is always true).
     pub fn and(filters: Vec<MetadataFilter>) -> Self {
         Self::And(filters)
     }
 
-    /// 构造 OR 组合(空列表恒为假)。
+    /// Builds an OR combination (an empty list is always false).
     pub fn or(filters: Vec<MetadataFilter>) -> Self {
         Self::Or(filters)
     }
 
-    /// 对一份文档的元数据求值。
+    /// Evaluates a document's metadata against this filter.
     ///
-    /// 缺失字段的语义对齐 SQL NULL:
-    /// - `Eq` / `In` / 排序操作符(`Gt/Gte/Lt/Lte`)对缺失字段**不匹配**(缺失不是某个值)。
-    /// - `Ne` / `Nin` 对缺失字段**匹配**(NULL ≠ value)。
+    /// Missing fields follow SQL NULL semantics:
+    /// - `Eq` / `In` / ordering operators (`Gt/Gte/Lt/Lte`) **do not match** a missing field (absence is not a value).
+    /// - `Ne` / `Nin` **match** a missing field (NULL ≠ value).
     pub fn matches(&self, metadata: &HashMap<String, Value>) -> bool {
         match self {
             Self::Field { key, op, value } => {
@@ -99,7 +103,7 @@ impl MetadataFilter {
         }
     }
 
-    /// 单值求值:数字按数值比较(1 == 1.0),字符串按字典序,其余类型走 JSON 相等。
+    /// Single-value evaluation: numbers compare numerically (1 == 1.0), strings lexicographically, other types by JSON equality.
     fn value_matches(op: &FilterOp, actual: &Value, expected: &Value) -> bool {
         match op {
             FilterOp::Eq => values_eq(actual, expected),
@@ -155,11 +159,13 @@ impl<'de> Deserialize<'de> for MetadataFilter {
 }
 
 impl MetadataFilter {
-    /// 从 JSON 构造过滤条件,接受两种形状:
-    /// - 派生序列化形状:`{"Field": {...}}` / `{"And": [...]}` / `{"Or": [...]}`。
-    /// - 宽松单条件形状:`{"key": ..., "op": ..., "value": ...}`(op 大小写/符号宽松)。
+    /// Builds a filter from JSON, accepting two shapes:
+    /// - The derived serialized shape: `{"Field": {...}}` / `{"And": [...]}` / `{"Or": [...]}`.
+    /// - The lenient single-condition shape: `{"key": ..., "op": ..., "value": ...}`
+    ///   (op accepts case-insensitive and symbolic forms).
     ///
-    /// 供 SelfQuery(S4) 从 LLM 结构化输出直接反序列化,兼容真实模型的输出差异。
+    /// Used by SelfQuery (S4) to deserialize LLM structured output directly, tolerating
+    /// real-model output variations.
     pub fn from_json(value: Value) -> Result<Self, String> {
         let obj = value
             .as_object()
@@ -210,7 +216,7 @@ impl MetadataFilter {
     }
 }
 
-/// 数值感知的 JSON 相等:`1` 与 `1.0` 视为相等,其余走 `Value` 的 PartialEq。
+/// Numeric-aware JSON equality: `1` and `1.0` are equal; everything else uses `Value`'s PartialEq.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (a.as_f64(), b.as_f64()) {
         (Some(x), Some(y)) => x == y,
@@ -218,7 +224,7 @@ fn values_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// 数值/字符串比较;类型不可比时返回 `None`(条件视为不命中)。
+/// Numeric/string comparison; returns `None` when the types are incomparable (the condition is treated as not matching).
 fn values_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     if let (Some(x), Some(y)) = (a.as_f64(), b.as_f64()) {
         return x.partial_cmp(&y);
@@ -249,7 +255,7 @@ mod tests {
         assert!(!MetadataFilter::field("source", FilterOp::Eq, "blog").matches(&m));
         assert!(MetadataFilter::field("source", FilterOp::Ne, "blog").matches(&m));
         assert!(!MetadataFilter::field("source", FilterOp::Ne, "docs").matches(&m));
-        // 数字按数值比较(1 == 1.0)
+        // numbers compare numerically (1 == 1.0)
         assert!(MetadataFilter::field("year", FilterOp::Eq, 2024.0).matches(&m));
     }
 
@@ -271,7 +277,7 @@ mod tests {
         assert!(!MetadataFilter::field("source", FilterOp::In, vec!["blog", "web"]).matches(&m));
         assert!(MetadataFilter::field("source", FilterOp::Nin, vec!["blog", "web"]).matches(&m));
         assert!(!MetadataFilter::field("source", FilterOp::Nin, vec!["docs"]).matches(&m));
-        // In/Nin 的 value 非数组时视为不命中(保守)。
+        // a non-array value for In/Nin is treated as not matching (conservative).
         assert!(!MetadataFilter::field("source", FilterOp::In, "docs").matches(&m));
     }
 
@@ -300,7 +306,7 @@ mod tests {
     #[test]
     fn test_missing_key_semantics() {
         let m = meta();
-        // 缺失字段:Eq/In/排序不命中,Ne/Nin 命中(SQL NULL 语义)。
+        // missing fields: Eq/In/ordering do not match, Ne/Nin match (SQL NULL semantics).
         assert!(!MetadataFilter::field("missing", FilterOp::Eq, "x").matches(&m));
         assert!(!MetadataFilter::field("missing", FilterOp::In, vec!["x"]).matches(&m));
         assert!(!MetadataFilter::field("missing", FilterOp::Gt, 1).matches(&m));
@@ -316,20 +322,20 @@ mod tests {
         assert_eq!(f, back);
     }
 
-    /// S4: 宽松反序列化 —— 大小写/符号 op + 直接单条件形状(LLM 友好)。
+    /// S4: lenient deserialization — case-insensitive/symbolic op + direct single-condition shape (LLM-friendly).
     #[test]
     fn test_deserialize_lenient_shapes() {
-        // 宽松单条件形状:op 小写。
+        // lenient single-condition shape: lowercase op.
         let f: MetadataFilter =
             serde_json::from_value(json!({"key": "source", "op": "eq", "value": "docs"})).unwrap();
         assert_eq!(f, MetadataFilter::field("source", FilterOp::Eq, "docs"));
 
-        // 符号 op。
+        // symbolic op.
         let f: MetadataFilter =
             serde_json::from_value(json!({"key": "year", "op": ">=", "value": 2020})).unwrap();
         assert_eq!(f, MetadataFilter::field("year", FilterOp::Gte, 2020));
 
-        // 派生形状仍可解析(回退兼容)。
+        // the derived shape still parses (backward compatible).
         let f: MetadataFilter = serde_json::from_value(json!({
             "And": [
                 {"Field": {"key": "source", "op": "Eq", "value": "docs"}},
@@ -345,7 +351,7 @@ mod tests {
             ])
         );
 
-        // 未知 op 显式报错。
+        // unknown op errors explicitly.
         let err = serde_json::from_value::<MetadataFilter>(
             json!({"key": "year", "op": "like", "value": 2020}),
         );

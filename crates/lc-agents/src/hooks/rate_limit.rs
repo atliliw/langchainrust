@@ -1,9 +1,10 @@
 // lc-agents/src/hooks/rate_limit.rs
-//! TokenBudgetHook — LLM token 预算 / 配额限流(P2-9)。
+//! TokenBudgetHook — LLM token budget / quota rate limiting (P2-9).
 //!
-//! 在 `on_before_completion`(每个 LLM 调用前)检查累计用量:超出 token 预算或
-//! 超过调用次数配额 → `Reject`,由 [`crate::base::AgentExecutor`] 把 Reject
-//! 转成错误中止;`on_after_completion` 累加真实 token 用量。
+//! Checks cumulative usage in `on_before_completion` (before every LLM call): if
+//! the token budget or the call-count quota is exceeded it returns `Reject`,
+//! which [`crate::base::AgentExecutor`] turns into an error that aborts the run;
+//! `on_after_completion` accumulates the real token usage.
 
 use async_trait::async_trait;
 use lc_core::token_counter::{CharRatioCounter, TokenCounter};
@@ -13,13 +14,14 @@ use std::sync::Arc;
 
 use super::{AgentHook, CompletionAction, CompletionContext, CompletionResult, HookError};
 
-/// 基于 token 预算 + 调用配额的前置限流 hook。
+/// Pre-call rate-limiting hook based on a token budget + call quota.
 ///
-/// - `budget`:整轮执行累计 token 上限。`on_before_completion` 用"已确认用量 +
-///   本次输入估算"预检,超出即 `Reject`;`on_after_completion` 累加真实用量。
-/// - `max_calls`:可选的最大 LLM 调用次数配额。
-/// - 无自定义计数器时用 [`CharRatioCounter::new(4)`](CharRatioCounter)(字符/4)
-///   估算输入。
+/// - `budget`: cumulative token cap for the whole run. `on_before_completion`
+///   pre-checks "confirmed usage + estimated input", returning `Reject` when
+///   exceeded; `on_after_completion` accumulates the real usage.
+/// - `max_calls`: optional maximum number of LLM calls.
+/// - Without a custom counter, input is estimated with
+///   [`CharRatioCounter::new(4)`](CharRatioCounter) (characters / 4).
 ///
 /// # Example
 ///
@@ -30,20 +32,20 @@ use super::{AgentHook, CompletionAction, CompletionContext, CompletionResult, Ho
 ///     .hook(TokenBudgetHook::new(10_000).with_max_calls(20));
 /// ```
 pub struct TokenBudgetHook {
-    /// token 预算上限。
+    /// Token budget cap.
     budget: usize,
-    /// 可选的最大 LLM 调用次数配额。
+    /// Optional maximum number of LLM calls.
     max_calls: Option<usize>,
-    /// 累计 token 用量(来自已完成 LLM 调用的真实用量)。
+    /// Cumulative token usage (real usage from completed LLM calls).
     tokens_used: AtomicUsize,
-    /// 已发生的 LLM 调用次数。
+    /// Number of LLM calls made so far.
     calls: AtomicUsize,
-    /// 精确计数器(可选;缺省用字符/4 估算)。
+    /// Precise counter (optional; defaults to characters/4 estimation).
     counter: Option<Arc<dyn TokenCounter>>,
 }
 
 impl TokenBudgetHook {
-    /// 创建 token 预算 hook。`budget` 为整轮执行累计 token 上限。
+    /// Creates a token-budget hook. `budget` is the cumulative token cap for the whole run.
     pub fn new(budget: usize) -> Self {
         Self {
             budget,
@@ -54,39 +56,39 @@ impl TokenBudgetHook {
         }
     }
 
-    /// 设置最大 LLM 调用次数配额。
+    /// Sets the maximum number of LLM calls.
     pub fn with_max_calls(mut self, max_calls: usize) -> Self {
         self.max_calls = Some(max_calls);
         self
     }
 
-    /// 使用精确 token 计数器替代字符比估算。
+    /// Uses a precise token counter instead of character-ratio estimation.
     pub fn with_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
         self.counter = Some(counter);
         self
     }
 
-    /// token 预算上限。
+    /// Token budget cap.
     pub fn budget(&self) -> usize {
         self.budget
     }
 
-    /// 累计 token 用量(来自已完成 LLM 调用的真实用量)。
+    /// Cumulative token usage (real usage from completed LLM calls).
     pub fn tokens_used(&self) -> usize {
         self.tokens_used.load(Ordering::SeqCst)
     }
 
-    /// 已发生的 LLM 调用次数。
+    /// Number of LLM calls made so far.
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
 
-    /// 剩余可用 token 预算(下限 0)。
+    /// Remaining token budget (floored at 0).
     pub fn remaining(&self) -> usize {
         self.budget.saturating_sub(self.tokens_used())
     }
 
-    /// 估算消息列表 token 数:自定义计数器优先,否则字符/4。
+    /// Estimates the token count of a message list: custom counter first, otherwise characters/4.
     fn estimate_messages(&self, messages: &[Message]) -> usize {
         match &self.counter {
             Some(c) => c.count_messages(messages) as usize,
@@ -98,7 +100,7 @@ impl TokenBudgetHook {
 #[async_trait]
 impl AgentHook for TokenBudgetHook {
     fn on_before_completion(&self, ctx: &mut CompletionContext) -> CompletionAction {
-        // 调用配额。
+        // Call quota.
         if let Some(max) = self.max_calls {
             if self.calls.load(Ordering::SeqCst) >= max {
                 return CompletionAction::Reject {
@@ -107,7 +109,7 @@ impl AgentHook for TokenBudgetHook {
             }
         }
 
-        // token 预算预检:已确认用量 + 本次输入估算。
+        // Token-budget pre-check: confirmed usage + estimated input.
         let used = self.tokens_used.load(Ordering::SeqCst);
         let estimate = self.estimate_messages(&ctx.messages);
         if used.saturating_add(estimate) > self.budget {
@@ -157,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_rejects_when_estimated_over_budget() {
-        // 空预算:任何输入(含消息开销)都超。
+        // Zero budget: any input (including message overhead) exceeds it.
         let hook = TokenBudgetHook::new(0);
         assert!(matches!(
             hook.on_before_completion(&mut completion_ctx("x")),
@@ -192,7 +194,7 @@ mod tests {
             hook.on_before_completion(&mut completion_ctx("b")),
             CompletionAction::Continue
         ));
-        // 第三次超配额。
+        // The third call exceeds the quota.
         let action = hook.on_before_completion(&mut completion_ctx("c"));
         match action {
             CompletionAction::Reject { reason } => assert!(reason.contains("quota"), "{reason}"),
@@ -204,7 +206,7 @@ mod tests {
     #[test]
     fn test_rejects_after_real_usage_exceeds_budget() {
         let hook = TokenBudgetHook::new(100);
-        // 真实用量已 90,再加输入估算(>10)即超。
+        // Real usage is already 90; adding the input estimate (>10) exceeds it.
         let mut result = CompletionResult {
             message: Message::ai("hi"),
             tokens_used: Some(TokenUsage {

@@ -1,8 +1,8 @@
 // src/agents/react/agent.rs
-//! ReAct Agent 实现
+//! ReAct Agent implementation
 //!
-//! 基于 "ReAct: Synergizing Reasoning and Acting in Language Models" 论文。
-//! 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+//! Based on the paper "ReAct: Synergizing Reasoning and Acting in Language Models".
+//! Supports any LLM provider that implements `BaseChatModel`.
 
 use super::parser::ReActOutputParser;
 use super::prompt::{build_react_prompt, format_scratchpad};
@@ -20,37 +20,37 @@ use std::sync::Arc;
 
 /// ReAct Agent
 ///
-/// 使用 ReAct (Reasoning + Acting) 模式的 Agent。
-/// 会先思考，然后决定执行什么工具，最后观察结果。
-/// 支持任何实现了 `BaseChatModel` 的 LLM Provider。
+/// An agent that uses the ReAct (Reasoning + Acting) pattern:
+/// it first thinks, then decides which tool to execute, and finally observes the
+/// result. Supports any LLM provider that implements `BaseChatModel`.
 pub struct ReActAgent {
-    /// LLM 客户端
+    /// LLM client
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
 
-    /// 可用工具列表
+    /// Available tools
     tools: Vec<Arc<dyn BaseTool>>,
 
-    /// 输出解析器
+    /// Output parser
     parser: ReActOutputParser,
 
-    /// 自定义系统提示词（可选）
+    /// Custom system prompt (optional)
     system_prompt: Option<String>,
 
-    /// 最近一次 `plan()` 的 token 用量(P1-5)。
+    /// Token usage from the most recent `plan()` call (P1-5).
     last_token_usage: std::sync::Mutex<Option<TokenUsage>>,
 }
 
 impl ReActAgent {
-    /// 创建新的 ReAct Agent
+    /// Creates a new ReAct Agent
     ///
-    /// # 参数
-    /// * `llm` - LLM 客户端（任何实现了 `BaseChatModel` 的类型）
-    /// * `tools` - 可用工具列表
-    /// * `system_prompt` - 自定义系统提示词（可选）
+    /// # Parameters
+    /// * `llm` - LLM client (any type implementing `BaseChatModel`)
+    /// * `tools` - available tools
+    /// * `system_prompt` - custom system prompt (optional)
     ///
-    /// # 向后兼容
-    /// 旧代码 `ReActAgent::new(openai_chat, tools, None)` 仍然可用，
-    /// 因为 `OpenAIChat: BaseChatModel` 且 `OpenAIError: Into<Error>`。
+    /// # Backward compatibility
+    /// Legacy code `ReActAgent::new(openai_chat, tools, None)` still works,
+    /// because `OpenAIChat: BaseChatModel` and `OpenAIError: Into<Error>`.
     pub fn new<L>(llm: L, tools: Vec<Arc<dyn BaseTool>>, system_prompt: Option<String>) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -65,7 +65,7 @@ impl ReActAgent {
         }
     }
 
-    /// 从已包装的 `Arc<dyn BaseChatModel>` 创建 Agent
+    /// Creates an agent from an already-wrapped `Arc<dyn BaseChatModel>`
     pub fn from_arc(
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         tools: Vec<Arc<dyn BaseTool>>,
@@ -80,9 +80,9 @@ impl ReActAgent {
         }
     }
 
-    /// 格式化工具描述
+    /// Formats the tool descriptions
     ///
-    /// 将工具列表格式化为 ReAct prompt 需要的格式
+    /// Formats the tool list into the format the ReAct prompt expects.
     fn format_tools(&self) -> String {
         self.tools
             .iter()
@@ -91,41 +91,41 @@ impl ReActAgent {
             .join("\n")
     }
 
-    /// 获取工具名称列表
+    /// Returns the list of tool names
     fn get_tool_names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
 
-    /// 构建 ReAct prompt
+    /// Builds the ReAct prompt
     ///
-    /// # 参数
-    /// * `input` - 用户问题
-    /// * `intermediate_steps` - 已执行的步骤历史
-    /// * `history` - 对话历史（可选）
+    /// # Parameters
+    /// * `input` - user question
+    /// * `intermediate_steps` - history of executed steps
+    /// * `history` - conversation history (optional)
     fn build_prompt(
         &self,
         input: &str,
         intermediate_steps: &[AgentStep],
         history: Option<&str>,
     ) -> String {
-        // 格式化工具描述
+        // Format the tool descriptions
         let tools_description = self.format_tools();
         let tool_names = self.get_tool_names();
 
-        // 格式化思考历史
+        // Format the thought history (scratchpad)
         let scratchpad = format_scratchpad(intermediate_steps);
 
-        // 构建基础 prompt
+        // Build the base prompt
         let mut prompt = build_react_prompt(&tools_description, &tool_names, input, &scratchpad);
 
-        // 如果有对话历史，添加到 prompt 开头
+        // Prepend the conversation history if present
         if let Some(h) = history {
             if !h.is_empty() {
                 prompt = format!("之前的对话历史:\n{}\n\n{}", h, prompt);
             }
         }
 
-        // 如果有自定义系统提示词，添加到 prompt 开头
+        // Prepend the custom system prompt if present
         if let Some(sys) = &self.system_prompt {
             prompt = format!("{}\n\n{}", sys, prompt);
         }
@@ -136,35 +136,35 @@ impl ReActAgent {
 
 #[async_trait]
 impl BaseAgent for ReActAgent {
-    /// 规划下一步行动
+    /// Plans the next action
     ///
-    /// # 参数
-    /// * `intermediate_steps` - 已执行的步骤历史
-    /// * `inputs` - 用户输入
+    /// # Parameters
+    /// * `intermediate_steps` - history of executed steps
+    /// * `inputs` - user input
     ///
-    /// # 返回
-    /// * `AgentOutput::Action` - 需要执行的动作
-    /// * `AgentOutput::Finish` - 最终答案
+    /// # Returns
+    /// * `AgentOutput::Action` - the action to execute
+    /// * `AgentOutput::Finish` - the final answer
     async fn plan(
         &self,
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
     ) -> Result<AgentOutput, AgentError> {
-        // 获取用户输入
+        // Get the user input
         let input = inputs
             .get("input")
             .ok_or_else(|| AgentError::Other("Missing input parameter 'input'".to_string()))?;
 
-        // 获取对话历史（如果有）
+        // Get the conversation history (if any)
         let history = inputs.get("history").map(|s| s.as_str());
 
-        // 构建 prompt
+        // Build the prompt
         let prompt_text = self.build_prompt(input, intermediate_steps, history);
 
-        // 创建消息
+        // Create the message
         let messages = vec![Message::human(prompt_text)];
 
-        // 调用 LLM
+        // Call the LLM
         let result = crate::retry::retry_chat(
             self.llm.as_ref(),
             messages,
@@ -179,21 +179,25 @@ impl BaseAgent for ReActAgent {
             *guard = result.token_usage.clone();
         }
 
-        // 解析输出
+        // Parse the output
         self.parser.parse(&result.content)
     }
 
-    /// 流式规划(F3):逐 token 转发模型输出,累积为完整文本后解析。
+    /// Streaming plan (F3): forwards model output token by token, accumulating
+    /// the full text before parsing.
     ///
-    /// `plan()` 走非流式 `chat`(带重试、记录 token 用量);这里走 `stream_chat`
-    /// 把每个 chunk 经 `on_token` 实时转发为 `Text` 事件,同时累积成完整文本
-    /// 供 Action / Final Answer 解析。
+    /// `plan()` goes through non-streaming `chat` (with retry, records token
+    /// usage); this goes through `stream_chat`, forwarding each chunk via
+    /// `on_token` as a live `Text` event while accumulating the full text for
+    /// Action / Final Answer parsing.
     ///
-    /// 权衡:流式 `stream_chat` 的 chunk 携带可选 `token_usage`,流结束后写入
-    /// `last_token_usage` 供预算门读取;provider 未回传用量(chunk.token_usage
-    /// 为 None)时,流式路径的 metrics 用量由非流式 `invoke` 路径补齐。
-    /// `stream_chat` 立即可用即失败
-    /// (如 provider 未实现流式)时回退到非流式 `plan()`,保证 agent 循环不中断。
+    /// Trade-off: `stream_chat` chunks carry optional `token_usage`; after the
+    /// stream ends it is written to `last_token_usage` for the budget gate to
+    /// read. When the provider does not report usage (chunk.token_usage is
+    /// `None`), the streaming path's metrics usage is filled in by the
+    /// non-streaming `invoke` path. If `stream_chat` fails immediately (e.g. the
+    /// provider does not implement streaming), it falls back to non-streaming
+    /// `plan()` so the agent loop is not interrupted.
     async fn plan_stream(
         &self,
         intermediate_steps: &[AgentStep],
@@ -222,9 +226,10 @@ impl BaseAgent for ReActAgent {
             }
         };
 
-        // 逐 token:先实时转发(clone 出自有 String),再拼进完整文本。
-        // 解析只在流结束后进行,因此一个 ReAct 步骤的 Action / Final Answer
-        // 判定不受影响。
+        // Token by token: forward the chunk live (cloned into an owned String),
+        // then append to the full text.
+        // Parsing only happens after the stream ends, so the Action / Final
+        // Answer decision for a single ReAct step is unaffected.
         let mut full = String::new();
         let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
@@ -243,7 +248,7 @@ impl BaseAgent for ReActAgent {
         self.parser.parse(&full)
     }
 
-    /// 获取允许的工具列表
+    /// Returns the allowed tools list
     fn get_allowed_tools(&self) -> Option<Vec<&str>> {
         Some(self.get_tool_names())
     }
@@ -265,7 +270,7 @@ mod tests {
     use lc_tools::Calculator;
     use std::pin::Pin;
 
-    /// 创建测试用的 OpenAI 配置
+    /// Creates an OpenAI config for tests
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
             api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
@@ -347,9 +352,10 @@ mod tests {
         assert!(prompt.contains("你是一个数学助手"));
     }
 
-    /// S1 流式 mock:逐 chunk 回传文本,最后一个 chunk 携带 `token_usage`。
-    /// 用于验证 `plan_stream` 把流式用量写入 `last_token_usage`,供
-    /// `AgentExecutor::stream` 的预算门读取。
+    /// S1 streaming mock: returns text chunk by chunk, with the last chunk
+    /// carrying `token_usage`. Used to verify that `plan_stream` writes the
+    /// streaming usage into `last_token_usage`, which the budget gate of
+    /// `AgentExecutor::stream` reads.
     struct UsageStreamingLLM;
 
     #[async_trait]
@@ -401,7 +407,7 @@ mod tests {
             _config: Option<RunnableConfig>,
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
-            // 首 chunk 不带用量,末 chunk 带用量 —— 验证"取最后一个非 None"。
+            // First chunk carries no usage, last chunk does — verifies "take the last non-None".
             let chunks = [
                 Ok(StreamChunk::new("Final ")),
                 Ok(StreamChunk {
@@ -417,8 +423,9 @@ mod tests {
         }
     }
 
-    /// S1:`plan_stream` 逐 chunk 转发文本并把最后一个非 None 的 token_usage
-    /// 写入 `last_token_usage`(流式路径的预算门依赖此值)。
+    /// S1: `plan_stream` forwards text chunk by chunk and writes the last
+    /// non-None token_usage into `last_token_usage` (the streaming path's
+    /// budget gate depends on it).
     #[tokio::test]
     async fn test_plan_stream_records_streaming_token_usage() {
         let llm = UsageStreamingLLM;

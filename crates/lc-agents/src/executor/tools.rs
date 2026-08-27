@@ -8,6 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+/// Tool-execution error → observation text (same format as the parallel path; the
+/// streaming single-tool and parallel paths both feed it back to the loop). The
+/// sequential `invoke` path does not go through here — it keeps hard-failing upward.
+pub(crate) fn tool_error_observation(err: &AgentError) -> String {
+    format!("[Tool execution error: {err}]")
+}
+
 /// Executes a tool with an optional timeout.
 ///
 /// With `Some(d)`, the tool call is cancelled (and errors) if it exceeds `d`.
@@ -76,6 +83,6 @@ pub(crate) async fn execute_tools_parallel_for_stream(
 
     results
         .into_iter()
-        .map(|result| result.unwrap_or_else(|e| format!("[Tool execution error: {}]", e)))
+        .map(|result| result.unwrap_or_else(|e| tool_error_observation(&e)))
         .collect()
 }

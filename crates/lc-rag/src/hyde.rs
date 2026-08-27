@@ -1,8 +1,8 @@
 // src/retrieval/hyde.rs
-//! HyDE (Hypothetical Document Embedding) Retriever 实现
+//! HyDE (Hypothetical Document Embedding) Retriever implementation
 //!
-//! 使用 LLM 生成假设文档，然后用假设文档进行检索，
-//! 提升语义检索的召回率和精确度。
+//! Uses an LLM to generate a hypothetical document, then retrieves with that hypothetical
+//! document, improving retrieval recall and precision.
 
 use lc_core::language_models::BaseChatModel;
 use lc_prompts::PromptTemplate;
@@ -14,15 +14,15 @@ use crate::retriever::RetrieverTrait;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// HyDE 错误类型
+/// HyDE error type
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HyDEError {
-    /// LLM 调用错误
+    /// LLM call error
     LLMError(String),
-    /// 向量化错误
+    /// Embedding error
     EmbeddingError(String),
-    /// 基础检索器错误
+    /// Base retriever error
     RetrieverError(String),
 }
 
@@ -38,15 +38,15 @@ impl std::fmt::Display for HyDEError {
 
 impl std::error::Error for HyDEError {}
 
-/// HyDE 配置
+/// HyDE configuration
 pub struct HyDEConfig {
-    /// 假设文档生成的 prompt
+    /// Prompt used to generate the hypothetical document
     pub prompt_template: String,
 
-    /// 检索文档数量
+    /// Number of documents to retrieve
     pub k: usize,
 
-    /// 是否包含原始查询结果
+    /// Whether to include the original query results
     pub include_original_query: bool,
 }
 
@@ -61,24 +61,24 @@ impl Default for HyDEConfig {
 }
 
 impl HyDEConfig {
-    /// 创建使用默认配置的 `HyDEConfig`
+    /// Creates a `HyDEConfig` with default configuration
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 设置检索文档数量
+    /// Sets the number of documents to retrieve
     pub fn with_k(mut self, k: usize) -> Self {
         self.k = k;
         self
     }
 
-    /// 设置假设文档生成的 prompt 模板
+    /// Sets the prompt template used to generate the hypothetical document
     pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.prompt_template = prompt.into();
         self
     }
 
-    /// 设置是否包含原始查询结果
+    /// Sets whether to include the original query results
     pub fn with_include_original_query(mut self, include: bool) -> Self {
         self.include_original_query = include;
         self
@@ -93,26 +93,26 @@ Passage:"#;
 
 /// HyDE Retriever
 ///
-/// 工作流程：
-/// 1. 用户提问
-/// 2. LLM 生成假设文档（一个理想的答案）
-/// 3. 将假设文档向量化
-/// 4. 用假设文档向量检索真实文档
-/// 5. 返回相关文档
+/// Workflow:
+/// 1. The user asks a question
+/// 2. The LLM generates a hypothetical document (an ideal answer)
+/// 3. The hypothetical document is embedded
+/// 4. The hypothetical document vector retrieves real documents
+/// 5. Returns the relevant documents
 pub struct HyDERetriever {
-    /// LLM 用于生成假设文档
+    /// The LLM used to generate the hypothetical document
     ///
-    /// P0-3: 不再硬编码 `OpenAIChat`,接受任意实现 `BaseChatModel` 的 LLM。
+    /// P0-3: no longer hardcodes `OpenAIChat`; accepts any LLM implementing `BaseChatModel`.
     llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
     base_retriever: Arc<dyn RetrieverTrait>,
     config: HyDEConfig,
 }
 
 impl HyDERetriever {
-    /// 创建 HyDERetriever(接受任意实现 `BaseChatModel` 的 LLM)
+    /// Creates a HyDERetriever (accepting any LLM implementing `BaseChatModel`)
     ///
-    /// P0-3: 移除死参数 `_embeddings`——假设文档的向量化由内部
-    /// `base_retriever` 完成,不需要外部传入 Embeddings。
+    /// P0-3: removes the dead `_embeddings` parameter — embedding the hypothetical document
+    /// is handled internally by the `base_retriever`, so no external Embeddings is needed.
     pub fn new<L>(llm: L, base_retriever: Arc<dyn RetrieverTrait>) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -125,7 +125,7 @@ impl HyDERetriever {
         }
     }
 
-    /// P0-3: 从已包装的 `Arc<dyn BaseChatModel<Error = ProviderError>>` 构建
+    /// P0-3: builds from an already-wrapped `Arc<dyn BaseChatModel<Error = ProviderError>>`
     pub fn new_arc(
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
         base_retriever: Arc<dyn RetrieverTrait>,
@@ -137,19 +137,19 @@ impl HyDERetriever {
         }
     }
 
-    /// 设置 HyDE 配置
+    /// Sets the HyDE configuration
     pub fn with_config(mut self, config: HyDEConfig) -> Self {
         self.config = config;
         self
     }
 
-    /// 设置检索文档数量
+    /// Sets the number of documents to retrieve
     pub fn with_k(mut self, k: usize) -> Self {
         self.config.k = k;
         self
     }
 
-    /// 设置是否包含原始查询结果
+    /// Sets whether to include the original query results
     pub fn with_include_original_query(mut self, include: bool) -> Self {
         self.config.include_original_query = include;
         self
@@ -174,7 +174,7 @@ impl HyDERetriever {
         Ok(response.content)
     }
 
-    /// 用 HyDE 流程检索文档：先生成假设文档，再检索并去重合并结果
+    /// Retrieves documents via the HyDE flow: generates a hypothetical document first, then retrieves and merges deduped results
     pub async fn retrieve(&self, query: &str) -> Result<Vec<Document>, HyDEError> {
         let hyde_doc = self.generate_hypothetical_document(query).await?;
 
@@ -209,7 +209,7 @@ impl HyDERetriever {
         Ok(all_docs)
     }
 
-    /// 带分数检索文档（HyDE 流程）
+    /// Retrieves documents with scores (HyDE flow)
     pub async fn retrieve_with_scores(&self, query: &str) -> Result<Vec<SearchResult>, HyDEError> {
         let hyde_doc = self.generate_hypothetical_document(query).await?;
 
@@ -250,7 +250,7 @@ impl HyDERetriever {
         Ok(all_results)
     }
 
-    /// 获取 LLM 生成的假设文档（不执行检索）
+    /// Returns the LLM-generated hypothetical document (without retrieving)
     pub async fn get_hypothetical_document(&self, query: &str) -> Result<String, HyDEError> {
         self.generate_hypothetical_document(query).await
     }

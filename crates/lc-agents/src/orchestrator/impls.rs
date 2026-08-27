@@ -1,8 +1,8 @@
-//! `Orchestrator` trait 在四个具体 agent 上的实现。
+//! `Orchestrator` trait implementations on four concrete agents.
 //!
-//! `PlanExecuteAgent` / `AdaptiveRAG` / `CorrectiveRAGAgent` / `DeepResearchAgent`
-//! 各自把原有的 `run()` / `invoke()` / `research()` 统一桥接到
-//! [`Orchestrator::run_with_context`]。
+//! Each of `PlanExecuteAgent` / `AdaptiveRAG` / `CorrectiveRAGAgent` /
+//! `DeepResearchAgent` bridges its existing `run()` / `invoke()` / `research()`
+//! into [`Orchestrator::run_with_context`].
 
 use async_trait::async_trait;
 use lc_core::language_models::BaseChatModel;

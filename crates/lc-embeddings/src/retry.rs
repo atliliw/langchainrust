@@ -1,39 +1,40 @@
 // lc-embeddings/src/retry.rs
-//! 嵌入 HTTP 调用的指数退避重试（P2-5）。
+//! Exponential backoff retry for embedding HTTP calls (P2-5).
 //!
-//! provider 对瞬时故障（429 限流、5xx 服务端错误）目前一次失败即抛错，
-//! 把一次网络抖动变成硬失败。这里提供统一的 [`post_json_with_retry`]：
-//! 对 429 / 5xx 做指数退避重试，其余 4xx（鉴权、参数错误等永久性失败）
-//! 立即返回，不掩盖配置错误。退避模式与 lc-agents 的 `retry.rs` 一致
-//! （`base_delay * 2^attempt`，封顶 `max_delay`）。
+//! Providers currently error on the first transient failure (429 rate limiting, 5xx server
+//! errors), turning a single network blip into a hard failure. This module provides a unified
+//! [`post_json_with_retry`]: 429 / 5xx are retried with exponential backoff, while other 4xx
+//! (auth, invalid parameters — permanent failures) return immediately without masking config
+//! errors. The backoff pattern matches `retry.rs` in lc-agents (`base_delay * 2^attempt`,
+//! capped at `max_delay`).
 
 use std::time::Duration;
 
-/// 指数退避重试配置。
+/// Exponential backoff retry configuration.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RetryConfig {
-    /// 首次失败后的最大重试次数。
+    /// Maximum retries after the first failure.
     pub max_retries: usize,
-    /// 首次重试前的初始延迟。
+    /// Initial delay before the first retry.
     pub base_delay: Duration,
-    /// 退避延迟上限。
+    /// Upper bound for backoff delay.
     pub max_delay: Duration,
 }
 
-/// 默认重试配置：最多 3 次重试，base 1s，上限 30s。
+/// Default retry config: at most 3 retries, base 1s, cap 30s.
 pub(crate) const DEFAULT_RETRY: RetryConfig = RetryConfig {
     max_retries: 3,
     base_delay: Duration::from_secs(1),
     max_delay: Duration::from_secs(30),
 };
 
-/// 对 POST JSON 请求做指数退避重试，返回首个非瞬时失败的响应。
+/// Retries a POST JSON request with exponential backoff, returning the first non-transient response.
 ///
-/// - 429 / 5xx：重试（指数退避，封顶 `max_delay`）；
-/// - 其余 4xx：立即返回（永久性失败，重试无意义）；
-/// - 传输层错误：直接返回（不在 HTTP 状态语义内，由调用方判定）。
+/// - 429 / 5xx: retry (exponential backoff, capped at `max_delay`);
+/// - other 4xx: return immediately (permanent failure, retrying is pointless);
+/// - transport errors: return as-is (outside HTTP status semantics, left to the caller).
 ///
-/// 调用方拿到响应后自行处理状态码与 body（P1-4 错误体不吞错）。
+/// The caller handles the status code and body after receiving the response (P1-4: error body not swallowed).
 pub(crate) async fn post_json_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -53,7 +54,7 @@ pub(crate) async fn post_json_with_retry(
 
         let status = response.status();
         if is_transient(&status) && attempt < retry.max_retries {
-            // 指数退避：base_delay * 2^attempt，封顶 max_delay。
+            // Exponential backoff: base_delay * 2^attempt, capped at max_delay.
             let shift = 1u32.checked_shl(attempt as u32).unwrap_or(u32::MAX);
             let delay = retry.base_delay.saturating_mul(shift).min(retry.max_delay);
             log::warn!(
@@ -70,7 +71,7 @@ pub(crate) async fn post_json_with_retry(
     }
 }
 
-/// 是否瞬时失败（可重试）：429 限流或 5xx 服务端错误。
+/// Whether the status is a transient failure (retryable): 429 rate limit or 5xx server error.
 fn is_transient(status: &reqwest::StatusCode) -> bool {
     status.as_u16() == 429 || status.as_u16() >= 500
 }

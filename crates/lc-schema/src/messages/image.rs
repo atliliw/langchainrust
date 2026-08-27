@@ -1,44 +1,44 @@
-//! 图片内容类型(多模态 vision 支持)
+//! Image content type (multimodal vision support)
 
 use serde::{Deserialize, Serialize};
 
-/// 图片内容(URL 或 base64 data URI)
+/// Image content (URL or base64 data URI)
 ///
-/// OpenAI Vision 使用 `image_url.url`(可为 https URL 或 `data:image/...;base64,...`),
-/// Ollama 使用 base64 原始数据。本类型统一存储为 `url` 字段,
-/// 由各 provider 在序列化时转换。
+/// OpenAI Vision uses `image_url.url` (an https URL or a `data:image/...;base64,...` data URI);
+/// Ollama uses raw base64 bytes. This type uniformly stores the value in the `url` field,
+/// letting each provider convert it at serialization time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageContent {
-    /// 图片 URL 或 base64 data URI
+    /// Image URL or base64 data URI
     pub url: String,
 }
 
 impl ImageContent {
-    /// 从 URL 创建
+    /// Create from a URL
     pub fn from_url(url: impl Into<String>) -> Self {
         Self { url: url.into() }
     }
 
-    /// 从 base64 数据创建(自动包装为 data URI)
+    /// Create from base64 data (auto-wrapped as a data URI)
     pub fn from_base64(data: impl Into<String>) -> Self {
         Self {
             url: format!("data:image/png;base64,{}", data.into()),
         }
     }
 
-    /// 从指定 MIME 类型的 base64 创建
+    /// Create from base64 data with the given MIME type
     pub fn from_base64_with_mime(data: impl Into<String>, mime: &str) -> Self {
         Self {
             url: format!("data:{};base64,{}", mime, data.into()),
         }
     }
 
-    /// 是否为 base64 data URI
+    /// Whether this is a base64 data URI
     pub fn is_base64(&self) -> bool {
         self.url.starts_with("data:")
     }
 
-    /// 提取 base64 原始数据(若是 data URI)
+    /// Extract the raw base64 data (when this is a data URI)
     pub fn base64_data(&self) -> Option<&str> {
         self.url
             .split_once(',')

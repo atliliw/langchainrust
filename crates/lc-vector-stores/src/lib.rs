@@ -93,7 +93,7 @@ pub enum VectorStoreError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
-    /// 元数据过滤不受支持(后端未覆写过滤检索)。
+    /// Metadata filtering is not supported (the backend does not override filtered retrieval).
     #[error("Metadata filter not supported: {0}")]
     UnsupportedFilter(String),
 }
@@ -129,21 +129,22 @@ pub trait VectorStore: Send + Sync {
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError>;
 
-    /// 返回该向量存储自带的文本嵌入器(若有)。
+    /// Returns this vector store's built-in text embedder, if any.
     ///
-    /// Q1: 此前 trait 只接收 `query_embedding: &[f32]`,调用方必须自己嵌入查询
-    /// 文本,却没有契约告诉它"该用哪个嵌入器"。有了该 getter,内嵌嵌入器的实现
-    /// 可以直接用 [`similarity_search_text`](Self::similarity_search_text) 传文本;
-    /// 没有的返回 `None`,调用方会收到显式错误而不是静默地用错模型。
+    /// Q1: previously the trait only took `query_embedding: &[f32]`, so callers had to embed
+    /// the query themselves without a contract saying which embedder to use. With this getter,
+    /// implementations that embed internally can accept text directly via
+    /// [`similarity_search_text`](Self::similarity_search_text); those without one return
+    /// `None`, and the caller gets an explicit error instead of silently using the wrong model.
     fn embed_query(&self) -> Option<&dyn Embeddings> {
         None
     }
 
-    /// 文本相似度检索:用 [`embed_query`](Self::embed_query) 返回的嵌入器把
-    /// `query` 向量化后再检索。
+    /// Text similarity search: vectorizes `query` with the embedder returned by
+    /// [`embed_query`](Self::embed_query), then searches.
     ///
-    /// 未配置嵌入器时返回 [`VectorStoreError::EmbeddingError`],提示改用
-    /// [`similarity_search`](Self::similarity_search) 直接传入查询向量。
+    /// Returns [`VectorStoreError::EmbeddingError`] when no embedder is configured, suggesting
+    /// [`similarity_search`](Self::similarity_search) with a query vector instead.
     async fn similarity_search_text(
         &self,
         query: &str,
@@ -163,15 +164,16 @@ pub trait VectorStore: Send + Sync {
         self.similarity_search(&query_embedding, k).await
     }
 
-    /// 带元数据过滤的相似度检索。
+    /// Similarity search with metadata filtering.
     ///
-    /// - `filter: None` —— 不过滤,等价 [`similarity_search`](Self::similarity_search)。
-    /// - `filter: Some(f)` —— 只返回满足过滤条件的文档,最多 `k` 条。
+    /// - `filter: None` — no filtering, equivalent to [`similarity_search`](Self::similarity_search).
+    /// - `filter: Some(f)` — returns only documents matching the filter, at most `k` entries.
     ///
-    /// 默认实现:无过滤时委托 [`similarity_search`](Self::similarity_search);有过滤
-    /// 但后端未覆写(不支持)时返回 [`VectorStoreError::UnsupportedFilter`],**不静默
-    /// 忽略**过滤。支持过滤的后端应覆写本方法,把 [`MetadataFilter`] 翻译成各自
-    /// 原生查询语法(Qdrant payload filter / Pinecone filter / Chroma where / …)。
+    /// Default implementation: delegates to [`similarity_search`](Self::similarity_search) when
+    /// there is no filter; returns [`VectorStoreError::UnsupportedFilter`] when a filter is given
+    /// but the backend does not override it, **without silently ignoring** the filter. Backends
+    /// that support filtering should override this method and translate [`MetadataFilter`] into
+    /// their native query syntax (Qdrant payload filter / Pinecone filter / Chroma where / …).
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -188,14 +190,16 @@ pub trait VectorStore: Send + Sync {
         }
     }
 
-    /// 带最低分数阈值的相似度检索。
+    /// Similarity search with a minimum score threshold.
     ///
-    /// - `min_score: None` —— 不过滤,返回全库 top-k(即使分数为负)。
-    /// - `min_score: Some(t)` —— 只返回 `score >= t` 的结果,最多 `k` 条。
+    /// - `min_score: None` — no filtering, returns the store's full top-k (even negative scores).
+    /// - `min_score: Some(t)` — returns only results with `score >= t`, at most `k` entries.
     ///
-    /// Q2: 默认实现基于 [`similarity_search`](Self::similarity_search) 的结果做二次过滤
-    /// (对检索期无法直接按阈值过滤的后端是最佳近似)。本地计算相似度的实现应覆盖此
-    /// 方法,以获得"先过滤再取 top-k"的精确语义。
+    /// Q2: the default implementation re-filters the results of
+    /// [`similarity_search`](Self::similarity_search), the best approximation for backends that
+    /// cannot threshold directly at retrieval time. Implementations that compute similarity
+    /// locally should override this method for the precise "filter first, then take top-k"
+    /// semantics.
     async fn similarity_search_with_min_score(
         &self,
         query_embedding: &[f32],

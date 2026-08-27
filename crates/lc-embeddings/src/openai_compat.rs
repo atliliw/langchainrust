@@ -1,43 +1,44 @@
 // lc-embeddings/src/openai_compat.rs
-//! OpenAI 兼容协议 embedding 客户端公共基类（P1-5）。
+//! Shared base class for OpenAI-compatible-protocol embedding clients (P1-5).
 //!
-//! DeepSeek 与 Qwen 走同一套 OpenAI `/embeddings` 协议（同样的请求体、同样的
-//! `data[index]` 对齐、同样的 Bearer 认证），二者源码几乎逐行重复。本模块抽出
-//! 通用实现，DeepSeek/Qwen 仅通过 [`CompatSpec`] 配置 URL / 模型 / 维度 / 批量大小。
+//! DeepSeek and Qwen speak the same OpenAI `/embeddings` protocol (same request body,
+//! same `data[index]` alignment, same Bearer auth), and their sources were almost
+//! line-for-line duplicates. This module extracts the common implementation; DeepSeek/Qwen
+//! only configure URL / model / dimension / batch size via [`CompatSpec`].
 
 use crate::{EmbeddingError, Embeddings};
 use async_trait::async_trait;
 use serde::Deserialize;
 
-/// 访问 provider 配置字段的抽象——DeepSeek/Qwen 的 config 结构体字段名相同。
+/// Abstraction over provider config fields — DeepSeek/Qwen config structs share field names.
 pub trait CompatConfigAccess {
-    /// 返回 API key
+    /// Returns the API key
     fn api_key(&self) -> &str;
-    /// 返回 Base URL
+    /// Returns the Base URL
     fn base_url(&self) -> &str;
-    /// 返回模型名
+    /// Returns the model name
     fn model(&self) -> &str;
 }
 
-/// OpenAI 兼容协议 provider 的静态规格。
+/// Static specification for an OpenAI-compatible-protocol provider.
 ///
-/// 实现该 trait 即可获得 `OpenAICompatEmbeddings` 提供的完整 embedding 能力，
-/// 是接入新增 OpenAI 兼容 provider 的扩展点。
+/// Implementing this trait grants the full embedding capability provided by
+/// `OpenAICompatEmbeddings`; it is the extension point for new OpenAI-compatible providers.
 pub trait CompatSpec: CompatConfigAccess + Sized + Default {
-    /// 环境变量名：API key（用于构造期错误信息，P1-3）。
+    /// Environment variable name: API key (used in construction-time error messages, P1-3).
     fn api_key_env() -> &'static str;
-    /// 单次请求的批量上限。
+    /// The batch limit for a single request.
     fn batch_size() -> usize;
-    /// 给定模型的向量维度；未知模型必须报错（P1-2），不得回落默认值撒谎。
+    /// Vector dimension for a given model; unknown models must error (P1-2), never lying with a default.
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError>;
-    /// 从环境变量构造 config（复用各 config 已实现的 from_env_result）。
+    /// Constructs config from environment variables (reuses each config's from_env_result).
     fn from_env_result() -> Result<Self, EmbeddingError>;
 }
 
-/// 通用 OpenAI 兼容 embedding 客户端（P1-5）。
+/// Generic OpenAI-compatible embedding client (P1-5).
 ///
-/// DeepSeek/Qwen 等走 OpenAI `/embeddings` 协议的 provider 通过
-/// [`CompatSpec`] 配置规格复用本实现；`C` 即各自的 config 类型。
+/// Providers speaking the OpenAI `/embeddings` protocol (DeepSeek/Qwen, etc.) reuse this
+/// implementation via the [`CompatSpec`] config spec; `C` is each provider's config type.
 pub struct OpenAICompatEmbeddings<C: CompatConfigAccess + CompatSpec> {
     config: C,
     client: reqwest::Client,
@@ -54,8 +55,8 @@ impl<C: CompatConfigAccess + CompatSpec> std::fmt::Debug for OpenAICompatEmbeddi
 }
 
 impl<C: CompatConfigAccess + CompatSpec> OpenAICompatEmbeddings<C> {
-    /// 构造时 fail fast（P1-3）：API key 为空立即报错，而不是拖到发请求才 401；
-    /// 同时校验模型维度已知（P1-2）。
+    /// Fails fast at construction (P1-3): an empty API key errors immediately instead of
+    /// waiting until the request to 401; also validates the model dimension is known (P1-2).
     pub fn new(config: C) -> Result<Self, EmbeddingError> {
         if config.api_key().trim().is_empty() {
             return Err(EmbeddingError::Config(format!(
@@ -92,7 +93,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             "input": text,
         });
 
-        // P2-5: 429/5xx 指数退避重试。
+        // P2-5: exponential backoff retry on 429/5xx.
         let response = crate::retry::post_json_with_retry(
             &self.client,
             &url,
@@ -105,7 +106,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
 
         let status = response.status();
         if !status.is_success() {
-            // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
             let error_text = response.text().await.map_err(|e| {
                 EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
             })?;
@@ -126,13 +127,13 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
             .embedding
             .clone();
-        // P2-8: 统一 L2 归一化,保证单位长度。
+        // P2-8: uniform L2 normalization, guaranteeing unit length.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
     }
 
     async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        // P1-1: 空切片不是错误（无事可做），含空/全空白文本才报错。
+        // P1-1: an empty slice is not an error (nothing to do); only empty/all-whitespace texts error.
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -142,8 +143,9 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
 
         let url = format!("{}/embeddings", self.config.base_url());
         let batch_size = C::batch_size().max(1);
-        // P0-1: 用 Option 槽位逐项收集,拒绝静默空向量。某 chunk 少返回/错位会
-        // 留下 None 槽位并在收尾时报错,而不是产出零向量被下游当成"不相似"。
+        // P0-1: collect item-by-item into Option slots, rejecting silent empty vectors. A chunk
+        // returning fewer/misaligned entries leaves None slots that error at the end, instead of
+        // producing zero vectors downstream treats as "dissimilar".
         let mut all_results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
         let mut offset = 0;
 
@@ -153,7 +155,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
                 "input": chunk,
             });
 
-            // P2-5: 429/5xx 指数退避重试。
+            // P2-5: exponential backoff retry on 429/5xx.
             let response = crate::retry::post_json_with_retry(
                 &self.client,
                 &url,
@@ -166,7 +168,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
 
             let status = response.status();
             if !status.is_success() {
-                // P1-4: 读失败的错误体也要报错，不能 unwrap_or_default() 吞掉。
+                // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
                 let error_text = response.text().await.map_err(|e| {
                     EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
                 })?;
@@ -184,7 +186,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             for item in embedding_response.data {
                 let global_index = offset + item.index as usize;
                 if global_index >= all_results.len() {
-                    // 服务端 index 超出请求范围 = 批次错位,直接报错。
+                    // Provider index beyond the requested range = batch misalignment; error out.
                     return Err(EmbeddingError::BatchMismatch {
                         expected: all_results.len(),
                         actual: global_index + 1,
@@ -195,7 +197,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             offset += chunk.len();
         }
 
-        // 展开为 Result:任一槽位空缺即显式报错,而非留下零向量;并统一 L2 归一化(P2-8)。
+        // Unwrap into Result: any empty slot errors explicitly rather than leaving a zero vector; then apply uniform L2 normalization (P2-8).
         all_results
             .into_iter()
             .map(|opt| {
@@ -215,7 +217,7 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
     }
 }
 
-/// OpenAI 兼容协议的 embedding 响应体（DeepSeek/Qwen 共用）。
+/// Embedding response body for the OpenAI-compatible protocol (shared by DeepSeek/Qwen).
 #[derive(Debug, Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingData>,

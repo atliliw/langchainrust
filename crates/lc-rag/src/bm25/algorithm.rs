@@ -1,15 +1,15 @@
 // src/retrieval/bm25/algorithm.rs
-//! BM25 算法核心实现
+//! Core BM25 algorithm implementation
 //!
-//! BM25 公式: score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D|/avgdl))
+//! BM25 formula: score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D|/avgdl))
 
-/// BM25 参数配置
+/// BM25 parameter configuration
 #[derive(Debug, Clone)]
 pub struct BM25Params {
-    /// 词频饱和参数，控制高频词的影响 (默认 1.5)
+    /// Term-frequency saturation parameter, controls the influence of high-frequency terms (default 1.5)
     pub k1: f64,
 
-    /// 文档长度归一化参数，控制长文档惩罚 (默认 0.75)
+    /// Document-length normalization parameter, controls the long-document penalty (default 0.75)
     pub b: f64,
 }
 
@@ -20,27 +20,27 @@ impl Default for BM25Params {
 }
 
 impl BM25Params {
-    /// 创建默认参数
+    /// Creates the default parameters
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 创建自定义参数
+    /// Creates custom parameters
     pub fn with_values(k1: f64, b: f64) -> Self {
         Self { k1, b }
     }
 }
 
-/// 计算 IDF (逆文档频率)
+/// Computes the IDF (inverse document frequency)
 ///
-/// 公式: IDF(qi) = log((N - n(qi) + 0.5) / (n(qi) + 0.5) + 1)
+/// Formula: IDF(qi) = log((N - n(qi) + 0.5) / (n(qi) + 0.5) + 1)
 ///
-/// # 参数
-/// - `n`: 包含该词的文档数量
-/// - `N`: 文档总数
+/// # Arguments
+/// - `n`: the number of documents containing the term
+/// - `N`: the total number of documents
 ///
-/// # 返回
-/// IDF 值
+/// # Returns
+/// The IDF value
 pub fn compute_idf(n: usize, total_docs: usize) -> f64 {
     if n == 0 || total_docs == 0 {
         return 0.0;
@@ -52,20 +52,20 @@ pub fn compute_idf(n: usize, total_docs: usize) -> f64 {
     (numerator / denominator + 1.0).ln()
 }
 
-/// 计算 BM25 评分
+/// Computes the BM25 score
 ///
-/// 公式: score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D|/avgdl))
+/// Formula: score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D|/avgdl))
 ///
-/// # 参数
-/// - `query_terms`: 查询词列表
-/// - `doc_term_freqs`: 文档词频表 (term -> frequency)
-/// - `doc_length`: 文档长度 (词数)
-/// - `avgdl`: 平均文档长度
-/// - `idf_values`: 词的 IDF 值表 (term -> IDF)
-/// - `params`: BM25 参数
+/// # Arguments
+/// - `query_terms`: the list of query terms
+/// - `doc_term_freqs`: the document term-frequency table (term -> frequency)
+/// - `doc_length`: the document length (in terms)
+/// - `avgdl`: the average document length
+/// - `idf_values`: the term IDF table (term -> IDF)
+/// - `params`: the BM25 parameters
 ///
-/// # 返回
-/// BM25 评分
+/// # Returns
+/// The BM25 score
 pub fn bm25_score(
     query_terms: &[String],
     doc_term_freqs: &std::collections::HashMap<String, usize>,
@@ -81,19 +81,19 @@ pub fn bm25_score(
     let mut score = 0.0;
 
     for term in query_terms {
-        // 获取 IDF
+        // Look up the IDF
         let idf = idf_values.get(term).copied().unwrap_or(0.0);
         if idf == 0.0 {
             continue;
         }
 
-        // 获取词频
+        // Look up the term frequency
         let tf = doc_term_freqs.get(term).copied().unwrap_or(0);
         if tf == 0 {
             continue;
         }
 
-        // 计算 TF 归一化部分
+        // Compute the TF-normalized component
         let dl_ratio = doc_length as f64 / avgdl;
         let tf_component = (tf as f64 * (params.k1 + 1.0))
             / (tf as f64 + params.k1 * (1.0 - params.b + params.b * dl_ratio));
@@ -111,15 +111,15 @@ mod tests {
 
     #[test]
     fn test_compute_idf() {
-        // 常见词 IDF 较低
-        let idf_common = compute_idf(100, 100); // 所有文档都有
+        // A common term has a low IDF
+        let idf_common = compute_idf(100, 100); // present in every document
         assert!(idf_common < 1.0);
 
-        // 稀有词 IDF 较高
-        let idf_rare = compute_idf(1, 100); // 只有1个文档有
+        // A rare term has a high IDF
+        let idf_rare = compute_idf(1, 100); // present in only 1 document
         assert!(idf_rare > idf_common);
 
-        // 不存在的词
+        // A nonexistent term
         let idf_zero = compute_idf(0, 100);
         assert_eq!(idf_zero, 0.0);
     }
@@ -147,7 +147,7 @@ mod tests {
             &params,
         );
 
-        // 评分应该为正
+        // The score should be positive
         assert!(score > 0.0);
     }
 
@@ -164,17 +164,17 @@ mod tests {
 
     #[test]
     fn test_bm25_high_tf_document() {
-        // 高词频文档应该得更高分
+        // A higher-term-frequency document should score higher
         let params = BM25Params::default();
 
         let query = vec!["rust".to_string()];
         let idf = HashMap::from([("rust".to_string(), 2.0)]);
 
-        // 低词频文档
+        // Low term frequency
         let low_tf = HashMap::from([("rust".to_string(), 1)]);
         let score_low = bm25_score(&query, &low_tf, 10, 15.0, &idf, &params);
 
-        // 高词频文档
+        // High term frequency
         let high_tf = HashMap::from([("rust".to_string(), 5)]);
         let score_high = bm25_score(&query, &high_tf, 10, 15.0, &idf, &params);
 

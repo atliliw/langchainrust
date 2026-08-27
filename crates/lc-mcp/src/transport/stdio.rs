@@ -1,4 +1,4 @@
-//! Stdio 传输:启动子进程,通过 stdin/stdout 以换行分隔的 JSON 通信。
+//! Stdio transport: spawns a child process, communicating over stdin/stdout with newline-delimited JSON.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,27 +14,27 @@ use super::{MCPEvent, MCPTransport};
 use crate::protocol::{MCPError, MCPRequest, MCPResponse};
 use crate::types::MCPConfig;
 
-/// Stdio 传输:启动子进程,通过 stdin/stdout 以换行分隔的 JSON 通信
+/// Stdio transport: spawns a child process, communicating over stdin/stdout with newline-delimited JSON
 ///
-/// P0-2: 后台监控 task 检测子进程退出后,以指数退避自动重新 spawn。
-/// `is_connected()` 暴露当前连接状态,断连期间请求返回
-/// `MCPError::connection_lost()` 供上层触发重连。
+/// P0-2: a background monitor task detects the child-process exit, then auto-respawns with exponential
+/// backoff. `is_connected()` exposes the current connection state; requests during a disconnect return
+/// `MCPError::connection_lost()` for the upper layer to trigger a reconnect.
 pub struct StdioTransport {
-    /// 保存原始配置以便重连时重新 spawn 子进程。
+    /// Keeps the original config so the child process can be respawned on reconnect.
     config: MCPConfig,
     stdin: Arc<Mutex<ChildStdin>>,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
     child: Arc<Mutex<Option<Child>>>,
     /// Per-request lock: ensures write + read is atomic for each request.
     request_lock: Arc<Mutex<()>>,
-    /// 连接状态(true = 子进程存活)。
+    /// Connection state (true = the child process is alive).
     connected: Arc<AtomicBool>,
-    /// 手动关闭标志:close() 后不再自动重连。
+    /// Manual close flag: after close() no more auto-reconnect.
     closed: Arc<AtomicBool>,
     event_tx: broadcast::Sender<MCPEvent>,
 }
 
-/// 子进程 spawn 结果(临时结构,new 后拆入字段)。
+/// A child-process spawn result (a temporary struct, split into fields after new).
 struct SpawnedProcess {
     child: Child,
     stdin: ChildStdin,
@@ -70,9 +70,9 @@ fn spawn_process(config: &MCPConfig) -> Result<SpawnedProcess, MCPError> {
 
     // Capture stderr in a background task so it doesn't block the process
     //
-    // P1-4: 用 `tracing`(开 `log` feature,事件同时进 log facade,与工作区
-    // `env_logger` 兼容)。按内容粗分级别:error/panic → error!,warn → warn!,
-    // 其余 → debug!,并按 target 过滤。
+    // P1-4: uses `tracing` (with the `log` feature, events also go through the log facade, compatible with the
+    // workspace `env_logger`). Coarse level split by content: error/panic → error!, warn → warn!, the rest →
+    // debug!, filtered by target.
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -98,7 +98,7 @@ fn spawn_process(config: &MCPConfig) -> Result<SpawnedProcess, MCPError> {
 }
 
 impl StdioTransport {
-    /// 创建 Stdio 传输:启动子进程并建立 stdin/stdout 通道。
+    /// Creates a Stdio transport: spawns the child process and establishes the stdin/stdout channels.
     pub async fn new(config: &MCPConfig) -> Result<Self, MCPError> {
         let spawned = spawn_process(config)?;
         let (event_tx, _) = broadcast::channel(64);
@@ -118,7 +118,8 @@ impl StdioTransport {
         Ok(transport)
     }
 
-    /// 后台监控 task:等待子进程退出 → 标记断连 → 指数退避自动重连。
+    /// Background monitor task: waits for the child process to exit → marks disconnected → auto-reconnects
+    /// with exponential backoff.
     fn spawn_monitor(&self) {
         let child = self.child.clone();
         let stdin = self.stdin.clone();
@@ -130,12 +131,13 @@ impl StdioTransport {
 
         tokio::spawn(async move {
             loop {
-                // 取出当前子进程等待退出(避免长时间持锁阻塞 request/close)
+                // Take out the current child process and wait for its exit (avoid holding the lock for a long
+                // time and blocking request/close)
                 let child_status = {
                     let mut guard = child.lock().await;
                     match guard.take() {
                         Some(mut c) => c.wait().await,
-                        None => return, // 已被 close() 取走
+                        None => return, // already taken by close()
                     }
                 };
                 log::warn!(
@@ -145,7 +147,7 @@ impl StdioTransport {
                 connected.store(false, Ordering::SeqCst);
                 let _ = event_tx.send(MCPEvent::Disconnected);
 
-                // 指数退避重连
+                // Exponential-backoff reconnect
                 let mut attempt = 0u32;
                 loop {
                     if closed.load(Ordering::SeqCst) {
@@ -209,7 +211,7 @@ impl MCPTransport for StdioTransport {
         let mut line = String::new();
         {
             let mut stdout = self.stdout.lock().await;
-            // 跳过空行,直到读到非空行
+            // Skip empty lines until a non-empty one is read
             loop {
                 line.clear();
                 let n = stdout
@@ -217,7 +219,8 @@ impl MCPTransport for StdioTransport {
                     .await
                     .map_err(|e| MCPError::new(-1, format!("failed to read stdout: {}", e)))?;
                 if n == 0 {
-                    // 子进程退出,连接断开 → 后台 monitor 会自动重连
+                    // The child process exited, the connection is dropped → the background monitor will
+                    // auto-reconnect
                     return Err(MCPError::connection_lost());
                 }
                 if !line.trim().is_empty() {
@@ -251,7 +254,7 @@ impl MCPTransport for StdioTransport {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(MCPError::connection_lost());
         }
-        // JSON-RPC 2.0 notification: 无 id 字段
+        // JSON-RPC 2.0 notification: no id field
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -288,7 +291,7 @@ impl MCPTransport for StdioTransport {
         if self.connected.load(Ordering::SeqCst) {
             return Ok(());
         }
-        // 后台 monitor 已在自动重连;此处等待其恢复。
+        // The background monitor is already auto-reconnecting; wait here for it to recover.
         timeout(Duration::from_secs(30), async {
             while !self.connected.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(100)).await;

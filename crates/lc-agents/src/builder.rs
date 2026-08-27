@@ -1,7 +1,8 @@
 // src/agents/builder.rs
-//! AgentBuilder — 3 行代码创建 Agent
+//! AgentBuilder — create an Agent in 3 lines
 //!
-//! 提供流畅的 Builder API，对标 rig 的 `client.agent(model).preamble(...).build()`。
+//! Provides a fluent Builder API, modeled on rig's
+//! `client.agent(model).preamble(...).build()`.
 //!
 //! # Example
 //!
@@ -19,11 +20,12 @@ use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
 use std::sync::Arc;
 
-/// Agent Builder — 流畅 API 创建 FunctionCallingAgent
+/// Agent Builder — fluent API to create a FunctionCallingAgent
 ///
-/// 使用 Builder 模式，让用户只需 3 行代码就能创建并运行 Agent。
+/// Uses the Builder pattern so users can create and run an Agent in just 3
+/// lines.
 ///
-/// # 基本用法
+/// # Basic usage
 ///
 /// ```ignore
 /// let agent = AgentBuilder::new()
@@ -33,7 +35,7 @@ use std::sync::Arc;
 ///     .build()?;
 /// ```
 ///
-/// # 使用 `Arc<dyn BaseChatModel>`
+/// # Using `Arc<dyn BaseChatModel>`
 ///
 /// ```ignore
 /// let llm = wrap_chat_model(OpenAIChat::new(config));
@@ -50,7 +52,7 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
-    /// 创建新的 AgentBuilder
+    /// Creates a new AgentBuilder
     pub fn new() -> Self {
         Self {
             llm: None,
@@ -60,9 +62,9 @@ impl AgentBuilder {
         }
     }
 
-    /// 设置 LLM（任何实现了 `BaseChatModel` 的类型）
+    /// Sets the LLM (any type implementing `BaseChatModel`)
     ///
-    /// 自动包装为 `Arc<dyn BaseChatModel<Error = ProviderError>>`。
+    /// Automatically wraps it as `Arc<dyn BaseChatModel<Error = ProviderError>>`.
     pub fn llm<L>(mut self, llm: L) -> Self
     where
         L: BaseChatModel + Send + Sync + 'static,
@@ -72,9 +74,9 @@ impl AgentBuilder {
         self
     }
 
-    /// 设置 LLM（从已包装的 `Arc<dyn BaseChatModel>`）
+    /// Sets the LLM (from an already-wrapped `Arc<dyn BaseChatModel>`)
     ///
-    /// 适用于已通过 `wrap_chat_model()` 或 `LLMClient` 创建的 LLM 实例。
+    /// For LLM instances already created via `wrap_chat_model()` or `LLMClient`.
     pub fn llm_from_arc(
         mut self,
         llm: Arc<dyn BaseChatModel<Error = ProviderError> + Send + Sync>,
@@ -83,25 +85,25 @@ impl AgentBuilder {
         self
     }
 
-    /// 设置系统提示词
+    /// Sets the system prompt
     pub fn system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
-    /// 添加单个工具
+    /// Adds a single tool
     pub fn tool<T: BaseTool + 'static>(mut self, tool: T) -> Self {
         self.tools.push(Arc::new(tool));
         self
     }
 
-    /// 添加多个工具
+    /// Adds multiple tools
     pub fn tools(mut self, tools: Vec<Arc<dyn BaseTool>>) -> Self {
         self.tools.extend(tools);
         self
     }
 
-    /// 设置最大迭代次数（clamp 到 [1, 100]，防止 0 或失控上限）
+    /// Sets max iterations (clamped to [1, 100] to prevent 0 or runaway limits)
     pub fn max_iterations(mut self, n: usize) -> Self {
         const MIN_MAX_ITERATIONS: usize = 1;
         const MAX_MAX_ITERATIONS: usize = 100;
@@ -112,11 +114,11 @@ impl AgentBuilder {
         self
     }
 
-    /// 构建 FunctionCallingAgent
+    /// Builds a FunctionCallingAgent
     ///
     /// # Errors
     ///
-    /// 如果没有设置 LLM，返回 `AgentError::Other`。
+    /// Returns `AgentError::Other` if no LLM was set.
     pub fn build(self) -> Result<FunctionCallingAgent, AgentError> {
         let llm = self.llm.ok_or_else(|| {
             AgentError::Other("AgentBuilder: LLM is required. Call .llm() first.".into())
@@ -129,17 +131,17 @@ impl AgentBuilder {
         ))
     }
 
-    /// 构建并包装为 `Arc<dyn BaseAgent>`，可直接传给 `AgentExecutor`
+    /// Builds and wraps as `Arc<dyn BaseAgent>` for direct use with `AgentExecutor`
     ///
     /// # Errors
     ///
-    /// 如果没有设置 LLM，返回 `AgentError::Other`。
+    /// Returns `AgentError::Other` if no LLM was set.
     pub fn build_as_agent(self) -> Result<Arc<dyn BaseAgent>, AgentError> {
         let agent = self.build()?;
         Ok(Arc::new(agent) as Arc<dyn BaseAgent>)
     }
 
-    /// 获取最大迭代次数
+    /// Returns the max iterations
     pub fn get_max_iterations(&self) -> usize {
         self.max_iterations
     }

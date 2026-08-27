@@ -11,14 +11,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 // ============================================================================
-// InMemoryChunkedDocumentStore（内存实现）
+// InMemoryChunkedDocumentStore (in-memory implementation)
 // ============================================================================
 
-/// 将 std 锁中毒 (poisoned) 转换为 [`VectorStoreError::StorageError`],而不是 unwrap panic。
+/// Converts a std lock poison into [`VectorStoreError::StorageError`], instead of an unwrap panic.
 ///
-/// Q5: std::sync::RwLock 在持有者 panic 后会被"中毒",之后所有 read/write 都返回 Err;
-/// 旧代码 `.read().unwrap()`/`.write().unwrap()` 会在中毒后直接 panic。这里显式
-/// 转换为 StorageError 向上传播。
+/// Q5: `std::sync::RwLock` becomes "poisoned" when its holder panics, after which every
+/// read/write returns Err; the old `.read().unwrap()`/`.write().unwrap()` would panic directly
+/// once poisoned. Here the poison is explicitly converted to a StorageError and propagated.
 pub(crate) fn lock_error<T>(
     result: Result<T, std::sync::PoisonError<T>>,
 ) -> Result<T, VectorStoreError> {
@@ -26,14 +26,14 @@ pub(crate) fn lock_error<T>(
         .map_err(|_| VectorStoreError::StorageError("document store lock is poisoned".to_string()))
 }
 
-/// 内存存储实现(开发/测试用)
+/// In-memory store implementation (development/test)
 ///
-/// Q5: 这里刻意保留 `std::sync::RwLock`(而不是像 InMemoryVectorStore 那样用
-/// `tokio::sync::RwLock`):`ChunkedDocumentStoreTrait` 的 `_blocking` 同步方法会被
-/// BM25 等同步检索路径在 async 上下文中调用(见 lc-rag 的 hybrid retriever),而 tokio
-/// 的 `blocking_read/blocking_write` 在 async 上下文调用会 panic(见 tokio 文档
-/// "Panics if called within an asynchronous execution context")。因此只消除
-/// `.unwrap()` 的锁中毒 panic 风险,见 `lock_error`。
+/// Q5: `std::sync::RwLock` is deliberately kept here (rather than `tokio::sync::RwLock` like
+/// InMemoryVectorStore): the `_blocking` synchronous methods of `ChunkedDocumentStoreTrait`
+/// are called from sync retrieval paths such as BM25 inside async contexts (see lc-rag's
+/// hybrid retriever), and tokio's `blocking_read/blocking_write` panic when called in an
+/// async context (see the tokio docs "Panics if called within an asynchronous execution
+/// context"). Therefore only the `.unwrap()` lock-poison panic risk is removed; see `lock_error`.
 pub struct InMemoryChunkedDocumentStore {
     pub(crate) parent_docs: Arc<std::sync::RwLock<HashMap<String, Document>>>,
     pub(crate) chunks: Arc<std::sync::RwLock<HashMap<String, ChunkDocument>>>,
@@ -41,7 +41,7 @@ pub struct InMemoryChunkedDocumentStore {
 }
 
 impl InMemoryChunkedDocumentStore {
-    /// 创建新的内存文档存储
+    /// Creates a new in-memory document store
     pub fn new() -> Self {
         Self {
             parent_docs: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -50,7 +50,7 @@ impl InMemoryChunkedDocumentStore {
         }
     }
 
-    /// 同步获取指定 chunk 对应的文档
+    /// Synchronously gets the document for the given chunk
     pub fn get_chunk_document_blocking(
         &self,
         chunk_id: &str,
@@ -70,7 +70,7 @@ impl InMemoryChunkedDocumentStore {
 
         let mut chunk_ids = Vec::new();
 
-        // S3: 分割出的 chunk 继承父文档的 metadata(供 chunked 后端元数据过滤)。
+        // S3: split chunks inherit the parent document's metadata (for chunked-backend metadata filtering).
         let parent_meta = self
             .get_parent_document_blocking(parent_id)?
             .map(|d| d.metadata)
@@ -117,7 +117,7 @@ impl InMemoryChunkedDocumentStore {
 
         let mut chunk_ids = Vec::new();
 
-        // S3: 分割出的 chunk 继承父文档的 metadata(供 chunked 后端元数据过滤)。
+        // S3: split chunks inherit the parent document's metadata (for chunked-backend metadata filtering).
         let parent_meta = self
             .get_parent_document(parent_id)
             .await?
@@ -269,7 +269,7 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
     }
 
     async fn parent_count(&self) -> usize {
-        // count 返回 usize,锁中毒时恢复出内部值(仅数量统计,不值得整体失败)
+        // count returns usize; on lock poison recover the inner value (only a count, not worth failing outright)
         self.parent_docs
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -356,11 +356,12 @@ impl ChunkedDocumentStoreTrait for InMemoryChunkedDocumentStore {
 }
 
 impl InMemoryChunkedDocumentStore {
-    /// 将内存中的父文档与子块序列化 (bincode) 落盘。
+    /// Serializes the in-memory parent documents and child chunks (bincode) to disk.
     ///
-    /// C3: `ChunkedDocumentStoreTrait` 上的默认 `save/load` 只会返回
-    /// "not implemented" 运行时错误,已被从 trait 删除;持久化改由各后端固有方法
-    /// 暴露。本方法即 InMemory 后端的真实实现,通过具体类型直接调用。
+    /// C3: the default `save/load` on `ChunkedDocumentStoreTrait` only returned a
+    /// "not implemented" runtime error and has been removed from the trait; persistence
+    /// is now exposed through each backend's own inherent methods. This method is the
+    /// real implementation for the InMemory backend, called directly on the concrete type.
     pub async fn save(&self, path: impl AsRef<Path>) -> Result<(), VectorStoreError> {
         let parents = lock_error(self.parent_docs.read())?;
         let chunks = lock_error(self.chunks.read())?;
@@ -381,7 +382,7 @@ impl InMemoryChunkedDocumentStore {
         Ok(())
     }
 
-    /// 从 [`save`](Self::save) 落盘的文件反序列化重建存储,父子关系完整保留。
+    /// Rebuilds the store by deserializing a file written by [`save`](Self::save), preserving the parent-child relationships.
     pub async fn load(path: impl AsRef<Path>) -> Result<Self, VectorStoreError> {
         let bytes = std::fs::read(path.as_ref())
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -397,5 +398,5 @@ impl InMemoryChunkedDocumentStore {
     }
 }
 
-/// `InMemoryChunkedDocumentStore` 的类型别名
+/// Type alias for `InMemoryChunkedDocumentStore`
 pub type ChunkedDocumentStore = InMemoryChunkedDocumentStore;

@@ -1,8 +1,8 @@
 // lc-tools/src/search.rs
-//! DuckDuckGo 搜索工具
+//! DuckDuckGo search tool
 //!
-//! 通过 DuckDuckGo Instant Answer API 进行网页搜索。
-//! 无需 API Key，免费使用。
+//! Performs web searches via the DuckDuckGo Instant Answer API.
+//! No API key needed, free to use.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -10,47 +10,47 @@ use serde::{Deserialize, Serialize};
 
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
-/// 搜索工具输入
+/// Search tool input
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchInput {
-    /// 搜索查询
+    /// The search query
     pub query: String,
-    /// 返回结果数量（默认 5）
+    /// Number of results to return (default: 5)
     pub top_k: Option<usize>,
 }
 
-/// 搜索工具输出
+/// Search tool output
 #[derive(Debug, Serialize)]
 pub struct SearchOutput {
-    /// 查询
+    /// The query
     pub query: String,
-    /// 结果列表
+    /// The result list
     pub results: Vec<SearchResult>,
-    /// 结果数量
+    /// Number of results
     pub total: usize,
-    /// 摘要（如有）
+    /// Abstract text, if any
     pub abstract_text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
-    /// 标题
+    /// Title
     pub title: String,
-    /// 摘要
+    /// Snippet
     pub snippet: String,
     /// URL
     pub url: String,
 }
 
-/// DuckDuckGo 网页搜索工具
+/// DuckDuckGo web search tool
 ///
-/// 使用 DuckDuckGo 的 Instant Answer API 进行搜索，无需 API Key。
+/// Searches using DuckDuckGo's Instant Answer API, no API key required.
 pub struct DuckDuckGoSearchTool {
     client: reqwest::Client,
 }
 
 impl DuckDuckGoSearchTool {
-    /// 创建 DuckDuckGo 搜索工具。
+    /// Creates a DuckDuckGo search tool.
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -162,7 +162,7 @@ impl Tool for DuckDuckGoSearchTool {
     }
 }
 
-/// URL 编码 (using urlencoding crate for complete encoding)
+/// URL encoding (using the urlencoding crate for complete encoding)
 fn urlencoding(s: &str) -> String {
     urlencoding::encode(s).to_string()
 }

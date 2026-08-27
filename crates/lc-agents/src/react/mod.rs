@@ -1,7 +1,7 @@
 // src/agents/react/mod.rs
-//! ReAct Agent 实现
+//! ReAct Agent implementation
 //!
-//! 基于 "ReAct: Synergizing Reasoning and Acting in Language Models" 论文。
+//! Based on the "ReAct: Synergizing Reasoning and Acting in Language Models" paper.
 
 pub mod agent;
 pub mod parser;
