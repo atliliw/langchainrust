@@ -649,7 +649,7 @@ let assistant = OpenAIAssistant::create(&config, "gpt-4o", "You are a translator
 let answer = assistant.run_once("Translate: Hello").await?;
 ```
 
-**Limitation**: Run with tool calls (`requires_action`) is not implemented; returns `AssistantError::RequiresAction`. Use `FunctionCallingAgent` for tool calls.
+**Run status**: Run with tool calls (`requires_action`) is handled automatically inside the `run_once` polling loop — `handle_requires_action` submits tool outputs to the Assistant API and keeps polling until `completed` or `failed`.
 
 ## Prompts
 

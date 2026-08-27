@@ -301,9 +301,16 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| GraphError::CheckpointError(format!("Serialize error: {}", e)))?;
 
-        tokio::fs::write(&path, json)
+        // 原子写:先写 `{id}.json.tmp` 再 rename 到正式文件,避免崩溃/中断在
+        // 半截 JSON 时损坏 checkpoint(与 FileResumeStore 同一模式)。`.tmp`
+        // 扩展名不会被 sorted_ids 的 `.json` 过滤读到。
+        let tmp_path = self.directory.join(format!("{id}.json.tmp"));
+        tokio::fs::write(&tmp_path, &json)
             .await
             .map_err(|e| GraphError::CheckpointError(format!("Write error: {}", e)))?;
+        tokio::fs::rename(&tmp_path, &path)
+            .await
+            .map_err(|e| GraphError::CheckpointError(format!("Atomic rename error: {}", e)))?;
 
         Ok(id)
     }
@@ -402,6 +409,35 @@ mod tests {
         checkpointer.delete(&id).await.unwrap();
         let list = checkpointer.list().await.unwrap();
         assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_checkpointer_atomic_write() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let checkpointer = FileCheckpointer::<AgentState>::new(temp_dir.path()).unwrap();
+
+        let id = checkpointer
+            .save(&AgentState::new("atomic".to_string()), 0)
+            .await
+            .unwrap();
+
+        // 主文件完整且可解析;`.tmp` 无残留(rename 已清理)。
+        let main = temp_dir.path().join(format!("{id}.json"));
+        assert!(main.exists(), "checkpoint file must exist");
+        let json = tokio::fs::read_to_string(&main).await.unwrap();
+        assert!(
+            serde_json::from_str::<CheckpointData<AgentState>>(&json).is_ok(),
+            "checkpoint file must be complete JSON after atomic write"
+        );
+        assert!(
+            !temp_dir.path().join(format!("{id}.json.tmp")).exists(),
+            "tmp file must be renamed away, not left behind"
+        );
+
+        // 残留的 `.tmp` 文件不被 list() 读到(扩展名过滤)。
+        std::fs::write(temp_dir.path().join("stale.json.tmp"), b"{}").unwrap();
+        let list = checkpointer.list().await.unwrap();
+        assert_eq!(list, vec![id]);
     }
 
     #[tokio::test]

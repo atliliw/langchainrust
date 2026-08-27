@@ -19,7 +19,7 @@
 //! client can agree on the same key material.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::client::{sign_agent_card, verify_card_signature};
 use crate::protocol::AgentCard;
@@ -324,8 +324,11 @@ pub enum AccessRequest {
 /// Least-privilege limits for a delegated agent (P2-5 sandbox).
 ///
 /// Path checks are prefix-based: a request is allowed when it is the allowed
-/// directory itself or lives underneath it. Network checks allow the host
-/// exactly, or any subdomain of an allowed domain.
+/// directory itself or lives underneath it. Before the prefix test, a request
+/// path containing `..` is rejected outright, and both sides are resolved
+/// against the filesystem so a symlink inside the root cannot smuggle a path
+/// outside it. Network checks allow the host exactly, or any subdomain of an
+/// allowed domain.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxConfig {
     allowed_read_paths: Vec<PathBuf>,
@@ -382,6 +385,7 @@ impl SandboxConfig {
     }
 
     fn check_read(&self, path: &Path) -> Result<(), SecurityError> {
+        reject_parent_dir(path)?;
         if self.allowed_read_paths.iter().any(|a| is_within(path, a)) {
             Ok(())
         } else {
@@ -393,6 +397,7 @@ impl SandboxConfig {
     }
 
     fn check_write(&self, path: &Path) -> Result<(), SecurityError> {
+        reject_parent_dir(path)?;
         if self.allowed_write_paths.iter().any(|a| is_within(path, a)) {
             Ok(())
         } else {
@@ -414,9 +419,63 @@ impl SandboxConfig {
     }
 }
 
-/// Whether `path` is `root` or lives underneath it.
+/// Reject a request path that climbs out of its sandbox root with `..`.
+///
+/// `Path::starts_with` is a *lexical* component-prefix test: `C:/data/../secret`
+/// matches the prefix `C:/data`, but the OS resolves it to `C:/secret`. The
+/// sandbox never trusts a `..` in an external request, even when it would
+/// resolve back inside the root — the caller must pass a normalized path.
+fn reject_parent_dir(path: &Path) -> Result<(), SecurityError> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(SecurityError::SandboxDenied(format!(
+            "path `{}` contains `..`; use a normalized path",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve `path` against the filesystem so symlinks cannot smuggle a request
+/// outside its sandbox root, normalizing both sides of the prefix test the
+/// same way.
+///
+/// Canonicalizes the deepest ancestor that exists on disk, then re-attaches the
+/// remaining lexical components. That keeps the two sides consistent even when
+/// they exist at different depths: a not-yet-created `C:/data` and a
+/// `C:/data/file.txt` both resolve to the canonical `C:\` drive root plus their
+/// own remaining components, so the prefix test still holds. Falls back to the
+/// lexical path when nothing on disk resolves — `..` was already rejected and
+/// the prefix comparison remains as a final defense.
+fn normalize(path: &Path) -> PathBuf {
+    let mut ancestor: &Path = path;
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(canonical) => {
+                let mut base = canonical;
+                for component in missing.iter().rev() {
+                    base.push(component);
+                }
+                return base;
+            }
+            Err(_) => match (ancestor.file_name(), ancestor.parent()) {
+                (Some(name), Some(parent)) => {
+                    missing.push(name.to_os_string());
+                    ancestor = parent;
+                }
+                // Reached a path with no parent (e.g. a bare relative name):
+                // nothing on disk resolves, so fall back to the lexical path.
+                _ => return path.to_path_buf(),
+            },
+        }
+    }
+}
+
+/// Whether `path` is `root` or lives underneath it, after symlink resolution.
 fn is_within(path: &Path, root: &Path) -> bool {
-    path == root || path.starts_with(root)
+    let path = normalize(path);
+    let root = normalize(root);
+    path == root || path.starts_with(&root)
 }
 
 /// Whether `host` is `domain` exactly or one of its subdomains.
@@ -673,5 +732,88 @@ mod tests {
         assert!(!sandbox.accepts_payload(101));
         let unbounded = SandboxConfig::new();
         assert!(unbounded.accepts_payload(usize::MAX));
+    }
+
+    #[test]
+    fn sandbox_denies_dotdot_traversal() {
+        // `..` must never be accepted, even when the lexical prefix matches —
+        // this is the exact sandbox escape reported for `C:/data/../secret`.
+        let sandbox = SandboxConfig::new().allow_read("C:/data");
+        assert!(matches!(
+            sandbox.check(&AccessRequest::ReadPath("C:/data/../secret.txt".into())),
+            Err(SecurityError::SandboxDenied(_))
+        ));
+        assert!(matches!(
+            sandbox.check(&AccessRequest::WritePath(
+                "C:/data/../../etc/cron.d/evil".into()
+            )),
+            Err(SecurityError::SandboxDenied(_))
+        ));
+        // A path that would resolve back inside is still rejected: the sandbox
+        // does not trust `..`, regardless of where it resolves.
+        assert!(matches!(
+            sandbox.check(&AccessRequest::ReadPath("C:/data/sub/../file.txt".into())),
+            Err(SecurityError::SandboxDenied(_))
+        ));
+    }
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("lc-a2a-sandbox-{tag}-{}-{n}", std::process::id()))
+    }
+
+    #[test]
+    fn sandbox_resolves_real_paths() {
+        let base = temp_root("real");
+        let root = base.join("data");
+        std::fs::create_dir_all(&root).unwrap();
+        let inside = root.join("file.txt");
+        std::fs::write(&inside, b"x").unwrap();
+        let outside = base.join("secret.txt");
+        std::fs::write(&outside, b"s").unwrap();
+
+        let sandbox = SandboxConfig::new().allow_read(root.clone());
+        assert!(sandbox.check(&AccessRequest::ReadPath(inside)).is_ok());
+        assert!(matches!(
+            sandbox.check(&AccessRequest::ReadPath(outside)),
+            Err(SecurityError::SandboxDenied(_))
+        ));
+
+        // A symlink inside the root pointing outside must be denied. Skipped on
+        // platforms where creating symlinks needs privileges (Windows admin).
+        #[cfg(unix)]
+        {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&base.join("secret.txt"), &link).unwrap();
+            assert!(matches!(
+                sandbox.check(&AccessRequest::ReadPath(link)),
+                Err(SecurityError::SandboxDenied(_))
+            ));
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_allows_writing_new_file_inside_root() {
+        let base = temp_root("write-new");
+        let root = base.join("data");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let sandbox = SandboxConfig::new().allow_write(root.clone());
+        // A fresh file that does not exist yet: parent is resolved and the file
+        // name re-attached — still allowed, no symlink to escape through.
+        let fresh = root.join("new.txt");
+        assert!(sandbox.check(&AccessRequest::WritePath(fresh)).is_ok());
+        // Writing outside the root is denied even when the target does not exist.
+        let outside = base.join("elsewhere.txt");
+        assert!(matches!(
+            sandbox.check(&AccessRequest::WritePath(outside)),
+            Err(SecurityError::SandboxDenied(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

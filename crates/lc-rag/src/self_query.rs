@@ -6,6 +6,11 @@
 //! 做元数据过滤(依赖 S3 的统一过滤能力)。拆解走 [`lc_core::judge::structured_call`]
 //! (绑定工具拿结构化参数,模型不支持时回落文本解析),与 Guardrails / Evaluation
 //! 同一执行路径;`allowed_attributes` 白名单拦截 LLM 用不存在的字段过滤。
+//!
+//! **不静默降级**:过滤器引用了白名单外字段时显式返回
+//! [`RetrieverError::InvalidFilter`],绝不丢弃过滤器回落无过滤检索——那会让
+//! 本该被过滤排除的数据被返回(数据面过曝)。空白名单 = 过滤整体禁用,过滤器
+//! 一律忽略并记 warning(这是「禁用过滤」的既定模式,不是静默降级)。
 
 use std::sync::Arc;
 
@@ -48,8 +53,10 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
     ///
     /// - `llm`:负责拆解自然语言查询的模型(支持结构化输出,或可文本回落)。
     /// - `store` / `embeddings`:过滤相似度检索用的向量存储与嵌入模型。
-    /// - `allowed_attributes`:允许出现在过滤字段的白名单;**空白名单 = 禁止一切
-    ///   过滤**,LLM 构造的过滤条件会被整条丢弃并记 warning。
+    /// - `allowed_attributes`:允许出现在过滤字段的白名单;**空白名单 = 过滤整体
+    ///   禁用**(LLM 返回的 filter 一律忽略并记 warning);**非空白名单下,过滤器
+    ///   引用白名单外字段会显式返回 [`RetrieverError::InvalidFilter`]**,不静默
+    ///   丢弃后回落无过滤检索。
     pub fn new(
         llm: impl Into<Arc<M>>,
         store: Arc<dyn VectorStore>,
@@ -116,26 +123,49 @@ impl<M: BaseChatModel> SelfQueryRetriever<M> {
         .map_err(|e| RetrieverError::LlmError(e.to_string()))
     }
 
-    /// 白名单校验:过滤里所有字段都在 `allowed_attributes` 内才放行;
-    /// 否则整条丢弃(拦截 LLM 用不存在的字段过滤,回退无过滤检索)。
-    fn validated_filter(&self, filter: &Option<MetadataFilter>) -> Option<MetadataFilter> {
-        let f = filter.as_ref()?;
-        if Self::fields_are_allowed(f, &self.allowed_attributes) {
-            filter.clone()
-        } else {
+    /// 白名单校验。
+    ///
+    /// - 无过滤器 → `Ok(None)`。
+    /// - 空白名单 = 过滤整体禁用:过滤器一律忽略(这是「禁用过滤」的既定模式,
+    ///   不是静默降级),记 warning 后 `Ok(None)`。
+    /// - 非空白名单下,过滤器引用白名单外字段 → `Err(InvalidFilter)`。绝不丢弃
+    ///   过滤器回落无过滤检索,否则本该被过滤排除的数据会被返回(数据面过曝)。
+    fn validated_filter(
+        &self,
+        filter: &Option<MetadataFilter>,
+    ) -> Result<Option<MetadataFilter>, RetrieverError> {
+        let Some(f) = filter else {
+            return Ok(None);
+        };
+        if self.allowed_attributes.is_empty() {
             log::warn!(
-                "SelfQuery: filter references a field not in allowed_attributes; dropping the filter"
+                "SelfQuery: filtering is disabled (empty allowed_attributes); ignoring filter"
             );
-            None
+            return Ok(None);
         }
+        if let Some(field) = Self::disallowed_field(f, &self.allowed_attributes) {
+            return Err(RetrieverError::InvalidFilter(format!(
+                "filter references `{field}`, which is not in allowed_attributes [{}]; \
+                 refusing to degrade to an unfiltered search",
+                self.allowed_attributes.join(", ")
+            )));
+        }
+        Ok(filter.clone())
     }
 
-    fn fields_are_allowed(filter: &MetadataFilter, allowed: &[String]) -> bool {
+    /// 第一个引用白名单外字段的 key,遍历嵌套的 And/Or 组合;全部在列则 `None`。
+    fn disallowed_field<'a>(filter: &'a MetadataFilter, allowed: &[String]) -> Option<&'a String> {
         match filter {
-            MetadataFilter::Field { key, .. } => allowed.iter().any(|a| a == key),
-            MetadataFilter::And(items) | MetadataFilter::Or(items) => {
-                items.iter().all(|f| Self::fields_are_allowed(f, allowed))
+            MetadataFilter::Field { key, .. } => {
+                if allowed.iter().any(|a| a == key) {
+                    None
+                } else {
+                    Some(key)
+                }
             }
+            MetadataFilter::And(items) | MetadataFilter::Or(items) => items
+                .iter()
+                .find_map(|f| Self::disallowed_field(f, allowed)),
         }
     }
 }
@@ -173,7 +203,7 @@ impl<M: BaseChatModel> RetrieverTrait for SelfQueryRetriever<M> {
         k: usize,
     ) -> Result<Vec<SearchResult>, RetrieverError> {
         let args = self.parse_query(query).await?;
-        let filter = self.validated_filter(&args.filter);
+        let filter = self.validated_filter(&args.filter)?;
 
         let query_embedding = self
             .embeddings
@@ -340,21 +370,45 @@ mod tests {
         );
     }
 
-    /// S4: 非法字段被白名单拦截 —— 整条 filter 丢弃,回退无过滤检索(全部返回)。
+    /// S2: 非法字段被白名单拦截 —— 显式报错,不静默丢弃过滤器回落无过滤检索。
     #[tokio::test]
-    async fn test_self_query_blocks_disallowed_attribute() {
+    async fn test_self_query_rejects_disallowed_attribute() {
         let store = store_with_docs().await;
         let llm = MockChatModel::new(
             r#"{"query": "rust", "filter": {"key": "nonexistent", "op": "eq", "value": 1}}"#,
         );
         let retriever = build_retriever(llm, store.clone(), &["source"]);
 
-        let results = retriever.retrieve("rust", 10).await.unwrap();
-        assert_eq!(
-            results.len(),
-            3,
-            "filter must be dropped, all docs returned"
+        let err = retriever.retrieve("rust", 10).await.unwrap_err();
+        assert!(matches!(err, RetrieverError::InvalidFilter(_)));
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    /// S2: 嵌套 And/Or 里出现白名单外字段同样显式报错。
+    #[tokio::test]
+    async fn test_self_query_rejects_disallowed_attribute_in_nested_and() {
+        let store = store_with_docs().await;
+        let llm = MockChatModel::new(
+            r#"{"query": "rust", "filter": {"And": [{"key": "source", "op": "eq", "value": "docs"}, {"key": "private", "op": "eq", "value": false}]}}"#,
         );
+        let retriever = build_retriever(llm, store.clone(), &["source"]);
+
+        let err = retriever.retrieve("rust", 10).await.unwrap_err();
+        assert!(matches!(err, RetrieverError::InvalidFilter(_)));
+        assert!(err.to_string().contains("private"));
+    }
+
+    /// S2: 空白名单 = 过滤整体禁用 —— filter 忽略并返回全部文档,不报错。
+    #[tokio::test]
+    async fn test_self_query_empty_whitelist_ignores_filter() {
+        let store = store_with_docs().await;
+        let llm = MockChatModel::new(
+            r#"{"query": "rust", "filter": {"key": "source", "op": "eq", "value": "docs"}}"#,
+        );
+        let retriever = build_retriever(llm, store.clone(), &[]);
+
+        let results = retriever.retrieve("rust", 10).await.unwrap();
+        assert_eq!(results.len(), 3, "filtering disabled -> all docs returned");
     }
 
     /// S4: 文本回落 —— 模型输出纯文本时整段当查询词,无过滤。

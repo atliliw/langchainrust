@@ -20,6 +20,17 @@ pub enum EvalError {
     /// 预测器(predictor)执行错误。
     #[error("prediction error: {0}")]
     PredictorError(String),
+    /// corpus 级评测的预测/参考样本数不一致(逐条对应)。
+    #[error(
+        "length mismatch: {predictions} predictions vs {references} references; \
+         sample counts must match"
+    )]
+    LengthMismatch {
+        /// 预测样本数
+        predictions: usize,
+        /// 参考样本数
+        references: usize,
+    },
 }
 
 /// P2-6: 共享裁判内核(lc-core::judge)的错误映射进评测错误域,

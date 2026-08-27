@@ -1,6 +1,6 @@
 [package]
 name = "lc-agents"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Agent system for langchainrust — ReAct, FunctionCalling, PlanExecute, CRAG, AdaptiveRAG, DeepResearch, Handoffs, Streaming"

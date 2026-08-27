@@ -21,6 +21,11 @@ pub enum RetrieverError {
     /// LLM 拆解失败(调用失败 / 输出无法解析)。SelfQuery(S4) 用。
     LlmError(String),
 
+    /// 过滤器引用了 `allowed_attributes` 白名单外的字段(SelfQuery)。
+    /// 显式报错,绝不静默丢弃后回落无过滤检索——那会让本该被过滤排除的
+    /// 数据被返回(数据面过曝)。
+    InvalidFilter(String),
+
     /// 无结果
     NoResults,
 }
@@ -31,6 +36,7 @@ impl std::fmt::Display for RetrieverError {
             RetrieverError::StoreError(e) => write!(f, "storage error: {}", e),
             RetrieverError::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
             RetrieverError::LlmError(msg) => write!(f, "LLM error: {}", msg),
+            RetrieverError::InvalidFilter(msg) => write!(f, "invalid filter: {}", msg),
             RetrieverError::NoResults => write!(f, "no relevant documents found"),
         }
     }

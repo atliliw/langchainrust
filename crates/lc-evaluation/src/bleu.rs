@@ -59,15 +59,17 @@ impl Bleu {
     /// 短句的匹配仍能贡献低阶精度。开启 `with_smoothing` 后某阶无匹配给小值
     /// 而非整体归零。
     ///
-    /// `predictions` 与 `references` 长度必须一致(逐条对应),否则 panic。
-    pub fn corpus_bleu(&self, predictions: &[&str], references: &[&str]) -> f64 {
-        assert_eq!(
-            predictions.len(),
-            references.len(),
-            "predictions and references sample counts do not match"
-        );
+    /// `predictions` 与 `references` 长度必须一致(逐条对应),否则返回
+    /// [`EvalError::LengthMismatch`](crate::EvalError::LengthMismatch)。
+    pub fn corpus_bleu(&self, predictions: &[&str], references: &[&str]) -> Result<f64, EvalError> {
+        if predictions.len() != references.len() {
+            return Err(EvalError::LengthMismatch {
+                predictions: predictions.len(),
+                references: references.len(),
+            });
+        }
         if predictions.is_empty() {
-            return 0.0;
+            return Ok(0.0);
         }
         let mut total = vec![0usize; self.max_n];
         let mut matches = vec![0usize; self.max_n];
@@ -89,7 +91,7 @@ impl Bleu {
             }
         }
         if pred_len == 0 {
-            return 0.0;
+            return Ok(0.0);
         }
         let mut log_precisions: Vec<f64> = Vec::new();
         for n in 0..self.max_n {
@@ -100,13 +102,13 @@ impl Bleu {
                 if self.smoothing {
                     continue;
                 }
-                return 0.0;
+                return Ok(0.0);
             } else if m == 0 {
                 if self.smoothing {
                     // 平滑:0 匹配给小值,避免 log(0) 把整体归零
                     0.5 / t as f64
                 } else {
-                    return 0.0;
+                    return Ok(0.0);
                 }
             } else {
                 m as f64 / t as f64
@@ -114,7 +116,7 @@ impl Bleu {
             log_precisions.push(p.ln());
         }
         if log_precisions.is_empty() {
-            return 0.0;
+            return Ok(0.0);
         }
         let geo_mean = log_precisions.iter().sum::<f64>() / log_precisions.len() as f64;
         // corpus 级 brevity penalty:总预测长度 vs 总参考长度
@@ -123,7 +125,7 @@ impl Bleu {
         } else {
             (1.0 - ref_len as f64 / pred_len as f64).exp()
         };
-        (bp * geo_mean.exp()).clamp(0.0, 1.0)
+        Ok((bp * geo_mean.exp()).clamp(0.0, 1.0))
     }
 }
 
@@ -294,10 +296,12 @@ mod tests {
     #[test]
     fn test_corpus_bleu_identical() {
         let ev = Bleu::new();
-        let v = ev.corpus_bleu(
-            &["the cat", "the dog sat on the mat"],
-            &["the cat", "the dog sat on the mat"],
-        );
+        let v = ev
+            .corpus_bleu(
+                &["the cat", "the dog sat on the mat"],
+                &["the cat", "the dog sat on the mat"],
+            )
+            .unwrap();
         assert!((v - 1.0).abs() < 1e-9);
     }
 
@@ -309,10 +313,12 @@ mod tests {
         let s = strict.eval("", "the cat", "the cat").await.unwrap();
         assert!((s.value - 0.0).abs() < 1e-9);
         // corpus 级:短句的匹配贡献低阶精度,整体不再为零
-        let v = strict.corpus_bleu(
-            &["the cat", "the dog sat on the mat"],
-            &["the cat", "the dog sat on the mat"],
-        );
+        let v = strict
+            .corpus_bleu(
+                &["the cat", "the dog sat on the mat"],
+                &["the cat", "the dog sat on the mat"],
+            )
+            .unwrap();
         assert!((v - 1.0).abs() < 1e-9);
     }
 
@@ -322,17 +328,31 @@ mod tests {
         let preds = &["the cat", "completely different"];
         let refs = &["the cat", "the dog"];
         let strict = Bleu::new();
-        let v0 = strict.corpus_bleu(preds, refs);
+        let v0 = strict.corpus_bleu(preds, refs).unwrap();
         assert!((v0 - 0.0).abs() < 1e-9, "strict 应为 0,实际 {v0}");
         let smooth = Bleu::new().with_smoothing(true);
-        let v1 = smooth.corpus_bleu(preds, refs);
+        let v1 = smooth.corpus_bleu(preds, refs).unwrap();
         assert!((v1 - 0.5).abs() < 1e-9, "平滑后应为 0.5,实际 {v1}");
     }
 
     /// P2-1: 空语料返回 0.0,不 panic。
     #[test]
     fn test_corpus_bleu_empty() {
-        let v = Bleu::new().corpus_bleu(&[], &[]);
+        let v = Bleu::new().corpus_bleu(&[], &[]).unwrap();
         assert!((v - 0.0).abs() < 1e-9);
+    }
+
+    /// S6: 预测/参考样本数不一致返回 LengthMismatch,不再 panic。
+    #[test]
+    fn test_corpus_bleu_length_mismatch_returns_err() {
+        let ev = Bleu::new();
+        let err = ev.corpus_bleu(&["a", "b"], &["a"]).unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::LengthMismatch {
+                predictions: 2,
+                references: 1
+            }
+        ));
     }
 }

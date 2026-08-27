@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "langchainrust"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2232,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "lc-a2a"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "lc-agents"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "lc-evaluation"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "lc-langgraph"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "lc-rag"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "async-trait",
  "bincode",

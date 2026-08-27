@@ -229,7 +229,9 @@ impl BaseAgent for ReActAgent {
         let mut usage: Option<TokenUsage> = None;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| AgentError::Other(format!("LLM stream error: {}", e)))?;
-            on_token(chunk.text.clone()).await;
+            if !chunk.text.is_empty() {
+                on_token(chunk.text.clone()).await;
+            }
             full.push_str(&chunk.text);
             if chunk.token_usage.is_some() {
                 usage = chunk.token_usage;

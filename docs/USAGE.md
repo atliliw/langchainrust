@@ -647,7 +647,7 @@ let assistant = OpenAIAssistant::create(&config, "gpt-4o", "You are a translator
 let answer = assistant.run_once("Translate: Hello").await?;
 ```
 
-**限制**：带工具调用的 Run（`requires_action`）尚未实现；会返回 `AssistantError::RequiresAction`。如需工具调用，请使用 `FunctionCallingAgent`。
+**Run 状态**：带工具调用的 Run（`requires_action`）在 `run_once` 的轮询循环内自动处理——`handle_requires_action` 会向 Assistant API 提交工具输出后继续轮询，直至 `completed` 或 `failed`。
 
 <a id="prompts"></a>
 ## 提示词

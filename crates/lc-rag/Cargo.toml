@@ -1,6 +1,6 @@
 [package]
 name = "lc-rag"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RAG (Retrieval-Augmented Generation) module for langchainrust — BM25, Hybrid Retrieval, GraphRAG, HyDE, Reranking, MultiQuery, Document Loaders"

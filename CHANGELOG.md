@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-08-27
+
+Patch release fixing the 7 review findings from the 0.18.0 gate.
+
+### Fixed
+- **Sandbox path traversal in `A2AServer`** (`lc-a2a`): file reads/writes are now checked against a normalized (canonicalized) sandbox root and any path containing `..` is rejected outright. Previously a request could escape the sandbox via lexical `..` components or a symlinked ancestor and read/write files outside the root (S1)
+- **`SelfQueryRetriever` refuses to degrade silently** (`lc-rag`): a generated filter referencing a field outside `allowed_attributes` now returns `RetrieverError::InvalidFilter` instead of dropping the filter and running an unfiltered search; an empty whitelist (filtering disabled) still logs a warning and ignores the filter (S2)
+- **`FileCheckpointer` writes atomically** (`lc-langgraph`): `save` writes to a `.tmp` sibling then renames, so a crash mid-write can no longer leave a truncated checkpoint visible to `list` (S3)
+- **Docs corrected** (`langchainrust`): USAGE.md / USAGE_EN.md now state that `run_once` resolves `requires_action` inside its own polling loop (it does not abandon the run); the CHANGELOG wording about `crates/lc/tests/` now correctly says the directory stays gitignored by design (S4, S5)
+- **Breaking — `corpus_bleu` returns `Result`** (`lc-evaluation`): a predictions/references length mismatch returns `Err(EvalError::LengthMismatch { predictions, references })` instead of silently returning a meaningless score; every exit path is now `Ok` (S6)
+- **ReAct streaming drops empty chunks** (`lc-agents`): the final-answer stream no longer emits empty-string tokens, matching the FunctionCalling agent (S7)
+
+### Migration
+- **`corpus_bleu` callers** (`lc-evaluation`): the return type is now `Result<f64, EvalError>`; callers must `?` / `.unwrap()` / match on `EvalError::LengthMismatch`
+
 ## [0.18.0] - 2026-08-26
 
 ### Added
@@ -20,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Breaking — `stream_chat` chunk type** (workspace): the chunk is `StreamChunk` instead of `String`; consumers destructure `text`, and streaming token usage is now available directly instead of relying on non-streaming `invoke` (S1)
 - **Breaking — `VectorStore` trait** (`lc-vector-stores`): third-party implementations must add `similarity_search_with_filter` (the default delegates to `similarity_search` when `filter: None` and errors on unsupported filters) (S3)
-- **11 known-failing online tests marked `#[ignore]` with reasons** (`langchainrust`): `crates/lc/tests/` is now tracked instead of gitignored; the failing cases (chains 7× model-permission `AccessDenied.Unpurchased`, core f04 / evaluation f06 output drift, mcp f10/f11 remote unreachable) are explicit `#[ignore]` with the cause noted, and the passing online tests run in CI (S8)
+- **11 known-failing online tests marked `#[ignore]` with reasons** (`langchainrust`): `crates/lc/tests/` remains gitignored by design (functional-test directory stays out of git/CI, run locally only); the failing cases (chains 7× model-permission `AccessDenied.Unpurchased`, core f04 / evaluation f06 output drift, mcp f10/f11 remote unreachable) are explicit `#[ignore]` with the cause noted (S8)
 
 ### Migration
 - **`docs/internal/v0.18.0/MIGRATION_0.17_to_0.18.md`**: covers the `StreamChunk` destructure and the `VectorStore` trait addition (S9)

@@ -1,6 +1,6 @@
 [package]
 name = "lc-evaluation"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Evaluation framework for langchainrust — Evaluator trait, built-in evaluators, dataset runner"
