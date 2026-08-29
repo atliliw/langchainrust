@@ -204,6 +204,9 @@ impl SimpleMathTool {
         })
     }
 
+    // clippy::only_used_in_recursion 误报(stable 1.86+ 报,1.85 不报):
+    // 基准分支 `b == 0 => return a` 实际使用了参数 `a`,并非"只在递归中用到"。
+    #[allow(clippy::only_used_in_recursion)]
     fn compute_gcd(&self, a: i64, b: i64) -> i64 {
         if b == 0 {
             a

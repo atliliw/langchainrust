@@ -34,7 +34,7 @@ pub use local::BagOfWordsEmbeddings;
 // old fallback alias was removed); users must explicitly choose — `BagOfWordsEmbeddings` or
 // the ONNX version via the feature.
 #[cfg(feature = "local-embeddings")]
-pub use local::LocalEmbeddings;
+pub use local::{LocalEmbeddings, LocalEmbeddingsBuilder};
 pub use mock::MockEmbeddings;
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};

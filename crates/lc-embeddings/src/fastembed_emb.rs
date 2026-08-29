@@ -16,6 +16,8 @@
 //! let vec = embedder.embed_query("hello world").await?;
 //! ```
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
@@ -25,7 +27,9 @@ use crate::{EmbeddingError, Embeddings};
 ///
 /// Wraps the `fastembed::TextEmbedding` ONNX Runtime engine.
 pub struct FastEmbedEmbeddings {
-    model: TextEmbedding,
+    // `TextEmbedding::embed` 需要 `&mut self`,而 `Embeddings` trait 方法只给 `&self`;
+    // 用 `Arc<Mutex<>>` 提供内部可变性,并让 `spawn_blocking` 能以 `'static` 捕获模型。
+    model: Arc<Mutex<TextEmbedding>>,
     model_name: String,
     dimension: usize,
 }
@@ -53,7 +57,7 @@ impl FastEmbedEmbeddings {
         })?;
 
         Ok(Self {
-            model,
+            model: Arc::new(Mutex::new(model)),
             model_name,
             dimension,
         })
@@ -181,10 +185,13 @@ impl Embeddings for FastEmbedEmbeddings {
         }
 
         let text = text.to_string();
-        let model_ref = &self.model;
+        let model = Arc::clone(&self.model);
 
         tokio::task::spawn_blocking(move || {
-            let result = model_ref.embed(vec![text.as_str()], None).map_err(|e| {
+            let mut model = model.lock().map_err(|e| {
+                EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
+            })?;
+            let result = model.embed(vec![text.as_str()], None).map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed inference failed: {}", e))
             })?;
 
@@ -207,11 +214,14 @@ impl Embeddings for FastEmbedEmbeddings {
         }
 
         let text_vec: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        let model_ref = &self.model;
+        let model = Arc::clone(&self.model);
 
         tokio::task::spawn_blocking(move || {
+            let mut model = model.lock().map_err(|e| {
+                EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
+            })?;
             let str_vec: Vec<&str> = text_vec.iter().map(|s| s.as_str()).collect();
-            let result = model_ref.embed(str_vec, None).map_err(|e| {
+            let result = model.embed(str_vec, None).map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed batch inference failed: {}", e))
             })?;
 

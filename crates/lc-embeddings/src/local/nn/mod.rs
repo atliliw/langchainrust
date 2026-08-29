@@ -301,13 +301,21 @@ impl LocalInner {
             ));
         }
 
-        let outputs = guard
-            .session()?
+        let session = guard.session()?;
+        // ort 2.0 的 `SessionOutputs::get` 只接受输出名(字符串),不接受索引;
+        // 输出名从 session 声明的元数据取第一个,而非硬编码 "output"(各模型输出名不同)。
+        let output_name = session
+            .outputs()
+            .first()
+            .map(|o| o.name().to_string())
+            .ok_or_else(|| EmbeddingError::ParseError("ONNX model has no output".to_string()))?;
+
+        let outputs = session
             .run(named)
             .map_err(|e| EmbeddingError::ApiError(format!("ONNX inference failed: {e}")))?;
 
         let output_value = outputs
-            .get(0)
+            .get(&output_name)
             .ok_or_else(|| EmbeddingError::ParseError("ONNX model has no output".to_string()))?;
         let (shape, data) = output_value.try_extract_tensor::<f32>().map_err(|e| {
             EmbeddingError::ParseError(format!("Failed to extract output tensor: {e}"))
