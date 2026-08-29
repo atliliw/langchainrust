@@ -243,7 +243,7 @@ impl LocalInner {
             .collect();
 
         let input_shape = vec![batch as i64, fed_seq_len as i64];
-        let input_tensor = Tensor::from_array((input_shape, input_ids)).map_err(|e| {
+        let input_tensor = Tensor::from_array((input_shape.clone(), input_ids)).map_err(|e| {
             EmbeddingError::ApiError(format!("Failed to construct input_ids tensor: {e}"))
         })?;
         let attention_tensor =
