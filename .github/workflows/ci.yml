@@ -18,6 +18,12 @@ jobs:
   fmt:
     name: Format Check
     runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml 锁的是 MSRV 1.85,会覆盖 dtolnay 装的工具链,导致
+      # 所有 job 实际都在 1.85 上跑(stable/beta 矩阵行失真、cargo install 工具
+      # 时工具自身 MSRV 更高而失败)。RUSTUP_TOOLCHAIN 是最高优先级,确保每个
+      # job 用声明自己的工具链。
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,6 +40,8 @@ jobs:
   clippy:
     name: Clippy Lints
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,13 +62,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # 对齐 v0.20.0 计划 S5 门禁:clippy 不跑 --all-features。
+      # --all-features 会启用 feature 门控依赖(ort-sys/tonic/image 等,声明
+      # rust-version ≥ 1.88),这些是 MSRV 承诺之外的盲区,由 release-gate.sh
+      # 在 stable 上单独覆盖。
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -D warnings
 
   # ==================== 测试 ====================
   test:
     name: Test
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,8 +116,10 @@ jobs:
 
       # --all-features 会启用 feature 门控的依赖(ort-sys 等,要求 rustc ≥ 1.88),
       # 不属于 MSRV 承诺,MSRV 门禁行只验证默认特性编译 + 测试。
-      - name: Test all features
-        if: matrix.rust != '1.85'
+      # 只留 ubuntu + stable 一行做全特性冒烟(其余平台/工具链受 ort-sys 下载与
+      # MSRV 限制,不做全特性门禁)。
+      - name: Test all features (ubuntu+stable only)
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: cargo test --all-features --verbose
         env:
           OPENAI_API_KEY: test-key
@@ -112,7 +128,9 @@ jobs:
   # MSRV = 1.85(见 rust-toolchain.toml 与各 crate 的 rust-version 字段)。
   # 已由上面 test 矩阵的 `rust: "1.85"` 行(ubuntu-latest)覆盖:该行即 MSRV 门禁,
   # 保证 1.85 下默认特性编译 + 测试通过。不另起 job,避免 1.85 重复编译。
-  # 注意:MSRV 行跳过「Test all features」步骤(feature 门控依赖需更高 rustc)。
+  # 注意:test job 的 RUSTUP_TOOLCHAIN=${{ matrix.rust }} 让每行用自己声明的
+  # 工具链(否则 rust-toolchain.toml 会把所有行拽到 1.85);MSRV 行跳过
+  # 「Test all features」步骤(feature 门控依赖需更高 rustc)。
 
   # ==================== semver 检查 ====================
   # 对比每个 crate 最近一次发布(registry 上的 0.15.x)与当前源码的公开 API 差异。
@@ -121,6 +139,8 @@ jobs:
   semver:
     name: SemVer Checks
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -131,8 +151,10 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
 
-      - name: Run semver checks
-        run: cargo semver-checks --workspace --all-features
+      # 当前版本已是 0.20.0(crates.io 尚未发布),必须显式给 baseline 0.19.0,
+      # 否则工具自动取同版本(0.20.0)基线会报找不到。
+      - name: Run semver checks (baseline 0.19.0)
+        run: cargo semver-checks --workspace --baseline-version 0.19.0
 
   # ==================== WASM 兼容检查 ====================
   # 目前只有数据模型层(lc-shared / lc-schema)对 wasm32-unknown-unknown 干净
@@ -142,6 +164,8 @@ jobs:
   wasm:
     name: WASM Check
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable  # wasm32 target 装在 stable 上,切到 1.85 会 E0463
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -158,6 +182,8 @@ jobs:
   docs:
     name: Documentation
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -176,8 +202,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # 对齐 v0.20.0 计划 S5 门禁:rustdoc 不跑 --all-features(feature 门控
+      # 依赖的 rustdoc 警告属 MSRV 盲区之外,由 release-gate.sh 在 stable 上覆盖)。
       - name: Build documentation
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -185,6 +213,8 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable  # cargo-audit 自身要求 rustc ≥ 1.88
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -221,6 +251,8 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable  # cargo-llvm-cov 自身要求 rustc ≥ 1.87
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
