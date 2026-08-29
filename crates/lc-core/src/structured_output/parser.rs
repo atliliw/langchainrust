@@ -81,11 +81,7 @@ impl PartialJsonParser {
             if !self.in_string {
                 match ch {
                     '{' | '[' => self.depth += 1,
-                    '}' | ']' => {
-                        if self.depth > 0 {
-                            self.depth -= 1;
-                        }
-                    }
+                    '}' | ']' if self.depth > 0 => self.depth -= 1,
                     _ => {}
                 }
             }

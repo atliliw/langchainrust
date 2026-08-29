@@ -41,14 +41,15 @@ jobs:
     name: Clippy Lints
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: stable
+      RUSTUP_TOOLCHAIN: "1.85"  # clippy 跟随 MSRV 门禁,理由见下方 Run clippy 注释
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (1.85)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.85"
           components: clippy
 
       - name: Cache cargo registry
@@ -62,10 +63,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # 对齐 v0.20.0 计划 S5 门禁:clippy 不跑 --all-features。
-      # --all-features 会启用 feature 门控依赖(ort-sys/tonic/image 等,声明
-      # rust-version ≥ 1.88),这些是 MSRV 承诺之外的盲区,由 release-gate.sh
-      # 在 stable 上单独覆盖。
+      # clippy 跑 MSRV 工具链(1.85),与 test 矩阵 MSRV 行、仓库 MSRV 承诺一致。
+      # stable clippy(1.86+)会暴露 1.85 开发者看不见的新 lint(如
+      # collapsible-match),造成「push→CI 红→改→再 push」打地鼠;且本机 stable
+      # 工具链为 windows-gnu、仓库构建目标是 msvc,无法在本地预演 stable clippy。
+      # 1.85 clippy 已本地验证全 workspace --all-targets -D warnings 零 lint
+      # (2026-08-29)。
+      # 不跑 --all-features:feature 门控依赖(ort-sys/tonic 等,rust-version ≥ 1.88)
+      # 属 MSRV 承诺之外盲区,由 release-gate.sh 在 stable 上单独覆盖。
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
