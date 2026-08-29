@@ -9,8 +9,6 @@
 //!
 //! Note: requires the `opentelemetry` feature.
 
-use langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== OpenTelemetry tracing example ===\n");
@@ -24,13 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("2. Exports spans to an OpenTelemetry Collector");
     println!("3. Supports backends such as Jaeger/Zipkin/Prometheus");
     println!("\nUsage:");
-    println!("  let handler = OtelHandler::new();");
+    println!("  let handler = OtelHandler::from_global(\"langchainrust\");");
     println!("  llm.with_callback(handler).chat(messages, None).await?;");
 
     #[cfg(feature = "opentelemetry")]
     {
         use langchainrust::OtelHandler;
-        let _handler = OtelHandler::new();
+        let _handler = OtelHandler::from_global("langchainrust");
         println!("\n✅ opentelemetry feature is enabled, OtelHandler is available");
     }
 
