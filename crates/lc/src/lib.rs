@@ -95,7 +95,8 @@ pub use core::batch::{
 };
 pub use core::language_models::wrap_chat_model;
 pub use core::language_models::{
-    predict_tools, LLMResult, PredictToolsError, StreamChunk, TokenUsage,
+    predict_tools, LLMResult, MultimodalError, MultimodalModel, PredictToolsError, StreamChunk,
+    TokenUsage,
 };
 pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};

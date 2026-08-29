@@ -417,6 +417,7 @@ mod tests {
                         completion_tokens: 5,
                         total_tokens: 15,
                     }),
+                    tool_calls: None,
                 }),
             ];
             Ok(Box::pin(futures_util::stream::iter(chunks)))

@@ -86,18 +86,16 @@ use lc_chains::base::BaseChain;
 use super::agent_adapter::AgentExecutorChain;
 
 use super::protocol::{
-    A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, A2ATaskResult, A2AWorkflow,
-    AgentCard, AgentSkill, TaskFilter, TaskPushNotification, TaskStatus,
+    A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, A2AWorkflow, AgentCard, AgentSkill,
+    TaskFilter, TaskPushNotification, TaskStatus,
 };
 use super::rate_limiter::RateLimiter;
 use super::router::{SkillMapRouter, SkillRouter};
 use super::store::{InMemoryTaskStore, StoredTask, TaskStore, DEFAULT_MAX_TASKS};
 
-use execution::{run_task, sweep_expired_tasks, InflightResume};
-use handlers::{
-    forbidden, publish_artifact, publish_status, task_details_response, task_not_found,
-};
-use message::{build_chain_input, extract_message, extract_output};
+use execution::{run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX_WORKFLOW_STEPS};
+use handlers::{forbidden, publish_status, task_details_response, task_not_found};
+use message::extract_message;
 
 /// Default task time-to-live before expiry cleanup (24 hours).
 const DEFAULT_TASK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -322,16 +320,31 @@ impl A2AServer {
         req: A2ARequest,
         bearer: Option<&str>,
     ) -> A2AResponse {
+        if let Err(resp) = self.check_auth(bearer) {
+            return resp;
+        }
+        self.handle_a2a_request(req).await
+    }
+
+    /// Validate the bearer token if the server requires one.
+    ///
+    /// Returns `Ok(())` when no token is configured or the token matches;
+    /// otherwise `Err` carries the 401 [`A2AResponse`] to return to the caller.
+    ///
+    /// Shared by the JSON-RPC handler and the SSE streaming endpoint so a
+    /// `with_auth_token` server cannot be bypassed by connecting to `/events`
+    /// directly (0.20.0 S4 G1).
+    pub(crate) fn check_auth(&self, bearer: Option<&str>) -> Result<(), A2AResponse> {
         if let Some(expected) = &self.expected_token {
             match bearer {
-                None => return A2AResponse::error(req.id, 401, "Authentication required"),
+                None => return Err(A2AResponse::error(0, 401, "Authentication required")),
                 Some(token) if token != expected => {
-                    return A2AResponse::error(req.id, 401, "Invalid authentication token");
+                    return Err(A2AResponse::error(0, 401, "Invalid authentication token"));
                 }
                 Some(_) => {}
             }
         }
-        self.handle_a2a_request(req).await
+        Ok(())
     }
 
     /// Dispatch a request to the matching handler.

@@ -148,6 +148,40 @@ impl FunctionCallingAgent {
 
         messages
     }
+
+    /// Converts complete [`ToolCall`]s from an LLM response into an [`AgentOutput`].
+    ///
+    /// Shared by the non-streaming [`BaseAgent::plan`] and the streaming
+    /// [`BaseAgent::plan_stream`]: both receive the same native `tool_calls`
+    /// shape, so they build actions identically. 0.20.0 S3.2: `plan_stream`
+    /// now reaches this through the streamed chunks instead of a non-streaming
+    /// fallback.
+    fn output_from_tool_calls(tool_calls: &[ToolCall]) -> AgentOutput {
+        let actions: Vec<AgentAction> = tool_calls
+            .iter()
+            .map(|call| {
+                let tool_input =
+                    match serde_json::from_str::<serde_json::Value>(&call.function.arguments) {
+                        Ok(v) => ToolInput::Object { value: v },
+                        Err(_) => ToolInput::String {
+                            value: call.function.arguments.clone(),
+                        },
+                    };
+
+                AgentAction {
+                    tool: call.function.name.clone(),
+                    tool_input,
+                    log: call.id.clone(),
+                }
+            })
+            .collect();
+
+        if actions.len() == 1 {
+            AgentOutput::Action(actions.into_iter().next().expect("checked len == 1"))
+        } else {
+            AgentOutput::Actions(actions)
+        }
+    }
 }
 
 #[async_trait]
@@ -175,31 +209,7 @@ impl BaseAgent for FunctionCallingAgent {
 
         if let Some(tool_calls) = &result.tool_calls {
             if !tool_calls.is_empty() {
-                let actions: Vec<AgentAction> = tool_calls
-                    .iter()
-                    .map(|call| {
-                        let tool_input = match serde_json::from_str::<serde_json::Value>(
-                            &call.function.arguments,
-                        ) {
-                            Ok(v) => ToolInput::Object { value: v },
-                            Err(_) => ToolInput::String {
-                                value: call.function.arguments.clone(),
-                            },
-                        };
-
-                        AgentAction {
-                            tool: call.function.name.clone(),
-                            tool_input,
-                            log: call.id.clone(),
-                        }
-                    })
-                    .collect();
-
-                if actions.len() == 1 {
-                    return Ok(AgentOutput::Action(actions.into_iter().next().unwrap()));
-                } else {
-                    return Ok(AgentOutput::Actions(actions));
-                }
+                return Ok(Self::output_from_tool_calls(tool_calls));
             }
         }
 
@@ -209,22 +219,23 @@ impl BaseAgent for FunctionCallingAgent {
         )))
     }
 
-    /// Streaming plan (S2): goes through `stream_chat`, forwarding model text
-    /// token by token and accumulating usage.
+    /// Streaming plan (S2 + 0.20.0 S3.2): goes through `stream_chat`, forwarding
+    /// model text token by token and accumulating usage **and tool calls**.
     ///
     /// The function-calling agent's **final answer** streams out as text token by
-    /// token (typewriter effect); but on **tool-call steps** the model returns no
-    /// text (content is empty, `tool_calls` arrive in increments), and the current
-    /// `stream_chat` chunks only carry text and usage, not `tool_calls` — so the
-    /// streaming path cannot reconstruct tool calls. When the accumulated text is
-    /// empty it falls back to non-streaming [`BaseAgent::plan`] to get the native
-    /// `tool_calls`, avoiding a fake "empty text → empty Finish" stream that would
-    /// end the agent loop early. If `stream_chat` fails immediately, it likewise
-    /// falls back to non-streaming `plan()`.
-    /// Honest boundary: when the model emits both text and a tool call in a single
-    /// step, only the text is kept (the tool call is lost) — consistent with the
-    /// provider layer's chunks not carrying `tool_calls`; the v0.18 plan document
-    /// leaves "chunks carrying thinking / tool_calls increments" as future work.
+    /// token (typewriter effect). **Tool-call steps** now stream natively too:
+    /// providers that support streaming `tool_calls` (OpenAI / Azure and their
+    /// delegates) attach the complete tool calls to the terminal `StreamChunk`
+    /// (`StreamChunk.tool_calls`), which `plan_stream` accumulates and converts
+    /// into [`AgentOutput::Action`]/[`AgentOutput::Actions`] — no non-streaming
+    /// fallback needed, so the agent loop does not emit a fake "empty Finish".
+    /// **Mixed steps** (text + tool calls) keep both: the text already streamed
+    /// via `on_token`, the tool calls preserved here.
+    ///
+    /// The non-streaming [`BaseAgent::plan`] fallback remains only as a safety net
+    /// for: `stream_chat` failing immediately, or a provider that yields neither
+    /// text nor `tool_calls` on the stream (e.g. one without streaming tool-call
+    /// support when the model makes a tool call).
     async fn plan_stream(
         &self,
         intermediate_steps: &[AgentStep],
@@ -248,9 +259,12 @@ impl BaseAgent for FunctionCallingAgent {
             }
         };
 
-        // Token by token: forward non-empty text, accumulate the full text + the last non-None usage.
+        // Token by token: forward non-empty text, accumulate the full text + the
+        // last non-None usage, and the last non-empty set of complete tool calls
+        // (providers attach them to the terminal chunk).
         let mut full = String::new();
         let mut usage: Option<TokenUsage> = None;
+        let mut tool_calls: Option<Vec<ToolCall>> = None;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| AgentError::Other(format!("LLM stream error: {}", e)))?;
             if !chunk.text.is_empty() {
@@ -260,18 +274,33 @@ impl BaseAgent for FunctionCallingAgent {
             if chunk.token_usage.is_some() {
                 usage = chunk.token_usage;
             }
+            // 0.20.0 S3.2: take the last non-empty tool_calls set so a tool-call
+            // step is returned natively below instead of falling back.
+            if let Some(tc) = &chunk.tool_calls {
+                if !tc.is_empty() {
+                    tool_calls = Some(tc.clone());
+                }
+            }
         }
         if let Ok(mut guard) = self.last_token_usage.lock() {
             *guard = usage;
         }
 
-        // Tool-call steps produce no model text: the streaming chunks carry no
-        // tool_calls, so fall back to non-streaming plan() to get the native tool
-        // calls, keeping the agent loop from ending early on an "empty Finish".
+        // 0.20.0 S3.2: tool-call steps stream natively — return the accumulated
+        // tool_calls as Action/Actions. Mixed steps keep both: the text already
+        // streamed via on_token, the tool calls preserved here.
+        if let Some(tc) = &tool_calls {
+            return Ok(Self::output_from_tool_calls(tc));
+        }
+
+        // Neither text nor tool_calls on the stream (a provider without streaming
+        // tool-call support on a tool-call step, or an empty reply): fall back to
+        // non-streaming plan() so the agent loop does not end early on an empty
+        // Finish.
         if full.trim().is_empty() {
             log::debug!(
-                "streamed plan produced no text (likely a tool call), \
-                 falling back to non-streaming plan for tool_calls"
+                "streamed plan produced neither text nor tool_calls, \
+                 falling back to non-streaming plan"
             );
             let output = self.plan(intermediate_steps, inputs).await?;
             if let AgentOutput::Finish(finish) = &output {
@@ -556,6 +585,7 @@ mod tests {
                         completion_tokens: 5,
                         total_tokens: 15,
                     }),
+                    tool_calls: None,
                 },
             ]),
             text_result("unused"),
@@ -586,11 +616,13 @@ mod tests {
         assert_eq!(llm.calls(), vec!["stream_chat"]);
     }
 
-    /// S2: tool-call steps produce no model text and streaming chunks carry no
-    /// tool_calls — `plan_stream` falls back to non-streaming `plan()` to get the
-    /// native tool calls, without a fake "empty Finish" stream.
+    /// S2 + 0.20.0 S3.2: a provider **without** streaming tool_calls support
+    /// yields only empty text + usage chunks on a tool-call step — `plan_stream`
+    /// falls back to non-streaming `plan()` to get the native tool calls, without
+    /// a fake "empty Finish" stream. Providers that DO stream tool_calls take the
+    /// native path (see `test_..._streams_tool_call_natively`).
     #[tokio::test]
-    async fn test_function_calling_plan_stream_falls_back_for_tool_call() {
+    async fn test_function_calling_plan_stream_falls_back_when_no_streaming_tool_calls() {
         // Simulate a tool-call step: the stream only returns empty text + usage chunks.
         let llm = MockFuncLLM::new(
             Some(vec![StreamChunk {
@@ -600,6 +632,7 @@ mod tests {
                     completion_tokens: 0,
                     total_tokens: 5,
                 }),
+                tool_calls: None,
             }]),
             calculator_call_result(),
         );
@@ -655,5 +688,96 @@ mod tests {
         assert!(matches!(output, AgentOutput::Finish(_)));
         // stream_chat fails immediately → fall back to non-streaming chat, the whole answer forwarded as a single Text event.
         assert_eq!(llm.calls(), vec!["stream_chat", "chat"]);
+    }
+
+    /// 0.20.0 S3.2: a provider WITH streaming tool_calls support lets a pure
+    /// tool-call step stream natively — the terminal chunk carries the tool calls,
+    /// so `plan_stream` returns Action without a non-streaming fallback (no `chat`
+    /// call at all).
+    #[tokio::test]
+    async fn test_function_calling_plan_stream_streams_tool_call_natively() {
+        let tool_chunk = StreamChunk {
+            text: String::new(),
+            token_usage: Some(TokenUsage {
+                prompt_tokens: 5,
+                completion_tokens: 0,
+                total_tokens: 5,
+            }),
+            tool_calls: Some(vec![ToolCall::builder("call_1")
+                .name("calculator")
+                .arguments(r#"{"expression": "2+3"}"#)
+                .build()]),
+        };
+        let llm = MockFuncLLM::new(Some(vec![tool_chunk]), text_result("unused"));
+        let (agent, llm) = streaming_agent(llm);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "计算 2 + 3".to_string());
+        let mut emitted: Vec<String> = Vec::new();
+        let mut on_token = |text: String| {
+            emitted.push(text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("plan_stream should succeed");
+
+        assert!(
+            matches!(&output, AgentOutput::Action(a) if a.tool == "calculator"),
+            "tool-call step must return Action natively"
+        );
+        assert!(emitted.is_empty(), "no free text on a pure tool-call step");
+        // Native path: only stream_chat ran — no non-streaming fallback.
+        assert_eq!(llm.calls(), vec!["stream_chat"]);
+    }
+
+    /// 0.20.0 S3.2: a mixed step (model emits text AND a tool call in one stream)
+    /// keeps both — the text streams out token by token via on_token, and the
+    /// tool call is returned as an Action (previously the tool call was silently
+    /// dropped).
+    #[tokio::test]
+    async fn test_function_calling_plan_stream_mixed_step_keeps_text_and_tool_call() {
+        let llm = MockFuncLLM::new(
+            Some(vec![
+                StreamChunk::new("Let me compute"),
+                StreamChunk {
+                    text: String::new(),
+                    token_usage: Some(TokenUsage {
+                        prompt_tokens: 5,
+                        completion_tokens: 0,
+                        total_tokens: 5,
+                    }),
+                    tool_calls: Some(vec![ToolCall::builder("call_1")
+                        .name("calculator")
+                        .arguments(r#"{"expression": "2+3"}"#)
+                        .build()]),
+                },
+            ]),
+            text_result("unused"),
+        );
+        let (agent, llm) = streaming_agent(llm);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "计算 2 + 3".to_string());
+        let mut emitted: Vec<String> = Vec::new();
+        let mut on_token = |text: String| {
+            emitted.push(text);
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()> + Send>>
+        };
+
+        let output = agent
+            .plan_stream(&[], &inputs, &mut on_token)
+            .await
+            .expect("plan_stream should succeed");
+
+        assert_eq!(emitted, vec!["Let me compute"], "preamble streams out");
+        assert!(
+            matches!(&output, AgentOutput::Action(a) if a.tool == "calculator"),
+            "tool call preserved, not dropped"
+        );
+        // Native path throughout — no non-streaming fallback.
+        assert_eq!(llm.calls(), vec!["stream_chat"]);
     }
 }

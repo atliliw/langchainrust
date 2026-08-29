@@ -1,9 +1,17 @@
 // lc-tools/src/sandbox/mod.rs
-//! Code Interpreter Sandbox for secure code execution.
+//! Code Interpreter Sandbox for pluggable code execution.
 //!
-//! Provides a pluggable sandbox architecture for executing code in isolated environments.
-//! The [`CodeSandbox`] trait defines the interface for sandbox backends, and [`SandboxTool`]
-//! wraps any sandbox implementation as a [`BaseTool`] usable by agents.
+//! Provides a pluggable architecture for executing code. The [`CodeSandbox`] trait
+//! defines the interface for sandbox backends, and [`SandboxTool`] wraps any sandbox
+//! implementation as a [`BaseTool`] usable by agents.
+//!
+//! # Security
+//!
+//! [`SandboxTool`] is **disabled by default**: code does not run until
+//! [`SandboxTool::with_dangerously_allow`] is called. This is deliberate — the bundled
+//! [`LocalSandbox`] backend is a plain subprocess + timeout with **no OS-level
+//! isolation**. Treat it as *convenience*, not a security boundary: untrusted code
+//! must run in a real sandbox (container / VM / WASM).
 //!
 //! # Backends
 //!
@@ -95,25 +103,40 @@ struct SandboxInput {
 }
 
 /// A [`BaseTool`] that executes code in a sandboxed environment.
+///
+/// **Disabled by default.** Call [`SandboxTool::with_dangerously_allow`] to enable
+/// execution. See the [module docs](self) for the security model.
 pub struct SandboxTool<S: CodeSandbox> {
     sandbox: S,
     language: Language,
     timeout_ms: u64,
+    /// Whether code execution is allowed (default false, must explicitly opt in).
+    dangerously_allow: bool,
 }
 
 impl<S: CodeSandbox> SandboxTool<S> {
     /// Create a new sandbox tool with the given backend and default language.
+    ///
+    /// Execution is **disabled** until
+    /// [`with_dangerously_allow`](Self::with_dangerously_allow) is called.
     pub fn new(sandbox: S, language: Language) -> Self {
         Self {
             sandbox,
             language,
             timeout_ms: 30_000,
+            dangerously_allow: false,
         }
     }
 
     /// Set the execution timeout in milliseconds.
     pub fn with_timeout(mut self, ms: u64) -> Self {
         self.timeout_ms = ms;
+        self
+    }
+
+    /// Explicitly enables code execution (disabled by default).
+    pub fn with_dangerously_allow(mut self, allow: bool) -> Self {
+        self.dangerously_allow = allow;
         self
     }
 }
@@ -126,6 +149,7 @@ impl<S: CodeSandbox + 'static> BaseTool for SandboxTool<S> {
 
     fn description(&self) -> &str {
         "Execute code in a sandboxed environment. \
+         Disabled by default for security; call .with_dangerously_allow(true) to enable. \
          Input JSON: {\"code\": \"...\"}. \
          Returns stdout, stderr, exit_code, and execution_time_ms. \
          Supported languages depend on the sandbox backend."
@@ -138,6 +162,14 @@ impl<S: CodeSandbox + 'static> BaseTool for SandboxTool<S> {
         if parsed.code.trim().is_empty() {
             return Err(ToolError::InvalidInput(
                 "code must not be empty".to_string(),
+            ));
+        }
+
+        if !self.dangerously_allow {
+            return Err(ToolError::ExecutionFailed(
+                "SandboxTool is disabled by default for security. \
+                 Call .with_dangerously_allow(true) to enable execution."
+                    .to_string(),
             ));
         }
 
@@ -246,8 +278,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sandbox_tool_run_success() {
+    async fn test_sandbox_tool_disabled_by_default() {
+        // 0.20.0 S4 P-C1: execution is off until explicitly enabled.
         let tool = SandboxTool::new(MockSandbox, Language::Python);
+        let result = tool.run(r#"{"code": "print(1+1)"}"#.to_string()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("disabled by default"),
+            "expected disabled-by-default gate, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sandbox_tool_run_success() {
+        let tool = SandboxTool::new(MockSandbox, Language::Python).with_dangerously_allow(true);
         let result = tool.run(r#"{"code": "print(1+1)"}"#.to_string()).await;
         assert!(result.is_ok());
         let output: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
@@ -287,7 +333,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_sandbox_tool_timeout_maps_to_tool_error() {
-        let tool = SandboxTool::new(TimeoutSandbox, Language::Python).with_timeout(5000);
+        let tool = SandboxTool::new(TimeoutSandbox, Language::Python)
+            .with_timeout(5000)
+            .with_dangerously_allow(true);
         let result = tool
             .run(r#"{"code": "while True: pass"}"#.to_string())
             .await;
@@ -315,7 +363,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sandbox_tool_unsupported_language() {
-        let tool = SandboxTool::new(UnsupportedSandbox, Language::Rust);
+        let tool =
+            SandboxTool::new(UnsupportedSandbox, Language::Rust).with_dangerously_allow(true);
         let result = tool.run(r#"{"code": "fn main(){}"}"#.to_string()).await;
         assert!(result.is_err());
     }

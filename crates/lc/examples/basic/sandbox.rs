@@ -1,6 +1,9 @@
 //! Code sandbox example
 //!
-//! Demonstrates secure code execution with LocalSandbox: subprocess isolation + timeout kill.
+//! Demonstrates LocalSandbox (subprocess + timeout). Note: LocalSandbox is a plain
+//! subprocess with **no OS-level isolation** — the bundled import blacklist is a noise
+//! filter, not a security boundary. It is disabled by default when wrapped in
+//! [`SandboxTool`]; untrusted code must run in a real sandbox (container / VM / WASM).
 //!
 //! # Run
 //! ```bash
@@ -57,7 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Use it as an Agent tool (wrapped in SandboxTool)
     println!("\n=== As an Agent tool ===");
-    let tool = SandboxTool::new(LocalSandbox::new(), Language::Python).with_timeout(10_000);
+    let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
+        .with_timeout(10_000)
+        .with_dangerously_allow(true);
     let input = r#"{"code": "import json\nprint(json.dumps({'result': 42}))"}"#;
     let output = tool.run(input.to_string()).await?;
     println!("tool output: {}", output);

@@ -51,6 +51,14 @@ pub struct TokenUsage {
 /// populate [`StreamChunk::token_usage`] on the **final** chunk; intermediate
 /// chunks carry `text` with `token_usage: None`. Providers that do not report
 /// usage (Ollama, local, proxy passthrough) always yield `token_usage: None`.
+///
+/// 0.20.0 S3.2: [`StreamChunk::tool_calls`] carries the **complete** tool calls
+/// requested by the model, accumulated from the provider's streaming
+/// `tool_calls` deltas. OpenAI-family providers (OpenAI / Azure / their
+/// delegates) attach them to the terminal chunk — the usage chunk, or a
+/// dedicated tool-calls chunk when the stream ends without usage; providers
+/// without streaming tool-call support always yield `None`. Consumers that only
+/// stream text can ignore the field.
 #[derive(Debug, Clone)]
 pub struct StreamChunk {
     /// The text delta for this chunk.
@@ -58,14 +66,20 @@ pub struct StreamChunk {
     /// Token usage for the whole streaming call, typically only on the last
     /// chunk (when the provider reports it).
     pub token_usage: Option<TokenUsage>,
+    /// Complete tool calls requested by the model in this streaming call, if
+    /// any. 0.20.0 S3.2: filled on the terminal chunk by providers that support
+    /// streaming `tool_calls` (OpenAI / Azure and their delegates); `None`
+    /// otherwise.
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 impl StreamChunk {
-    /// Creates a text-only chunk with no token usage.
+    /// Creates a text-only chunk with no token usage and no tool calls.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             token_usage: None,
+            tool_calls: None,
         }
     }
 }

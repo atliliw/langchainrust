@@ -2,15 +2,27 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::sync::broadcast;
 
 use lc_chains::base::BaseChain;
 
-use crate::protocol::{A2AMessage, A2ATaskResult, TaskFilter, TaskPushNotification, TaskStatus};
+use crate::protocol::{
+    A2AMessage, A2ATaskResult, TaskFilter, TaskPushNotification, TaskStatus, WorkflowStep,
+};
 use crate::store::TaskStore;
 
 use super::handlers::{publish_artifact, publish_status};
-use super::message::{build_chain_input_from_history, extract_output, is_input_required};
+use super::message::{
+    build_chain_input, build_chain_input_from_history, extract_output, is_input_required,
+};
+
+/// Maximum number of steps a `workflow/run` request may carry (0.20.0 S4 G2).
+///
+/// A client-supplied workflow is unbounded input: without a cap, a single request
+/// could drive an arbitrarily long serial chain run. The `tasks/runWorkflow`
+/// handler rejects workflows beyond this limit with an `invalid_params` error.
+pub(crate) const MAX_WORKFLOW_STEPS: usize = 50;
 
 /// RAII guard releasing an in-flight resume claim on drop.
 ///
@@ -126,6 +138,74 @@ pub(crate) async fn run_task(
                         Some(&e.to_string()),
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Execute a workflow in the background: run each step's chain in order, aggregate
+/// per-step outputs, and finalize the backing task (`working -> completed/failed`),
+/// guarded by the task state machine so a cancelled task is not clobbered.
+///
+/// The handler acknowledges the `working` task immediately and spawns this; the
+/// client polls `tasks/get` for the outcome (0.20.0 S4 G2).
+pub(crate) async fn run_workflow(
+    store: &Arc<dyn TaskStore>,
+    steps: Vec<WorkflowStep>,
+    chains: Vec<Arc<dyn BaseChain>>,
+    task_id: &str,
+    event_bus: Option<Arc<broadcast::Sender<TaskPushNotification>>>,
+) {
+    let mut results = serde_json::Map::new();
+    let mut failure: Option<(String, String)> = None; // (step_id, message)
+    for (step, chain) in steps.iter().zip(chains.iter()) {
+        let input = build_chain_input(&step.message.content, chain.as_ref());
+        match chain.invoke(input).await {
+            Ok(result) => {
+                let output = extract_output(&result);
+                results.insert(step.id.clone(), Value::String(output));
+            }
+            Err(e) => {
+                failure = Some((step.id.clone(), e.to_string()));
+                break;
+            }
+        }
+    }
+
+    let aggregated = results
+        .values()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let Ok(Some(mut finalize)) = store.get(task_id).await else {
+        return;
+    };
+    match failure {
+        Some((step_id, message)) => {
+            if finalize.task.status.can_transition_to(&TaskStatus::Failed) {
+                finalize.task.status = TaskStatus::Failed;
+                finalize.error = Some(format!("step `{step_id}` failed: {message}"));
+                let error = finalize.error.clone();
+                finalize.touch();
+                let _ = store.upsert(finalize).await;
+                publish_status(&event_bus, task_id, TaskStatus::Failed, error.as_deref());
+            }
+        }
+        None => {
+            if finalize
+                .task
+                .status
+                .can_transition_to(&TaskStatus::Completed)
+            {
+                finalize.task.status = TaskStatus::Completed;
+                let task_result = A2ATaskResult::new(aggregated);
+                finalize.result = Some(task_result.clone());
+                finalize.error = None;
+                finalize.touch();
+                let _ = store.upsert(finalize).await;
+                publish_status(&event_bus, task_id, TaskStatus::Completed, None);
+                publish_artifact(&event_bus, task_id, task_result);
             }
         }
     }

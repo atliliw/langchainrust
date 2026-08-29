@@ -43,7 +43,7 @@ use serde_json::json;
 use std::pin::Pin;
 
 use self::types::*;
-use crate::openai::sse::SSEParser;
+use crate::openai::sse::{SSEParser, StreamToolCallAccumulator};
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::{
@@ -248,6 +248,10 @@ impl AzureOpenAIChat {
         tokio::spawn(async move {
             use futures_util::StreamExt;
             let mut byte_stream = byte_stream;
+            // 0.20.0 S3.2: accumulate streaming tool_calls deltas so the terminal
+            // chunk carries complete tool calls (mirrors OpenAI's stream loop).
+            let mut tool_acc = StreamToolCallAccumulator::default();
+            let mut tool_calls_emitted = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
@@ -277,17 +281,28 @@ impl AzureOpenAIChat {
                                         return;
                                     }
                                 }
+                                if let Some(deltas) = &choice.delta.tool_calls {
+                                    for delta in deltas {
+                                        tool_acc.push(delta);
+                                    }
+                                }
                             }
                             // Azure OpenAI 与 OpenAI 同构:末尾 chunk 携带 usage。
+                            // 0.20.0 S3.2:同时携带累积的完整 tool_calls。
                             if let Some(usage) = chunk.usage {
                                 let token_usage = TokenUsage {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     total_tokens: usage.total_tokens,
                                 };
+                                let tool_calls = tool_acc.build();
+                                if !tool_calls.is_empty() {
+                                    tool_calls_emitted = true;
+                                }
                                 let final_chunk = StreamChunk {
                                     text: String::new(),
                                     token_usage: Some(token_usage),
+                                    tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                                 };
                                 if tx.send(Ok(final_chunk)).await.is_err() {
                                     return;
@@ -302,6 +317,20 @@ impl AzureOpenAIChat {
                             );
                         }
                     }
+                }
+            }
+            // 无 usage 结尾时,把累积的 tool_calls 以独立终束 chunk 刷出,
+            // 保证流式路径不丢失工具调用(0.20.0 S3.2)。
+            if !tool_calls_emitted {
+                let tool_calls = tool_acc.build();
+                if !tool_calls.is_empty() {
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            text: String::new(),
+                            token_usage: None,
+                            tool_calls: Some(tool_calls),
+                        }))
+                        .await;
                 }
             }
         });

@@ -123,6 +123,16 @@ pub enum ToolError {
         /// Additional error data (optional)
         data: Option<Value>,
     },
+
+    /// Framework-level control abort (0.20.0 S3.1).
+    ///
+    /// Distinct from [`ExecutionFailed`](ToolError::ExecutionFailed): this is the framework
+    /// **refusing to perform** the tool call for control-flow reasons (e.g. the handoff
+    /// cycle / depth guard in `lc-agents`), not the tool running and failing. Callers must
+    /// propagate it **hard** — the agent cannot recover by re-planning, and softening it to
+    /// an observation would defeat the guard it exists to enforce.
+    #[error("Control abort: {0}")]
+    ControlAbort(String),
 }
 
 use super::ToolDefinition;

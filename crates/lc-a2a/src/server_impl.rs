@@ -105,7 +105,18 @@ async fn post_request(
 }
 
 /// `GET /events` — SSE stream of task notifications (P2-1).
-async fn sse_stream(State(server): State<Arc<A2AServer>>) -> Response {
+///
+/// Enforces the same bearer auth as [`post_request`] when the server was
+/// configured with `with_auth_token`, so the streaming endpoint is not a
+/// bypass for the JSON-RPC one (0.20.0 S4 G1).
+async fn sse_stream(State(server): State<Arc<A2AServer>>, headers: HeaderMap) -> Response {
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    if let Err(resp) = server.check_auth(bearer) {
+        return (StatusCode::UNAUTHORIZED, Json(resp)).into_response();
+    }
     let Some(rx) = server.subscribe() else {
         return (
             StatusCode::NOT_FOUND,
@@ -249,5 +260,37 @@ mod tests {
         }
         assert!(saw_working, "expected a working status-update");
         assert!(saw_completed, "expected a completed status-update");
+    }
+
+    #[tokio::test]
+    async fn serve_sse_requires_bearer_token_when_configured() {
+        // 0.20.0 S4 G1: the SSE endpoint must not be an auth bypass for a
+        // token-configured server.
+        let server = A2AServer::new(Arc::new(EchoChain))
+            .with_auth_token("secret-token")
+            .with_streaming(64);
+        let (base, _handle) = spawn(server).await;
+
+        // No token -> 401 before any SSE bytes.
+        let resp = reqwest::get(format!("{base}/events")).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "unauthenticated SSE must be rejected"
+        );
+
+        // Correct token -> SSE stream opens.
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("{base}/events"))
+            .bearer_auth("secret-token")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "authenticated SSE should open, got: {}",
+            resp.status()
+        );
     }
 }

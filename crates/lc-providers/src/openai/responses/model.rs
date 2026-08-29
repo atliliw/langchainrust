@@ -376,6 +376,7 @@ impl ResponsesModel {
                                         .send(Ok(StreamChunk {
                                             text: String::new(),
                                             token_usage: Some(token_usage),
+                                            tool_calls: None,
                                         }))
                                         .await;
                                 } else {

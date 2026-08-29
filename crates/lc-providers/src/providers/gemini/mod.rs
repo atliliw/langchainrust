@@ -557,6 +557,7 @@ impl GeminiChat {
                                     let usage_chunk = StreamChunk {
                                         text: String::new(),
                                         token_usage: Some(token_usage),
+                                        tool_calls: None,
                                     };
                                     if tx.send(Ok(usage_chunk)).await.is_err() {
                                         return;

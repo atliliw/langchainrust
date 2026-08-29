@@ -715,6 +715,50 @@ async fn handle_tasks_send_input_required_then_resume() {
 }
 
 #[tokio::test]
+async fn resume_rejected_when_inflight_releases_message_id() {
+    // G3 (0.20.0): a resume rejected because another resume is in flight must
+    // release its `message_id` reservation — otherwise the key leaks as
+    // permanently in-flight and a retry carrying it can never be processed.
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::with_max_tasks(10));
+    let server = A2AServer::new(Arc::new(EchoChain)).with_store(store.clone());
+    store
+        .upsert(StoredTask::new(
+            A2ATask::new("t-input".to_string(), A2AMessage::user("init"))
+                .with_status(TaskStatus::InputRequired),
+        ))
+        .await
+        .unwrap();
+
+    // Claim the resume slot so the handler sees "already being resumed".
+    let inflight = server.begin_resume("t-input").expect("claim resume slot");
+
+    let msg = A2AMessage::user("more");
+    let resp = server
+        .handle_a2a_request(
+            A2ARequest::continue_task(1, "t-input", &msg).with_message_id("resume-idem"),
+        )
+        .await;
+    assert!(resp.is_error());
+    assert_eq!(resp.error.unwrap().code, -32000);
+
+    // The rejected resume released its message_id reservation.
+    assert!(
+        server.message_ids.read().await.get("resume-idem").is_none(),
+        "message_id reservation leaked after rejected resume"
+    );
+
+    // Once the in-flight resume finishes, a retry with the same message_id is
+    // claimable again and actually resumes the task (not "already processed").
+    drop(inflight);
+    let retry = server
+        .handle_a2a_request(
+            A2ARequest::continue_task(2, "t-input", &msg).with_message_id("resume-idem"),
+        )
+        .await;
+    assert!(!retry.is_error());
+}
+
+#[tokio::test]
 async fn handle_tasks_send_continue_working_rejected() {
     // Only input-required tasks can be resumed. Continuing a task that is
     // still `working` would spawn a second worker racing the first.
@@ -999,14 +1043,19 @@ async fn run_workflow_executes_steps_in_order_and_aggregates() {
         .handle_a2a_request(A2ARequest::run_workflow(1, &workflow))
         .await;
     assert!(!resp.is_error());
-    let result = resp.result.unwrap();
+    // G2 (0.20.0): the handler acknowledges a `working` task and executes in
+    // the background; poll `tasks/get` for the completed outcome.
+    let task_id = resp.result.unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let done = wait_for_status(&server, &task_id, "completed").await;
+    let result = done.result.unwrap();
     assert_eq!(result["task"]["status"], "completed");
-    assert_eq!(result["results"]["s1"], "first");
-    assert_eq!(result["results"]["s2"], "second");
+    assert_eq!(result["result"]["output"], "first\nsecond");
 
     // The backing task was persisted with the aggregated output.
-    let task_id = result["task"]["id"].as_str().unwrap();
-    let stored = store.get(task_id).await.unwrap().expect("task stored");
+    let stored = store.get(&task_id).await.unwrap().expect("task stored");
     assert_eq!(stored.task.status, TaskStatus::Completed);
     assert_eq!(stored.result.as_ref().unwrap().output, "first\nsecond");
 }
@@ -1048,9 +1097,17 @@ async fn run_workflow_routes_steps_by_skill() {
         .handle_a2a_request(A2ARequest::run_workflow(1, &workflow))
         .await;
     assert!(!resp.is_error());
-    let result = resp.result.unwrap();
-    assert_eq!(result["results"]["s1"], "hello");
-    assert_eq!(result["results"]["s2"], "translated");
+    // G2 (0.20.0): background execution — poll for the completed outcome.
+    let task_id = resp.result.unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let done = wait_for_status(&server, &task_id, "completed").await;
+    let result = done.result.unwrap();
+    assert_eq!(result["task"]["status"], "completed");
+    // Steps are routed per skill: the default chain echoes "hello", the
+    // "translate" skill produces "translated".
+    assert_eq!(result["result"]["output"], "hello\ntranslated");
 }
 
 #[tokio::test]
@@ -1067,21 +1124,21 @@ async fn run_workflow_step_failure_marks_task_failed_and_stops() {
     let resp = failing
         .handle_a2a_request(A2ARequest::run_workflow(1, &workflow))
         .await;
-    assert!(!resp.is_error()); // the task itself records the failure
-    let result = resp.result.unwrap();
+    assert!(!resp.is_error()); // submission succeeds; the failure lands on the task
+                               // G2 (0.20.0): background execution — poll for the failed outcome.
+    let task_id = resp.result.unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let done = wait_for_status(&failing, &task_id, "failed").await;
+    let result = done.result.unwrap();
     assert_eq!(result["task"]["status"], "failed");
-    assert!(result["results"].get("s1").is_some());
-    assert!(result["results"].get("s2").is_none());
     assert!(result["error"]
         .as_str()
         .unwrap()
         .contains("step `s2` failed"));
 
-    let stored = store
-        .get(result["task"]["id"].as_str().unwrap())
-        .await
-        .unwrap()
-        .unwrap();
+    let stored = store.get(&task_id).await.unwrap().unwrap();
     assert_eq!(stored.task.status, TaskStatus::Failed);
     assert!(stored.error.as_deref().unwrap().contains("s2"));
 }
@@ -1102,6 +1159,27 @@ async fn run_workflow_empty_steps_invalid() {
         .handle_a2a_request(A2ARequest::run_workflow(1, &A2AWorkflow::new(vec![])))
         .await;
     assert!(resp.is_error());
+}
+
+#[tokio::test]
+async fn run_workflow_rejects_more_than_max_steps() {
+    // G2 (0.20.0): a client-supplied workflow is unbounded input; the handler
+    // rejects workflows beyond MAX_WORKFLOW_STEPS before spawning any work.
+    let server = A2AServer::new(Arc::new(EchoChain));
+    let steps: Vec<WorkflowStep> = (0..=super::MAX_WORKFLOW_STEPS)
+        .map(|i| WorkflowStep::new(format!("s{i}"), "x"))
+        .collect();
+    let resp = server
+        .handle_a2a_request(A2ARequest::run_workflow(1, &A2AWorkflow::new(steps)))
+        .await;
+    assert!(resp.is_error());
+    let err = resp.error.unwrap();
+    assert!(
+        err.message
+            .contains(&format!("maximum of {} steps", super::MAX_WORKFLOW_STEPS)),
+        "unexpected error message: {}",
+        err.message
+    );
 }
 
 #[tokio::test]

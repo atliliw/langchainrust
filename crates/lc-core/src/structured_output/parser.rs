@@ -293,12 +293,39 @@ impl PartialJsonParser {
     }
 
     /// Remove trailing commas before closing braces/brackets (invalid in strict JSON).
+    ///
+    /// 0.20.0 K1: the scan must track string state — a comma inside a string
+    /// literal (e.g. `{"a": "text, }"}`) is content, not a trailing comma.
+    /// Mirrors the in-string/escape state machine used by
+    /// [`Self::repair_partial_json`]; without it the old version corrupted
+    /// string values whose text ended with a comma followed by `}`/`]`.
     pub(crate) fn remove_trailing_commas(s: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let chars: Vec<char> = s.chars().collect();
         let mut i = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
         while i < chars.len() {
-            if chars[i] == ',' && i + 1 < chars.len() {
+            let ch = chars[i];
+            if in_string {
+                result.push(ch);
+                if escape_next {
+                    escape_next = false;
+                } else if ch == '\\' {
+                    escape_next = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if ch == '"' {
+                in_string = true;
+                result.push(ch);
+                i += 1;
+                continue;
+            }
+            if ch == ',' && i + 1 < chars.len() {
                 let next_non_ws = chars[i + 1..].iter().find(|c| !c.is_whitespace());
                 if next_non_ws == Some(&'}') || next_non_ws == Some(&']') {
                     // Skip the trailing comma
@@ -306,7 +333,7 @@ impl PartialJsonParser {
                     continue;
                 }
             }
-            result.push(chars[i]);
+            result.push(ch);
             i += 1;
         }
         result

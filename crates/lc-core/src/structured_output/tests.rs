@@ -560,6 +560,25 @@ fn test_remove_trailing_commas() {
     assert_eq!(result, r#"{"a": 1, "b": 2}"#);
 }
 
+/// 0.20.0 K1: a comma inside a string literal is content, not a trailing comma.
+#[test]
+fn test_remove_trailing_commas_preserves_string_literals() {
+    // Comma + `}`/`]` inside a string must survive the scan.
+    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "text, } more"}"#);
+    assert_eq!(result, r#"{"a": "text, } more"}"#);
+
+    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "x,]", "b": 1}"#);
+    assert_eq!(result, r#"{"a": "x,]", "b": 1}"#);
+
+    // Escaped quote inside the string must not end string state prematurely.
+    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "he said \"hi, \"", "b": 1,}"#);
+    assert_eq!(result, r#"{"a": "he said \"hi, \"", "b": 1}"#);
+
+    // A real trailing comma in the structure is still removed.
+    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "1, 2, 3", "b": [1,]}"#);
+    assert_eq!(result, r#"{"a": "1, 2, 3", "b": [1]}"#);
+}
+
 // H4: markdown code-fence handling — when the model wraps JSON in ```json ... ```,
 // the streaming parser must also strip the fence and emit partial results, not judge it unparseable.
 #[test]

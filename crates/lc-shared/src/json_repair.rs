@@ -199,13 +199,37 @@ pub fn fix_unescaped_quotes(json: &str) -> String {
 /// Removes trailing commas before closing brackets.
 ///
 /// Handles patterns like: `{"a": 1, "b": 2,}` → `{"a": 1, "b": 2}`.
+///
+/// 0.20.0 K1: tracks string state so a comma inside a string literal (e.g.
+/// `{"a": "x, }"}`) is kept — it is content, not a trailing comma. Mirrors the
+/// in-string/escape state machine used by [`extract_bracket_pair`] /
+/// [`fix_unescaped_quotes`]; without it the old version corrupted string values
+/// whose text ended with a comma followed by `}`/`]`.
 pub fn remove_trailing_commas(json: &str) -> String {
     let mut result = String::with_capacity(json.len());
     let chars: Vec<char> = json.chars().collect();
     let len = chars.len();
+    let mut in_string = false;
+    let mut escape_next = false;
 
     for i in 0..len {
         let ch = chars[i];
+        if in_string {
+            result.push(ch);
+            if escape_next {
+                escape_next = false;
+            } else if ch == '\\' {
+                escape_next = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            result.push(ch);
+            continue;
+        }
         // Check if this comma is followed by ] or } (possibly with whitespace)
         if ch == ',' {
             let mut j = i + 1;
@@ -387,6 +411,28 @@ mod tests {
         assert_eq!(
             remove_trailing_commas(input),
             r#"{"arr": [1, 2], "val": 3}"#
+        );
+    }
+
+    #[test]
+    fn test_remove_trailing_commas_preserves_string_literals() {
+        // 0.20.0 K1: commas inside string values are content, not trailing commas.
+        let input = r#"{"a": "text, } more"}"#;
+        assert_eq!(remove_trailing_commas(input), input);
+
+        let input = r#"{"a": "x,]", "b": 1}"#;
+        assert_eq!(remove_trailing_commas(input), input);
+
+        let input = r#"{"a": "he said \"hi, \"", "b": 1,}"#;
+        assert_eq!(
+            remove_trailing_commas(input),
+            r#"{"a": "he said \"hi, \"", "b": 1}"#
+        );
+
+        let input = r#"{"a": "1, 2, 3", "b": [1,]}"#;
+        assert_eq!(
+            remove_trailing_commas(input),
+            r#"{"a": "1, 2, 3", "b": [1]}"#
         );
     }
 

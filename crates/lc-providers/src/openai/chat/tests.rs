@@ -125,3 +125,124 @@ mod tests_q3_q4 {
         assert!(matches!(err, OpenAIError::Api(_)));
     }
 }
+
+/// 0.20.0 S3.2: the SSE streaming loop accumulates fragmented `delta.tool_calls`
+/// and attaches the complete tool calls to the terminal chunk — the piece that
+/// lets FunctionCalling's `plan_stream` stream tool-call steps natively.
+mod tests_streaming_tool_calls {
+    use super::*;
+    use futures_util::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Spawns a one-shot HTTP server that replies to POST /v1/chat/completions
+    /// with the given OpenAI-style SSE body, returning the base URL.
+    async fn spawn_sse_server(sse_body: &'static str) -> String {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                // Read the request header + body so reqwest's POST completes.
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let header_str = String::from_utf8_lossy(&header).to_lowercase();
+                let content_length: usize = header_str
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                let response =
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{sse_body}");
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn stream_chat_accumulates_fragmented_tool_calls() {
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"beij\"}}]},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ing\\\"}\"}}]},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8,\"total_tokens\":18}}\n\n\
+data: [DONE]\n\n";
+        let base_url = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("weather in beijing")])
+            .await
+            .unwrap();
+
+        let mut terminal: Option<StreamChunk> = None;
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("chunk ok");
+            if chunk.tool_calls.is_some() {
+                terminal = Some(chunk);
+            }
+        }
+
+        let final_chunk = terminal.expect("terminal chunk carries tool_calls");
+        let calls = final_chunk.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name(), "get_weather");
+        assert_eq!(
+            calls[0].arguments(),
+            r#"{"city":"beijing"}"#,
+            "arguments concatenated across fragments"
+        );
+        let usage = final_chunk
+            .token_usage
+            .expect("usage on the same terminal chunk");
+        assert_eq!(usage.total_tokens, 18);
+    }
+
+    #[tokio::test]
+    async fn stream_chat_flushes_tool_calls_without_usage_chunk() {
+        // Some compatible providers end the stream without a usage chunk; the
+        // accumulated tool calls must still be flushed as a terminal chunk.
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":null}]}\n\n\
+data: [DONE]\n\n";
+        let base_url = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("compute")])
+            .await
+            .unwrap();
+
+        let mut terminal: Option<StreamChunk> = None;
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("chunk ok");
+            if chunk.tool_calls.is_some() {
+                terminal = Some(chunk);
+            }
+        }
+
+        let final_chunk = terminal.expect("flushed tool-calls chunk");
+        let calls = final_chunk.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name(), "add");
+        assert_eq!(calls[0].arguments(), r#"{"a":1}"#);
+    }
+}

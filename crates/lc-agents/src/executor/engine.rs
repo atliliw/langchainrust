@@ -748,13 +748,24 @@ impl AgentExecutor {
     ) -> Pin<Box<dyn Stream<Item = Result<AgentStreamEvent, AgentError>> + Send>> {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
 
+        // 0.20.0 A-H2: dropping the returned stream must stop the background agent
+        // loop. Without this, a consumer that stops reading (a client disconnect, an
+        // early UI cancel) left the loop running — consuming tool calls and LLM tokens
+        // for a listener that is gone. The watch channel is the cancel signal: the loop
+        // checks it at iteration / tool boundaries, and the wrapper (`AgentEventStream`)
+        // sends `true` on drop.
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
         // P2-2: the streaming path also fails fast — unregistered tools emit one error
         // event before ending.
         if let Err(e) = self.validate_tool_registration() {
             tokio::spawn(async move {
                 let _ = tx.send(Err(e)).await;
             });
-            return Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+            return Box::pin(AgentEventStream {
+                inner: tokio_stream::wrappers::ReceiverStream::new(rx),
+                cancel: cancel_tx,
+            });
         }
 
         let agent = self.agent.clone();
@@ -781,6 +792,13 @@ impl AgentExecutor {
             for iteration in 0..max_iterations {
                 if verbose {
                     log::info!("=== Stream Iteration {} ===", iteration + 1);
+                }
+
+                // 0.20.0 A-H2: the consumer dropped the stream → stop before the next
+                // plan. Any tool already in flight is allowed to finish (cooperative
+                // cancellation), but no new plan / tool starts.
+                if *cancel_rx.borrow() {
+                    return;
                 }
 
                 // Budget gate: iteration-level (iteration count + wall-clock). Over the
@@ -905,13 +923,33 @@ impl AgentExecutor {
                             return;
                         }
 
-                        // Execute the tool. A tool failure becomes an observation fed
-                        // back to the loop (S3), matching the streaming parallel path —
-                        // it no longer aborts the whole stream.
+                        // 0.20.0 A-H2: dropped mid-iteration → do not start a new tool.
+                        if *cancel_rx.borrow() {
+                            return;
+                        }
+
+                        // Execute the tool. A tool **execution** failure becomes an
+                        // observation fed back to the loop (S3.1) so the agent can
+                        // recover. Framework guardrails (A-H1, 0.20.0) —
+                        // `ControlAbort` handoff/depth guard, `ToolNotFound`, input
+                        // serialization — reject the call *before* execution; the agent
+                        // cannot recover from them by re-planning, so they end the
+                        // stream hard, matching the non-streaming invoke path.
                         let observation =
                             match execute_tool_for_stream(&tools, &action, tool_timeout).await {
                                 Ok(obs) => obs,
-                                Err(e) => tool_error_observation(&e),
+                                Err(e @ AgentError::ToolExecutionError(_)) => {
+                                    tool_error_observation(&e)
+                                }
+                                Err(e) => {
+                                    publish_metrics(&metrics, &metrics_store, loop_start);
+                                    let _ = tx
+                                        .send(Ok(AgentStreamEvent::Error {
+                                            message: e.to_string(),
+                                        }))
+                                        .await;
+                                    return;
+                                }
                             };
 
                         let _ = tx
@@ -965,13 +1003,34 @@ impl AgentExecutor {
                             return;
                         }
 
-                        let observations = execute_tools_parallel_for_stream(
+                        // 0.20.0 A-H2: dropped mid-iteration → do not start a new batch.
+                        if *cancel_rx.borrow() {
+                            return;
+                        }
+
+                        let observations = match execute_tools_parallel_for_stream(
                             &tools,
                             &actions,
                             tool_timeout,
                             max_concurrency,
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(obs) => obs,
+                            // A-H1 (0.20.0): a framework guardrail in any one tool
+                            // of the batch ends the stream hard, matching the
+                            // invoke-parallel path. Execution errors were already
+                            // converted to observations inside the helper.
+                            Err(e) => {
+                                publish_metrics(&metrics, &metrics_store, loop_start);
+                                let _ = tx
+                                    .send(Ok(AgentStreamEvent::Error {
+                                        message: e.to_string(),
+                                    }))
+                                    .await;
+                                return;
+                            }
+                        };
 
                         for (action, observation) in
                             actions.into_iter().zip(observations.into_iter())
@@ -998,7 +1057,10 @@ impl AgentExecutor {
             let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
         });
 
-        Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
+        Box::pin(AgentEventStream {
+            inner: tokio_stream::wrappers::ReceiverStream::new(rx),
+            cancel: cancel_tx,
+        })
     }
 }
 
@@ -1024,6 +1086,35 @@ impl std::fmt::Debug for AgentExecutor {
                     .unwrap_or(false),
             )
             .finish()
+    }
+}
+
+/// Stream wrapper returned by [`AgentExecutor::stream`]: cancels the background agent
+/// loop when the consumer drops the stream (0.20.0 A-H2). A dropped stream means the
+/// listener is gone — the loop must stop burning tool calls and LLM tokens instead of
+/// running the remaining iterations invisibly.
+struct AgentEventStream {
+    /// The live event channel.
+    inner: tokio_stream::wrappers::ReceiverStream<Result<AgentStreamEvent, AgentError>>,
+    /// Set to `true` on drop; the loop observes it via `cancel_rx` at iteration / tool
+    /// boundaries and stops cooperatively (letting any in-flight tool finish).
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+impl Stream for AgentEventStream {
+    type Item = Result<AgentStreamEvent, AgentError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl Drop for AgentEventStream {
+    fn drop(&mut self) {
+        let _ = self.cancel.send(true);
     }
 }
 

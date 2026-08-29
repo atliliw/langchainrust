@@ -264,6 +264,7 @@ impl BaseChatModel for ReplayProvider {
         let stream = futures_util::stream::iter(vec![Ok(StreamChunk {
             text: response.content,
             token_usage: response.token_usage,
+            tool_calls: None,
         })]);
         Ok(Box::pin(stream))
     }

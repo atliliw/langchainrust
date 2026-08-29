@@ -27,12 +27,18 @@ pub struct StdioTransport {
     child: Arc<Mutex<Option<Child>>>,
     /// Per-request lock: ensures write + read is atomic for each request.
     request_lock: Arc<Mutex<()>>,
+    /// Per-request timeout (M1): a child that swallows the request cannot make
+    /// the caller wait forever. Tests shorten it with [`Self::with_request_timeout`].
+    request_timeout: Duration,
     /// Connection state (true = the child process is alive).
     connected: Arc<AtomicBool>,
     /// Manual close flag: after close() no more auto-reconnect.
     closed: Arc<AtomicBool>,
     event_tx: broadcast::Sender<MCPEvent>,
 }
+
+/// Default per-request timeout (M1).
+const STDIO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A child-process spawn result (a temporary struct, split into fields after new).
 struct SpawnedProcess {
@@ -97,6 +103,45 @@ fn spawn_process(config: &MCPConfig) -> Result<SpawnedProcess, MCPError> {
     })
 }
 
+/// Read from `reader` until the JSON-RPC response matching `req_id` arrives.
+///
+/// The child may interleave notifications (no `id`) or a stale response to a
+/// previously timed-out request (M1), so the stdout buffer must not be consumed
+/// as a single line. Only a message whose `id` equals `req_id` — and that
+/// actually carries a `result` or `error` (a JSON-RPC response has exactly one)
+/// — is returned; everything else is skipped (M2, 0.20.0). EOF means the child
+/// exited; the background monitor will auto-reconnect.
+pub(super) async fn read_response_for<R>(
+    reader: &mut R,
+    req_id: u64,
+) -> Result<MCPResponse, MCPError>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| MCPError::new(-1, format!("failed to read stdout: {e}")))?;
+        if n == 0 {
+            return Err(MCPError::connection_lost());
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<MCPResponse>(line.trim()) {
+            Ok(resp)
+                if resp.id == Some(req_id) && (resp.result.is_some() || resp.error.is_some()) =>
+            {
+                return Ok(resp);
+            }
+            _ => continue,
+        }
+    }
+}
+
 impl StdioTransport {
     /// Creates a Stdio transport: spawns the child process and establishes the stdin/stdout channels.
     pub async fn new(config: &MCPConfig) -> Result<Self, MCPError> {
@@ -110,12 +155,22 @@ impl StdioTransport {
             stdout: Arc::new(Mutex::new(BufReader::new(spawned.stdout))),
             child: Arc::new(Mutex::new(Some(spawned.child))),
             request_lock: Arc::new(Mutex::new(())),
+            request_timeout: STDIO_REQUEST_TIMEOUT,
             connected: connected.clone(),
             closed: closed.clone(),
             event_tx: event_tx.clone(),
         };
         transport.spawn_monitor();
         Ok(transport)
+    }
+
+    /// Sets the per-request timeout (M1, default 30s). Mainly used by tests to shorten
+    /// the timeout window; only exists in test builds, to avoid a dead-code warning in
+    /// non-test builds under `-D warnings`.
+    #[cfg(test)]
+    pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     /// Background monitor task: waits for the child process to exit → marks disconnected → auto-reconnects
@@ -192,49 +247,40 @@ impl MCPTransport for StdioTransport {
         let json = serde_json::to_string(&req)
             .map_err(|e| MCPError::new(-1, format!("failed to serialize request: {}", e)))?;
 
-        {
-            let mut stdin = self.stdin.lock().await;
-            stdin
-                .write_all(json.as_bytes())
-                .await
-                .map_err(|e| MCPError::new(-1, format!("failed to write to stdin: {}", e)))?;
-            stdin
-                .write_all(b"\n")
-                .await
-                .map_err(|e| MCPError::new(-1, format!("failed to write newline: {}", e)))?;
-            stdin
-                .flush()
-                .await
-                .map_err(|e| MCPError::new(-1, format!("failed to flush stdin: {}", e)))?;
-        }
-
-        let mut line = String::new();
-        {
-            let mut stdout = self.stdout.lock().await;
-            // Skip empty lines until a non-empty one is read
-            loop {
-                line.clear();
-                let n = stdout
-                    .read_line(&mut line)
+        // M1 (0.20.0): the whole write + read is bounded by `request_timeout`,
+        // so a child that swallows the request cannot block the caller forever.
+        let req_id = req.id;
+        let result = timeout(self.request_timeout, async {
+            {
+                let mut stdin = self.stdin.lock().await;
+                stdin
+                    .write_all(json.as_bytes())
                     .await
-                    .map_err(|e| MCPError::new(-1, format!("failed to read stdout: {}", e)))?;
-                if n == 0 {
-                    // The child process exited, the connection is dropped → the background monitor will
-                    // auto-reconnect
-                    return Err(MCPError::connection_lost());
-                }
-                if !line.trim().is_empty() {
-                    break;
-                }
+                    .map_err(|e| MCPError::new(-1, format!("failed to write to stdin: {e}")))?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| MCPError::new(-1, format!("failed to write newline: {e}")))?;
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| MCPError::new(-1, format!("failed to flush stdin: {e}")))?;
             }
-        }
-
-        serde_json::from_str::<MCPResponse>(line.trim()).map_err(|e| {
-            MCPError::new(
-                -1,
-                format!("failed to parse response: {} | raw: {}", e, line),
-            )
+            // M2 (0.20.0): correlate by request id — skip interleaved
+            // notifications and stale responses to other (e.g. previously
+            // timed-out) requests.
+            let mut stdout = self.stdout.lock().await;
+            read_response_for(&mut *stdout, req_id).await
         })
+        .await;
+
+        match result {
+            Ok(resp) => resp,
+            Err(_) => Err(MCPError::new(
+                -1,
+                format!("stdio request timed out after {:?}", self.request_timeout),
+            )),
+        }
     }
 
     async fn close(&self) -> Result<(), MCPError> {

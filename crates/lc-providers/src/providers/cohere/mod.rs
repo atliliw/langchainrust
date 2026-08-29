@@ -273,33 +273,18 @@ impl CohereChat {
                     if event.is_done() {
                         break;
                     }
-                    // Cohere v2 streaming uses the same SSE format as OpenAI
-                    // with content deltas in choices[0].delta.content
-                    // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
-                    // 避免流式回复因单条坏数据被截断却毫无提示
-                    match event.parse_openai_chunk() {
-                        Ok(Some(chunk)) => {
-                            if let Some(choice) = chunk.choices.first() {
-                                if let Some(content) = &choice.delta.content {
-                                    if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                            // Cohere 复用了 OpenAI SSE 解析:若末尾 chunk 携带 OpenAI 风格
-                            // usage(prompt_tokens/completion_tokens/total_tokens),同样发出
-                            // usage chunk;结构不匹配(如 Cohere 自带 tokens 嵌套)则保持 None。
-                            if let Some(usage) = chunk.usage {
-                                let token_usage = TokenUsage {
-                                    prompt_tokens: usage.prompt_tokens,
-                                    completion_tokens: usage.completion_tokens,
-                                    total_tokens: usage.total_tokens,
-                                };
-                                let final_chunk = StreamChunk {
-                                    text: String::new(),
-                                    token_usage: Some(token_usage),
-                                };
-                                if tx.send(Ok(final_chunk)).await.is_err() {
+                    // 0.20.0 P4: Cohere v2 SSE 是**自己的**事件格式,不是 OpenAI
+                    // 兼容格式——没有 choices[0].delta.content。文本增量在
+                    // content-delta 事件的 delta.message.content.text,usage 在
+                    // message-end 事件的 delta.usage.tokens。旧实现复用
+                    // parse_openai_chunk,因缺 id/object/created/model/choices
+                    // 每条事件反序列化都失败,流式静默产出空文本。此处改用专用解析。
+                    // 解析失败的 SSE chunk 不静默丢弃:记 error 日志,避免流式回复
+                    // 因单条坏数据被截断却毫无提示。
+                    match parse_cohere_event(&event.data) {
+                        Ok(Some(ev)) => {
+                            if let Some(chunk) = cohere_event_to_chunk(&ev) {
+                                if tx.send(Ok(chunk)).await.is_err() {
                                     return;
                                 }
                             }
@@ -318,6 +303,58 @@ impl CohereChat {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
+    }
+}
+
+/// Parses one Cohere v2 SSE event's `data:` payload into a typed stream event.
+///
+/// Returns `Ok(None)` for the OpenAI-style `[DONE]` terminator (Cohere never
+/// sends it — it closes the connection after `message-end` — but this tolerates
+/// OpenAI-compatible proxies).
+///
+/// 0.20.0 P4: the replacement for `SSEEvent::parse_openai_chunk`, which
+/// deserializes OpenAI's `id/object/created/model/choices` shape and therefore
+/// fails on every real Cohere event.
+fn parse_cohere_event(data: &str) -> Result<Option<CohereStreamEvent>, serde_json::Error> {
+    if data == "[DONE]" {
+        return Ok(None);
+    }
+    let parsed = serde_json::from_str(data)?;
+    Ok(Some(parsed))
+}
+
+/// Maps one parsed Cohere streaming event to an optional `StreamChunk`.
+///
+/// - `content-delta` → a text chunk (empty deltas are dropped)
+/// - `message-end` → a terminal usage chunk when the event carries usage
+/// - any other event → `None` (no output)
+fn cohere_event_to_chunk(ev: &CohereStreamEvent) -> Option<StreamChunk> {
+    match ev.event_type.as_str() {
+        "content-delta" => ev
+            .delta
+            .as_ref()
+            .and_then(|d| d.message.as_ref())
+            .and_then(|m| m.content.as_ref())
+            .and_then(|c| c.text.clone())
+            .filter(|t| !t.is_empty())
+            .map(StreamChunk::new),
+        "message-end" => ev
+            .delta
+            .as_ref()
+            .and_then(|d| d.usage.as_ref())
+            .map(|usage| {
+                let token_usage = TokenUsage {
+                    prompt_tokens: usage.tokens.input_tokens,
+                    completion_tokens: usage.tokens.output_tokens,
+                    total_tokens: usage.tokens.input_tokens + usage.tokens.output_tokens,
+                };
+                StreamChunk {
+                    text: String::new(),
+                    token_usage: Some(token_usage),
+                    tool_calls: None,
+                }
+            }),
+        _ => None,
     }
 }
 

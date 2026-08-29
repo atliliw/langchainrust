@@ -194,6 +194,22 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
+  # ==================== 危险模式静态扫描 ====================
+  # 0.18.1 ⏳ 待办落地:门禁补「安全/质量静态分析 job」。
+  # scripts/security-scan.sh 用正则基线扫危险模式(SQL 拼接/路径穿越/子进程
+  # 参数拼接/硬编码 key/URL 内嵌 secret)。BLOCK 命中即 fail(基线已清零,
+  # 新命中即回归);A1/A4 为 ADVISORY 只打印。纯 grep 无 cargo 依赖,不受
+  # windows-gnu/ort-sys 等本地环境盲区影响。
+  security-scan:
+    name: Security Pattern Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run dangerous-pattern scan
+        run: bash scripts/security-scan.sh --fail-if-found
+
   # ==================== 覆盖率报告 ====================
   # 使用 cargo-llvm-cov 测量行覆盖率并设 80% 门禁(fail-under-lines 80)。
   # 注意:本机 windows-gnu 工具链缺 profiler_builtins(`rustc -C instrument-coverage`

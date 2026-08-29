@@ -8,7 +8,12 @@ use tokio::process::Command;
 
 use super::{CodeSandbox, Language, RunResult, SandboxError};
 
-/// Dangerous Python modules that are blocked for security.
+/// Dangerous Python modules matched by a noise-filter substring blacklist.
+///
+/// Note: this is a *noise filter*, **not a security boundary** — a substring scan is
+/// trivially bypassed (`__import__("o" + "s")`, `import os;` variants, exec, ...).
+/// Untrusted code must not be run through [`LocalSandbox`] at all unless the process
+/// itself sits inside a real sandbox (container / VM / WASM).
 const BLOCKED_PYTHON_IMPORTS: &[&str] = &[
     "os",
     "subprocess",
@@ -103,7 +108,8 @@ impl LocalSandbox {
                 if let Some(blocked) = contains_dangerous_python_import(code) {
                     return Err(SandboxError::Runtime(format!(
                         "Code contains dangerous import: '{}'. \
-                         This module is blocked for security in local sandbox.",
+                         Blocked by the noise-filter blacklist (note: this is not a \
+                         security boundary; untrusted code must run in a real sandbox).",
                         blocked
                     )));
                 }

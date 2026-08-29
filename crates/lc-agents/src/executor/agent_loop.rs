@@ -15,6 +15,7 @@ use crate::metrics::AgentMetrics;
 use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{RunTree, RunType};
+use lc_core::tools::ToolError;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -170,9 +171,20 @@ impl AgentExecutor {
                         store,
                     });
 
-                    let observation = self
+                    // 0.20.0 S3.1:工具**执行**错误(工具真的跑了、失败返回 ToolError)
+                    // 转 observation 喂回循环,agent 可自救——四条执行路径(顺序/并行 ×
+                    // invoke/stream)一致。框架级守卫拒绝(权限策略 / hook 拒绝 /
+                    // ControlAbort 交接环与深度中止 / ToolNotFound)不是执行失败,仍
+                    // 硬失败上抛:agent 无法靠重规划绕过它们,软化成 observation 会让
+                    // 策略拒绝、预算配额与交接环检测形同虚设。
+                    let observation = match self
                         .execute_tool_inner(&action, root_run, resume_ctx.as_ref(), None)
-                        .await?;
+                        .await
+                    {
+                        Ok(obs) => obs,
+                        Err(e @ AgentError::ToolExecutionError(_)) => tool_error_observation(&e),
+                        Err(e) => return Err(e),
+                    };
 
                     if self.verbose {
                         log::info!("Observation: {}", observation);
@@ -226,7 +238,12 @@ impl AgentExecutor {
     /// Executes multiple tools in parallel.
     ///
     /// Collects successful results and reports failures as error observations
-    /// rather than discarding partial results when one tool fails.
+    /// rather than discarding partial results when one tool fails. A tool that
+    /// ran and failed (`ToolExecutionError`) or that was never registered
+    /// (`ToolNotFound` — e.g. an LLM hallucinated name, 0.20.0 A-H3) becomes an
+    /// observation, so the batch's other results survive and the loop can
+    /// recover. Non-recoverable framework guardrails (`ControlAbort`, permission
+    /// policy, hook `Reject`) still abort the whole batch hard.
     /// Concurrency is capped by the executor's global `concurrency_sem`.
     async fn execute_tools_parallel(
         &self,
@@ -253,7 +270,21 @@ impl AgentExecutor {
         for result in results {
             match result {
                 Ok(output) => observations.push(output),
-                Err(e) => observations.push(tool_error_observation(&e)),
+                // 0.20.0 S3.1:工具**执行**错误(工具真的跑了、失败返回 ToolError)
+                // 转 observation。
+                Err(e @ AgentError::ToolExecutionError(_)) => {
+                    observations.push(tool_error_observation(&e))
+                }
+                // 0.20.0 A-H3:并行 batch 中单个未注册工具名(LLM 幻觉)也转
+                // observation——同批其余工具的真实结果得以保留,agent 可自救。
+                // 这是并行路径独有的宽松:顺序路径引用一个不存在的工具没有任何
+                // 部分结果可保留,仍硬失败(P2-2 锁存)。
+                Err(AgentError::ToolNotFound(name)) => {
+                    observations.push(format!("[Tool not found: {name}]"))
+                }
+                // 框架级守卫拒绝(ControlAbort 交接环与深度中止 / 权限策略 /
+                // hook 拒绝)仍硬失败上抛:agent 无法靠重规划绕过它们。
+                Err(e) => return Err(e),
             }
         }
         Ok(observations)
@@ -463,7 +494,16 @@ impl AgentExecutor {
                         handler.on_tool_error(&tool_run, &e.to_string()).await;
                     }
                 }
-                Err(AgentError::ToolExecutionError(e.to_string()))
+                // 0.20.0 S3.1:框架级控制中止(如交接环/深度守卫,见 ToolError::ControlAbort)
+                // 是「拒绝执行」而非「执行失败」,走 Other 硬失败上抛;其余 ToolError
+                // (ExecutionFailed/Timeout/McpError/InvalidInput/ToolNotFound)才包装成
+                // ToolExecutionError,由循环软化成 observation。两者在调用方必须可区分。
+                match e {
+                    ToolError::ControlAbort(msg) => {
+                        Err(AgentError::Other(format!("Tool call aborted: {msg}")))
+                    }
+                    other => Err(AgentError::ToolExecutionError(other.to_string())),
+                }
             }
         }
     }

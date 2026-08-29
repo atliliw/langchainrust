@@ -495,7 +495,7 @@ impl OpenAIChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>, OpenAIError>
     {
-        use super::sse::SSEParser;
+        use super::sse::{SSEParser, StreamToolCallAccumulator};
         use std::sync::{Arc, Mutex};
 
         let url = format!("{}/chat/completions", self.config.base_url);
@@ -528,6 +528,11 @@ impl OpenAIChat {
         tokio::spawn(async move {
             use futures_util::StreamExt;
             let mut byte_stream = byte_stream;
+            // 0.20.0 S3.2: accumulate streaming tool_calls deltas so the terminal
+            // chunk carries complete tool calls (previously dropped, which made
+            // tool-call steps fall back to non-streaming plan() in lc-agents).
+            let mut tool_acc = StreamToolCallAccumulator::default();
+            let mut tool_calls_emitted = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H2 fix: propagate network errors to the consumer
                 // Must be done OUTSIDE the mutex scope to avoid Send issue
@@ -560,20 +565,32 @@ impl OpenAIChat {
                                         return;
                                     }
                                 }
+                                if let Some(deltas) = &choice.delta.tool_calls {
+                                    for delta in deltas {
+                                        tool_acc.push(delta);
+                                    }
+                                }
                             }
                             // OpenAI carries usage at the end of the stream (usually in the
                             // last chunk before `[DONE]`). Emit it as a standalone chunk: empty
                             // text, token_usage filled, so the consumer gets the whole call's
-                            // token usage from the streaming path.
+                            // token usage from the streaming path — and, 0.20.0 S3.2, the
+                            // complete tool_calls accumulated so far, so tool-call steps
+                            // stream natively.
                             if let Some(usage) = chunk.usage {
                                 let token_usage = TokenUsage {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     total_tokens: usage.total_tokens,
                                 };
+                                let tool_calls = tool_acc.build();
+                                if !tool_calls.is_empty() {
+                                    tool_calls_emitted = true;
+                                }
                                 let final_chunk = StreamChunk {
                                     text: String::new(),
                                     token_usage: Some(token_usage),
+                                    tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                                 };
                                 if tx.send(Ok(final_chunk)).await.is_err() {
                                     return;
@@ -588,6 +605,21 @@ impl OpenAIChat {
                             );
                         }
                     }
+                }
+            }
+            // Some compatible providers end the stream without a usage chunk. If tool
+            // calls were accumulated but never emitted, flush them as a dedicated
+            // terminal chunk so the streaming path never loses them (0.20.0 S3.2).
+            if !tool_calls_emitted {
+                let tool_calls = tool_acc.build();
+                if !tool_calls.is_empty() {
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            text: String::new(),
+                            token_usage: None,
+                            tool_calls: Some(tool_calls),
+                        }))
+                        .await;
                 }
             }
         });

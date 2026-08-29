@@ -1,6 +1,6 @@
 [package]
 name = "lc-langgraph"
-version = "0.18.1"
+version = "0.20.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "LangGraph - Graph-based orchestration framework for building stateful LLM applications"

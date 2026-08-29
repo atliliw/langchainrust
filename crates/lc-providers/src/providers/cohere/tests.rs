@@ -110,3 +110,101 @@ fn test_message_to_cohere_format_system() {
     let formatted = CohereChat::message_to_cohere_format(&msg);
     assert_eq!(formatted["role"], "system");
 }
+
+// ---- 0.20.0 P4: Cohere v2 streaming is its own SSE format, not OpenAI ----
+
+#[test]
+fn test_parse_cohere_event_done_terminator() {
+    // Cohere never sends [DONE] (it closes the connection after message-end),
+    // but the parser tolerates it for OpenAI-compatible proxies.
+    let result = parse_cohere_event("[DONE]").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_parse_cohere_event_malformed_data_errors() {
+    // 0.20.0 P4: malformed payloads surface as errors (logged, not silent),
+    // matching the OpenAI streaming path.
+    assert!(parse_cohere_event("not json").is_err());
+}
+
+#[test]
+fn test_cohere_event_to_chunk_content_delta() {
+    let data =
+        r#"{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"Hi"}}}}"#;
+    let ev = parse_cohere_event(data).unwrap().unwrap();
+    let chunk = cohere_event_to_chunk(&ev).expect("content-delta -> chunk");
+    assert_eq!(chunk.text, "Hi");
+    assert!(chunk.token_usage.is_none());
+    assert!(chunk.tool_calls.is_none());
+}
+
+#[test]
+fn test_cohere_event_to_chunk_ignores_framing_events() {
+    for data in [
+        r#"{"type":"message-start","message":{"role":"assistant","id":"m1"}}"#,
+        r#"{"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}"#,
+        r#"{"type":"content-end","index":0}"#,
+        // Streaming tool calls are framed by the API but not consumed here yet.
+        r#"{"type":"tool-call-start","index":0,"delta":{"tool_call":{"name":"get_weather"}}}"#,
+    ] {
+        let ev = parse_cohere_event(data).unwrap().unwrap();
+        assert!(
+            cohere_event_to_chunk(&ev).is_none(),
+            "framing/tool event must not emit a chunk: {data}"
+        );
+    }
+}
+
+#[test]
+fn test_cohere_event_to_chunk_message_end_usage() {
+    let data = r#"{"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"tokens":{"input_tokens":5,"output_tokens":2}}}}"#;
+    let ev = parse_cohere_event(data).unwrap().unwrap();
+    let chunk = cohere_event_to_chunk(&ev).expect("message-end -> chunk");
+    assert!(chunk.text.is_empty());
+    let usage = chunk.token_usage.expect("usage parsed");
+    assert_eq!(usage.prompt_tokens, 5);
+    assert_eq!(usage.completion_tokens, 2);
+    assert_eq!(usage.total_tokens, 7);
+}
+
+#[test]
+fn test_stream_parses_full_cohere_v2_stream() {
+    // 0.20.0 P4 lock-in: a realistic Cohere v2 SSE stream (framing + text +
+    // usage) is parsed into the expected concatenated text. Before the fix the
+    // old OpenAI-format parser rejected every event, so the stream was empty.
+    use crate::openai::sse::SSEParser;
+
+    let mut parser = SSEParser::new();
+    let raw = format!(
+        "{}\n\n",
+        [
+            "event: message-start\ndata: {\"type\":\"message-start\",\"message\":{\"role\":\"assistant\",\"id\":\"m1\"}}",
+            "event: content-start\ndata: {\"type\":\"content-start\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"text\",\"text\":\"\"}}}}",
+            "event: content-delta\ndata: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\"Hello\"}}}}",
+            "event: content-delta\ndata: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\" world\"}}}}",
+            "event: content-end\ndata: {\"type\":\"content-end\",\"index\":0}",
+            "event: message-end\ndata: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usage\":{\"tokens\":{\"input_tokens\":5,\"output_tokens\":2}}}}",
+        ]
+        .join("\n\n")
+    );
+
+    let events = parser.parse(&raw);
+    assert_eq!(events.len(), 6, "six SSE events");
+    let chunks: Vec<StreamChunk> = events
+        .iter()
+        .filter_map(|e| parse_cohere_event(&e.data).ok().flatten())
+        .filter_map(|ev| cohere_event_to_chunk(&ev))
+        .collect();
+
+    let text: String = chunks.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(text, "Hello world");
+
+    let usage = chunks
+        .iter()
+        .find_map(|c| c.token_usage.clone())
+        .expect("usage from message-end");
+    assert_eq!(usage.prompt_tokens, 5);
+    assert_eq!(usage.completion_tokens, 2);
+    assert_eq!(usage.total_tokens, 7);
+}

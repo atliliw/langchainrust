@@ -232,6 +232,7 @@ where
         let stream = futures_util::stream::iter(vec![Ok(StreamChunk {
             text: full,
             token_usage: usage,
+            tool_calls: None,
         })]);
         Ok(Box::pin(stream))
     }

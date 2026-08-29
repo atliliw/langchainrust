@@ -31,33 +31,39 @@ jobs:
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Verify version consistency
+      # 0.20.0 S2.2:发布门禁脚本化。原本的 fmt/clippy/test/doc 手工步骤固化为
+      # `scripts/release-gate.sh --all-features`(含磁盘预检、semver-checks 基线、
+      # security-scan、全 workspace 版本一致性)。这里保留两件脚本不做的事:
+      #   1) tag 版本 vs facade crate 版本一致性——release-gate 第 8 步只查各
+      #      crate 相互一致,不对比 tag。
+      #   2) 安装 cargo-semver-checks——release-gate 第 6 步在 CI 模式要真实
+      #      运行(本地未装时脚本才 warn+跳过)。
+      # 注意:根 Cargo.toml 是虚拟 workspace,无 version 字段;发布版本以
+      # facade crate(crates/lc/Cargo.toml,package = "langchainrust")为准。
+      # (旧写法 grep 根 Cargo.toml 得到空值,tag 检查必然失败——0.20.0 修正。)
+      - name: Verify tag vs facade version
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          CARGO_VERSION=$(grep '^version' crates/lc/Cargo.toml | head -1 | cut -d'"' -f2)
           echo "Tag version: $TAG_VERSION"
-          echo "Cargo.toml version: $CARGO_VERSION"
+          echo "Facade Cargo.toml version: $CARGO_VERSION"
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "ERROR: Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            echo "ERROR: Tag version ($TAG_VERSION) != facade version ($CARGO_VERSION)"
             exit 1
           fi
-          echo "Version consistency check passed"
+          echo "Tag version consistency check passed"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Run release gate
+        run: bash scripts/release-gate.sh --all-features
         env:
           OPENAI_API_KEY: test-key
-
-      - name: Build documentation
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
+          # semver 基线 = 上一发布版本;每次发版前更新
+          BASELINE: "0.19.0"
+          # CI runner 磁盘有限,降低告警阈值(该步只 warn 不 fail)
+          MIN_FREE_GB: "2"
 
   # ==================== 发布到 crates.io ====================
   publish:

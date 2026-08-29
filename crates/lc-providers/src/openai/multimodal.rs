@@ -114,11 +114,10 @@ impl OpenAIChat {
             let b64 = audio.base64_data().unwrap_or("");
             base64_decode(b64)?
         } else {
-            // Fetch from URL
-            let response = self
-                .client
-                .get(&audio.url)
-                .send()
+            // Fetch from URL through the SSRF-guarded GET (0.20.0 S4 P1): the audio
+            // URL is caller-supplied, so it must not be able to reach private/internal
+            // addresses or be redirected into the intranet.
+            let response = lc_core::ssrf::guarded_get(&self.client, &audio.url, true)
                 .await
                 .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
             response
@@ -315,5 +314,17 @@ mod tests {
     fn test_base64_decode_invalid() {
         let result = base64_decode("!!!invalid!!!");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_whisper_transcribe_blocks_private_audio_url() {
+        // 0.20.0 S4 P1: caller-supplied audio URLs go through the SSRF guard, so
+        // private/internal addresses are rejected before any network call.
+        let chat = OpenAIChat::new(crate::OpenAIConfig::new("test_key"));
+        let audio = AudioContent::from_url("http://127.0.0.1:9/audio.wav");
+        let result = chat.whisper_transcribe(audio).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("SSRF"), "expected SSRF block, got: {}", err);
     }
 }

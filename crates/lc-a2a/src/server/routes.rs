@@ -131,6 +131,10 @@ impl A2AServer {
         // `input-required` task cannot both pass the state check and spawn
         // racing workers. The guard releases the claim on every exit path.
         let Some(_inflight) = self.begin_resume(&task_id) else {
+            // G3 (0.20.0): this call was rejected before doing any work, so its
+            // `message_id` reservation must be released — otherwise the key
+            // leaks as permanently in-flight and a retry can never claim it.
+            self.release_resume_id(&message_id).await;
             return A2AResponse::from_error_data(
                 req.id,
                 A2AErrorData::new(-32000, "task is already being resumed; retry"),
@@ -378,6 +382,17 @@ impl A2AServer {
                 A2AErrorData::invalid_params("Workflow has no steps"),
             );
         }
+        // G2 (0.20.0): a client-supplied workflow is unbounded input; cap the
+        // number of steps so a single request cannot drive an arbitrarily long
+        // serial chain run.
+        if workflow.steps.len() > MAX_WORKFLOW_STEPS {
+            return A2AResponse::from_error_data(
+                req.id,
+                A2AErrorData::invalid_params(format!(
+                    "Workflow exceeds the maximum of {MAX_WORKFLOW_STEPS} steps"
+                )),
+            );
+        }
 
         // Create the backing task, propagating owner and trace id.
         let task_id = workflow
@@ -417,88 +432,21 @@ impl A2AServer {
         }
         publish_status(&self.event_bus, &task_id, TaskStatus::Working, None);
 
-        // Execute steps in order, aggregating per-step outputs.
-        let mut results = serde_json::Map::new();
-        let mut failure: Option<(String, String)> = None; // (step_id, message)
-        for step in &workflow.steps {
-            let chain = self.resolve_chain(step.skill_id.as_deref());
-            let input = build_chain_input(&step.message.content, chain.as_ref());
-            match chain.invoke(input).await {
-                Ok(result) => {
-                    let output = extract_output(&result);
-                    results.insert(step.id.clone(), Value::String(output));
-                }
-                Err(e) => {
-                    failure = Some((step.id.clone(), e.to_string()));
-                    break;
-                }
-            }
-        }
+        // G2 (0.20.0): execute in the background (matching `tasks/send`), so the
+        // handler is not blocked by a serial chain run. The client polls
+        // `tasks/get` for the outcome.
+        let steps = workflow.steps.clone();
+        let chains: Vec<Arc<dyn BaseChain>> = steps
+            .iter()
+            .map(|s| self.resolve_chain(s.skill_id.as_deref()))
+            .collect();
+        let store = self.store.clone();
+        let event_bus = self.event_bus.clone();
+        let spawned_id = task_id.clone();
+        tokio::spawn(async move {
+            run_workflow(&store, steps, chains, &spawned_id, event_bus).await;
+        });
 
-        // Finalize the backing task with the aggregated outcome.
-        let mut finalize = match self.store.get(&task_id).await {
-            Ok(Some(s)) => s,
-            _ => {
-                return A2AResponse::from_error_data(
-                    req.id,
-                    A2AErrorData::internal_error("workflow task vanished"),
-                );
-            }
-        };
-        let aggregated = results
-            .values()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        match failure {
-            Some((step_id, message)) => {
-                finalize.task.status = TaskStatus::Failed;
-                finalize.error = Some(format!("step `{step_id}` failed: {message}"));
-                let error = finalize.error.clone();
-                if self.store.upsert(finalize.clone()).await.is_err() {
-                    return A2AResponse::from_error_data(
-                        req.id,
-                        A2AErrorData::internal_error("task store write failed"),
-                    );
-                }
-                publish_status(
-                    &self.event_bus,
-                    &task_id,
-                    TaskStatus::Failed,
-                    error.as_deref(),
-                );
-                A2AResponse::ok(
-                    req.id,
-                    json!({
-                        "task": finalize.task,
-                        "error": error,
-                        "results": Value::Object(results),
-                    }),
-                )
-            }
-            None => {
-                finalize.task.status = TaskStatus::Completed;
-                finalize.result = Some(A2ATaskResult::new(aggregated));
-                finalize.error = None;
-                if self.store.upsert(finalize.clone()).await.is_err() {
-                    return A2AResponse::from_error_data(
-                        req.id,
-                        A2AErrorData::internal_error("task store write failed"),
-                    );
-                }
-                publish_status(&self.event_bus, &task_id, TaskStatus::Completed, None);
-                if let Some(result) = finalize.result.clone() {
-                    publish_artifact(&self.event_bus, &task_id, result);
-                }
-                A2AResponse::ok(
-                    req.id,
-                    json!({
-                        "task": finalize.task,
-                        "result": finalize.result,
-                        "results": Value::Object(results),
-                    }),
-                )
-            }
-        }
+        A2AResponse::ok(req.id, json!({ "task": task }))
     }
 }

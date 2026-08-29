@@ -181,7 +181,13 @@ impl SseTransport {
                                             // POST by `id`.
                                             if let Ok(resp) = serde_json::from_str::<MCPResponse>(&data) {
                                                 if let Some(id) = resp.id {
-                                                    if let Some(tx) = pending.lock().unwrap().remove(&id) {
+                                                    // M3 (0.20.0): recover from a poisoned lock — one panicking
+                                                    // task must not permanently kill SSE request delivery.
+                                                    if let Some(tx) = pending
+                                                        .lock()
+                                                        .unwrap_or_else(|e| e.into_inner())
+                                                        .remove(&id)
+                                                    {
                                                         let _ = tx.send(resp);
                                                         continue;
                                                     }
@@ -224,7 +230,7 @@ impl SseTransport {
                 // F4: connection dropped, clear the pending registry — waiting requests receive no push, their
                 // oneshots are dropped and fail out with "push channel closed", taking the `request`
                 // invalidate-cache → reconnect → retry-once path.
-                pending.lock().unwrap().clear();
+                pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
                 // Wait a moment before reconnecting to avoid a busy loop
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -279,7 +285,10 @@ impl SseTransport {
         let req_id = body.get("id").and_then(serde_json::Value::as_u64);
         let (pending_tx, pending_rx) = oneshot::channel();
         if let Some(id) = req_id {
-            self.pending.lock().unwrap().insert(id, pending_tx);
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, pending_tx);
         }
 
         let result = self.post_and_wait(post_url, body, pending_rx).await;
@@ -287,7 +296,10 @@ impl SseTransport {
         // Cleanup: the read loop may have already removed (taking the tx to deliver), in which case remove
         // returning None is harmless; a late push is naturally ignored because the registry is empty.
         if let Some(id) = req_id {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
         }
         result
     }
@@ -494,5 +506,41 @@ impl MCPTransport for SseTransport {
 
     fn subscribe_events(&self) -> broadcast::Receiver<MCPEvent> {
         self.event_tx.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M3 (0.20.0): a panicking task that poisons the `pending` mutex must not
+    /// permanently kill SSE request delivery — the recovery-lock idiom used at
+    /// every `pending` site must keep the registry usable.
+    #[test]
+    fn pending_registry_survives_poisoned_lock() {
+        let config = MCPConfig::sse("http://127.0.0.1:9/sse");
+        let transport = SseTransport::new(&config).unwrap();
+
+        // Poison the lock: panic while holding the guard. Caught so the test
+        // continues; unwinding drops the guard and marks the mutex poisoned.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = transport.pending.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(transport.pending.is_poisoned());
+
+        // The exact recovery idiom used across the read loop / post_request:
+        // a recovered guard must still allow insert + remove.
+        let (tx, _rx) = oneshot::channel();
+        {
+            let mut guard = transport.pending.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(7, tx);
+        }
+        assert!(transport
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&7)
+            .is_some());
     }
 }

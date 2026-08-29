@@ -278,6 +278,7 @@ impl BaseChatModel for AnthropicChat {
                         completion_tokens: usage.output_tokens,
                         total_tokens: usage.input_tokens + usage.output_tokens,
                     }),
+                    tool_calls: None,
                 })],
                 Err(e) => vec![Err(e)],
             })

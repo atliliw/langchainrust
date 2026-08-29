@@ -142,7 +142,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.15"
+langchainrust = "0.19"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -4335,7 +4335,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.18.0"
+lc-testkit = "0.20.0"
 ```
 
 ```rust

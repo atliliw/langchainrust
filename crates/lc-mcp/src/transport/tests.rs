@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use super::sse::parse_sse_line;
+use super::stdio::read_response_for;
 use super::*;
 use crate::types::MCPConfig;
 
@@ -13,6 +14,32 @@ async fn test_stdio_transport_new_invalid_command() {
     let config = MCPConfig::stdio("nonexistent_command_xyz_zzz", vec![]);
     let result = StdioTransport::new(&config).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_stdio_request_times_out_when_child_never_responds() {
+    // M1 (0.20.0): `request` is bounded by `request_timeout`, so a child that
+    // swallows the request cannot make the caller wait forever. `sh -c "sleep
+    // 5"` writes nothing to stdout, so the read side must time out.
+    let config = MCPConfig::stdio("sh", vec!["-c".into(), "sleep 5".into()]);
+    let Ok(transport) = StdioTransport::new(&config).await else {
+        eprintln!("skipping: `sh` not available on this platform");
+        return;
+    };
+    let transport = transport.with_request_timeout(Duration::from_millis(300));
+
+    let req = MCPRequest::new(1, "tools/list", None);
+    // Outer 10s backstop: if the timeout mechanism fails, this errors instead
+    // of hanging the whole test run.
+    let result = timeout(Duration::from_secs(10), transport.request(req)).await;
+    let err = result
+        .expect("request must not hang forever (10s backstop)")
+        .expect_err("request should time out when the child never responds");
+    assert!(
+        err.to_string().contains("timed out"),
+        "expected 'timed out' in error, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -74,6 +101,50 @@ fn test_connection_lost_error() {
     assert!(err.is_connection_lost());
     let other = MCPError::new(-1, "boom");
     assert!(!other.is_connection_lost());
+}
+
+#[tokio::test]
+async fn test_read_response_for_skips_notifications_and_stale_responses() {
+    // M2 (0.20.0): the stdio read loop must correlate by request id. A
+    // notification and a stale response for a different request on the stream
+    // must be skipped, and only the response matching `req_id` returned.
+    use tokio::io::AsyncWriteExt;
+
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let payload = concat!(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"stale\":true}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n",
+    );
+    writer.write_all(payload.as_bytes()).await.unwrap();
+
+    let resp = read_response_for(&mut buf_reader, 7)
+        .await
+        .expect("matching response must be returned");
+    assert_eq!(resp.id, Some(7));
+    assert_eq!(resp.result, Some(serde_json::json!({ "ok": true })));
+    assert!(resp.error.is_none());
+}
+
+#[tokio::test]
+async fn test_read_response_for_returns_error_response_on_match() {
+    // A matching response that carries an `error` (instead of a `result`) must
+    // also be returned — it is this request's response.
+    use tokio::io::AsyncWriteExt;
+
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    let mut buf_reader = tokio::io::BufReader::new(reader);
+    let payload = "{\"jsonrpc\":\"2.0\",\"id\":9,\"error\":{\"code\":-32601,\"message\":\"no such method\"}}\n";
+    writer.write_all(payload.as_bytes()).await.unwrap();
+
+    let resp = read_response_for(&mut buf_reader, 9)
+        .await
+        .expect("matching error response must be returned");
+    assert_eq!(resp.id, Some(9));
+    assert!(resp.result.is_none());
+    assert!(resp.error.is_some());
+    assert_eq!(resp.error.as_ref().unwrap().code, -32601);
 }
 
 /// Waits for the SSE background read loop to establish the connection (the early-exit check in request

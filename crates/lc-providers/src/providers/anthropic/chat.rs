@@ -511,10 +511,26 @@ impl AnthropicChat {
                                             }
                                         }
                                     }
+                                } else {
+                                    // 0.20.0 P3: a malformed SSE datum no longer vanishes
+                                    // silently — log it and skip this token (matching the
+                                    // OpenAI streaming path). One bad datum does not kill the
+                                    // stream, but a stream truncated by failures is not left
+                                    // unexplained.
+                                    log::error!(
+                                        "Failed to parse Anthropic streaming SSE event (skipping this token): {}",
+                                        data
+                                    );
                                 }
                             }
                         }
                     }
+                } else if let Err(e) = chunk_result {
+                    // 0.20.0 P3: a transport error mid-stream no longer ends the stream
+                    // silently — surface it so the caller does not mistake a truncated
+                    // reply for a complete one.
+                    let _ = tx.send(Err(AnthropicError::Http(e.to_string()))).await;
+                    return;
                 }
             }
         });

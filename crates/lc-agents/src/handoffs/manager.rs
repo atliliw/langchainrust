@@ -281,11 +281,15 @@ impl BaseTool for HandoffTool {
             task,
             context,
         };
+        // 0.20.0 S3.1:交接环/深度守卫是框架级「拒绝执行」的控制中止,不是工具执行
+        // 失败。用 ControlAbort 而非 ExecutionFailed 区分,使 AgentExecutor 能把
+        // 它硬失败上抛(agent 无法靠重规划绕过环检测),而不会像普通工具失败那样
+        // 被转成 observation 喂回循环。
         let result = self
             .manager
             .execute_handoff(handoff)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            .map_err(|e| ToolError::ControlAbort(e.to_string()))?;
         Ok(result.result)
     }
 }
