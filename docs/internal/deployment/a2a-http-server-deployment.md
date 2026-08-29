@@ -34,7 +34,7 @@
 
 - 一台 Linux 服务器(本指南:CentOS 7, x86_64),能 SSH 登录(`root`)
 - 服务器端口 `18080` 对外可达(客户端能连到;默认绑定 `0.0.0.0` 所有网卡)
-- 服务器上装有 Rust 工具链(`rustc`/`cargo`,版本 ≥ 项目 MSRV 1.82)
+- 服务器上装有 Rust 工具链(`rustc`/`cargo`,版本 ≥ 项目 MSRV 1.85)
 - **出网**:agent 服务器要能 HTTPS 访问模型端点(阿里云 MaaS
   `*.maas.aliyuncs.com`)。客户端不需要访问模型端点,只访问 agent 的 `18080`。
 - **网络注意(中国大陆)**:`static.rust-lang.org` / `crates.io` 直连常被墙,
@@ -57,9 +57,9 @@ cargo build --release -p langchainrust --example a2a_http_server
 #    target/release/examples/a2a_http_server
 ```
 
-> **工具链注意**:项目根有 `rust-toolchain.toml` 锁 1.82。若服务器 `rustup
-> toolchain install 1.82` 因 GFW 下载失败,可把 `rust-toolchain.toml` 改名
-> 为 `rust-toolchain.toml.bak`,改用服务器已装的 stable(≥ 1.82 即可)。
+> **工具链注意**:项目根有 `rust-toolchain.toml` 锁 1.85。若服务器 `rustup
+> toolchain install 1.85` 因 GFW 下载失败,可把 `rust-toolchain.toml` 改名
+> 为 `rust-toolchain.toml.bak`,改用服务器已装的 stable(≥ 1.85 即可)。
 
 ### 3.2 方案 B:本地构建后拷贝
 
@@ -240,7 +240,7 @@ test f05_deployed_remote_server_roundtrip ... ok
 | `POST /` 返回 `invalid utf-8 sequence` | 客户端把中文按非 UTF-8 编码发出;用 `-d @file` 传 UTF-8 文件(5.2) |
 | 客户端连不上 `18080` | 服务器没设 `A2A_HOST=0.0.0.0`(只绑了回环),或防火墙/安全组没放行端口 |
 | 远程请求报 401 / `Authentication required` | 服务器开了 `A2A_AUTH_TOKEN`,客户端没带 `Authorization: Bearer <token>`(5.3 末) |
-| `rustup toolchain install 1.82` 卡在 TLS | GFW 挡 `static.rust-lang.org`;改名 `rust-toolchain.toml` 用服务器已装 stable |
+| `rustup toolchain install 1.85` 卡在 TLS | GFW 挡 `static.rust-lang.org`;改名 `rust-toolchain.toml` 用服务器已装 stable |
 | `cargo build` 拉依赖超时 | 配 USTC 镜像(3.3)或离线缓存(3.4) |
 | Windows 本地 cargo 链接 `Permission denied` | 网盘同步目录锁文件;设 `CARGO_TARGET_DIR` 到同步目录外(3.2) |
 | 想换技能/加 SSE | 编辑 `crates/lc/examples/a2a_http_server.rs`(换模板 / `with_streaming`),重新构建部署 |

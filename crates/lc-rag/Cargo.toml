@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "RAG (Retrieval-Augmented Generation) module for langchainrust — BM25, Hybrid Retrieval, GraphRAG, HyDE, Reranking, MultiQuery, Document Loaders"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.82"
+rust-version = "1.85"
 
 [dependencies]
 lc-shared = { path = "../lc-shared", version = "0.20.0" }

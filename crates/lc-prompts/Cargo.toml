@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Prompt templates for langchainrust"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.82"
+rust-version = "1.85"
 
 [dependencies]
 lc-schema = { path = "../lc-schema", version = "0.20.0" }

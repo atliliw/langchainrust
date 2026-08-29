@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Agent system for langchainrust — ReAct, FunctionCalling, PlanExecute, CRAG, AdaptiveRAG, DeepResearch, Handoffs, Streaming"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.82"
+rust-version = "1.85"
 
 [dependencies]
 lc-core = { path = "../lc-core", version = "0.20.0" }

@@ -4,7 +4,7 @@ Get started with LangChainRust in 5 minutes.
 
 ## Prerequisites
 
-- Rust 1.82+ (edition 2021)
+- Rust 1.85+ (edition 2021)
 - An OpenAI API key (or any supported LLM provider)
 
 ## Installation

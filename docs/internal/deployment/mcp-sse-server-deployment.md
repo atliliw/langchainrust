@@ -31,7 +31,7 @@
 
 - 一台 Linux 服务器(本指南:CentOS 7, x86_64),能 SSH 登录(`root`)
 - 服务器端口 `8788` 对外可达(客户端能连到)
-- 服务器上装有 Rust 工具链(`rustc`/`cargo`,版本 ≥ 项目 MSRV 1.82)
+- 服务器上装有 Rust 工具链(`rustc`/`cargo`,版本 ≥ 项目 MSRV 1.85)
 - **网络注意(中国大陆)**:`static.rust-lang.org` / `crates.io` 直连常被墙,
   需要配置镜像源,见 [第 3.3 节](#33-配置-cargo-镜像源中国大陆)
 
@@ -52,10 +52,10 @@ cargo build --release -p langchainrust --example mcp_sse_server
 #    target/release/examples/mcp_sse_server
 ```
 
-> **工具链注意**:项目根有 `rust-toolchain.toml` 锁 1.82。若服务器 `rustup
-> toolchain install 1.82` 因 GFW 下载失败,可把 `rust-toolchain.toml` 改名
-> 为 `rust-toolchain.toml.bak`,改用服务器已装的 stable(≥ 1.82 即可,项目
-> MSRV 是 1.82)。
+> **工具链注意**:项目根有 `rust-toolchain.toml` 锁 1.85。若服务器 `rustup
+> toolchain install 1.85` 因 GFW 下载失败,可把 `rust-toolchain.toml` 改名
+> 为 `rust-toolchain.toml.bak`,改用服务器已装的 stable(≥ 1.85 即可,项目
+> MSRV 是 1.85)。
 
 ### 3.2 方案 B:本地构建后拷贝
 
@@ -205,7 +205,7 @@ test f10_deployed_remote_server_roundtrip ... ok
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `rustup toolchain install 1.82` 卡在 TLS | GFW 挡 `static.rust-lang.org`;改名 `rust-toolchain.toml` 用服务器已装 stable |
+| `rustup toolchain install 1.85` 卡在 TLS | GFW 挡 `static.rust-lang.org`;改名 `rust-toolchain.toml` 用服务器已装 stable |
 | `cargo build` 拉依赖超时 | 配 USTC 镜像(3.3)或离线缓存(3.4) |
 | 客户端报"连接 POST 地址失败" | `MCP_SERVER_PUBLIC_URL` 没设置,服务端发了 `0.0.0.0`;按 4.2 设置 |
 | 客户端列出的工具不是 6 个 | 改了 `examples/mcp_sse_server.rs` 后忘了重新构建/部署 |

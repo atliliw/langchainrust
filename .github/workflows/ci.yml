@@ -70,7 +70,7 @@ jobs:
           - os: ubuntu-latest
             rust: beta
           - os: ubuntu-latest
-            rust: "1.82"
+            rust: "1.85"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -100,15 +100,19 @@ jobs:
           # 使用模拟数据运行测试，不需要真实 API Key
           OPENAI_API_KEY: test-key
 
+      # --all-features 会启用 feature 门控的依赖(ort-sys 等,要求 rustc ≥ 1.88),
+      # 不属于 MSRV 承诺,MSRV 门禁行只验证默认特性编译 + 测试。
       - name: Test all features
+        if: matrix.rust != '1.85'
         run: cargo test --all-features --verbose
         env:
           OPENAI_API_KEY: test-key
 
   # ==================== MSRV 检查 ====================
-  # MSRV = 1.82(见 rust-toolchain.toml 与各 crate 的 rust-version 字段)。
-  # 已由上面 test 矩阵的 `rust: "1.82"` 行(ubuntu-latest)覆盖:该行即 MSRV 门禁,
-  # 保证 1.82 下编译 + 全部测试通过。不另起 job,避免 1.82 重复编译。
+  # MSRV = 1.85(见 rust-toolchain.toml 与各 crate 的 rust-version 字段)。
+  # 已由上面 test 矩阵的 `rust: "1.85"` 行(ubuntu-latest)覆盖:该行即 MSRV 门禁,
+  # 保证 1.85 下默认特性编译 + 测试通过。不另起 job,避免 1.85 重复编译。
+  # 注意:MSRV 行跳过「Test all features」步骤(feature 门控依赖需更高 rustc)。
 
   # ==================== semver 检查 ====================
   # 对比每个 crate 最近一次发布(registry 上的 0.15.x)与当前源码的公开 API 差异。

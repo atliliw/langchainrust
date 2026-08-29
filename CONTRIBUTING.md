@@ -55,7 +55,7 @@ cargo fmt --check
 
 ### Prerequisites
 
-- Rust 1.82+ (see `rust-toolchain.toml`)
+- Rust 1.85+ (see `rust-toolchain.toml`)
 - For integration tests: set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` environment variables
 
 ## Code Standards

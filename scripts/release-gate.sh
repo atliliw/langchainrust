@@ -29,7 +29,7 @@
 #                      handle_alloc_error / E0463 级联,实测 2026-08-28)
 #
 # 设计约束(盲区说明,见 RELEASE_CHECKLIST S2.3):
-#   - 本地默认不带 --all-features:windows-gnu + rust-toolchain 1.82 下,
+#   - 本地默认不带 --all-features:windows-gnu + rust-toolchain 1.85 下,
 #     lc-embeddings/local-embeddings → ort-sys 2.0.0-rc.13 需 rustc≥1.88
 #     无法编译。clippy/doc 的 --all-features 组合是 CI 责任,本地不强跑。
 #   - set -euo pipefail;每步失败即退出,便于快速定位。

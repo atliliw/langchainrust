@@ -10,7 +10,7 @@ documentation = "https://docs.rs/langchainrust"
 readme = "README.md"
 keywords = ["llm", "langchain", "ai", "rag", "agent"]
 categories = ["algorithms", "asynchronous", "api-bindings", "science"]
-rust-version = "1.82"
+rust-version = "1.85"
 authors = ["atliliw"]
 exclude = [
     "/docs",

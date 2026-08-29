@@ -23,4 +23,11 @@ members = [
     "crates/lc-a2a",
     "crates/lc-testkit",
 ]
-resolver = "2"
+resolver = "3"
+
+# MSRV 承诺 1.85(与各 crate rust-version 一致,见 rust-toolchain.toml)。
+# resolver "3" 启用 MSRV 感知解析:在 cargo 1.84+ 上解析依赖时自动排除
+# `rust-version > 1.85` 的版本。2026-08 依赖漂移实测:icu 2.x / time 0.3.55 /
+# ort-sys 均要求 rustc ≥ 1.88,单靠锁版本(update --precise)会被 cookie_store/
+# ureq 等约束链挡住,resolver 3 在解析层根治。
+rust-version = "1.85"
