@@ -43,6 +43,10 @@ redis-storage = ["redis"]
 sqlite-storage = ["rusqlite"]
 pgvector-storage = ["dep:sqlx", "dep:pgvector"]
 
+# docs.rs 构建用显式 feature 清单而非 all-features:
+# pgvector-storage 会拉入 sqlx(钉在 0.8.0 —— 与 rusqlite 0.31 共享 libsqlite3-sys 0.28 以避开 links 冲突),
+# 而 sqlx 0.8.0 在 docs.rs 的较新 rustc 上编译失败(E0277 `!: Decode`);升 0.8.1+ 又会与 rusqlite 撞
+# libsqlite3-sys 版本冲突(详见 ../lc/Cargo.toml 顶部注释)。因此 docs 构建排除该 feature。
 [package.metadata.docs.rs]
-all-features = true
+features = ["qdrant-integration", "mongodb-persistence", "redis-storage", "sqlite-storage"]
 rustdoc-args = ["--cfg", "docsrs"]

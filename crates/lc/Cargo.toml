@@ -93,8 +93,11 @@ local-embeddings = ["lc-embeddings/local-embeddings"]
 fastembed = ["lc-embeddings/fastembed"]
 vectorstore-memory = ["lc-memory/vectorstore-memory"]
 
+# docs.rs 构建用显式 feature 清单而非 all-features:
+# pgvector-storage 转发 lc-vector-stores/pgvector-storage → 拉入 sqlx 0.8.0,在 docs.rs 较新 rustc 上
+# 编译失败;sqlx 无法升级(原因见本文件顶部 59-64 行注释)。因此 docs 构建排除该 feature。
 [package.metadata.docs.rs]
-all-features = true
+features = ["experimental", "qdrant-integration", "mongodb-persistence", "redis-storage", "sqlite-storage", "opentelemetry", "local-embeddings", "fastembed", "vectorstore-memory"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 # ============================================================================
