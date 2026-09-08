@@ -87,6 +87,74 @@ pub async fn spawn_status_stub(
     (format!("http://{}", addr), requests)
 }
 
+/// Minimal HTTP stub: the first `failures_before_success` requests return `429` with a
+/// `Retry-After: <secs>` header, then a success. Returns `(base_url, received request count)`.
+///
+/// Used for the 0.21.0 S3.3 `Retry-After` honoring tests (the header must raise the
+/// retry delay beyond the plain exponential backoff).
+pub async fn spawn_retry_after_stub(
+    retry_after_secs: u64,
+    failures_before_success: usize,
+) -> (String, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let r = requests.clone();
+
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let r = r.clone();
+            tokio::spawn(async move {
+                // Read the header section up to \r\n\r\n
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let header_str = String::from_utf8_lossy(&header).to_lowercase();
+                let content_length: usize = header_str
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+
+                let n = r.fetch_add(1, Ordering::SeqCst);
+                if n < failures_before_success {
+                    let resp_body = "{\"error\":\"rate limited\"}";
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        retry_after_secs,
+                        resp_body.len(),
+                        resp_body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                } else {
+                    let resp_body = "{\"ok\":true}";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        resp_body.len(),
+                        resp_body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+
+    (format!("http://{}", addr), requests)
+}
+
 /// Starts an HTTP stub returning OpenAI-style embeddings responses.
 ///
 /// `n_vectors(input_count)` decides how many vectors each request returns, simulating

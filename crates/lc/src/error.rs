@@ -92,424 +92,167 @@ pub use lc_a2a::client::A2AError;
 /// This allows using `?` across module boundaries without manually
 /// mapping error types. Each variant wraps the original sub-module
 /// error, preserving full context.
-#[derive(Debug)]
+///
+/// 0.21.0 S3.4: `Display` / `std::error::Error` (with `source()`) / `From` are
+/// derived via `thiserror` (`#[error]` / `#[from]`) — behaviorally equivalent
+/// to the previous 40+ hand-written impls (~300 lines of boilerplate removed):
+/// each variant renders as `"<Name> error: <inner>"` and its `source()` is the
+/// wrapped sub-module error.
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     // ---- LLM Provider ----
     /// OpenAI API error.
-    OpenAI(OpenAIError),
+    #[error("OpenAI error: {0}")]
+    OpenAI(#[from] OpenAIError),
     /// Anthropic API error.
-    Anthropic(AnthropicError),
+    #[error("Anthropic error: {0}")]
+    Anthropic(#[from] AnthropicError),
     /// Gemini API error.
-    Gemini(GeminiError),
+    #[error("Gemini error: {0}")]
+    Gemini(#[from] GeminiError),
     /// Ollama API error.
-    Ollama(OllamaError),
+    #[error("Ollama error: {0}")]
+    Ollama(#[from] OllamaError),
     /// OpenAI Assistants API error.
-    Assistant(AssistantError),
+    #[error("Assistant error: {0}")]
+    Assistant(#[from] AssistantError),
     /// OpenAI Responses API error.
-    Responses(ResponsesError),
+    #[error("Responses error: {0}")]
+    Responses(#[from] ResponsesError),
     /// Provider error (from lc-providers crate).
-    Provider(lc_providers::ProviderError),
+    #[error("Provider error: {0}")]
+    Provider(#[from] lc_providers::ProviderError),
 
     // ---- Agents ----
     /// Adaptive RAG agent error.
-    AdaptiveRAG(AdaptiveRAGError),
+    #[error("AdaptiveRAG error: {0}")]
+    AdaptiveRAG(#[from] AdaptiveRAGError),
     /// Agent execution error.
-    Agent(AgentError),
+    #[error("Agent error: {0}")]
+    Agent(#[from] AgentError),
     /// Corrective RAG agent error.
-    CRAG(CRAGError),
+    #[error("CRAG error: {0}")]
+    CRAG(#[from] CRAGError),
     /// Document grading error.
-    Grader(GraderError),
+    #[error("Grader error: {0}")]
+    Grader(#[from] GraderError),
     /// Query rewriting error.
-    Rewriter(RewriterError),
+    #[error("Rewriter error: {0}")]
+    Rewriter(#[from] RewriterError),
     /// Deep research agent error.
-    Research(ResearchError),
+    #[error("Research error: {0}")]
+    Research(#[from] ResearchError),
     /// Agent handoff error.
-    Handoff(HandoffError),
+    #[error("Handoff error: {0}")]
+    Handoff(#[from] HandoffError),
     /// Plan-execute agent error.
-    PlanExecute(PlanExecuteError),
+    #[error("PlanExecute error: {0}")]
+    PlanExecute(#[from] PlanExecuteError),
 
     // ---- Chains ----
     /// Chain execution error.
-    Chain(ChainError),
+    #[error("Chain error: {0}")]
+    Chain(#[from] ChainError),
 
     // ---- Core ----
     /// Batch processing error.
-    Batch(BatchError),
+    #[error("Batch error: {0}")]
+    Batch(#[from] BatchError),
     /// LLM JSON parsing error.
-    LlmJsonParse(LlmJsonParseError),
+    #[error("LlmJsonParse error: {0}")]
+    LlmJsonParse(#[from] LlmJsonParseError),
     /// Math operation error.
-    Math(MathError),
+    #[error("Math error: {0}")]
+    Math(#[from] MathError),
     /// Output parser error.
-    OutputParser(OutputParserError),
+    #[error("OutputParser error: {0}")]
+    OutputParser(#[from] OutputParserError),
     /// LLM router error.
-    Router(RouterError),
+    #[error("Router error: {0}")]
+    Router(#[from] RouterError),
     /// Structured output extraction error.
-    StructuredOutput(StructuredOutputError),
+    #[error("StructuredOutput error: {0}")]
+    StructuredOutput(#[from] StructuredOutputError),
     /// Partial JSON parsing error.
-    PartialJson(PartialJsonError),
+    #[error("PartialJson error: {0}")]
+    PartialJson(#[from] PartialJsonError),
     /// Tool execution error.
-    Tool(ToolError),
+    #[error("Tool error: {0}")]
+    Tool(#[from] ToolError),
 
     // ---- Embeddings ----
     /// Embedding model error.
-    Embedding(EmbeddingError),
+    #[error("Embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
 
     // ---- Memory ----
     /// Memory operation error.
-    Memory(MemoryError),
+    #[error("Memory error: {0}")]
+    Memory(#[from] MemoryError),
 
     // ---- Retrieval ----
     /// Graph RAG error.
-    GraphRAG(GraphRAGError),
+    #[error("GraphRAG error: {0}")]
+    GraphRAG(#[from] GraphRAGError),
     /// HyDE retriever error.
-    HyDE(HyDEError),
+    #[error("HyDE error: {0}")]
+    HyDE(#[from] HyDEError),
     /// Document loader error.
-    Loader(LoaderError),
+    #[error("Loader error: {0}")]
+    Loader(#[from] LoaderError),
     /// Multi-query retriever error.
-    MultiQuery(MultiQueryError),
+    #[error("MultiQuery error: {0}")]
+    MultiQuery(#[from] MultiQueryError),
     /// Reranking error.
-    Reranking(RerankingError),
+    #[error("Reranking error: {0}")]
+    Reranking(#[from] RerankingError),
     /// Retriever error.
-    Retriever(RetrieverError),
+    #[error("Retriever error: {0}")]
+    Retriever(#[from] RetrieverError),
 
     // ---- Vector Stores ----
     /// Vector store error.
-    VectorStore(VectorStoreError),
+    #[error("VectorStore error: {0}")]
+    VectorStore(#[from] VectorStoreError),
 
     // ---- Tools / Sandbox ----
     /// Code sandbox error.
-    Sandbox(SandboxError),
+    #[error("Sandbox error: {0}")]
+    Sandbox(#[from] SandboxError),
 
     // ---- Callbacks ----
     /// LangSmith callback error.
-    LangSmith(LangSmithError),
+    #[error("LangSmith error: {0}")]
+    LangSmith(#[from] LangSmithError),
 
     // ---- LangGraph ----
     /// Graph execution error.
-    Graph(GraphError),
+    #[error("Graph error: {0}")]
+    Graph(#[from] GraphError),
     /// Graph persistence error.
-    Persistence(PersistenceError),
+    #[error("Persistence error: {0}")]
+    Persistence(#[from] PersistenceError),
 
     // ---- Guardrails ----
     /// Guardrail validation error.
-    Guardrail(GuardrailError),
+    #[error("Guardrail error: {0}")]
+    Guardrail(#[from] GuardrailError),
 
     // ---- Evaluation ----
     /// Evaluation error.
-    Eval(EvalError),
+    #[error("Eval error: {0}")]
+    Eval(#[from] EvalError),
 
     // ---- Sessions ----
     /// Session store error.
-    Session(SessionError),
+    #[error("Session error: {0}")]
+    Session(#[from] SessionError),
 
     // ---- A2A ----
     /// Agent-to-Agent protocol error.
-    A2A(A2AError),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::OpenAI(e) => write!(f, "OpenAI error: {e}"),
-            Error::Anthropic(e) => write!(f, "Anthropic error: {e}"),
-            Error::Gemini(e) => write!(f, "Gemini error: {e}"),
-            Error::Ollama(e) => write!(f, "Ollama error: {e}"),
-            Error::Assistant(e) => write!(f, "Assistant error: {e}"),
-            Error::Responses(e) => write!(f, "Responses error: {e}"),
-            Error::Provider(e) => write!(f, "Provider error: {e}"),
-            Error::AdaptiveRAG(e) => write!(f, "AdaptiveRAG error: {e}"),
-            Error::Agent(e) => write!(f, "Agent error: {e}"),
-            Error::CRAG(e) => write!(f, "CRAG error: {e}"),
-            Error::Grader(e) => write!(f, "Grader error: {e}"),
-            Error::Rewriter(e) => write!(f, "Rewriter error: {e}"),
-            Error::Research(e) => write!(f, "Research error: {e}"),
-            Error::Handoff(e) => write!(f, "Handoff error: {e}"),
-            Error::PlanExecute(e) => write!(f, "PlanExecute error: {e}"),
-            Error::Chain(e) => write!(f, "Chain error: {e}"),
-            Error::Batch(e) => write!(f, "Batch error: {e}"),
-            Error::LlmJsonParse(e) => write!(f, "LlmJsonParse error: {e}"),
-            Error::Math(e) => write!(f, "Math error: {e}"),
-            Error::OutputParser(e) => write!(f, "OutputParser error: {e}"),
-            Error::Router(e) => write!(f, "Router error: {e}"),
-            Error::StructuredOutput(e) => write!(f, "StructuredOutput error: {e}"),
-            Error::PartialJson(e) => write!(f, "PartialJson error: {e}"),
-            Error::Tool(e) => write!(f, "Tool error: {e}"),
-            Error::Embedding(e) => write!(f, "Embedding error: {e}"),
-            Error::Memory(e) => write!(f, "Memory error: {e}"),
-            Error::GraphRAG(e) => write!(f, "GraphRAG error: {e}"),
-            Error::HyDE(e) => write!(f, "HyDE error: {e}"),
-            Error::Loader(e) => write!(f, "Loader error: {e}"),
-            Error::MultiQuery(e) => write!(f, "MultiQuery error: {e}"),
-            Error::Reranking(e) => write!(f, "Reranking error: {e}"),
-            Error::Retriever(e) => write!(f, "Retriever error: {e}"),
-            Error::VectorStore(e) => write!(f, "VectorStore error: {e}"),
-            Error::Sandbox(e) => write!(f, "Sandbox error: {e}"),
-            Error::LangSmith(e) => write!(f, "LangSmith error: {e}"),
-            Error::Graph(e) => write!(f, "Graph error: {e}"),
-            Error::Persistence(e) => write!(f, "Persistence error: {e}"),
-            Error::Guardrail(e) => write!(f, "Guardrail error: {e}"),
-            Error::Eval(e) => write!(f, "Eval error: {e}"),
-            Error::Session(e) => write!(f, "Session error: {e}"),
-            Error::A2A(e) => write!(f, "A2A error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::OpenAI(e) => Some(e),
-            Error::Anthropic(e) => Some(e),
-            Error::Gemini(e) => Some(e),
-            Error::Ollama(e) => Some(e),
-            Error::Assistant(e) => Some(e),
-            Error::Responses(e) => Some(e),
-            Error::Provider(e) => Some(e),
-            Error::AdaptiveRAG(e) => Some(e),
-            Error::Agent(e) => Some(e),
-            Error::CRAG(e) => Some(e),
-            Error::Grader(e) => Some(e),
-            Error::Rewriter(e) => Some(e),
-            Error::Research(e) => Some(e),
-            Error::Handoff(e) => Some(e),
-            Error::PlanExecute(e) => Some(e),
-            Error::Chain(e) => Some(e),
-            Error::Batch(e) => Some(e),
-            Error::LlmJsonParse(e) => Some(e),
-            Error::Math(e) => Some(e),
-            Error::OutputParser(e) => Some(e),
-            Error::Router(e) => Some(e),
-            Error::StructuredOutput(e) => Some(e),
-            Error::PartialJson(e) => Some(e),
-            Error::Tool(e) => Some(e),
-            Error::Embedding(e) => Some(e),
-            Error::Memory(e) => Some(e),
-            Error::GraphRAG(e) => Some(e),
-            Error::HyDE(e) => Some(e),
-            Error::Loader(e) => Some(e),
-            Error::MultiQuery(e) => Some(e),
-            Error::Reranking(e) => Some(e),
-            Error::Retriever(e) => Some(e),
-            Error::VectorStore(e) => Some(e),
-            Error::Sandbox(e) => Some(e),
-            Error::LangSmith(e) => Some(e),
-            Error::Graph(e) => Some(e),
-            Error::Persistence(e) => Some(e),
-            Error::Guardrail(e) => Some(e),
-            Error::Eval(e) => Some(e),
-            Error::Session(e) => Some(e),
-            Error::A2A(e) => Some(e),
-        }
-    }
-}
-
-// ---- From impls for all sub-error types ----
-
-impl From<OpenAIError> for Error {
-    fn from(e: OpenAIError) -> Self {
-        Error::OpenAI(e)
-    }
-}
-impl From<AnthropicError> for Error {
-    fn from(e: AnthropicError) -> Self {
-        Error::Anthropic(e)
-    }
-}
-impl From<GeminiError> for Error {
-    fn from(e: GeminiError) -> Self {
-        Error::Gemini(e)
-    }
-}
-impl From<OllamaError> for Error {
-    fn from(e: OllamaError) -> Self {
-        Error::Ollama(e)
-    }
-}
-impl From<AssistantError> for Error {
-    fn from(e: AssistantError) -> Self {
-        Error::Assistant(e)
-    }
-}
-impl From<ResponsesError> for Error {
-    fn from(e: ResponsesError) -> Self {
-        Error::Responses(e)
-    }
-}
-impl From<lc_providers::ProviderError> for Error {
-    fn from(e: lc_providers::ProviderError) -> Self {
-        Error::Provider(e)
-    }
-}
-impl From<AdaptiveRAGError> for Error {
-    fn from(e: AdaptiveRAGError) -> Self {
-        Error::AdaptiveRAG(e)
-    }
-}
-impl From<AgentError> for Error {
-    fn from(e: AgentError) -> Self {
-        Error::Agent(e)
-    }
-}
-impl From<CRAGError> for Error {
-    fn from(e: CRAGError) -> Self {
-        Error::CRAG(e)
-    }
-}
-impl From<GraderError> for Error {
-    fn from(e: GraderError) -> Self {
-        Error::Grader(e)
-    }
-}
-impl From<RewriterError> for Error {
-    fn from(e: RewriterError) -> Self {
-        Error::Rewriter(e)
-    }
-}
-impl From<ResearchError> for Error {
-    fn from(e: ResearchError) -> Self {
-        Error::Research(e)
-    }
-}
-impl From<HandoffError> for Error {
-    fn from(e: HandoffError) -> Self {
-        Error::Handoff(e)
-    }
-}
-impl From<PlanExecuteError> for Error {
-    fn from(e: PlanExecuteError) -> Self {
-        Error::PlanExecute(e)
-    }
-}
-impl From<ChainError> for Error {
-    fn from(e: ChainError) -> Self {
-        Error::Chain(e)
-    }
-}
-impl From<BatchError> for Error {
-    fn from(e: BatchError) -> Self {
-        Error::Batch(e)
-    }
-}
-impl From<LlmJsonParseError> for Error {
-    fn from(e: LlmJsonParseError) -> Self {
-        Error::LlmJsonParse(e)
-    }
-}
-impl From<MathError> for Error {
-    fn from(e: MathError) -> Self {
-        Error::Math(e)
-    }
-}
-impl From<OutputParserError> for Error {
-    fn from(e: OutputParserError) -> Self {
-        Error::OutputParser(e)
-    }
-}
-impl From<RouterError> for Error {
-    fn from(e: RouterError) -> Self {
-        Error::Router(e)
-    }
-}
-impl From<StructuredOutputError> for Error {
-    fn from(e: StructuredOutputError) -> Self {
-        Error::StructuredOutput(e)
-    }
-}
-impl From<PartialJsonError> for Error {
-    fn from(e: PartialJsonError) -> Self {
-        Error::PartialJson(e)
-    }
-}
-impl From<ToolError> for Error {
-    fn from(e: ToolError) -> Self {
-        Error::Tool(e)
-    }
-}
-impl From<EmbeddingError> for Error {
-    fn from(e: EmbeddingError) -> Self {
-        Error::Embedding(e)
-    }
-}
-impl From<MemoryError> for Error {
-    fn from(e: MemoryError) -> Self {
-        Error::Memory(e)
-    }
-}
-impl From<GraphRAGError> for Error {
-    fn from(e: GraphRAGError) -> Self {
-        Error::GraphRAG(e)
-    }
-}
-impl From<HyDEError> for Error {
-    fn from(e: HyDEError) -> Self {
-        Error::HyDE(e)
-    }
-}
-impl From<LoaderError> for Error {
-    fn from(e: LoaderError) -> Self {
-        Error::Loader(e)
-    }
-}
-impl From<MultiQueryError> for Error {
-    fn from(e: MultiQueryError) -> Self {
-        Error::MultiQuery(e)
-    }
-}
-impl From<RerankingError> for Error {
-    fn from(e: RerankingError) -> Self {
-        Error::Reranking(e)
-    }
-}
-impl From<RetrieverError> for Error {
-    fn from(e: RetrieverError) -> Self {
-        Error::Retriever(e)
-    }
-}
-impl From<VectorStoreError> for Error {
-    fn from(e: VectorStoreError) -> Self {
-        Error::VectorStore(e)
-    }
-}
-impl From<SandboxError> for Error {
-    fn from(e: SandboxError) -> Self {
-        Error::Sandbox(e)
-    }
-}
-impl From<LangSmithError> for Error {
-    fn from(e: LangSmithError) -> Self {
-        Error::LangSmith(e)
-    }
-}
-impl From<GraphError> for Error {
-    fn from(e: GraphError) -> Self {
-        Error::Graph(e)
-    }
-}
-impl From<PersistenceError> for Error {
-    fn from(e: PersistenceError) -> Self {
-        Error::Persistence(e)
-    }
-}
-impl From<GuardrailError> for Error {
-    fn from(e: GuardrailError) -> Self {
-        Error::Guardrail(e)
-    }
-}
-impl From<EvalError> for Error {
-    fn from(e: EvalError) -> Self {
-        Error::Eval(e)
-    }
-}
-impl From<SessionError> for Error {
-    fn from(e: SessionError) -> Self {
-        Error::Session(e)
-    }
-}
-impl From<A2AError> for Error {
-    fn from(e: A2AError) -> Self {
-        Error::A2A(e)
-    }
+    #[error("A2A error: {0}")]
+    A2A(#[from] A2AError),
 }
 
 #[cfg(test)]

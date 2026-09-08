@@ -67,7 +67,10 @@ pub use builder::AgentBuilder;
 pub use cache::{MemoryCache, ResponseCache};
 pub use crag::{CRAGError, CRAGResult, CorrectiveRAGAgent};
 pub use deep_research::{Citation, DeepResearchAgent, ResearchError, ResearchReport};
-pub use executor::{AgentError, AgentExecutor, BaseAgent, BudgetConfig, BudgetExceeded};
+pub use executor::{
+    estimate_step_tokens, AgentError, AgentExecutor, BaseAgent, BudgetConfig, BudgetExceeded,
+    CompactionConfig, CompactionStrategy, CompactionTrigger,
+};
 pub use function_calling::FunctionCallingAgent;
 pub use handoffs::HandoffManager;
 pub use hooks::{

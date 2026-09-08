@@ -147,6 +147,7 @@ const DEFAULT_MAX_CONCURRENCY: usize = 8;
 
 mod agent_loop;
 mod budget;
+mod compaction;
 mod engine;
 mod hooks;
 #[cfg(test)]
@@ -154,4 +155,7 @@ mod tests;
 mod tools;
 
 pub use budget::{BudgetConfig, BudgetExceeded};
+pub use compaction::{
+    estimate_step_tokens, CompactionConfig, CompactionStrategy, CompactionTrigger,
+};
 pub use engine::AgentExecutor;

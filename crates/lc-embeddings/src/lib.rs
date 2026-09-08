@@ -17,12 +17,16 @@ mod openai;
 pub mod openai_compat;
 mod qwen;
 mod retry;
+pub mod token_level;
 
 #[cfg(test)]
 mod test_support;
 
 #[cfg(feature = "fastembed")]
 mod fastembed_emb;
+
+#[cfg(feature = "local-candle")]
+mod candle_emb;
 
 pub use cohere::{
     CohereEmbedInputType, CohereEmbeddings, CohereEmbeddingsConfig, COHERE_EMBED_BASE_URL,
@@ -38,9 +42,16 @@ pub use local::{LocalEmbeddings, LocalEmbeddingsBuilder};
 pub use mock::MockEmbeddings;
 pub use openai::{OpenAIEmbeddings, OpenAIEmbeddingsConfig};
 pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
+pub use token_level::{
+    char_spans_to_byte_spans, LocalTokenLevelEmbeddings, TokenEmbedding, TokenLevelEmbeddings,
+    TokenSpan,
+};
 
 #[cfg(feature = "fastembed")]
 pub use fastembed_emb::FastEmbedEmbeddings;
+
+#[cfg(feature = "local-candle")]
+pub use candle_emb::CandleEmbeddings;
 
 use async_trait::async_trait;
 

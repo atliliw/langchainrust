@@ -287,6 +287,7 @@ mod tests {
             organization: None,
             tools: None,
             tool_choice: None,
+            response_format: None,
         }
     }
 

@@ -14,6 +14,22 @@ pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/
 /// Default embedding model for Qwen.
 pub const QWEN_EMBED_MODEL: &str = "text-embedding-v1";
 
+/// Qwen3-Embedding series models (0.21.0 S5.1).
+///
+/// All three support **matryoshka** output dimensions (32-4096) via the
+/// `dimensions` request parameter, and token-level output (late chunking
+/// prerequisite). Defaults: 0.6B=1024, 4B=2560, 8B=4096.
+pub const QWEN3_EMBEDDING_0_6B: &str = "qwen3-embedding-0.6b";
+/// Qwen3-Embedding 4B model.
+pub const QWEN3_EMBEDDING_4B: &str = "qwen3-embedding-4b";
+/// Qwen3-Embedding 8B model.
+pub const QWEN3_EMBEDDING_8B: &str = "qwen3-embedding-8b";
+
+/// Whether `model` is a Qwen3-Embedding series model (supports `dimensions`).
+pub fn is_qwen3_embedding(model: &str) -> bool {
+    model.starts_with("qwen3-embedding")
+}
+
 /// Configuration for Qwen embeddings API.
 #[derive(Debug, Clone)]
 pub struct QwenEmbeddingsConfig {
@@ -23,6 +39,9 @@ pub struct QwenEmbeddingsConfig {
     pub base_url: String,
     /// Embedding model name.
     pub model: String,
+    /// Optional matryoshka output dimension (0.21.0 S5.1): 32-4096. Only valid
+    /// on Qwen3-Embedding models; `None` keeps the model default.
+    pub dimensions: Option<usize>,
 }
 
 impl Default for QwenEmbeddingsConfig {
@@ -31,6 +50,7 @@ impl Default for QwenEmbeddingsConfig {
             api_key: std::env::var("QWEN_API_KEY").unwrap_or_default(),
             base_url: QWEN_BASE_URL.to_string(),
             model: QWEN_EMBED_MODEL.to_string(),
+            dimensions: None,
         }
     }
 }
@@ -61,6 +81,7 @@ impl QwenEmbeddingsConfig {
             api_key,
             base_url,
             model,
+            dimensions: None,
         })
     }
 
@@ -68,6 +89,26 @@ impl QwenEmbeddingsConfig {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
+    }
+
+    /// Sets the matryoshka output dimension (32-4096, 0.21.0 S5.1).
+    ///
+    /// Only valid on Qwen3-Embedding models — construction fails otherwise
+    /// (P1-2: never send a `dimensions` the model does not support).
+    pub fn with_dimensions(mut self, dimensions: usize) -> Result<Self, EmbeddingError> {
+        if !(32..=4096).contains(&dimensions) {
+            return Err(EmbeddingError::Config(format!(
+                "matryoshka dimensions must be within 32..=4096, got {dimensions}"
+            )));
+        }
+        if !is_qwen3_embedding(&self.model) {
+            return Err(EmbeddingError::Config(format!(
+                "model '{}' does not support the `dimensions` parameter (Qwen3-Embedding only)",
+                self.model
+            )));
+        }
+        self.dimensions = Some(dimensions);
+        Ok(self)
     }
 }
 
@@ -81,6 +122,9 @@ impl CompatConfigAccess for QwenEmbeddingsConfig {
     fn model(&self) -> &str {
         &self.model
     }
+    fn dimensions(&self) -> Option<usize> {
+        self.dimensions
+    }
 }
 
 impl CompatSpec for QwenEmbeddingsConfig {
@@ -91,13 +135,33 @@ impl CompatSpec for QwenEmbeddingsConfig {
         64
     }
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError> {
-        if model == QWEN_EMBED_MODEL {
-            Ok(1536)
-        } else {
-            Err(EmbeddingError::Config(format!(
-                "unknown embedding dimension for Qwen model '{model}' (supported: '{QWEN_EMBED_MODEL}')"
-            )))
+        match model {
+            QWEN_EMBED_MODEL => Ok(1536),
+            QWEN3_EMBEDDING_0_6B => Ok(1024),
+            QWEN3_EMBEDDING_4B => Ok(2560),
+            QWEN3_EMBEDDING_8B => Ok(4096),
+            _ => Err(EmbeddingError::Config(format!(
+                "unknown embedding dimension for Qwen model '{model}' (supported: '{QWEN_EMBED_MODEL}', '{QWEN3_EMBEDDING_0_6B}', '{QWEN3_EMBEDDING_4B}', '{QWEN3_EMBEDDING_8B}')"
+            ))),
         }
+    }
+    fn validate(config: &Self) -> Result<(), EmbeddingError> {
+        // P1-2: a `dimensions` override on a model that does not support the
+        // parameter must fail at construction, never at request time.
+        if let Some(d) = config.dimensions {
+            if !is_qwen3_embedding(&config.model) {
+                return Err(EmbeddingError::Config(format!(
+                    "model '{}' does not support the `dimensions` parameter (Qwen3-Embedding only)",
+                    config.model
+                )));
+            }
+            if !(32..=4096).contains(&d) {
+                return Err(EmbeddingError::Config(format!(
+                    "matryoshka dimensions must be within 32..=4096, got {d}"
+                )));
+            }
+        }
+        Ok(())
     }
     fn from_env_result() -> Result<Self, EmbeddingError> {
         Self::from_env_result()
@@ -127,6 +191,7 @@ mod tests {
             api_key: "test-key".into(),
             base_url,
             model: QWEN_EMBED_MODEL.into(),
+            dimensions: None,
         };
         let embeddings = QwenEmbeddings::new(config).unwrap();
 
@@ -145,6 +210,7 @@ mod tests {
             api_key: String::new(),
             base_url: QWEN_BASE_URL.into(),
             model: QWEN_EMBED_MODEL.into(),
+            dimensions: None,
         };
         let err = QwenEmbeddings::new(config).unwrap_err();
         assert!(matches!(err, EmbeddingError::Config(_)));
@@ -157,9 +223,88 @@ mod tests {
             api_key: "test-key".into(),
             base_url: QWEN_BASE_URL.into(),
             model: "some-unknown-model".into(),
+            dimensions: None,
         };
         let err = QwenEmbeddings::new(config).unwrap_err();
         assert!(matches!(err, EmbeddingError::Config(_)));
+    }
+
+    /// 0.21.0 S5.1: Qwen3-Embedding series dimension map (0.6B=1024, 4B=2560, 8B=4096).
+    #[test]
+    fn test_qwen3_dimension_map() {
+        assert_eq!(
+            QwenEmbeddingsConfig::dimension_for(QWEN3_EMBEDDING_0_6B).unwrap(),
+            1024
+        );
+        assert_eq!(
+            QwenEmbeddingsConfig::dimension_for(QWEN3_EMBEDDING_4B).unwrap(),
+            2560
+        );
+        assert_eq!(
+            QwenEmbeddingsConfig::dimension_for(QWEN3_EMBEDDING_8B).unwrap(),
+            4096
+        );
+        assert_eq!(
+            QwenEmbeddingsConfig::dimension_for(QWEN_EMBED_MODEL).unwrap(),
+            1536
+        );
+    }
+
+    /// 0.21.0 S5.1: Qwen3 construction with a matryoshka `dimensions` override.
+    #[test]
+    fn test_qwen3_with_dimensions() {
+        let config = QwenEmbeddingsConfig::new("test-key")
+            .with_model(QWEN3_EMBEDDING_0_6B)
+            .with_dimensions(512)
+            .unwrap();
+        assert_eq!(config.dimensions, Some(512));
+        let embeddings = QwenEmbeddings::new(config).unwrap();
+        assert_eq!(embeddings.dimension(), 512, "configured dimension wins");
+    }
+
+    /// 0.21.0 S5.1: `dimensions` outside 32..=4096 → Config error.
+    #[test]
+    fn test_qwen3_with_dimensions_rejects_out_of_range() {
+        let err = QwenEmbeddingsConfig::new("test-key")
+            .with_model(QWEN3_EMBEDDING_0_6B)
+            .with_dimensions(31)
+            .unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+        let err = QwenEmbeddingsConfig::new("test-key")
+            .with_model(QWEN3_EMBEDDING_0_6B)
+            .with_dimensions(4097)
+            .unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+    }
+
+    /// 0.21.0 S5.1: `dimensions` on a non-Qwen3 model → Config error at
+    /// construction (P1-2: never send an unsupported parameter).
+    #[test]
+    fn test_dimensions_rejected_on_non_qwen3_model() {
+        let err = QwenEmbeddingsConfig::new("test-key")
+            .with_model(QWEN_EMBED_MODEL)
+            .with_dimensions(512)
+            .unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+        // And the CompatSpec-level guard (bypassing the builder) also rejects.
+        let config = QwenEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url: QWEN_BASE_URL.into(),
+            model: QWEN_EMBED_MODEL.into(),
+            dimensions: Some(512),
+        };
+        let err = QwenEmbeddings::new(config).unwrap_err();
+        assert!(matches!(err, EmbeddingError::Config(_)));
+    }
+
+    /// 0.21.0 S5.1: no `dimensions` → construction on Qwen3 uses the model default.
+    #[test]
+    fn test_qwen3_default_dimension() {
+        let embeddings = QwenEmbeddings::new(
+            QwenEmbeddingsConfig::new("test-key").with_model(QWEN3_EMBEDDING_8B),
+        )
+        .unwrap();
+        assert_eq!(embeddings.dimension(), 4096);
     }
 
     fn save_and_set(key: &str, value: &str) -> Option<String> {

@@ -22,7 +22,11 @@
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
+  - Qwen3-Embedding 与 matryoshka 维度 ✨ v0.21.0
   - LocalEmbeddings
+  - CandleEmbeddings（纯 Rust 本地推理） ✨ v0.21.0
+  - Token 级嵌入（TokenLevelEmbeddings） ✨ v0.21.0
+  - Late Chunking（后分块） ✨ v0.21.0
 - [提示词](#prompts)
   - FewShotPrompt + ExampleSelectors
 - [输出解析器](#output-parsers)
@@ -51,6 +55,7 @@
   - AgentBuilder ✨ v0.14.0
   - Orchestrator ✨ v0.14.0
   - ToolPolicy ✨ v0.14.0
+  - 上下文压缩（CompactionConfig） ✨ v0.21.0
 - [Plan-Execute 智能体](#plan-execute-agent)
 - [Handoffs](#handoffs)
 - [流式工具调用](#streaming-tool-calls)
@@ -58,6 +63,8 @@
   - Guardable ✨ v0.15.0
   - 流式护栏 ✨ v0.15.0
   - 审计持久化 ✨ v0.15.0
+  - Retrieval Rail（检索护栏） ✨ v0.21.0
+  - AI 透明披露（disclose） ✨ v0.21.0
 - [Token 计数器](#token-counter)
 - [会话](#sessions)
   - 会话生命周期 ✨ v0.15.0
@@ -84,8 +91,11 @@
   - SemanticSplitter
   - 统一 VectorStore trait ✨ v0.15.0
   - MetadataFilter ✨ v0.18.0
+  - Contextual Retrieval ✨ v0.21.0
+  - 语义缓存（SemanticCache） ✨ v0.21.0
 - [BM25](#bm25)
 - [混合检索](#hybrid-retrieval)
+  - 原生混合搜索（Qdrant Query API） ✨ v0.21.0
 - [文档加载器](#document-loaders)
   - HTMLLoader
   - DocxLoader ✨ v0.4.1
@@ -109,6 +119,7 @@
   - 子图 / 动态规划 / 流式 ✨ v0.15.0
 - [A2A 智能体协议](#a2a-agent-protocol) ✨ v0.4.1
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
+  - 原生 JSON Schema 引擎约束 ✨ v0.21.0
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
 - [ComputerUseTool](#computerusetool) ✨ v0.4.1
 - [v0.5.0 新特性](#v050-new-features) ✨ v0.5.0
@@ -142,7 +153,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.19"
+langchainrust = "0.21.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2108,6 +2119,7 @@ let executor = executor.with_budget(BudgetConfig {
     max_iterations: Some(10),                          // 覆盖/收紧默认迭代上限
     ..Default::default()
 });
+```
 
 ### 跨进程 resume（ResumeStore / FileResumeStore） ✨ v0.18.0
 
@@ -2131,7 +2143,29 @@ if let Some(pending) = executor.pending_approval().await? {
 ```
 
 框架在每次工具调用进入审批**之前**把 `PendingApproval` 快照写入 store（工具名 / 参数 / 中间步骤 / 迭代序号 / 预算累计），审批决定落地后清除——原子写（先 `pending.json.tmp` 再 rename），崩溃不产生半截 checkpoint。`ApprovalHandler` 接口不变，调用方零改动；`MemoryResumeStore` 是内存版（单进程演示 / 测试用）。并发 executor 须用各自独立目录。
+
+### 上下文压缩（CompactionConfig）✨ v0.21.0
+
+长会话跑几十轮后，历史消息会把上下文窗口撑爆。上下文压缩让 executor 在**每轮 `plan()` 之前**检查触发条件，按 turn 边界裁剪历史（不会产生"孤儿 tool result"——工具输出和它的调用总是同进同出）。**默认不压缩**：不配置 `with_compaction` 就是零行为变化。
+
+```rust
+use langchainrust::agents::executor::{CompactionConfig, CompactionStrategy, CompactionTrigger};
+use langchainrust::AgentExecutor;
+
+let executor = AgentExecutor::new(agent, tools)
+    .with_compaction(
+        CompactionConfig::new(
+            CompactionTrigger::TurnCount(20),              // 满 20 turn 触发
+            CompactionStrategy::SlidingWindow { keep_recent_turns: 8 }, // 保留最近 8 turn
+        )
+        .with_min_recent_turns(2),                          // 压缩后至少保留 2 turn,默认 2
+    );
 ```
+
+**触发器**：`TurnCount(n)` / `TokenCount(n)` / `Any(a, b)` / `All(a, b)` 组合。
+**策略**：`SlidingWindow { keep_recent_turns }`（保留最近 n turn）或 `TokenBudget { max_tokens, keep_recent_turns }`（超预算时从旧往新丢，直到塞进预算）。
+
+**关键行为**：invoke 与 stream 双路径同语义；压缩次数计入 `AgentMetrics.compactions`（serde default,旧指标载荷兼容）；`min_recent_turns` 下限防止把会话压空。
 
 ## Plan-Execute Agent
 
@@ -2384,6 +2418,64 @@ let config = GuardrailsConfig::new()
 ```
 
 `violations` 有界(`MAX_VIOLATIONS = 1000`),可 `clear_violations()` 清空。`SensitiveInfoGuardrail` 支持挂 LLM 裁判(`with_judge`,复用 `SensitiveJudge` / `LlmSensitiveJudge`)做上下文敏感检测,并对高误报词(`password`/`密码`/`token`/`secret`)降级为仅告警。
+
+### Retrieval Rail(检索护栏)✨ v0.21.0
+
+**解决什么问题**：输入输出护栏守住了用户消息和模型回复,但 RAG 检索回来的文档也是不可信输入——外部网页/PDF 里可能埋着 "ignore all previous instructions" 这类提示注入。RetrievalRail 对检索结果做**批量注入检测**(模式库与 `PromptInjectionHook` 共享),三种处置模式:
+
+| 模式 | 行为 | 适用 |
+|------|------|------|
+| `Flag`(默认) | 保留文档,metadata 打标记 `retrieval_rail_flagged` | 保守,先观察 |
+| `Redact` | 内容替换为 `[REDACTED by retrieval rail: ...]` | 保留条数、去掉内容 |
+| `Drop` | 直接从结果集移除 | 强隔离 |
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{GuardedRetriever, RetrievalRail, RailAction};
+use langchainrust::retrieval::{RetrieverTrait, SemanticCacheConfig, CachedRetriever};
+
+// 直接扫描(不改变行为,拿到报告):
+let mut results = /* Vec<SearchResult> */;
+let report = RetrievalRail::default().scan(&mut results);
+println!("flagged={} redacted={} dropped={}", report.flagged, report.redacted, report.dropped);
+
+// 装饰任意 RetrieverTrait:
+let guarded = GuardedRetriever::new(
+    Arc::new(inner_retriever),            // 你的底层 retriever
+    RetrievalRail::new(RailAction::Drop),
+)
+.with_audit_sink(audit_sink);             // 可选:命中写审计
+
+// 与语义缓存叠加:护栏放缓存内侧(先过滤再入缓存,防污染)
+let cached = CachedRetriever::new(
+    Arc::new(guarded),
+    Arc::new(embedder),
+    SemanticCacheConfig::new(),
+);
+// cached 实现了 RetrieverTrait,可直接接入 RAGPipeline
+```
+
+**关键行为**:无命中时零改动;`with_patterns(vec![...])` 可追加自定义模式;词法/语义缓存条目永远是护栏过滤后的干净结果。
+
+### AI 透明披露(disclose)✨ v0.21.0
+
+对齐 **EU AI Act 第 50 条**:与 AI 系统交互时应告知用户。提供的是**能力**而非强制——是否调用由应用决定。
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{disclose, DisclosureConfig, AuditSink};
+
+let audit: Arc<dyn AuditSink> = /* 你的 AuditSink(如 FileAuditSink) */;
+let config = DisclosureConfig::new()
+    .with_statement("{system} is an AI assistant. Responses may contain errors.") // 支持 {system} 占位符
+    .with_session_disclosed(false);
+
+// 会话开始时调用一次:渲染文案 + 写审计 + 返回渲染后文本
+let text = disclose(&audit, &config, "support-bot", Some("trace-1")).await;
+// text = "support-bot is an AI assistant. Responses may contain errors."
+```
+
+披露失败只记告警不抛错(fire-and-forget),不会阻断业务请求。
 
 ---
 
@@ -2926,6 +3018,7 @@ let rows = sql.execute_parameterized("SELECT * FROM users WHERE name = ?", &["Al
 | **BagOfWords** | `BagOfWordsEmbeddings` | 自定义 | 纯本地词袋 |
 | **Mock** | `MockEmbeddings` | 自定义 | 测试用 |
 | **Local** | `LocalEmbeddings` | 默认 | 纯 Rust,离线 |
+| **Candle** | `CandleEmbeddings` | 模型决定 | 纯 Rust 推理(`local-candle` feature)✨ v0.21.0 |
 
 ### OpenAI 嵌入
 
@@ -2977,6 +3070,33 @@ let embeddings = Arc::new(QwenEmbeddings::from_env());
 let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
+### Qwen3-Embedding 与 matryoshka 维度 ✨ v0.21.0
+
+Qwen3 系列嵌入模型(`qwen3-embedding-0.6b` / `4b` / `8b`)已在 `QwenEmbeddingsConfig` 中注册维度映射,并支持 **matryoshka 输出**:通过 `with_dimensions` 指定 32~4096 之间的任意输出维度,DashScope 会按需截断向量——存储成本与检索精度可以按需权衡。
+
+```rust
+use langchainrust::{QwenEmbeddings, QwenEmbeddingsConfig};
+use std::sync::Arc;
+
+// Qwen3-Embedding + 自定义输出维度(注意 with_dimensions 返回 Result,0.6B 模型默认 1024 维)
+let config = QwenEmbeddingsConfig::new("sk-...")
+    .with_model("qwen3-embedding-0.6b")
+    .with_dimensions(512)?;
+let embeddings = Arc::new(QwenEmbeddings::new(config)?);
+assert_eq!(embeddings.dimension(), 512);
+
+// 不设 dimensions 时用模型默认维度:0.6B=1024 / 4B=2560 / 8B=4096
+let cfg8b = QwenEmbeddingsConfig::new("sk-...").with_model("qwen3-embedding-8b");
+let e8b = QwenEmbeddings::new(cfg8b)?;
+assert_eq!(e8b.dimension(), 4096);
+```
+
+**关键行为**:
+
+- 默认模型仍是 `text-embedding-v1`(1536 维),兼容旧代码;Qwen3 需显式 `with_model`
+- `dimensions` 范围校验 32~4096,越界报错;只有 Qwen3 系列支持 matryoshka 截断
+- 请求体快照测试保证 `dimensions` 只在设置时透传,不影响 DeepSeek 等其他 provider
+
 ### Mock 嵌入（测试用）
 
 生成固定维度的随机向量，不调用任何 API。仅用于测试和开发，不用于生产。
@@ -3019,7 +3139,7 @@ let vec = emb.embed_query("hello world").await?;
 
 ### 重试与并发 ✨ v0.15.0
 
-内建请求韧性:对 429 / 5xx 自动重试(默认 3 次);批量嵌入并发度 8、批次上限 2048;向量统一 L2 归一化,便于余弦相似度比对。
+内建请求韧性:对 429 / 5xx 自动重试(默认 3 次),带 **jitter 抖动**(避免重试风暴)并优先遵循服务端 `Retry-After` 响应头 ✨ v0.21.0;批量嵌入并发度 8、批次上限 2048;向量统一 L2 归一化,便于余弦相似度比对。
 
 ```rust
 use langchainrust::{OpenAIEmbeddings, Embeddings, retrieval::graph_rag::EmbeddingMatcher};
@@ -3029,6 +3149,71 @@ let docs = vec!["Rust ownership".into(), "Borrow checker".into()];
 let matcher = EmbeddingMatcher::new(emb, docs);
 let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近的 2 篇
 ```
+
+### CandleEmbeddings(纯 Rust 本地推理)✨ v0.21.0
+
+基于 [Candle](https://github.com/huggingface/candle) 的 CPU-only 本地嵌入后端,无需 ONNX Runtime。启用 `local-candle` feature 后可用,支持 BERT 家族模型(mask 加权 mean-pooling,L2 归一化,批大小 16)。
+
+```toml
+# Cargo.toml
+langchainrust = { version = "0.21.0", features = ["local-candle"] }
+```
+
+```rust
+use langchainrust::embeddings::CandleEmbeddings;
+use langchainrust::Embeddings;
+
+// 方式一:从 Hugging Face Hub 下载(config.json + tokenizer.json + model.safetensors,带本地缓存)
+let embedder = CandleEmbeddings::from_hf_hub("BAAI/bge-small-en-v1.5")?;
+
+// 方式二:从本地模型目录加载
+// let embedder = CandleEmbeddings::from_dir("./models/bge-small")?;
+
+let vec = embedder.embed_query("Rust is a systems programming language.").await?;
+println!("dim = {}", embedder.dimension()); // 384(config.hidden_size)
+```
+
+**适用场景**:已有 safetensors 权重、想完全离线运行;与 fastembed(ONNX)互为替代后端。
+
+### Token 级嵌入(TokenLevelEmbeddings)✨ v0.21.0
+
+可选能力 trait:实现方为每个 token 返回 `(字节偏移 span, L2 归一化向量)`。它**不在** `Embeddings` 主 trait 里——实现了才有(能力探测),避免给不支持 token 输出的 provider 强加契约。
+
+```rust
+use langchainrust::embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings, TokenSpan};
+
+// trait 使用原生 async fn(trait_variant 生成 Send 变体),泛型静态分发,不支持 dyn
+pub trait TokenLevelEmbeddings {
+    async fn embed_tokens(&self, text: &str)
+        -> Result<Vec<TokenEmbedding>, langchainrust::embeddings::EmbeddingError>;
+}
+
+// TokenSpan 是字节偏移(多字节安全):
+// "你好 world" → tokens[1] = TokenSpan { start: 7, end: 12 } ("world")
+```
+
+本地 fastembed(ONNX)路径已实现该能力(与常规 embed 共享推理管线,span 与 [CLS]/[SEP]/padding 对齐)。
+
+### Late Chunking(后分块)✨ v0.21.0
+
+传统做法"先切块、再逐块嵌入"会让每块丢失全文上下文。late chunking 反过来:**整篇文本先过一次 token 级嵌入,再按块边界对 token 向量做 mean-pooling**,每块都携带全文上下文。长文档检索质量通常更好。
+
+```rust
+use langchainrust::retrieval::late_chunking::{late_chunk, LateChunkConfig};
+
+let config = LateChunkConfig::new()
+    .with_chunk_size(1024)    // 字节,默认 1024
+    .with_chunk_overlap(128); // 字节,默认 128,须满足 0 < overlap < size
+config.validate()?;
+
+// embedder 需实现 TokenLevelEmbeddings(如本地 ONNX 路径)
+let chunks = late_chunk(&embedder, "整篇长文档……", &config).await?;
+for c in &chunks {
+    // c.range = (start, end) 字节区间;c.text = 块文本;c.vector = 池化后 L2 归一化向量
+}
+```
+
+**注意**:late chunking 不是银弹——块内自洽的短文档收益为零;需要模型支持 token 级输出,否则用不了。
 
 ## RAG
 
@@ -3154,7 +3339,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["chromadb"] }
+langchainrust = { version = "0.21.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3393,6 +3578,37 @@ for result in results {
 | SimpleVector | InMemoryVectorStore | 无查找 | 纯向量，简单场景 |
 | BM25 Only | ChunkedDocumentStore | 查找 | 纯关键词 |
 | Hybrid | ChunkedDocumentStore（共享） | 查找 | 组合检索（推荐） |
+
+### 原生混合搜索（Qdrant Query API）✨ v0.21.0
+
+`UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
+
+```toml
+langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }
+```
+
+```rust
+use langchainrust::vector_stores::{
+    FusionMethod, NativeHybridQuery, NativeHybridSearch, QdrantConfig, QdrantVectorStore,
+};
+
+let store = QdrantVectorStore::new(
+    QdrantConfig::new("http://localhost:6334", "my-collection").with_vector_size(1536),
+).await?;
+
+assert!(store.supports_native_hybrid());
+
+let query = NativeHybridQuery::new(
+    vec![dense_vec, sparse_vec],   // ≥ 2 路查询向量,同维度
+    10,                            // 最终返回 top-10
+)?
+.with_fusion(FusionMethod::Rrf)    // 或 FusionMethod::Dbsf
+.with_prefetch_limit(50);          // 每路召回数,默认 max(limit*2, 10)
+
+let results = store.native_hybrid_search(&query).await?; // 服务端融合
+```
+
+**关键行为**:`NativeHybridQuery::new` 校验向量数 ≥ 2 且维度一致;`FusionMethod` 直接映射 Qdrant 的 `rrf` / `dbsf` 融合;不支持原生能力的 store 调用会返回明确错误(提示改用客户端 RRF 兜底)。
 
 ---
 
@@ -3834,6 +4050,63 @@ let docs = retriever.retrieve("去年的科技新闻", 5).await?;
 
 ---
 
+<a id="contextual-retrieval"></a>
+## Contextual Retrieval ✨ v0.21.0
+
+Anthropic 提出的索引期增强：每个 chunk 前面只有自己，缺少"它在整篇文档里处于什么位置"的上下文，导致很多语义相关但措辞不同的内容检索不到。`ContextualEnhancer` 在**索引期**用一个小 LLM 为每块生成 1-2 句上下文说明，拼在原文前面入库——检索命中率显著提升。
+
+```rust
+use langchainrust::retrieval::contextual::{ContextualConfig, ContextualEnhancer};
+use langchainrust::retrieval::Document;
+
+let enhancer = ContextualEnhancer::new(llm)   // 任意 BaseChatModel(建议小模型控制成本)
+    .with_config(ContextualConfig::new().with_max_concurrency(4)); // 并发上限,默认 4
+
+let docs = vec![Document::new("Revenue grew 3% year over year.")];
+let enhanced = enhancer.enhance_documents(&docs).await;
+
+// enhanced[0].content = "<LLM 生成的上下文>\nRevenue grew 3% ..."
+// enhanced[0].metadata["contextual_context"] = 上下文原文(可检索、可审计)
+// 之后照常 index_documents(enhanced) 即可
+```
+
+**关键行为**：
+
+- **幂等**：已带 `contextual_context` metadata 的文档自动跳过，重复调用不会叠加
+- **fail-open**：单块 LLM 调用失败只记 warning、用原文入库，不阻塞索引
+- **成本提示**：每块一次 LLM 调用，大语料先评估费用；建议用便宜的小模型
+
+---
+
+<a id="semantic-cache"></a>
+## 语义缓存（SemanticCache）✨ v0.21.0
+
+相同/相似的问题每次都重新检索一遍向量库，纯浪费。`CachedRetriever` 包装任意 `RetrieverTrait`：**词法命中**（查询字符串完全相同）直接返回缓存且跳过 embedding；否则对缓存条目算**余弦相似度**，超阈值即视为同义查询命中。
+
+```rust
+use std::sync::Arc;
+use langchainrust::retrieval::{CachedRetriever, SemanticCacheConfig, RetrieverTrait};
+use langchainrust::Embeddings;
+
+let cached = CachedRetriever::new(
+    Arc::new(inner_retriever),   // 任意 RetrieverTrait
+    Arc::new(embeddings),        // 用于给查询算向量
+    SemanticCacheConfig::new()
+        .with_threshold(0.95)    // 语义命中阈值,默认 0.95
+        .with_max_entries(256)   // FIFO 容量,默认 256
+        .with_ttl(Some(std::time::Duration::from_secs(600))), // 可选 TTL
+);
+
+let docs = cached.retrieve("apple", 3).await?;   // miss → 检索并缓存
+let fast = cached.retrieve("apple", 3).await?;   // 词法命中,零成本
+
+cached.cache().invalidate();                      // 语料更新后手动失效
+```
+
+**关键行为**：`k` 参与缓存身份（同查询不同 k 各自缓存）；embedding 失败向上传播、不缓存；`add_documents` 自动 `invalidate()`。配合护栏使用时把 `GuardedRetriever` 放内侧（见 Retrieval Rail 一节）。
+
+---
+
 <a id="reranking"></a>
 ## 重排序
 
@@ -4021,7 +4294,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["opentelemetry"] }
+langchainrust = { version = "0.21.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4035,6 +4308,8 @@ let manager = CallbackManager::new()
 ```
 
 嵌套 span；导出到 Jaeger / Tempo / Grafana。
+
+**gen_ai 语义约定对齐 ✨ v0.21.0**：span 属性对齐 OpenTelemetry GenAI 语义约定（development 状态）——`gen_ai.system`、`gen_ai.request.model`、`gen_ai.request.max_tokens` / `gen_ai.request.temperature`、`gen_ai.response.finish_reason`、`gen_ai.response.model`、token 用量 `gen_ai.client.token.usage.prompt_tokens` / `completion_tokens`，以及扩展属性 `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.reasoning.output_tokens`（provider 有上报才填）。LLM 调用 span 的 `gen_ai.operation.name = "chat"`，检索 span 为 `"retrieve"`，工具 span 携带 `gen_ai.tool.name`（`gen_ai.tool.*` 为扩展命名空间，标准稳定后迁移）。Langfuse / Grafana 等消费方可直接按 `gen_ai.*` 属性过滤聚合。
 
 ---
 
@@ -4173,7 +4448,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -4247,14 +4522,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["redis-storage"] }
+langchainrust = { version = "0.21.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["sqlite-storage"] }
+langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4356,7 +4631,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.20.0"
+lc-testkit = "0.21.0"
 ```
 
 ```rust
@@ -4546,6 +4821,34 @@ let answer: Answer = llm.with_structured_output::<Answer>().await?;
 - 要"一次拿完整结果、类型确定"→ 用 `with_structured_output`。
 - 要"边生成边用、逐字段渲染"→ 用 `stream_structured_output`。
 - 只是想解析模型已有的输出（不是让模型按 schema 返回）→ 直接用 `JsonOutputParser` 或 `TypedOutputParser` 等解析器。
+
+### 原生 JSON Schema 引擎约束（with_json_schema_output）✨ v0.21.0
+
+上面两条路径都是**拿到输出后再解析**——模型仍可能给出不合 schema 的内容。`with_json_schema_output` 把 schema 直接下发给 OpenAI（`response_format: {type: "json_schema", strict: true}`），由**引擎在解码时约束**每个 token 只能生成合乎 schema 的 JSON，从源头消灭格式错误。
+
+```rust
+use schemars::JsonSchema;
+use serde::Deserialize;
+use langchainrust::language_models::openai::OpenAIChat;
+use langchainrust::schema::Message;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+let chat = OpenAIChat::new(config);
+let method = chat.with_json_schema_output::<Person>(); // 自动生成 strict json_schema
+let person: Person = method.invoke(vec![Message::human("Introduce Alice, 30.")]).await?;
+```
+
+**关键行为**：
+
+- schema 由 **schemars 1.0** 从 Rust 类型生成;`make_strict_schema` 自动补 `additionalProperties: false` + 全字段 `required`(strict 模式要求)
+- 仅 `OpenAIChat` 及其兼容路径支持;不支持的 provider 仍走 `with_structured_output`
+- 请求若被服务端拒绝(如模型不支持)会显式报 4xx,不静默降级
+- `PartialJsonParser` 流式增量解析保留为 fallback 与流式路径
 
 ---
 

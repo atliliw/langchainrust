@@ -126,6 +126,7 @@ impl QwenConfig {
             organization: None,
             tools: None,
             tool_choice: None,
+            response_format: None,
         }
     }
 }

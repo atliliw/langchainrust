@@ -246,3 +246,97 @@ data: [DONE]\n\n";
         assert_eq!(calls[0].arguments(), r#"{"a":1}"#);
     }
 }
+
+/// 0.21.0 S3.1: `response_format` plumbing — engine-side structured output.
+mod tests_response_format {
+    use super::*;
+    use crate::openai::response_format::ResponseFormat;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    struct Person {
+        /// The person's full name.
+        name: String,
+        /// The person's age in years.
+        age: u32,
+    }
+
+    fn sample_messages() -> Vec<Message> {
+        vec![Message::human("who are you")]
+    }
+
+    /// Default: no `response_format` key in the request body (unchanged behavior).
+    #[test]
+    fn build_request_body_has_no_response_format_by_default() {
+        let chat = OpenAIChat::new(OpenAIConfig::new("k"));
+        let body = chat.build_request_body(sample_messages(), false);
+        assert!(body.get("response_format").is_none());
+    }
+
+    /// json_object mode is serialized with the `type` tag.
+    #[test]
+    fn build_request_body_includes_json_object_format() {
+        let chat = OpenAIChat::new(OpenAIConfig::new("k"))
+            .config
+            .clone()
+            .with_response_format(ResponseFormat::JsonObject);
+        let chat = OpenAIChat::new(chat);
+        let body = chat.build_request_body(sample_messages(), false);
+        assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    /// `with_json_schema_output` wires a strict json_schema response_format into
+    /// the request body — and normalizes the generated schema for strict mode.
+    #[test]
+    fn with_json_schema_output_sets_strict_schema_format() {
+        let chat = OpenAIChat::new(OpenAIConfig::new("k"));
+        let method = chat.with_json_schema_output::<Person>();
+        let body_chat = OpenAIChat {
+            config: method.config.clone(),
+            client: chat.client.clone(),
+        };
+        let body = body_chat.build_request_body(sample_messages(), false);
+
+        let format = &body["response_format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["name"], "output");
+        assert_eq!(format["json_schema"]["strict"], true);
+
+        let schema = &format["json_schema"]["schema"];
+        assert_eq!(
+            schema["additionalProperties"], false,
+            "strict mode requires additionalProperties: false"
+        );
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            required,
+            vec!["age", "name"],
+            "strict mode requires all properties"
+        );
+    }
+
+    /// The tool-based `with_structured_output` path is unchanged (regression guard).
+    #[test]
+    fn with_structured_output_keeps_tool_based_path() {
+        let chat = OpenAIChat::new(OpenAIConfig::new("k"));
+        let method = chat.with_structured_output::<Person>();
+        let body_chat = OpenAIChat {
+            config: method.config.clone(),
+            client: chat.client.clone(),
+        };
+        let body = body_chat.build_request_body(sample_messages(), false);
+        assert!(
+            body.get("response_format").is_none(),
+            "tool-based path must not set response_format"
+        );
+        assert_eq!(body["tools"][0]["function"]["strict"], true);
+        assert_eq!(body["tool_choice"], "auto");
+    }
+}

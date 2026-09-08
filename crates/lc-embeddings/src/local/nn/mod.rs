@@ -223,11 +223,16 @@ impl LocalInner {
         (input_ids, attention_mask, token_type_ids, max_len)
     }
 
-    /// Batch inference: feeds pad-aligned tensors, extracts per-row vectors via masked mean pooling, L2-normalizes (P2-4).
-    fn infer_rows(
+    /// Runs the model for a batch of encodings, returning the raw output tensor
+    /// `(shape, data)` plus the aligned mask rows and fed sequence length.
+    ///
+    /// 0.21.0 S5.2: extracted from `infer_rows` so the token-level path
+    /// (`token_level_rows`) shares the exact same feed/alignment logic —
+    /// pooling happens on top of this shared pipeline.
+    fn run_tensors(
         &self,
         encodings: &[tokenizers::Encoding],
-    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    ) -> Result<(Vec<usize>, Vec<f32>, Vec<Vec<i64>>, usize), EmbeddingError> {
         if encodings.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
@@ -321,8 +326,17 @@ impl LocalInner {
             EmbeddingError::ParseError(format!("Failed to extract output tensor: {e}"))
         })?;
         let shape_vec: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+        Ok((shape_vec, data.to_vec(), mask_rows, fed_seq_len))
+    }
 
-        let mut rows = Self::pool_rows(&shape_vec, data, &mask_rows, batch, fed_seq_len)?;
+    /// Batch inference: feeds pad-aligned tensors, extracts per-row vectors via masked mean pooling, L2-normalizes (P2-4).
+    fn infer_rows(
+        &self,
+        encodings: &[tokenizers::Encoding],
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let (shape_vec, data, mask_rows, fed_seq_len) = self.run_tensors(encodings)?;
+        let batch = encodings.len();
+        let mut rows = Self::pool_rows(&shape_vec, &data, &mask_rows, batch, fed_seq_len)?;
         for row in &mut rows {
             crate::l2_normalize(row);
         }
@@ -398,6 +412,102 @@ impl LocalInner {
                 shape.len()
             ))),
         }
+    }
+
+    /// Extracts per-token rows from a 3D `[1, seq, dim]` output tensor — no
+    /// pooling (0.21.0 S5.2 token-level path).
+    ///
+    /// Pure: position `s` is included iff `keep[s]` is true (the caller passes
+    /// `mask[s] == 1 && !special[s]`, so [CLS]/[SEP]/padding are all excluded
+    /// together with their offsets — the row list and the offset list stay
+    /// aligned by construction). Requires the tensor to be 3D with batch == 1
+    /// (the token-level path encodes a single text). 2D outputs
+    /// (already-pooled models) error explicitly — they have no token-level
+    /// information to expose.
+    fn token_rows_from_3d(
+        shape: &[usize],
+        data: &[f32],
+        keep: &[bool],
+        fed_seq_len: usize,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if shape.len() != 3 {
+            return Err(EmbeddingError::ParseError(format!(
+                "token-level output requires a 3D [batch, seq, dim] tensor, got shape {shape:?}"
+            )));
+        }
+        let (out_batch, out_seq, dim) = (shape[0], shape[1], shape[2]);
+        if out_batch != 1 {
+            return Err(EmbeddingError::BatchMismatch {
+                expected: 1,
+                actual: out_batch,
+            });
+        }
+        let seq = out_seq.min(fed_seq_len).min(keep.len());
+        let mut rows = Vec::new();
+        for s in 0..seq {
+            if !keep[s] {
+                continue;
+            }
+            let base = s * dim;
+            let end = base + dim;
+            if end > data.len() {
+                return Err(EmbeddingError::ParseError(format!(
+                    "output tensor data too short: need {} floats, got {}",
+                    end,
+                    data.len()
+                )));
+            }
+            rows.push(data[base..end].to_vec());
+        }
+        if rows.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        Ok(rows)
+    }
+
+    /// Token-level extraction for one text: encode → run → per-token rows →
+    /// byte spans → L2-normalize (0.21.0 S5.2).
+    ///
+    /// Special tokens ([CLS]/[SEP]) and padding are excluded together — the
+    /// row selector and the offset filter share one `keep` sequence, so rows
+    /// and spans stay aligned by construction.
+    fn token_level_rows(&self, text: &str) -> Result<Vec<crate::TokenEmbedding>, EmbeddingError> {
+        if text.trim().is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        let encodings = self.tokenize(&[text.to_string()])?;
+        let (shape_vec, data, mask_rows, fed_seq_len) = self.run_tensors(&encodings)?;
+
+        let encoding = encodings
+            .first()
+            .ok_or_else(|| EmbeddingError::EmptyInput)?;
+        // tokenizers offsets are char positions of the original text.
+        let offsets: Vec<(usize, usize)> = encoding.get_offsets().to_vec();
+        // `get_special_tokens_mask` is u32 (1 = special).
+        let special: Vec<u32> = encoding.get_special_tokens_mask().to_vec();
+        let mask = mask_rows
+            .first()
+            .ok_or_else(|| EmbeddingError::EmptyInput)?;
+
+        // One keep-sequence drives both the row selection and the offset filter.
+        let seq = fed_seq_len.min(offsets.len());
+        let keep: Vec<bool> = (0..seq)
+            .map(|s| {
+                mask.get(s).copied().unwrap_or(0) == 1 && special.get(s).copied().unwrap_or(1) == 0
+            })
+            .collect();
+        let real_offsets: Vec<(usize, usize)> =
+            (0..seq).filter(|&s| keep[s]).map(|s| offsets[s]).collect();
+
+        let rows = Self::token_rows_from_3d(&shape_vec, &data, &keep, fed_seq_len)?;
+
+        let byte_spans = crate::char_spans_to_byte_spans(text, &real_offsets);
+        let mut out = Vec::with_capacity(rows.len());
+        for (span, mut vector) in byte_spans.into_iter().zip(rows) {
+            crate::l2_normalize(&mut vector);
+            out.push(crate::TokenEmbedding { span, vector });
+        }
+        Ok(out)
     }
 
     /// Runs the full embedding pipeline for a batch (per-chunk pad-aligned inference).
@@ -659,6 +769,21 @@ impl LocalEmbeddingsBuilder {
                 max_batch,
             }),
         })
+    }
+}
+
+#[async_trait]
+impl crate::TokenLevelEmbeddings for LocalEmbeddings {
+    /// Token-level embeddings from the ONNX model's 3D output — no pooling,
+    /// one vector per real (non-special, non-pad) token with its byte span.
+    /// Late-chunking prerequisite (0.21.0 S5.2); the same ONNX session pool
+    /// and alignment pipeline as the pooled path (via `run_tensors`).
+    async fn embed_tokens(&self, text: &str) -> Result<Vec<crate::TokenEmbedding>, EmbeddingError> {
+        let inner = self.inner.clone();
+        let text = text.to_string();
+        tokio::task::spawn_blocking(move || inner.token_level_rows(&text))
+            .await
+            .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {e}")))?
     }
 }
 

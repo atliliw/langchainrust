@@ -142,3 +142,74 @@ fn test_pool_rows_batch_mismatch() {
         }
     ));
 }
+
+/// 0.21.0 S5.2: 	oken_rows_from_3d keeps only kept positions, slices rows by dim.
+#[test]
+fn test_token_rows_from_3d_filters_and_slices() {
+    // shape [1, 3, 2]: 3 positions, dim 2. keep = [true, false, true].
+    let shape = vec![1usize, 3, 2];
+    let data = vec![1.0, 2.0, 9.0, 9.0, 3.0, 4.0];
+    let keep = vec![true, false, true];
+    let rows = LocalInner::token_rows_from_3d(&shape, &data, &keep, 3).unwrap();
+    assert_eq!(rows, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+}
+
+/// 0.21.0 S5.2: non-3D output (already-pooled 2D model) errors explicitly —
+/// no token-level information to expose.
+#[test]
+fn test_token_rows_from_3d_rejects_2d() {
+    let shape = vec![1usize, 2];
+    let data = vec![1.0, 2.0, 3.0, 4.0];
+    let keep = vec![true, true];
+    let err = LocalInner::token_rows_from_3d(&shape, &data, &keep, 2).unwrap_err();
+    assert!(matches!(err, EmbeddingError::ParseError(_)));
+}
+
+/// 0.21.0 S5.2: batch != 1 is a BatchMismatch (the path encodes a single text).
+#[test]
+fn test_token_rows_from_3d_rejects_batch() {
+    let shape = vec![2usize, 2, 2];
+    let data = vec![0.0; 8];
+    let keep = vec![true, true];
+    let err = LocalInner::token_rows_from_3d(&shape, &data, &keep, 2).unwrap_err();
+    assert!(matches!(
+        err,
+        EmbeddingError::BatchMismatch {
+            expected: 1,
+            actual: 2
+        }
+    ));
+}
+
+/// 0.21.0 S5.2: all positions excluded -> EmptyInput (never an empty vector list).
+#[test]
+fn test_token_rows_from_3d_empty_input() {
+    let shape = vec![1usize, 2, 2];
+    let data = vec![0.0; 4];
+    let keep = vec![false, false];
+    let err = LocalInner::token_rows_from_3d(&shape, &data, &keep, 2).unwrap_err();
+    assert!(matches!(err, EmbeddingError::EmptyInput));
+}
+
+/// 0.21.0 S5.2: short tensor data errors instead of panicking on the slice.
+#[test]
+fn test_token_rows_from_3d_short_data() {
+    let shape = vec![1usize, 2, 2];
+    let data = vec![1.0]; // need 4
+    let keep = vec![true, true];
+    let err = LocalInner::token_rows_from_3d(&shape, &data, &keep, 2).unwrap_err();
+    assert!(matches!(err, EmbeddingError::ParseError(_)));
+}
+
+/// 0.21.0 S5.2: char offsets -> byte spans through the real WordPiece tokenizer
+/// (this fixture tokenizer has no special tokens, so offsets cover real words).
+#[test]
+fn test_token_level_offsets_to_byte_spans() {
+    let tok = tiny_tokenizer(false);
+    let enc = tok.encode("hello world", true).unwrap();
+    let offsets = enc.get_offsets().to_vec();
+    let spans = crate::char_spans_to_byte_spans("hello world", &offsets);
+    assert_eq!(spans.len(), 2);
+    assert_eq!(&"hello world"[spans[0].start..spans[0].end], "hello");
+    assert_eq!(&"hello world"[spans[1].start..spans[1].end], "world");
+}

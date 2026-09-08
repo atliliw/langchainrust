@@ -8,9 +8,11 @@
 
 pub mod adapter;
 pub mod bm25;
+pub mod contextual;
 pub mod graph_rag;
 pub mod hybrid;
 pub mod hyde;
+pub mod late_chunking;
 pub mod loaders;
 pub mod multi_query;
 pub mod parent_document;
@@ -19,12 +21,16 @@ pub mod reranking;
 pub mod retriever;
 pub mod retriever_runnable;
 pub mod self_query;
+pub mod semantic_cache;
 pub mod semantic_splitter;
 pub mod splitter;
 mod structured;
 pub mod unified_hybrid;
 
 pub use adapter::RagRunnable;
+pub use contextual::{
+    ContextualConfig, ContextualEnhancer, ContextualError, CONTEXTUAL_METADATA_KEY,
+};
 pub use parent_document::ParentDocumentRetriever;
 pub use pipeline::{RAGPipeline, RAGPipelineBuilder, RAGQueryResult};
 pub use retriever_runnable::RetrieverRunnable;
@@ -35,6 +41,7 @@ pub use loaders::{
 };
 pub use retriever::{Retriever, RetrieverError, RetrieverTrait, SimilarityRetriever};
 pub use self_query::{SelfQueryArgs, SelfQueryRetriever};
+pub use semantic_cache::{CacheHitKind, CachedRetriever, SemanticCacheConfig, SemanticCacheCore};
 pub use semantic_splitter::SemanticSplitter;
 pub use splitter::{RecursiveCharacterSplitter, TextSplitter};
 
@@ -51,6 +58,7 @@ pub use multi_query::{
 };
 
 pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
+pub use late_chunking::{late_chunk, pool_tokens, LateChunk, LateChunkConfig};
 
 pub use reranking::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,

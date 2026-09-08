@@ -18,6 +18,12 @@ pub trait CompatConfigAccess {
     fn base_url(&self) -> &str;
     /// Returns the model name
     fn model(&self) -> &str;
+    /// Optional matryoshka output-dimension override (0.21.0 S5.1): when set,
+    /// the request carries a `dimensions` field. Default `None` — the request
+    /// body stays identical to pre-0.21.0 for providers that do not opt in.
+    fn dimensions(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Static specification for an OpenAI-compatible-protocol provider.
@@ -31,8 +37,35 @@ pub trait CompatSpec: CompatConfigAccess + Sized + Default {
     fn batch_size() -> usize;
     /// Vector dimension for a given model; unknown models must error (P1-2), never lying with a default.
     fn dimension_for(model: &str) -> Result<usize, EmbeddingError>;
+    /// Per-instance validation beyond the static dimension check (P1-2/P1-3).
+    /// Default: valid. Used e.g. by Qwen to reject `dimensions` on models that
+    /// do not support the parameter.
+    fn validate(_config: &Self) -> Result<(), EmbeddingError> {
+        Ok(())
+    }
     /// Constructs config from environment variables (reuses each config's from_env_result).
     fn from_env_result() -> Result<Self, EmbeddingError>;
+}
+
+/// Builds the `/embeddings` request body.
+///
+/// Pure helper (0.21.0 S5.1): `dimensions` is only present when set — the
+/// serialized body stays identical to pre-0.21.0 otherwise (snapshotted in
+/// tests). `input` is a string for the single-text path and an array for
+/// batches, matching the original inline bodies.
+pub(crate) fn build_request_body(
+    model: &str,
+    input: serde_json::Value,
+    dimensions: Option<usize>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "input": input,
+    });
+    if let Some(d) = dimensions {
+        body["dimensions"] = serde_json::json!(d);
+    }
+    body
 }
 
 /// Generic OpenAI-compatible embedding client (P1-5).
@@ -64,7 +97,13 @@ impl<C: CompatConfigAccess + CompatSpec> OpenAICompatEmbeddings<C> {
                 C::api_key_env()
             )));
         }
-        let dimension = C::dimension_for(config.model())?;
+        C::validate(&config)?;
+        // 0.21.0 S5.1: an explicit matryoshka `dimensions` override wins over
+        // the model default (validated by the spec's `validate` hook).
+        let dimension = match config.dimensions() {
+            Some(d) => d,
+            None => C::dimension_for(config.model())?,
+        };
         Ok(Self {
             config,
             client: reqwest::Client::new(),
@@ -88,10 +127,11 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
 
         let url = format!("{}/embeddings", self.config.base_url());
 
-        let body = serde_json::json!({
-            "model": self.config.model(),
-            "input": text,
-        });
+        let body = build_request_body(
+            self.config.model(),
+            serde_json::json!(text),
+            self.config.dimensions(),
+        );
 
         // P2-5: exponential backoff retry on 429/5xx.
         let response = crate::retry::post_json_with_retry(
@@ -150,10 +190,11 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
         let mut offset = 0;
 
         for chunk in texts.chunks(batch_size) {
-            let body = serde_json::json!({
-                "model": self.config.model(),
-                "input": chunk,
-            });
+            let body = build_request_body(
+                self.config.model(),
+                serde_json::json!(chunk),
+                self.config.dimensions(),
+            );
 
             // P2-5: exponential backoff retry on 429/5xx.
             let response = crate::retry::post_json_with_retry(
@@ -227,4 +268,32 @@ struct EmbeddingResponse {
 struct EmbeddingData {
     embedding: Vec<f32>,
     index: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 0.21.0 S5.1: without `dimensions` the body is identical to pre-0.21.0.
+    #[test]
+    fn request_body_without_dimensions_unchanged() {
+        let body = build_request_body("text-embedding-v1", serde_json::json!(["a", "b"]), None);
+        assert_eq!(
+            body,
+            serde_json::json!({"model": "text-embedding-v1", "input": ["a", "b"]})
+        );
+        assert!(
+            body.get("dimensions").is_none(),
+            "no `dimensions` key may leak into requests that did not opt in"
+        );
+    }
+
+    /// 0.21.0 S5.1: with `dimensions` the matryoshka override is carried in the body.
+    #[test]
+    fn request_body_with_dimensions() {
+        let body = build_request_body("qwen3-embedding-0.6b", serde_json::json!("text"), Some(512));
+        assert_eq!(body["dimensions"], 512);
+        assert_eq!(body["model"], "qwen3-embedding-0.6b");
+        assert_eq!(body["input"], "text");
+    }
 }

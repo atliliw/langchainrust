@@ -8,7 +8,8 @@ use crate::resume::{FileResumeStore, PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentFinish, AgentOutput, AgentStep, ToolInput};
 use crate::ResponseCache;
 use async_trait::async_trait;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
+use lc_core::observability::{MetricsSink, ObsError, ObsEvent};
 use lc_core::runnables::RunnableConfig;
 use lc_core::tools::{BaseTool, ToolError};
 use lc_embeddings::{EmbeddingError, Embeddings};
@@ -1065,4 +1066,105 @@ async fn test_resume_budget_continues_from_consumed() {
 
     // The checkpoint has been claimed (cleared).
     assert!(exec.pending_approval().await.unwrap().is_none());
+}
+
+// --- v0.20.2: observability sink --------------------------------------------
+
+/// Mock observability sink recording events in a shared buffer.
+struct MockSink {
+    events: Arc<tokio::sync::Mutex<Vec<ObsEvent>>>,
+    fail: bool,
+}
+
+#[async_trait]
+impl MetricsSink for MockSink {
+    async fn export(&self, event: &ObsEvent) -> Result<(), ObsError> {
+        if self.fail {
+            return Err(ObsError::Transport("mock failure".to_string()));
+        }
+        self.events.lock().await.push(event.clone());
+        Ok(())
+    }
+}
+
+/// Agent that finishes immediately without tools.
+struct ImmediateFinishAgent;
+
+#[async_trait]
+impl BaseAgent for ImmediateFinishAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+    ) -> Result<AgentOutput, AgentError> {
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            "done".to_string(),
+            String::new(),
+        )))
+    }
+}
+
+/// v0.20.2: with a sink attached, each invoke run exports exactly one
+/// `AgentMetrics` event at the end.
+#[tokio::test]
+async fn invoke_exports_agent_metrics_once() {
+    let events = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(Arc::new(ImmediateFinishAgent), vec![]).with_metrics_sink(
+        Arc::new(MockSink {
+            events: events.clone(),
+            fail: false,
+        }),
+    );
+
+    let result = executor.invoke("hi".to_string()).await.unwrap();
+    assert_eq!(result, "done");
+
+    let captured = events.lock().await;
+    assert_eq!(captured.len(), 1, "exactly one metrics event per run");
+    match &captured[0] {
+        ObsEvent::AgentMetrics(m) => {
+            // `llm_calls` counts plan iterations (one for the immediate finish).
+            assert_eq!(m.llm_calls, 1);
+            assert_eq!(m.tool_calls, 0);
+        }
+        ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
+    }
+}
+
+/// v0.20.2: the streaming path exports one `AgentMetrics` event too.
+#[tokio::test]
+async fn stream_exports_agent_metrics_once() {
+    let events = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(Arc::new(ImmediateFinishAgent), vec![]).with_metrics_sink(
+        Arc::new(MockSink {
+            events: events.clone(),
+            fail: false,
+        }),
+    );
+
+    let stream = executor.stream("hi".to_string());
+    let items: Vec<_> = stream.collect().await;
+    assert!(!items.is_empty(), "stream should emit events");
+
+    let captured = events.lock().await;
+    assert_eq!(captured.len(), 1, "stream exports one metrics event");
+    match &captured[0] {
+        ObsEvent::AgentMetrics(_) => {}
+        ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
+    }
+}
+
+/// v0.20.2: a failing sink must not fail the invoke; metrics still recorded.
+#[tokio::test]
+async fn sink_failure_is_warned_and_invoke_succeeds() {
+    let executor = AgentExecutor::new(Arc::new(ImmediateFinishAgent), vec![]).with_metrics_sink(
+        Arc::new(MockSink {
+            events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            fail: true,
+        }),
+    );
+
+    let result = executor.invoke("hi".to_string()).await;
+    assert!(result.is_ok(), "sink failure must not fail invoke");
+    assert!(executor.last_metrics().is_some(), "metrics still recorded");
 }

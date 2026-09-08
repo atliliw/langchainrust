@@ -1,6 +1,6 @@
 [package]
 name = "lc-tools"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Built-in tools for langchainrust — Calculator, DateTime, URLFetch, etc."
@@ -8,12 +8,12 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.85"
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.20.0" }
-lc-tools-derive = { path = "../lc-tools-derive", version = "0.20.0" }
+lc-core = { path = "../lc-core", version = "0.21.0" }
+lc-tools-derive = { path = "../lc-tools-derive", version = "0.21.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-schemars = "0.8"
+schemars = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 regex = "1"
@@ -29,3 +29,4 @@ tempfile = "3.0"
 [features]
 default = []
 sqlite-storage = ["rusqlite"]
+

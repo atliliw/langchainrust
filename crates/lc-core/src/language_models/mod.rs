@@ -2,6 +2,7 @@
 //! Language model base traits.
 
 mod base;
+mod boxed;
 mod chat;
 mod multimodal;
 

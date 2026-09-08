@@ -547,6 +547,77 @@ fn test_repair_partial_json_unclosed_string() {
     assert_eq!(parsed["name"], "Ali");
 }
 
+/// 0.21.0 BUG-1: a stream truncated at the end of an array must close the
+/// array FIRST (LIFO), producing `{"a": [1, 2]}` — the old counter-based
+/// repair emitted the illegal `{"a": [1, 2}]`.
+#[test]
+fn test_repair_partial_json_array_at_end() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"a": [1, 2"#);
+    let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+    assert_eq!(parsed["a"], serde_json::json!([1, 2]));
+}
+
+/// 0.21.0 BUG-1: array containing an unclosed object at the end closes the
+/// object first, then the array.
+#[test]
+fn test_repair_partial_json_object_in_array_at_end() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"[{"a": 1"#);
+    let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+    assert_eq!(parsed[0]["a"], 1);
+}
+
+/// 0.21.0 BUG-1: alternating nesting follows true open order, not the
+/// "all braces then all brackets" counter order.
+#[test]
+fn test_repair_partial_json_alternating_nesting() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"list": [{"k": "v"#);
+    let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+    assert_eq!(parsed["list"][0]["k"], "v");
+}
+
+/// 0.21.0 BUG-1: already-closed structures are not padded with extra closers.
+#[test]
+fn test_repair_partial_json_complete_structure_unchanged() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"a": [1, 2]}"#);
+    assert_eq!(repaired, r#"{"a": [1, 2]}"#);
+
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"a": 1}"#);
+    assert_eq!(repaired, r#"{"a": 1}"#);
+}
+
+/// 0.21.0 BUG-1: deeper mixed nesting (object > array > object > string)
+/// closes in exact reverse open order.
+#[test]
+fn test_repair_partial_json_deep_mixed_nesting() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"a": [{"b": {"c": [1"#);
+    let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+    assert_eq!(parsed["a"][0]["b"]["c"], serde_json::json!([1]));
+}
+
+/// 0.21.0 BUG-1: stray closers (more closes than opens) must not corrupt the
+/// repair — the stack pop is a no-op on an empty stack, and an over-closed
+/// structure is left unchanged.
+#[test]
+fn test_repair_partial_json_stray_closer() {
+    let repaired = PartialJsonParser::repair_partial_json(r#"{"a": [1, 2}]"#);
+    assert_eq!(repaired, r#"{"a": [1, 2}]"#);
+
+    let repaired = PartialJsonParser::repair_partial_json(r#"[1, 2]]"#);
+    assert_eq!(repaired, r#"[1, 2]]"#);
+}
+
+/// 0.21.0 BUG-1 end-to-end: the streaming path (push_and_parse) must now
+/// yield the partial object while the truncation is still inside an array —
+/// previously this returned `Incomplete` and the streaming structured-output
+/// path failed for the whole scenario.
+#[test]
+fn test_push_and_parse_truncated_in_array() {
+    let mut parser = PartialJsonParser::new();
+    let result = parser.push_and_parse(r#"{"a": [1, 2"#);
+    let value = result.expect("truncated-in-array partial JSON should repair");
+    assert_eq!(value["a"], serde_json::json!([1, 2]));
+}
+
 #[test]
 fn test_remove_trailing_commas() {
     let result = PartialJsonParser::remove_trailing_commas(r#"{"a": 1,}"#);

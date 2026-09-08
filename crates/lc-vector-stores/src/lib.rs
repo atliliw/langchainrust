@@ -20,6 +20,9 @@ mod mongo_document_store;
 #[cfg(feature = "qdrant-integration")]
 mod qdrant;
 
+#[cfg(feature = "qdrant-integration")]
+pub mod hybrid_native;
+
 #[cfg(feature = "redis-storage")]
 pub mod redis_store;
 
@@ -49,6 +52,9 @@ pub use mongo_document_store::{MongoChunkedDocumentStore, MongoStoreConfig};
 
 #[cfg(feature = "qdrant-integration")]
 pub use qdrant::{QdrantConfig, QdrantDistance, QdrantVectorStore};
+
+#[cfg(feature = "qdrant-integration")]
+pub use hybrid_native::{FusionMethod, NativeHybridQuery, NativeHybridSearch};
 
 pub use chromadb::{ChromaDBConfig, ChromaDBVectorStore};
 

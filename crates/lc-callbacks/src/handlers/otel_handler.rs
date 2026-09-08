@@ -12,6 +12,21 @@
 //! use lc_callbacks::OtelHandler;
 //! let manager = CallbackManager::new().add_handler(std::sync::Arc::new(OtelHandler::from_global("langchainrust")));
 //! ```
+//!
+//! # GenAI semantic conventions (0.21.0 S6.4)
+//!
+//! Spans carry `gen_ai.*` attributes aligned with the OTel GenAI semconv
+//! (development status): `gen_ai.system`, `gen_ai.request.model`,
+//! `gen_ai.operation.name`, `gen_ai.response.finish_reasons` (singular form
+//! per span), `gen_ai.response.model`, token usage (incl. cache /
+//! reasoning attribution when the provider reports it) and the
+//! `gen_ai.tool.*` extension for tool spans.
+//!
+//! Known semconv gaps are filled with extensions, not inventions: tool-call
+//! spans use `gen_ai.tool.*`, retrieval spans use
+//! `gen_ai.operation.name = "retrieve"` (retrieval is not yet standardized —
+//! tracked upstream). Lock the semconv version in the deployment env with
+//! `OTEL_SEMCONV_STABILITY_OPT_IN` to prevent attribute drift on upgrades.
 
 use async_trait::async_trait;
 use opentelemetry::global::{self, BoxedSpan, BoxedTracer};
@@ -169,6 +184,30 @@ impl CallbackHandler for OtelHandler {
                             c as i64,
                         ));
                     }
+                    // 0.21.0 S6.4: cache / reasoning token cost attribution
+                    // (GenAI semconv; providers report these only on some
+                    // models, so they are emitted when present).
+                    if let Some(p) = obj.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.cache_read.input_tokens",
+                            p as i64,
+                        ));
+                    }
+                    if let Some(p) = obj
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.cache_creation.input_tokens",
+                            p as i64,
+                        ));
+                    }
+                    if let Some(p) = obj.get("reasoning_output_tokens").and_then(|v| v.as_u64()) {
+                        span.set_attribute(opentelemetry::KeyValue::new(
+                            "gen_ai.usage.reasoning.output_tokens",
+                            p as i64,
+                        ));
+                    }
                 }
             }
             // gen_ai.request.max_tokens
@@ -242,6 +281,15 @@ impl CallbackHandler for OtelHandler {
 
     async fn on_retriever_start(&self, run: &RunTree, _query: &str) {
         self.start_span("retriever", run).await;
+        // 0.21.0 S6.4: retrieval is not yet in the GenAI semconv — use the
+        // operation-name extension (see module docs).
+        let mut spans = self.spans.lock().await;
+        if let Some(span) = spans.get_mut(&run.id.to_string()) {
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "gen_ai.operation.name",
+                "retrieve".to_string(),
+            ));
+        }
     }
     async fn on_retriever_end(&self, run: &RunTree, _documents: &[serde_json::Value]) {
         self.end_span(run).await;

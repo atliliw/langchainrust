@@ -18,6 +18,7 @@ members = [
     "crates/lc-memory",
     "crates/lc-chains",
     "crates/lc-agents",
+    "crates/lc-observability",
     "crates/lc-evaluation",
     "crates/lc-guardrails",
     "crates/lc-a2a",

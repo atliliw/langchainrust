@@ -120,6 +120,15 @@ impl OpenAIChat {
             body["tool_choice"] = json!(tool_choice);
         }
 
+        // 0.21.0 S3.1: engine-side structured output constraint. Providers that
+        // do not support `response_format: json_schema` reject the request with
+        // a 4xx — the caller should fall back to the local parser path
+        // (`PartialJsonParser`) or json_object mode for those.
+        if let Some(format) = &self.config.response_format {
+            body["response_format"] =
+                serde_json::to_value(format).unwrap_or(serde_json::Value::Null);
+        }
+
         body
     }
 
@@ -158,6 +167,43 @@ impl OpenAIChat {
         let config = OpenAIConfig {
             tools: Some(vec![tool]),
             tool_choice: Some("auto".to_string()),
+            ..self.config.clone()
+        };
+
+        StructuredOutputMethod {
+            config,
+            client: self.client.clone(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// 0.21.0 S3.1: enables engine-constrained structured output via the
+    /// `response_format: { type: "json_schema", ... }` request field (OpenAI
+    /// strict mode).
+    ///
+    /// The schema is generated from `T` via `schemars` and normalized for
+    /// strict mode (`additionalProperties: false`, all properties required —
+    /// see [`crate::openai::response_format::make_strict_schema`]). The engine
+    /// guarantees schema-valid JSON, so the returned method parses the message
+    /// content directly; no tool-binding round trip is involved.
+    ///
+    /// Unlike [`Self::with_structured_output`] (tool-based, works on any
+    /// OpenAI-compatible backend), this path requires provider-side
+    /// `json_schema` support; unsupported providers return a 4xx error.
+    pub fn with_json_schema_output<T: DeserializeOwned + JsonSchema>(
+        &self,
+    ) -> StructuredOutputMethod<T> {
+        use schemars::schema_for;
+        let mut schema = serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| {
+            // H64: Schema generation should not silently produce null
+            serde_json::json!({"type": "object", "properties": {}})
+        });
+        crate::openai::response_format::make_strict_schema(&mut schema);
+
+        let config = OpenAIConfig {
+            response_format: Some(crate::openai::response_format::ResponseFormat::json_schema(
+                "output", schema,
+            )),
             ..self.config.clone()
         };
 

@@ -16,18 +16,22 @@
 //! ```
 
 pub mod audit;
+pub mod disclosure;
 pub mod guarded_agent;
 pub mod guardrail;
 pub mod judge;
+pub mod retrieval_rail;
 pub mod runner;
 pub mod validators;
 
 pub use audit::{AuditSink, FileAuditSink};
+pub use disclosure::{disclose, disclose_to_file, DisclosureConfig, DEFAULT_DISCLOSURE};
 pub use guarded_agent::{ChainGuardable, Guardable, GuardableChunk, GuardedAgent};
 pub use guardrail::{
     ChunkAction, GuardrailError, GuardrailsConfig, InputGuardrail, InputGuardrailResult,
     OutputGuardrail, OutputGuardrailResult, StreamingOutputGuardrail,
 };
 pub use judge::{LlmSensitiveJudge, SensitiveJudge};
+pub use retrieval_rail::{GuardedRetriever, RailAction, RailReport, RetrievalRail, RAIL_FLAG_KEY};
 pub use runner::{GuardrailRunner, GuardrailViolation, OutputValidation};
 pub use validators::{ForbiddenWordsGuardrail, MaxLengthGuardrail, SensitiveInfoGuardrail};

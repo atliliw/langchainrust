@@ -1,12 +1,14 @@
 // lc-vector-stores/src/qdrant.rs
 //! Qdrant vector store implementation
 
+use crate::hybrid_native::{FusionMethod, NativeHybridQuery, NativeHybridSearch};
 use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 use async_trait::async_trait;
 use qdrant_client::{
     qdrant::{
-        Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, PointId,
-        PointStruct, QueryPointsBuilder, Range, UpsertPointsBuilder, VectorParamsBuilder,
+        Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, Filter, Fusion, PointId,
+        PointStruct, PrefetchQuery, PrefetchQueryBuilder, Query, QueryPointsBuilder, Range,
+        ScoredPoint, UpsertPointsBuilder, VectorParamsBuilder,
     },
     Payload, Qdrant,
 };
@@ -211,7 +213,8 @@ impl QdrantVectorStore {
         Ok(builder)
     }
 
-    /// Runs the query and parses the payload → [`SearchResult`] (shared by plain and filtered retrieval).
+    /// Runs the query and parses the payload → [`SearchResult`] (shared by plain, filtered,
+    /// and native-hybrid retrieval).
     async fn search_impl(
         &self,
         builder: QueryPointsBuilder,
@@ -222,45 +225,50 @@ impl QdrantVectorStore {
             .await
             .map_err(|e| VectorStoreError::StorageError(format!("search failed: {}", e)))?;
 
-        let results: Vec<SearchResult> = search_result
+        Ok(search_result
             .result
             .into_iter()
-            .map(|scored_point| {
-                let payload = scored_point.payload;
+            .map(scored_point_to_result)
+            .collect())
+    }
+}
 
-                let content = payload
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
+/// Maps a Qdrant `ScoredPoint` to a [`SearchResult`].
+///
+/// Pure (0.21.0 S4.3): extracted from the inline map so the native-hybrid path
+/// shares the exact same payload conventions (`content` / `doc_id` / metadata
+/// pass-through) and can be unit-tested without a server.
+pub(crate) fn scored_point_to_result(scored_point: ScoredPoint) -> SearchResult {
+    let payload = scored_point.payload;
 
-                let id = payload
-                    .get("doc_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+    let content = payload
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
 
-                let mut metadata = HashMap::new();
-                for (key, value) in &payload {
-                    if key != "content" && key != "doc_id" {
-                        if let Some(s) = value.as_str() {
-                            metadata.insert(key.clone(), s.clone().into());
-                        }
-                    }
-                }
+    let id = payload
+        .get("doc_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
-                SearchResult {
-                    document: Document {
-                        content,
-                        metadata,
-                        id,
-                    },
-                    score: scored_point.score,
-                }
-            })
-            .collect();
+    let mut metadata = HashMap::new();
+    for (key, value) in &payload {
+        if key != "content" && key != "doc_id" {
+            if let Some(s) = value.as_str() {
+                metadata.insert(key.clone(), s.clone().into());
+            }
+        }
+    }
 
-        Ok(results)
+    SearchResult {
+        document: Document {
+            content,
+            metadata,
+            id,
+        },
+        score: scored_point.score,
     }
 }
 
@@ -721,5 +729,128 @@ mod tests {
             empty_in,
             Err(VectorStoreError::UnsupportedFilter(_))
         ));
+    }
+}
+
+// ============================================================================
+// 0.21.0 S4.3: engine-native hybrid fusion (Query API, server-side RRF/DBSF)
+// ============================================================================
+
+#[async_trait]
+impl NativeHybridSearch for QdrantVectorStore {
+    /// Qdrant >= 1.10 serves the Query API with server-side fusion. The client
+    /// crate is version-locked (1.18) so the request shape is compile-time
+    /// verified; a too-old *server* surfaces its own error from the query.
+    fn supports_native_hybrid(&self) -> bool {
+        true
+    }
+
+    async fn native_hybrid_search(
+        &self,
+        query: &NativeHybridQuery,
+    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        // One prefetch branch per query vector; the engine fuses them.
+        let prefetch_limit = query.effective_prefetch_limit();
+        let prefetches: Vec<PrefetchQuery> = query
+            .query_vectors
+            .iter()
+            .map(|vector| {
+                PrefetchQueryBuilder::default()
+                    .query(vector.clone())
+                    .limit(prefetch_limit)
+                    .build()
+            })
+            .collect();
+
+        let mut builder = QueryPointsBuilder::new(&self.config.collection_name)
+            .prefetch(prefetches)
+            .query(qdrant_client::qdrant::Query::new_fusion(Fusion::from(
+                query.fusion,
+            )))
+            .limit(query.limit as u64)
+            .with_payload(true);
+
+        if let Some(filter) = &query.filter {
+            builder = builder.filter(filter_to_qdrant(filter)?);
+        }
+
+        self.search_impl(builder).await
+    }
+}
+
+#[cfg(test)]
+mod hybrid_native_tests {
+    use super::*;
+    use crate::hybrid_native::fixtures::scored_point as fixture_point;
+
+    /// Mapping follows the same payload conventions as plain search:
+    /// content -> content, doc_id -> id, other string fields -> metadata.
+    #[test]
+    fn scored_point_maps_to_search_result() {
+        let result = scored_point_to_result(fixture_point(1, 0.98, "rust doc", "docs"));
+        assert_eq!(result.document.content, "rust doc");
+        assert_eq!(result.document.id, None, "no doc_id payload -> no id");
+        assert_eq!(result.score, 0.98);
+        assert_eq!(
+            result
+                .document
+                .metadata
+                .get("source")
+                .and_then(|v| v.as_str()),
+            Some("docs")
+        );
+        assert!(
+            !result.document.metadata.contains_key("content"),
+            "content is not duplicated into metadata"
+        );
+    }
+
+    /// doc_id payload becomes the document id.
+    #[test]
+    fn doc_id_payload_becomes_document_id() {
+        let mut point = fixture_point(2, 0.9, "hello", "docs");
+        point.payload.insert(
+            "doc_id".to_string(),
+            qdrant_client::qdrant::Value::from("doc-42"),
+        );
+        let result = scored_point_to_result(point);
+        assert_eq!(result.document.id.as_deref(), Some("doc-42"));
+    }
+
+    /// Live end-to-end native fusion (needs a real Qdrant; run with
+    /// `--ignored` and `QDRANT_URL` set, e.g. `http://localhost:6334`).
+    /// Verifies the Query API path (prefetch branches + server-side RRF)
+    /// returns results shaped like the plain-search path.
+    #[tokio::test]
+    #[ignore = "requires a live Qdrant server (QDRANT_URL)"]
+    async fn native_hybrid_search_end_to_end() {
+        let url = std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
+        let store = QdrantVectorStore::new(
+            crate::QdrantConfig::new(url, "lc-native-hybrid-test")
+                .with_vector_size(4)
+                .with_distance(crate::QdrantDistance::Dot),
+        )
+        .await
+        .expect("connect to Qdrant");
+
+        let docs = vec![
+            Document::new("alpha document"),
+            Document::new("beta document"),
+            Document::new("gamma document"),
+        ];
+        let embeddings = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ];
+        store.add_documents(docs, embeddings).await.unwrap();
+
+        let query =
+            NativeHybridQuery::new(vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.9, 0.1, 0.0, 0.0]], 2)
+                .unwrap();
+        assert!(store.supports_native_hybrid());
+        let results = store.native_hybrid_search(&query).await.unwrap();
+        assert_eq!(results.len(), 2, "fused top-2");
+        assert_eq!(results[0].document.content, "alpha document");
     }
 }

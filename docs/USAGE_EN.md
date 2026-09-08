@@ -22,7 +22,11 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - OpenAI Embeddings
   - DeepSeek Embeddings
   - Qwen Embeddings
+  - Qwen3-Embedding & Matryoshka Dimensions ✨ v0.21.0
   - LocalEmbeddings
+  - CandleEmbeddings (Pure-Rust Local Inference) ✨ v0.21.0
+  - Token-Level Embeddings (TokenLevelEmbeddings) ✨ v0.21.0
+  - Late Chunking ✨ v0.21.0
 - [Prompts](#prompts)
   - FewShotPrompt + ExampleSelectors
 - [Output Parsers](#output-parsers)
@@ -51,6 +55,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - AgentBuilder ✨ v0.14.0
   - Orchestrator ✨ v0.14.0
   - ToolPolicy ✨ v0.14.0
+  - Context Compaction (CompactionConfig) ✨ v0.21.0
 - [Plan-Execute Agent](#plan-execute-agent)
 - [Handoffs](#handoffs)
 - [Streaming Tool Calls](#streaming-tool-calls)
@@ -58,6 +63,8 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Guardable ✨ v0.15.0
   - Streaming Guardrails ✨ v0.15.0
   - Audit Persistence ✨ v0.15.0
+  - Retrieval Rail ✨ v0.21.0
+  - AI Disclosure (disclose) ✨ v0.21.0
 - [Token Counter](#token-counter)
 - [Sessions](#sessions)
   - Session Lifecycle ✨ v0.15.0
@@ -84,8 +91,11 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - SemanticSplitter
   - Unified VectorStore Trait ✨ v0.15.0
   - MetadataFilter ✨ v0.18.0
+  - Contextual Retrieval ✨ v0.21.0
+  - Semantic Cache ✨ v0.21.0
 - [BM25](#bm25)
 - [Hybrid Retrieval](#hybrid-retrieval)
+  - Native Hybrid Search (Qdrant Query API) ✨ v0.21.0
 - [Document Loaders](#document-loaders)
   - HTMLLoader
   - DocxLoader ✨ v0.4.1
@@ -109,6 +119,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Subgraph / Dynamic Planning / Streaming ✨ v0.15.0
 - [A2A Agent Protocol](#a2a-agent-protocol) ✨ v0.4.1
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
+  - Native JSON Schema Engine Constraints ✨ v0.21.0
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
 - [ComputerUseTool](#computerusetool) ✨ v0.4.1
 - [v0.5.0 New Features](#v050-new-features) ✨ v0.5.0
@@ -142,7 +153,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.19"
+langchainrust = "0.21.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2097,6 +2108,7 @@ let executor = executor.with_budget(BudgetConfig {
     max_iterations: Some(10),                          // tighten/override default iteration cap
     ..Default::default()
 });
+```
 
 ### Cross-Process Resume (ResumeStore / FileResumeStore) ✨ v0.18.0
 
@@ -2120,7 +2132,29 @@ if let Some(pending) = executor.pending_approval().await? {
 ```
 
 Before every tool call enters approval, the framework snapshots a `PendingApproval` (tool name / arguments / intermediate steps / iteration index / budget consumed) into the store and clears it once the decision lands — written atomically (`pending.json.tmp` then rename), so a crash can't leave a half-written checkpoint. The `ApprovalHandler` interface is unchanged (zero migration); `MemoryResumeStore` is the in-memory variant (single-process demos / tests). Concurrent executors must use separate directories.
+
+### Context Compaction (CompactionConfig) ✨ v0.21.0
+
+After dozens of turns a long session blows up the context window with accumulated history. Context compaction lets the executor check a trigger **before every `plan()`** and prune history along turn boundaries (no "orphan tool results" — a tool output always stays with its call). **Off by default**: without `with_compaction` behavior is unchanged.
+
+```rust
+use langchainrust::agents::executor::{CompactionConfig, CompactionStrategy, CompactionTrigger};
+use langchainrust::AgentExecutor;
+
+let executor = AgentExecutor::new(agent, tools)
+    .with_compaction(
+        CompactionConfig::new(
+            CompactionTrigger::TurnCount(20),                            // trigger at 20 turns
+            CompactionStrategy::SlidingWindow { keep_recent_turns: 8 },  // keep the last 8
+        )
+        .with_min_recent_turns(2),                                       // floor after compaction, default 2
+    );
 ```
+
+**Triggers**: `TurnCount(n)` / `TokenCount(n)` / `Any(a, b)` / `All(a, b)` combinations.
+**Strategies**: `SlidingWindow { keep_recent_turns }` or `TokenBudget { max_tokens, keep_recent_turns }` (drops oldest-first until it fits the budget).
+
+**Key behaviors**: identical semantics on invoke and stream paths; compaction count lands in `AgentMetrics.compactions` (serde default, backward-compatible payloads); the `min_recent_turns` floor keeps the session from being compacted away entirely.
 
 ## Plan-Execute Agent
 
@@ -2373,6 +2407,64 @@ let config = GuardrailsConfig::new()
 ```
 
 `violations` is bounded (`MAX_VIOLATIONS = 1000`) and can be cleared with `clear_violations()`. `SensitiveInfoGuardrail` supports attaching an LLM judge (`with_judge`, reusing `SensitiveJudge` / `LlmSensitiveJudge`) for context-sensitive detection, and downgrades high-false-positive words (`password` / `token` / `secret`) to warning-only.
+
+### Retrieval Rail ✨ v0.21.0
+
+**Problem**: input/output guardrails cover user messages and model replies, but documents fetched by RAG are untrusted input too — external web pages / PDFs can carry prompt injections like "ignore all previous instructions". `RetrievalRail` batch-scans retrieved documents for injection patterns (the pattern library is shared with `PromptInjectionHook`), with three actions:
+
+| Action | Behavior | Use case |
+|------|------|------|
+| `Flag` (default) | Keep the document, tag metadata `retrieval_rail_flagged` | Conservative, observe first |
+| `Redact` | Replace content with `[REDACTED by retrieval rail: ...]` | Keep the entry, strip content |
+| `Drop` | Remove from the result set | Hard isolation |
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{GuardedRetriever, RetrievalRail, RailAction};
+use langchainrust::retrieval::{RetrieverTrait, SemanticCacheConfig, CachedRetriever};
+
+// Direct scan (non-destructive, get a report):
+let mut results = /* Vec<SearchResult> */;
+let report = RetrievalRail::default().scan(&mut results);
+println!("flagged={} redacted={} dropped={}", report.flagged, report.redacted, report.dropped);
+
+// Decorate any RetrieverTrait:
+let guarded = GuardedRetriever::new(
+    Arc::new(inner_retriever),            // your underlying retriever
+    RetrievalRail::new(RailAction::Drop),
+)
+.with_audit_sink(audit_sink);             // optional: audit hits
+
+// Stacked with the semantic cache: rail goes INSIDE the cache (filter before caching, no pollution)
+let cached = CachedRetriever::new(
+    Arc::new(guarded),
+    Arc::new(embedder),
+    SemanticCacheConfig::new(),
+);
+// cached implements RetrieverTrait — plug it straight into the RAGPipeline
+```
+
+**Key behaviors**: zero changes when nothing matches; `with_patterns(vec![...])` appends custom patterns; cache entries always hold only post-rail clean results.
+
+### AI Disclosure (disclose) ✨ v0.21.0
+
+Aligned with **EU AI Act Article 50**: users should be told they are interacting with an AI system. This is a *capability*, not an enforcement — whether to call it is up to the application.
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{disclose, DisclosureConfig, AuditSink};
+
+let audit: Arc<dyn AuditSink> = /* your AuditSink (e.g. FileAuditSink) */;
+let config = DisclosureConfig::new()
+    .with_statement("{system} is an AI assistant. Responses may contain errors.") // {system} placeholder
+    .with_session_disclosed(false);
+
+// Call once at session start: render the notice + write audit + return the rendered text
+let text = disclose(&audit, &config, "support-bot", Some("trace-1")).await;
+// text = "support-bot is an AI assistant. Responses may contain errors."
+```
+
+A failed disclosure only logs a warning (fire-and-forget) and never blocks the business request.
 
 ---
 
@@ -2913,6 +3005,7 @@ As a tool call it prefers the parameterized `{"sql": "...", "params": [...]}` fo
 | **BagOfWords** | `BagOfWordsEmbeddings` | Custom | Pure local bag-of-words |
 | **Mock** | `MockEmbeddings` | Custom | Testing |
 | **Local** | `LocalEmbeddings` | Default | Pure Rust, offline |
+| **Candle** | `CandleEmbeddings` | Model-defined | Pure Rust inference (`local-candle` feature) ✨ v0.21.0 |
 
 ### OpenAI Embeddings
 
@@ -2964,6 +3057,33 @@ let embeddings = Arc::new(QwenEmbeddings::from_env());
 let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
+### Qwen3-Embedding & Matryoshka Dimensions ✨ v0.21.0
+
+The Qwen3 embedding family (`qwen3-embedding-0.6b` / `4b` / `8b`) is registered in `QwenEmbeddingsConfig` with dimension mappings, and supports **matryoshka output**: `with_dimensions` requests any output dimension between 32 and 4096, and DashScope truncates the vector on the fly — trade storage cost against retrieval precision as needed.
+
+```rust
+use langchainrust::{QwenEmbeddings, QwenEmbeddingsConfig};
+use std::sync::Arc;
+
+// Qwen3-Embedding + custom output dimension (note: with_dimensions returns a Result; 0.6B defaults to 1024)
+let config = QwenEmbeddingsConfig::new("sk-...")
+    .with_model("qwen3-embedding-0.6b")
+    .with_dimensions(512)?;
+let embeddings = Arc::new(QwenEmbeddings::new(config)?);
+assert_eq!(embeddings.dimension(), 512);
+
+// Without dimensions, model defaults apply: 0.6B=1024 / 4B=2560 / 8B=4096
+let cfg8b = QwenEmbeddingsConfig::new("sk-...").with_model("qwen3-embedding-8b");
+let e8b = QwenEmbeddings::new(cfg8b)?;
+assert_eq!(e8b.dimension(), 4096);
+```
+
+**Key behaviors**:
+
+- The default model is still `text-embedding-v1` (1536 dims) for backward compatibility; Qwen3 requires an explicit `with_model`
+- `dimensions` is validated to 32~4096; matryoshka truncation is a Qwen3-family feature
+- Request-body snapshot tests guarantee `dimensions` is only sent when set — DeepSeek and other providers are unaffected
+
 ### Mock Embeddings (Testing)
 
 Generates fixed-dimension random vectors without any API calls. For testing and development only, not for production.
@@ -3006,7 +3126,7 @@ Errors are not silently swallowed: any failed embedding returns an explicit erro
 
 ### Retry & Concurrency ✨ v0.15.0
 
-Built-in request resilience: automatic retry on 429 / 5xx (default 3 times); batch embedding concurrency 8, batch cap 2048; vectors are L2-normalized uniformly for cosine-similarity comparison.
+Built-in request resilience: automatic retry on 429 / 5xx (default 3 times) with **jitter** (avoids retry storms) and `Retry-After` header support ✨ v0.21.0; batch embedding concurrency 8, batch cap 2048; vectors are L2-normalized uniformly for cosine-similarity comparison.
 
 ```rust
 use langchainrust::{OpenAIEmbeddings, Embeddings, retrieval::graph_rag::EmbeddingMatcher};
@@ -3016,6 +3136,71 @@ let docs = vec!["Rust ownership".into(), "Borrow checker".into()];
 let matcher = EmbeddingMatcher::new(emb, docs);
 let top = matcher.query("memory safety in Rust", 2).await?; // 2 most semantically similar
 ```
+
+### CandleEmbeddings (Pure-Rust Local Inference) ✨ v0.21.0
+
+A CPU-only local embedding backend built on [Candle](https://github.com/huggingface/candle) — no ONNX Runtime needed. Enable the `local-candle` feature; BERT-family models are supported (masked weighted mean-pooling, L2 normalization, batch size 16).
+
+```toml
+# Cargo.toml
+langchainrust = { version = "0.21.0", features = ["local-candle"] }
+```
+
+```rust
+use langchainrust::embeddings::CandleEmbeddings;
+use langchainrust::Embeddings;
+
+// Option 1: download from Hugging Face Hub (config.json + tokenizer.json + model.safetensors, cached locally)
+let embedder = CandleEmbeddings::from_hf_hub("BAAI/bge-small-en-v1.5")?;
+
+// Option 2: load from a local model directory
+// let embedder = CandleEmbeddings::from_dir("./models/bge-small")?;
+
+let vec = embedder.embed_query("Rust is a systems programming language.").await?;
+println!("dim = {}", embedder.dimension()); // 384 (config.hidden_size)
+```
+
+**When to use**: you already have safetensors weights and want fully offline inference; an alternative backend to fastembed (ONNX).
+
+### Token-Level Embeddings (TokenLevelEmbeddings) ✨ v0.21.0
+
+An optional capability trait: implementors return `(byte-offset span, L2-normalized vector)` per token. It is deliberately **not** part of the main `Embeddings` trait — the capability is opt-in (detected by whether it is implemented), so providers without token-level output are never forced into the contract.
+
+```rust
+use langchainrust::embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings, TokenSpan};
+
+// The trait uses native async fn (trait_variant generates the Send variant); generic static dispatch, no dyn
+pub trait TokenLevelEmbeddings {
+    async fn embed_tokens(&self, text: &str)
+        -> Result<Vec<TokenEmbedding>, langchainrust::embeddings::EmbeddingError>;
+}
+
+// TokenSpan is a byte offset (multibyte-safe):
+// "你好 world" → tokens[1] = TokenSpan { start: 7, end: 12 } ("world")
+```
+
+The local fastembed (ONNX) path implements this capability (shares the inference pipeline with regular embedding; spans align with [CLS] / [SEP] / padding).
+
+### Late Chunking ✨ v0.21.0
+
+The traditional approach — chunk first, embed each chunk separately — loses full-document context per chunk. Late chunking flips it: **embed the whole text once at token level, then mean-pool the token vectors per chunk boundary**, so every chunk carries full-document context. Retrieval quality on long documents typically improves.
+
+```rust
+use langchainrust::retrieval::late_chunking::{late_chunk, LateChunkConfig};
+
+let config = LateChunkConfig::new()
+    .with_chunk_size(1024)    // bytes, default 1024
+    .with_chunk_overlap(128); // bytes, default 128; requires 0 < overlap < size
+config.validate()?;
+
+// the embedder must implement TokenLevelEmbeddings (e.g. the local ONNX path)
+let chunks = late_chunk(&embedder, "the whole long document...", &config).await?;
+for c in &chunks {
+    // c.range = (start, end) byte range; c.text = chunk text; c.vector = pooled, L2-normalized
+}
+```
+
+**Caveat**: late chunking is not a silver bullet — self-contained short documents gain nothing; the model must support token-level output.
 
 ## RAG
 
@@ -3141,7 +3326,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["chromadb"] }
+langchainrust = { version = "0.21.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3379,6 +3564,37 @@ for result in results {
 | SimpleVector | InMemoryVectorStore | No lookup | Vector-only, simple |
 | BM25 Only | ChunkedDocumentStore | Lookup | Keyword-only |
 | Hybrid | ChunkedDocumentStore (shared) | Lookup | Combined (recommended) |
+
+### Native Hybrid Search (Qdrant Query API) ✨ v0.21.0
+
+`UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
+
+```toml
+langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }
+```
+
+```rust
+use langchainrust::vector_stores::{
+    FusionMethod, NativeHybridQuery, NativeHybridSearch, QdrantConfig, QdrantVectorStore,
+};
+
+let store = QdrantVectorStore::new(
+    QdrantConfig::new("http://localhost:6334", "my-collection").with_vector_size(1536),
+).await?;
+
+assert!(store.supports_native_hybrid());
+
+let query = NativeHybridQuery::new(
+    vec![dense_vec, sparse_vec],   // ≥ 2 query vectors, same dimension
+    10,                            // final top-10
+)?
+.with_fusion(FusionMethod::Rrf)    // or FusionMethod::Dbsf
+.with_prefetch_limit(50);          // per-branch recall, default max(limit*2, 10)
+
+let results = store.native_hybrid_search(&query).await?; // server-side fusion
+```
+
+**Key behaviors**: `NativeHybridQuery::new` validates ≥ 2 vectors with matching dimensions; `FusionMethod` maps directly to Qdrant's `rrf` / `dbsf`; calling a store without native support returns an explicit error pointing to the client-side RRF fallback.
 
 ---
 
@@ -3818,6 +4034,63 @@ Contrast: MultiQuery / HyDE solve **low recall** (query variants, hypothetical d
 
 ---
 
+<a id="contextual-retrieval"></a>
+## Contextual Retrieval ✨ v0.21.0
+
+Anthropic's index-time enhancement: on its own, each chunk lacks the context of "where it sits in the whole document", so semantically related but differently-worded content often goes unretrieved. `ContextualEnhancer` runs at **index time**: a small LLM writes a 1-2 sentence context blurb per chunk, prepended to the content before ingestion — retrieval hit rates improve noticeably.
+
+```rust
+use langchainrust::retrieval::contextual::{ContextualConfig, ContextualEnhancer};
+use langchainrust::retrieval::Document;
+
+let enhancer = ContextualEnhancer::new(llm)   // any BaseChatModel (a small model keeps cost down)
+    .with_config(ContextualConfig::new().with_max_concurrency(4)); // concurrency cap, default 4
+
+let docs = vec![Document::new("Revenue grew 3% year over year.")];
+let enhanced = enhancer.enhance_documents(&docs).await;
+
+// enhanced[0].content = "<LLM-generated context>\nRevenue grew 3% ..."
+// enhanced[0].metadata["contextual_context"] = the context text (searchable, auditable)
+// then index_documents(enhanced) as usual
+```
+
+**Key behaviors**:
+
+- **Idempotent**: documents already carrying `contextual_context` metadata are skipped — repeated calls never stack
+- **Fail-open**: a per-chunk LLM failure logs a warning and indexes the original text; indexing is never blocked
+- **Cost note**: one LLM call per chunk — estimate the bill on large corpora; prefer a cheap small model
+
+---
+
+<a id="semantic-cache"></a>
+## Semantic Cache ✨ v0.21.0
+
+Re-retrieving the vector store for identical or near-identical questions is pure waste. `CachedRetriever` wraps any `RetrieverTrait`: a **lexical hit** (byte-identical query) returns from cache and skips the embedder entirely; otherwise it computes **cosine similarity** against cached query vectors and hits above the threshold.
+
+```rust
+use std::sync::Arc;
+use langchainrust::retrieval::{CachedRetriever, SemanticCacheConfig, RetrieverTrait};
+use langchainrust::Embeddings;
+
+let cached = CachedRetriever::new(
+    Arc::new(inner_retriever),   // any RetrieverTrait
+    Arc::new(embeddings),        // used to embed the query
+    SemanticCacheConfig::new()
+        .with_threshold(0.95)    // semantic hit threshold, default 0.95
+        .with_max_entries(256)   // FIFO capacity, default 256
+        .with_ttl(Some(std::time::Duration::from_secs(600))), // optional TTL
+);
+
+let docs = cached.retrieve("apple", 3).await?;   // miss → retrieve and cache
+let fast = cached.retrieve("apple", 3).await?;   // lexical hit, zero cost
+
+cached.cache().invalidate();                      // invalidate after corpus updates
+```
+
+**Key behaviors**: `k` is part of the cache identity (same query, different k → separate entries); embedding failure propagates and nothing is cached; `add_documents` auto-`invalidate()`s. When combining with guardrails, put `GuardedRetriever` inside the cache (see Retrieval Rail).
+
+---
+
 ## Reranking
 
 Initial retrieval may return less-relevant results. Rerankers re-score retrieval results, pushing the most relevant to the top for better precision.
@@ -4003,7 +4276,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["opentelemetry"] }
+langchainrust = { version = "0.21.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4017,6 +4290,8 @@ let manager = CallbackManager::new()
 ```
 
 Nested spans; export to Jaeger / Tempo / Grafana.
+
+**GenAI semantic-convention alignment ✨ v0.21.0**: span attributes align with the OpenTelemetry GenAI semconv (development status) — `gen_ai.system`, `gen_ai.request.model`, `gen_ai.request.max_tokens` / `gen_ai.request.temperature`, `gen_ai.response.finish_reason`, `gen_ai.response.model`, token usage `gen_ai.client.token.usage.prompt_tokens` / `completion_tokens`, plus extension attributes `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.reasoning.output_tokens` (filled only when the provider reports them). LLM-call spans carry `gen_ai.operation.name = "chat"`, retrieval spans `"retrieve"`, and tool spans `gen_ai.tool.name` (`gen_ai.tool.*` is an extension namespace to be migrated once the standard stabilizes). Consumers like Langfuse / Grafana can filter and aggregate directly on `gen_ai.*` attributes.
 
 ---
 
@@ -4153,7 +4428,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -4227,14 +4502,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["redis-storage"] }
+langchainrust = { version = "0.21.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.8", features = ["sqlite-storage"] }
+langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4335,7 +4610,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.20.0"
+lc-testkit = "0.21.0"
 ```
 
 ```rust
@@ -4525,6 +4800,34 @@ let answer: Answer = llm.with_structured_output::<Answer>().await?;
 - "Get the complete result at once, with a determined type" → use `with_structured_output`.
 - "Use it as it's generated, render field by field" → use `stream_structured_output`.
 - Just want to parse output the model already produced (not make it return per a schema) → use a parser like `JsonOutputParser` or `TypedOutputParser` directly.
+
+### Native JSON Schema Engine Constraints (with_json_schema_output) ✨ v0.21.0
+
+Both paths above are **parse-after-generation** — the model can still produce schema-violating content. `with_json_schema_output` sends the schema straight to OpenAI (`response_format: {type: "json_schema", strict: true}`) so the **engine constrains decoding** — every token is generated to fit the schema, eliminating format errors at the source.
+
+```rust
+use schemars::JsonSchema;
+use serde::Deserialize;
+use langchainrust::language_models::openai::OpenAIChat;
+use langchainrust::schema::Message;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+let chat = OpenAIChat::new(config);
+let method = chat.with_json_schema_output::<Person>(); // generates the strict json_schema
+let person: Person = method.invoke(vec![Message::human("Introduce Alice, 30.")]).await?;
+```
+
+**Key behaviors**:
+
+- The schema is generated from the Rust type by **schemars 1.0**; `make_strict_schema` adds `additionalProperties: false` + full `required` automatically (strict mode requires it)
+- Only `OpenAIChat` and its compatible paths support this; other providers keep using `with_structured_output`
+- A server-side rejection (e.g. unsupported model) surfaces as an explicit 4xx error — no silent degradation
+- `PartialJsonParser` streaming incremental parsing remains the fallback and streaming path
 
 ---
 

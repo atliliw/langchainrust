@@ -226,17 +226,23 @@ impl PartialJsonParser {
 
     /// Repair a partial JSON string by closing unclosed structures and
     /// truncating incomplete values.
+    ///
+    /// 0.21.0 BUG-1: closing order is a LIFO stack (last opened, first closed),
+    /// not two independent counters. The old counter-based repair closed all
+    /// braces first, then all brackets — independent of actual nesting — so a
+    /// stream truncated at the end of an array produced illegal JSON
+    /// (`{"a": [1, 2` → `{"a": [1, 2}]` instead of `{"a": [1, 2]}`), failing
+    /// the whole streaming structured-output path in that scenario.
     pub(crate) fn repair_partial_json(text: &str) -> String {
         let mut repaired = text.trim().to_string();
 
-        // Scan the text tracking string state to correctly count braces/brackets
-        // and quotes outside of strings (C20 + C21).
+        // Scan the text tracking string state to correctly identify structure
+        // characters outside of strings (C20 + C21).
         let mut in_string = false;
         let mut escape_next = false;
-        let mut open_braces = 0usize;
-        let mut close_braces = 0usize;
-        let mut open_brackets = 0usize;
-        let mut close_brackets = 0usize;
+        // Expected closers for currently-open structures, in open order.
+        // LIFO order at the end reproduces the true nesting.
+        let mut expected_closers: Vec<u8> = Vec::new();
         let mut unescaped_quote_count = 0usize;
 
         for ch in repaired.chars() {
@@ -255,10 +261,13 @@ impl PartialJsonParser {
             }
             if !in_string {
                 match ch {
-                    '{' => open_braces += 1,
-                    '}' => close_braces += 1,
-                    '[' => open_brackets += 1,
-                    ']' => close_brackets += 1,
+                    '{' => expected_closers.push(b'}'),
+                    '[' => expected_closers.push(b']'),
+                    '}' | ']' => {
+                        // Ignore stray closers (more closes than opens);
+                        // pop is a no-op on an empty stack.
+                        expected_closers.pop();
+                    }
                     _ => {}
                 }
             }
@@ -270,15 +279,11 @@ impl PartialJsonParser {
             repaired.push('"');
         }
 
-        // Close unclosed braces first (before removing trailing commas,
-        // so that commas before the newly-added braces get removed)
-        for _ in close_braces..open_braces {
-            repaired.push('}');
-        }
-
-        // Close unclosed brackets
-        for _ in close_brackets..open_brackets {
-            repaired.push(']');
+        // Close unclosed structures in reverse open order (LIFO) — before
+        // removing trailing commas, so that commas before the newly-added
+        // closers get removed.
+        for closer in expected_closers.iter().rev() {
+            repaired.push(*closer as char);
         }
 
         // Remove trailing commas before closing brackets/braces

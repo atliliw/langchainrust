@@ -48,6 +48,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Batch API** | `BatchClient` for OpenAI / Anthropic batch inference (~50% cost reduction). |
 | **LLM Cache** | `LLMCache` with TTL + true LRU eviction (hits refresh recency). |
 | **Structured Output** | `with_structured_output` + `StructuredOutputExt` trait, `JsonOutputParser` fallback, and streaming structured output via `PartialJsonParser`. |
+| **Native JSON Schema (v0.21)** | `OpenAIChat::with_json_schema_output::<T>()` sends `response_format: {type: "json_schema"}` (strict mode) generated from schemars 1.0 — schema-constrained decoding on the provider side; `make_strict_schema` enforces `additionalProperties: false` + full `required`. `with_structured_output` remains the portable path. |
 | **Token Counter** | `TiktokenCounter` (precise) / `CharRatioCounter` (Chinese-friendly estimate) + `TokenTrackingLLM` usage stats + `ModelPricing` cost estimation. |
 
 ### Embeddings
@@ -56,8 +57,12 @@ The framework is engineered around a few hard rules that come out of its own des
 |-----------|-------------|
 | **Unified `Embeddings` trait** | `embed_query` / `embed_documents` / `dimension` / `model_name`, with empty-input and batch-alignment checks enforced in the trait default path. |
 | **Providers** | OpenAI (ada-002 / 3-small / 3-large), DeepSeek, Qwen, Cohere (embed-v3.0, 4 input types), FastEmbed (local ONNX), Mock (deterministic, for tests), BagOfWords (local, always available). |
-| **Reliability** | Exponential-backoff retries (429/5xx, max 3, 4xx not retried), concurrent batching (OpenAI: 2048 docs/batch, concurrency 8), and unified normalization so downstream similarity is provider-independent. |
+| **Qwen3-Embedding (v0.21)** | `qwen3-embedding-0.6b` / `4b` / `8b` (dims 1024 / 2560 / 4096) + matryoshka output via `QwenEmbeddingsConfig::with_dimensions(32..=4096)`; the configured `dimensions` is passed through to the DashScope request. |
+| **Reliability** | Exponential-backoff retries (429/5xx, max 3, 4xx not retried) with jitter and `Retry-After` header support (v0.21), concurrent batching (OpenAI: 2048 docs/batch, concurrency 8), and unified normalization so downstream similarity is provider-independent. |
 | **Local ONNX** | `LocalEmbeddings` via the `local-embeddings` feature (ort). |
+| **Token-level embeddings (v0.21)** | Optional `TokenLevelEmbeddings` capability trait (native `async fn`, statically dispatched): `embed_tokens` returns per-token `TokenEmbedding { span, vector }` with byte-offset spans. Local ONNX path shares the fastembed pipeline. |
+| **Late chunking (v0.21)** | `late_chunk(&embedder, text, &LateChunkConfig)` embeds the whole text once at token level, then mean-pools token vectors per chunk range into L2-normalized chunk vectors — better context retention than chunk-then-embed for long documents. |
+| **Candle backend (v0.21)** | `CandleEmbeddings` via the `local-candle` feature: pure-Rust CPU inference for BERT-family models (`from_hf_hub("BAAI/bge-small-en-v1.5")` or `from_dir`), masked mean-pooling, batch size 16. |
 
 ### Composition: Chains & LCEL
 
@@ -86,6 +91,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Agent Hooks** | Approval (`on_before_tool_call` allow/reject/skip), `PromptInjectionHook`, `TokenBudgetHook`, `ContentFilterHook`, logging. |
 | **Agent Gates (v0.16)** | Async human-approval gate — `.with_approval()` (Allow / Deny / Modify; Deny feeds the reason back as an observation, Modify rewrites the arguments). Budget gate — `.with_budget()` with hard caps on tool calls / tokens / wall-clock duration / iterations, exceeding returns `AgentError::BudgetExceeded`. Both default off. |
 | **Cross-process resume (v0.18)** | `FileResumeStore` persists the pending human-approval / budget-gate state to disk (atomic write); a restarted executor loads the pending point and re-enters approval instead of restarting the agent loop. |
+| **Context compaction (v0.21)** | `.with_compaction(CompactionConfig)` — trigger on `TurnCount` / `TokenCount` / `Any` / `All`, compact with `SlidingWindow` or `TokenBudget` (turn-boundary truncation, no orphan tool results, `min_recent_turns` floor, default 2). Off by default; compaction count lands in `AgentMetrics.compactions`. |
 | **Streaming** | Token-level streaming via `StreamingFunctionCallingAgent` + `AgentStreamEvent`; tool-level events via `AgentExecutor::stream`. |
 | **Tool Policies** | `ToolPolicy` / `ToolRisk` risk classification for tool access control. |
 
@@ -103,6 +109,9 @@ The framework is engineered around a few hard rules that come out of its own des
 | **SelfQueryRetriever (v0.18)** | LLM splits a natural-language query into `{query, filter}` via structured call, with an `allowed_attributes` whitelist; retrieves through `similarity_search_with_filter`. Composes in LCEL as a `RetrieverRunnable`. |
 | **GraphRAG** | Knowledge-graph RAG with Global / Local / Hybrid modes, entity extraction, community detection. |
 | **Advanced RAG** | `CorrectiveRAG` (self-correcting), `AdaptiveRAG` (adaptive retrieval + structured routing decisions). |
+| **Contextual Retrieval (v0.21)** | `ContextualEnhancer` — index-time transform: a small LLM writes a 1-2 sentence context per chunk, prepended to the content (original stored in metadata under `contextual_context`). Concurrency-limited, idempotent, fail-open (on LLM failure the original text is indexed). |
+| **Semantic Cache (v0.21)** | `CachedRetriever` wraps any `RetrieverTrait` — exact-match hits skip the embedder entirely; otherwise a cosine-similarity lookup over cached query vectors (`threshold` default 0.95, FIFO `max_entries` 256, optional TTL, `invalidate()` for corpus updates). |
+| **Native Hybrid Search (v0.21)** | `NativeHybridSearch` capability on `QdrantVectorStore` (Query API, server-side fusion, needs Qdrant ≥ 1.10): multi-branch `NativeHybridQuery` with `FusionMethod::Rrf` / `Dbsf` in a single round trip. Stores without the capability fail explicitly instead of silently degrading to client-side RRF. |
 
 ### Memory & Sessions
 
@@ -135,10 +144,12 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Streaming guardrails** | Two-phase: incremental keyword check (24-char sliding window) + full-output re-check. |
 | **Audit** | `AuditSink` trait + `FileAuditSink` (JSON Lines) for violation persistence; LLM-sensitive judge for context-aware decisions. |
 | **GuardedAgent** | Wrap an executor/chain → validate input → run → validate output; a blocked input never touches the network. |
+| **Retrieval Rail (v0.21)** | `RetrievalRail` batch-scans retrieved documents for prompt injection (pattern library shared with `PromptInjectionHook`); `GuardedRetriever` wraps any `RetrieverTrait` with `RailAction::Flag` (default, tags metadata) / `Redact` / `Drop` + `RailReport` counts and optional audit sink. Place it inside `CachedRetriever` so only clean results enter the cache. |
+| **AI Disclosure (v0.21)** | `disclose()` records an EU AI Act Art. 50-style transparency notice ("you are interacting with an AI system") through an `AuditSink`; template customizable via `DisclosureConfig::with_statement` with a `{system}` placeholder. Capability, not enforcement. |
 | **Evaluation** | 10+ evaluators: `ExactMatch`, `ContainsKeyword`, `RegexMatch`, `LengthCheck`, `Bleu`, `StringDistance`, `EmbeddingSimilarity`, `LLMAsJudge`, `PairwiseJudge`, `Faithfulness`. `EvalRunner` batches all examples × all evaluators into a `Report`. |
 | **LLM judge** | `StructuredJudge` shared with guardrails — prefers structured output, tolerant score parsing. |
 | **Callbacks** | `CallbackHandler` (3 lifecycle methods minimum) + `CallbackManager` dispatcher. Built-in: `StdOutHandler`, `FileCallbackHandler`, `LangSmithHandler`, `OtelHandler`. |
-| **Tracing** | `Tracer` + `SpanGuard` (RAII), `InMemory` / `Console` / `OTel` backends, parent-child span tree, GenAI Semantic Conventions. |
+| **Tracing** | `Tracer` + `SpanGuard` (RAII), `InMemory` / `Console` / `OTel` backends, parent-child span tree, GenAI Semantic Conventions. OTel spans carry `gen_ai.*` attributes aligned with the OpenTelemetry GenAI semconv (v0.21): `gen_ai.system` / `gen_ai.request.model` / `gen_ai.response.finish_reason` / token usage incl. cache-read and reasoning extensions, plus `gen_ai.operation.name = "retrieve"` for retrieval spans. |
 
 ### Tools
 
@@ -218,20 +229,20 @@ langchainrust is a **22-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.20.0"
+langchainrust = "0.21.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.20.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.20.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.20.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.20.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.20.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.20.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.20.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
-langchainrust = { version = "0.20.0", features = ["fastembed"] }            # FastEmbed embeddings
-langchainrust = { version = "0.20.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.20.0", features = ["experimental"] }         # Experimental features
+langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.21.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.21.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.21.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.21.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.21.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.21.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.21.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

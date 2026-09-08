@@ -2,6 +2,7 @@
 //! `AgentExecutor` — the execution loop (plan -> act -> observe).
 
 use super::budget::{budget_iteration_gate, budget_token_gate, budget_tool_gate, BudgetConfig};
+use super::compaction::CompactionConfig;
 use super::hooks::{run_after_completion_hooks, run_before_completion_hooks};
 use super::tools::{
     execute_tool_for_stream, execute_tools_parallel_for_stream, tool_error_observation,
@@ -20,6 +21,7 @@ use crate::streaming::state::AgentStreamEvent;
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use futures_util::Stream;
 use lc_callbacks::{CallbackManager, RunTree, RunType};
+use lc_core::observability::{MetricsSink, ObsEvent};
 use lc_core::runnables::RunnableConfig;
 use lc_core::tools::BaseTool;
 use lc_memory::BaseMemory;
@@ -87,11 +89,19 @@ pub struct AgentExecutor {
     /// Budget gate (§4.2): hard limits. `None` = unlimited (default off).
     pub(crate) budget: Option<BudgetConfig>,
 
+    /// Context compaction (0.21.0 S6.1): drops the oldest intermediate steps at
+    /// whole-step boundaries when the trigger fires. `None` = off (default).
+    pub(crate) compaction: Option<CompactionConfig>,
+
     /// Cross-process resume (§4.2): checkpoint store. When `Some`, `execute_tool`
     /// persists the pending approval before awaiting approval and clears it once the
     /// decision lands; a new process can inspect it via `pending_approval()` and
     /// continue via `resume(decision)`. `None` = off (default).
     pub(crate) resume_store: Option<Arc<dyn ResumeStore>>,
+
+    /// Observability sink (v0.20.2): exports one `AgentMetrics` event per run
+    /// (invoke / stream / resume). `None` = off (default). Failures are `warn` only.
+    pub(crate) metrics_sink: Option<Arc<dyn MetricsSink>>,
 }
 
 impl AgentExecutor {
@@ -114,7 +124,9 @@ impl AgentExecutor {
             tool_policy: None,
             approval: None,
             budget: None,
+            compaction: None,
             resume_store: None,
+            metrics_sink: None,
         }
     }
 
@@ -236,6 +248,26 @@ impl AgentExecutor {
         self
     }
 
+    /// Context compaction (0.21.0 S6.1): drop the oldest intermediate steps
+    /// (whole steps — action + observation stay paired) when the trigger fires.
+    ///
+    /// Checked before every `plan()` round in both the invoke and stream paths.
+    /// Off by default (`None` = unlimited history, zero behavior change).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let config = CompactionConfig::new(
+    ///     CompactionTrigger::TurnCount(20),
+    ///     CompactionStrategy::SlidingWindow { keep_recent_turns: 8 },
+    /// );
+    /// let executor = AgentExecutor::new(agent, tools).with_compaction(config);
+    /// ```
+    pub fn with_compaction(mut self, compaction: CompactionConfig) -> Self {
+        self.compaction = Some(compaction);
+        self
+    }
+
     /// Cross-process resume (§4.2): checkpoint store.
     ///
     /// When enabled, before each tool call enters the approval gate to await approval,
@@ -311,6 +343,14 @@ impl AgentExecutor {
         self
     }
 
+    /// Sets an observability sink: each run (invoke / stream / resume) exports one
+    /// [`AgentMetrics`] event at the end (v0.20.2). Failures are logged, never
+    /// propagated.
+    pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = Some(sink);
+        self
+    }
+
     /// Adds an agent hook.
     pub fn hook(mut self, hook: impl AgentHook + 'static) -> Self {
         self.hooks.push(Arc::new(hook));
@@ -320,6 +360,18 @@ impl AgentExecutor {
     /// Returns metrics from the most recent invocation, if any.
     pub fn last_metrics(&self) -> Option<AgentMetrics> {
         self.metrics_store.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Exports one run's metrics to the attached sink (v0.20.2). Called at every
+    /// run tail (invoke, resume, stream). Failures are logged as `warn` and never
+    /// propagate into the agent flow.
+    async fn export_metrics(&self, metrics: &AgentMetrics) {
+        if let Some(sink) = &self.metrics_sink {
+            let evt = ObsEvent::AgentMetrics(metrics.clone());
+            if let Err(e) = sink.export(&evt).await {
+                log::warn!(target: "lc_agents::metrics", "agent metrics export failed: {e}");
+            }
+        }
     }
 
     /// Reads the currently pending approval checkpoint (cross-process resume).
@@ -422,8 +474,9 @@ impl AgentExecutor {
         metrics.duration = started.elapsed();
         metrics.log_summary();
         if let Ok(mut guard) = self.metrics_store.lock() {
-            *guard = Some(metrics);
+            *guard = Some(metrics.clone());
         }
+        self.export_metrics(&metrics).await;
         result.map(Some)
     }
 
@@ -652,8 +705,9 @@ impl AgentExecutor {
         metrics.duration = started.elapsed();
         metrics.log_summary();
         if let Ok(mut store) = self.metrics_store.lock() {
-            *store = Some(metrics);
+            *store = Some(metrics.clone());
         }
+        self.export_metrics(&metrics).await;
 
         result
     }
@@ -700,7 +754,9 @@ impl AgentExecutor {
             tool_policy: self.tool_policy.clone(),
             approval: self.approval.clone(),
             budget: self.budget.clone(),
+            compaction: self.compaction.clone(),
             resume_store: self.resume_store.clone(),
+            metrics_sink: self.metrics_sink.clone(),
         };
 
         merged_executor.invoke_inner(input, trace_id).await
@@ -777,7 +833,9 @@ impl AgentExecutor {
         let hooks = self.hooks.clone();
         let tool_policy = self.tool_policy.clone();
         let budget = self.budget.clone();
+        let compaction = self.compaction.clone();
         let metrics_store = self.metrics_store.clone();
+        let metrics_sink = self.metrics_sink.clone();
 
         tokio::spawn(async move {
             let mut intermediate_steps: Vec<AgentStep> = Vec::new();
@@ -806,7 +864,7 @@ impl AgentExecutor {
                 if let Some(err) =
                     budget_iteration_gate(budget.as_ref(), max_iterations, iteration, loop_start)
                 {
-                    publish_metrics(&metrics, &metrics_store, loop_start);
+                    publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
                 }
@@ -814,7 +872,7 @@ impl AgentExecutor {
                 // P2-9: rate-limit / quota check before the LLM call (also applies on
                 // the streaming path).
                 if let Err(e) = run_before_completion_hooks(&hooks, &inputs) {
-                    publish_metrics(&metrics, &metrics_store, loop_start);
+                    publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx
                         .send(Ok(AgentStreamEvent::Error {
                             message: e.to_string(),
@@ -827,6 +885,23 @@ impl AgentExecutor {
                 // plan_stream to go through `stream_chat` for a real word-by-word stream;
                 // other agents use the default implementation (the whole answer as a
                 // single Text event), matching the old path's behavior.
+                // 0.21.0 S6.1: context compaction before planning — same semantics as
+                // the invoke path (`run_agent_loop_from`), so the two paths cannot diverge.
+                if let Some(config) = &compaction {
+                    let tokens = metrics.total_tokens.unwrap_or(0);
+                    let (kept, dropped) = config.compact(&intermediate_steps, tokens);
+                    if dropped > 0 {
+                        log::info!(
+                            target: "lc_agents::compaction",
+                            "compacted {} of {} steps ({} remain) [stream]",
+                            dropped,
+                            dropped + kept.len(),
+                            kept.len()
+                        );
+                        intermediate_steps = kept;
+                        metrics.compactions += 1;
+                    }
+                }
                 let output = {
                     // Must not shadow the outer tx: the closure's `move` would carry it
                     // away, and the ToolStart/FinalAnswer below would no longer be able
@@ -847,7 +922,8 @@ impl AgentExecutor {
                     {
                         Ok(o) => o,
                         Err(e) => {
-                            publish_metrics(&metrics, &metrics_store, loop_start);
+                            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
+                                .await;
                             let _ = tx
                                 .send(Ok(AgentStreamEvent::Error {
                                     message: e.to_string(),
@@ -868,7 +944,7 @@ impl AgentExecutor {
                 // Budget gate: cumulative tokens after the LLM call. Over the limit →
                 // send Err and stop.
                 if let Some(err) = budget_token_gate(budget.as_ref(), &metrics) {
-                    publish_metrics(&metrics, &metrics_store, loop_start);
+                    publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
                 }
@@ -880,7 +956,7 @@ impl AgentExecutor {
                         // by piece by plan_stream through on_token (Text events); here
                         // only the FinalAnswer terminal event is sent — the full answer is
                         // not repeated.
-                        publish_metrics(&metrics, &metrics_store, loop_start);
+                        publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                         let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
                         return;
                     }
@@ -890,7 +966,13 @@ impl AgentExecutor {
                         // policy.
                         if let Some(policy) = &tool_policy {
                             if let Err(e) = policy.check(&action.tool) {
-                                publish_metrics(&metrics, &metrics_store, loop_start);
+                                publish_metrics(
+                                    &metrics,
+                                    &metrics_store,
+                                    &metrics_sink,
+                                    loop_start,
+                                )
+                                .await;
                                 let _ = tx
                                     .send(Ok(AgentStreamEvent::Error {
                                         message: e.to_string(),
@@ -918,7 +1000,8 @@ impl AgentExecutor {
                         // the tool runs.
                         metrics.tool_calls += 1;
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            publish_metrics(&metrics, &metrics_store, loop_start);
+                            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
+                                .await;
                             let _ = tx.send(Err(err)).await;
                             return;
                         }
@@ -942,7 +1025,13 @@ impl AgentExecutor {
                                     tool_error_observation(&e)
                                 }
                                 Err(e) => {
-                                    publish_metrics(&metrics, &metrics_store, loop_start);
+                                    publish_metrics(
+                                        &metrics,
+                                        &metrics_store,
+                                        &metrics_sink,
+                                        loop_start,
+                                    )
+                                    .await;
                                     let _ = tx
                                         .send(Ok(AgentStreamEvent::Error {
                                             message: e.to_string(),
@@ -967,7 +1056,13 @@ impl AgentExecutor {
                         if let Some(policy) = &tool_policy {
                             for action in &actions {
                                 if let Err(e) = policy.check(&action.tool) {
-                                    publish_metrics(&metrics, &metrics_store, loop_start);
+                                    publish_metrics(
+                                        &metrics,
+                                        &metrics_store,
+                                        &metrics_sink,
+                                        loop_start,
+                                    )
+                                    .await;
                                     let _ = tx
                                         .send(Ok(AgentStreamEvent::Error {
                                             message: e.to_string(),
@@ -998,7 +1093,8 @@ impl AgentExecutor {
                         // the parallel tools run.
                         metrics.tool_calls += actions.len();
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            publish_metrics(&metrics, &metrics_store, loop_start);
+                            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
+                                .await;
                             let _ = tx.send(Err(err)).await;
                             return;
                         }
@@ -1022,7 +1118,13 @@ impl AgentExecutor {
                             // invoke-parallel path. Execution errors were already
                             // converted to observations inside the helper.
                             Err(e) => {
-                                publish_metrics(&metrics, &metrics_store, loop_start);
+                                publish_metrics(
+                                    &metrics,
+                                    &metrics_store,
+                                    &metrics_sink,
+                                    loop_start,
+                                )
+                                .await;
                                 let _ = tx
                                     .send(Ok(AgentStreamEvent::Error {
                                         message: e.to_string(),
@@ -1051,7 +1153,7 @@ impl AgentExecutor {
             // Max iterations reached: return a placeholder result; log it so a non-answer
             // is not mistaken for the real final answer
             log::warn!("agent reached max iterations; streaming a placeholder result (not the real final answer)");
-            publish_metrics(&metrics, &metrics_store, loop_start);
+            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
             let finish = agent.return_stopped_response(&intermediate_steps);
             let content = finish.output().unwrap_or("").to_string();
             let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
@@ -1076,6 +1178,7 @@ impl std::fmt::Debug for AgentExecutor {
             .field("has_response_cache", &self.response_cache.is_some())
             .field("has_tool_policy", &self.tool_policy.is_some())
             .field("has_resume_store", &self.resume_store.is_some())
+            .field("has_metrics_sink", &self.metrics_sink.is_some())
             .field(
                 "has_metrics",
                 &self
@@ -1125,15 +1228,22 @@ impl Drop for AgentEventStream {
 /// termination path must **`publish_metrics` before `tx.send(terminal event)`** —
 /// otherwise a consumer that checks `last_metrics()` immediately after draining the
 /// stream may read `None` (the event arrived but the write has not happened yet).
-fn publish_metrics(
+async fn publish_metrics(
     metrics: &AgentMetrics,
     metrics_store: &Arc<Mutex<Option<AgentMetrics>>>,
+    metrics_sink: &Option<Arc<dyn MetricsSink>>,
     started: Instant,
 ) {
     let mut m = metrics.clone();
     m.duration = started.elapsed();
     m.log_summary();
     if let Ok(mut guard) = metrics_store.lock() {
-        *guard = Some(m);
+        *guard = Some(m.clone());
+    }
+    if let Some(sink) = metrics_sink {
+        let evt = ObsEvent::AgentMetrics(m);
+        if let Err(e) = sink.export(&evt).await {
+            log::warn!(target: "lc_agents::metrics", "agent metrics export failed: {e}");
+        }
     }
 }

@@ -138,6 +138,20 @@ impl RunTree {
     }
 }
 
+/// LangSmith run 的 extra 载荷:自定义 metadata 放 `extra.metadata`。
+/// LangSmith v2 忽略 run 顶层 `metadata`,只认 `extra.metadata`。
+#[derive(Debug, Default, Serialize)]
+pub struct RunExtra {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl RunExtra {
+    pub fn is_empty(&self) -> bool {
+        self.metadata.is_empty()
+    }
+}
+
 /// Simplified run structure for API requests
 #[derive(Debug, Serialize)]
 pub struct RunCreate {
@@ -169,9 +183,9 @@ pub struct RunCreate {
     /// Tags attached to the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// Arbitrary metadata for the run.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub metadata: HashMap<String, serde_json::Value>,
+    /// 额外载荷:自定义 metadata 放 `extra.metadata`(顶层 `metadata` 会被 LangSmith v2 忽略)。
+    #[serde(default, skip_serializing_if = "RunExtra::is_empty")]
+    pub extra: RunExtra,
 }
 
 impl From<&RunTree> for RunCreate {
@@ -188,7 +202,9 @@ impl From<&RunTree> for RunCreate {
             end_time: run.end_time.map(|t| t.to_rfc3339()),
             session_name: run.project_name.clone(),
             tags: run.tags.clone(),
-            metadata: run.metadata.clone(),
+            extra: RunExtra {
+                metadata: run.metadata.clone(),
+            },
         }
     }
 }
@@ -214,5 +230,20 @@ impl From<&RunTree> for RunUpdate {
             error: run.error.clone(),
             end_time: run.end_time.map(|t| t.to_rfc3339()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_create_puts_metadata_into_extra() {
+        let run = RunTree::new("t", RunType::Chain, serde_json::json!({}))
+            .with_metadata("obs", serde_json::json!({"total_tokens": 451}));
+        let body = serde_json::to_value(RunCreate::from(&run)).unwrap();
+        // LangSmith v2 忽略顶层 metadata,只认 extra.metadata
+        assert!(body.get("metadata").is_none(), "顶层 metadata 不应再出现");
+        assert_eq!(body["extra"]["metadata"]["obs"]["total_tokens"], 451);
     }
 }

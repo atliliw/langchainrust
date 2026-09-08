@@ -118,6 +118,26 @@ impl AgentExecutor {
                 log::info!("=== Iteration {} ===", iteration + 1);
             }
 
+            // 0.21.0 S6.1: context compaction (off by default). Checked before
+            // every plan round; drops the oldest whole steps (action + pair
+            // observation stay together) when the trigger fires. The same
+            // semantics run in the streaming path — the two paths cannot diverge.
+            if let Some(config) = &self.compaction {
+                let tokens = metrics.total_tokens.unwrap_or(0);
+                let (kept, dropped) = config.compact(&intermediate_steps, tokens);
+                if dropped > 0 {
+                    log::info!(
+                        target: "lc_agents::compaction",
+                        "compacted {} of {} steps ({} remain)",
+                        dropped,
+                        dropped + kept.len(),
+                        kept.len()
+                    );
+                    intermediate_steps = kept;
+                    metrics.compactions += 1;
+                }
+            }
+
             let output = self
                 .plan_cached(&intermediate_steps, &inputs, metrics)
                 .await?;

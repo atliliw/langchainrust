@@ -124,6 +124,7 @@ impl ZhipuConfig {
             organization: None,
             tools: None,
             tool_choice: None,
+            response_format: None,
         }
     }
 }

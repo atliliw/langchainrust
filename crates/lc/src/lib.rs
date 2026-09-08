@@ -98,6 +98,7 @@ pub use core::language_models::{
     predict_tools, LLMResult, MultimodalError, MultimodalModel, PredictToolsError, StreamChunk,
     TokenUsage,
 };
+pub use core::observability::{AgentMetrics, MetricsSink, ObsError, ObsEvent};
 pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
 pub use core::tools::to_tool_definition;

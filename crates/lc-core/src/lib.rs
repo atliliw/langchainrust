@@ -16,6 +16,7 @@ pub mod json_parse;
 pub mod judge;
 pub mod language_models;
 pub mod math;
+pub mod observability;
 pub mod output_parsers;
 pub mod router_llm;
 pub mod runnables;

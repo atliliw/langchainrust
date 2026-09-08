@@ -225,7 +225,13 @@ impl Embeddings for FastEmbedEmbeddings {
                 EmbeddingError::ApiError(format!("FastEmbed batch inference failed: {}", e))
             })?;
 
-            Ok(result.into_iter().map(|v| v.to_vec()).collect())
+            // 0.21.0 BUG-2 (P0-1 alignment contract): provider 返回的向量数与
+            // 请求批次数不符必须显式报错，禁止静默返回对齐错误的向量。
+            // 同仓 ONNX 路径（local/nn）、openai/cohere/openai_compat 均已强制。
+            Ok(Self::aligned_batch(
+                result.into_iter().map(|v| v.to_vec()).collect(),
+                str_vec.len(),
+            ))
         })
         .await
         .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?
@@ -237,6 +243,26 @@ impl Embeddings for FastEmbedEmbeddings {
 
     fn model_name(&self) -> &str {
         &self.model_name
+    }
+}
+
+impl FastEmbedEmbeddings {
+    /// 0.21.0 BUG-2 (P0-1 alignment contract): the provider returned a different
+    /// number of vectors than the requested batch → explicit `BatchMismatch`,
+    /// never a silently mis-aligned vector list. Pure helper so the contract is
+    /// unit-testable without loading a real model (same pattern as `pool_rows`
+    /// in the ONNX path, `local/nn/mod.rs`).
+    fn aligned_batch(
+        result: Vec<Vec<f32>>,
+        expected: usize,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if result.len() != expected {
+            return Err(EmbeddingError::BatchMismatch {
+                expected,
+                actual: result.len(),
+            });
+        }
+        Ok(result)
     }
 }
 
@@ -310,5 +336,30 @@ mod tests {
             FastEmbedEmbeddings::friendly_model_name(EmbeddingModel::SnowflakeArcticEmbedMLong),
             "snowflake-arctic-embed-m-long"
         );
+    }
+
+    /// 0.21.0 BUG-2 (P0-1 alignment contract): returned row count == requested
+    /// batch → pass through unchanged.
+    #[test]
+    fn test_aligned_batch_ok() {
+        let batch = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let aligned = FastEmbedEmbeddings::aligned_batch(batch.clone(), 2).unwrap();
+        assert_eq!(aligned, batch);
+    }
+
+    /// 0.21.0 BUG-2 (P0-1 alignment contract): model output rows != input batch
+    /// → explicit `BatchMismatch` (expected/actual reported), never a silent
+    /// mis-aligned vector list.
+    #[test]
+    fn test_aligned_batch_mismatch() {
+        let batch = vec![vec![1.0, 2.0]];
+        let err = FastEmbedEmbeddings::aligned_batch(batch, 2).unwrap_err();
+        assert!(matches!(
+            err,
+            EmbeddingError::BatchMismatch {
+                expected: 2,
+                actual: 1
+            }
+        ));
     }
 }

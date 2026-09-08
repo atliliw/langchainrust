@@ -4,6 +4,7 @@
 use lc_core::tools::ToolDefinition;
 use std::env;
 
+use crate::openai::response_format::ResponseFormat;
 use crate::ProviderError;
 
 /// OpenAI configuration
@@ -33,6 +34,9 @@ pub struct OpenAIConfig {
     pub tools: Option<Vec<ToolDefinition>>,
     /// Tool choice strategy (e.g. "auto" or a function name).
     pub tool_choice: Option<String>,
+    /// Response format constraint (0.21.0 S3.1): engine-side structured output
+    /// (`json_object` / `json_schema`). `None` keeps the default text mode.
+    pub response_format: Option<ResponseFormat>,
 }
 
 impl Default for OpenAIConfig {
@@ -50,6 +54,7 @@ impl Default for OpenAIConfig {
             organization: None,
             tools: None,
             tool_choice: None,
+            response_format: None,
         }
     }
 }
@@ -132,6 +137,12 @@ impl OpenAIConfig {
     /// Set tool choice strategy.
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());
+        self
+    }
+
+    /// Set the response format constraint (0.21.0 S3.1).
+    pub fn with_response_format(mut self, format: ResponseFormat) -> Self {
+        self.response_format = Some(format);
         self
     }
 }

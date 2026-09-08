@@ -4,6 +4,7 @@ pub mod assistants;
 mod chat;
 mod config;
 mod multimodal;
+pub mod response_format;
 pub mod responses;
 pub mod sse;
 
@@ -13,5 +14,6 @@ pub use chat::OpenAIError;
 pub use chat::StructuredOutputMethod;
 pub use config::OpenAIConfig;
 pub use multimodal::{DallEImageSize, TtsVoice};
+pub use response_format::{make_strict_schema, JsonSchemaSpec, ResponseFormat};
 pub use responses::{BuiltinTool, ResponsesConfig, ResponsesError, ResponsesModel};
 pub use sse::{SSEEvent, SSEParser};
