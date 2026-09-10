@@ -9,12 +9,14 @@
 
 mod base;
 mod registry;
+mod risk;
 mod structured;
 mod structured_output;
 mod tool_definition;
 
 pub use base::{to_tool_definition, BaseTool, Tool, ToolError};
 pub use registry::ToolRegistry;
+pub use risk::ToolRiskProfile;
 pub use structured::StructuredTool;
 pub use structured_output::StructuredOutput;
 pub use tool_definition::{

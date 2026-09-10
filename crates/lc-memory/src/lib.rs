@@ -22,6 +22,8 @@
 pub mod base;
 pub mod buffer;
 pub mod context_window;
+pub mod decay;
+pub mod file_memory;
 pub mod persistent;
 pub mod summary;
 pub mod summary_buffer;
@@ -42,6 +44,8 @@ pub use base::{
 };
 pub use buffer::ConversationBufferMemory;
 pub use context_window::{ContextWindow, Strategy};
+pub use decay::{ForgetConfig, ForgettingMemory};
+pub use file_memory::{FileMemoryError, FileMemoryStore, MemoryEntry};
 pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;

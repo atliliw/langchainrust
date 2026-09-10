@@ -23,9 +23,12 @@ mod bleu;
 mod criteria;
 mod faithfulness;
 mod pairwise;
+pub mod price;
 mod results;
 mod rules;
 mod runner;
+
+pub use price::{OverallCost, Price, PriceBook, TokenUsage};
 
 #[cfg(test)]
 mod test_support;

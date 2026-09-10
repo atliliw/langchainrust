@@ -157,7 +157,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.22.0"
+langchainrust = "0.22.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -3230,7 +3230,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.22.0", features = ["local-candle"] }
+langchainrust = { version = "0.22.1", features = ["local-candle"] }
 ```
 
 ```rust
@@ -3413,7 +3413,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["chromadb"] }
+langchainrust = { version = "0.22.1", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3658,7 +3658,7 @@ for result in results {
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.22.1", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4368,7 +4368,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.22.1", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4522,7 +4522,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.22.1", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -4596,14 +4596,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["redis-storage"] }
+langchainrust = { version = "0.22.1", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.22.1", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4705,7 +4705,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.22.0"
+lc-testkit = "0.22.1"
 ```
 
 ```rust

@@ -8,6 +8,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+/// A1 Spotlighting — open marker wrapping untrusted tool output.
+///
+/// Mirrors `lc_guardrails`' `DEFAULT_OPEN_MARKER`/`DEFAULT_CLOSE_MARKER` and its escaping
+/// (a backslash-prefixed close tag) so output wrapped here parse back cleanly through
+/// [`lc_guardrails::spotlighting::unwrap`]. `lc-agents` cannot import `lc-guardrails`
+/// (the dependency points the other way), so the constants are mirrored rather than reused.
+pub(crate) const UNTRUSTED_OPEN: &str = "<untrusted_data>";
+pub(crate) const UNTRUSTED_CLOSE: &str = "</untrusted_data>";
+
+/// A1: wraps untrusted tool output in the data delimiters, escaping any embedded close
+/// marker so a hostile tool result cannot forge a premature `</untrusted_data>`.
+pub(crate) fn wrap_tool_output(output: &str) -> String {
+    let escaped = output.replace(UNTRUSTED_CLOSE, "\\</untrusted_data>");
+    format!("{UNTRUSTED_OPEN}{escaped}{UNTRUSTED_CLOSE}")
+}
+
 /// Tool-**execution** error → observation text, fed back to the loop so the agent can
 /// recover on its own. 0.20.0 S3.1 unified all four execution paths (invoke/stream ×
 /// single/parallel) to this soft-fail semantics — the sequential `invoke` single-tool
@@ -42,15 +58,28 @@ pub(crate) async fn run_tool_with_timeout(
 }
 
 /// Helper: execute a single tool for streaming (no RunTree dependency).
+///
+/// `spotlight`/`rule_of_two` mirror the executor's A1/A2 toggles so the streaming path
+/// (which cannot read `AgentExecutor` fields) applies the same guards as invoke.
 pub(crate) async fn execute_tool_for_stream(
     tools: &[Arc<dyn BaseTool>],
     action: &AgentAction,
     timeout: Option<Duration>,
+    spotlight: bool,
+    rule_of_two: bool,
 ) -> Result<String, AgentError> {
     let tool = tools
         .iter()
         .find(|t| t.name() == action.tool)
         .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
+
+    // A2: block a tool that arms all three risk properties (v0.22.1 §S8).
+    if rule_of_two && tool.risk().count_armed() >= 3 {
+        return Ok(
+            "[BLOCKED by Rule of Two: tool declares untrusted-input + sensitive-access + state-changing]"
+                .to_string(),
+        );
+    }
 
     let input_str = match &action.tool_input {
         ToolInput::String { value: s } => s.clone(),
@@ -58,7 +87,7 @@ pub(crate) async fn execute_tool_for_stream(
             .map_err(|e| AgentError::Other(format!("Failed to serialize tool input: {}", e)))?,
     };
 
-    run_tool_with_timeout(tool, input_str, timeout)
+    let output = run_tool_with_timeout(tool, input_str, timeout)
         .await
         .map_err(|e| match e {
             // 0.20.0 A-H1: keep `ControlAbort` (handoff cycle / depth guard) distinct
@@ -67,7 +96,14 @@ pub(crate) async fn execute_tool_for_stream(
             // apart from "the tool ran and failed, re-plan".
             ToolError::ControlAbort(msg) => AgentError::Other(format!("Tool call aborted: {msg}")),
             other => AgentError::ToolExecutionError(other.to_string()),
-        })
+        })?;
+
+    // A1: wrap untrusted tool output when spotlighting is on (v0.22.1 §S8).
+    Ok(if spotlight {
+        wrap_tool_output(&output)
+    } else {
+        output
+    })
 }
 
 /// Helper: execute multiple tools in parallel for streaming.
@@ -83,6 +119,8 @@ pub(crate) async fn execute_tools_parallel_for_stream(
     actions: &[AgentAction],
     timeout: Option<Duration>,
     max_concurrency: usize,
+    spotlight: bool,
+    rule_of_two: bool,
 ) -> Result<Vec<String>, AgentError> {
     use futures_util::future::join_all;
 
@@ -94,7 +132,7 @@ pub(crate) async fn execute_tools_parallel_for_stream(
                 .acquire_owned()
                 .await
                 .map_err(|e| AgentError::Other(format!("concurrency semaphore closed: {e}")))?;
-            execute_tool_for_stream(tools, action, timeout).await
+            execute_tool_for_stream(tools, action, timeout, spotlight, rule_of_two).await
         }
     });
 

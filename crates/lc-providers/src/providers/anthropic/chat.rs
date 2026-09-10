@@ -254,7 +254,20 @@ impl AnthropicChat {
         });
 
         if !system_text.is_empty() {
-            body["system"] = json!(system_text);
+            // B1 transparent passthrough: with prompt caching enabled, the system prompt
+            // becomes a content-block array whose (only) block carries an explicit
+            // `cache_control: {"type":"ephemeral"}` breakpoint. Anthropic only honors
+            // cache_control on content-block arrays, so the plain-string form is used
+            // when caching is off to keep the request byte-identical to before.
+            if self.config.prompt_caching {
+                body["system"] = json!([{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }]);
+            } else {
+                body["system"] = json!(system_text);
+            }
         }
 
         if let Some(temp) = self.config.temperature {
@@ -274,7 +287,7 @@ impl AnthropicChat {
 
         // H7: Inject tools if configured (Anthropic function calling)
         if let Some(ref tools) = self.config.tools {
-            let anthropic_tools: Vec<serde_json::Value> = tools
+            let mut anthropic_tools: Vec<serde_json::Value> = tools
                 .iter()
                 .map(|td| {
                     let mut tool_json = json!({
@@ -289,6 +302,13 @@ impl AnthropicChat {
                     tool_json
                 })
                 .collect();
+            // B1: cache the last tool definition too (the most stable, largest prefix).
+            // Anthropic allows `cache_control` on tool entries for prompt caching.
+            if self.config.prompt_caching {
+                if let Some(last) = anthropic_tools.last_mut() {
+                    last["cache_control"] = json!({"type": "ephemeral"});
+                }
+            }
             body["tools"] = json!(anthropic_tools);
         }
 
@@ -377,6 +397,18 @@ impl AnthropicChat {
         // If only thinking blocks exist (no text), content should be empty,
         // not leaked thinking text.
         // The first loop above already collected all "text" blocks.
+
+        if let Some(ref usage) = anthropic_response.usage {
+            // B1 statistic: surface the prompt-cache breakdown on the non-streaming path.
+            log::info!(
+                target: "lc_providers::anthropic::cache",
+                "input={} cache_read={} cache_created={} miss={}",
+                usage.input_tokens,
+                usage.cache_read_tokens(),
+                usage.cache_creation_tokens(),
+                usage.cache_miss_tokens()
+            );
+        }
 
         Ok(LLMResult {
             content: text_content,
@@ -487,6 +519,16 @@ impl AnthropicChat {
                                         // message_delta at the end of the stream carries usage; emit it as
                                         // a standalone token so the streaming path also gets the full call usage.
                                         if let Some(usage) = event.usage {
+                                            // B1 statistic: cache breakdown on the streaming path
+                                            // (also exposed on `AnthropicUsage` itself).
+                                            log::info!(
+                                                target: "lc_providers::anthropic::cache",
+                                                "input={} cache_read={} cache_created={} miss={}",
+                                                usage.input_tokens,
+                                                usage.cache_read_tokens(),
+                                                usage.cache_creation_tokens(),
+                                                usage.cache_miss_tokens()
+                                            );
                                             if tx
                                                 .send(Ok(AnthropicStreamToken::Usage(usage)))
                                                 .await
@@ -629,6 +671,7 @@ impl<T: DeserializeOwned + JsonSchema> AnthropicStructuredOutputMethod<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::anthropic::types::AnthropicUsage;
     use lc_core::tools::ToolDefinition;
     use serde_json::json;
 
@@ -800,6 +843,69 @@ mod tests {
         let img = lc_schema::ImageContent::from_url("https://example.com/img.png");
         let source = AnthropicChat::image_to_anthropic_source(&img);
         assert!(source.is_none());
+    }
+
+    // --- B1 prompt caching ---
+
+    #[test]
+    fn prompt_caching_off_keeps_plain_system_string() {
+        let config = AnthropicConfig::new("test-key");
+        let chat = AnthropicChat::new(config);
+        let msg = Message::system("be concise");
+        let body = chat.build_request_body(vec![msg], false);
+        assert_eq!(body["system"], "be concise", "caching off: keep byte-identical string");
+    }
+
+    #[test]
+    fn prompt_caching_on_emits_cache_control_block() {
+        let config = AnthropicConfig::new("test-key").with_prompt_caching(true);
+        let chat = AnthropicChat::new(config);
+        let msg = Message::system("be concise");
+        let body = chat.build_request_body(vec![msg], false);
+        let system = body["system"].as_array().expect("caching on emits a block array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "be concise");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn prompt_caching_on_caches_last_tool() {
+        let config = AnthropicConfig::new("test-key").with_prompt_caching(true);
+        let tools = vec![
+            ToolDefinition::new("a", "tool a").with_parameters(
+                json!({"type":"object","properties":{"x":{"type":"string"}}}),
+            ),
+            ToolDefinition::new("b", "tool b").with_parameters(
+                json!({"type":"object","properties":{"y":{"type":"string"}}}),
+            ),
+        ];
+        let chat = AnthropicChat::new(config).bind_tools(tools);
+        let body = chat.build_request_body(vec![], false);
+        let arr = body["tools"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(arr[0].get("cache_control").is_none(), "only the last tool is cached");
+        assert_eq!(arr[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn usage_deserializes_cache_fields() {
+        let raw = r#"{"input_tokens": 100, "output_tokens": 40,
+                     "cache_creation_input_tokens": 50, "cache_read_input_tokens": 60}"#;
+        let usage: AnthropicUsage = serde_json::from_str(raw).unwrap();
+        assert_eq!(usage.cache_creation_tokens(), 50);
+        assert_eq!(usage.cache_read_tokens(), 60);
+        assert_eq!(usage.cache_miss_tokens(), 40); // 100 - 60
+        assert_eq!(usage.cache_breakdown(), (50, 60));
+    }
+
+    #[test]
+    fn usage_parse_tolerates_missing_cache_fields() {
+        // older Anthropic payloads / proxies that omit cache fields still parse
+        let raw = r#"{"input_tokens": 7, "output_tokens": 3}"#;
+        let usage: AnthropicUsage = serde_json::from_str(raw).unwrap();
+        assert_eq!(usage.cache_read_tokens(), 0);
+        assert_eq!(usage.cache_creation_tokens(), 0);
     }
 
     #[test]

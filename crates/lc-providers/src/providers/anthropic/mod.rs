@@ -18,4 +18,6 @@ pub use config::{
     AnthropicConfig, ThinkingConfig, ThinkingType, ANTHROPIC_BASE_URL, CLAUDE_MODELS,
 };
 pub use error::AnthropicError;
-pub use types::{AnthropicContentBlock, AnthropicMessageContent, AnthropicStreamToken};
+pub use types::{
+    AnthropicContentBlock, AnthropicMessageContent, AnthropicStreamToken, AnthropicUsage,
+};

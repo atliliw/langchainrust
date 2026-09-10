@@ -157,7 +157,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.22.0"
+langchainrust = "0.22.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -3219,7 +3219,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.22.0", features = ["local-candle"] }
+langchainrust = { version = "0.22.1", features = ["local-candle"] }
 ```
 
 ```rust
@@ -3402,7 +3402,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["chromadb"] }
+langchainrust = { version = "0.22.1", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3646,7 +3646,7 @@ for result in results {
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.22.1", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4352,7 +4352,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.22.1", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4504,7 +4504,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.22.1", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -4578,14 +4578,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["redis-storage"] }
+langchainrust = { version = "0.22.1", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.22.1", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4686,7 +4686,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.22.0"
+lc-testkit = "0.22.1"
 ```
 
 ```rust

@@ -41,7 +41,7 @@ mod tests;
 #[cfg(feature = "opentelemetry")]
 pub use backend::OtelTracingBackend;
 pub use backend::{ConsoleTracingBackend, InMemoryTracingBackend};
-pub use span::{SpanId, SpanKind, SpanStatus, SpanTokenUsage, TraceNode, TraceSpan};
+pub use span::{aggregate_cost, SpanId, SpanKind, SpanStatus, SpanTokenUsage, TraceNode, TraceSpan};
 pub use tracer::{clear_span_stack, init_task_span_stack, SpanGuard, Tracer};
 
 /// Backend for persisting/processing trace spans.

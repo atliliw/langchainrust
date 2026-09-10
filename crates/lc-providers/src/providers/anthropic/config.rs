@@ -91,6 +91,10 @@ pub struct AnthropicConfig {
     pub tools: Option<Vec<ToolDefinition>>,
     /// Tool choice strategy (e.g. "auto", "any", or a specific tool name).
     pub tool_choice: Option<String>,
+    /// When true, emit Anthropic `cache_control: {"type":"ephemeral"}` on the system
+    /// prompt and the last tool definition, marking the stable prefix for prompt caching
+    /// (B1 transparent passthrough). Defaults to off so behavior is unchanged unless opted in.
+    pub prompt_caching: bool,
 }
 
 impl Default for AnthropicConfig {
@@ -105,6 +109,7 @@ impl Default for AnthropicConfig {
             thinking: ThinkingConfig::default(),
             tools: None,
             tool_choice: None,
+            prompt_caching: false,
         }
     }
 }
@@ -183,6 +188,14 @@ impl AnthropicConfig {
     /// Enables extended thinking with the given token budget.
     pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// Enables (`true`) or disables (`false`) explicit prompt caching (B1): the system
+    /// prompt and last tool carry a `cache_control` breakpoint so the stable prefix is
+    /// cached across turns.
+    pub fn with_prompt_caching(mut self, on: bool) -> Self {
+        self.prompt_caching = on;
         self
     }
 }

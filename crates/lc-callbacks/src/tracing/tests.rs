@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::backend::{ConsoleTracingBackend, InMemoryTracingBackend};
-use super::span::{SpanKind, SpanStatus, SpanTokenUsage, TraceSpan};
+use super::span::{aggregate_cost, SpanKind, SpanStatus, SpanTokenUsage, TraceSpan};
 use super::tracer::{clear_span_stack, Tracer};
 use super::TracingBackend;
 
@@ -375,4 +375,111 @@ fn test_span_guard_end_called_twice_is_safe() {
     // Should have exactly 1 span, not duplicated
     let spans = backend.spans();
     assert_eq!(spans.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// E3: cost.usd — auto cost estimation + agent aggregate
+// ---------------------------------------------------------------------------
+
+fn usage(prompt: usize, completion: usize) -> SpanTokenUsage {
+    SpanTokenUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+    }
+}
+
+#[test]
+fn span_auto_estimates_cost_from_tokens_and_request_model() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone());
+
+    {
+        // 1M in + 1M out on claude-3-5-sonnet (3/15) = 18.0, no explicit with_cost
+        tracer
+            .start("llm", SpanKind::Llm)
+            .with_tokens(usage(1_000_000, 1_000_000))
+            .with_gen_ai_request_model("claude-3-5-sonnet-20241022")
+            .end();
+    }
+
+    let spans = backend.spans();
+    let cost = spans[0].cost.expect("cost should be auto-estimated");
+    assert!((cost - 18.0).abs() < 1e-9, "got {cost}");
+}
+
+#[test]
+fn span_auto_cost_falls_back_to_response_model() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone());
+
+    {
+        tracer
+            .start("llm", SpanKind::Llm)
+            .with_tokens(usage(0, 1_000_000))
+            .with_gen_ai_response_model("gpt-4o-mini") // 0.60 out
+            .end();
+    }
+
+    let spans = backend.spans();
+    let cost = spans[0].cost.expect("cost should use response model");
+    assert!((cost - 0.60).abs() < 1e-9, "got {cost}");
+}
+
+#[test]
+fn span_explicit_cost_beats_auto_estimate() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone());
+
+    {
+        tracer
+            .start("llm", SpanKind::Llm)
+            .with_tokens(usage(1_000_000, 1_000_000))
+            .with_gen_ai_request_model("claude-3-5-sonnet")
+            .with_cost(0.001) // explicit, should win over ~18.0 estimate
+            .end();
+    }
+
+    let spans = backend.spans();
+    assert!((spans[0].cost.unwrap() - 0.001).abs() < f64::EPSILON);
+}
+
+#[test]
+fn span_without_model_gets_no_cost() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone());
+
+    {
+        tracer.start("llm", SpanKind::Llm).with_tokens(usage(100, 100)).end();
+    }
+
+    let spans = backend.spans();
+    assert!(spans[0].cost.is_none(), "unknown model must not mint a cost");
+}
+
+#[test]
+fn aggregate_sums_explicit_and_estimated_costs() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone());
+
+    {
+        // explicit 0.01
+        tracer.start("agent", SpanKind::Agent).with_cost(0.01).end();
+        // estimated: 1M in + 1M out claude-3-5-sonnet = 18.0
+        tracer
+            .start("llm", SpanKind::Llm)
+            .with_tokens(usage(1_000_000, 1_000_000))
+            .with_gen_ai_request_model("claude-3-5-sonnet")
+            .end();
+        // unknown model => contributes 0
+        tracer
+            .start("llm2", SpanKind::Llm)
+            .with_tokens(usage(1_000_000, 1_000_000))
+            .with_gen_ai_request_model("some-future-model")
+            .end();
+    }
+
+    let spans = backend.spans();
+    let total = aggregate_cost(&spans);
+    assert!((total - 18.01).abs() < 1e-9, "got {total}");
 }

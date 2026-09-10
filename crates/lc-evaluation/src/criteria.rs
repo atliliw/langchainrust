@@ -180,6 +180,13 @@ pub trait PairwiseEvaluator: Send + Sync {
 pub trait Predictor: Send + Sync {
     /// Predicts on a single input, returning the text result.
     async fn predict(&self, input: &str) -> Result<String, EvalError>;
+
+    /// Reports the token usage of the most recent [`predict`](Self::predict) call, if the
+    /// predictor meters it (E1). Defaults to `None` — evaluators with no token metering keep
+    /// the report's cost ledger at zero (zero behavior change).
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        None
+    }
 }
 
 #[cfg(test)]

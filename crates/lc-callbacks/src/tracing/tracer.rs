@@ -225,8 +225,23 @@ impl SpanGuard {
     }
 
     /// Set cost on this span.
+    ///
+    /// When set, [`end`](Self::end) uses this value verbatim. When left `None`, cost is
+    /// auto-estimated from token usage + gen_ai model at span end (E3).
     pub fn with_cost(mut self, cost: f64) -> Self {
         self.span.cost = Some(cost);
+        self
+    }
+
+    /// Set the gen_ai request model (used for auto cost estimation).
+    pub fn with_gen_ai_request_model(mut self, model: impl Into<String>) -> Self {
+        self.span.gen_ai_request_model = Some(model.into());
+        self
+    }
+
+    /// Set the gen_ai response model (fallback for auto cost estimation).
+    pub fn with_gen_ai_response_model(mut self, model: impl Into<String>) -> Self {
+        self.span.gen_ai_response_model = Some(model.into());
         self
     }
 
@@ -243,9 +258,32 @@ impl SpanGuard {
         self.span.status = SpanStatus::Error(msg.to_string());
     }
 
+    /// Fill `cost` with an estimate when it isn't set but token usage + a gen_ai model are.
+    fn finalize_cost(&mut self) {
+        if self.span.cost.is_some() {
+            return;
+        }
+        let tokens = match &self.span.tokens {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let model = match self
+            .span
+            .gen_ai_request_model
+            .as_deref()
+            .or(self.span.gen_ai_response_model.as_deref())
+        {
+            Some(m) => m.to_string(),
+            None => return,
+        };
+        self.span.cost =
+            crate::pricing::estimate_cost_usd(tokens.prompt_tokens, tokens.completion_tokens, &model);
+    }
+
     /// Manually end the span now instead of waiting for Drop.
     pub fn end(mut self) {
         if !self.dropped {
+            self.finalize_cost();
             self.span.end_time = Some(chrono::Utc::now().to_rfc3339());
             self.span.latency_ms = Some(self.start_instant.elapsed().as_millis() as u64);
             Tracer::end_span(&self.backend, &self.span);
@@ -257,6 +295,7 @@ impl SpanGuard {
 impl Drop for SpanGuard {
     fn drop(&mut self) {
         if !self.dropped {
+            self.finalize_cost();
             self.span.end_time = Some(chrono::Utc::now().to_rfc3339());
             self.span.latency_ms = Some(self.start_instant.elapsed().as_millis() as u64);
             Tracer::end_span(&self.backend, &self.span);

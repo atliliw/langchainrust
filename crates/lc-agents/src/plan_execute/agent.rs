@@ -165,16 +165,9 @@ impl PlanExecuteAgent {
                                     .join("\n")
                             };
                             plan = planner
-                                .replan(
-                                    objective,
-                                    &step_desc,
-                                    &error_msg,
-                                    &completed_block,
-                                )
+                                .replan(objective, &step_desc, &error_msg, &completed_block)
                                 .await
-                                .map_err(|e| {
-                                    PlanExecuteError::PlanningError(e.to_string())
-                                })?;
+                                .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
                             // Splice the completed steps (with results) back at
                             // the front so they show up in the summary and are
                             // not re-executed (only Pending steps run).

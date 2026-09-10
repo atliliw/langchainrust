@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1] - 2026-09-10
+
+Non-breaking feature release adding nine agent-safety / durability / observability capabilities from the §S8 plan. Everything new defaults **off** (zero behavior change for existing callers). Planned as **0.22.1** to avoid a semver-breaking re-vendor of the 0.22 line. Implementation notes in `docs/internal/v0.22.1/EXECUTION_PLAN.md`.
+
+### Added
+
+- **A1 — Spotlighting delimiting** (`lc-agents` + `lc-guardrails`): the agent loop wraps untrusted tool output in `<untrusted_data>…</untrusted_data>` before it enters the intermediate steps, so the model reads tool results as delimited data. Opt in via `AgentExecutor::with_tool_spotlight(true)`; markers mirrored in `lc-agents` (the dependency points the other way), parseable with `lc_guardrails::spotlighting::unwrap`.
+- **A2 — Rule of Two** (`lc-core` + `lc-agents` + `lc-guardrails`): `lc_core::tools::ToolRiskProfile` carries three risk properties (**u**ntrusted-input / **s**ensitive-access / **s**tate-changing); when all three are armed, `execute_tool_inner` blocks the tool before execution and feeds the loop a rejection observation. Opt in via `AgentExecutor::with_rule_of_two(true)`; the triage logic is exported from `lc-guardrails` (`rule_of_two::triage`) for external reuse.
+- **B1 — Prompt caching passthrough** (`lc-providers`): cache hits/statistics are surfaced and propagated on supported providers.
+- **C1 — File-backed memory** (`lc-memory`): deterministic, path-sandboxed `FileMemoryStore` where each memory is a real inspectable `NAME.md` file (view/create/write/append/str_replace/rename/delete/list), rejecting traversal/reserved-name escapes. `lc-agents` mounts the same store as a `BaseTool` via `AgentExecutor::with_memory_tool(root)`.
+- **C2 — Context editing** (`lc-agents`): `CompactionStrategy::ClearToolUses` clears the observations of old tool-steps to a placeholder while keeping every step (no history is dropped, no action is orphaned; idempotent).
+- **C3 — Memory decay / forgetting** (`lc-memory`): TTL + importance-aware decay layered on the file store.
+
+### Added (observability / cost)
+
+- **E1 — Eval cost meter** (`lc-evaluation`): `PriceBook` (configurable USD per-1M-token rates, exact-match model keys) + `TokenUsage` / `OverallCost` ledger; `Predictor::report_token_usage()` (default `None`, additive). The eval `Report` carries `.cost`.
+- **E3 — cost.usd + agent spans** (`lc-callbacks`): `TraceSpan` auto-estimates `cost` from tokens + gen-ai model on end when not set; `aggregate_cost(spans)` rolls up a chain/agent run's USD cost. TLS install snippets updated to `0.22.1`.
+
 ## [0.22.0] - 2026-09-09
 
 2026-alignment release across three protocol surfaces: **MCP goes stateless single-track** (breaking), **Sessions are rewritten around event sourcing** (old manager deprecated), and **A2A upgrades to spec v1.0.1** (multi-transport cards + signing). All 23 crates are uniformly bumped to 0.22.0. See the migration guide (`docs/internal/v0.22.0/MIGRATION.md`) for code-level mappings.

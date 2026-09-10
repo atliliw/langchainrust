@@ -167,7 +167,7 @@ impl HandoffManager {
                 chain.pop();
                 chain.last().cloned()
             })
-            .unwrap_or_else(|_| primary)
+            .unwrap_or(primary)
             .unwrap_or_default();
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());

@@ -133,6 +133,30 @@ pub struct TraceNode {
     pub children: Vec<TraceNode>,
 }
 
+/// Estimates the USD cost of a single span from its token usage and gen_ai model.
+///
+/// Returns `None` when the span has no tokens or no recognizable model.
+fn estimate_span_cost(span: &TraceSpan) -> Option<f64> {
+    let tokens = span.tokens.as_ref()?;
+    let model = span
+        .gen_ai_request_model
+        .as_deref()
+        .or(span.gen_ai_response_model.as_deref())?;
+    crate::pricing::estimate_cost_usd(tokens.prompt_tokens, tokens.completion_tokens, model)
+}
+
+/// Sums the USD cost across spans (E3 agent roll-up).
+///
+/// Uses each span's recorded `cost` when set; otherwise estimates it from token
+/// usage + gen_ai model. Unknown models contribute zero (an unestimated span can't
+/// be trusted, so it doesn't deflate the aggregate with a guessed value).
+pub fn aggregate_cost(spans: &[TraceSpan]) -> f64 {
+    spans
+        .iter()
+        .map(|s| s.cost.or_else(|| estimate_span_cost(s)).unwrap_or(0.0))
+        .sum()
+}
+
 pub(crate) fn build_tree(root: &TraceSpan, all_spans: &[TraceSpan]) -> TraceNode {
     let children: Vec<TraceNode> = all_spans
         .iter()

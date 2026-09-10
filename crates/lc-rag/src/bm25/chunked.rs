@@ -230,7 +230,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
 
         // C5: idempotent overwrite for a known chunk id.
         if let Some(&slot) = self.chunk_id_slots.get(&chunk_id) {
-            for (term, _) in &self.chunk_term_freqs[slot] {
+            for term in self.chunk_term_freqs[slot].keys() {
                 if let Some(postings) = self.term_index.get_mut(term) {
                     postings.retain(|(idx, _)| *idx != slot);
                     if postings.is_empty() {

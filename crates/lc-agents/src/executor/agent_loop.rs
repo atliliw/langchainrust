@@ -463,6 +463,24 @@ impl AgentExecutor {
             policy.check(&tool_name)?;
         }
 
+        // A2 Rule of Two (v0.22.1 §S8): a tool that arms all three risk properties
+        // (untrusted-input + sensitive-access + state-changing) is blocked before
+        // execution; the loop gets a rejection observation it can re-plan around.
+        // Default off — an undeclared tool has an all-false profile (count 0) and is
+        // never intercepted.
+        if self.rule_of_two && tool.risk().count_armed() >= 3 {
+            log::warn!(
+                target: "lc_agents::rule_of_two",
+                "blocked high-risk tool '{}' (risk={}/3)",
+                tool_name,
+                tool.risk().count_armed()
+            );
+            return Ok(
+                "[BLOCKED by Rule of Two: tool declares untrusted-input + sensitive-access + state-changing]"
+                    .to_string(),
+            );
+        }
+
         let input_for_tool = serde_json::to_string(&tool_ctx.arguments)
             .unwrap_or_else(|_| tool_ctx.arguments.to_string());
 
@@ -518,7 +536,14 @@ impl AgentExecutor {
                     }
                 }
 
-                Ok(result_ctx.result)
+                // A1 (v0.22.1 §S8): when spotlighting is on, wrap the observation so the
+                // model reads untrusted tool output as delimited data.
+                let observed = if self.spotlight_tool_output {
+                    super::tools::wrap_tool_output(&result_ctx.result)
+                } else {
+                    result_ctx.result
+                };
+                Ok(observed)
             }
             Err(e) => {
                 log::info!(

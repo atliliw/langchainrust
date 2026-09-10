@@ -11,6 +11,11 @@ use tokio::sync::Mutex;
 use super::session::Session;
 use super::store::{SessionError, SessionStore};
 
+/// Factory that produces a fresh per-session memory instance.
+pub(crate) type MemoryFactory = Arc<dyn Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static>;
+/// Lazily-created per-session memory instances, keyed by session id.
+pub(crate) type SessionMemories = Arc<Mutex<HashMap<String, Arc<Mutex<dyn BaseMemory>>>>>;
+
 /// Session manager
 ///
 /// Deprecated since 0.22.0: superseded by the event-sourced
@@ -33,9 +38,9 @@ pub struct SessionManager {
     /// fresh memory instance on first use, so one session's history never leaks
     /// into another's context. Without it the legacy shared `memory` instance is
     /// used (manager-level singleton → cross-session contamination).
-    memory_factory: Option<Arc<dyn Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static>>,
+    memory_factory: Option<MemoryFactory>,
     /// Lazily-created per-session memory instances, keyed by session id.
-    session_memories: Arc<Mutex<HashMap<String, Arc<Mutex<dyn BaseMemory>>>>>,
+    session_memories: SessionMemories,
 
     /// Memory input key (must align with the memory instance's input_key; default `"input"`).
     memory_input_key: String,

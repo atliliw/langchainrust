@@ -537,21 +537,17 @@ mod tests {
 
         // The window must not open on the orphaned Tool message.
         assert!(
-            !matches!(pruned.first().map(|m| &m.message_type),
-                Some(MessageType::Tool { .. })),
+            !matches!(
+                pruned.first().map(|m| &m.message_type),
+                Some(MessageType::Tool { .. })
+            ),
             "pruned window started on an orphaned Tool message: {:?}",
             pruned.first().map(|m| &m.message_type)
         );
         // The newest user+assistant pair is still preserved.
         assert!(!pruned.is_empty());
-        assert!(matches!(
-            pruned[0].message_type,
-            MessageType::Human
-        ));
-        assert!(matches!(
-            pruned[1].message_type,
-            MessageType::AI
-        ));
+        assert!(matches!(pruned[0].message_type, MessageType::Human));
+        assert!(matches!(pruned[1].message_type, MessageType::AI));
     }
 
     #[tokio::test]

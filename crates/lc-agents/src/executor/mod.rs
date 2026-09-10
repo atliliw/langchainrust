@@ -149,6 +149,7 @@ mod agent_loop;
 mod budget;
 mod compaction;
 mod engine;
+mod file_memory_tool;
 mod hooks;
 #[cfg(test)]
 mod tests;
@@ -159,3 +160,4 @@ pub use compaction::{
     estimate_step_tokens, CompactionConfig, CompactionStrategy, CompactionTrigger,
 };
 pub use engine::AgentExecutor;
+pub use file_memory_tool::{mount, FileMemoryTool};

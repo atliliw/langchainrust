@@ -69,6 +69,20 @@ pub enum CompactionStrategy {
         /// Number of recent steps always kept, even over budget.
         keep_recent_turns: usize,
     },
+    /// ClearToolUses (C2, v0.22.1 §S8): trim context without dropping turns.
+    ///
+    /// Replaces the tool observation text of steps older than the most recent
+    /// `keep_recent_turns` with a short `placeholder`. Every step is retained —
+    /// history length is preserved and no action is orphaned from its
+    /// (placeholder) observation, so the model still sees the full k-ary
+    /// sequence of tool calls, just without the bulky results. Idempotent:
+    /// already-clear observations are left untouched on later compactions.
+    ClearToolUses {
+        /// Number of most recent steps whose observations stay intact.
+        keep_recent_turns: usize,
+        /// Placeholder text inserted in place of cleared observations.
+        placeholder: String,
+    },
 }
 
 /// Token estimate for one step: ~4 bytes per token over the serialized step
@@ -123,6 +137,17 @@ impl CompactionConfig {
             return (steps.to_vec(), 0);
         }
         let floor = self.min_recent_turns.min(steps.len());
+
+        // ClearToolUses doesn't drop — it rewrites observations in place and returns the full
+        // history, so handle it before the drop-oriented strategies.
+        if let CompactionStrategy::ClearToolUses {
+            keep_recent_turns,
+            placeholder,
+        } = &self.strategy
+        {
+            return self.clear_tool_uses(steps, *keep_recent_turns, placeholder);
+        }
+
         let keep = match &self.strategy {
             CompactionStrategy::SlidingWindow { keep_recent_turns } => {
                 (*keep_recent_turns).max(floor)
@@ -147,6 +172,7 @@ impl CompactionConfig {
                 }
                 kept.max((*keep_recent_turns).max(floor)).min(steps.len())
             }
+            CompactionStrategy::ClearToolUses { .. } => unreachable!("handled above"),
         };
         let keep = keep.min(steps.len());
         let dropped = steps.len() - keep;
@@ -154,6 +180,31 @@ impl CompactionConfig {
             return (steps.to_vec(), 0);
         }
         (steps[steps.len() - keep..].to_vec(), dropped)
+    }
+
+    /// C2: replace tool observations older than the most recent `keep_recent_turns` with a
+    /// placeholder. Returns the full (unchanged-length) history and the count of observations
+    /// actually rewritten (already-clear ones are skipped). No step is orphaned: every clear
+    /// keeps its action + a (placeholder) observation.
+    fn clear_tool_uses(
+        &self,
+        steps: &[AgentStep],
+        keep_recent_turns: usize,
+        placeholder: &str,
+    ) -> (Vec<AgentStep>, usize) {
+        if steps.is_empty() || keep_recent_turns >= steps.len() {
+            return (steps.to_vec(), 0);
+        }
+        let mut out = steps.to_vec();
+        let mut cleared = 0usize;
+        let clear_count = steps.len() - keep_recent_turns;
+        for step in out.iter_mut().take(clear_count) {
+            if step.observation != placeholder {
+                step.observation = placeholder.to_string();
+                cleared += 1;
+            }
+        }
+        (out, cleared)
     }
 }
 
@@ -329,5 +380,100 @@ mod tests {
     #[test]
     fn estimate_scales_with_content() {
         assert!(estimate_step_tokens(&step("tool", 400)) > estimate_step_tokens(&step("tool", 40)));
+    }
+
+    // ---------------------------------------------------------------------
+    // C2: ClearToolUses
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn clear_tool_uses_replaces_old_observations_keeps_recent() {
+        let config = CompactionConfig::new(
+            CompactionTrigger::TurnCount(2),
+            CompactionStrategy::ClearToolUses {
+                keep_recent_turns: 2,
+                placeholder: "[cleared]".into(),
+            },
+        );
+        let steps: Vec<AgentStep> = (0..5)
+            .map(|i| step(&format!("t{i}"), i as usize * 100))
+            .collect();
+
+        let (kept, cleared) = config.compact(&steps, 0);
+        // history length unchanged — nothing is dropped
+        assert_eq!(kept.len(), 5, "ClearToolUses must not drop steps");
+        assert_eq!(cleared, 3, "oldest 3 observations cleared");
+        // recent two observations intact
+        assert_eq!(kept[3].observation, "x".repeat(300));
+        assert_eq!(kept[4].observation, "x".repeat(400));
+        // older observations replaced by the placeholder
+        for s in &kept[..3] {
+            assert_eq!(s.observation, "[cleared]");
+        }
+    }
+
+    #[test]
+    fn clear_tool_uses_never_orphans_actions() {
+        let config = CompactionConfig::new(
+            CompactionTrigger::TurnCount(0),
+            CompactionStrategy::ClearToolUses {
+                keep_recent_turns: 1,
+                placeholder: "[cleared]".into(),
+            },
+        );
+        let steps: Vec<AgentStep> = (0..7).map(|i| step(&format!("t{i}"), 50)).collect();
+        let (kept, _) = config.compact(&steps, 0);
+        assert_eq!(kept.len(), steps.len());
+        for (idx, s) in kept.iter().enumerate() {
+            // action preserved with a non-empty observation (intact or placeholder)
+            assert!(!s.observation.is_empty(), "step {idx} orphaned");
+        }
+        // actions themselves untouched (order + names preserved)
+        for (idx, s) in kept.iter().enumerate() {
+            assert_eq!(s.action.tool, format!("t{idx}"));
+        }
+    }
+
+    #[test]
+    fn clear_tool_uses_is_idempotent() {
+        let config = CompactionConfig::new(
+            CompactionTrigger::TurnCount(0),
+            CompactionStrategy::ClearToolUses {
+                keep_recent_turns: 2,
+                placeholder: "[cleared]".into(),
+            },
+        );
+        let steps: Vec<AgentStep> = (0..5).map(|i| step(&format!("t{i}"), 50)).collect();
+        let (first, c1) = config.compact(&steps, 0);
+        assert_eq!(c1, 3);
+        // compacting the already-cleared history clears nothing new
+        let (second, c2) = config.compact(&first, 0);
+        assert_eq!(c2, 0);
+        // history is byte-identical after the idempotent second pass
+        fn obs(v: &[AgentStep]) -> Vec<&str> {
+            v.iter().map(|s| s.observation.as_str()).collect()
+        }
+        assert_eq!(obs(&second), obs(&first));
+    }
+
+    #[test]
+    fn clear_tool_uses_keeps_everything_when_under_keep() {
+        let config = CompactionConfig::new(
+            CompactionTrigger::TurnCount(10),
+            CompactionStrategy::ClearToolUses {
+                keep_recent_turns: 3,
+                placeholder: "[cleared]".into(),
+            },
+        );
+        // trigger (TurnCount 10) doesn't fire → no-op like other strategies
+        let steps: Vec<AgentStep> = (0..5).map(|i| step(&format!("t{i}"), 50)).collect();
+        let (kept, cleared) = config.compact(&steps, 0);
+        assert_eq!(cleared, 0);
+        // byte-identical pass-through, nothing rewritten
+        let same = kept
+            .iter()
+            .zip(steps.iter())
+            .all(|(a, b)| a.observation == b.observation && a.action.tool == b.action.tool);
+        assert!(same);
     }
 }

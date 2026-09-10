@@ -28,6 +28,7 @@ use lc_memory::BaseMemory;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -108,6 +109,17 @@ pub struct AgentExecutor {
     /// string was indistinguishable from a real answer and downstream
     /// consumers (PlanExecute) recorded failed steps as completed.
     pub(crate) on_max_iterations: MaxIterationsPolicy,
+
+    /// A2 Rule-of-Two (v0.22.1 §S8): when enabled, a tool whose declared risk profile
+    /// arms all three properties (`count_armed() >= 3`) is **blocked before execution**
+    /// and the loop gets a rejection observation. Default `false` (off, zero change) —
+    /// an undeclared tool has an all-false profile and is never intercepted.
+    pub(crate) rule_of_two: bool,
+
+    /// A1 Spotlighting (v0.22.1 §S8): when enabled, tool output observations are wrapped in
+    /// `<untrusted_data>…</untrusted_data>` before entering the intermediate steps, so the
+    /// model reads untrusted tool results as delimited data. Default `false` (off, zero change).
+    pub(crate) spotlight_tool_output: bool,
 }
 
 /// 0.22.0 C4 fix: behavior when the agent loop exhausts its iteration budget.
@@ -146,6 +158,8 @@ impl AgentExecutor {
             resume_store: None,
             metrics_sink: None,
             on_max_iterations: MaxIterationsPolicy::default(),
+            rule_of_two: false,
+            spotlight_tool_output: false,
         }
     }
 
@@ -174,6 +188,39 @@ impl AgentExecutor {
     pub fn with_on_max_iterations(mut self, policy: MaxIterationsPolicy) -> Self {
         self.on_max_iterations = policy;
         self
+    }
+
+    /// A2 Rule of Two (v0.22.1 §S8): when enabled, a tool whose declared risk profile arms
+    /// all three properties (untrusted-input + sensitive-access + state-changing) is blocked
+    /// before execution and the loop receives a rejection observation. Default off — an
+    /// undeclared tool has an all-false profile and is never intercepted (zero behavior change).
+    pub fn with_rule_of_two(mut self, on: bool) -> Self {
+        self.rule_of_two = on;
+        self
+    }
+
+    /// A1 tool-output spotlighting (v0.22.1 §S8): when enabled, tool observations are wrapped
+    /// in `<untrusted_data>…</untrusted_data>` before entering intermediate steps. Default off —
+    /// tool output passes through unchanged.
+    pub fn with_tool_spotlight(mut self, on: bool) -> Self {
+        self.spotlight_tool_output = on;
+        self
+    }
+
+    /// C1: mounts a file-memory tool (v0.22.1 §S8).
+    ///
+    /// Pushes the [`crate::executor::FileMemoryTool`] adapter over a fresh [`lc_memory::file_memory::FileMemoryStore`]
+    /// rooted at `root` into the executor's tool set, letting the agent explicitly `view` /
+    /// `create` / `write` / `append` / `delete` / `list` named memories during a run. Default
+    /// off — this is explicit opt-in; the tools are only registered when this builder is used.
+    /// Err is returned when the root directory cannot be set up.
+    pub fn with_memory_tool(
+        mut self,
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, lc_memory::file_memory::FileMemoryError> {
+        let tool: Arc<dyn BaseTool> = crate::executor::mount(root)?;
+        self.tools.push(tool);
+        Ok(self)
     }
 
     /// Sets the tool execution timeout.
@@ -693,8 +740,7 @@ impl AgentExecutor {
                 Err(e) => {
                     let mut outputs = HashMap::new();
                     outputs.insert("output".to_string(), String::new());
-                    if let Err(save_err) =
-                        memory.lock().await.save_context(&inputs, &outputs).await
+                    if let Err(save_err) = memory.lock().await.save_context(&inputs, &outputs).await
                     {
                         log::warn!(
                             "failed to save errored round to memory: {}, original error: {}",
@@ -796,6 +842,8 @@ impl AgentExecutor {
             resume_store: self.resume_store.clone(),
             metrics_sink: self.metrics_sink.clone(),
             on_max_iterations: self.on_max_iterations,
+            rule_of_two: self.rule_of_two,
+            spotlight_tool_output: self.spotlight_tool_output,
         };
 
         merged_executor.invoke_inner(input, trace_id).await
@@ -882,6 +930,11 @@ impl AgentExecutor {
         // history is loaded before the loop and the final answer is saved.
         let callbacks = self.callbacks.clone();
         let memory = self.memory.clone();
+        // v0.22.1 §S8: copy the A1/A2 toggles so the spawned stream loop reads locals,
+        // not `&self` (disjoint capture holds here; referencing `self.` would borrow the
+        // whole executor into the `'static` task because `Mutex<dyn BaseMemory>` is invariant).
+        let rule_of_two = self.rule_of_two;
+        let spotlight_tool_output = self.spotlight_tool_output;
 
         tokio::spawn(async move {
             let mut intermediate_steps: Vec<AgentStep> = Vec::new();
@@ -977,9 +1030,7 @@ impl AgentExecutor {
                     let msg = e.to_string();
                     stream_chain_error(&callbacks, &mut root_run, &msg).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
-                    let _ = tx
-                        .send(Ok(AgentStreamEvent::Error { message: msg }))
-                        .await;
+                    let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
                     return;
                 }
                 // F3: streaming planning — the agent forwards model text token by token
@@ -1031,9 +1082,7 @@ impl AgentExecutor {
                             }
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
-                            let _ = tx
-                                .send(Ok(AgentStreamEvent::Error { message: msg }))
-                                .await;
+                            let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
                             return;
                         }
                     }
@@ -1122,9 +1171,7 @@ impl AgentExecutor {
                                     loop_start,
                                 )
                                 .await;
-                                let _ = tx
-                                    .send(Ok(AgentStreamEvent::Error { message: msg }))
-                                    .await;
+                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
                                 return;
                             }
                         }
@@ -1166,28 +1213,33 @@ impl AgentExecutor {
                         // serialization — reject the call *before* execution; the agent
                         // cannot recover from them by re-planning, so they end the
                         // stream hard, matching the non-streaming invoke path.
-                        let observation =
-                            match execute_tool_for_stream(&tools, &action, tool_timeout).await {
-                                Ok(obs) => obs,
-                                Err(e @ AgentError::ToolExecutionError(_)) => {
-                                    tool_error_observation(&e)
-                                }
-                                Err(e) => {
-                                    let msg = e.to_string();
-                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
-                                    publish_metrics(
-                                        &metrics,
-                                        &metrics_store,
-                                        &metrics_sink,
-                                        loop_start,
-                                    )
-                                    .await;
-                                    let _ = tx
-                                        .send(Ok(AgentStreamEvent::Error { message: msg }))
-                                        .await;
-                                    return;
-                                }
-                            };
+                        let observation = match execute_tool_for_stream(
+                            &tools,
+                            &action,
+                            tool_timeout,
+                            spotlight_tool_output,
+                            rule_of_two,
+                        )
+                        .await
+                        {
+                            Ok(obs) => obs,
+                            Err(e @ AgentError::ToolExecutionError(_)) => {
+                                tool_error_observation(&e)
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                publish_metrics(
+                                    &metrics,
+                                    &metrics_store,
+                                    &metrics_sink,
+                                    loop_start,
+                                )
+                                .await;
+                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                                return;
+                            }
+                        };
 
                         let _ = tx
                             .send(Ok(AgentStreamEvent::ToolEnd {
@@ -1213,9 +1265,8 @@ impl AgentExecutor {
                                         loop_start,
                                     )
                                     .await;
-                                    let _ = tx
-                                        .send(Ok(AgentStreamEvent::Error { message: msg }))
-                                        .await;
+                                    let _ =
+                                        tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
                                     return;
                                 }
                             }
@@ -1258,6 +1309,8 @@ impl AgentExecutor {
                             &actions,
                             tool_timeout,
                             max_concurrency,
+                            spotlight_tool_output,
+                            rule_of_two,
                         )
                         .await
                         {
@@ -1276,9 +1329,7 @@ impl AgentExecutor {
                                     loop_start,
                                 )
                                 .await;
-                                let _ = tx
-                                    .send(Ok(AgentStreamEvent::Error { message: msg }))
-                                    .await;
+                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
                                 return;
                             }
                         };
@@ -1309,9 +1360,7 @@ impl AgentExecutor {
             if on_max_iterations == MaxIterationsPolicy::Error {
                 stream_chain_error(&callbacks, &mut root_run, "max iterations reached").await;
                 publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
-                let _ = tx
-                    .send(Err(AgentError::MaxIterationsReached))
-                    .await;
+                let _ = tx.send(Err(AgentError::MaxIterationsReached)).await;
                 return;
             }
             // Legacy placeholder policy: the stopped response is treated as a final

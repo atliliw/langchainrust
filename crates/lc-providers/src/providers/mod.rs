@@ -20,8 +20,8 @@ pub mod zhipu;
 
 pub use anthropic::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
-    AnthropicStructuredOutputMethod, ThinkingConfig, ThinkingType, ANTHROPIC_BASE_URL,
-    CLAUDE_MODELS,
+    AnthropicStructuredOutputMethod, AnthropicUsage, ThinkingConfig, ThinkingType,
+    ANTHROPIC_BASE_URL, CLAUDE_MODELS,
 };
 pub use azure::{AzureOpenAIChat, AzureOpenAIConfig, AzureOpenAIError, AZURE_DEFAULT_API_VERSION};
 pub use cohere::{CohereChat, CohereConfig, CohereError, COHERE_BASE_URL, COHERE_MODELS};

@@ -44,6 +44,11 @@ impl AutoCompaction {
     }
 }
 
+/// Factory that produces a fresh per-session event memory instance.
+pub(crate) type MemoryFactory = Arc<dyn Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static>;
+/// Lazily-created per-session event memory instances, keyed by session id.
+pub(crate) type SessionMemories = Arc<Mutex<HashMap<String, Arc<Mutex<dyn BaseMemory>>>>>;
+
 /// Event-sourced session manager.
 pub struct EventSessionManager {
     store: Arc<dyn EventStore>,
@@ -61,9 +66,9 @@ pub struct EventSessionManager {
     /// can never leak into another's context. Without it the legacy shared
     /// `memory` instance is used (manager-level singleton → cross-session
     /// contamination; prefer the factory once memory spans multiple sessions).
-    memory_factory: Option<Arc<dyn Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static>>,
+    memory_factory: Option<MemoryFactory>,
     /// Lazily-created per-session memory instances, keyed by session id.
-    session_memories: Arc<Mutex<HashMap<String, Arc<Mutex<dyn BaseMemory>>>>>,
+    session_memories: SessionMemories,
 
     /// Turn-based context window: with `Some(n)`, a `chat()` without memory
     /// feeds only the most recent `n` turns' messages; `None` = full history.

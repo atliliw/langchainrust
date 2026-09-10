@@ -54,6 +54,16 @@ pub trait BaseTool: Send + Sync {
         false
     }
 
+    /// Declared Rule-of-Two risk profile (A2, v0.22.1).
+    ///
+    /// Defaults to an all-false profile, so existing tools are never intercepted. Tools that
+    /// combine an untrusted input source, sensitive access, and world-state change should
+    /// override this so the agent can refuse the call before executing it (see
+    /// [`ToolRiskProfile::count_armed`]).
+    fn risk(&self) -> ToolRiskProfile {
+        ToolRiskProfile::empty()
+    }
+
     /// Handle execution error.
     ///
     /// Returns a friendly error message when tool execution fails.
@@ -135,7 +145,7 @@ pub enum ToolError {
     ControlAbort(String),
 }
 
-use super::ToolDefinition;
+use super::{ToolDefinition, ToolRiskProfile};
 
 /// Converts BaseTool to ToolDefinition (for function calling).
 ///

@@ -273,7 +273,10 @@ mod tests {
         let ranges = config.chunk_ranges(&text);
         assert!(!ranges.is_empty());
         for (start, end) in &ranges {
-            assert!(text.is_char_boundary(*start), "start {start} not a boundary");
+            assert!(
+                text.is_char_boundary(*start),
+                "start {start} not a boundary"
+            );
             assert!(text.is_char_boundary(*end), "end {end} not a boundary");
             // Slicing is the regression: this would panic before the fix.
             let _ = &text[*start..*end];

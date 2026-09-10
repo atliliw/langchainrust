@@ -35,7 +35,8 @@ pub use openai::{
 };
 pub use providers::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
-    AnthropicStructuredOutputMethod, AzureOpenAIChat, AzureOpenAIConfig, AzureOpenAIError,
+    AnthropicStructuredOutputMethod, AnthropicUsage, AzureOpenAIChat, AzureOpenAIConfig,
+    AzureOpenAIError,
     CohereChat, CohereConfig, CohereError, DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig,
     GeminiError, GeminiStructuredOutputMethod, MistralChat, MistralConfig, MoonshotChat,
     MoonshotConfig, QwenChat, QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,

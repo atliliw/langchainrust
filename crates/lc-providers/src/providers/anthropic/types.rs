@@ -123,10 +123,43 @@ pub(crate) struct AnthropicContent {
 ///
 /// Exposed (with crate-private fields) because it appears as the payload of
 /// the public [`AnthropicStreamToken::Usage`] variant.
+///
+/// B1: we also capture the prompt-cache breakdown Anthropic reports separately —
+/// `cache_creation_input_tokens` (tokens written into the cache by this call) and
+/// `cache_read_input_tokens` (tokens served from cache). Both are `#[serde(default)]`
+/// so older payloads (and providers/proxies that omit them) still deserialize.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AnthropicUsage {
     pub(crate) input_tokens: usize,
     pub(crate) output_tokens: usize,
+    /// Tokens written into the prompt cache by this call (B1 statistic).
+    #[serde(default)]
+    pub(crate) cache_creation_input_tokens: usize,
+    /// Prompt tokens served from cache instead of re-processed (B1 statistic).
+    #[serde(default)]
+    pub(crate) cache_read_input_tokens: usize,
+}
+
+impl AnthropicUsage {
+    /// Tokens written into the cache by this call, if reported (else 0).
+    pub fn cache_creation_tokens(&self) -> usize {
+        self.cache_creation_input_tokens
+    }
+
+    /// Prompt tokens served from cache (cache hits), if reported (else 0).
+    pub fn cache_read_tokens(&self) -> usize {
+        self.cache_read_input_tokens
+    }
+
+    /// Prompt tokens that actually had to be recomputed: input minus cache reads.
+    pub fn cache_miss_tokens(&self) -> usize {
+        self.input_tokens.saturating_sub(self.cache_read_input_tokens)
+    }
+
+    /// `(creation, read)` cache breakdown for observability.
+    pub fn cache_breakdown(&self) -> (usize, usize) {
+        (self.cache_creation_input_tokens, self.cache_read_input_tokens)
+    }
 }
 
 #[derive(Deserialize)]
