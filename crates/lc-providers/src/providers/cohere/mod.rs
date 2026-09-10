@@ -64,7 +64,8 @@ impl CohereChat {
     pub fn new(config: CohereConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -154,15 +155,19 @@ impl CohereChat {
         let url = format!("{}/chat", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CohereError::Http(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.config.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| CohereError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -224,7 +229,7 @@ impl CohereChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, CohereError>> + Send>>, CohereError>
     {
-        use crate::openai::sse::SSEParser;
+        use crate::openai::sse::{SseByteFramer, SSEParser};
         use std::sync::{Arc, Mutex};
 
         let url = format!("{}/chat", self.config.base_url);
@@ -247,7 +252,7 @@ impl CohereChat {
         }
 
         let byte_stream = response.bytes_stream();
-        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         let parser_clone = parser.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, CohereError>>(64);
 
@@ -264,9 +269,13 @@ impl CohereChat {
                 };
 
                 let events = {
-                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-                    parser_guard.parse(&chunk_str)
+                    // 0.22.0 C1: byte-layer framing; only complete events are decoded
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::new();
+                    for text in guard.1.push(&chunk_bytes) {
+                        out.extend(guard.0.parse(&text));
+                    }
+                    out
                 };
 
                 for event in events {

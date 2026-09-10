@@ -6,7 +6,7 @@
 
 use super::parser::ReActOutputParser;
 use super::prompt::{build_react_prompt, format_scratchpad};
-use crate::{AgentError, AgentOutput, AgentStep, BaseAgent};
+use crate::{AgentAction, AgentError, AgentOutput, AgentStep, BaseAgent, ToolInput};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use lc_core::language_models::{BaseChatModel, TokenUsage};
@@ -17,6 +17,14 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// 0.22.0 audit fix (H-A5): pseudo-tool the agent returns when the model output
+/// cannot be parsed. The executor never executes it — it feeds the embedded
+/// message back as an observation so the model can retry in the correct ReAct
+/// format (standard repair loop). If the model fails to parse again while the
+/// previous observation is already a parse-repair message, the agent hard-fails
+/// instead of looping forever.
+pub const PARSE_ERROR_TOOL: &str = "__parse_error__";
 
 /// ReAct Agent
 ///
@@ -132,6 +140,50 @@ impl ReActAgent {
 
         prompt
     }
+
+    /// 0.22.0 audit fix (H-A5): a single parse failure must not hard-fail the run.
+    ///
+    /// On `OutputParsingError`, return an Action on the [`PARSE_ERROR_TOOL`]
+    /// pseudo-tool whose input is a repair instruction + the error. The executor
+    /// feeds it back as an observation and the model retries in the correct
+    /// format. Guard: if the previous observation is already a parse-repair
+    /// message (the model failed twice in a row), hard-fail to prevent an
+    /// infinite repair loop.
+    fn parse_with_repair(
+        &self,
+        text: &str,
+        intermediate_steps: &[AgentStep],
+    ) -> Result<AgentOutput, AgentError> {
+        match self.parser.parse(text) {
+            Ok(output) => Ok(output),
+            Err(e) => {
+                let already_repaired = intermediate_steps
+                    .last()
+                    .map(|s| s.action.tool == PARSE_ERROR_TOOL)
+                    .unwrap_or(false);
+                if already_repaired {
+                    return Err(e);
+                }
+                log::warn!(
+                    "ReAct output parse failed, feeding back a repair prompt: {}",
+                    e
+                );
+                Ok(AgentOutput::Action(AgentAction {
+                    tool: PARSE_ERROR_TOOL.to_string(),
+                    tool_input: ToolInput::String {
+                        value: format!(
+                            "Your previous output could not be parsed ({e}). \
+                             Re-emit your next step using EXACTLY one of these formats:\n\
+                             Thought: <reasoning>\nAction: <tool name>\n\
+                             Action Input: <tool input>\n\nor\n\n\
+                             Thought: <reasoning>\nFinal Answer: <final answer>"
+                        ),
+                    },
+                    log: "0.22.0 audit fix: parse repair".to_string(),
+                }))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -180,7 +232,7 @@ impl BaseAgent for ReActAgent {
         }
 
         // Parse the output
-        self.parser.parse(&result.content)
+        self.parse_with_repair(&result.content, intermediate_steps)
     }
 
     /// Streaming plan (F3): forwards model output token by token, accumulating
@@ -245,7 +297,7 @@ impl BaseAgent for ReActAgent {
         if let Ok(mut guard) = self.last_token_usage.lock() {
             *guard = usage;
         }
-        self.parser.parse(&full)
+        self.parse_with_repair(&full, intermediate_steps)
     }
 
     /// Returns the allowed tools list

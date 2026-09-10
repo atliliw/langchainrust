@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use lc_core::language_models::{LLMResult, TokenUsage};
-use lc_core::tools::{StructuredOutput, ToolDefinition};
+use lc_core::tools::{StructuredOutput, ToolCall, ToolDefinition};
 use lc_schema::Message;
 
 use super::config::{AnthropicConfig, ThinkingConfig};
@@ -19,6 +19,7 @@ use super::types::{
     AnthropicContentBlock, AnthropicImageSource, AnthropicMessage, AnthropicMessageContent,
     AnthropicResponse, AnthropicStreamEvent, AnthropicStreamToken,
 };
+use crate::openai::sse::SseByteFramer;
 use crate::ProviderError;
 
 /// Anthropic Claude chat client.
@@ -33,7 +34,8 @@ impl AnthropicChat {
     pub fn new(config: AnthropicConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -310,16 +312,20 @@ impl AnthropicChat {
         let url = format!("{}/messages", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", &self.config.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AnthropicError::Http(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("x-api-key", &self.config.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| AnthropicError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -424,39 +430,41 @@ impl AnthropicChat {
         }
 
         let byte_stream = response.bytes_stream();
-        let sse_buffer = Arc::new(Mutex::new(String::new()));
+        // 0.22.0 C1: byte-level framer — complete events are decoded to UTF-8,
+        // so CJK characters split across TCP chunks are never lossy-torn.
+        let sse_buffer = Arc::new(Mutex::new(SseByteFramer::new()));
         let (tx, rx) =
             tokio::sync::mpsc::channel::<Result<AnthropicStreamToken, AnthropicError>>(64);
 
         let buffer_clone = sse_buffer.clone();
         tokio::spawn(async move {
             use futures_util::StreamExt;
+            use std::collections::HashMap;
 
             let mut byte_stream = byte_stream;
+            // 0.22.0 C2: accumulate streaming tool calls. `content_block_start`
+            // (type=tool_use) opens a slot with id+name; `input_json_delta`
+            // fragments append `partial_json`; `content_block_stop` flushes a
+            // complete ToolCall. Previously only text/thinking deltas were
+            // handled and tool calls fell into `_ => {}` silently.
+            let mut tool_blocks: HashMap<usize, (String, String, String)> = HashMap::new();
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
-                    let chunk_str = String::from_utf8_lossy(&bytes);
 
-                    // Extract complete SSE events from buffer
+                    // Extract complete SSE events from the byte-level framer
                     let events = {
                         let mut buffer_guard =
                             buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        buffer_guard.push_str(&chunk_str);
-
-                        let mut events = Vec::new();
-                        while let Some(pos) = buffer_guard.find("\n\n") {
-                            let event_text = buffer_guard[..pos].to_string();
-                            buffer_guard.drain(..=pos + 1);
-                            events.push(event_text);
-                        }
-                        events
+                        buffer_guard.push(&bytes)
                     };
                     // buffer_guard is dropped here, before any await
 
                     for event_text in events {
                         for line in event_text.lines() {
-                            if line.starts_with("data: ") {
-                                let data = line.trim_start_matches("data: ");
+                            // Tolerate both "data: {...}" and "data:{...}"
+                            // (0.22.0 audit fix, Medium).
+                            if let Some(rest) = line.strip_prefix("data:") {
+                                let data = rest.trim();
                                 if data == "[DONE]" {
                                     continue;
                                 }
@@ -464,6 +472,17 @@ impl AnthropicChat {
                                 if let Ok(event) =
                                     serde_json::from_str::<AnthropicStreamEvent>(data)
                                 {
+                                    if event.type_field == "error" {
+                                        // 0.22.0 (audit Medium): overloaded_error and
+                                        // friends must not end the stream looking like
+                                        // a complete answer.
+                                        let _ = tx
+                                            .send(Err(AnthropicError::Api(format!(
+                                                "anthropic stream error event: {data}"
+                                            ))))
+                                            .await;
+                                        return;
+                                    }
                                     if event.type_field == "message_delta" {
                                         // message_delta at the end of the stream carries usage; emit it as
                                         // a standalone token so the streaming path also gets the full call usage.
@@ -474,6 +493,18 @@ impl AnthropicChat {
                                                 .is_err()
                                             {
                                                 return;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    if event.type_field == "content_block_start" {
+                                        if let Some(block) = &event.content_block {
+                                            if block.type_field == "tool_use" {
+                                                let index = event.index.unwrap_or_default();
+                                                tool_blocks.insert(
+                                                    index,
+                                                    (block.id.clone(), block.name.clone(), String::new()),
+                                                );
                                             }
                                         }
                                         continue;
@@ -507,9 +538,41 @@ impl AnthropicChat {
                                                         return;
                                                     }
                                                 }
+                                                "input_json_delta" => {
+                                                    // C2: fold argument fragments into the slot
+                                                    // opened by content_block_start.
+                                                    let index = event.index.unwrap_or_default();
+                                                    if let Some((_, _, partial)) =
+                                                        tool_blocks.get_mut(&index)
+                                                    {
+                                                        partial.push_str(&delta.partial_json);
+                                                    }
+                                                }
                                                 _ => {}
                                             }
                                         }
+                                        continue;
+                                    }
+                                    if event.type_field == "content_block_stop" {
+                                        // C2: flush the completed tool call
+                                        if let Some((id, name, partial)) =
+                                            event.index.and_then(|i| tool_blocks.remove(&i))
+                                        {
+                                            if !name.is_empty() {
+                                                let call = ToolCall::builder(&id)
+                                                    .name(&name)
+                                                    .arguments(&partial)
+                                                    .build();
+                                                if tx
+                                                    .send(Ok(AnthropicStreamToken::ToolCall(call)))
+                                                    .await
+                                                    .is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        continue;
                                     }
                                 } else {
                                     // 0.20.0 P3: a malformed SSE datum no longer vanishes

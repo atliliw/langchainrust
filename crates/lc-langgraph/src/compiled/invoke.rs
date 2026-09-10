@@ -42,7 +42,41 @@ impl<S: StateSchema> CompiledGraph<S> {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
 
-            // Check for FanOut edge — execute all branches in parallel and merge
+            // 0.22.0 C3 fix: the fan-out source node executes BEFORE branching
+            // (previously the fan-out check ran first and the source node was
+            // silently skipped). START is a virtual entry — never executed.
+            if current_node != crate::START {
+                recursion_count += 1;
+
+                let node = self.get_node(&current_node).await?;
+
+                let config = NodeConfig {
+                    recursion_limit: self.recursion_limit,
+                    debug: false,
+                    metadata: HashMap::new(),
+                };
+
+                let update = node.execute(&state, Some(config)).await?;
+
+                if let Some(new_state) = update.update {
+                    state = self.default_reducer.reduce(&state, &new_state);
+                }
+
+                steps.push(ExecutionStep::node(
+                    current_node.clone(),
+                    update.metadata.clone(),
+                ));
+
+                if self.interrupt_after.contains(&current_node) {
+                    return Err(GraphError::ExecutionInterrupted(format!(
+                        "after_{}",
+                        current_node
+                    )));
+                }
+            }
+
+            // FanOut: after the source node has run, execute all branches in
+            // parallel and merge (on top of the pre-fan-out state).
             let fan_out_targets = self.find_fan_out_targets(&current_node).await;
             if let Some(targets) = fan_out_targets {
                 recursion_count += 1;
@@ -66,11 +100,13 @@ impl<S: StateSchema> CompiledGraph<S> {
                 }
 
                 let merge_target = self.find_fan_in_target(&targets).await;
+                // C3: fold on top of the pre-fan-out main-path state.
+                let base = state.clone();
                 if let Some(merge_node) = merge_target {
-                    state = self.merge_parallel_states(&parallel_branches)?;
+                    state = self.merge_parallel_states(&parallel_branches, &base)?;
                     current_node = merge_node;
                 } else {
-                    state = self.merge_parallel_states(&parallel_branches)?;
+                    state = self.merge_parallel_states(&parallel_branches, &base)?;
                     current_node = END.to_string();
                 }
 
@@ -86,34 +122,6 @@ impl<S: StateSchema> CompiledGraph<S> {
                     ));
                 }
                 continue;
-            }
-
-            recursion_count += 1;
-
-            let node = self.get_node(&current_node).await?;
-
-            let config = NodeConfig {
-                recursion_limit: self.recursion_limit,
-                debug: false,
-                metadata: HashMap::new(),
-            };
-
-            let update = node.execute(&state, Some(config)).await?;
-
-            if let Some(new_state) = update.update {
-                state = self.default_reducer.reduce(&state, &new_state);
-            }
-
-            steps.push(ExecutionStep::node(
-                current_node.clone(),
-                update.metadata.clone(),
-            ));
-
-            if self.interrupt_after.contains(&current_node) {
-                return Err(GraphError::ExecutionInterrupted(format!(
-                    "after_{}",
-                    current_node
-                )));
             }
 
             let next_node = self.find_next_node(&current_node, &state).await?;

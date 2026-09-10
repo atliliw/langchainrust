@@ -22,12 +22,12 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use lc_mcp::{MCPGateway, GatewayServerSpec, MCPConfig, ToolConflict};
+//! use lc_mcp::{MCPGateway, GatewayServerSpec, ToolConflict};
 //! use std::time::Duration;
 //!
 //! let gw = MCPGateway::new();
 //! gw.register(
-//!     GatewayServerSpec::new("fs", MCPConfig::stdio("npx", vec!["@anthropic/mcp-server-filesystem".into(), "/tmp".into()]))
+//!     GatewayServerSpec::new("fs", "http://mcp-fs.internal:8080/mcp")
 //!         .with_conflict(ToolConflict::Prefix)
 //!         .with_rate_limit(60, Duration::from_secs(60)),
 //! ).await?;
@@ -36,10 +36,12 @@
 //! ```
 
 mod audit;
+mod method_rate_limiter;
 mod policy;
 mod rate_limiter;
 
 pub use audit::GatewayAuditRecord;
+pub use method_rate_limiter::MethodRateLimiter;
 pub use policy::GatewayServerSpec;
 pub use rate_limiter::RateLimiter;
 
@@ -299,12 +301,18 @@ impl MCPGateway {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
+                // 0.22.0 H-P6: feed the breaker with the real call failure, so
+                // a node whose calls keep failing gets tripped (previously only
+                // the audit was recorded and the breaker stayed "Closed").
+                let _ = self.manager.report(&server, false).await;
                 self.record(&server, full_name, false, Some(e.message.clone()));
                 return Err(from_mcp_error(e));
             }
         };
         let out = result_to_string_or_error(&result);
         self.record(&server, full_name, out.is_ok(), None);
+        // H-P6: a successful call recovers the breaker.
+        let _ = self.manager.report(&server, out.is_ok()).await;
         out
     }
 

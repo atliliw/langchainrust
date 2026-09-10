@@ -3,7 +3,7 @@
 //! find_fan_in_target, and execute_parallel_branches methods
 
 use super::graph::CompiledGraph;
-use super::types::{GraphInvocation, StreamEvent};
+use super::types::{GraphInvocation, ParallelBranch, StreamEvent};
 use crate::edge::GraphEdge;
 use crate::errors::{GraphError, GraphResult};
 use crate::graph::END;
@@ -61,54 +61,126 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                     return;
                 }
 
-                recursion_count += 1;
+                // 0.22.0 C3 fix: the fan-out source node executes BEFORE
+                // branching (previously the stream loop never checked fan-out,
+                // so `find_next_node` ran only the first branch and silently
+                // dropped the rest). START is virtual — never executed.
+                if current_node != crate::START {
+                    recursion_count += 1;
 
-                if tx
-                    .send(Ok(StreamEvent::enter_node(
-                        current_node.clone(),
-                        state.clone(),
-                    )))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-
-                let node = match graph.get_node(&current_node).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
+                    if tx
+                        .send(Ok(StreamEvent::enter_node(
+                            current_node.clone(),
+                            state.clone(),
+                        )))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
-                };
 
-                let config = NodeConfig {
-                    recursion_limit: graph.recursion_limit,
-                    debug: false,
-                    metadata: HashMap::new(),
-                };
+                    let node = match graph.get_node(&current_node).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    };
 
-                let update = match node.execute(&state, Some(config)).await {
-                    Ok(u) => u,
-                    Err(e) => {
-                        let _ = tx.send(Err(e)).await;
+                    let config = NodeConfig {
+                        recursion_limit: graph.recursion_limit,
+                        debug: false,
+                        metadata: HashMap::new(),
+                    };
+
+                    let update = match node.execute(&state, Some(config)).await {
+                        Ok(u) => u,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    };
+
+                    if tx
+                        .send(Ok(StreamEvent::node_complete(
+                            current_node.clone(),
+                            update.clone(),
+                        )))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
-                };
 
-                if tx
-                    .send(Ok(StreamEvent::node_complete(
-                        current_node.clone(),
-                        update.clone(),
-                    )))
-                    .await
-                    .is_err()
-                {
-                    return;
+                    if let Some(new_state) = update.update {
+                        state = graph.default_reducer.reduce(&state, &new_state);
+                        if tx
+                            .send(Ok(StreamEvent::state_update(state.clone())))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+
+                    if graph.interrupt_after.contains(&current_node) {
+                        if let Some(ref checkpointer) = graph.checkpointer {
+                            let _ = checkpointer
+                                .lock()
+                                .await
+                                .save(&state, recursion_count)
+                                .await;
+                        }
+                        let _ = tx
+                            .send(Err(GraphError::ExecutionInterrupted(format!(
+                                "after_{}",
+                                current_node
+                            ))))
+                            .await;
+                        return;
+                    }
                 }
 
-                if let Some(new_state) = update.update {
-                    state = graph.default_reducer.reduce(&state, &new_state);
+                // C3: FanOut interception — same semantics as the invoke path:
+                // execute all branches, merge on top of the pre-fan-out state,
+                // then continue at the FanIn target (or END).
+                let fan_out_targets = graph.find_fan_out_targets(&current_node).await;
+                if let Some(targets) = fan_out_targets {
+                    recursion_count += 1;
+                    let branch_results =
+                        match graph.execute_parallel_branches(&targets, &state, recursion_count).await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
+                        };
+                    let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+                    for (name, inv) in branch_results {
+                        parallel_branches.push(ParallelBranch {
+                            name: name.clone(),
+                            final_state: inv.final_state.clone(),
+                            steps: inv.steps.clone(),
+                        });
+                        let _ = tx
+                            .send(Ok(StreamEvent::node_complete(
+                                name.clone(),
+                                crate::state::StateUpdate {
+                                    update: Some(inv.final_state.clone()),
+                                    metadata: HashMap::new(),
+                                },
+                            )))
+                            .await;
+                    }
+                    let base = state.clone();
+                    state = match graph.merge_parallel_states(&parallel_branches, &base) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    };
                     if tx
                         .send(Ok(StreamEvent::state_update(state.clone())))
                         .await
@@ -116,9 +188,10 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                     {
                         return;
                     }
-                }
-
-                if graph.interrupt_after.contains(&current_node) {
+                    current_node = match graph.find_fan_in_target(&targets).await {
+                        Some(merge_node) => merge_node,
+                        None => END.to_string(),
+                    };
                     if let Some(ref checkpointer) = graph.checkpointer {
                         let _ = checkpointer
                             .lock()
@@ -126,13 +199,7 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                             .save(&state, recursion_count)
                             .await;
                     }
-                    let _ = tx
-                        .send(Err(GraphError::ExecutionInterrupted(format!(
-                            "after_{}",
-                            current_node
-                        ))))
-                        .await;
-                    return;
+                    continue;
                 }
 
                 let next_node = match graph.find_next_node(&current_node, &state).await {
@@ -306,10 +373,31 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
             return Ok(END.to_string());
         }
 
+        // 0.22.0 C3: a FanIn source with no outgoing edge terminates its
+        // branch — the parent fan-out loop merges at the FanIn target.
+        if self.is_fan_in_source(current).await {
+            return Ok(END.to_string());
+        }
+
         Err(GraphError::RoutingError(format!(
             "No outgoing edge from node '{}'",
             current
         )))
+    }
+
+    /// Whether `node` is a source of any FanIn edge (runtime or static).
+    pub(super) async fn is_fan_in_source(&self, node: &str) -> bool {
+        {
+            let re = self.runtime_edges.read().await;
+            if re.iter().any(|e| {
+                matches!(e, GraphEdge::FanIn { sources, .. } if sources.iter().any(|s| s == node))
+            }) {
+                return true;
+            }
+        }
+        self.edges.iter().any(|e| {
+            matches!(e, GraphEdge::FanIn { sources, .. } if sources.iter().any(|s| s == node))
+        })
     }
 
     pub(super) async fn find_fan_out_targets(&self, current: &str) -> Option<Vec<String>> {

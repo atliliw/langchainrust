@@ -67,6 +67,8 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - AI Disclosure (disclose) ✨ v0.21.0
 - [Token Counter](#token-counter)
 - [Sessions](#sessions)
+  - Event Sourcing Rewrite ✨ v0.22.0 (recommended path)
+  - Session Fork
   - Session Lifecycle ✨ v0.15.0
   - Attaching Memory ✨ v0.15.0
 - [MCP](#mcp)
@@ -118,6 +120,8 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Checkpointer Family ✨ v0.15.0
   - Subgraph / Dynamic Planning / Streaming ✨ v0.15.0
 - [A2A Agent Protocol](#a2a-agent-protocol) ✨ v0.4.1
+  - v1.0.1: Multi-Transport Declaration (supportedInterfaces) ✨ v0.22.0
+  - Card Signing (JWS HS256) ✨ v0.22.0
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
   - Native JSON Schema Engine Constraints ✨ v0.21.0
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
@@ -153,7 +157,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.21.0"
+langchainrust = "0.22.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2521,6 +2525,8 @@ let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
 
 ## Sessions
 
+> **⚠️ As of v0.22.0 the event-sourcing path is recommended**: the `SessionManager` described in the first half of this section is `#[deprecated]` (removed in 0.23.0, still functional). New code should use [`EventSessionManager`](#event-sourcing-rewrite--v0220recommended-path) directly (see "Event Sourcing Rewrite" below); existing code keeps compiling after the upgrade, it only emits deprecation warnings.
+
 Multi-turn conversation must remember context — what the user said last turn and how the assistant replied. But "where to store it, how to persist it, how to retrieve it" is boilerplate every app re-implements. `SessionManager` abstracts conversations into lifecycle management: create a session → write conversation into it → pull history anytime → archive/clean up. It also natively supports **multi-session isolation**: each session has its own id and owning user, so conversations from different users or different topics never interfere with each other.
 
 **Core trio**: `Session` (the session itself) ← `SessionStore` (how it is stored) ← `SessionManager` (how it is used).
@@ -2597,31 +2603,105 @@ let r = manager.chat(&id, &llm, "question".to_string()).await?;
 - **Session vs checkpoints**: a session stores "what was said"; a Checkpointer stores "how far graph execution got" (lc-langgraph). Both involve persistence, but their semantics differ.
 - **Storage choice**: `MemorySessionStore` is enough for tests and single-process scenarios; for multiple instances / cross-process shared history, switch to a database or Redis backend implementing `SessionStore`.
 
+### Event Sourcing Rewrite ✨ v0.22.0 (recommended path)
+
+**The problem it solves**: the old `SessionManager` is "rewrite-style" — every conversation reads the whole `Session`, mutates it, and writes it back. Three hard flaws: ① a crash in the middle of "read-mutate-write" **loses messages or whole turns**; ② no forking — to experiment with a branch conversation you had to copy the whole session; ③ no time travel — you cannot answer "what did the history look like at turn 5?".
+
+As of 0.22.0 lc-sessions is rewritten around **event sourcing**: a session is no longer a mutable object but an **append-only event log**. Each conversation only appends events; history = projection (replay) from the head. Crash-safe, forkable, replayable.
+
+**Core four**: `SessionEvent` (the event) ← `EventStore` (how it is stored) ← `EventSessionManager` (how it is used) ← `project()` (how it is projected).
+
+```rust
+use langchainrust::sessions::{EventSessionManager, MemoryEventStore, AutoCompaction};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let manager = EventSessionManager::new(Arc::new(MemoryEventStore::new()))
+    .with_max_context_turns(10)                                  // turn window (default: full)
+    .with_auto_compaction(AutoCompaction::new(20)?);             // auto-snapshot after 20 turns
+
+let id = manager.create_session().await?;                        // uuid v7
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?;
+
+let history = manager.history(&id).await?;   // projected Vec<Message>
+// clear / archive / delete: append Metadata events to the EventStore directly
+// (the log is immutable; see "Event types" below)
+```
+
+**Old API → new API mapping** (the old `SessionManager` / `SessionManagerRunnable` are `#[deprecated]`, kept until removal in 0.23.0; `#[allow(deprecated)]` silences the warnings):
+
+| Old (0.21.x) | New (0.22.0) | Semantic change |
+|---|---|---|
+| `SessionManager::new(Arc<dyn SessionStore>)` | `EventSessionManager::new(Arc<dyn EventStore>)` | Storage becomes an append-only event log; `MemoryEventStore` corresponds to `MemorySessionStore` |
+| `create_session() / create_session_for(user)` | `create_session()` (uuid v7) | Session existence = the log is non-empty; user ownership goes through `Metadata` events |
+| `chat(&id, &llm, msg)` | `chat(&id, &llm, msg)` | Same signature, same semantics; persistence changes from "rewrite" to "append" — crash-safe |
+| `history(&id)` | `history(&id)` / `replay_session(&id)` | history = projected messages; `replay_session` yields the old-style mutable `Session` view |
+| (none) | `fork_session(&id, branch, until)` | **new**: copies a prefix from the trunk into a new branch; the trunk is unaffected |
+| `max_context_messages(n)` (message-count window) | `with_max_context_turns(n)` (turn window) | n=1 includes the full previous turn + the current message; user/ai stay paired, no orphan tool results |
+| (none) | `with_auto_compaction(AutoCompaction)` | **new**: past N turns, appends a deterministic Snapshot event automatically (no LLM call) |
+| `clear / archive / delete_session` | append `Metadata` events to the `EventStore` directly (wrapper methods land in 0.23.0) | the event log is immutable; "cleanup" becomes appending a state event |
+| `SessionStore` (custom storage trait) | `EventStore` | Four methods: `append / append_batch / read / fork`; append idempotency key `(session, branch, id)` |
+
+### Session fork
+
+```rust
+// Copy the prefix "up to some event sequence number" from the trunk into a new
+// branch; the trunk is unaffected. Returns a manager pinned to the branch
+// (same session_id, independent event sequence).
+let mut experiment = manager.fork_session(&id, "experiment", None).await?;
+// Chatting on the fork writes into the "experiment" branch; the trunk never sees it
+experiment.chat(&id, &llm, "branch message".to_string()).await?;
+// Re-forking the same (session, branch) is idempotent — same prefix, no duplicates
+```
+
+`until_id: Option<u64>` is the event sequence number (0-based): copy only up to that point — "go back to turn 5 and try a different answer" is `fork_session(&id, "retry", Some(5))`.
+
+### Crash safety and replay
+
+- **Idempotent append**: `append` uses `(session_id, branch, id)` as its idempotency key; replaying the same event never writes it twice — after a crash "half-way through appending", replaying the partial batch on restart is safe.
+- **Projection**: `project(&events)` / `to_session(&events)` rebuild session state from the event stream; orphan tool results (a tool result with no matching tool call) are detected and reported at projection time, guaranteeing the history fed to the LLM is always properly paired.
+- **Checkpoint placeholder**: the `SessionCheckpoint` trait + `NoopCheckpoint` are in place; durable checkpoints (persisting projections) land in 0.23.0.
+
+### Event types
+
+| `EventPayload` variant | Meaning |
+|---|---|
+| `SessionCreated` | Session established (uuid v7, time-ordered) |
+| `UserMessage` | User message |
+| `AssistantMessage` | Assistant reply (one Turn per round) |
+| `ToolCall` / `ToolResult` | Tool call and result (appended as a pair) |
+| `Snapshot` | Deterministic compaction snapshot (projection uses it instead of replaying the prefix) |
+| `Metadata` | Lifecycle / ownership key-value state (clear / archive / delete / user) |
+
+### Event storage choice
+
+Tests and single-process use `MemoryEventStore`; for multi-instance / cross-process / audit-grade history, implement `EventStore` (database / Redis / Kafka all work) — the append-only + idempotency-key contract is backend-friendly and has no read-mutate-write race.
+
 ---
 
 ## MCP
 
-[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. `MCPClient` connects to any MCP Server to obtain tools and adapts them as `BaseTool` for agents.
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. As of 0.22.0 lc-mcp is **stateless single-track**: every request is a self-contained JSON-RPC HTTP POST (with `Mcp-Method` / `Mcp-Name` routing headers and `_meta`). `StatelessMcpClient` connects to any MCP Server to obtain tools and adapts them as `BaseTool` for agents. The legacy handshake-based `MCPClient` (SSE/stdio transports) was removed in 0.22.0.
 
 ```rust
-use langchainrust::mcp::{MCPClient, MCPConfig};
+use langchainrust::mcp::{MCPToolAdapter, StatelessMcpClient};
 use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
 use std::sync::Arc;
 
-// Stdio: spawn an MCP Server subprocess
-let config = MCPConfig::stdio(
-    "npx",
-    vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
-);
-// Or SSE: MCPConfig::sse("http://localhost:3001/sse");
+// Stateless connect: no handshake, this only constructs the client (never fails)
+let client = StatelessMcpClient::connect("http://localhost:3001/mcp");
 
-let mut client = MCPClient::connect(config).await?;
 let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
 // Adapt to a BaseTool list and hand it to an agent
-// P0-3: as_tools auto-discovers tools, no need to call list_tools first
-let mcp_tools = client.as_tools().await?;
+let mcp_tools: Vec<Arc<dyn BaseTool>> = tools
+    .into_iter()
+    .map(|def| Arc::new(MCPToolAdapter::new(client.clone(), def)) as Arc<dyn BaseTool>)
+    .collect();
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
     mcp_tools,
@@ -2633,13 +2713,13 @@ let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
 client.close().await?;
 ```
 
-`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`; `client.call_tool(name, arguments)` calls a tool directly; `as_tools()` wraps tools as `MCPToolAdapter` (implements `BaseTool`).
+`client.call_tool(name, arguments)` calls a tool directly; `MCPToolAdapter::new(client, def)` wraps tools as adapters implementing `BaseTool` (`namespaced` variant carries a `server:tool` prefix); `.with_mrtr(...)` / `.with_answer_provider(...)` handle `input_required` multi-round requests; `.with_method_rate_limiter(...)` applies method-level rate limiting.
 
 ---
 
 ### MCPServer
 
-Symmetric to `MCPClient`: expose local `BaseTool`s as an MCP Server for Claude Desktop / Cursor hosts. Supports `initialize` / `tools/list` / `tools/call`.
+Symmetric to `StatelessMcpClient`: expose local `BaseTool`s as an MCP Server. Supports `initialize` / `tools/list` / `tools/call`.
 
 ```rust
 use langchainrust::{MCPServer, Calculator, BaseTool};
@@ -2653,25 +2733,21 @@ let server = MCPServer::new()
 server.serve_stdio().await?;
 ```
 
-`server.handle_request(req)` for single-step JSON-RPC handling with custom transport.
+`server.handle_request(req)` for single-step JSON-RPC handling with custom transport; `server.serve_http(listener)` serves it as a stateless HTTP service (connect with `StatelessMcpClient::connect(url)`), see `examples/mcp_http_server.rs`.
 
-### Transport Resilience ✨ v0.15.0
+### ConnectionManager (Managed Registry) ✨ v0.15.0
 
-MCP connections auto-reconnect: after a disconnect they retry with exponential backoff (starting at 0.5s, capped at 30s) and recover automatically once the Server restarts. `MCPServer` has the same hot-restart capability — a reconnecting host resumes the session.
-
-### ConnectionManager (Connection Pool) ✨ v0.15.0
-
-Manages the lifecycle of multiple `MCPClient`s — auto-reconnect and unified shutdown:
+Hosts a managed registry of multiple `StatelessMcpClient`s — lazy construction, unified reaping:
 
 ```rust
 use langchainrust::mcp::{ConnectionManager, ServerSpec};
 
 let manager = ConnectionManager::new();
-manager.register(ServerSpec::new("files", MCPConfig::sse("http://localhost:3001/sse"))).await?;
-manager.register(ServerSpec::new("tools", MCPConfig::stdio("npx", vec!["...".into()]))).await?;
+manager.register(ServerSpec::new("files", "http://localhost:3001/mcp")).await?;
+manager.register(ServerSpec::new("tools", "http://localhost:3002/mcp").keep_alive()).await?;
 
-let client = manager.client("files").await?;  // grab one server's connection
-manager.reap_idle().await;                     // reap idle connections
+let client = manager.client("files").await?;  // grab one server's client (lazily built)
+manager.reap_idle().await;                     // reap idle handles
 // manager.shutdown().await;                     // shut everything down
 ```
 
@@ -2718,11 +2794,11 @@ let lease = guard.enter(4000)?; // enter one sampling; returns a SamplingLease t
 Aggregates multiple MCP servers behind one entry point, routing by the `server` parameter:
 
 ```rust
-use langchainrust::mcp::{MCPGateway, GatewayServerSpec, MCPConfig};
+use langchainrust::mcp::{MCPGateway, GatewayServerSpec};
 
 let gateway = MCPGateway::new();
-gateway.register(GatewayServerSpec::new("files", MCPConfig::stdio("npx", vec!["filesystem".into(), "/tmp".into()]))).await?;
-gateway.register(GatewayServerSpec::new("db", MCPConfig::sse("http://localhost:9000/sse"))).await?;
+gateway.register(GatewayServerSpec::new("files", "http://localhost:9001/mcp")).await?;
+gateway.register(GatewayServerSpec::new("db", "http://localhost:9002/mcp")).await?;
 gateway.sync_all().await?; // pull tools from all servers
 
 let tools = gateway.as_base_tools().await?; // auto-prefixed by server, no collisions
@@ -2730,9 +2806,9 @@ let tools = gateway.as_base_tools().await?; // auto-prefixed by server, no colli
 
 Companion capabilities:
 - **`ServerSandbox`**: `ParamRule` (parameter allow/deny lists, type checks), `EgressPolicy` (outbound policy restricting a tool call's network / file scope)
-- **`PartialContent`**: streaming tool results returned in chunks; `stream_tool_call` pushes while executing
 - **`TenantGateway`**: multi-tenant isolation — per-tenant tool namespaces + quotas + access control
 - **`ToolOrchestrator`**: tool DAG orchestration — auto-orders / parallelizes once dependencies are declared
+- **`MethodRateLimiter`**: client-side per-method rate limiting (a hit returns -32002 without a network round trip)
 - **`VersionPolicy`**: multi-version MCP protocol negotiation (`VersionPolicy::Latest` / `Pin("2024-11-05")`)
 
 ### MCP Server Primitive Wiring ✨ v0.18.0
@@ -3143,7 +3219,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.21.0", features = ["local-candle"] }
+langchainrust = { version = "0.22.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -3326,7 +3402,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["chromadb"] }
+langchainrust = { version = "0.22.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3570,7 +3646,7 @@ for result in results {
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4276,7 +4352,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.22.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4428,7 +4504,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -4502,14 +4578,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["redis-storage"] }
+langchainrust = { version = "0.22.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4610,7 +4686,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.21.0"
+lc-testkit = "0.22.0"
 ```
 
 ```rust
@@ -4715,6 +4791,69 @@ let task = client.cancel_task(&task.id).await?;
 
 **Current boundary**: `tasks/send` / `tasks/get` / `tasks/cancel` and `AgentCard` are implemented; task state-machine extensions, auth (token), and streaming push are planned (⏳). A deployment example lives in the repo at `crates/lc/examples/a2a_http_server.rs` (axum HTTP wrapper).
 
+### v1.0.1: Multi-Transport Declaration (supportedInterfaces) ✨ v0.22.0
+
+**The problem it solves**: a v0.3 Agent Card can only declare "one protocol version + one transport" — serving both JSON-RPC and HTTP+JSON clients required issuing two cards. A2A v1.0.1 restructures that single field into `supportedInterfaces[]`: one card declares multiple `(protocolVersion, transport, url)` combinations, and each interface can carry an enterprise tenant tag.
+
+```rust
+use langchainrust::a2a::protocol::{AgentCard, AgentInterface, A2ATransport, A2A_VERSION_V101};
+
+let card = AgentCard::new("agent-a", "A helpful agent", "https://a.example")
+    .with_supported_interface(AgentInterface::new(
+        A2A_VERSION_V101,           // "1.0.1", a separate protocolVersion per interface
+        A2ATransport::HttpJson,     // JsonRpc | HttpJson | Grpc
+        "https://a.example/a2a",
+    ))
+    .with_supported_interface(
+        AgentInterface::new("1.0.1", A2ATransport::JsonRpc, "https://a.example/a2a/jsonrpc")
+            .with_tenant("acme"),   // enterprise multi-tenancy (optional)
+    );
+
+assert!(card.is_v101());        // whether the card declares any v1.0.1 interface
+```
+
+The old fields are kept (v0.3 reader compatibility); new cards should fill `supportedInterfaces` and treat the old fields as fallback.
+
+**Negotiation (`negotiate`)**: after fetching the card, the client picks a mutually supported interface given "which transport I want + which versions I speak"; a miss is a clear error, not a guess:
+
+```rust
+// client_versions is the list of protocol versions the client supports;
+// a hit returns the corresponding AgentInterface
+let picked = card.negotiate(A2ATransport::HttpJson, &["1.0.1", "1.0"])?;
+```
+
+### Card Signing (JWS HS256) ✨ v0.22.0
+
+**The problem it solves**: the Agent Card is the core of discovery — clients use it to decide who to send tasks to and with which protocol. A man-in-the-middle tampering with the card (swapping the endpoint, downgrading the protocol) is a supply-chain attack. v1.0.1 provides card signing: the card JSON is canonicalized RFC 8785-lite (recursive key ordering) and then HMAC-SHA256 signed into a compact JWS.
+
+```rust
+use langchainrust::a2a::client::{sign_agent_card, verify_card_signature};
+use langchainrust::a2a::protocol::AgentCard;
+
+let secret = b"shared-secret-between-registrar-and-clients";
+
+// Publisher (registry / the agent itself): computes the canonical-JSON signature
+// in place and hex-writes it into card.signature
+let mut card = AgentCard::new("agent-a", "A helpful agent", "https://a.example");
+sign_agent_card(&mut card, secret)?;
+
+// Consumer (client): verify. Tampering with any field (endpoint / version / capability) fails
+verify_card_signature(&card, secret)?;
+
+// Or operate on the compact JWS token directly (keeps the card field free; header-friendly):
+use langchainrust::a2a::client::{sign_card_jws, verify_card_jws};
+let jws = sign_card_jws(&card, secret)?;
+verify_card_jws(&card, &jws, secret)?;
+
+// Anti-algorithm-confusion: a token whose alg is not HS256, or a card/token
+// mismatch, is rejected outright
+```
+
+Boundaries (honest disclosure):
+- **HS256 symmetric key**: the registry and clients share a secret; ES256 asymmetric signing is planned for 0.22.1;
+- **Canonicalization is RFC 8785-lite** (recursive key ordering), not full JCS (number / unicode edge cases differ);
+- **Expiry is carried by the card's own `expiresAt` field**; the signature embeds no timestamp claim.
+
 ### Key Behaviors and Boundaries
 
 | Capability | Status |
@@ -4723,8 +4862,12 @@ let task = client.cancel_task(&task.id).await?;
 | `tasks/get` | Implemented (retrieves by task ID) |
 | `tasks/cancel` | Implemented (transitions task status) |
 | Agent Card discovery | Implemented |
+| v1.0.1 `supportedInterfaces` multi-transport declaration + negotiation | Implemented ✨ v0.22.0 |
+| Card signing JWS HS256 (RFC 8785-lite canonicalization) | Implemented ✨ v0.22.0 (ES256 / full JCS deferred to 0.22.1) |
+| gRPC binding | ⛔ Deferred to 0.22.1 (tonic codegen needs protoc, not hermetic) |
+| API key / Static Bearer auth | Implemented (configurable secret, HMAC/JWS mode) |
+| OAuth / OIDC binding | ⏳ Planned (0.22.1) |
 | Task state-machine extensions (submitted → working → terminal) | ⏳ Planned |
-| Auth (token) | ⏳ Planned |
 | Streaming push | ⏳ Planned |
 | TLS / rate limiting | ⏳ Planned; add in the HTTP layer before production deployment |
 

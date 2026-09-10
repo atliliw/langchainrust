@@ -1,4 +1,5 @@
 // lc-sessions/src/session_runnable.rs
+#![allow(deprecated)]
 //! SessionManagerRunnable — an LCEL Runnable adapter over persistent sessions
 
 use async_trait::async_trait;

@@ -64,7 +64,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
     /// Calls the LLM and counts tokens.
     ///
     /// Inherent method (kept for backward compatibility); delegates to
-    /// [`Self::chat_tracked`]. When the model is reached through
+    /// `Self::chat_tracked`. When the model is reached through
     /// `dyn BaseChatModel` (e.g. inside an agent), the trait `chat` takes over —
     /// both count through the same helper, so the two paths never diverge.
     pub async fn chat(

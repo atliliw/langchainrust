@@ -1,19 +1,20 @@
-//! Example / deployable MCP SSE server.
+//! Example / deployable MCP stateless HTTP server.
 //!
-//! Exposes langchainrust's built-in tools as a networked MCP server via `MCPServer::serve_sse`,
-//! callable by MCP clients (MCPClient / Cursor / Claude Desktop, etc.).
+//! Exposes langchainrust's built-in tools as a networked MCP server via `MCPServer::serve_http`,
+//! callable by stateless MCP clients (StatelessMcpClient, or any HTTP client that POSTs
+//! self-contained JSON-RPC with the `Mcp-Method` header).
 //!
 //! # Run (local testing)
 //!
 //! ```powershell
-//! cargo run -p langchainrust --example mcp_sse_server
+//! cargo run -p langchainrust --example mcp_http_server
 //! ```
 //!
 //! # Build a standalone executable (for deployment)
 //!
 //! ```powershell
-//! cargo build --release -p langchainrust --example mcp_sse_server
-//! # Artifact: target/release/examples/mcp_sse_server.exe, copy it to the remote server and run
+//! cargo build --release -p langchainrust --example mcp_http_server
+//! # Artifact: target/release/examples/mcp_http_server.exe, copy it to the remote server and run
 //! ```
 //!
 //! # Runtime configuration (environment variables, not hardcoded)
@@ -22,19 +23,13 @@
 //! |---|---|---|
 //! | `MCP_SERVER_HOST` | `127.0.0.1` | Bind address (default local-only; for remote access set it explicitly to `0.0.0.0` and configure auth / network whitelist yourself) |
 //! | `MCP_SERVER_PORT` | `8788` | Listening port |
-//! | `MCP_SERVER_PUBLIC_URL` | see below | Base URL clients use to reach this server |
-//!
-//! For remote deployment you **must set** `MCP_SERVER_PUBLIC_URL`, otherwise the POST address
-//! the server sends to clients would be written as `0.0.0.0` and clients could not connect.
-//! Local testing can omit it.
 //!
 //! ```powershell
 //! $env:MCP_SERVER_PORT = "8788"
-//! $env:MCP_SERVER_PUBLIC_URL = "http://<your-server-public-ip-or-domain>:8788"
-//! .\target\release\examples\mcp_sse_server.exe
+//! .\target\release\examples\mcp_http_server.exe
 //! ```
 //!
-//! On startup it prints the client connection endpoint: `http://<host>:<port>/sse`.
+//! On startup it prints the client connection endpoint: `http://<host>:<port>/mcp`.
 
 use langchainrust::mcp::{MCPRequest, MCPServer};
 use langchainrust::{
@@ -78,26 +73,18 @@ async fn main() {
             eprintln!("failed to bind {host}:{port}: {e}");
             std::process::exit(1);
         });
-    let bound = listener.local_addr().unwrap();
 
-    // 3. Base URL for clients: required for remote deployment, otherwise 0.0.0.0 cannot be reached
-    let public_base = std::env::var("MCP_SERVER_PUBLIC_URL").unwrap_or_else(|_| {
-        eprintln!("⚠ MCP_SERVER_PUBLIC_URL is not set; remote clients will be unable to reach the POST address.");
-        eprintln!("  set it to: http://<server-public-ip-or-domain>:<port>");
-        format!("http://{bound}")
-    });
-
-    // 4. Build the server, print the registered tools, and start serving
+    // 3. Build the server, print the registered tools, and start serving
     let server = Arc::new(build_server());
     let names = registered_tool_names(&server).await;
     println!("registered {} tools: {}", names.len(), names.join(", "));
 
-    let sse_url = server.serve_sse(listener, public_base);
-    println!("MCP SSE server started ✅");
-    println!("client connection endpoint: {sse_url}");
+    let url = server.serve_http(listener);
+    println!("MCP stateless HTTP server started ✅");
+    println!("client connection endpoint: {url}");
     println!("press Ctrl+C to stop.");
 
-    // 5. Keep the process alive (the receive loop runs in a background task)
+    // 4. Keep the process alive (the accept loop runs in a background task)
     std::future::pending::<()>().await;
 }
 

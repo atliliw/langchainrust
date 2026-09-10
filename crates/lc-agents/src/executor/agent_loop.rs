@@ -6,7 +6,7 @@
 //! `plan.rs` (cached planning).
 
 use super::budget::{budget_iteration_gate, budget_token_gate, budget_tool_gate};
-use super::engine::AgentExecutor;
+use super::engine::{AgentExecutor, MaxIterationsPolicy};
 use super::tools::{run_tool_with_timeout, tool_error_observation};
 use super::AgentError;
 use crate::approval::ApprovalDecision;
@@ -157,6 +157,22 @@ impl AgentExecutor {
                 }
 
                 AgentOutput::Action(action) => {
+                    // 0.22.0 audit fix (H-A5): the ReAct parse-repair pseudo-tool is
+                    // not a real tool — never executed. Its input is fed back as the
+                    // observation so the model can re-emit in the correct format;
+                    // the agent hard-fails if it fails to parse twice in a row.
+                    if action.tool == crate::react::agent::PARSE_ERROR_TOOL {
+                        let observation = match &action.tool_input {
+                            ToolInput::String { value } => value.clone(),
+                            ToolInput::Object { value } => value.to_string(),
+                        };
+                        if self.verbose {
+                            log::info!("Parse repair observation: {}", observation);
+                        }
+                        intermediate_steps.push(AgentStep::new(action, observation));
+                        continue;
+                    }
+
                     metrics.tool_calls += 1;
                     if self.verbose {
                         log::info!("Action: {}({})", action.tool, action.tool_input);
@@ -243,13 +259,19 @@ impl AgentExecutor {
             }
         }
 
-        // Reaching the iteration cap returns a placeholder string. It must not be only
-        // verbose-visible: the caller cannot distinguish a real answer from the
-        // placeholder, so log it explicitly at warning level.
+        // 0.22.0 C4 fix: the iteration cap is a failure, not a silent
+        // placeholder. Default policy fails the run with `MaxIterationsReached`
+        // so callers (PlanExecute included) can distinguish "did not converge"
+        // from a real answer; `MaxIterationsPolicy::Placeholder` restores the
+        // legacy ≤ 0.21.x behavior.
         log::warn!(
-            "agent reached max iterations {} without returning a final answer; returning a placeholder result (not the real final answer)",
-            self.max_iterations
+            "agent reached max iterations {} without returning a final answer (policy: {:?})",
+            self.max_iterations,
+            self.on_max_iterations
         );
+        if self.on_max_iterations == MaxIterationsPolicy::Error {
+            return Err(AgentError::MaxIterationsReached);
+        }
 
         let finish = self.agent.return_stopped_response(&intermediate_steps);
         Ok(finish.output().unwrap_or("").to_string())

@@ -67,6 +67,8 @@
   - AI 透明披露（disclose） ✨ v0.21.0
 - [Token 计数器](#token-counter)
 - [会话](#sessions)
+  - 事件溯源重写 ✨ v0.22.0（推荐路径）
+  - 会话分叉（fork）
   - 会话生命周期 ✨ v0.15.0
   - 接入记忆系统 ✨ v0.15.0
 - [MCP](#mcp)
@@ -118,6 +120,8 @@
   - Checkpointer 家族 ✨ v0.15.0
   - 子图 / 动态规划 / 流式 ✨ v0.15.0
 - [A2A 智能体协议](#a2a-agent-protocol) ✨ v0.4.1
+  - v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
+  - 卡片签名（JWS HS256） ✨ v0.22.0
 - [with_structured_output](#with_structured_output) ✨ v0.4.1
   - 原生 JSON Schema 引擎约束 ✨ v0.21.0
 - [FileVectorStore](#filevectorstore) ✨ v0.4.1
@@ -153,7 +157,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.21.0"
+langchainrust = "0.22.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2532,6 +2536,8 @@ let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
 
 ## Sessions
 
+> **⚠️ v0.22.0 起推荐事件溯源路径**：本节前半部分介绍的 `SessionManager` 已标 `#[deprecated]`（0.23.0 移除，功能保留）。新代码请直接用 [`EventSessionManager`](#事件溯源重写--v0220推荐路径)（见下方"事件溯源重写"节）；存量代码升级后仍可编译运行，只会出现 deprecation 警告。
+
 **解决什么问题**：多轮对话必须记住上下文——用户上一轮说了什么、助手怎么回的。但"记在哪、怎么存、怎么取"是每个应用都要重复实现的样板。`SessionManager` 把会话抽象成生命周期管理：创建会话 → 往里写对话 → 随时取历史 → 归档/清理。同时天然支持**多会话隔离**：每个会话有独立 id 和归属用户，不同用户、不同话题的对话互不串扰。
 
 **核心三件套**：`Session`（会话本身）← `SessionStore`（怎么存）← `SessionManager`（怎么用）。
@@ -2608,31 +2614,103 @@ let r = manager.chat(&id, &llm, "问题".to_string()).await?;
 - **会话 vs 检查点**：会话存"聊了什么"；检查点（Checkpointer）存"图执行到哪一步"（lc-langgraph）。两者都涉及持久化，但语义不同。
 - **存储选型**：测试、单进程场景用 `MemorySessionStore` 足够；多实例 / 需要跨进程共享历史时，换数据库或 Redis 后端实现 `SessionStore`。
 
+### 事件溯源重写 ✨ v0.22.0（推荐路径）
+
+**解决什么问题**：旧 `SessionManager` 是"改写式"——每次对话把整个 `Session` 读出来、改完写回去。三个硬伤：① 进程崩溃在"读-改-写"中间会**丢消息或丢整轮**；② 无法分叉——想试验一个分支对话只能复制整个会话；③ 没有"时间旅行"——无法回答"第 5 轮时的历史长什么样"。
+
+0.22.0 起 lc-sessions 重写为**事件溯源（Event Sourcing）**：会话不再是可变对象，而是一条**只追加（append-only）的事件日志**。每次对话只追加事件，历史 = 从头投影（replay），崩溃安全、可分叉、可回放。
+
+**核心四件套**：`SessionEvent`（事件）← `EventStore`（怎么存）← `EventSessionManager`（怎么用）← `project()`（怎么投影）。
+
+```rust
+use langchainrust::sessions::{EventSessionManager, MemoryEventStore, AutoCompaction};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let manager = EventSessionManager::new(Arc::new(MemoryEventStore::new()))
+    .with_max_context_turns(10)                                  // 轮窗（默认全量）
+    .with_auto_compaction(AutoCompaction::new(20)?);             // 超 20 轮自动压快照
+
+let id = manager.create_session().await?;                        // uuid v7
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?;
+
+let history = manager.history(&id).await?;   // 投影后的 Vec<Message>
+// 清理/归档/删除:向 EventStore 追加 Metadata 事件(日志不可变,见下文"事件类型")
+```
+
+**旧 API → 新 API 对照**（旧 `SessionManager` / `SessionManagerRunnable` 标 `#[deprecated]`，保留到 0.23.0 移除，`#[allow(deprecated)]` 可静默）：
+
+| 旧（0.21.x） | 新（0.22.0） | 语义变化 |
+|---|---|---|
+| `SessionManager::new(Arc<dyn SessionStore>)` | `EventSessionManager::new(Arc<dyn EventStore>)` | 存储换为 append-only 事件日志；`MemoryEventStore` 对应 `MemorySessionStore` |
+| `create_session() / create_session_for(user)` | `create_session()`（uuid v7） | 会话存在性 = 日志非空；用户归属走 `Metadata` 事件 |
+| `chat(&id, &llm, msg)` | `chat(&id, &llm, msg)` | 同签名同语义，持久化从"改写"变为"追加"——崩溃安全 |
+| `history(&id)` | `history(&id)` / `replay_session(&id)` | history = 投影后的消息；`replay_session` 给出旧式可变 `Session` 视图 |
+| （无） | `fork_session(&id, branch, until)` | **新**：从主干复制前缀到新分支，主干不受影响 |
+| `max_context_messages(n)`（消息计数窗） | `with_max_context_turns(n)`（轮窗） | n=1 含完整上一轮 + 当前消息；保证 user/ai 成对、无孤儿工具结果 |
+| （无） | `with_auto_compaction(AutoCompaction)` | **新**：超 N 轮自动追加确定性 Snapshot 事件（无 LLM 调用） |
+| `clear / archive / delete_session` | 直接向 `EventStore` 追加 `Metadata` 事件(0.23.0 提供封装方法) | 事件日志不可变,"清理"变为追加状态事件 |
+| `SessionStore`（自定义存储 trait） | `EventStore` | 四方法：`append / append_batch / read / fork`；append 幂等键 `(session, branch, id)` |
+
+### 会话分叉（fork）
+
+```rust
+// 从主干复制"到某事件序号为止"的前缀到新分支,主干不受影响
+// 返回的是一个绑定到新分支的 manager(同一 session_id,事件序号独立)
+let mut experiment = manager.fork_session(&id, "experiment", None).await?;
+// 继续在分支上 chat:写进 "experiment" 分支,主干看不到
+experiment.chat(&id, &llm, "分支消息".to_string()).await?;
+// 对同一 (session, branch) 重复 fork 是幂等的——前缀一致,不重复
+```
+
+`until_id: Option<u64>` 是事件序号(从 0 起):只复制到该序号为止——"回到第 5 轮再试另一种回答"就是 `fork_session(&id, "retry", Some(5))`。
+
+### 崩溃安全与回放
+
+- **幂等追加**：`append` 以 `(session_id, branch, id)` 为幂等键，同一事件重放不会重复写入——进程在"追加到一半"崩溃后，重启重放残缺批次是安全的。
+- **投影（project）**：`project(&events)` / `to_session(&events)` 从事件流重建会话状态；孤儿工具结果（有 tool result 无对应 tool call）在投影时被检测并报错，保证喂给 LLM 的历史永远成对合法。
+- **检查点占位**：`SessionCheckpoint` trait + `NoopCheckpoint` 已就位，持久化检查点（把投影落库）在 0.23.0 接入。
+
+### 事件类型
+
+| `EventPayload` 变体 | 含义 |
+|---|---|
+| `SessionCreated` | 会话建立（uuid v7 时间有序） |
+| `UserMessage` | 用户消息 |
+| `AssistantMessage` | 助手回复（一轮一个 Turn） |
+| `ToolCall` / `ToolResult` | 工具调用与结果（成对追加） |
+| `Snapshot` | 确定性压缩快照（投影时用它替代重放前缀） |
+| `Metadata` | 生命周期/归属等键值状态（clear / archive / delete / user） |
+
+### 事件存储选型
+
+测试、单进程用 `MemoryEventStore` 足够；多实例 / 跨进程 / 需要审计历史时，实现 `EventStore`（数据库 / Redis / Kafka 均可）——append-only + 幂等键的契约对后端非常友好，不存在"读改写竞态"。
+
 ---
 
 ## MCP
 
-[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。`MCPClient` 连接任意 MCP Server 获取工具，并将其适配为 `BaseTool` 供 Agent 使用。
+[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。0.22.0 起 lc-mcp 采用**无状态单轨**：每个请求都是自包含的 JSON-RPC HTTP POST（带 `Mcp-Method` / `Mcp-Name` 路由头与 `_meta`），`StatelessMcpClient` 连接任意 MCP Server 获取工具，并将其适配为 `BaseTool` 供 Agent 使用。旧的握手式 `MCPClient`（SSE/stdio 传输）已在 0.22.0 移除。
 
 ```rust
-use langchainrust::mcp::{MCPClient, MCPConfig};
+use langchainrust::mcp::{MCPToolAdapter, StatelessMcpClient};
 use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
 use std::sync::Arc;
 
-// Stdio：启动 MCP Server 子进程
-let config = MCPConfig::stdio(
-    "npx",
-    vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
-);
-// 或 SSE：MCPConfig::sse("http://localhost:3001/sse");
+// 无状态连接：无握手，connect 只构造客户端（不会失败）
+let client = StatelessMcpClient::connect("http://localhost:3001/mcp");
 
-let mut client = MCPClient::connect(config).await?;
 let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
 // 适配为 BaseTool 列表并交给 Agent
-// P0-3: as_tools 自动发现工具,无需先手动调用 list_tools
-let mcp_tools = client.as_tools().await?;
+let mcp_tools: Vec<Arc<dyn BaseTool>> = tools
+    .into_iter()
+    .map(|def| Arc::new(MCPToolAdapter::new(client.clone(), def)) as Arc<dyn BaseTool>)
+    .collect();
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
     mcp_tools,
@@ -2644,13 +2722,13 @@ let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
 client.close().await?;
 ```
 
-`MCPConfig::stdio(command, args)` / `MCPConfig::sse(url)` / `.with_env(k, v)`；`client.call_tool(name, arguments)` 直接调用工具；`as_tools()` 将工具包装为 `MCPToolAdapter`（实现 `BaseTool`）。
+`client.call_tool(name, arguments)` 直接调用工具；`MCPToolAdapter::new(client, def)` 将工具包装为实现 `BaseTool` 的适配器（`namespaced` 变体带 `server:tool` 前缀）；`.with_mrtr(...)` / `.with_answer_provider(...)` 处理 `input_required` 多轮请求；`.with_method_rate_limiter(...)` 做方法级限流。
 
 ---
 
 ### MCPServer
 
-与 `MCPClient` 对称：将本地 `BaseTool` 暴露为 MCP Server，供 Claude Desktop / Cursor 等宿主使用。支持 `initialize` / `tools/list` / `tools/call`。
+与 `StatelessMcpClient` 对称：将本地 `BaseTool` 暴露为 MCP Server。支持 `initialize` / `tools/list` / `tools/call`。
 
 ```rust
 use langchainrust::{MCPServer, Calculator, BaseTool};
@@ -2664,25 +2742,21 @@ let server = MCPServer::new()
 server.serve_stdio().await?;
 ```
 
-`server.handle_request(req)` 用于自定义传输层的单步 JSON-RPC 处理。
-
-### 传输层韧性 ✨ v0.15.0
-
-MCP 连接自动重连:断线后按指数退避(0.5s 起,上限 30s)重试,Server 重启后自动恢复。`MCPServer` 侧同样具备热重启能力,宿主重连即恢复会话。
+`server.handle_request(req)` 用于自定义传输层的单步 JSON-RPC 处理；`server.serve_http(listener)` 把服务起成无状态 HTTP 服务（`StatelessMcpClient::connect(url)` 直连），示例见 `examples/mcp_http_server.rs`。
 
 ### ConnectionManager（连接池） ✨ v0.15.0
 
-管理多个 `MCPClient` 生命周期,自动重连、统一关闭:
+管理多个 `StatelessMcpClient` 的托管注册表，惰性构建、统一回收：
 
 ```rust
 use langchainrust::mcp::{ConnectionManager, ServerSpec};
 
 let manager = ConnectionManager::new();
-manager.register(ServerSpec::new("files", MCPConfig::sse("http://localhost:3001/sse"))).await?;
-manager.register(ServerSpec::new("tools", MCPConfig::stdio("npx", vec!["...".into()]))).await?;
+manager.register(ServerSpec::new("files", "http://localhost:3001/mcp")).await?;
+manager.register(ServerSpec::new("tools", "http://localhost:3002/mcp").keep_alive()).await?;
 
-let client = manager.client("files").await?;  // 取某个 server 的连接
-manager.reap_idle().await;                     // 回收空闲连接
+let client = manager.client("files").await?;  // 取某个 server 的客户端（惰性构建）
+manager.reap_idle().await;                     // 回收空闲句柄
 // manager.shutdown().await;                     // 统一关闭
 ```
 
@@ -2729,11 +2803,11 @@ let lease = guard.enter(4000)?; // 进入一次采样,返回 SamplingLease,drop 
 把多个 MCP server 聚合为一个统一入口,按 `server` 参数路由:
 
 ```rust
-use langchainrust::mcp::{MCPGateway, GatewayServerSpec, MCPConfig};
+use langchainrust::mcp::{MCPGateway, GatewayServerSpec};
 
 let gateway = MCPGateway::new();
-gateway.register(GatewayServerSpec::new("files", MCPConfig::stdio("npx", vec!["filesystem".into(), "/tmp".into()]))).await?;
-gateway.register(GatewayServerSpec::new("db", MCPConfig::sse("http://localhost:9000/sse"))).await?;
+gateway.register(GatewayServerSpec::new("files", "http://localhost:9001/mcp")).await?;
+gateway.register(GatewayServerSpec::new("db", "http://localhost:9002/mcp")).await?;
 gateway.sync_all().await?; // 拉取全部 server 的工具
 
 let tools = gateway.as_base_tools().await?; // 自动加 server 前缀,互不冲突
@@ -2741,9 +2815,9 @@ let tools = gateway.as_base_tools().await?; // 自动加 server 前缀,互不冲
 
 配套能力:
 - **`ServerSandbox`**:`ParamRule`(参数白名单/黑名单/类型校验)、`EgressPolicy`(出站策略,限制工具调用的网络/文件范围)
-- **`PartialContent`**:流式工具结果分块返回,`stream_tool_call` 边执行边推送
 - **`TenantGateway`**:多租户隔离,每租户独立的工具命名空间 + 配额 + 访问控制
 - **`ToolOrchestrator`**:工具 DAG 编排,声明依赖关系后自动排序/并行执行
+- **`MethodRateLimiter`**:client 侧方法级限流(命中即返回 -32002,不发网络请求)
 - **`VersionPolicy`**:多版本 MCP 协议协商(`VersionPolicy::Latest` / `Pin("2024-11-05")`)
 
 ### MCP Server 原语接线 ✨ v0.18.0
@@ -3156,7 +3230,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.21.0", features = ["local-candle"] }
+langchainrust = { version = "0.22.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -3339,7 +3413,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["chromadb"] }
+langchainrust = { version = "0.22.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3584,7 +3658,7 @@ for result in results {
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4294,7 +4368,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.22.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4448,7 +4522,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -4522,14 +4596,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["redis-storage"] }
+langchainrust = { version = "0.22.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4631,7 +4705,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.21.0"
+lc-testkit = "0.22.0"
 ```
 
 ```rust
@@ -4736,6 +4810,66 @@ let task = client.cancel_task(&task.id).await?;
 
 **当前边界**：`tasks/send` / `tasks/get` / `tasks/cancel` 与 `AgentCard` 已实现；任务状态机扩展、鉴权（token）、流式推送为规划项（⏳）。部署示例见仓库 `crates/lc/examples/a2a_http_server.rs`（axum HTTP 封装）。
 
+### v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
+
+**解决什么问题**：v0.3 的 Agent Card 只能声明"一种协议版本 + 一种传输"——同时服务 JSON-RPC 和 HTTP+JSON 两类客户端时只能起两张卡。A2A v1.0.1 把单字段重构为 `supportedInterfaces[]`：一张卡声明多个 `(protocolVersion, transport, url)` 组合，每个接口还可以带企业租户标签。
+
+```rust
+use langchainrust::a2a::protocol::{AgentCard, AgentInterface, A2ATransport, A2A_VERSION_V101};
+
+let card = AgentCard::new("agent-a", "A helpful agent", "https://a.example")
+    .with_supported_interface(AgentInterface::new(
+        A2A_VERSION_V101,           // "1.0.1",每个接口独立 protocolVersion
+        A2ATransport::HttpJson,     // JsonRpc | HttpJson | Grpc
+        "https://a.example/a2a",
+    ))
+    .with_supported_interface(
+        AgentInterface::new("1.0.1", A2ATransport::JsonRpc, "https://a.example/a2a/jsonrpc")
+            .with_tenant("acme"),   // 企业多租户(可选)
+    );
+
+assert!(card.is_v101());        // 卡片是否声明了 v1.0.1 接口
+```
+
+旧字段保留（v0.3 读者兼容）；新卡应填 `supportedInterfaces`，旧字段视为后备。
+
+**协商（negotiate）**：客户端拿到卡片后，用"我要什么传输 + 我支持哪些版本"挑一个双方都匹配的接口，匹配不到返回清晰错误而不是猜：
+
+```rust
+// client_versions 为客户端支持的协议版本列表;命中即返回该 AgentInterface
+let picked = card.negotiate(A2ATransport::HttpJson, &["1.0.1", "1.0"])?;
+```
+
+### 卡片签名（JWS HS256） ✨ v0.22.0
+
+**解决什么问题**：Agent Card 是发现协议的核心——客户端拿它决定把任务发给谁、用什么协议。卡片被中间人篡改（换端点、降协议版本）就是一次供应链攻击。v1.0.1 提供卡片签名：签名前先把卡片 JSON 按 RFC 8785-lite 规范化（递归键排序），再打 HMAC-SHA256 紧凑型 JWS。
+
+```rust
+use langchainrust::a2a::client::{sign_agent_card, verify_card_signature};
+use langchainrust::a2a::protocol::AgentCard;
+
+let secret = b"shared-secret-between-registrar-and-clients";
+
+// 发布方(注册中心/Agent 自己):就地计算规范 JSON 签名,hex 写入 card.signature 字段
+let mut card = AgentCard::new("agent-a", "A helpful agent", "https://a.example");
+sign_agent_card(&mut card, secret)?;
+
+// 消费方(客户端):验证。任何字段被篡改(端点/版本/能力)都会验证失败
+verify_card_signature(&card, secret)?;
+
+// 也可以直接操作紧凑型 JWS token(不落卡片字段,适合放响应头):
+use langchainrust::a2a::client::{sign_card_jws, verify_card_jws};
+let jws = sign_card_jws(&card, secret)?;
+verify_card_jws(&card, &jws, secret)?;
+
+// 防算法混淆:token 里 alg 不是 HS256、或卡与 token 不匹配,一律拒绝
+```
+
+边界（诚实声明）：
+- **HS256 对称密钥**：注册方与客户端共享 secret；ES256 非对称签名在 0.22.1 规划；
+- **JSON 规范化为 RFC 8785-lite**（递归键排序），非完整 JCS（数字/unicode 边角与完整 JCS 有差异）；
+- **有效期由卡片自身的 `expiresAt` 字段承载**，签名不含时间戳声明。
+
 ### 关键行为与边界
 
 | 能力 | 状态 |
@@ -4744,8 +4878,12 @@ let task = client.cancel_task(&task.id).await?;
 | `tasks/get` | 已实现（按任务 ID 检索） |
 | `tasks/cancel` | 已实现（转换任务状态） |
 | Agent Card 发现 | 已实现 |
+| v1.0.1 `supportedInterfaces` 多传输声明 + 协商 | 已实现 ✨ v0.22.0 |
+| 卡片签名 JWS HS256（RFC 8785-lite 规范化） | 已实现 ✨ v0.22.0（ES256 / 完整 JCS 挪 0.22.1） |
+| gRPC 绑定 | ⛔ 挪 0.22.1（tonic codegen 需 protoc，非 hermetic） |
+| API key / Static Bearer 鉴权 | 已实现（配置化 secret，HMAC/JWS 模式） |
+| OAuth / OIDC 绑定 | ⏳ 规划（0.22.1） |
 | 任务状态机扩展（submitted → working → terminal） | ⏳ 规划 |
-| 鉴权（token） | ⏳ 规划 |
 | 流式推送 | ⏳ 规划 |
 | TLS / 速率限制 | ⏳ 规划，生产部署前建议在 HTTP 层自补 |
 

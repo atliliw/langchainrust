@@ -171,6 +171,11 @@ pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = lc_vector_stores::Chu
     params: BM25Params,
     tokenizer: Tokenizer,
     config: AutoMergingConfig,
+    /// 0.22.0 C5 fix: chunk_id → slot. Re-adding an existing chunk id
+    /// **overwrites** its slot (postings / term freqs / doc length) instead
+    /// of appending a duplicate that inflates `n_docs`, skews avgdl/IDF and
+    /// makes the same parent surface multiple times in results.
+    chunk_id_slots: HashMap<String, usize>,
 }
 
 impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
@@ -194,6 +199,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
             params: BM25Params::default(),
             tokenizer: Tokenizer::new(),
             config,
+            chunk_id_slots: HashMap::new(),
         }
     }
 
@@ -205,18 +211,41 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
     }
 
     /// Adds a chunk index (the content is already in the store)
+    ///
+    /// 0.22.0 C5 fix: re-adding an existing `chunk_id` overwrites its slot in
+    /// place (idempotent re-ingest) instead of appending a duplicate that
+    /// inflated `n_docs` and skewed `avgdl` / IDF.
     pub fn add_chunk_index(
         &mut self,
         chunk_id: impl Into<String>,
         parent_id: impl Into<String>,
         content: &str,
     ) {
-        let chunk_idx = self.n_docs;
         let chunk_id = chunk_id.into();
         let parent_id = parent_id.into();
 
         let terms = self.tokenizer.tokenize(content);
         let term_freq = self.compute_term_freq(&terms);
+        let doc_length: usize = term_freq.values().sum();
+
+        // C5: idempotent overwrite for a known chunk id.
+        if let Some(&slot) = self.chunk_id_slots.get(&chunk_id) {
+            for (term, _) in &self.chunk_term_freqs[slot] {
+                if let Some(postings) = self.term_index.get_mut(term) {
+                    postings.retain(|(idx, _)| *idx != slot);
+                    if postings.is_empty() {
+                        self.term_index.remove(term);
+                    }
+                }
+            }
+            self.chunk_term_freqs[slot] = term_freq;
+            self.doc_lengths[slot] = doc_length;
+            self.update_avgdl();
+            self.idf_cache.clear();
+            return;
+        }
+
+        let chunk_idx = self.n_docs;
 
         // Update the inverted index
         for (term, freq) in &term_freq {
@@ -233,10 +262,10 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
             .push(chunk_idx);
 
         // Store the chunk_id and term frequencies (needed for BM25 scoring)
+        self.chunk_id_slots.insert(chunk_id.clone(), chunk_idx);
         self.chunk_id_list.push(chunk_id);
         self.chunk_term_freqs.push(term_freq.clone());
 
-        let doc_length: usize = term_freq.values().sum();
         self.doc_lengths.push(doc_length);
         self.n_docs += 1;
         self.update_avgdl();
@@ -321,6 +350,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         self.avgdl = 0.0;
         self.n_docs = 0;
         self.idf_cache.clear();
+        self.chunk_id_slots.clear();
     }
 }
 
@@ -574,7 +604,20 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         let mut results: Vec<ChunkedSearchResult> = Vec::new();
 
         for (parent_id, matched_leaves) in parent_stats {
-            let ratio = matched_leaves.len() as f32 / leaves_per_parent as f32;
+            // 0.22.0 H-R1: AutoMerging is a "hit-coverage" semantic — the ratio
+            // is matched leaves over the parent's ACTUAL leaf count, not the
+            // fixed `leaves_per_parent` config value. The old divisor made a
+            // 2-leaf parent's 2/2 full hit 0.4 (< threshold → never merged)
+            // while a 10-leaf parent merged on just 5/10 hits. Use the real
+            // `parent_to_leaves` count, falling back to the config only when
+            // the parent is unknown (avoids a divide-by-zero).
+            let total_leaves = self
+                .index
+                .parent_to_leaves
+                .get(&parent_id)
+                .map_or(leaves_per_parent, |leaves| leaves.len())
+                .max(1);
+            let ratio = matched_leaves.len() as f32 / total_leaves as f32;
 
             let avg_score =
                 matched_leaves.iter().map(|(_, s)| s).sum::<f64>() / matched_leaves.len() as f64;
@@ -646,7 +689,15 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         let mut results: Vec<ChunkedSearchResult> = Vec::new();
 
         for (parent_id, matched_leaves) in parent_stats {
-            let ratio = matched_leaves.len() as f32 / leaves_per_parent as f32;
+            // 0.22.0 H-R1: see auto_merge_sync — ratio is hit-coverage over the
+            // parent's actual leaf count, not the fixed config value.
+            let total_leaves = self
+                .index
+                .parent_to_leaves
+                .get(&parent_id)
+                .map_or(leaves_per_parent, |leaves| leaves.len())
+                .max(1);
+            let ratio = matched_leaves.len() as f32 / total_leaves as f32;
 
             let avg_score =
                 matched_leaves.iter().map(|(_, s)| s).sum::<f64>() / matched_leaves.len() as f64;
@@ -819,6 +870,14 @@ impl ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
         let data: ChunkedIndexData = bincode::deserialize(&bytes)?;
         let params: BM25Params = data.params.into();
 
+        // Rebuild the chunk_id → slot map from the persisted id list (C5).
+        let chunk_id_slots: HashMap<String, usize> = data
+            .chunk_id_list
+            .iter()
+            .enumerate()
+            .map(|(idx, id)| (id.clone(), idx))
+            .collect();
+
         Ok(Self {
             index: ChunkedBM25Index {
                 store,
@@ -833,6 +892,7 @@ impl ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
                 params,
                 tokenizer: Tokenizer::new(),
                 config: data.config,
+                chunk_id_slots,
             },
         })
     }

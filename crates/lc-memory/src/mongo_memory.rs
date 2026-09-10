@@ -225,7 +225,13 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
                 if matches!(msg.message_type, lc_schema::MessageType::Human) {
                     chat_memory.add_user_message(&msg.content);
                 } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                    chat_memory.add_ai_message(&msg.content);
+                    // 0.22.0 H-M2: this restore drops Tool messages, so also
+                    // drop assistant messages that carry tool_calls — keeping
+                    // assistant.tool_calls without its tool results is a
+                    // dangling pair → OpenAI/Anthropic 400.
+                    if msg.tool_calls.is_none() {
+                        chat_memory.add_ai_message(&msg.content);
+                    }
                 } else if matches!(msg.message_type, lc_schema::MessageType::System) {
                     chat_memory.add_system_message(&msg.content);
                 }

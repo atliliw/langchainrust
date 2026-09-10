@@ -419,8 +419,12 @@ impl VectorStore for QdrantVectorStore {
         for (doc, embedding) in documents.into_iter().zip(embeddings) {
             let user_id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
 
-            // Qdrant PointId only accepts a UUID or a number, so generate an internal UUID
-            let internal_uuid = Uuid::new_v4();
+            // 0.22.0 C5 fix: the internal point id is **deterministic** —
+            // UUIDv5 over the user doc id. Previously it was a fresh random
+            // UUID per insert, so re-adding the same document created parallel
+            // duplicate vectors that crowded out top-k (the payload `doc_id`
+            // alone cannot dedupe because point ids never match).
+            let internal_uuid = deterministic_point_uuid(&user_id, &self.config.collection_name);
             let point_id = PointId::from(internal_uuid.to_string());
 
             let mut payload = Payload::new();
@@ -596,6 +600,17 @@ impl VectorStore for QdrantVectorStore {
 
         Ok(())
     }
+}
+
+/// 0.22.0 C5: deterministic internal point id — UUIDv5 over
+/// `(collection_name, user_doc_id)` in a fixed namespace. Same document in
+/// the same collection always maps to the same point, so re-ingesting a
+/// document **upserts** it instead of creating parallel duplicate vectors.
+fn deterministic_point_uuid(collection: &str, doc_id: &str) -> Uuid {
+    // Fixed namespace (any constant UUID works; this one is a reserved
+    // example namespace so we are not colliding with DNS/OID/URL names).
+    let namespace = uuid::uuid!("167f0e54-3d37-4a72-a58b-8b2a1c6d5f10");
+    Uuid::new_v5(&namespace, format!("{collection}:{doc_id}").as_bytes())
 }
 
 #[cfg(test)]

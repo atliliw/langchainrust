@@ -102,6 +102,24 @@ pub struct AgentExecutor {
     /// Observability sink (v0.20.2): exports one `AgentMetrics` event per run
     /// (invoke / stream / resume). `None` = off (default). Failures are `warn` only.
     pub(crate) metrics_sink: Option<Arc<dyn MetricsSink>>,
+
+    /// 0.22.0 C4 fix: what to do when the loop exhausts `max_iterations`
+    /// without a final answer. Default **`Error`** — the previous placeholder
+    /// string was indistinguishable from a real answer and downstream
+    /// consumers (PlanExecute) recorded failed steps as completed.
+    pub(crate) on_max_iterations: MaxIterationsPolicy,
+}
+
+/// 0.22.0 C4 fix: behavior when the agent loop exhausts its iteration budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaxIterationsPolicy {
+    /// Fail the run with [`AgentError::MaxIterationsReached`] (default —
+    /// "failure disguised as success" is no longer possible).
+    #[default]
+    Error,
+    /// Legacy behavior (≤ 0.21.x): return the stopped-response placeholder
+    /// string. Opt in explicitly when a caller cannot handle errors.
+    Placeholder,
 }
 
 impl AgentExecutor {
@@ -127,6 +145,7 @@ impl AgentExecutor {
             compaction: None,
             resume_store: None,
             metrics_sink: None,
+            on_max_iterations: MaxIterationsPolicy::default(),
         }
     }
 
@@ -140,6 +159,20 @@ impl AgentExecutor {
                 MAX_MAX_ITERATIONS
             );
         }
+        self
+    }
+
+    /// 0.22.0 C4 fix: chooses what happens when the loop exhausts
+    /// `max_iterations` without a final answer.
+    ///
+    /// - `MaxIterationsPolicy::Error` (default): the run fails with
+    ///   [`AgentError::MaxIterationsReached`] — the caller can distinguish
+    ///   "did not converge" from a real answer, and PlanExecute treats the
+    ///   step as failed instead of completed-with-garbage.
+    /// - `MaxIterationsPolicy::Placeholder`: legacy ≤ 0.21.x behavior —
+    ///   return the stopped-response placeholder string.
+    pub fn with_on_max_iterations(mut self, policy: MaxIterationsPolicy) -> Self {
+        self.on_max_iterations = policy;
         self
     }
 
@@ -637,6 +670,13 @@ impl AgentExecutor {
             )
             .await;
 
+        // 0.22.0 audit fix (H-A9) reconciled with the F7 error-save contract:
+        // the errored round is still part of the conversation — write the user's
+        // input back to memory so the next round does not lose it. But the raw
+        // error text is never stored as assistant output (H-A9): the assistant
+        // slot is left empty, so framework noise can never be mistaken for
+        // assistant reasoning. A save failure only warns; it never masks the
+        // original agent error.
         if let Some(memory) = &self.memory {
             match &result {
                 Ok(output) => {
@@ -650,19 +690,17 @@ impl AgentExecutor {
                         .await
                         .map_err(|e| AgentError::Other(format!("Failed to save memory: {}", e)))?;
                 }
-                // F7: the errored round is still part of the conversation — write the
-                // user input + error message back to memory, otherwise the next round
-                // loses context (the user's previous input is entirely gone). The error
-                // text is saved as `output`, honoring save_context's input/output
-                // two-key contract. A save failure only warns and does not mask the
-                // original error.
                 Err(e) => {
                     let mut outputs = HashMap::new();
-                    outputs.insert("output".to_string(), format!("[error] {}", e));
-
-                    if let Err(save_err) = memory.lock().await.save_context(&inputs, &outputs).await
+                    outputs.insert("output".to_string(), String::new());
+                    if let Err(save_err) =
+                        memory.lock().await.save_context(&inputs, &outputs).await
                     {
-                        log::warn!("failed to save errored round to memory: {}", save_err);
+                        log::warn!(
+                            "failed to save errored round to memory: {}, original error: {}",
+                            save_err,
+                            e
+                        );
                     }
                 }
             }
@@ -757,6 +795,7 @@ impl AgentExecutor {
             compaction: self.compaction.clone(),
             resume_store: self.resume_store.clone(),
             metrics_sink: self.metrics_sink.clone(),
+            on_max_iterations: self.on_max_iterations,
         };
 
         merged_executor.invoke_inner(input, trace_id).await
@@ -836,11 +875,73 @@ impl AgentExecutor {
         let compaction = self.compaction.clone();
         let metrics_store = self.metrics_store.clone();
         let metrics_sink = self.metrics_sink.clone();
+        let on_max_iterations = self.on_max_iterations;
+        // 0.22.0 audit fix (H-A1): the stream path previously dropped the
+        // cross-cutting capabilities invoke has. Clone callbacks + memory into
+        // the spawned task so chain-level callbacks are dispatched, memory
+        // history is loaded before the loop and the final answer is saved.
+        let callbacks = self.callbacks.clone();
+        let memory = self.memory.clone();
 
         tokio::spawn(async move {
             let mut intermediate_steps: Vec<AgentStep> = Vec::new();
             let mut inputs = HashMap::new();
-            inputs.insert("input".to_string(), input);
+            inputs.insert("input".to_string(), input.clone());
+
+            // H-A1: chain callbacks / trace parity with invoke — build the root
+            // RunTree, dispatch on_chain_start and on_agent_start hooks, and load
+            // memory variables into the inputs before the loop.
+            //
+            // Remaining known gaps (honest): LLM-level `on_llm_*` callbacks,
+            // tool-level `on_tool_*` callbacks, and RunTree trace_id stamping from
+            // RunnableConfig metadata (stream() takes no config) are still not
+            // dispatched on this path — invoke's tool child-run tracing has no
+            // equivalent here because tool execution goes through
+            // `execute_tool_for_stream` without a RunTree.
+            let mut root_run = RunTree::new(
+                "AgentExecutor",
+                RunType::Chain,
+                json!({"input": inputs.get("input").cloned().unwrap_or_default()}),
+            );
+            if let Some(ref callbacks) = callbacks {
+                for handler in callbacks.handlers() {
+                    handler.on_chain_start(&root_run, &root_run.inputs).await;
+                }
+            }
+            for hook in &hooks {
+                if let Err(e) = hook.on_agent_start(&input) {
+                    log::warn!("Hook on_agent_start error: {}", e);
+                }
+            }
+
+            if let Some(memory) = &memory {
+                let memory_guard = memory.lock().await;
+                let variable_keys: Vec<String> = memory_guard
+                    .memory_variables()
+                    .into_iter()
+                    .map(|k| k.to_string())
+                    .collect();
+                let loaded = match memory_guard.load_memory_variables(&inputs).await {
+                    Ok(vars) => vars,
+                    Err(e) => {
+                        let msg = format!("Failed to load memory: {e}");
+                        stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                        for hook in &hooks {
+                            hook.on_error(&HookError::Other(msg.clone()));
+                        }
+                        let _ = tx.send(Err(AgentError::Other(msg))).await;
+                        return;
+                    }
+                };
+                drop(memory_guard);
+                for key in variable_keys {
+                    if let Some(value) = loaded.get(&key) {
+                        if let Some(s) = value.as_str() {
+                            inputs.insert(key, s.to_string());
+                        }
+                    }
+                }
+            }
 
             // Budget gate (§4.2): start the stream timer + accumulate metrics (same
             // semantics as the invoke path).
@@ -864,6 +965,7 @@ impl AgentExecutor {
                 if let Some(err) =
                     budget_iteration_gate(budget.as_ref(), max_iterations, iteration, loop_start)
                 {
+                    stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
@@ -872,11 +974,11 @@ impl AgentExecutor {
                 // P2-9: rate-limit / quota check before the LLM call (also applies on
                 // the streaming path).
                 if let Err(e) = run_before_completion_hooks(&hooks, &inputs) {
+                    let msg = e.to_string();
+                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx
-                        .send(Ok(AgentStreamEvent::Error {
-                            message: e.to_string(),
-                        }))
+                        .send(Ok(AgentStreamEvent::Error { message: msg }))
                         .await;
                     return;
                 }
@@ -922,12 +1024,15 @@ impl AgentExecutor {
                     {
                         Ok(o) => o,
                         Err(e) => {
+                            let msg = e.to_string();
+                            stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                            for hook in &hooks {
+                                hook.on_error(&HookError::Other(msg.clone()));
+                            }
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx
-                                .send(Ok(AgentStreamEvent::Error {
-                                    message: e.to_string(),
-                                }))
+                                .send(Ok(AgentStreamEvent::Error { message: msg }))
                                 .await;
                             return;
                         }
@@ -944,6 +1049,7 @@ impl AgentExecutor {
                 // Budget gate: cumulative tokens after the LLM call. Over the limit →
                 // send Err and stop.
                 if let Some(err) = budget_token_gate(budget.as_ref(), &metrics) {
+                    stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
@@ -952,6 +1058,32 @@ impl AgentExecutor {
                 match output {
                     AgentOutput::Finish(finish) => {
                         let content = finish.output().unwrap_or("").to_string();
+                        // H-A1: memory save on the final answer, same as invoke's
+                        // post-answer save_context. A save failure only warns — it
+                        // must not mask a successfully finished stream.
+                        if let Some(memory) = &memory {
+                            let mut outputs = HashMap::new();
+                            outputs.insert("output".to_string(), content.clone());
+                            if let Err(e) =
+                                memory.lock().await.save_context(&inputs, &outputs).await
+                            {
+                                log::warn!("failed to save final answer to memory [stream]: {e}");
+                            }
+                        }
+
+                        root_run.end(json!({"output": content.clone()}));
+                        if let Some(ref callbacks) = callbacks {
+                            if let Some(ref outputs) = root_run.outputs {
+                                for handler in callbacks.handlers() {
+                                    handler.on_chain_end(&root_run, outputs).await;
+                                }
+                            }
+                        }
+                        for hook in &hooks {
+                            if let Err(e) = hook.on_agent_end(&content) {
+                                log::warn!("Hook on_agent_end error: {}", e);
+                            }
+                        }
                         // P1-8 streaming fusion: the model text was already emitted piece
                         // by piece by plan_stream through on_token (Text events); here
                         // only the FinalAnswer terminal event is sent — the full answer is
@@ -962,10 +1094,27 @@ impl AgentExecutor {
                     }
 
                     AgentOutput::Action(action) => {
+                        // 0.22.0 audit fix (H-A5): the ReAct parse-repair pseudo-tool
+                        // is not a real tool — feed its message back as the
+                        // observation so the model can retry (standard ReAct repair
+                        // loop), matching the invoke path.
+                        if action.tool == crate::react::agent::PARSE_ERROR_TOOL {
+                            let observation = match &action.tool_input {
+                                ToolInput::String { value } => value.clone(),
+                                ToolInput::Object { value } => value.to_string(),
+                            };
+                            if verbose {
+                                log::info!("Parse repair observation: {}", observation);
+                            }
+                            intermediate_steps.push(AgentStep::new(action, observation));
+                            continue;
+                        }
                         // P2-9: the streaming path also enforces the tool permission
                         // policy.
                         if let Some(policy) = &tool_policy {
                             if let Err(e) = policy.check(&action.tool) {
+                                let msg = e.to_string();
+                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -974,9 +1123,7 @@ impl AgentExecutor {
                                 )
                                 .await;
                                 let _ = tx
-                                    .send(Ok(AgentStreamEvent::Error {
-                                        message: e.to_string(),
-                                    }))
+                                    .send(Ok(AgentStreamEvent::Error { message: msg }))
                                     .await;
                                 return;
                             }
@@ -1000,6 +1147,7 @@ impl AgentExecutor {
                         // the tool runs.
                         metrics.tool_calls += 1;
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
+                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -1025,6 +1173,8 @@ impl AgentExecutor {
                                     tool_error_observation(&e)
                                 }
                                 Err(e) => {
+                                    let msg = e.to_string();
+                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -1033,9 +1183,7 @@ impl AgentExecutor {
                                     )
                                     .await;
                                     let _ = tx
-                                        .send(Ok(AgentStreamEvent::Error {
-                                            message: e.to_string(),
-                                        }))
+                                        .send(Ok(AgentStreamEvent::Error { message: msg }))
                                         .await;
                                     return;
                                 }
@@ -1056,6 +1204,8 @@ impl AgentExecutor {
                         if let Some(policy) = &tool_policy {
                             for action in &actions {
                                 if let Err(e) = policy.check(&action.tool) {
+                                    let msg = e.to_string();
+                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -1064,9 +1214,7 @@ impl AgentExecutor {
                                     )
                                     .await;
                                     let _ = tx
-                                        .send(Ok(AgentStreamEvent::Error {
-                                            message: e.to_string(),
-                                        }))
+                                        .send(Ok(AgentStreamEvent::Error { message: msg }))
                                         .await;
                                     return;
                                 }
@@ -1093,6 +1241,7 @@ impl AgentExecutor {
                         // the parallel tools run.
                         metrics.tool_calls += actions.len();
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
+                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -1118,6 +1267,8 @@ impl AgentExecutor {
                             // invoke-parallel path. Execution errors were already
                             // converted to observations inside the helper.
                             Err(e) => {
+                                let msg = e.to_string();
+                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -1126,9 +1277,7 @@ impl AgentExecutor {
                                 )
                                 .await;
                                 let _ = tx
-                                    .send(Ok(AgentStreamEvent::Error {
-                                        message: e.to_string(),
-                                    }))
+                                    .send(Ok(AgentStreamEvent::Error { message: msg }))
                                     .await;
                                 return;
                             }
@@ -1150,12 +1299,46 @@ impl AgentExecutor {
                 }
             }
 
-            // Max iterations reached: return a placeholder result; log it so a non-answer
-            // is not mistaken for the real final answer
-            log::warn!("agent reached max iterations; streaming a placeholder result (not the real final answer)");
-            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
+            // 0.22.0 C4 fix: the iteration cap is a failure by default —
+            // surface `MaxIterationsReached` on the stream instead of streaming
+            // a placeholder that looks like a real answer.
+            log::warn!(
+                "agent reached max iterations; policy: {:?}",
+                on_max_iterations
+            );
+            if on_max_iterations == MaxIterationsPolicy::Error {
+                stream_chain_error(&callbacks, &mut root_run, "max iterations reached").await;
+                publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
+                let _ = tx
+                    .send(Err(AgentError::MaxIterationsReached))
+                    .await;
+                return;
+            }
+            // Legacy placeholder policy: the stopped response is treated as a final
+            // answer — run the H-A1 terminal path (memory save + chain end) too.
             let finish = agent.return_stopped_response(&intermediate_steps);
             let content = finish.output().unwrap_or("").to_string();
+            if let Some(memory) = &memory {
+                let mut outputs = HashMap::new();
+                outputs.insert("output".to_string(), content.clone());
+                if let Err(e) = memory.lock().await.save_context(&inputs, &outputs).await {
+                    log::warn!("failed to save final answer to memory [stream]: {e}");
+                }
+            }
+            root_run.end(json!({"output": content.clone()}));
+            if let Some(ref callbacks) = callbacks {
+                if let Some(ref outputs) = root_run.outputs {
+                    for handler in callbacks.handlers() {
+                        handler.on_chain_end(&root_run, outputs).await;
+                    }
+                }
+            }
+            for hook in &hooks {
+                if let Err(e) = hook.on_agent_end(&content) {
+                    log::warn!("Hook on_agent_end error: {}", e);
+                }
+            }
+            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
             let _ = tx.send(Ok(AgentStreamEvent::FinalAnswer { content })).await;
         });
 
@@ -1218,6 +1401,22 @@ impl Stream for AgentEventStream {
 impl Drop for AgentEventStream {
     fn drop(&mut self) {
         let _ = self.cancel.send(true);
+    }
+}
+
+/// 0.22.0 audit fix (H-A1): dispatches the chain-error callbacks on the stream
+/// path, mirroring invoke's `on_chain_error` handling. Best-effort — never
+/// fails, only marks the root run as errored first.
+async fn stream_chain_error(
+    callbacks: &Option<Arc<CallbackManager>>,
+    root_run: &mut RunTree,
+    message: &str,
+) {
+    root_run.end_with_error(message.to_string());
+    if let Some(callbacks) = callbacks {
+        for handler in callbacks.handlers() {
+            handler.on_chain_error(root_run, message).await;
+        }
     }
 }
 

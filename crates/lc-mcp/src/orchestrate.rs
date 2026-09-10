@@ -340,8 +340,8 @@ impl ToolCaller for MCPGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{start_fake_sse_server, PostMode};
-    use crate::{GatewayServerSpec, MCPConfig};
+    use crate::test_support::{start_fake_stateless_server, StatelessMode};
+    use crate::GatewayServerSpec;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -493,14 +493,14 @@ mod tests {
         );
     }
 
-    /// Integration with the real Gateway: both steps go through the fake SSE server `fs:echo`,
+    /// Integration with the real Gateway: both steps go through the fake stateless server `fs:echo`,
     /// the inter-step dependency holds, and the `impl ToolCaller for MCPGateway` path works end to end.
     #[tokio::test]
     async fn test_orchestrator_with_gateway() {
-        let fake = start_fake_sse_server(PostMode::Quiet).await;
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
         let gateway = MCPGateway::new();
         gateway
-            .register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+            .register(GatewayServerSpec::new("fs", &fake.url))
             .await
             .unwrap();
 
@@ -509,8 +509,8 @@ mod tests {
             .add_step(ToolStep::new("two", "fs:echo", json!({})).after("one"));
 
         let results = orch.execute(&gateway).await.unwrap();
-        assert_eq!(results["one"], Value::String("echo".to_string()));
-        assert_eq!(results["two"], Value::String("echo".to_string()));
+        assert!(results["one"].as_str().unwrap().contains("echo"));
+        assert!(results["two"].as_str().unwrap().contains("echo"));
         assert_eq!(results.len(), 2);
     }
 }

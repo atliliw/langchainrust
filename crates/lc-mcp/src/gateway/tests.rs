@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use super::*;
 use crate::sandbox::{ParamRule, ServerSandbox};
-use crate::test_support::{start_fake_sse_server, PostMode};
+use crate::test_support::{start_fake_stateless_server, StatelessMode};
 use crate::tool_timeout::ToolSpec;
-use crate::types::MCPConfig;
 use serde_json::json;
 
 /// Fixed-window rate limit: over-quota calls in a window are rejected, quota restores after the window expires.
@@ -30,12 +29,9 @@ fn test_rate_limiter_min_one() {
 #[tokio::test]
 async fn test_register_is_lazy_and_empty_registry() {
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new(
-        "bad",
-        MCPConfig::stdio("no_such_cmd_xyz", vec![]),
-    ))
-    .await
-    .expect("register should not spawn a connection");
+    gw.register(GatewayServerSpec::new("bad", "http://127.0.0.1:1/mcp"))
+        .await
+        .expect("register should not spawn a connection");
     assert_eq!(gw.server_count().await, 1);
     assert!(
         gw.tools().await.is_empty(),
@@ -47,7 +43,7 @@ async fn test_register_is_lazy_and_empty_registry() {
 #[tokio::test]
 async fn test_register_duplicate_rejected() {
     let gw = MCPGateway::new();
-    let spec = GatewayServerSpec::new("dup", MCPConfig::stdio("no_such_cmd_xyz", vec![]));
+    let spec = GatewayServerSpec::new("dup", "http://127.0.0.1:1/mcp");
     gw.register(spec.clone())
         .await
         .expect("first register should succeed");
@@ -55,12 +51,12 @@ async fn test_register_duplicate_rejected() {
     assert!(err.to_string().contains("already registered"), "{}", err);
 }
 
-/// sync pulls tools from a fake SSE server, and `server:tool` appears in the unified registry.
+/// sync pulls tools from a fake stateless server, and `server:tool` appears in the unified registry.
 #[tokio::test]
 async fn test_sync_populates_namespaced_registry() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
         .await
         .expect("register should succeed");
 
@@ -78,9 +74,9 @@ async fn test_sync_populates_namespaced_registry() {
 /// sync is idempotent: re-syncing does not duplicate registry entries.
 #[tokio::test]
 async fn test_sync_is_idempotent() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
         .await
         .unwrap();
     let first = gw.sync("fs").await.unwrap();
@@ -97,9 +93,9 @@ async fn test_sync_is_idempotent() {
 /// Unified entry: call("server:tool") routes to the server by raw name (auto-syncs when not manually synced).
 #[tokio::test]
 async fn test_call_dispatches_with_auto_sync() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
         .await
         .unwrap();
 
@@ -107,9 +103,9 @@ async fn test_call_dispatches_with_auto_sync() {
         .call("fs:echo", json!({}))
         .await
         .expect("dispatch by full name");
-    assert_eq!(
-        out, "echo",
-        "should reach the server with the raw tool name and echo back"
+    assert!(
+        out.contains("echo"),
+        "should reach the server with the raw tool name and echo back, actual: {out}"
     );
 }
 
@@ -128,13 +124,13 @@ async fn test_call_unknown_tool_not_found() {
 /// Sandbox blocks: violating parameters are caught at the Gateway entry, never reach the server, and are audited.
 #[tokio::test]
 async fn test_call_sandbox_blocks_and_audits() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let sandbox = Arc::new(ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
         field: "path".to_string(),
         prefix: "file:///tmp/".to_string(),
     }));
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)).with_sandbox(sandbox))
+    gw.register(GatewayServerSpec::new("fs", &fake.url).with_sandbox(sandbox))
         .await
         .unwrap();
 
@@ -162,11 +158,10 @@ async fn test_call_sandbox_blocks_and_audits() {
 /// Rate limit: over-quota calls in a window are rejected and audited; one record for allow, one for block.
 #[tokio::test]
 async fn test_call_rate_limit_blocks_and_audits() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
     gw.register(
-        GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url))
-            .with_rate_limit(1, Duration::from_secs(60)),
+        GatewayServerSpec::new("fs", &fake.url).with_rate_limit(1, Duration::from_secs(60)),
     )
     .await
     .unwrap();
@@ -186,9 +181,9 @@ async fn test_call_rate_limit_blocks_and_audits() {
 /// Static layer + dynamic layer: after pin, select hits the full-name tool.
 #[tokio::test]
 async fn test_select_over_synced_registry() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
         .await
         .unwrap();
     gw.sync("fs").await.unwrap();
@@ -212,10 +207,10 @@ async fn test_select_over_synced_registry() {
 /// Convert to BaseTool: adapters carry the namespace + timeout + sandbox and can be called normally.
 #[tokio::test]
 async fn test_as_base_tools_builds_adapters() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
     gw.register(
-        GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url))
+        GatewayServerSpec::new("fs", &fake.url)
             .with_timeout(ToolSpec::new("echo", Duration::from_secs(5))),
     )
     .await
@@ -232,19 +227,19 @@ async fn test_as_base_tools_builds_adapters() {
         .run("{}".into())
         .await
         .expect("adapter should be callable");
-    assert_eq!(out, "echo");
+    assert!(
+        out.contains("echo"),
+        "adapter should be callable end to end, actual: {out}"
+    );
 }
 
 /// Breaker delegation: health probe -> Down, reap_unhealthy removes it.
 #[tokio::test]
 async fn test_gateway_health_and_reap() {
     let gw = MCPGateway::new();
-    gw.register(
-        GatewayServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]))
-            .with_max_failures(1),
-    )
-    .await
-    .unwrap();
+    gw.register(GatewayServerSpec::new("bad", "http://127.0.0.1:1/mcp").with_max_failures(1))
+        .await
+        .unwrap();
 
     let h = gw
         .health("bad")
@@ -262,9 +257,9 @@ async fn test_gateway_health_and_reap() {
 /// Audit ring cap: only the newest max_audit entries are kept.
 #[tokio::test]
 async fn test_audit_cap_keeps_newest() {
-    let fake = start_fake_sse_server(PostMode::Quiet).await;
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new().with_max_audit(1);
-    gw.register(GatewayServerSpec::new("fs", MCPConfig::sse(&fake.sse_url)))
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
         .await
         .unwrap();
     gw.call("fs:echo", json!({})).await.expect("1st call");

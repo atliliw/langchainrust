@@ -43,39 +43,12 @@ impl<S: StateSchema> CompiledGraph<S> {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
 
-            recursion_count += 1;
+            // 0.22.0 C3 fix: the fan-out source node executes BEFORE branching.
+            // Previously the fan-out check ran first and the source node was
+            // silently skipped. START is virtual (never executed).
+            if current_node != crate::START {
+                recursion_count += 1;
 
-            let fan_out_targets = self.find_fan_out_targets(&current_node).await;
-
-            if let Some(targets) = fan_out_targets {
-                let branch_results = self
-                    .execute_parallel_branches(&targets, &state, recursion_count)
-                    .await?;
-
-                for (name, inv) in branch_results {
-                    parallel_branches.push(ParallelBranch {
-                        name: name.clone(),
-                        final_state: inv.final_state.clone(),
-                        steps: inv.steps.clone(),
-                    });
-                    steps.push(ExecutionStep::ParallelNode {
-                        branch: name,
-                        metadata: HashMap::new(),
-                    });
-                }
-
-                let merge_target = self.find_fan_in_target(&targets).await;
-                if let Some(merge_node) = merge_target {
-                    state = self.merge_parallel_states(&parallel_branches)?;
-                    current_node = merge_node;
-                } else {
-                    // H6: same as the main path in invoke.rs — all branch results are merged
-                    // through the reducer, rather than keeping only `parallel_branches.last()`
-                    // and dropping the rest.
-                    state = self.merge_parallel_states(&parallel_branches)?;
-                    current_node = END.to_string();
-                }
-            } else {
                 let node = self.get_node(&current_node).await?;
 
                 let config = NodeConfig {
@@ -101,7 +74,40 @@ impl<S: StateSchema> CompiledGraph<S> {
                         current_node
                     )));
                 }
+            }
 
+            // FanOut: after the source node has run, execute all branches and merge.
+            let fan_out_targets = self.find_fan_out_targets(&current_node).await;
+
+            if let Some(targets) = fan_out_targets {
+                recursion_count += 1;
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
+
+                for (name, inv) in branch_results {
+                    parallel_branches.push(ParallelBranch {
+                        name: name.clone(),
+                        final_state: inv.final_state.clone(),
+                        steps: inv.steps.clone(),
+                    });
+                    steps.push(ExecutionStep::ParallelNode {
+                        branch: name,
+                        metadata: HashMap::new(),
+                    });
+                }
+
+                let merge_target = self.find_fan_in_target(&targets).await;
+                // C3: fold on top of the pre-fan-out main-path state.
+                let base = state.clone();
+                if let Some(merge_node) = merge_target {
+                    state = self.merge_parallel_states(&parallel_branches, &base)?;
+                    current_node = merge_node;
+                } else {
+                    state = self.merge_parallel_states(&parallel_branches, &base)?;
+                    current_node = END.to_string();
+                }
+            } else {
                 current_node = self.find_next_node(&current_node, &state).await?;
             }
         }
@@ -220,15 +226,25 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
-    pub(super) fn merge_parallel_states(&self, branches: &[ParallelBranch<S>]) -> GraphResult<S> {
+    /// Merges parallel branch states on top of the main-path `base` state.
+    ///
+    /// 0.22.0 C3 fix: the fold used to start from `branches[0]`, so the last
+    /// branch overwrote everything **and** any state the fan-out source node
+    /// wrote before branching was dropped. Now `base` (the state at the
+    /// fan-out point) is the fold's foundation.
+    pub(super) fn merge_parallel_states(
+        &self,
+        branches: &[ParallelBranch<S>],
+        base: &S,
+    ) -> GraphResult<S> {
         if branches.is_empty() {
             return Err(GraphError::StateError(
                 "Cannot merge states: no parallel branches completed".to_string(),
             ));
         }
 
-        let mut merged = branches[0].final_state.clone();
-        for branch in branches.iter().skip(1) {
+        let mut merged = base.clone();
+        for branch in branches {
             merged = self.default_reducer.reduce(&merged, &branch.final_state);
         }
         Ok(merged)

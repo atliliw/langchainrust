@@ -2267,12 +2267,12 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card">
-                    <p><strong>MCP</strong> (Model Context Protocol) connects tools from any MCP Server into your Agent. <code>MCPClient</code> connects via Stdio/SSE and adapts tools into <code>BaseTool</code> automatically; <code>MCPServer</code> exposes local tools to hosts like Claude Desktop / Cursor.</p>
+                    <p><strong>MCP</strong> (Model Context Protocol) connects tools from any MCP Server into your Agent. As of 0.22.0 the crate is stateless single-track: <code>StatelessMcpClient</code> posts self-contained JSON-RPC (with <code>Mcp-Method</code>/<code>Mcp-Name</code> routing headers and <code>_meta</code>) and adapts tools into <code>BaseTool</code> automatically; <code>MCPServer</code> exposes local tools via serve_http / serve_stdio.</p>
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>Core Primitives</h3><p>initialize / tools/list / tools/call + resources / prompts / completion primitives + streaming tool results (PartialContent) & cancellation</p></div>
-                    <div class="feature-card"><h3>Transport Resilience</h3><p>Auto-reconnect (0.5s→30s exponential backoff), ConnectionManager pool, CircuitBreaker</p></div>
+                    <div class="feature-card"><h3>Core Primitives</h3><p>initialize / tools/list / tools/call + resources / prompts / completion primitives + MRTR input_required multi-round requests</p></div>
+                    <div class="feature-card"><h3>Managed Registry</h3><p>ConnectionManager lazy construction, CircuitBreaker, health probes</p></div>
                     <div class="feature-card"><h3>Namespacing / Discovery</h3><p>ToolNamespace multi-server isolation, ToolDiscovery batch discovery, ToolSpec timeout policy</p></div>
                     <div class="feature-card"><h3>Security</h3><p>SamplingGuard sampling recursion guard (depth + token budget + timeout), ServerSandbox param & egress policy</p></div>
                     <div class="feature-card"><h3>Gateway</h3><p>MCPGateway aggregates servers under one entry, TenantGateway multi-tenant, ToolOrchestrator DAG orchestration</p></div>
@@ -2349,7 +2349,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>MCP</h3><p>MCPClient connects MCP Server, tools as BaseTool</p></div>
+                    <div class="feature-card"><h3>MCP</h3><p>StatelessMcpClient connects MCP Server, tools as BaseTool</p></div>
                     <div class="feature-card"><h3>Multimodal Vision</h3><p>ImageContent + human_with_image (OpenAI/Ollama)</p></div>
                     <div class="feature-card"><h3>Sessions</h3><p>SessionManager multi-turn session lifecycle</p></div>
                     <div class="feature-card"><h3>Token Counter</h3><p>TiktokenCounter + TokenTrackingLLM + cost</p></div>
@@ -2488,7 +2488,7 @@ crates/
 ├── lc-tools-derive/     # `#[tool]` proc macro
 ├── lc-mcp/              # MCP client/server + ConnectionManager / Gateway / SamplingGuard / CircuitBreaker
 │   ├── protocol.rs      # initialize / tools/list / tools/call + resources/prompts/completion wiring, sampling/elicitation initiating (v0.18)
-│   ├── stream.rs        # PartialContent streaming tool results + cancellation
+│   ├── client_stateless.rs / transport/stateless.rs  # stateless HTTP POST track (0.22.0 single-track)
 │   ├── connection_manager.rs / gateway.rs / tenant.rs / orchestrate.rs
 │   ├── health.rs        # ServerHealth / CircuitBreaker
 │   ├── sampling.rs      # SamplingGuard sampling protection

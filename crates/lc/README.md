@@ -86,7 +86,7 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  └── LangGraph (StateGraph, Subgraph, Parallel)             │
 ├─────────────────────────────────────────────────────────────┤
 │  MCP Layer                                                   │
-│  ├── MCPClient (Stdio + SSE) -> MCPToolAdapter -> BaseTool   │
+│  ├── StatelessMcpClient (HTTP POST) -> MCPToolAdapter        │
 │  ├── MCPServer (expose BaseTool to host)                     │
 │  └── Full 6 primitives (resources/prompts/completion/...)    │
 ├─────────────────────────────────────────────────────────────┤
@@ -128,17 +128,17 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.21.0"
+langchainrust = "0.22.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.21.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.21.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.21.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.21.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.22.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.22.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.22.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.22.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

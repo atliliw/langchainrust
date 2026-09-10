@@ -68,23 +68,60 @@ impl LateChunkConfig {
         Ok(())
     }
 
-    /// Computes the chunk byte ranges `[start, end)` over a document of
-    /// `text_len` bytes. Ranges are monotonically increasing, non-empty, and
-    /// cover the whole document.
-    pub fn chunk_ranges(&self, text_len: usize) -> Vec<(usize, usize)> {
+    /// Computes the chunk byte ranges `[start, end)` over `text`.
+    ///
+    /// Ranges are monotonically increasing, non-empty, cover the whole
+    /// document, and — 0.22.0 C6 fix — are always **snapped to UTF-8 char
+    /// boundaries** (the window advances in bytes for stable sizing, then
+    /// edges snap inward; slicing `text[start..end]` can no longer panic on
+    /// CJK / emoji text whose character straddles a window edge).
+    pub fn chunk_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        let text_len = text.len();
         let mut ranges = Vec::new();
         let step = self.chunk_size - self.chunk_overlap;
         let mut start = 0usize;
         while start < text_len {
-            let end = (start + self.chunk_size).min(text_len);
-            ranges.push((start, end));
-            if end == text_len {
+            let raw_end = (start + self.chunk_size).min(text_len);
+            // Snap the window edges inward to char boundaries.
+            let mut end = prev_char_boundary(text, raw_end);
+            if end <= start {
+                // Degenerate snap (e.g. start inside a wide char): push the
+                // end forward instead so the range is never empty.
+                end = next_char_boundary(text, raw_end).min(text_len);
+            }
+            if end <= start {
                 break;
             }
-            start += step;
+            ranges.push((start, end));
+            if end >= text_len {
+                break;
+            }
+            let next = next_char_boundary(text, (start + step).min(text_len));
+            if next <= start {
+                break;
+            }
+            start = next;
         }
         ranges
     }
+}
+
+/// Next UTF-8 char boundary at or after `pos` (clamped to `text.len()`).
+fn next_char_boundary(text: &str, pos: usize) -> usize {
+    let mut p = pos.min(text.len());
+    while p < text.len() && !text.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+/// Previous UTF-8 char boundary at or before `pos`.
+fn prev_char_boundary(text: &str, pos: usize) -> usize {
+    let mut p = pos.min(text.len());
+    while p > 0 && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
 }
 
 /// One late chunk: a byte range of the original document plus its pooled,
@@ -148,9 +185,8 @@ pub async fn late_chunk<E: TokenLevelEmbeddings>(
 ) -> Result<Vec<LateChunk>, EmbeddingError> {
     config.validate()?;
     let tokens = embedder.embed_tokens(text).await?;
-    let text_len = text.len();
     let mut chunks = Vec::new();
-    for (start, end) in config.chunk_ranges(text_len) {
+    for (start, end) in config.chunk_ranges(text) {
         let vector = pool_tokens(&tokens, start, end)?;
         chunks.push(LateChunk {
             range: (start, end),
@@ -208,8 +244,10 @@ mod tests {
             chunk_size: 10,
             chunk_overlap: 2,
         };
-        let ranges = config.chunk_ranges(25);
-        // step 8: [0,10) [8,18) [16,25) 鈥?monotone, cover everything.
+        // ASCII-only document of 25 bytes: boundaries are identity.
+        let text_ascii = "x".repeat(25);
+        let ranges = config.chunk_ranges(&text_ascii);
+        // step 8: [0,10) [8,18) [16,25) — monotone, cover everything.
         assert_eq!(ranges, vec![(0, 10), (8, 18), (16, 25)]);
     }
 
@@ -219,7 +257,29 @@ mod tests {
             chunk_size: 10,
             chunk_overlap: 2,
         };
-        assert_eq!(config.chunk_ranges(5), vec![(0, 5)]);
+        assert_eq!(config.chunk_ranges("xxxxx"), vec![(0, 5)]);
+    }
+
+    /// C6 fix: a CJK window edge inside a multi-byte character snaps to a
+    /// char boundary — slicing `text[start..end]` never panics.
+    #[test]
+    fn chunk_ranges_snap_to_char_boundaries() {
+        let config = LateChunkConfig {
+            chunk_size: 10,
+            chunk_overlap: 2,
+        };
+        // 6 CJK chars = 18 bytes; step 8 would slice at byte 8 (mid-char).
+        let text = "你好世界天地".to_string(); // 3-byte chars, 18 bytes
+        let ranges = config.chunk_ranges(&text);
+        assert!(!ranges.is_empty());
+        for (start, end) in &ranges {
+            assert!(text.is_char_boundary(*start), "start {start} not a boundary");
+            assert!(text.is_char_boundary(*end), "end {end} not a boundary");
+            // Slicing is the regression: this would panic before the fix.
+            let _ = &text[*start..*end];
+        }
+        // Coverage: the last range reaches the end of the document.
+        assert_eq!(ranges.last().unwrap().1, 18);
     }
 
     /// Pooling averages intersecting tokens and L2-normalizes the result.

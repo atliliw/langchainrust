@@ -12,7 +12,9 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    substitute_template, BaseChain, ChainError, ChainResult, ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Default Map processing prompt template.
@@ -127,9 +129,13 @@ impl MapReduceDocumentsChain {
 
     /// Build the map-phase prompt by substituting the document content and input.
     pub fn build_map_prompt(&self, context: &str, input: &str) -> String {
-        self.map_prompt_template
-            .replace(&format!("{{{}}}", self.document_variable_name), context)
-            .replace("{input}", input)
+        // 0.22.0 audit fix (H-C2): single-pass substitution — document
+        // contents containing literal `{input}` are never re-replaced.
+        let vars = HashMap::from([
+            (self.document_variable_name.clone(), context.to_string()),
+            ("input".to_string(), input.to_string()),
+        ]);
+        substitute_template(&self.map_prompt_template, &vars).0
     }
 
     /// Build the reduce-phase prompt from the per-document summaries and input.
@@ -141,9 +147,13 @@ impl MapReduceDocumentsChain {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        self.reduce_prompt_template
-            .replace("{summaries}", &summaries_text)
-            .replace("{input}", input)
+        // 0.22.0 audit fix (H-C2): single-pass substitution — map answers
+        // containing literal `{summaries}` / `{input}` are never re-replaced.
+        let vars = HashMap::from([
+            ("summaries".to_string(), summaries_text),
+            ("input".to_string(), input.to_string()),
+        ]);
+        substitute_template(&self.reduce_prompt_template, &vars).0
     }
 
     /// Map phase: call LLM for a single document.
@@ -193,6 +203,16 @@ impl MapReduceDocumentsChain {
 
         match self.map_concurrency {
             Some(limit) => {
+                // 0.22.0 audit fix: `buffer_unordered(0)` panics — clamp a
+                // zero/negative-style limit to at least 1 with a warning.
+                let limit = if limit == 0 {
+                    log::warn!(
+                        "MapReduceDocumentsChain: map_concurrency 0 is invalid; clamping to 1"
+                    );
+                    1
+                } else {
+                    limit
+                };
                 futures_util::stream::iter(map_futures)
                     .buffer_unordered(limit)
                     .try_collect()

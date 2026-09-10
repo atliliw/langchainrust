@@ -66,6 +66,14 @@ impl Runnable<Vec<Message>, LLMResult> for AnthropicChat {
                 tool_calls: None,
                 thinking_content: None,
             }),
+            Ok(AnthropicStreamToken::ToolCall(tc)) => Ok(LLMResult {
+                content: String::new(),
+                model: model.clone(),
+                token_usage: None,
+                // 0.22.0 C2: complete tool calls surface on the streaming path
+                tool_calls: Some(vec![tc]),
+                thinking_content: None,
+            }),
             Ok(AnthropicStreamToken::Usage(u)) => Ok(LLMResult {
                 content: String::new(),
                 model: model.clone(),
@@ -259,6 +267,7 @@ impl BaseChatModel for AnthropicChat {
                         }
                     }
                     Ok(AnthropicStreamToken::Usage(_)) => {}
+                    Ok(AnthropicStreamToken::ToolCall(_)) => {}
                     Err(_) => {}
                 }
                 token_result
@@ -271,6 +280,12 @@ impl BaseChatModel for AnthropicChat {
             futures_util::stream::iter(match token_result {
                 Ok(AnthropicStreamToken::Text(token)) => vec![Ok(StreamChunk::new(token))],
                 Ok(AnthropicStreamToken::Thinking(_)) => vec![],
+                Ok(AnthropicStreamToken::ToolCall(tc)) => vec![Ok(StreamChunk {
+                    text: String::new(),
+                    token_usage: None,
+                    // 0.22.0 C2: complete tool calls surface on the streaming path
+                    tool_calls: Some(vec![tc]),
+                })],
                 Ok(AnthropicStreamToken::Usage(usage)) => vec![Ok(StreamChunk {
                     text: String::new(),
                     token_usage: Some(TokenUsage {

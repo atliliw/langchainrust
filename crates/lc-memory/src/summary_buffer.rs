@@ -14,7 +14,7 @@ use lc_core::language_models::LLMResult;
 use lc_core::runnables::Runnable;
 use lc_core::token_counter::{CharRatioCounter, TiktokenCounter, TokenCounter};
 use lc_prompts::PromptTemplate;
-use lc_schema::Message;
+use lc_schema::{Message, MessageType};
 
 const DEFAULT_SUMMARY_PROMPT: &str =
     "Progressively summarize the conversation, adding new content to the previous summary.
@@ -191,6 +191,26 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         }
 
         kept_messages.reverse();
+
+        // 0.22.0 H-M2: the window must not open on an orphaned Tool message.
+        // Pruning keeps the newest suffix, so a kept window can start on a
+        // `Tool` / tool RESULT whose matching assistant `tool_calls` fell
+        // outside the window. A standalone tool message is malformed for
+        // OpenAI/Anthropic (tool message without a preceding assistant
+        // tool_calls → 400). Drop any leading Tool messages until the window
+        // opens on a non-Tool message.
+        while kept_messages
+            .first()
+            .is_some_and(|m| matches!(m.message_type, MessageType::Tool { .. }))
+        {
+            kept_messages.remove(0);
+            // The token budget may now be under the limit; that is fine.
+            // Subsequent turns re-run the pruner as history grows.
+            if kept_messages.is_empty() {
+                break;
+            }
+        }
+
         kept_messages
     }
 
@@ -483,6 +503,55 @@ mod tests {
         let pruned = memory.prune_messages(&messages);
 
         assert_eq!(pruned.len(), 2);
+    }
+
+    /// 0.22.0 H-M2: pruning keeps a newest-suffix window, so the budget can cut
+    /// right after an old assistant `tool_calls`, leaving a free-standing Tool
+    /// message at the front of the kept window. That is malformed for
+    /// OpenAI/Anthropic (400); the pruner must drop leading Tool messages.
+    #[test]
+    fn test_prune_never_opens_on_orphan_tool() {
+        let llm = MockLlm::new(vec![Ok("summary".to_string())]);
+        // CharRatioCounter(4): 40 chars == 10 tokens exactly (4 chars/token).
+        let memory: ConversationSummaryBufferMemory<MockLlm> =
+            ConversationSummaryBufferMemory::new(llm, 40)
+                .with_counter(std::sync::Arc::new(CharRatioCounter::new(4)));
+
+        // #1 large assistant message (would be cut), then Tool → human → AI.
+        // Budget 40 tokens fits only #2+#3+#4 (10+10+10); #1 (250 t) is dropped,
+        // leaving the Tool message as the leading kept message — an orphan.
+        let messages = vec![
+            Message::ai("z".repeat(1000)), // ~250 tokens, pruned
+            Message {
+                content: "r".repeat(40),
+                message_type: MessageType::Tool {
+                    tool_call_id: "c1".into(),
+                },
+                ..Message::human("")
+            },
+            Message::human("m".repeat(40)),
+            Message::ai("f".repeat(40)),
+        ];
+
+        let pruned = memory.prune_messages(&messages);
+
+        // The window must not open on the orphaned Tool message.
+        assert!(
+            !matches!(pruned.first().map(|m| &m.message_type),
+                Some(MessageType::Tool { .. })),
+            "pruned window started on an orphaned Tool message: {:?}",
+            pruned.first().map(|m| &m.message_type)
+        );
+        // The newest user+assistant pair is still preserved.
+        assert!(!pruned.is_empty());
+        assert!(matches!(
+            pruned[0].message_type,
+            MessageType::Human
+        ));
+        assert!(matches!(
+            pruned[1].message_type,
+            MessageType::AI
+        ));
     }
 
     #[tokio::test]

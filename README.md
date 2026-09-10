@@ -121,18 +121,19 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Semantic memory** | `VectorStoreRetrieverMemory` — retrieval by similarity, not recency. |
 | **Context window** | `ContextWindow` with `Truncate` / `Summarize` strategies and pluggable `TokenCounter`; System messages are always preserved. |
 | **Persistence** | `MongoPersistentMemory` (feature-gated) — generic over `BaseChatModel`, optimistic-lock concurrent writes, session-resume summary re-injection. |
-| **Sessions** | `SessionManager` / `SessionStore` — multi-turn lifecycle (Active → Archived → Deleted), pluggable storage (`MemorySessionStore` default), `with_memory` bridge to memories. |
+| **Sessions** | `EventSessionManager` / `EventStore` (v0.22.0, recommended) — **event sourcing**: the session is an append-only log, history is a projection; crash-safe idempotent appends, `fork_session` branching from any point, turn-window context, deterministic auto-compaction (snapshot past N turns, no LLM call). Legacy `SessionManager` / `SessionStore` deprecated (removed 0.23.0). |
 
 ### Protocols: MCP & A2A
 
 | Component | Description |
 |-----------|-------------|
-| **MCP** | Model Context Protocol client + server over **Stdio and SSE**. All 6 MCP primitives — **Resources / Prompts / Completion / Elicitation / Roots / Sampling** — implemented on both client and server sides. |
-| **MCP resilience** | Auto-reconnect (subprocess crash → exponential backoff respawn + re-handshake + tool refresh), SSE heartbeat read-timeout (30s), tool-list cache with TTL + `list_changed` invalidation, `watch`-channel POST-URL re-discovery. |
-| **MCP interop** | SSE client accepts both direct-response servers (POST returns JSON) and **202 + SSE-push** servers (POST returns `202 Accepted`, the JSON-RPC response arrives later over SSE and is correlated by request `id`). |
+| **MCP stateless track (v0.22.0)** | 2026-07-28 single-track model: every request is a self-contained JSON-RPC HTTP POST — no handshake, no session. `StatelessMcpClient` carries `_meta` (protocol version + client identity + optional `requestState`), tagged with `Mcp-Method` / `Mcp-Name` routing headers so gateways route and throttle without parsing the body. The legacy handshake client (`MCPClient`, SSE/stdio transports, streaming push) was **removed in 0.22.0**. |
+| **MCP MRTR** | Multi-round tool requests: on `input_required { requestState, questions }` the client collects answers (`MrtrAnswerProvider`) and resends with the continuation token, bounded by `max_round_trips` (`-32003` on exceed). Server-initiated interaction without a push channel. |
+| **MCP auth** | OAuth 2.1-style: `TokenValidator` + `StaticBearerValidator` / `JwtIssValidator` (iss + exp) server-side; per-request bearer auth client-side (`connect_with_auth`); 401 → `-32001`. |
+| **MCP server** | `MCPServer` exposes local `BaseTool`s — in-process (`handle_request`), as a **deployable stateless HTTP service** (`serve_http`, example `mcp_http_server`), or over stdio line framing for hosts like Claude Desktop / Cursor (`serve_stdio`). `server/discover` for capability queries. |
+| **MCP at scale** | Connection management, tool namespaces + conflict policy, static+dynamic tool discovery, per-tool timeout with hard cap, health checks + circuit breaker, per-server sandbox, sampling recursion guard, **MCP Gateway** (registry / pool / rate-limit / audit), multi-tenant isolation, per-method client rate limiting. |
 | **MCP tool adapter** | `MCPToolAdapter` implements `BaseTool` — MCP tools mix seamlessly with local tools in any agent; structured errors keep `{code, data}`; multi-type content (image/resource) preserved. |
-| **MCP at scale** | Connection management, tool namespaces + conflict policy, static+dynamic tool discovery, per-tool timeout + progress, health checks + circuit breaker, per-server sandbox, sampling recursion guard, **MCP Gateway** (registry / pool / rate-limit / audit), multi-tenant isolation, protocol version negotiation. |
-| **A2A** | Agent-to-Agent protocol: `AgentCard` discovery (`/.well-known/agent-card.json`), `A2ATask` / `TaskStatus` lifecycle (submitted → working → completed/failed), `send` / `get` / `cancel`, JSON-RPC over HTTP. `A2AServer` (task persistence) exposes a `BaseChain` as a network agent; `A2AClient` with bearer-token auth. |
+| **A2A v1.0.1** | Agent-to-Agent protocol: `AgentCard` with `supportedInterfaces[]` — one card declares multiple `(protocolVersion, transport, url)` bindings (JsonRpc / HttpJson / Grpc), tenant-tagged, with client-side `negotiate()`. Card **signing** (RFC 8785-lite canonicalization + JWS HS256) protects discovery from tampering. `send_task` / `get_task` / `cancel_task` over HTTP. |
 | **A2A vs MCP** | A2A orchestrates **agent ↔ agent**; MCP lets an **agent call tools**. They compose: A2A between agents, MCP below them. |
 
 ### Quality: Guardrails, Evaluation, Observability
@@ -229,20 +230,20 @@ langchainrust is a **22-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.21.0"
+langchainrust = "0.22.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.21.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.21.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.21.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.21.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.21.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.21.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.21.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
-langchainrust = { version = "0.21.0", features = ["fastembed"] }            # FastEmbed embeddings
-langchainrust = { version = "0.21.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.21.0", features = ["experimental"] }         # Experimental features
+langchainrust = { version = "0.22.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.22.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.22.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.22.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.22.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.22.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.22.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.22.0", features = ["fastembed"] }            # FastEmbed embeddings
+langchainrust = { version = "0.22.0", features = ["vectorstore-memory"] }   # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.22.0", features = ["experimental"] }         # Experimental features
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
@@ -362,7 +363,7 @@ The `crates/lc/examples/` directory provides 39 runnable examples covering core 
 | lcel | lcel_pipe / lcel_compose | pipe: No / compose: Yes |
 | evaluation | evaluation | No |
 | guardrails | guardrails | No |
-| mcp | mcp_server / mcp_sse_server / mcp_stdio_server | No |
+| mcp | mcp_http_server / mcp_stdio_server | No |
 | a2a | a2a_http_server | Yes |
 | otel | otel_tracing | No |
 

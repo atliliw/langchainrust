@@ -422,9 +422,14 @@ impl BaseChain for LLMRouterChain {
         inputs: HashMap<String, Value>,
         config: Option<RunnableConfig>,
     ) -> Result<ChainStream, ChainError> {
-        stream_chain_with_callbacks(self.name(), inputs, config.clone(), |inputs| async move {
-            self.route_and_stream(inputs, config).await
-        })
+        let output_key = self.output_keys().first().map(|k| (*k).to_string());
+        stream_chain_with_callbacks(
+            self.name(),
+            inputs,
+            config.clone(),
+            output_key,
+            |inputs| async move { self.route_and_stream(inputs, config).await },
+        )
         .await
     }
 

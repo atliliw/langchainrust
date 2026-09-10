@@ -2,6 +2,8 @@
 //! Searcher - executes search queries in parallel across all configured
 //! search tools, collects results, and deduplicates them.
 
+use std::sync::Arc;
+
 use lc_core::tools::BaseTool;
 
 use super::ResearchError;
@@ -19,6 +21,12 @@ pub struct SearchResult {
     pub url: String,
 }
 
+/// Upper bound on search HTTP calls in flight at once. Without a cap, every
+/// query × every searcher fired `join_all` simultaneously — a single round
+/// could issue dozens of concurrent requests with no timeout (0.22.0 H-A2).
+/// The executor keeps a concurrency gate for the same reason.
+const MAX_CONCURRENT_SEARCHES: usize = 8;
+
 /// Executes search queries in parallel across all configured search tools.
 pub async fn search(
     searchers: &[Box<dyn BaseTool>],
@@ -32,14 +40,26 @@ pub async fn search(
 
     let mut all_results = Vec::new();
 
-    // Run all queries across all searchers in parallel
+    // Run all queries across all searchers in parallel, bounded by a
+    // semaphore so we never fan out more than `MAX_CONCURRENT_SEARCHES`
+    // in-flight HTTP calls at once. Each permit is held across `searcher.run`.
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES));
     let futures: Vec<_> = queries
         .iter()
         .flat_map(|query| {
             searchers.iter().map(|searcher| {
                 let query = query.clone();
                 let input = serde_json::json!({"query": query}).to_string();
+                let semaphore = semaphore.clone();
                 async move {
+                    // The permit is dropped when this task finishes, always
+                    // released. The semaphore Arc is held by every one of the
+                    // `futures` below, so it can never be closed while a task
+                    // awaits it — the expect is unreachable.
+                    let _permit = semaphore
+                        .acquire_owned()
+                        .await
+                        .expect("search concurrency semaphore never closed");
                     let output = searcher.run(input).await;
                     (query, output)
                 }
@@ -47,7 +67,7 @@ pub async fn search(
         })
         .collect();
 
-    // Use join_all for parallel execution
+    // join_all for parallel execution (bounded by the semaphore above).
     let results = futures_util::future::join_all(futures).await;
 
     for (query, output) in results {

@@ -76,6 +76,20 @@ impl InMemoryChunkedDocumentStore {
             .map(|d| d.metadata)
             .unwrap_or_default();
 
+        // 0.22.0 C5 fix: re-adding the same parent **replaces** its chunk set
+        // (ids are deterministic `{parent}::{segment}`). Previously the
+        // mapping was appended to, so a duplicate ingest produced duplicated
+        // mapping entries and orphaned old chunks that were still returned.
+        {
+            let mut chunks_store = lock_error(self.chunks.write())?;
+            let mut mapping = lock_error(self.parent_to_chunks.write())?;
+            if let Some(old_ids) = mapping.remove(parent_id) {
+                for old in old_ids {
+                    chunks_store.remove(&old);
+                }
+            }
+        }
+
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}::{}", parent_id, segment);
 
@@ -127,6 +141,14 @@ impl InMemoryChunkedDocumentStore {
         // Acquire locks once for all chunks
         let mut chunks_store = lock_error(self.chunks.write())?;
         let mut mapping = lock_error(self.parent_to_chunks.write())?;
+
+        // 0.22.0 C5 fix: re-adding the same parent **replaces** its chunk set
+        // (deterministic ids); previously the mapping was appended to.
+        if let Some(old_ids) = mapping.remove(parent_id) {
+            for old in old_ids {
+                chunks_store.remove(&old);
+            }
+        }
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
             let chunk_id = format!("{}::{}", parent_id, segment);

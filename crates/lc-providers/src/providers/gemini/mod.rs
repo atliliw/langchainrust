@@ -25,6 +25,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use self::types::*;
+use crate::openai::sse::SseByteFramer;
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::{
@@ -165,7 +166,8 @@ impl GeminiChat {
     pub fn new(config: GeminiConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -266,8 +268,16 @@ impl GeminiChat {
                     });
                 }
                 MessageType::Tool { ref tool_call_id } => {
-                    // Gemini uses functionResponse format for tool results
-                    let function_name = tool_call_id.split('_').next().unwrap_or(tool_call_id);
+                    // Gemini uses functionResponse format for tool results. The
+                    // outgoing ToolCall id is built as `call_{name}` (see
+                    // parse_response); recover the bare function name here.
+                    // Previously `split('_').next()` always returned the literal
+                    // "call", so the functionResponse.name never matched a real
+                    // declaration and any multi-round tool dialog broke from the
+                    // second round (0.22.0 audit H-P7).
+                    let function_name = tool_call_id
+                        .strip_prefix("call_")
+                        .unwrap_or(tool_call_id);
                     contents.push(GeminiContent {
                         role: Some("function".to_string()),
                         parts: vec![GeminiPart {
@@ -417,15 +427,19 @@ impl GeminiChat {
 
         let request_body = self.build_request(messages);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.config.api_key)
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| GeminiError::HttpError(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("x-goog-api-key", &self.config.api_key)
+                    .header("Content-Type", "application/json")
+                    .json(&request_body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| GeminiError::HttpError(e.to_string()))?;
 
         let status = response.status();
         let body = response
@@ -434,19 +448,20 @@ impl GeminiChat {
             .map_err(|e| GeminiError::HttpError(e.to_string()))?;
 
         if !status.is_success() {
+            // 0.22.0 C6 fix: char-boundary truncation (byte slicing panicked on
+            // non-ASCII error bodies).
+            let preview: String = body.chars().take(500).collect();
             return Err(GeminiError::ApiError(format!(
                 "HTTP {}: {}",
                 status.as_u16(),
-                &body[..std::cmp::min(500, body.len())]
+                preview
             )));
         }
 
         let gemini_response: GeminiResponse = serde_json::from_str(&body).map_err(|e| {
-            GeminiError::ParseError(format!(
-                "{} - body: {}",
-                e,
-                &body[..std::cmp::min(200, body.len())]
-            ))
+            // 0.22.0 C6 fix: char-boundary truncation.
+            let preview: String = body.chars().take(200).collect();
+            GeminiError::ParseError(format!("{} - body: {}", e, preview))
         })?;
 
         self.parse_response(gemini_response, &self.config.model)
@@ -486,7 +501,9 @@ impl GeminiChat {
         }
 
         let byte_stream = response.bytes_stream();
-        let sse_buffer = Arc::new(Mutex::new(String::new()));
+        // 0.22.0 C1: byte-level framer — complete events are decoded to UTF-8,
+        // so CJK characters split across TCP chunks are never lossy-torn.
+        let sse_buffer = Arc::new(Mutex::new(SseByteFramer::new()));
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, GeminiError>>(64);
 
         let buffer_clone = sse_buffer.clone();
@@ -496,76 +513,86 @@ impl GeminiChat {
             let mut byte_stream = byte_stream;
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
-                    let chunk_str = String::from_utf8_lossy(&bytes);
 
-                    // Extract complete events from buffer
+                    // Extract complete events from the byte-level framer
                     let events = {
                         let mut buffer_guard =
                             buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        buffer_guard.push_str(&chunk_str);
-
-                        let mut events = Vec::new();
-                        while let Some(pos) = buffer_guard.find("\n\n") {
-                            let event_text = buffer_guard[..pos].to_string();
-                            buffer_guard.drain(..=pos + 1);
-                            events.push(event_text);
-                        }
-                        events
+                        buffer_guard.push(&bytes)
                     };
                     // buffer_guard is dropped here, before any await
 
                     for event_text in events {
                         for line in event_text.lines() {
                             let line = line.trim();
-                            if !line.starts_with("data: ") {
+                            if !line.starts_with("data:") {
                                 continue;
                             }
 
-                            let data = &line[6..];
+                            // Tolerate both "data: {...}" and "data:{...}"
+                            let data = line.trim_start_matches("data:").trim();
                             if data == "[DONE]" {
                                 continue;
                             }
 
-                            if let Ok(resp) = serde_json::from_str::<GeminiResponse>(data) {
-                                if let Some(candidates) = resp.candidates {
-                                    for candidate in candidates {
-                                        if let Some(content) = candidate.content {
-                                            for part in content.parts {
-                                                if let Some(text) = part.text {
-                                                    if tx
-                                                        .send(Ok(StreamChunk::new(text)))
-                                                        .await
-                                                        .is_err()
-                                                    {
-                                                        return;
+                            match serde_json::from_str::<GeminiResponse>(data) {
+                                Ok(resp) => {
+                                    if let Some(candidates) = resp.candidates {
+                                        for candidate in candidates {
+                                            if let Some(content) = candidate.content {
+                                                for part in content.parts {
+                                                    if let Some(text) = part.text {
+                                                        if tx
+                                                            .send(Ok(StreamChunk::new(text)))
+                                                            .await
+                                                            .is_err()
+                                                        {
+                                                            return;
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
-                                // Gemini carries usageMetadata on the last chunk; if present,
-                                // emit a usage chunk so the streaming path gets the whole call's usage.
-                                if let Some(usage) = resp.usage_metadata {
-                                    let token_usage = TokenUsage {
-                                        prompt_tokens: usage.prompt_token_count.unwrap_or(0)
-                                            as usize,
-                                        completion_tokens: usage.candidates_token_count.unwrap_or(0)
-                                            as usize,
-                                        total_tokens: usage.total_token_count.unwrap_or(0) as usize,
-                                    };
-                                    let usage_chunk = StreamChunk {
-                                        text: String::new(),
-                                        token_usage: Some(token_usage),
-                                        tool_calls: None,
-                                    };
-                                    if tx.send(Ok(usage_chunk)).await.is_err() {
-                                        return;
+                                    // Gemini carries usageMetadata on the last chunk; if present,
+                                    // emit a usage chunk so the streaming path gets the whole call's usage.
+                                    if let Some(usage) = resp.usage_metadata {
+                                        let token_usage = TokenUsage {
+                                            prompt_tokens: usage.prompt_token_count.unwrap_or(0)
+                                                as usize,
+                                            completion_tokens: usage.candidates_token_count
+                                                .unwrap_or(0)
+                                                as usize,
+                                            total_tokens: usage.total_token_count.unwrap_or(0)
+                                                as usize,
+                                        };
+                                        let usage_chunk = StreamChunk {
+                                            text: String::new(),
+                                            token_usage: Some(token_usage),
+                                            tool_calls: None,
+                                        };
+                                        if tx.send(Ok(usage_chunk)).await.is_err() {
+                                            return;
+                                        }
                                     }
+                                }
+                                Err(e) => {
+                                    // 0.22.0 (audit Medium): a bad datum no longer ends the
+                                    // stream silently — log and skip (transport errors are
+                                    // still surfaced below).
+                                    log::error!(
+                                        "Failed to parse Gemini streaming SSE event (skipping this token): {e}; data: {}",
+                                        &data[..data.len().min(200)]
+                                    );
                                 }
                             }
                         }
                     }
+                } else if let Err(e) = chunk_result {
+                    // 0.22.0 (audit Medium): transport errors mid-stream no longer
+                    // end the stream silently.
+                    let _ = tx.send(Err(GeminiError::HttpError(e.to_string()))).await;
+                    return;
                 }
             }
         });

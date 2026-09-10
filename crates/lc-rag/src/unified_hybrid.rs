@@ -169,11 +169,28 @@ impl UnifiedHybridIndex {
     }
 
     /// Adds a single document: auto-chunks it and builds both the BM25 and vector indexes
+    ///
+    /// 0.22.0 C5 fix: re-adding the same document id is **idempotent** — the
+    /// stale chunk set is removed from the vector store before the fresh
+    /// chunks are written (chunk ids are deterministic, and BM25 already
+    /// overwrites by chunk id). Previously a duplicate ingest left parallel
+    /// stale vectors that crowded out top-k.
     pub async fn add_document(&self, document: Document) -> Result<String, VectorStoreError> {
         let parent_id = document
             .id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // C5: capture the stale chunk ids BEFORE the store replaces the
+        // chunk set, then best-effort delete their vectors.
+        let stale_chunk_ids = self
+            .document_store
+            .get_chunks_for_parent(&parent_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.chunk_id)
+            .collect::<Vec<_>>();
 
         // P0-1: For a document without an id, attach the pre-allocated parent_id before
         // storing; otherwise the store generates a new uuid internally, making
@@ -184,6 +201,13 @@ impl UnifiedHybridIndex {
                 self.config.chunk_size,
             )
             .await?;
+
+        // C5: remove the stale vectors (chunk ids are deterministic, so the
+        // fresh upsert would otherwise leave the old duplicates in place on
+        // vector-store backends that append rather than overwrite by id).
+        for chunk_id in &stale_chunk_ids {
+            let _ = self.vector_store.delete_document(chunk_id).await;
+        }
 
         let chunks = self
             .document_store

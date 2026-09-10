@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 
-use super::client::MCPClient;
+use super::client_stateless::StatelessMcpClient;
 use super::protocol::MCPError;
 use super::sandbox::ServerSandbox;
 use super::tool_timeout::{call_tool_with_timeout, ToolSpec};
@@ -39,7 +39,7 @@ pub(crate) fn result_to_string_or_error(result: &MCPToolResult) -> Result<String
 
 /// MCP tool adapter - wraps the tools a MCP Server exposes as `BaseTool`s
 pub struct MCPToolAdapter {
-    client: MCPClient,
+    client: StatelessMcpClient,
     definition: MCPToolDefinition,
     /// The externally visible tool name (P2-2): after namespacing it is `server_name:tool_name`;
     /// without namespacing it equals the original tool name. The LLM sees this; the actual call still uses
@@ -56,7 +56,7 @@ pub struct MCPToolAdapter {
 
 impl MCPToolAdapter {
     /// Creates an adapter from the original tool name (no namespacing).
-    pub fn new(client: MCPClient, definition: MCPToolDefinition) -> Self {
+    pub fn new(client: StatelessMcpClient, definition: MCPToolDefinition) -> Self {
         let display_name = definition.name.clone();
         Self {
             client,
@@ -73,7 +73,11 @@ impl MCPToolAdapter {
     /// Pairs with [`crate::ToolNamespace::qualify`] for unique routing of same-named tools in the 100+ Server
     /// scenario: when several Servers all have `read_file`, each exposes `fs:read_file` / `db:read_file`, but
     /// the calls all go through their own `read_file`.
-    pub fn namespaced(client: MCPClient, server: &str, definition: MCPToolDefinition) -> Self {
+    pub fn namespaced(
+        client: StatelessMcpClient,
+        server: &str,
+        definition: MCPToolDefinition,
+    ) -> Self {
         let display_name = format!("{server}:{}", definition.name);
         Self {
             client,
@@ -143,17 +147,20 @@ impl BaseTool for MCPToolAdapter {
 mod tests {
     use super::*;
     use crate::sandbox::ParamRule;
-    use crate::test_support::{start_fake_sse_server, PostMode};
+    use crate::test_support::{start_fake_stateless_server, StatelessMode};
     use crate::types::MCPContent;
-    use crate::MCPConfig;
     use serde_json::json;
 
     fn sample_definition() -> MCPToolDefinition {
         MCPToolDefinition {
-            name: "read_file".to_string(),
-            description: "Read a file".to_string(),
+            name: "echo".to_string(),
+            description: "Echo a message".to_string(),
             input_schema: json!({"type": "object"}),
         }
+    }
+
+    fn sample_client(server_url: &str) -> StatelessMcpClient {
+        StatelessMcpClient::connect(server_url)
     }
 
     #[test]
@@ -221,10 +228,8 @@ mod tests {
     /// the Server.
     #[tokio::test]
     async fn test_adapter_sandbox_blocks_before_call() {
-        let server = start_fake_sse_server(PostMode::Quiet).await;
-        let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
-            .await
-            .expect("connecting to fake SSE server should succeed");
+        let server = start_fake_stateless_server(StatelessMode::Normal).await;
+        let client = sample_client(&server.url);
         let sandbox = Arc::new(ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
             field: "path".to_string(),
             prefix: "file:///tmp/".to_string(),
@@ -244,10 +249,8 @@ mod tests {
     /// Sandbox allow: compliant parameters really reach the Server (P2-6).
     #[tokio::test]
     async fn test_adapter_sandbox_allows_and_reaches_server() {
-        let server = start_fake_sse_server(PostMode::Quiet).await;
-        let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
-            .await
-            .expect("connecting to fake SSE server should succeed");
+        let server = start_fake_stateless_server(StatelessMode::Normal).await;
+        let client = sample_client(&server.url);
         let sandbox = Arc::new(ServerSandbox::new("fs").with_param_rule(ParamRule::Prefix {
             field: "path".to_string(),
             prefix: "file:///tmp/".to_string(),
@@ -257,8 +260,8 @@ mod tests {
             .run(r#"{"path": "file:///tmp/a.txt"}"#.to_string())
             .await;
         assert!(
-            matches!(out.as_deref(), Ok("read_file")),
-            "should reach the server and echo the tool name after allow, actual: {:?}",
+            matches!(out.as_deref(), Ok(text) if text.contains("echo")),
+            "should reach the server after allow, actual: {:?}",
             out.as_deref()
         );
     }

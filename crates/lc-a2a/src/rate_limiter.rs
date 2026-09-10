@@ -73,26 +73,31 @@ impl RateLimiter {
     /// Returns a guard that releases the concurrency slot when dropped, or a
     /// `RateLimitError` if the request would exceed either limit.
     pub async fn try_acquire(&self) -> Result<RateLimitPermit, RateLimitError> {
-        // 1. Window rate check.
-        if self.max_requests > 0 {
-            let mut state = self.state.lock().await;
-            let now = Instant::now();
-            if now.duration_since(state.window_start) >= self.window {
-                state.window_start = now;
-                state.count = 0;
-            }
-            if state.count >= self.max_requests {
-                return Err(RateLimitError::TooManyRequests);
-            }
-            state.count += 1;
+        // 0.22.0 audit fix (H-P3): the window check, concurrency admission and
+        // counter increment share one synchronous critical section
+        // (`try_acquire_owned` never awaits), so a request rejected by the
+        // concurrency cap no longer consumes the per-window budget.
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        if now.duration_since(state.window_start) >= self.window {
+            state.window_start = now;
+            state.count = 0;
+        }
+        if self.max_requests > 0 && state.count >= self.max_requests {
+            return Err(RateLimitError::TooManyRequests);
         }
 
-        // 2. Concurrency slot.
+        // Concurrency slot.
         let permit = self
             .semaphore
             .clone()
             .try_acquire_owned()
             .map_err(|_| RateLimitError::ConcurrencyLimitExceeded)?;
+
+        if self.max_requests > 0 {
+            state.count += 1;
+        }
+        drop(state);
 
         Ok(RateLimitPermit { _permit: permit })
     }
@@ -143,5 +148,41 @@ mod tests {
             // Slot freed -> acquire succeeds again.
             assert!(limiter.try_acquire().await.is_ok());
         });
+    }
+
+    // 0.22.0 audit fix (H-P3): the permit must keep the concurrency slot
+    // reserved while the caller holds it across the dispatch await.
+    #[tokio::test]
+    async fn permit_is_held_across_await() {
+        let limiter = Arc::new(RateLimiter::new(1, 0));
+        let permit = limiter.try_acquire().await.unwrap();
+        let other = limiter.clone();
+        let rejected = tokio::spawn(async move { other.try_acquire().await.is_err() });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            rejected.await.unwrap(),
+            "concurrency cap must apply while the permit is held across an await"
+        );
+        drop(permit);
+        assert!(limiter.try_acquire().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn concurrency_rejection_does_not_consume_window_budget() {
+        let limiter = RateLimiter::new(1, 2);
+        let permit = limiter.try_acquire().await.unwrap();
+        // Rejected by the concurrency cap — must not burn a window slot.
+        assert!(matches!(
+            limiter.try_acquire().await,
+            Err(RateLimitError::ConcurrencyLimitExceeded)
+        ));
+        drop(permit);
+        assert!(limiter.try_acquire().await.is_ok());
+        // Only two window slots were ever consumed: the legit acquire plus
+        // the one after the rejection.
+        assert!(matches!(
+            limiter.try_acquire().await,
+            Err(RateLimitError::TooManyRequests)
+        ));
     }
 }

@@ -2272,12 +2272,12 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card">
-                    <p><strong>MCP</strong>（Model Context Protocol）把任意 MCP Server 的工具接入 Agent。`MCPClient` 连接 Stdio/SSE，自动把工具适配为 <code>BaseTool</code>；`MCPServer` 把本地工具暴露给 Claude Desktop / Cursor 等宿主。</p>
+                    <p><strong>MCP</strong>（Model Context Protocol）把任意 MCP Server 的工具接入 Agent。0.22.0 起为无状态单轨：`StatelessMcpClient` 走自包含 HTTP POST（带 `Mcp-Method`/`Mcp-Name` 路由头与 `_meta`），自动把工具适配为 <code>BaseTool</code>；`MCPServer` 把本地工具暴露给宿主（serve_http / serve_stdio）。</p>
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>核心原语</h3><p>initialize / tools/list / tools/call + resources / prompts / completion 原语 + 流式工具结果（PartialContent）与取消</p></div>
-                    <div class="feature-card"><h3>传输韧性</h3><p>自动重连（0.5s→30s 指数退避）、ConnectionManager 连接池、CircuitBreaker 熔断</p></div>
+                    <div class="feature-card"><h3>核心原语</h3><p>initialize / tools/list / tools/call + resources / prompts / completion 原语 + MRTR input_required 多轮请求</p></div>
+                    <div class="feature-card"><h3>托管注册表</h3><p>ConnectionManager 惰性构建、CircuitBreaker 熔断、健康探活</p></div>
                     <div class="feature-card"><h3>命名空间 / 发现</h3><p>ToolNamespace 多 server 隔离、ToolDiscovery 批量发现、ToolSpec 超时策略</p></div>
                     <div class="feature-card"><h3>安全</h3><p>SamplingGuard 采样递归防护（深度 + token 预算 + 超时）、ServerSandbox 参数与出站策略</p></div>
                     <div class="feature-card"><h3>网关</h3><p>MCPGateway 聚合多 server 统一入口、TenantGateway 多租户、ToolOrchestrator DAG 编排</p></div>
@@ -2354,7 +2354,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card-grid">
-                    <div class="feature-card"><h3>MCP</h3><p>MCPClient 连接 MCP Server，工具作为 BaseTool</p></div>
+                    <div class="feature-card"><h3>MCP</h3><p>StatelessMcpClient 连接 MCP Server，工具作为 BaseTool</p></div>
                     <div class="feature-card"><h3>多模态视觉</h3><p>ImageContent + human_with_image（OpenAI/Ollama）</p></div>
                     <div class="feature-card"><h3>会话管理</h3><p>SessionManager 多轮会话生命周期</p></div>
                     <div class="feature-card"><h3>Token 计数器</h3><p>TiktokenCounter + TokenTrackingLLM + 成本</p></div>
@@ -2493,7 +2493,7 @@ crates/
 ├── lc-tools-derive/     # `#[tool]` 过程宏
 ├── lc-mcp/              # MCP 客户端/服务端 + ConnectionManager / Gateway / SamplingGuard / CircuitBreaker
 │   ├── protocol.rs      # initialize / tools/list / tools/call + resources/prompts/completion 注册制接线、sampling/elicitation 发起（v0.18）
-│   ├── stream.rs        # PartialContent 流式工具结果 + 取消
+│   ├── client_stateless.rs / transport/stateless.rs  # 无状态 HTTP POST 轨道（0.22.0 单轨）
 │   ├── connection_manager.rs / gateway.rs / tenant.rs / orchestrate.rs
 │   ├── health.rs        # ServerHealth / CircuitBreaker
 │   ├── sampling.rs      # SamplingGuard 采样保护

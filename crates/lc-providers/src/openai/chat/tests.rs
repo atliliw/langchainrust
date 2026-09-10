@@ -108,8 +108,46 @@ mod tests_q3_q4 {
                 Ok(StreamChunk::new("world")),
             ]));
 
-        let content = OpenAIChat::aggregate_stream(stream).await.unwrap();
+        let (content, token_usage, tool_calls) =
+            OpenAIChat::aggregate_stream(stream).await.unwrap();
         assert_eq!(content, "Hello, world");
+        // 0.22.0 audit fix (Medium): a text-only stream carries no terminal
+        // usage / tool calls.
+        assert!(token_usage.is_none());
+        assert!(tool_calls.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_stream_carries_terminal_usage_and_tool_calls() {
+        // 0.22.0 audit fix (Medium): the `config.streaming=true` aggregate path
+        // must not drop the terminal usage chunk / accumulated tool calls.
+        let usage_chunk = StreamChunk {
+            text: String::new(),
+            token_usage: Some(TokenUsage {
+                prompt_tokens: 3,
+                completion_tokens: 5,
+                total_tokens: 8,
+            }),
+            tool_calls: Some(vec![lc_core::tools::ToolCall::builder("call_1")
+                .name("get_weather")
+                .arguments(r#"{"city":"beijing"}"#)
+                .build()]),
+        };
+        let stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>> =
+            Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamChunk::new("Hello")),
+                Ok(StreamChunk::new(" world")),
+                Ok(usage_chunk),
+            ]));
+
+        let (content, token_usage, tool_calls) =
+            OpenAIChat::aggregate_stream(stream).await.unwrap();
+        assert_eq!(content, "Hello world");
+        let usage = token_usage.expect("usage carried through");
+        assert_eq!(usage.total_tokens, 8);
+        let calls = tool_calls.expect("tool_calls carried through");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name(), "get_weather");
     }
 
     #[tokio::test]

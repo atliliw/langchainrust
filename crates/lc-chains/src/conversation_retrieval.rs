@@ -294,11 +294,9 @@ impl BaseChain for ConversationRetrievalChain {
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
             for (i, doc) in documents.iter().enumerate() {
-                let preview = if doc.content.len() > 100 {
-                    &doc.content[..100]
-                } else {
-                    &doc.content
-                };
+                // 0.22.0 C6 fix: char-boundary preview (byte slicing panicked on
+                // CJK documents; matches retrieval_qa.rs's chars().take(100)).
+                let preview: String = doc.content.chars().take(100).collect();
                 println!("Document {}: {}", i + 1, preview);
             }
         }

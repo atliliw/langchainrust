@@ -8,12 +8,116 @@ use serde_json::Value;
 /// MCP protocol version (the version this library currently implements, sent as the requested version at `initialize`).
 pub const MCP_VERSION: &str = "2024-11-05";
 
+/// Stateless MCP spec version (2026-07-28 fifth edition): no handshake, no
+/// session ids — every request is self-contained via `_meta` (0.22.0 S2).
+pub const MCP_VERSION_STATELESS: &str = "2026-07-28";
+
 /// Protocol versions supported by this library (P2-10).
 ///
 /// Recognized in order during the handshake; the first entry is the currently implemented version. New versions
 /// are appended as the protocol evolves while old ones are kept for compatibility with older servers (degradation);
 /// versions not in the list are handled by [`VersionPolicy`] — degrade or reject.
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_VERSION];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[MCP_VERSION_STATELESS, MCP_VERSION];
+
+/// HTTP header carrying the JSON-RPC method name on stateless POSTs
+/// (2026-07-28 SEP-2243): gateways / WAFs / rate limiters can route and
+/// throttle without parsing the body.
+pub const MCP_METHOD_HEADER: &str = "Mcp-Method";
+
+/// HTTP header carrying the MCP protocol namespace on stateless POSTs.
+pub const MCP_NAME_HEADER: &str = "Mcp-Name";
+
+/// JSON-RPC error code for authorization failures on the stateless track
+/// (maps to HTTP 401 at the transport boundary).
+pub const MCP_ERROR_UNAUTHORIZED: i32 = -32001;
+
+/// Self-contained per-request metadata for the stateless track: replaces the
+/// deleted `initialize` handshake / session id. Serialized as the JSON-RPC
+/// `_meta` member of `params`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RequestMeta {
+    /// Protocol version the client speaks (e.g. [`MCP_VERSION_STATELESS`]).
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: String,
+    /// Client identity (replaces the handshake `clientInfo`).
+    #[serde(rename = "clientInfo")]
+    pub client_info: ClientIdentity,
+    /// Client capabilities the server may rely on for this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Value>,
+    /// Opaque MRTR continuation token (`requestState`): present only on
+    /// resent requests after an `input_required` round trip.
+    #[serde(rename = "requestState", skip_serializing_if = "Option::is_none")]
+    pub request_state: Option<String>,
+}
+
+/// Client identity carried in [`RequestMeta`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientIdentity {
+    /// Client name (e.g. `"langchainrust-mcp-client"`).
+    pub name: String,
+    /// Client version.
+    pub version: String,
+}
+
+impl RequestMeta {
+    /// Builds the default meta for this library.
+    pub fn default_for(version: impl Into<String>) -> Self {
+        Self {
+            protocol_version: version.into(),
+            client_info: ClientIdentity {
+                name: "langchainrust-mcp-client".to_string(),
+                version: "0.22.0".to_string(),
+            },
+            capabilities: None,
+            request_state: None,
+        }
+    }
+
+    /// Sets the MRTR continuation token.
+    pub fn with_request_state(mut self, request_state: impl Into<String>) -> Self {
+        self.request_state = Some(request_state.into());
+        self
+    }
+}
+
+/// One question the server asks during a multi-round-trip (MRTR) exchange.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MrtrQuestion {
+    /// Question id the answer must reference.
+    pub id: String,
+    /// What the server needs from the client.
+    pub prompt: String,
+}
+
+/// The `input_required` shape a stateless server returns when it needs
+/// client input before it can finish a request (MRTR).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InputRequired {
+    /// Opaque continuation token; echoed back on the resent request.
+    #[serde(rename = "requestState")]
+    pub request_state: String,
+    /// What the server needs.
+    pub questions: Vec<MrtrQuestion>,
+}
+
+impl InputRequired {
+    /// Extracts an `input_required` payload from a successful result, if the
+    /// result is one.
+    pub fn from_result(result: &Value) -> Option<Self> {
+        let ir = result.get("input_required")?;
+        serde_json::from_value(ir.clone()).ok()
+    }
+}
+
+/// The client's answers to one MRTR round, sent alongside the resent request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MrtrAnswer {
+    /// Question id being answered.
+    pub id: String,
+    /// The collected answer.
+    pub value: String,
+}
 
 /// Protocol version negotiation policy (P2-10): what to do when a server declares a version outside the support list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,6 +156,11 @@ pub struct MCPRequest {
     /// Optional request parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    /// Stateless-track per-request metadata, serialized as the top-level
+    /// `_meta` member of the JSON-RPC message (self-contained request; no
+    /// handshake / session id). `None` on the legacy handshake track.
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<RequestMeta>,
 }
 
 impl MCPRequest {
@@ -62,6 +171,23 @@ impl MCPRequest {
             id,
             method: method.into(),
             params,
+            meta: None,
+        }
+    }
+
+    /// Builds a stateless-track request with self-contained `_meta`.
+    pub fn new_stateless(
+        id: u64,
+        method: impl Into<String>,
+        params: Option<Value>,
+        meta: RequestMeta,
+    ) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: method.into(),
+            params,
+            meta: Some(meta),
         }
     }
 }

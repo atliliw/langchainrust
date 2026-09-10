@@ -73,7 +73,7 @@ mod handlers;
 mod message;
 mod routes;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,6 +89,7 @@ use super::protocol::{
     A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, A2AWorkflow, AgentCard, AgentSkill,
     TaskFilter, TaskPushNotification, TaskStatus,
 };
+use crate::client::signing::constant_time_eq;
 use super::rate_limiter::RateLimiter;
 use super::router::{SkillMapRouter, SkillRouter};
 use super::store::{InMemoryTaskStore, StoredTask, TaskStore, DEFAULT_MAX_TASKS};
@@ -99,6 +100,50 @@ use message::extract_message;
 
 /// Default task time-to-live before expiry cleanup (24 hours).
 const DEFAULT_TASK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Maximum number of tracked idempotency keys before the oldest entry is
+/// evicted (0.22.0 audit fix H-P5: the `message_id` table used to grow
+/// unboundedly).
+const MAX_MESSAGE_IDS: usize = 10_000;
+
+/// Bounded insertion-ordered map backing the `message_id -> task_id`
+/// idempotency table (0.22.0 audit fix H-P5).
+///
+/// The `map` holds the reservation state (empty `task_id` = in-flight claim);
+/// `order` records insertion order so the oldest entry can be evicted when
+/// the table reaches [`MAX_MESSAGE_IDS`]. Aborted keys leave a stale entry in
+/// `order`, which eviction skips over.
+#[derive(Default)]
+struct MessageIdTable {
+    map: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+impl MessageIdTable {
+    fn get(&self, mid: &str) -> Option<&String> {
+        self.map.get(mid)
+    }
+
+    fn insert(&mut self, mid: String, task_id: String) {
+        if !self.map.contains_key(&mid) {
+            // At capacity, pop-oldest and remove it from the map; skip
+            // entries that were already aborted.
+            while self.map.len() >= MAX_MESSAGE_IDS {
+                match self.order.pop_front() {
+                    Some(oldest) if self.map.remove(&oldest).is_some() => break,
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            self.order.push_back(mid.clone());
+        }
+        self.map.insert(mid, task_id);
+    }
+
+    fn remove(&mut self, mid: &str) {
+        self.map.remove(mid);
+    }
+}
 
 /// A2A Server - wraps an agent and provides handler functions.
 ///
@@ -121,8 +166,9 @@ pub struct A2AServer {
     ///
     /// A mapping whose value is the empty string marks a `message_id` claimed
     /// by an in-flight request whose task has not been created yet; concurrent
-    /// retries with the same id see it and are rejected instead of double-executing.
-    message_ids: Arc<RwLock<HashMap<String, String>>>,
+    /// retries with the same id see it and are rejected instead of
+    /// double-executing. The table is bounded (see [`MAX_MESSAGE_IDS`]).
+    message_ids: Arc<RwLock<MessageIdTable>>,
     /// Task ids currently being resumed by `tasks/send_continue`.
     ///
     /// Guards the read-check-write of the resume path so two concurrent
@@ -159,7 +205,7 @@ impl A2AServer {
             chain,
             card,
             store: Arc::new(InMemoryTaskStore::with_max_tasks(DEFAULT_MAX_TASKS)),
-            message_ids: Arc::new(RwLock::new(HashMap::new())),
+            message_ids: Arc::new(RwLock::new(MessageIdTable::default())),
             inflight_resumes: Arc::new(std::sync::Mutex::new(HashSet::new())),
             skill_router: None,
             event_bus: None,
@@ -303,11 +349,17 @@ impl A2AServer {
     /// - `tasks/list` -> list stored tasks
     /// - unknown method -> method_not_found error
     pub async fn handle_a2a_request(&self, req: A2ARequest) -> A2AResponse {
-        if let Some(limiter) = &self.rate_limiter {
-            if let Err(e) = limiter.try_acquire().await {
-                return A2AResponse::error(req.id, 429, e.to_string());
-            }
-        }
+        // 0.22.0 audit fix (H-P3): bind the permit in the enclosing scope so
+        // it is held across the dispatch await. Holding it in a temporary
+        // `if let` value dropped it at the end of the statement, before the
+        // dispatch ran, so the concurrency cap never applied.
+        let _permit = match &self.rate_limiter {
+            Some(limiter) => match limiter.try_acquire().await {
+                Ok(permit) => Some(permit),
+                Err(e) => return A2AResponse::error(req.id, 429, e.to_string()),
+            },
+            None => None,
+        };
         self.dispatch(req).await
     }
 
@@ -338,7 +390,9 @@ impl A2AServer {
         if let Some(expected) = &self.expected_token {
             match bearer {
                 None => return Err(A2AResponse::error(0, 401, "Authentication required")),
-                Some(token) if token != expected => {
+                // 0.22.0 audit fix: compare in constant time so the check does
+                // not leak the expected token through early-exit timing.
+                Some(token) if !constant_time_eq(token, expected) => {
                     return Err(A2AResponse::error(0, 401, "Invalid authentication token"));
                 }
                 Some(_) => {}

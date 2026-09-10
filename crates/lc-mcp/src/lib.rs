@@ -1,27 +1,27 @@
 #![warn(missing_docs)]
-//! MCP (Model Context Protocol) support
+//! MCP (Model Context Protocol) support — 2026-07-28 stateless track only.
 //!
 //! MCP is the tool protocol standard introduced by Anthropic and has become the de-facto industry standard.
-//! This module provides an MCP Client that can connect to any MCP Server to obtain tool capabilities,
-//! and adapts MCP tools into `BaseTool` for use by Agents.
+//! This module provides a stateless MCP Client that can connect to any stateless MCP Server to obtain tool
+//! capabilities, and adapts MCP tools into `BaseTool` for use by Agents. Every request is self-contained
+//! (`_meta` + `Mcp-Method`/`Mcp-Name` headers) — no handshake, no session.
+//! The legacy handshake track (SSE/stdio/MCPClient) was removed in 0.22.0; see
+//! `docs/internal/v0.22.0/MIGRATION.md`.
 //!
 //! # Example
 //! ```no_run
-//! use lc_mcp::{MCPClient, MCPConfig};
+//! use lc_mcp::StatelessMcpClient;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let config = MCPConfig::stdio(
-//!     "npx",
-//!     vec!["@anthropic/mcp-server-filesystem".to_string(), "/tmp".to_string()],
-//! );
-//! let mut client = MCPClient::connect(config).await?;
+//! let client = StatelessMcpClient::connect("https://host/mcp");
 //! let tools = client.list_tools().await?;
 //! println!("MCP 工具数量: {}", tools.len());
 //! # Ok(())
 //! # }
 //! ```
 
-pub mod client;
+pub mod auth;
+pub mod client_stateless;
 pub mod completion;
 pub mod connection_manager;
 pub mod elicitation;
@@ -35,8 +35,7 @@ pub mod roots;
 pub mod sampling;
 pub mod sandbox;
 pub mod server;
-mod sse;
-pub mod stream;
+pub mod tasks;
 pub mod tenant;
 pub mod tool_adapter;
 pub mod tool_discovery;
@@ -48,7 +47,10 @@ pub mod types;
 #[cfg(test)]
 mod test_support;
 
-pub use client::MCPClient;
+pub use auth::{AuthScheme, Claims, JwtIssValidator, StaticBearerValidator, TokenValidator};
+pub use client_stateless::{
+    CannedAnswerProvider, MrtrAnswerProvider, MrtrConfig, StatelessMcpClient,
+};
 pub use completion::{
     CompletionArgument, CompletionProvider, CompletionRef, CompletionRequest, CompletionResult,
     CompletionValue,
@@ -57,7 +59,9 @@ pub use connection_manager::{ConnectionManager, ServerSpec};
 pub use elicitation::{
     ElicitationAction, ElicitationHandler, ElicitationRequest, ElicitationResponse,
 };
-pub use gateway::{GatewayAuditRecord, GatewayServerSpec, MCPGateway, RateLimiter};
+pub use gateway::{
+    GatewayAuditRecord, GatewayServerSpec, MCPGateway, MethodRateLimiter, RateLimiter,
+};
 pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
 pub use orchestrate::{OrchestrateError, ToolCaller, ToolOrchestrator, ToolStep};
 pub use prompts::{
@@ -65,8 +69,9 @@ pub use prompts::{
     PromptMessage, PromptProvider,
 };
 pub use protocol::{
-    MCPError, MCPRequest, MCPResponse, ProtocolInfo, VersionPolicy, MCP_VERSION,
-    SUPPORTED_PROTOCOL_VERSIONS,
+    ClientIdentity, InputRequired, MCPError, MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion,
+    ProtocolInfo, RequestMeta, VersionPolicy, MCP_ERROR_UNAUTHORIZED, MCP_METHOD_HEADER,
+    MCP_NAME_HEADER, MCP_VERSION, MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
 };
 pub use resources::{
     ListResourcesResult, ReadResourceParams, ReadResourceResult, Resource, ResourceContent,
@@ -80,11 +85,11 @@ pub use sandbox::{
     AuditRecord, EgressPolicy, ParamRule, ParamRuleError, SandboxError, ServerSandbox,
 };
 pub use server::MCPServer;
-pub use stream::{PartialContent, ToolStream, ToolStreamError};
+pub use tasks::McpTaskHandle;
 pub use tenant::TenantGateway;
 pub use tool_adapter::MCPToolAdapter;
 pub use tool_discovery::{KeywordScorer, ToolDiscovery, ToolScorer};
 pub use tool_namespace::{NamespacedTool, ToolConflict, ToolNamespace};
 pub use tool_timeout::{call_tool_with_timeout, ToolSpec};
-pub use transport::{InMemoryTransport, MCPEvent, MCPTransport, SseTransport, StdioTransport};
-pub use types::{MCPConfig, MCPContent, MCPToolDefinition, MCPToolResult};
+pub use transport::{default_meta, StatelessTransport};
+pub use types::{MCPContent, MCPToolDefinition, MCPToolResult};

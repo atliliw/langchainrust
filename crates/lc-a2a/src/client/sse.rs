@@ -26,7 +26,9 @@ impl A2ASseStream {
 
     /// Wait for the next event, or `None` when the stream ends.
     ///
-    /// Returns an error if the connection breaks or an event fails to parse.
+    /// Returns an error if the connection breaks; a malformed event is logged
+    /// and skipped so one bad payload does not kill the whole stream
+    /// (0.22.0 audit fix).
     pub async fn next(&mut self) -> Option<Result<TaskPushNotification, A2AError>> {
         loop {
             if let Some(event) = self.pending.pop_front() {
@@ -35,15 +37,9 @@ impl A2ASseStream {
             match self.response.chunk().await {
                 Ok(Some(chunk)) => {
                     let text = String::from_utf8_lossy(&chunk);
-                    match self.parser.feed(&text) {
-                        Ok(events) => {
-                            self.pending.extend(events);
-                            // Loop so queued events are returned even if a chunk
-                            // carried none (or we keep reading on an empty chunk).
-                            continue;
-                        }
-                        Err(e) => return Some(Err(e)),
-                    }
+                    self.pending.extend(self.parser.feed(&text));
+                    // Loop so queued events are returned even if a chunk
+                    // carried none (or we keep reading on an empty chunk).
                 }
                 Ok(None) => return None,
                 Err(e) => return Some(Err(A2AError::from(e))),
@@ -69,7 +65,10 @@ impl A2aSseParser {
     }
 
     /// Feed a chunk of the response body; returns any complete notifications.
-    fn feed(&mut self, chunk: &str) -> Result<Vec<TaskPushNotification>, A2AError> {
+    ///
+    /// 0.22.0 audit fix: an event whose JSON payload fails to parse is logged
+    /// and skipped; only transport-level errors surface to the caller.
+    fn feed(&mut self, chunk: &str) -> Vec<TaskPushNotification> {
         self.buffer.push_str(chunk);
         let mut out = Vec::new();
         while let Some(pos) = self.buffer.find("\n\n") {
@@ -85,11 +84,13 @@ impl A2aSseParser {
             if data.is_empty() || data == "[DONE]" {
                 continue;
             }
-            let notification: TaskPushNotification = serde_json::from_str(&data).map_err(|e| {
-                A2AError::Parse(format!("Failed to parse SSE event `{data}`: {}", e))
-            })?;
-            out.push(notification);
+            match serde_json::from_str::<TaskPushNotification>(&data) {
+                Ok(notification) => out.push(notification),
+                Err(e) => {
+                    log::warn!("skipping malformed SSE event `{data}`: {e}");
+                }
+            }
         }
-        Ok(out)
+        out
     }
 }

@@ -8,6 +8,7 @@ use crate::errors::{GraphError, GraphResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// State Schema trait
 pub trait StateSchema:
@@ -89,6 +90,38 @@ pub struct ReplaceReducer;
 impl<S: StateSchema> Reducer<S> for ReplaceReducer {
     fn reduce(&self, _current: &S, update: &S) -> S {
         update.clone()
+    }
+}
+
+/// 0.22.0 C3 fix: composed merge reducer — applies every per-field reducer
+/// registered via [`StateGraph::set_reducer`](crate::StateGraph::set_reducer)
+/// on top of the default (replace) merge.
+///
+/// Each field reducer (e.g. [`AppendMessagesReducer`]) merges **its own
+/// field** into the running result; fields without a registered reducer take
+/// the update's values. Previously the registered reducers were dropped at
+/// `compile()` and every merge point used plain replace, so accumulating
+/// fields (messages / steps) were silently overwritten after each node.
+pub struct MergeReducer<S: StateSchema> {
+    fallback: Arc<dyn Reducer<S>>,
+    fields: Vec<Arc<dyn Reducer<S>>>,
+}
+
+impl<S: StateSchema> MergeReducer<S> {
+    /// Composes `fields` (in registration order) over `fallback`.
+    pub fn new(fallback: Arc<dyn Reducer<S>>, fields: Vec<Arc<dyn Reducer<S>>>) -> Self {
+        Self { fallback, fields }
+    }
+}
+
+impl<S: StateSchema> Reducer<S> for MergeReducer<S> {
+    fn reduce(&self, current: &S, update: &S) -> S {
+        let mut merged = self.fallback.reduce(current, update);
+        for reducer in &self.fields {
+            let next = reducer.reduce(current, &merged);
+            merged = next;
+        }
+        merged
     }
 }
 

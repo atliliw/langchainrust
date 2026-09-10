@@ -44,7 +44,8 @@ impl ResponsesModel {
     pub fn new(config: ResponsesConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -299,7 +300,7 @@ impl ResponsesModel {
         Pin<Box<dyn Stream<Item = Result<StreamChunk, ResponsesError>> + Send>>,
         ResponsesError,
     > {
-        use crate::openai::sse::SSEParser;
+        use crate::openai::sse::{SseByteFramer, SSEParser};
         use std::sync::{Arc, Mutex};
 
         let url = format!("{}/responses", self.config.base_url);
@@ -325,7 +326,7 @@ impl ResponsesModel {
         }
 
         let byte_stream = response.bytes_stream();
-        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         // M18: Use bounded channel to prevent OOM with slow consumers
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, ResponsesError>>(64);
 
@@ -336,17 +337,26 @@ impl ResponsesModel {
             let mut byte_stream = byte_stream;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H41: Use unwrap_or_else to recover from poisoned mutex
-                let events = {
-                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Ok(bytes) = chunk_result {
-                        let chunk_str = String::from_utf8_lossy(&bytes);
-
-                        parser_guard.parse(&chunk_str)
-                    } else {
-                        Vec::new()
+                // 0.22.0 C1: byte-layer framing; only complete events are decoded
+                let (events, transport_err) = {
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    match chunk_result {
+                        Ok(bytes) => {
+                            let mut out = Vec::new();
+                            for text in guard.1.push(&bytes) {
+                                out.extend(guard.0.parse(&text));
+                            }
+                            (out, None)
+                        }
+                        Err(e) => (Vec::new(), Some(e.to_string())),
                     }
                 };
                 // parser_guard is dropped here, before any await
+
+                if let Some(e) = transport_err {
+                    let _ = tx.send(Err(ResponsesError::Http(e))).await;
+                    return;
+                }
 
                 for event in events {
                     if event.is_done() {

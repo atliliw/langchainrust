@@ -129,6 +129,108 @@ pub(crate) fn documents_to_values(documents: &[Document]) -> Result<Vec<Value>, 
         .collect()
 }
 
+/// Single-pass template substitution shared by LLMChain and the document
+/// chains.
+///
+/// 0.22.0 audit fix (H-C1/H-C2): replaces the old per-key `String::replace`
+/// loop, which re-scanned substituted values — a value containing
+/// `{other_key}` could be silently re-substituted (or not, depending on
+/// HashMap iteration order), enabling injection and nondeterminism. This
+/// walks the template exactly once, mirroring
+/// `lc-prompts::template_parser::{parse_template, format_template}`:
+///
+/// - `{name}` placeholders are looked up in `vars` and substituted; values
+///   are never rescanned.
+/// - Missing variables are left as literal `{name}` text and reported in the
+///   returned `Vec<String>` (deduped, first-appearance order) so callers can
+///   decide to error or keep the literal. Variable names follow lc-prompts
+///   semantics: first char alphabetic (CJK included via `is_alphabetic`) or
+///   `_`, then alphanumeric or `_`.
+/// - `{{` and `}}` escape to literal `{` / `}`.
+pub(crate) fn substitute_template(
+    template: &str,
+    vars: &HashMap<String, String>,
+) -> (String, Vec<String>) {
+    let chars: Vec<char> = template.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(template.len());
+    let mut missing: Vec<String> = Vec::new();
+    let mut i = 0;
+
+    while i < n {
+        let c = chars[i];
+
+        if c == '{' {
+            // Escaped `{{` → literal `{`
+            if i + 1 < n && chars[i + 1] == '{' {
+                out.push('{');
+                i += 2;
+                continue;
+            }
+
+            // Find the closing `}` for a potential `{name}`
+            let mut j = i + 1;
+            while j < n && chars[j] != '}' {
+                j += 1;
+            }
+            if j < n {
+                let name: String = chars[i + 1..j].iter().collect();
+                if is_valid_template_var_name(&name) {
+                    match vars.get(&name) {
+                        Some(v) => out.push_str(v),
+                        None => {
+                            if !missing.contains(&name) {
+                                missing.push(name.clone());
+                            }
+                            // Leave the placeholder as literal text
+                            out.push('{');
+                            out.push_str(&name);
+                            out.push('}');
+                        }
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+
+            // Not a variable — literal `{`
+            out.push('{');
+            i += 1;
+            continue;
+        }
+
+        if c == '}' {
+            // Escaped `}}` → literal `}`
+            if i + 1 < n && chars[i + 1] == '}' {
+                out.push('}');
+                i += 2;
+                continue;
+            }
+            // Lone `}` is literal
+            out.push('}');
+            i += 1;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    (out, missing)
+}
+
+/// A template variable name starts with a letter or `_`, followed by letters,
+/// digits, `_`. `is_alphabetic`/`is_alphanumeric` also accept CJK characters,
+/// matching `lc-prompts::template_parser::is_valid_var_name`.
+fn is_valid_template_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
 /// Base Chain trait.
 ///
 /// Chain is LangChain's core abstraction, representing a sequence of operations.
@@ -185,14 +287,29 @@ pub trait BaseChain: Send + Sync {
         let result = self.invoke(inputs).await?;
         // P2-2: a chain that produces no string output now fails loudly instead
         // of silently streaming a single empty token (`unwrap_or("")`).
-        let output_text = result
-            .values()
-            .next()
-            .and_then(|v| v.as_str())
+        //
+        // 0.22.0 audit fix: pick the output deterministically instead of taking
+        // an arbitrary `values().next()` (HashMap order): prefer the chain's
+        // declared output key(s), then the only value when the map has exactly
+        // one entry, then the lexicographically smallest key.
+        let as_str = |v: &Value| v.as_str().map(|s| s.to_string());
+        let output_text = self
+            .output_keys()
+            .iter()
+            .find_map(|k| result.get(*k).and_then(as_str))
+            .or_else(|| {
+                if result.len() == 1 {
+                    result.values().next().and_then(as_str)
+                } else {
+                    result
+                        .keys()
+                        .min()
+                        .and_then(|k| result.get(k).and_then(as_str))
+                }
+            })
             .ok_or_else(|| {
                 ChainError::OutputError("chain produced no string output to stream".to_string())
-            })?
-            .to_string();
+            })?;
         let stream = futures_util::stream::once(async move {
             Ok(StreamToken {
                 token: output_text,
@@ -212,9 +329,16 @@ pub trait BaseChain: Send + Sync {
         inputs: HashMap<String, Value>,
         config: Option<RunnableConfig>,
     ) -> Result<ChainStream, ChainError> {
-        stream_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
-            self.stream(inputs).await
-        })
+        let output_key = self.output_keys().first().map(|k| (*k).to_string());
+        stream_chain_with_callbacks(
+            self.name(),
+            inputs,
+            config,
+            output_key,
+            |inputs| async move {
+                self.stream(inputs).await
+            },
+        )
         .await
     }
 
@@ -286,10 +410,15 @@ where
 ///
 /// Shared by the default `stream_with_config` and by composite chains that
 /// override it to thread `config` into their sub-chains.
+///
+/// `output_key` names the key under which the accumulated token text is
+/// reported on `on_chain_end` (0.22.0 audit fix: previously the final
+/// dispatch always carried `output: null`).
 pub(crate) async fn stream_chain_with_callbacks<F, Fut>(
     name: &str,
     inputs: HashMap<String, Value>,
     config: Option<RunnableConfig>,
+    output_key: Option<String>,
     body: F,
 ) -> Result<ChainStream, ChainError>
 where
@@ -315,49 +444,107 @@ where
         }
     };
 
-    Ok(Box::pin(end_stream_on_completion(stream, run, callbacks)))
+    Ok(Box::pin(end_stream_on_completion(
+        stream,
+        run,
+        callbacks,
+        output_key,
+    )))
 }
 
 /// Wrap a chain token stream so the RunTree is ended and `on_chain_end` /
 /// `on_chain_error` dispatched once the stream completes or errors.
+///
+/// The accumulated token text is reported under `output_key` on completion
+/// (0.22.0 audit fix: previously always `output: null`).
 fn end_stream_on_completion(
     inner: ChainStream,
     run: RunTree,
     callbacks: Option<Arc<CallbackManager>>,
+    output_key: Option<String>,
 ) -> impl Stream<Item = Result<StreamToken, ChainError>> + Send {
-    stream::unfold(Some((inner, run, callbacks)), |state| async move {
-        let (mut inner, run, callbacks) = match state {
-            Some(s) => s,
-            None => return None,
-        };
-        match inner.next().await {
-            Some(Ok(token)) => Some((Ok(token), Some((inner, run, callbacks)))),
-            Some(Err(e)) => {
-                let msg = e.to_string();
-                let mut run = run;
-                run.end_with_error(msg.clone());
-                if let Some(cb) = callbacks {
-                    cb.dispatch_chain_error(&run, &msg).await;
+    stream::unfold(
+        Some((inner, run, callbacks, output_key, String::new())),
+        |state| async move {
+            let (mut inner, run, callbacks, output_key, mut accumulated) = match state {
+                Some(s) => s,
+                None => return None,
+            };
+            match inner.next().await {
+                Some(Ok(token)) => {
+                    accumulated.push_str(&token.token);
+                    Some((
+                        Ok(token),
+                        Some((inner, run, callbacks, output_key, accumulated)),
+                    ))
                 }
-                Some((Err(e), None))
-            }
-            None => {
-                let mut run = run;
-                run.end(json!({ "output": null }));
-                if let Some(cb) = callbacks {
-                    cb.dispatch_chain_end(&run, &json!({ "output": null }))
-                        .await;
+                Some(Err(e)) => {
+                    let msg = e.to_string();
+                    let mut run = run;
+                    run.end_with_error(msg.clone());
+                    if let Some(cb) = callbacks {
+                        cb.dispatch_chain_error(&run, &msg).await;
+                    }
+                    Some((Err(e), None))
                 }
-                None
+                None => {
+                    let mut run = run;
+                    // 0.22.0 audit fix: report the actual accumulated output
+                    // under the chain's output key instead of `output: null`.
+                    let key = output_key.unwrap_or_else(|| "output".to_string());
+                    let payload = json!({ key: accumulated });
+                    run.end(json!({ "output": payload }));
+                    if let Some(cb) = callbacks {
+                        cb.dispatch_chain_end(&run, &json!({ "output": payload }))
+                            .await;
+                    }
+                    None
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::error::Error;
+
+    /// 0.22.0 audit fix (H-C2): substituted values are never rescanned, so a
+    /// value containing `{key}` cannot be re-substituted.
+    #[test]
+    fn test_substitute_template_no_value_rescan() {
+        let mut vars = HashMap::new();
+        vars.insert("question".to_string(), "value with {summaries} inside".to_string());
+        vars.insert("summaries".to_string(), "SHOULD_NOT_APPEAR".to_string());
+        let (out, missing) = substitute_template("Q: {question} S: {summaries}", &vars);
+        assert_eq!(
+            out,
+            "Q: value with {summaries} inside S: SHOULD_NOT_APPEAR"
+        );
+        assert!(missing.is_empty());
+    }
+
+    /// 0.22.0 audit fix (H-C1): CJK variable names are recognized; missing
+    /// ones are reported instead of silently left behind.
+    #[test]
+    fn test_substitute_template_cjk_and_missing() {
+        let mut vars = HashMap::new();
+        vars.insert("姓名".to_string(), "张三".to_string());
+        let (out, missing) = substitute_template("你好，{姓名}！{缺失}", &vars);
+        assert_eq!(out, "你好，张三！{缺失}");
+        assert_eq!(missing, vec!["缺失".to_string()]);
+    }
+
+    /// 0.22.0 audit fix (H-C1): `{{`/`}}` escape like lc-prompts.
+    #[test]
+    fn test_substitute_template_escaped_braces() {
+        let mut vars = HashMap::new();
+        vars.insert("x".to_string(), "V".to_string());
+        let (out, missing) = substitute_template("{{literal}} {x} }}end{{", &vars);
+        assert_eq!(out, "{literal} V }end{");
+        assert!(missing.is_empty());
+    }
 
     #[test]
     fn test_chain_error_display() {

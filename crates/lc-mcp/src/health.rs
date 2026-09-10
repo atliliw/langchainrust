@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::client::MCPClient;
+use crate::client_stateless::StatelessMcpClient;
 use crate::protocol::MCPError;
 
 /// Exponential backoff base (0.5s).
@@ -196,7 +196,7 @@ impl CircuitBreaker {
 ///
 /// Being able to list tools means the server can at least respond to requests; a failed probe is
 /// recorded by the caller ([`CircuitBreaker::record_failure`]) into the breaker count.
-pub async fn probe_health(client: &MCPClient) -> Result<(), MCPError> {
+pub async fn probe_health(client: &StatelessMcpClient) -> Result<(), MCPError> {
     client.list_tools().await.map(|_| ())
 }
 
@@ -212,8 +212,8 @@ fn to_status(state: BreakerState, failures: u32) -> HealthStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{start_fake_sse_server, PostMode};
-    use crate::MCPConfig;
+    use crate::client_stateless::StatelessMcpClient;
+    use crate::test_support::{start_fake_stateless_server, StatelessMode};
 
     /// `ServerHealth` state flow: Healthy → Degraded → Down → back to Healthy.
     #[test]
@@ -293,13 +293,11 @@ mod tests {
         );
     }
 
-    /// Probe: list_tools against a fake SSE server succeeds.
+    /// Probe: list_tools against a fake stateless server succeeds.
     #[tokio::test]
     async fn test_probe_health_with_fake_server() {
-        let server = start_fake_sse_server(PostMode::Quiet).await;
-        let client = MCPClient::connect(MCPConfig::sse(&server.sse_url))
-            .await
-            .expect("connecting to fake SSE server should succeed");
+        let server = start_fake_stateless_server(StatelessMode::Normal).await;
+        let client = StatelessMcpClient::connect(&server.url);
         probe_health(&client)
             .await
             .expect("list_tools probe should succeed");

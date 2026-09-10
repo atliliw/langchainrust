@@ -1,25 +1,25 @@
 //! MCP multi-Server connection management (P2-1): lazy startup + idle reaping + connection pooling.
 //!
-//! 100+ Servers each calling `MCPClient::connect` directly = hundreds of subprocesses / long
-//! connections, exhausting both memory and file descriptors. This module provides a managed registry:
+//! 100+ Servers each holding a dedicated client directly = hundreds of long-lived handles,
+//! exhausting memory and file descriptors. This module provides a managed registry:
 //!
-//! - **Lazy startup**: `register` only records the `ServerSpec`; only the first `client(name)` actually
-//!   spawns a subprocess / opens an SSE connection, so unused Servers cost nothing.
+//! - **Lazy startup**: `register` only records the `ServerSpec`; the first `client(name)` actually
+//!   builds the client. The stateless track has no connection state, so construction is infallible.
 //! - **Idle reaping**: a background task scans periodically; non-`keep_alive` Servers idle longer than
-//!   `max_idle` get `close()`d to free the connection; stateful Servers marked `keep_alive` are exempt.
-//! - **Connection pooling**: `client()` on the same `ManagedServer` is idempotent; later calls reuse the
-//!   connection, no repeated spawning.
+//!   `max_idle` get `close()`d; stateful Servers marked `keep_alive` are exempt.
+//! - **Connection pooling**: `client()` on the same `ManagedServer` is idempotent; later calls reuse
+//!   the handle.
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use lc_mcp::{ConnectionManager, ServerSpec, MCPConfig};
+//! use lc_mcp::{ConnectionManager, ServerSpec};
 //!
 //! let manager = ConnectionManager::new();
-//! manager.register(ServerSpec::new("fs", MCPConfig::stdio("npx", vec!["@anthropic/mcp-server-filesystem".into(), "/tmp".into()]))).await?;
-//! manager.register(ServerSpec::new("db", MCPConfig::sse("http://localhost:8080/sse")).keep_alive()).await?;
+//! manager.register(ServerSpec::new("fs", "http://mcp-fs.internal:8080/mcp")).await?;
+//! manager.register(ServerSpec::new("db", "http://mcp-db.internal:8080/mcp").keep_alive()).await?;
 //!
-//! // The connection is started lazily, only on first call
+//! // The client is built lazily, only on first call
 //! let client = manager.client("fs").await?;
 //! ```
 
@@ -30,10 +30,9 @@ use tokio::sync::watch;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
-use crate::client::MCPClient;
+use crate::client_stateless::StatelessMcpClient;
 use crate::health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
 use crate::protocol::MCPError;
-use crate::types::MCPConfig;
 
 /// Default idle-reap scan interval.
 const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
@@ -43,8 +42,8 @@ const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
 pub struct ServerSpec {
     /// Server name (registry key / tool namespace prefix).
     pub name: String,
-    /// Connection config (Stdio / SSE).
-    pub config: MCPConfig,
+    /// Stateless endpoint URL.
+    pub url: String,
     /// Stateful-Server flag: not reaped while idle (default false).
     pub keep_alive: bool,
     /// Idle-reap threshold: connections unused beyond this duration are closed to free resources.
@@ -55,10 +54,10 @@ pub struct ServerSpec {
 
 impl ServerSpec {
     /// Creates a managed Server declaration.
-    pub fn new(name: impl Into<String>, config: MCPConfig) -> Self {
+    pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            config,
+            url: url.into(),
             keep_alive: false,
             max_idle: Duration::from_secs(300),
             max_failures: 3,
@@ -88,7 +87,7 @@ impl ServerSpec {
 struct ManagedServer {
     spec: ServerSpec,
     /// Lazy init: connects only on the first `client()`, reused afterwards.
-    client: tokio::sync::Mutex<Option<MCPClient>>,
+    client: tokio::sync::Mutex<Option<StatelessMcpClient>>,
     /// Last-used time (basis for idle-reap decisions).
     last_used: tokio::sync::Mutex<Instant>,
     /// Health breaker (P2-5): trips on consecutive failures + exponential backoff retry.
@@ -114,7 +113,7 @@ impl ManagedServer {
     /// Breaker gating (P2-5): `Open` with the backoff still running → fast-fail (no more requests to a
     /// broken Server). Connect success/failure feeds the breaker — success recovers, failure advances the
     /// failure count.
-    async fn client(&self) -> Result<MCPClient, MCPError> {
+    async fn client(&self) -> Result<StatelessMcpClient, MCPError> {
         {
             let breaker = self.breaker.lock().await;
             if !breaker.allow_request() {
@@ -134,16 +133,10 @@ impl ManagedServer {
                 "server '{}' first use, lazily starting connection",
                 self.spec.name
             );
-            match MCPClient::connect(self.spec.config.clone()).await {
-                Ok(c) => {
-                    self.breaker.lock().await.record_success();
-                    *guard = Some(c);
-                }
-                Err(e) => {
-                    self.breaker.lock().await.record_failure();
-                    return Err(e);
-                }
-            }
+            // Stateless construction is infallible (no handshake): failures
+            // surface on the first request and feed the breaker there.
+            *guard = Some(StatelessMcpClient::connect(self.spec.url.clone()));
+            self.breaker.lock().await.record_success();
         }
         *self.last_used.lock().await = Instant::now();
         Ok(guard
@@ -273,12 +266,34 @@ impl ConnectionManager {
     }
 
     /// Gets a Server's client (lazily connects on first call, reuses afterwards).
-    pub async fn client(&self, name: &str) -> Result<MCPClient, MCPError> {
+    pub async fn client(&self, name: &str) -> Result<StatelessMcpClient, MCPError> {
         let map = self.servers.read().await;
         let server = map
             .get(name)
             .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' is not registered")))?;
         server.client().await
+    }
+
+    /// Reports a tool-call outcome to a Server's circuit breaker (0.22.0 H-P6).
+    ///
+    /// The gateway previously logged call failures to the audit trail but
+    /// never fed the breaker, so a node whose *calls* kept failing was never
+    /// tripped — the breaker only watched connects and health probes, leaving
+    /// a persistently-failing node "Closed". Feeding actual call success /
+    /// failure here lets the breaker fast-fail bad nodes and recover on the
+    /// first success.
+    pub async fn report(&self, name: &str, ok: bool) -> Result<(), MCPError> {
+        let map = self.servers.read().await;
+        let server = map
+            .get(name)
+            .ok_or_else(|| MCPError::new(-1, format!("MCP server '{name}' is not registered")))?;
+        let mut breaker = server.breaker.lock().await;
+        if ok {
+            breaker.record_success();
+        } else {
+            breaker.record_failure();
+        }
+        Ok(())
     }
 
     /// Explicitly closes and releases a Server's connection (rebuilt lazily on the next `client`).
@@ -407,31 +422,30 @@ async fn reap_idle(servers: &Arc<RwLock<HashMap<String, Arc<ManagedServer>>>>) -
 mod tests {
     use super::*;
 
-    /// Lazy startup: register doesn't connect (a connect failure is fine); only the first client() attempts to connect.
+    const DEAD_URL: &str = "http://127.0.0.1:1";
+
+    /// Lazy startup: register doesn't connect; the client is constructed on
+    /// the first `client()` call (stateless construction is infallible —
+    /// failures surface on the first request).
     #[tokio::test]
-    async fn test_lazy_start_register_does_not_spawn() {
+    async fn test_lazy_start_register_does_not_connect() {
         let manager = ConnectionManager::new();
-        // The command can't exist — if register spawned, this would fail here.
-        let spec = ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]));
+        let spec = ServerSpec::new("lazy", DEAD_URL);
         manager
             .register(spec)
             .await
-            .expect("register should not spawn a connection");
+            .expect("register should not connect");
         assert_eq!(manager.len().await, 1);
 
-        // Only the first client() actually attempts to spawn → command missing → Err.
-        let result = manager.client("bad").await;
-        assert!(
-            result.is_err(),
-            "lazy connect should fail because the command does not exist"
-        );
+        // First client() constructs the stateless client (no network I/O).
+        let _ = manager.client("lazy").await.expect("lazy client");
     }
 
     /// Re-registering the same Server name errors.
     #[tokio::test]
     async fn test_register_duplicate_rejected() {
         let manager = ConnectionManager::new();
-        let spec = ServerSpec::new("dup", MCPConfig::sse("http://localhost:1/sse"));
+        let spec = ServerSpec::new("dup", DEAD_URL);
         manager
             .register(spec.clone())
             .await
@@ -457,15 +471,12 @@ mod tests {
     async fn test_reap_idle_respects_keep_alive() {
         let manager = ConnectionManager::new();
         manager
-            .register(
-                ServerSpec::new("idle", MCPConfig::sse("http://localhost:1/sse"))
-                    .with_max_idle(Duration::ZERO),
-            )
+            .register(ServerSpec::new("idle", DEAD_URL).with_max_idle(Duration::ZERO))
             .await
             .expect("register idle server");
         manager
             .register(
-                ServerSpec::new("sticky", MCPConfig::sse("http://localhost:1/sse"))
+                ServerSpec::new("sticky", DEAD_URL)
                     .keep_alive()
                     .with_max_idle(Duration::ZERO),
             )
@@ -488,10 +499,7 @@ mod tests {
     async fn test_release_unconnected_is_noop() {
         let manager = ConnectionManager::new();
         manager
-            .register(ServerSpec::new(
-                "x",
-                MCPConfig::sse("http://localhost:1/sse"),
-            ))
+            .register(ServerSpec::new("x", DEAD_URL))
             .await
             .expect("register should succeed");
         manager
@@ -509,7 +517,7 @@ mod tests {
     async fn test_len_and_unregister() {
         let manager = ConnectionManager::new();
         for i in 0..3 {
-            let spec = ServerSpec::new(format!("s{i}"), MCPConfig::sse("http://localhost:1/sse"));
+            let spec = ServerSpec::new(format!("s{i}"), DEAD_URL);
             manager.register(spec).await.unwrap();
         }
         assert_eq!(manager.len().await, 3);
@@ -521,18 +529,14 @@ mod tests {
         assert!(!manager.is_empty().await);
     }
 
-    /// Health probe: consecutive failures escalate Degraded → Down at the threshold (P2-5).
-    ///
-    /// A nonexistent command fails to connect immediately (fast), no real Server needed; with
-    /// `max_failures=2` the status should turn Down after two probes.
+    /// Health probe: consecutive failures escalate Degraded → Down at the
+    /// threshold (P2-5). The probe is a stateless `list_tools` request to a
+    /// dead URL — it fails, feeding the breaker.
     #[tokio::test]
     async fn test_health_probe_tracks_degraded_then_down() {
         let manager = ConnectionManager::new();
         manager
-            .register(
-                ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]))
-                    .with_max_failures(2),
-            )
+            .register(ServerSpec::new("bad", DEAD_URL).with_max_failures(2))
             .await
             .expect("register should succeed");
 
@@ -556,19 +560,16 @@ mod tests {
         assert_eq!(h2.failures, 2);
     }
 
-    /// After tripping, `client()` fast-fails, no longer issuing requests to the broken Server (P2-5).
+    /// After tripping, `client()` fast-fails while the backoff runs (P2-5).
     #[tokio::test]
     async fn test_client_blocked_when_circuit_open() {
         let manager = ConnectionManager::new();
         manager
-            .register(
-                ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]))
-                    .with_max_failures(1),
-            )
+            .register(ServerSpec::new("bad", DEAD_URL).with_max_failures(1))
             .await
             .expect("register should succeed");
 
-        // One failure trips the breaker.
+        // One failed probe trips the breaker.
         let health = manager
             .health("bad")
             .await
@@ -583,23 +584,18 @@ mod tests {
         assert!(err.to_string().contains("circuit"), "{}", err);
     }
 
-    /// Removes tripped Servers (P2-5): healthy ones are unaffected; tripped ones are removed and their names returned.
+    /// Removes tripped Servers (P2-5): healthy ones are unaffected; tripped
+    /// ones are removed and their names returned.
     #[tokio::test]
     async fn test_reap_unhealthy_removes_down_servers() {
         let manager = ConnectionManager::new();
         // "ok" never probes, so its breaker stays Closed.
         manager
-            .register(ServerSpec::new(
-                "ok",
-                MCPConfig::stdio("no_such_cmd_xyz", vec![]),
-            ))
+            .register(ServerSpec::new("ok", DEAD_URL))
             .await
             .expect("register ok");
         manager
-            .register(
-                ServerSpec::new("bad", MCPConfig::stdio("no_such_cmd_xyz", vec![]))
-                    .with_max_failures(1),
-            )
+            .register(ServerSpec::new("bad", DEAD_URL).with_max_failures(1))
             .await
             .expect("register bad");
 

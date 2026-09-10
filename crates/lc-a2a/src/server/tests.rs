@@ -4,6 +4,7 @@ use lc_chains::base::{BaseChain, ChainError, ChainResult};
 use tokio::sync::Notify;
 
 use crate::protocol::WorkflowStep;
+use crate::store::StoreError;
 
 /// A simple mock chain that echoes the input.
 struct EchoChain;
@@ -1198,4 +1199,117 @@ async fn run_workflow_carries_trace_id_onto_backing_task() {
         .to_string();
     let stored = store.get(&task_id).await.unwrap().unwrap();
     assert_eq!(stored.trace_id.as_deref(), Some("trace-wf"));
+}
+
+#[test]
+fn message_id_table_is_bounded_and_evicts_oldest() {
+    // 0.22.0 audit fix (H-P5): the idempotency table must not grow unboundedly.
+    let mut table = MessageIdTable::default();
+    for i in 0..MAX_MESSAGE_IDS + 10 {
+        table.insert(format!("m{i}"), format!("t{i}"));
+    }
+    assert_eq!(table.map.len(), MAX_MESSAGE_IDS);
+    // The ten extra entries pushed the ten oldest out, in order.
+    for i in 0..10 {
+        assert!(table.get(&format!("m{i}")).is_none(), "m{i} evicted");
+    }
+    assert!(table.get("m10").is_some());
+    assert!(table
+        .get(&format!("m{}", MAX_MESSAGE_IDS + 9))
+        .is_some());
+
+    // In-place update (finishing an existing claim) must not evict or
+    // double-queue the key.
+    table.insert("m100".to_string(), "t-updated".to_string());
+    assert_eq!(table.map.len(), MAX_MESSAGE_IDS);
+    assert_eq!(table.order.len(), MAX_MESSAGE_IDS);
+    assert_eq!(table.get("m100").map(|s| s.as_str()), Some("t-updated"));
+}
+
+#[test]
+fn message_id_table_abort_frees_the_key() {
+    let mut table = MessageIdTable::default();
+    table.insert("aborted".to_string(), String::new());
+    table.remove("aborted");
+    assert!(table.get("aborted").is_none());
+    for i in 0..MAX_MESSAGE_IDS {
+        table.insert(format!("m{i}"), format!("t{i}"));
+    }
+    assert_eq!(table.map.len(), MAX_MESSAGE_IDS);
+    // One more insert forces an eviction; the stale `aborted` order entry is
+    // skipped and the oldest live key (`m0`) is evicted.
+    table.insert("mx".to_string(), "tx".to_string());
+    assert!(table.get("m0").is_none(), "oldest live entry is evicted");
+    assert!(table.get("mx").is_some());
+    assert_eq!(table.map.len(), MAX_MESSAGE_IDS);
+}
+
+/// A store whose `upsert` blocks until released, so a test can observe a
+/// dispatch that is still in flight (used to verify the rate-limit permit
+/// stays held across the dispatch await — 0.22.0 audit fix H-P3).
+struct GatedStore {
+    inner: InMemoryTaskStore,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl TaskStore for GatedStore {
+    async fn upsert(&self, stored: StoredTask) -> Result<(), StoreError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.upsert(stored).await
+    }
+
+    async fn get(&self, task_id: &str) -> Result<Option<StoredTask>, StoreError> {
+        self.inner.get(task_id).await
+    }
+
+    async fn list(&self, filter: &TaskFilter) -> Result<Vec<StoredTask>, StoreError> {
+        self.inner.list(filter).await
+    }
+
+    async fn delete(&self, task_id: &str) -> Result<bool, StoreError> {
+        self.inner.delete(task_id).await
+    }
+
+    async fn compare_and_update(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        self.inner.compare_and_update(task_id, update).await
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_permit_is_held_across_dispatch() {
+    // 0.22.0 audit fix (H-P3): the permit must survive past the acquire
+    // statement, so the concurrency cap is active for the whole dispatch.
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let limiter = Arc::new(RateLimiter::new(1, 0));
+    let store: Arc<dyn TaskStore> = Arc::new(GatedStore {
+        inner: InMemoryTaskStore::new(),
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+    let server = A2AServer::new(Arc::new(EchoChain))
+        .with_store(store)
+        .with_rate_limiter(limiter.clone());
+
+    let handle = tokio::spawn(async move {
+        server
+            .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")))
+            .await
+    });
+    entered.notified().await;
+    // The dispatch is still awaiting inside the store write, holding the
+    // permit: a second acquire must be rejected.
+    assert!(
+        limiter.try_acquire().await.is_err(),
+        "concurrency cap must apply while the first request is dispatching"
+    );
+    release.notify_one();
+    handle.await.unwrap();
 }

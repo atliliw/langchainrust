@@ -7,7 +7,6 @@ use crate::connection_manager::ServerSpec;
 use crate::sandbox::ServerSandbox;
 use crate::tool_namespace::ToolConflict;
 use crate::tool_timeout::ToolSpec;
-use crate::types::MCPConfig;
 
 /// A single server's Gateway policy (conflict / timeout / sandbox / static layer).
 ///
@@ -27,8 +26,8 @@ pub(crate) struct ServerPolicy {
 pub struct GatewayServerSpec {
     /// Server name (registry key / tool-namespace prefix).
     pub name: String,
-    /// Connection config (Stdio / SSE).
-    pub config: MCPConfig,
+    /// Stateless endpoint URL.
+    pub url: String,
     /// Stateful server: not reaped when idle (default false).
     pub keep_alive: bool,
     /// Idle-reap threshold.
@@ -49,10 +48,10 @@ pub struct GatewayServerSpec {
 
 impl GatewayServerSpec {
     /// Creates a Gateway server declaration.
-    pub fn new(name: impl Into<String>, config: MCPConfig) -> Self {
+    pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            config,
+            url: url.into(),
             keep_alive: false,
             max_idle: Duration::from_secs(300),
             max_failures: 3,
@@ -112,9 +111,9 @@ impl GatewayServerSpec {
         self
     }
 
-    /// Converts into the underlying connection manager's ServerSpec (borrows fields, clones config).
+    /// Converts into the underlying connection manager's ServerSpec.
     pub(crate) fn to_server_spec(&self) -> ServerSpec {
-        let mut spec = ServerSpec::new(&self.name, self.config.clone())
+        let mut spec = ServerSpec::new(&self.name, self.url.clone())
             .with_max_idle(self.max_idle)
             .with_max_failures(self.max_failures);
         if self.keep_alive {

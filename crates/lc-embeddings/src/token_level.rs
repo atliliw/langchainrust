@@ -18,7 +18,7 @@
 //!   [`trait_variant`](https://docs.rs/trait_variant), the current standard
 //!   stopgap until native async dyn dispatch lands;
 //! - RPITIT is not dyn-compatible, so this trait is designed for *generic*
-//!   (static) dispatch — see [`late_chunk`] in `lc-rag`, which takes the
+//!   (static) dispatch — see late_chunk in `lc-rag`, which takes the
 //!   embedder as a generic parameter. Existing `#[async_trait]` traits
 //!   (`Embeddings`, `BaseChatModel`) are NOT migrated.
 

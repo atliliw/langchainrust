@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use super::OllamaConfig;
-use crate::openai::sse::SSEParser;
+use crate::openai::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::{
@@ -56,7 +56,8 @@ impl OllamaChat {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             config: OllamaConfig::new(model),
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -67,7 +68,8 @@ impl OllamaChat {
     pub fn with_config(config: OllamaConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -205,14 +207,18 @@ impl OllamaChat {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| OllamaError::Http(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| OllamaError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -268,7 +274,7 @@ impl OllamaChat {
         }
 
         let byte_stream = response.bytes_stream();
-        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, OllamaError>>(64);
 
         let parser_clone = parser.clone();
@@ -276,6 +282,14 @@ impl OllamaChat {
             use futures_util::StreamExt;
 
             let mut byte_stream = byte_stream;
+            // 0.22.0 C2: accumulate streaming tool_calls deltas (Ollama speaks
+            // the OpenAI-compatible delta format but the loop previously only
+            // forwarded `delta.content`, silently dropping tool calls).
+            let mut tool_acc = StreamToolCallAccumulator::default();
+            // 0.22.0 audit fix (Medium): `[DONE]` must break the outer loop
+            // (instead of `return`) so the terminal tool-call flush below
+            // still runs.
+            let mut done = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H2 fix: propagate network errors outside the mutex scope
                 let chunk_bytes = match chunk_result {
@@ -287,15 +301,20 @@ impl OllamaChat {
                 };
 
                 let events = {
-                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-                    parser_guard.parse(&chunk_str)
+                    // 0.22.0 C1: byte-layer framing; only complete events are decoded
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::new();
+                    for text in guard.1.push(&chunk_bytes) {
+                        out.extend(guard.0.parse(&text));
+                    }
+                    out
                 };
                 // parser_guard is dropped here, before any await
 
                 for event in events {
                     if event.is_done() {
-                        return;
+                        done = true;
+                        break;
                     }
                     // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
                     // 避免流式回复因单条坏数据被截断却毫无提示
@@ -305,6 +324,12 @@ impl OllamaChat {
                                 if let Some(content) = &choice.delta.content {
                                     if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
                                         return;
+                                    }
+                                }
+                                // C2: fold tool-call fragments into the accumulator
+                                if let Some(deltas) = &choice.delta.tool_calls {
+                                    for delta in deltas {
+                                        tool_acc.push(delta);
                                     }
                                 }
                             }
@@ -320,6 +345,20 @@ impl OllamaChat {
                         }
                     }
                 }
+                if done {
+                    break;
+                }
+            }
+            // C2: stream exhausted — flush accumulated tool calls as a terminal chunk
+            let calls = tool_acc.build();
+            if !calls.is_empty() {
+                let _ = tx
+                    .send(Ok(StreamChunk {
+                        text: String::new(),
+                        token_usage: None,
+                        tool_calls: Some(calls),
+                    }))
+                    .await;
             }
         });
 
@@ -365,7 +404,8 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
                 content: chunk.text,
                 model: model.clone(),
                 token_usage: chunk.token_usage,
-                tool_calls: None,
+                // 0.22.0 C2: accumulated tool calls surface on the streaming path
+                tool_calls: chunk.tool_calls,
                 thinking_content: None,
             }),
             Err(e) => Err(e),

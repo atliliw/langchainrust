@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// MCP tool definition (from `tools/list`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,49 +96,6 @@ impl MCPToolResult {
     }
 }
 
-/// MCP Client configuration
-#[derive(Debug, Clone)]
-pub enum MCPConfig {
-    /// Stdio transport: spawns a child process, communicating over stdin/stdout
-    Stdio {
-        /// The command to start
-        command: String,
-        /// Command-line arguments
-        args: Vec<String>,
-        /// Child-process environment variables
-        env: HashMap<String, String>,
-    },
-    /// SSE transport: HTTP Server-Sent Events
-    Sse {
-        /// SSE endpoint URL
-        url: String,
-    },
-}
-
-impl MCPConfig {
-    /// Creates a Stdio config (empty environment variables by default)
-    pub fn stdio(command: impl Into<String>, args: Vec<String>) -> Self {
-        Self::Stdio {
-            command: command.into(),
-            args,
-            env: HashMap::new(),
-        }
-    }
-
-    /// Creates an SSE config
-    pub fn sse(url: impl Into<String>) -> Self {
-        Self::Sse { url: url.into() }
-    }
-
-    /// Appends an environment variable (only effective for Stdio)
-    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        if let MCPConfig::Stdio { env, .. } = &mut self {
-            env.insert(key.into(), value.into());
-        }
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,33 +187,5 @@ mod tests {
         let text = result.text();
         assert!(text.contains("title"));
         assert!(text.contains("[image: image/jpeg"));
-    }
-
-    #[test]
-    fn test_config_stdio() {
-        let config = MCPConfig::stdio(
-            "npx",
-            vec![
-                "@anthropic/mcp-server-filesystem".to_string(),
-                "/tmp".to_string(),
-            ],
-        );
-        assert!(matches!(config, MCPConfig::Stdio { .. }));
-    }
-
-    #[test]
-    fn test_config_sse() {
-        let config = MCPConfig::sse("http://localhost:3001/sse");
-        assert!(matches!(config, MCPConfig::Sse { .. }));
-    }
-
-    #[test]
-    fn test_config_with_env() {
-        let config = MCPConfig::stdio("npx", vec![]).with_env("API_KEY", "secret");
-        if let MCPConfig::Stdio { env, .. } = config {
-            assert_eq!(env.get("API_KEY"), Some(&"secret".to_string()));
-        } else {
-            panic!("expected Stdio");
-        }
     }
 }

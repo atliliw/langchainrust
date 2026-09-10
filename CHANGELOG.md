@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-09-09
+
+2026-alignment release across three protocol surfaces: **MCP goes stateless single-track** (breaking), **Sessions are rewritten around event sourcing** (old manager deprecated), and **A2A upgrades to spec v1.0.1** (multi-transport cards + signing). All 23 crates are uniformly bumped to 0.22.0. See the migration guide (`docs/internal/v0.22.0/MIGRATION.md`) for code-level mappings.
+
+### Removed (breaking — MCP)
+
+- **Legacy handshake MCP track** (`lc-mcp`): `MCPClient`, `MCPConfig` (stdio + SSE), the `SseTransport` / `StdioTransport` / `InMemoryTransport` transports, the `MCPTransport` trait, `MCPEvent` / `subscribe_events`, and the streaming push surface (`ToolStream` / `PartialContent` / `stream_tool_call` / `subscribe_tool_stream`, `MCPServer::publish_partial` / `subscribe_partials` / `serve_sse`) are **removed in this version** (user directive: single-track, not dual-track + feature gate). The 2026-07-28 model makes every request a self-contained JSON-RPC HTTP POST. `serve_stdio` remains (protocol-agnostic line framing for external hosts like Claude Desktop / Cursor). See *Added* for the stateless replacements and the migration path.
+
+### Added
+
+- **MCP stateless track** (`lc-mcp`):
+  - `StatelessTransport` — pure HTTP POST per request, tagged with `Mcp-Method` / `Mcp-Name` routing headers (gateways can route and throttle without parsing the body), 401 → `-32001`.
+  - `StatelessMcpClient` — no handshake, infallible construction, self-contained `_meta` (`RequestMeta` carries protocol version `2026-07-28` + client identity + optional `requestState`). `list_tools` / `call_tool` / `discover` / `send`.
+  - **MRTR** (multi-round tool request): on `input_required { requestState, questions }` the client collects answers via a `MrtrAnswerProvider` and resends the original request with the continuation token (answers travel as `params.mrtr_answers`); bounded by `MrtrConfig { max_round_trips }` (default 3, `-32003` on exceed).
+  - **OAuth 2.1-style auth**: `TokenValidator` trait + `StaticBearerValidator` + `JwtIssValidator` (iss + exp claims; signature verification wired to your IdP/JWKS); client side `connect_with_auth(url, AuthScheme::Bearer(..))`.
+  - **Per-method client rate limiting**: `MethodRateLimiter` keyed by the `Mcp-Method` header; a hit returns `-32002` with zero network round trips.
+  - **`MCPServer::serve_http(listener)`** — deploys the server as a stateless HTTP service (replaces the removed SSE server); `server/discover` handler for capability queries without `initialize`.
+  - New example `mcp_http_server` (replaces `mcp_sse_server`).
+- **Sessions event sourcing** (`lc-sessions`): the session is an append-only event log; history is a projection.
+  - `SessionEvent` / `EventPayload` (`SessionCreated` / `UserMessage` / `AssistantMessage` / `ToolCall` / `ToolResult` / `Snapshot` / `Metadata`), turns as first-class `Turn` units.
+  - `EventStore` trait + `MemoryEventStore` — `append / append_batch / read / fork`, with `(session, branch, id)` idempotency keys (crash-safe: replaying a half-written batch never duplicates).
+  - `EventSessionManager` — `chat` / `history` / `replay_session` / `fork_session` / turn-window context (`with_max_context_turns`, user/ai always paired, no orphan tool results) / deterministic auto-compaction (`with_auto_compaction(AutoCompaction)`, snapshot past N turns, no LLM call).
+  - `project()` / `to_session()` projections with orphan-tool-result detection; `SessionCheckpoint` trait + `NoopCheckpoint` placeholder for durable checkpoints (0.23.0).
+  - The legacy `SessionManager` / `SessionManagerRunnable` are `#[deprecated]` (removed in 0.23.0); existing code keeps compiling with warnings.
+- **A2A v1.0.1** (`lc-a2a`):
+  - `supportedInterfaces[]` — one card declares multiple `(protocolVersion, transport, url)` bindings (`AgentInterface`, `A2ATransport::JsonRpc | HttpJson | Grpc`), each optionally tenant-tagged (`with_tenant`); `is_v101()` / `negotiate(transport, client_versions)` for client-side negotiation. Old v0.3 fields retained for reader compatibility.
+  - **Card signing**: `canonical_json` (RFC 8785-lite recursive key ordering) + `sign_agent_card` / `verify_card_signature` (hex signature in `card.signature`) and `sign_card_jws` / `verify_card_jws` (compact JWS HS256); alg-confusion and card/token mismatch are rejected.
+- **User-facing docs**: USAGE (EN/中文) gains MCP-stateless / sessions-event-sourcing / A2A-v1.0.1 sections; the book gains an A2A chapter and an event-sourcing sessions chapter; `docs/USAGE*` and install snippets updated to 0.22.0; `docs/internal/deployment/mcp-http-server-deployment.md` replaces the SSE guide.
+
+### Notes
+
+- **gRPC A2A binding deferred to 0.22.1**: tonic 0.14.6 compiles under MSRV 1.85 but its codegen needs protoc (not hermetic); HTTP+JSON and JSON-RPC bindings are independently usable.
+- **Server-side idempotency window deferred to 0.22.1**: M5 verifies requestState round-tripping; a full server-side dedup cache (no side-effect replay) needs persistence semantics.
+- **ES256 / full JCS canonicalization deferred to 0.22.1** (A2A signing is HS256 + RFC 8785-lite for now).
+- **MSRV stays 1.85**; all 23 crates share the 0.22.0 version.
+- **13 environment-gated tests** (`#[ignore]`) cover live DashScope-key flows; the hardcoded key expired (401) — un-ignore after supplying a valid key.
+
 ## [0.21.0] - 2026-09-08
 
 Full-capability release: 2 bug fixes, 2026-tech alignment (structured output / native async trait / retry / error derive), and 8 new capabilities across RAG, agents, guardrails, embeddings and observability. All 22 crates are uniformly bumped to 0.21.0. Additive by design — existing user code upgrades without changes (one documented exception below).

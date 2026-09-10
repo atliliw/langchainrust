@@ -152,7 +152,7 @@ impl RetrievalRail {
     }
 }
 
-/// A [`lc_rag::RetrieverTrait`](retriever) decorator that runs every result set
+/// A [`lc_rag::RetrieverTrait`] decorator that runs every result set
 /// through a [`RetrievalRail`] before returning.
 ///
 /// Composition order with the semantic cache (0.21.0 S4.2): put the rail

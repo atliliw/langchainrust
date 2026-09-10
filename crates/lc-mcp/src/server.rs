@@ -1,6 +1,6 @@
 //! MCP Server - exposes local `BaseTool`s as an MCP Server for other Hosts (Claude Desktop/Cursor etc.) to call
 //!
-//! Symmetric to `MCPClient`: the Client connects to another's Server to use tools, the Server exposes its own
+//! Symmetric to `StatelessMcpClient`: the Client connects to another's Server to use tools, the Server exposes its own
 //! tools to others.
 //! Supports the `initialize` handshake, `tools/list`, `tools/call`, plus registration-based primitives
 //! `resources/*` / `prompts/*` / `completion/complete` (still returning `method_not_found` when unregistered,
@@ -10,29 +10,45 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::broadcast;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Semaphore;
 
+use super::auth::TokenValidator;
 use super::completion::{CompletionProvider, CompletionRequest};
 use super::elicitation::{ElicitationHandler, ElicitationRequest, ElicitationResponse};
 use super::prompts::{ListPromptsResult, PromptProvider};
 use super::protocol::{
-    MCPError, MCPRequest, MCPResponse, MCP_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
+    MCPError, MCPRequest, MCPResponse, MCP_VERSION, MCP_VERSION_STATELESS,
+    SUPPORTED_PROTOCOL_VERSIONS,
 };
 use super::resources::{ListResourcesResult, ReadResourceResult, ResourceProvider};
 use super::sampling::{SamplingHandler, SamplingRequest, SamplingResult};
-use super::stream::PartialContent;
 use super::types::{MCPContent, MCPToolDefinition, MCPToolResult};
 use lc_core::BaseTool;
+
+/// 0.22.0 C8 hardening: maximum accepted request body (1 MiB). A larger
+/// `Content-Length` is rejected with 413 and a stream exceeding it aborts —
+/// without the cap a single connection could grow `buf` unboundedly (OOM).
+const HTTP_MAX_BODY_BYTES: usize = 1024 * 1024;
+/// 0.22.0 C8 hardening: per-request socket read deadline. A slow-loris
+/// connection that never finishes its headers is reaped instead of holding
+/// a task + file descriptor forever.
+const HTTP_READ_TIMEOUT_SECS: u64 = 30;
+/// 0.22.0 C8 hardening: maximum concurrently served connections. Accept waits
+/// for a permit instead of spawning unbounded tasks.
+const HTTP_MAX_CONCURRENT_CONNECTIONS: usize = 256;
 
 /// MCP Server - exposes a set of `BaseTool`s as MCP tools
 pub struct MCPServer {
     tools: Vec<Arc<dyn BaseTool>>,
     server_name: String,
     server_version: String,
-    /// Streaming tool-output broadcast (P2-9): `publish_partial` pushes incremental chunks,
-    /// and transport layers such as `InMemoryTransport` subscribe and forward them to the client.
-    partial_tx: broadcast::Sender<PartialContent>,
+    /// 0.22.0 C8: optional request authenticator. When set, `serve_http`
+    /// validates the `Authorization: Bearer <token>` header on **every**
+    /// request and answers 401 otherwise — the server no longer "deploys
+    /// naked". `initialize` is not exempt: the stateless track has no
+    /// session, so every request is authenticated.
+    auth_validator: Option<Arc<dyn TokenValidator>>,
     /// Optional resource provider (S10): once registered, enables `resources/list` / `resources/read`.
     resources: Option<Arc<dyn ResourceProvider>>,
     /// Optional prompt provider (S10): once registered, enables `prompts/list` / `prompts/get`.
@@ -52,13 +68,23 @@ impl MCPServer {
             tools: Vec::new(),
             server_name: "langchainrust-mcp-server".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
-            partial_tx: broadcast::channel(64).0,
+            auth_validator: None,
             resources: None,
             prompts: None,
             completion: None,
             sampling_handler: None,
             elicitation_handler: None,
         }
+    }
+
+    /// 0.22.0 C8: requires authenticated requests on [`Self::serve_http`].
+    ///
+    /// Every request must carry `Authorization: Bearer <token>` and pass
+    /// `validator.validate(token)`; failures get HTTP 401. Recommended for
+    /// any non-loopback binding (see the deployment guide).
+    pub fn with_token_validator(mut self, validator: Arc<dyn TokenValidator>) -> Self {
+        self.auth_validator = Some(validator);
+        self
     }
 
     /// Registers a tool
@@ -114,24 +140,6 @@ impl MCPServer {
     pub fn with_elicitation_handler(mut self, handler: Arc<dyn ElicitationHandler>) -> Self {
         self.elicitation_handler = Some(handler);
         self
-    }
-
-    /// Pushes one streaming tool-output incremental chunk (P2-9).
-    ///
-    /// Long-running tools "stream while they run": during execution they split partial results into chunks and
-    /// push each via `publish_partial` to connected Hosts (transport layers such as `InMemoryTransport` subscribe
-    /// and forward them to the client as `notifications/tool_partial`). With no subscribers the chunk is silently
-    /// dropped — the incremental output is a preview, the final result is still carried by the `tools/call` response.
-    pub fn publish_partial(&self, partial: PartialContent) {
-        let _ = self.partial_tx.send(partial);
-    }
-
-    /// Subscribes to the incremental streaming chunks this server pushes (P2-9).
-    ///
-    /// For transport layers (such as [`InMemoryTransport`](crate::InMemoryTransport)) to turn the server-side
-    /// `publish_partial` into client-visible push events.
-    pub fn subscribe_partials(&self) -> broadcast::Receiver<PartialContent> {
-        self.partial_tx.subscribe()
     }
 
     /// Builds an MCP tool definition from a BaseTool
@@ -201,6 +209,31 @@ impl MCPServer {
                 }
             }
             "tools/call" => self.handle_tools_call(req).await,
+            // 2026-07-28 stateless track: on-demand capability discovery —
+            // self-contained requests ask what the server can do without a
+            // prior initialize handshake.
+            "server/discover" => {
+                let mut capabilities = json!({ "tools": {} });
+                if self.resources.is_some() {
+                    capabilities["resources"] = json!({});
+                }
+                if self.prompts.is_some() {
+                    capabilities["prompts"] = json!({});
+                }
+                if self.completion.is_some() {
+                    capabilities["completion"] = json!({});
+                }
+                MCPResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: Some(req.id),
+                    result: Some(json!({
+                        "protocolVersion": MCP_VERSION_STATELESS,
+                        "capabilities": capabilities,
+                        "serverInfo": { "name": self.server_name, "version": self.server_version }
+                    })),
+                    error: None,
+                }
+            }
             // S10 five client→server primitives: registered → correct structure, unregistered → method_not_found.
             "resources/list" => self.handle_resources_list(req).await,
             "resources/read" => self.handle_resources_read(req).await,
@@ -492,6 +525,7 @@ impl MCPServer {
                 id,
                 method: msg.method,
                 params: msg.params,
+                meta: None,
             };
             let resp = self.handle_request(req).await;
             let json = serde_json::to_string(&resp)
@@ -503,27 +537,142 @@ impl MCPServer {
         Ok(())
     }
 
-    /// Serves MCP over an SSE network service on an already-bound TCP listener, returning the SSE entry URL
-    /// clients connect to.
+    /// Serves MCP as a stateless HTTP service on an already-bound TCP listener,
+    /// returning the endpoint URL clients connect to.
     ///
-    /// This is the "deployable MCP server" entry point: it exposes this server as an HTTP/SSE service that any
-    /// MCP client (`MCPClient::connect(MCPConfig::sse(...))` / Cursor / Claude Desktop etc.) can connect to and
-    /// use the registered tools. The SSE frame format aligns with the `MCPClient` (SseTransport) client behavior.
+    /// This is the "deployable MCP server" entry point (2026-07-28 stateless
+    /// track): it exposes this server as an HTTP service that any stateless
+    /// MCP client (`StatelessMcpClient::connect(url)`) can POST JSON-RPC to.
+    /// No handshake, no session — every request is self-contained.
     ///
-    /// - `listener`: a `TcpListener` already bound to an address. For local debugging bind `127.0.0.1:0`;
-    ///   for remote deployment bind `0.0.0.0:PORT`.
-    /// - `public_base`: the base address clients use to reach this server (e.g. `http://your-server-ip:8788`).
-    ///   The POST address the server sends to clients is built from it; when deployed remotely it must be an
-    ///   address clients can really reach (not `0.0.0.0`).
+    /// - `listener`: a `TcpListener` already bound to an address. For local
+    ///   debugging bind `127.0.0.1:0`; for remote deployment bind
+    ///   `0.0.0.0:PORT`.
     ///
-    /// Returns the SSE URL immediately after startup; the accept loop runs on a background task until the
-    /// process exits.
-    pub fn serve_sse(
-        self: Arc<Self>,
-        listener: tokio::net::TcpListener,
-        public_base: impl Into<String>,
-    ) -> String {
-        crate::sse::serve(self, listener, public_base.into())
+    /// Returns the endpoint URL immediately after startup; the accept loop
+    /// runs on a background task until the process exits.
+    pub fn serve_http(self: Arc<Self>, listener: tokio::net::TcpListener) -> String {
+        let addr = listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_default();
+        // C8: bounded concurrency — accept blocks for a permit instead of
+        // spawning an unbounded task per connection.
+        let semaphore = Arc::new(Semaphore::new(HTTP_MAX_CONCURRENT_CONNECTIONS));
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => break,
+                };
+                let server = self.clone();
+                let permit = match semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                tokio::spawn(async move {
+                    let _permit = permit; // released on connection close
+                    loop {
+                        // C8: reap connections that never finish a request.
+                        let request =
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(HTTP_READ_TIMEOUT_SECS),
+                                read_http_request(&mut sock),
+                            )
+                            .await
+                            {
+                                Err(_) => {
+                                    let _ = sock
+                                        .write_all(
+                                            b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                        )
+                                        .await;
+                                    return;
+                                }
+                                Ok(Err(_)) => return, // closed / malformed transport
+                                Ok(Ok(req)) => req,
+                            };
+                        if request.first_line.is_empty() {
+                            return;
+                        }
+                        if !request.first_line.starts_with("POST ") {
+                            let _ = sock
+                                .write_all(
+                                    b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n",
+                                )
+                                .await;
+                            continue;
+                        }
+
+                        // C8: authenticate every request when a validator is configured.
+                        if let Some(validator) = &server.auth_validator {
+                            let token = request
+                                .headers
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                                .and_then(|(_, v)| v.strip_prefix("Bearer "))
+                                .map(str::to_string);
+                            let token = match token {
+                                Some(t) => t,
+                                None => {
+                                    let _ = sock
+                                        .write_all(
+                                            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+                                        )
+                                        .await;
+                                    return;
+                                }
+                            };
+                            if validator.validate(&token).await.is_err() {
+                                let _ = sock
+                                    .write_all(
+                                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+                                    )
+                                    .await;
+                                return;
+                            }
+                        }
+
+                        let body = match request.body {
+                            Some(b) => b,
+                            None => {
+                                // C8: truncated body — reply instead of slicing out of bounds.
+                                let _ = sock
+                                    .write_all(
+                                        b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n",
+                                    )
+                                    .await;
+                                return;
+                            }
+                        };
+
+                        // JSON-RPC over HTTP: a parse failure is answered with a
+                        // JSON-RPC error envelope carrying `id: null` (spec-compliant;
+                        // previously `id: 0`).
+                        let resp = match serde_json::from_str::<MCPRequest>(&body) {
+                            Ok(req) => server.handle_request(req).await,
+                            Err(e) => MCPResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: None,
+                                result: None,
+                                error: Some(MCPError::new(-32700, format!("parse error: {e}"))),
+                            },
+                        };
+                        let payload =
+                            serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
+                        let http = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            payload.len(),
+                            payload
+                        );
+                        if sock.write_all(http.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/mcp")
     }
 
     /// Handles a notification the server receives (a message without an id).
@@ -580,6 +729,80 @@ async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, json: &str) -> Result<(
     w.write_all(b"\n").await?;
     w.flush().await?;
     Ok(())
+}
+
+/// One parsed HTTP request (0.22.0 C8: `body` is `None` when the connection
+/// closed mid-body — the caller answers 400 instead of slicing out of bounds).
+struct HttpRequest {
+    first_line: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+/// Reads one HTTP request from the socket.
+/// `Err(())` = transport closed (or an oversized header line); the caller
+/// closes the connection. Body reads are bounded by [`HTTP_MAX_BODY_BYTES`].
+async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Result<HttpRequest, ()> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let mut end = None;
+        for i in 0..buf.len().saturating_sub(3) {
+            if &buf[i..i + 4] == b"\r\n\r\n" {
+                end = Some(i);
+                break;
+            }
+        }
+        if let Some(pos) = end {
+            let head = String::from_utf8_lossy(&buf[..pos]).to_string();
+            let mut lines = head.lines();
+            let first_line = lines.next().unwrap_or_default().to_string();
+            let mut headers = Vec::new();
+            for line in lines {
+                if let Some((k, v)) = line.split_once(':') {
+                    headers.push((k.trim().to_string(), v.trim().to_string()));
+                }
+            }
+            let content_length = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            // C8: reject oversized bodies up front.
+            if content_length > HTTP_MAX_BODY_BYTES {
+                return Ok(HttpRequest {
+                    first_line,
+                    headers,
+                    body: None,
+                });
+            }
+            let body_start = pos + 4;
+            while buf.len() < body_start + content_length {
+                let n = sock.read(&mut tmp).await.unwrap_or(0);
+                if n == 0 {
+                    // Truncated: the caller must not slice `buf` short.
+                    return Ok(HttpRequest {
+                        first_line,
+                        headers,
+                        body: None,
+                    });
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let body = String::from_utf8_lossy(&buf[body_start..(body_start + content_length)])
+                .to_string();
+            return Ok(HttpRequest {
+                first_line,
+                headers,
+                body: Some(body),
+            });
+        }
+        let n = sock.read(&mut tmp).await.unwrap_or(0);
+        if n == 0 {
+            return Err(());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
 }
 
 #[cfg(test)]
@@ -1144,5 +1367,120 @@ mod tests {
             .await;
         // Unknown notifications should be ignored
         server.handle_notification("foo/bar", None).await;
+    }
+
+    // ------------------------------------------------------------------
+    // 0.22.0 C8: serve_http hardening
+    // ------------------------------------------------------------------
+
+    use crate::auth::StaticBearerValidator;
+
+    /// POSTs one raw HTTP request and returns (status_line, body).
+    async fn post_raw(
+        addr: &str,
+        authorization: Option<&str>,
+        body: &str,
+    ) -> (String, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        if let Some(auth) = authorization {
+            req = req.replacen(
+                "Content-Type: application/json",
+                &format!("Content-Type: application/json\r\nAuthorization: {auth}"),
+                1,
+            );
+        }
+        sock.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sock.read_to_end(&mut resp),
+        )
+        .await;
+        let text = String::from_utf8_lossy(&resp).to_string();
+        let (status, rest) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+        (status.to_string(), rest.to_string())
+    }
+
+    /// C8: without a token validator the server answers normally (back-compat).
+    #[tokio::test]
+    async fn test_serve_http_open_when_no_validator() {
+        let server = Arc::new(server_with_echo());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let _url = server.serve_http(listener);
+        let body = serde_json::to_string(&MCPRequest::new(1, "tools/list", None)).unwrap();
+        let (status, resp_body) = post_raw(&addr, None, &body).await;
+        assert!(status.contains("200 OK"), "{status}");
+        assert!(resp_body.contains("echo"), "{resp_body}");
+    }
+
+    /// C8: with a validator, missing/wrong token → 401, correct token → 200.
+    #[tokio::test]
+    async fn test_serve_http_enforces_token_validator() {
+        let server = Arc::new(
+            server_with_echo()
+                .with_token_validator(Arc::new(StaticBearerValidator::new("secret-token"))),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let _url = server.serve_http(listener);
+        let body = serde_json::to_string(&MCPRequest::new(1, "tools/list", None)).unwrap();
+
+        let (status, _) = post_raw(&addr, None, &body).await;
+        assert!(status.contains("401"), "missing token: {status}");
+
+        let (status, _) = post_raw(&addr, Some("Bearer wrong"), &body).await;
+        assert!(status.contains("401"), "wrong token: {status}");
+
+        let (status, resp_body) = post_raw(&addr, Some("Bearer secret-token"), &body).await;
+        assert!(status.contains("200 OK"), "valid token: {status}");
+        assert!(resp_body.contains("echo"), "{resp_body}");
+    }
+
+    /// C8: an unparseable body is answered with a JSON-RPC parse error and
+    /// `id: null` (JSON-RPC spec; previously `id: 0`).
+    #[tokio::test]
+    async fn test_serve_http_parse_error_id_null() {
+        let server = Arc::new(server_with_echo());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let _url = server.serve_http(listener);
+        let (status, resp_body) = post_raw(&addr, None, "this is not json").await;
+        assert!(status.contains("200 OK"), "{status}");
+        assert!(resp_body.contains("\"id\":null"), "{resp_body}");
+        assert!(resp_body.contains("-32700"), "{resp_body}");
+    }
+
+    /// C8: an oversized declared body is rejected with 413, not buffered.
+    #[tokio::test]
+    async fn test_serve_http_rejects_oversized_body() {
+        let server = Arc::new(server_with_echo());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let _url = server.serve_http(listener);
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let header = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
+            HTTP_MAX_BODY_BYTES + 1
+        );
+        sock.write_all(header.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sock.read_to_end(&mut resp),
+        )
+        .await;
+        let text = String::from_utf8_lossy(&resp).to_string();
+        assert!(
+            text.starts_with("HTTP/1.1 400") || text.starts_with("HTTP/1.1 413"),
+            "oversized body should be rejected, got: {text}"
+        );
     }
 }

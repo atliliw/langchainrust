@@ -105,6 +105,31 @@ pub trait TaskStore: Send + Sync {
 
     /// Delete a task by id. Returns `true` if a task was actually removed.
     async fn delete(&self, task_id: &str) -> Result<bool, StoreError>;
+
+    /// Atomically replace the stored task for `task_id` when the currently
+    /// stored status may transition to the update's status (per
+    /// `TaskStatus::can_transition_to`). Returns `true` when the update was
+    /// applied.
+    ///
+    /// 0.22.0 audit fix: this closes the check-then-act window where a
+    /// handler read a task, validated its status, and wrote it back — a
+    /// concurrent writer (e.g. `tasks/cancel` racing the chain completing)
+    /// could overwrite the other's terminal state in between. The default
+    /// implementation is a racy `get` + `upsert` fallback; backends that can
+    /// should override it with a truly atomic operation.
+    async fn compare_and_update(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        match self.get(task_id).await? {
+            Some(current) if current.task.status.can_transition_to(&update.task.status) => {
+                self.upsert(update).await?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 /// Default maximum number of tasks stored before LRU eviction.
@@ -182,6 +207,25 @@ impl TaskStore for InMemoryTaskStore {
 
     async fn delete(&self, task_id: &str) -> Result<bool, StoreError> {
         Ok(self.inner.write().await.remove(task_id).is_some())
+    }
+
+    async fn compare_and_update(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        // Single write lock over the read-validate-write sequence: a
+        // concurrent writer (e.g. `tasks/cancel` vs. the chain completing)
+        // can no longer flip the status between our check and our write
+        // (0.22.0 audit fix).
+        let mut guard = self.inner.write().await;
+        match guard.get(task_id) {
+            Some(current) if current.task.status.can_transition_to(&update.task.status) => {
+                guard.insert(task_id.to_string(), update);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
@@ -334,5 +378,56 @@ mod tests {
             .await
             .unwrap();
         assert!(clone.get("t1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn compare_and_update_rejects_stale_status() {
+        // 0.22.0 audit fix: a writer holding a stale snapshot must not
+        // clobber a terminal state written concurrently.
+        let store = InMemoryTaskStore::new();
+        store
+            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working)))
+            .await
+            .unwrap();
+        let mut stale = store.get("t1").await.unwrap().unwrap();
+
+        // Concurrent writer flips the task to Cancelled first.
+        let mut cancelled = store.get("t1").await.unwrap().unwrap();
+        cancelled.task.status = TaskStatus::Cancelled;
+        cancelled.touch();
+        store.upsert(cancelled).await.unwrap();
+
+        stale.task.status = TaskStatus::Completed;
+        stale.touch();
+        assert!(!store.compare_and_update("t1", stale).await.unwrap());
+        assert_eq!(
+            store.get("t1").await.unwrap().unwrap().task.status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_and_update_applies_valid_transition() {
+        let store = InMemoryTaskStore::new();
+        store
+            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working)))
+            .await
+            .unwrap();
+        let mut done = store.get("t1").await.unwrap().unwrap();
+        done.task.status = TaskStatus::Completed;
+        done.touch();
+        assert!(store.compare_and_update("t1", done).await.unwrap());
+        assert_eq!(
+            store.get("t1").await.unwrap().unwrap().task.status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_and_update_missing_task_is_noop() {
+        let store = InMemoryTaskStore::new();
+        let update = StoredTask::new(sample_task("ghost", TaskStatus::Completed));
+        assert!(!store.compare_and_update("ghost", update).await.unwrap());
+        assert!(store.get("ghost").await.unwrap().is_none());
     }
 }

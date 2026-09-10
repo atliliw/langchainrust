@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_rag::retriever::RetrieverTrait;
@@ -14,7 +15,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    stream_chain_with_callbacks, BaseChain, ChainError, ChainResult, ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Default QA prompt template.
@@ -50,6 +53,71 @@ pub struct RetrievalQA {
 }
 
 impl RetrievalQA {
+    /// Shared streaming body used by `stream` (config-less) and
+    /// `stream_with_config` (config threaded into the LLM stream).
+    async fn stream_body(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        if config.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(ChainError::StreamError("Operation cancelled".to_string()));
+        }
+
+        let question = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        if self.verbose {
+            println!("\n=== RetrievalQA Stream ===");
+            println!("Question: {}", question);
+            println!("Retrieval count (k): {}", self.k);
+        }
+
+        let documents = self
+            .retriever
+            .retrieve(question, self.k)
+            .await
+            .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
+
+        if self.verbose {
+            println!("Retrieved {} documents", documents.len());
+        }
+
+        let context = self.format_context(&documents);
+        let prompt = self.build_prompt(&context, question);
+
+        let messages = vec![Message::human(&prompt)];
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, config)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+
+        let stream = llm_stream.map(move |result| match result {
+            Ok(chunk) => Ok(StreamToken {
+                token: chunk.text,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
+
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
+
+        Ok(Box::pin(final_stream))
+    }
+
     /// Create a new [`RetrievalQA`] chain with the given LLM and retriever.
     pub fn new<L>(llm: L, retriever: Arc<dyn RetrieverTrait>) -> Self
     where
@@ -137,9 +205,14 @@ impl RetrievalQA {
     }
 
     fn build_prompt(&self, context: &str, question: &str) -> String {
-        self.prompt_template
-            .replace("{context}", context)
-            .replace("{question}", question)
+        // 0.22.0 audit fix (H-C2): single-pass substitution — document
+        // contents containing literal `{question}` / `{context}` are never
+        // re-replaced (the old two-pass `String::replace` let them inject).
+        let vars = HashMap::from([
+            ("context".to_string(), context.to_string()),
+            ("question".to_string(), question.to_string()),
+        ]);
+        crate::base::substitute_template(&self.prompt_template, &vars).0
     }
 
     /// Simplified query interface returning the answer string.
@@ -264,58 +337,28 @@ impl BaseChain for RetrievalQA {
     /// pushes LLM tokens via `stream_chat` instead of wrapping `invoke` in a
     /// single chunk (the base default).
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
-        self.validate_inputs(&inputs)?;
+        self.stream_body(inputs, None).await
+    }
 
-        let question = inputs
-            .get(&self.input_key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
-
-        if self.verbose {
-            println!("\n=== RetrievalQA Stream ===");
-            println!("Question: {}", question);
-            println!("Retrieval count (k): {}", self.k);
-        }
-
-        let documents = self
-            .retriever
-            .retrieve(question, self.k)
-            .await
-            .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
-
-        if self.verbose {
-            println!("Retrieved {} documents", documents.len());
-        }
-
-        let context = self.format_context(&documents);
-        let prompt = self.build_prompt(&context, question);
-
-        let messages = vec![Message::human(&prompt)];
-        let llm_stream = self
-            .llm
-            .stream_chat(messages, None)
-            .await
-            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
-
-        let stream = llm_stream.map(move |result| match result {
-            Ok(chunk) => Ok(StreamToken {
-                token: chunk.text,
-                is_final: false,
-            }),
-            Err(e) => Err(ChainError::StreamError(format!(
-                "Stream token error: {}",
-                e
-            ))),
-        });
-
-        let final_stream = stream.chain(futures_util::stream::once(async move {
-            Ok(StreamToken {
-                token: String::new(),
-                is_final: true,
-            })
-        }));
-
-        Ok(Box::pin(final_stream))
+    /// Stream with config propagation.
+    ///
+    /// 0.22.0 audit fix (H-C3): thread the chain's `RunnableConfig` into
+    /// `stream_chat` (sampling overrides / cancellation token / callbacks)
+    /// instead of passing `None`.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(
+            self.name(),
+            inputs,
+            config.clone(),
+            output_key,
+            |inputs| async move { self.stream_body(inputs, config).await },
+        )
+        .await
     }
 
     fn name(&self) -> &str {

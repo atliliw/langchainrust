@@ -1,4 +1,4 @@
-# Summary
+﻿# Summary
 
 - [Quick Start](./quick-start.md)
 - [Installation](./installation.md)
@@ -21,4 +21,5 @@
 - [Hooks](./hooks.md)
 - [Multimodal](./multimodal.md)
 - [Sessions](./sessions.md)
+- [A2A Protocol](./a2a.md)
 - [Migration Guide](./migration/v0.7-to-v0.8.md)

@@ -230,11 +230,16 @@ impl Tool for PythonREPLTool {
 
         let timeout_secs = input.timeout_seconds.unwrap_or(30);
 
+        // 0.22.0 H-A3: `kill_on_drop(true)` terminates the subprocess when the
+        // timeout fires and the `.output()` future is dropped. Without it the
+        // child kept running as an orphan after the parent gave up waiting,
+        // an infinite loop burned CPU in the background forever.
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             Command::new(&self.python_path)
                 .arg("-c")
                 .arg(&input.code)
+                .kill_on_drop(true)
                 .output(),
         )
         .await

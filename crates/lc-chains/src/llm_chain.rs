@@ -10,12 +10,13 @@ use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
-use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    stream_chain_with_callbacks, substitute_template, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// LLM Chain
@@ -48,11 +49,41 @@ pub struct LLMChain {
     name: String,
 }
 
-/// Pre-compiled regex for detecting unreplaced template variables.
-static TEMPLATE_VAR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}").unwrap());
-
 impl LLMChain {
+    /// Shared streaming body used by `stream` (config-less) and
+    /// `stream_with_config` (config threaded into the LLM stream).
+    async fn stream_body(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+        if config.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(ChainError::StreamError("Operation cancelled".to_string()));
+        }
+        let prompt = self.render_prompt(&inputs)?;
+        let messages = vec![Message::human(&prompt)];
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, config)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+        let stream = llm_stream.map(move |result| match result {
+            Ok(chunk) => Ok(StreamToken {
+                token: chunk.text,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!("Stream token error: {}", e))),
+        });
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
+        Ok(Box::pin(final_stream))
+    }
+
     /// Create a new LLMChain.
     ///
     /// # Arguments
@@ -97,30 +128,27 @@ impl LLMChain {
 
     /// Render the Prompt template.
     ///
-    /// Validates that all {variable} placeholders in the template
-    /// have been replaced. Returns an error if any unreplaced placeholders remain.
+    /// 0.22.0 audit fix (H-C1): single-pass tokenized replacement mirroring
+    /// `lc-prompts` semantics — values are never rescanned (no re-replacement
+    /// injection), CJK variable names are recognized, and `{{`/`}}` escape to
+    /// literal braces. Missing variables are an error (like lc-prompts), and
+    /// ALL of them are reported in one message.
     fn render_prompt(&self, inputs: &HashMap<String, Value>) -> Result<String, ChainError> {
-        let mut prompt = self.prompt_template.clone();
-
+        let mut vars = HashMap::with_capacity(inputs.len());
         for (key, value) in inputs {
-            let placeholder = format!("{{{}}}", key);
             let value_str = match value {
                 Value::String(s) => s.clone(),
                 _ => value.to_string(),
             };
-            prompt = prompt.replace(&placeholder, &value_str);
+            vars.insert(key.clone(), value_str);
         }
 
-        // Check for unreplaced {variable} placeholders
-        let unreplaced: Vec<&str> = TEMPLATE_VAR_RE
-            .captures_iter(&prompt)
-            .filter_map(|c| c.get(1).map(|m| m.as_str()))
-            .collect();
+        let (prompt, missing) = substitute_template(&self.prompt_template, &vars);
 
-        if !unreplaced.is_empty() {
+        if !missing.is_empty() {
             return Err(ChainError::ExecutionError(format!(
                 "Prompt template has unreplaced variable(s): {}",
-                unreplaced.join(", ")
+                missing.join(", ")
             )));
         }
 
@@ -177,7 +205,21 @@ impl BaseChain for LLMChain {
             cb.dispatch_chain_start(&run, &run.inputs).await;
         }
 
-        let prompt = self.render_prompt(&inputs)?;
+        // 0.22.0 audit fix (H-C5): a render_prompt failure used to `?`-return
+        // without ending the run or firing on_chain_error, leaking the run in
+        // the observability run tree. End the run and dispatch the error
+        // callback, matching the other error paths below.
+        let prompt = match self.render_prompt(&inputs) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = e.to_string();
+                run.end_with_error(msg.clone());
+                if let Some(ref cb) = callbacks {
+                    cb.dispatch_chain_error(&run, &msg).await;
+                }
+                return Err(e);
+            }
+        };
         let messages = vec![Message::human(&prompt)];
 
         // on_llm_start — single child run reused for both on_llm_end and
@@ -246,36 +288,29 @@ impl BaseChain for LLMChain {
 
     /// Stream execution for LLMChain -- token by token output.
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
-        self.validate_inputs(&inputs)?;
+        self.stream_body(inputs, None).await
+    }
 
-        let prompt = self.render_prompt(&inputs)?;
-
-        let messages = vec![Message::human(&prompt)];
-        let llm_stream = self
-            .llm
-            .stream_chat(messages, None)
-            .await
-            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
-
-        let stream = llm_stream.map(move |result| match result {
-            Ok(chunk) => Ok(StreamToken {
-                token: chunk.text,
-                is_final: false,
-            }),
-            Err(e) => Err(ChainError::StreamError(format!(
-                "Stream token error: {}",
-                e
-            ))),
-        });
-
-        let final_stream = stream.chain(futures_util::stream::once(async move {
-            Ok(StreamToken {
-                token: String::new(),
-                is_final: true,
-            })
-        }));
-
-        Ok(Box::pin(final_stream))
+    /// Stream with config propagation.
+    ///
+    /// 0.22.0 audit fix (H-C3): the chain's `RunnableConfig` is threaded into
+    /// `stream_chat`, so sampling overrides / cancellation token / callbacks
+    /// reach the provider (providers consume config via `apply_overrides`)
+    /// instead of every streaming call being hardwired to `None`.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(
+            self.name(),
+            inputs,
+            config.clone(),
+            output_key,
+            |inputs| async move { self.stream_body(inputs, config).await },
+        )
+        .await
     }
 
     fn name(&self) -> &str {

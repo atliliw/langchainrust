@@ -145,9 +145,8 @@ impl ToolNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::MCPClient;
-    use crate::test_support::{start_fake_sse_server, PostMode};
-    use crate::MCPConfig;
+    use crate::client_stateless::StatelessMcpClient;
+    use crate::test_support::{start_fake_stateless_server, StatelessMode};
     use crate::MCPToolAdapter;
     use lc_core::BaseTool;
     use serde_json::json;
@@ -250,15 +249,13 @@ mod tests {
 
     /// Namespaced adapter: the LLM sees `server:tool`, the actual call strips the prefix and uses the raw name.
     ///
-    /// The fake SSE server's `tools/call` does not validate the tool name — if `run` called with the prefix
+    /// The fake stateless server's `tools/call` does not validate the tool name — if `run` called with the prefix
     /// and still returned successfully (rather than method-not-found / invalid-params), it proves the routing
     /// went through the original-name path.
     #[tokio::test]
     async fn test_namespaced_adapter_routes_to_raw_name() {
-        let fake = start_fake_sse_server(PostMode::Quiet).await;
-        let client = MCPClient::connect(MCPConfig::sse(&fake.sse_url))
-            .await
-            .expect("connecting to fake SSE server should succeed");
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+        let client = StatelessMcpClient::connect(&fake.url);
 
         let adapter = MCPToolAdapter::namespaced(client, "server_a", tool("echo"));
         // BaseTool::name() → the external name carries the namespace prefix.
@@ -267,23 +264,22 @@ mod tests {
         assert_eq!(adapter.description(), "echo desc");
         assert!(adapter.args_schema().is_some());
         // run strips the prefix and calls the fake server by the original name "echo"; the fake server echoes
-        // the received tool name, so it equals the original name proves the namespace prefix did not leak to
-        // the Server side.
+        // the received tool name, so the text containing "echo" (and not the prefixed name) proves the
+        // namespace prefix did not leak to the Server side.
         let out = adapter.run("{}".into()).await;
+        let text = out.as_deref().unwrap_or_default().to_string();
         assert!(
-            matches!(out.as_deref(), Ok("echo")),
+            text.contains("echo") && !text.contains("server_a"),
             "should call with the raw tool name, not the prefixed full name, actual: {:?}",
-            out.as_deref()
+            out
         );
     }
 
     /// A non-namespaced adapter keeps the original name, matching the legacy behavior.
     #[tokio::test]
     async fn test_plain_adapter_keeps_raw_name() {
-        let fake = start_fake_sse_server(PostMode::Quiet).await;
-        let client = MCPClient::connect(MCPConfig::sse(&fake.sse_url))
-            .await
-            .expect("connecting to fake SSE server should succeed");
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+        let client = StatelessMcpClient::connect(&fake.url);
 
         let adapter = MCPToolAdapter::new(client, tool("echo"));
         assert_eq!(adapter.name(), "echo");

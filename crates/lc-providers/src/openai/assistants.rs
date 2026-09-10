@@ -97,7 +97,7 @@ impl OpenAIAssistant {
         model: &str,
         instructions: &str,
     ) -> Result<Self, AssistantError> {
-        let client = reqwest::Client::new();
+        let client = crate::retry::default_client();
         let url = format!("{}/assistants", config.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": model,
@@ -125,7 +125,7 @@ impl OpenAIAssistant {
         instructions: &str,
         tools: ToolRegistry,
     ) -> Result<Self, AssistantError> {
-        let client = reqwest::Client::new();
+        let client = crate::retry::default_client();
         let url = format!("{}/assistants", config.base_url.trim_end_matches('/'));
 
         // Build the tools JSON (Assistants API format)
@@ -170,7 +170,7 @@ impl OpenAIAssistant {
     /// Constructs from an existing assistant id (skips create)
     pub fn from_id(config: OpenAIConfig, assistant_id: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::retry::default_client(),
             config,
             assistant_id: assistant_id.into(),
             tools: ToolRegistry::new(),
@@ -185,7 +185,7 @@ impl OpenAIAssistant {
         tools: ToolRegistry,
     ) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::retry::default_client(),
             config,
             assistant_id: assistant_id.into(),
             tools,

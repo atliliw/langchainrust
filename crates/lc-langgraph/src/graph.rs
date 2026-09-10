@@ -5,7 +5,7 @@ use crate::compiled::CompiledGraph;
 use crate::edge::{ConditionalEdge, GraphEdge};
 use crate::errors::{GraphError, GraphResult};
 use crate::node::{AsyncFn, AsyncNode, GraphNode, SyncNode};
-use crate::state::{Reducer, ReplaceReducer, StateSchema, StateUpdate};
+use crate::state::{MergeReducer, Reducer, ReplaceReducer, StateSchema, StateUpdate};
 use crate::subgraph::SubgraphNode;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -178,11 +178,23 @@ impl<S: StateSchema + 'static> StateGraph<S> {
             )));
         }
 
+        // 0.22.0 C3 fix: honor the per-field reducers registered via
+        // `set_reducer`. Previously they were dropped here and every merge
+        // point used plain replace, silently overwriting accumulating fields.
+        let merge_reducer: Arc<dyn Reducer<S>> = if self.reducers.is_empty() {
+            self.default_reducer.clone()
+        } else {
+            Arc::new(MergeReducer::new(
+                self.default_reducer.clone(),
+                self.reducers.values().cloned().collect(),
+            ))
+        };
+
         let mut compiled = CompiledGraph::new(
             self.nodes.clone(),
             self.edges.clone(),
             entry,
-            self.default_reducer.clone(),
+            merge_reducer,
         );
 
         for (name, router) in &self.conditional_routers {
@@ -369,5 +381,204 @@ mod tests {
             .add_edge("process", END)
             .compile();
         assert!(compiled.is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // 0.22.0 C3 fixes: field reducers honored, merge on main-path base,
+    // stream fan-out runs all branches, FanIn topology compiles (H-A10).
+    // ------------------------------------------------------------------
+
+    use crate::compiled::types::StreamEvent;
+    use crate::state::{AppendMessagesReducer, MessageEntry, MessageRole};
+    use futures_util::StreamExt;
+
+    /// C3-1: a field reducer registered via `set_reducer` merges its field
+    /// into the state instead of being dropped (previously the registered
+    /// reducer never reached `CompiledGraph` and every merge was replace).
+    #[tokio::test]
+    async fn test_field_reducer_accumulates_across_nodes() {
+        let mut graph: StateGraph<AgentState> = StateGraph::new();
+        graph.add_node_fn("a", |_state: &AgentState| {
+            // Partial update: only this node's message (drop the rest).
+            Ok(StateUpdate {
+                update: Some(AgentState {
+                    input: String::new(),
+                    messages: vec![MessageEntry {
+                        role: MessageRole::AI,
+                        content: "from-a".into(),
+                    }],
+                    steps: vec![],
+                    output: None,
+                }),
+                metadata: Default::default(),
+            })
+        });
+        graph.add_node_fn("b", |_state: &AgentState| {
+            Ok(StateUpdate {
+                update: Some(AgentState {
+                    input: String::new(),
+                    messages: vec![MessageEntry {
+                        role: MessageRole::AI,
+                        content: "from-b".into(),
+                    }],
+                    steps: vec![],
+                    output: None,
+                }),
+                metadata: Default::default(),
+            })
+        });
+        graph.set_entry_point("a");
+        graph.add_edge("a", "b");
+        graph.add_edge("b", END);
+        graph.set_reducer("messages", Arc::new(AppendMessagesReducer));
+
+        let compiled = graph.compile().unwrap();
+        let mut initial = AgentState::new("start"); // messages = [human "start"]
+        initial.messages.clear();
+        let result = compiled.invoke(initial).await.unwrap();
+        let contents: Vec<&str> = result
+            .final_state
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        // Both node messages survived the merges (replace would keep only b's).
+        assert!(
+            contents.contains(&"from-a") && contents.contains(&"from-b"),
+            "field reducer should accumulate, got {contents:?}"
+        );
+    }
+
+    /// C3-2: `merge_parallel_states` folds on top of the pre-fan-out
+    /// main-path state — the fan-out source node's writes are not dropped.
+    #[tokio::test]
+    async fn test_parallel_merge_keeps_main_path_state() {
+        let mut graph: StateGraph<AgentState> = StateGraph::new();
+        graph.add_node_fn("source", |state: &AgentState| {
+            let mut s = state.clone();
+            s.messages.push(MessageEntry {
+                role: MessageRole::AI,
+                content: "main-path".into(),
+            });
+            Ok(StateUpdate::full(s))
+        });
+        graph.add_node_fn("branch1", |state: &AgentState| {
+            let mut s = state.clone();
+            s.messages.push(MessageEntry {
+                role: MessageRole::AI,
+                content: "b1".into(),
+            });
+            Ok(StateUpdate::full(s))
+        });
+        graph.add_node_fn("branch2", |state: &AgentState| {
+            let mut s = state.clone();
+            s.messages.push(MessageEntry {
+                role: MessageRole::AI,
+                content: "b2".into(),
+            });
+            Ok(StateUpdate::full(s))
+        });
+        graph.add_node_fn("merge", |state: &AgentState| {
+            let mut s = state.clone();
+            s.set_output("merged");
+            Ok(StateUpdate::full(s))
+        });
+        graph.set_entry_point("source");
+        graph.add_fan_out("source", vec!["branch1".into(), "branch2".into()]);
+        graph.add_fan_in(vec!["branch1".into(), "branch2".into()], "merge");
+        graph.add_edge("merge", END);
+        graph.set_reducer("messages", Arc::new(AppendMessagesReducer));
+
+        let compiled = graph.compile().unwrap();
+        let mut initial = AgentState::new("start");
+        initial.messages.clear();
+        let result = compiled.invoke(initial).await.unwrap();
+        let contents: Vec<&str> = result
+            .final_state
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        // All three writers survive: source (main path) + both branches.
+        assert!(
+            contents.contains(&"main-path")
+                && contents.contains(&"b1")
+                && contents.contains(&"b2"),
+            "merge must keep main-path + all branch writes, got {contents:?}"
+        );
+        assert_eq!(result.final_state.output.as_deref(), Some("merged"));
+    }
+
+    /// C3-3: `CompiledGraph::stream` executes ALL fan-out branches (it used
+    /// to run only `targets[0]` and silently drop the rest).
+    #[tokio::test]
+    async fn test_stream_fan_out_runs_all_branches() {
+        let mut graph: StateGraph<AgentState> = StateGraph::new();
+        graph.add_node_fn("source", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        });
+        graph.add_node_fn("branch1", |state: &AgentState| {
+            let mut s = state.clone();
+            s.messages.push(MessageEntry {
+                role: MessageRole::AI,
+                content: "s-b1".into(),
+            });
+            Ok(StateUpdate::full(s))
+        });
+        graph.add_node_fn("branch2", |state: &AgentState| {
+            let mut s = state.clone();
+            s.messages.push(MessageEntry {
+                role: MessageRole::AI,
+                content: "s-b2".into(),
+            });
+            Ok(StateUpdate::full(s))
+        });
+        graph.set_entry_point("source");
+        graph.add_fan_out("source", vec!["branch1".into(), "branch2".into()]);
+        graph.add_fan_in(vec!["branch1".into(), "branch2".into()], END);
+        graph.set_reducer("messages", Arc::new(AppendMessagesReducer));
+
+        let compiled = graph.compile().unwrap();
+        let mut initial = AgentState::new("start");
+        initial.messages.clear();
+        let events = compiled.stream_collected(initial).await.unwrap();
+        let end = events
+            .into_iter()
+            .find_map(|e| match e {
+                StreamEvent::End(s) => Some(s),
+                _ => None,
+            })
+            .expect("stream should end");
+        let contents: Vec<&str> = end
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(
+            contents.contains(&"s-b1") && contents.contains(&"s-b2"),
+            "stream must execute all fan-out branches, got {contents:?}"
+        );
+    }
+
+    /// H-A10: a standard fan-out + fan-in topology compiles — FanIn edges
+    /// were previously invisible to reachability (`source()` returned a
+    /// constant), so `compile()` rejected the graph with "Unreachable node".
+    #[test]
+    fn test_fan_in_topology_compiles() {
+        let mut graph: StateGraph<AgentState> = StateGraph::new();
+        graph.add_node_fn("source", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        });
+        graph.add_node_fn("b1", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
+        graph.add_node_fn("b2", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
+        graph.add_node_fn("merge", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
+        graph.set_entry_point("source");
+        graph.add_fan_out("source", vec!["b1".into(), "b2".into()]);
+        graph.add_fan_in(vec!["b1".into(), "b2".into()], "merge");
+        graph.add_edge("merge", END);
+        assert!(
+            graph.compile().is_ok(),
+            "fan-out + fan-in topology must compile"
+        );
     }
 }

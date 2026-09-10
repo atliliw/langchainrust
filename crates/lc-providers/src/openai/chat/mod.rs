@@ -40,7 +40,9 @@ impl OpenAIChat {
     pub fn new(config: OpenAIConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout
+            // (no total timeout — streams must not be cut off).
+            client: crate::retry::default_client(),
         }
     }
 
@@ -347,12 +349,16 @@ impl BaseChatModel for OpenAIChat {
         // into a single LLMResult instead of ignoring the field.
         let result = if effective.config.streaming {
             let stream = effective.stream_chat_internal(messages.clone()).await?;
-            let content = Self::aggregate_stream(stream).await?;
+            // 0.22.0 audit fix (Medium): the aggregate path must carry
+            // tool_calls and token_usage through from the stream's terminal
+            // chunks, not just the text (thinking content is not represented
+            // in StreamChunk, so it cannot be carried here).
+            let (content, token_usage, tool_calls) = Self::aggregate_stream(stream).await?;
             Ok(LLMResult {
                 content,
                 model: effective.config.model.clone(),
-                token_usage: None,
-                tool_calls: None,
+                token_usage,
+                tool_calls,
                 thinking_content: None,
             })
         } else {
@@ -470,15 +476,20 @@ impl OpenAIChat {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| OpenAIError::Http(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): non-streaming requests are retried on
+        // 429/5xx/transport errors with exponential backoff.
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", self.config.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| OpenAIError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -541,7 +552,7 @@ impl OpenAIChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>, OpenAIError>
     {
-        use super::sse::{SSEParser, StreamToolCallAccumulator};
+        use super::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
         use std::sync::{Arc, Mutex};
 
         let url = format!("{}/chat/completions", self.config.base_url);
@@ -565,7 +576,7 @@ impl OpenAIChat {
 
         let byte_stream = response.bytes_stream();
 
-        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
 
         let parser_clone = parser.clone();
         // M18: Use bounded channel to prevent OOM with slow consumers
@@ -579,6 +590,9 @@ impl OpenAIChat {
             // tool-call steps fall back to non-streaming plan() in lc-agents).
             let mut tool_acc = StreamToolCallAccumulator::default();
             let mut tool_calls_emitted = false;
+            // 0.22.0 audit fix (Medium): `[DONE]` must also exit the outer
+            // byte-chunk loop, not just the inner event loop.
+            let mut done = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H2 fix: propagate network errors to the consumer
                 // Must be done OUTSIDE the mutex scope to avoid Send issue
@@ -591,14 +605,21 @@ impl OpenAIChat {
                 };
 
                 let events = {
-                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-                    parser_guard.parse(&chunk_str)
+                    // 0.22.0 C1: frame at the byte layer; only complete events
+                    // are decoded, so multi-byte characters split across TCP
+                    // chunks never hit from_utf8_lossy mid-character.
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::new();
+                    for text in guard.1.push(&chunk_bytes) {
+                        out.extend(guard.0.parse(&text));
+                    }
+                    out
                 };
                 // parser_guard is dropped here, before any await
 
                 for event in events {
                     if event.is_done() {
+                        done = true;
                         break;
                     }
                     // Failed SSE chunks are no longer silently dropped: log an error,
@@ -652,6 +673,9 @@ impl OpenAIChat {
                         }
                     }
                 }
+                if done {
+                    break;
+                }
             }
             // Some compatible providers end the stream without a usage chunk. If tool
             // calls were accumulated but never emitted, flush them as a dedicated
@@ -674,19 +698,40 @@ impl OpenAIChat {
         Ok(Box::pin(stream))
     }
 
-    /// Aggregates a token stream into a single string (Q4).
+    /// Aggregates a token stream into a single result payload (Q4).
     ///
-    /// This is the piece that makes `config.streaming` observable: the
-    /// non-streaming `chat()` path consumes the token stream through here.
+    /// Returns `(content, token_usage, tool_calls)`. This is the piece that
+    /// makes `config.streaming` observable: the non-streaming `chat()` path
+    /// consumes the token stream through here. Terminal chunks (usage /
+    /// accumulated tool calls) are merged in so the aggregate path loses
+    /// nothing versus a direct non-streaming request.
     async fn aggregate_stream(
         mut stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>,
-    ) -> Result<String, OpenAIError> {
+    ) -> Result<
+        (
+            String,
+            Option<TokenUsage>,
+            Option<Vec<lc_core::tools::ToolCall>>,
+        ),
+        OpenAIError,
+    > {
         use futures_util::StreamExt;
         let mut content = String::new();
+        let mut token_usage = None;
+        let mut tool_calls = None;
         while let Some(item) = stream.next().await {
-            content.push_str(&item?.text);
+            let chunk = item?;
+            content.push_str(&chunk.text);
+            // Later terminal chunks win: usage arrives last, and the final
+            // tool-call chunk is the fully accumulated one.
+            if chunk.token_usage.is_some() {
+                token_usage = chunk.token_usage;
+            }
+            if chunk.tool_calls.is_some() {
+                tool_calls = chunk.tool_calls;
+            }
         }
-        Ok(content)
+        Ok((content, token_usage, tool_calls))
     }
 }
 

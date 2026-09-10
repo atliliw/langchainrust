@@ -6,6 +6,91 @@
 use lc_core::tools::ToolCall;
 use serde::Deserialize;
 
+/// Byte-level SSE framer (0.22.0 C1 fix).
+///
+/// Accumulates **raw bytes** and only decodes complete events to UTF-8.
+/// Event boundaries (`\n\n` or `\r\n\r\n`) are pure ASCII, so they are safe
+/// to search at the byte layer; a multi-byte character (CJK / emoji) split
+/// across TCP chunks is therefore never lossy-converted mid-character. Feed
+/// the returned event texts into [`SSEParser`] (or any event parser) instead
+/// of feeding raw chunks into `String::from_utf8_lossy` first.
+///
+/// ```rust
+/// use lc_providers::openai::sse::{SseByteFramer, SSEParser};
+///
+/// let mut framer = SseByteFramer::new();
+/// let mut parser = SSEParser::new();
+/// // Split a Chinese chunk in the middle of a 3-byte character:
+/// let full = b"data: {\"x\": \"\xe4\xbd\xa0\xe5\xa5\xbd\"}\n\n";
+/// let (a, b) = full.split_at(full.len() - 1);
+/// let mut events = Vec::new();
+/// for part in [a, b] {
+///     for text in framer.push(part) {
+///         events.extend(parser.parse(&text));
+///     }
+/// }
+/// assert_eq!(events.len(), 1);
+/// assert!(events[0].data.contains("你好")); // no U+FFFD
+/// ```
+pub struct SseByteFramer {
+    buf: Vec<u8>,
+}
+
+impl SseByteFramer {
+    /// Creates an empty framer
+    pub fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    /// Pushes one raw chunk; returns the text of each **complete** SSE event
+    /// (decoded to UTF-8, terminator normalized to `\n\n` so downstream
+    /// string-level parsers see a finished event).
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buf.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        while let Some((sep_len, end)) = find_event_end(&self.buf) {
+            let raw: Vec<u8> = self.buf.drain(..end).collect();
+            self.buf.drain(..sep_len);
+            events.push(format!("{}\n\n", String::from_utf8_lossy(&raw)));
+        }
+        events
+    }
+
+    /// Bytes still buffered (incomplete event); for tests / diagnostics.
+    pub fn pending(&self) -> usize {
+        self.buf.len()
+    }
+}
+
+impl Default for SseByteFramer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Finds the first event terminator in `buf`.
+/// Returns `(separator_len, event_text_end)` where `event_text_end` is the
+/// index just past the event text (exclusive of the separator bytes).
+fn find_event_end(buf: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] == b'\n' {
+            // "\n\n"
+            if i + 1 < buf.len() && buf[i + 1] == b'\n' {
+                return Some((2, i));
+            }
+            // "\n\r\n" can only be the tail of "\r\n\r\n"; require the
+            // leading \r so we never mis-frame "\n\r\n" alone.
+            if i + 2 < buf.len() && buf[i + 1] == b'\r' && buf[i + 2] == b'\n' && i >= 1 && buf[i - 1] == b'\r'
+            {
+                return Some((4, i - 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// SSE parser
 pub struct SSEParser {
     buffer: String,
@@ -27,7 +112,12 @@ impl SSEParser {
     /// # Returns
     /// The list of complete events
     pub fn parse(&mut self, chunk: &str) -> Vec<SSEEvent> {
-        self.buffer.push_str(chunk);
+        // 0.22.0 audit fix (Medium): normalize CRLF line endings to LF so both
+        // "\n\n" and "\r\n\r\n" event terminators are recognized (previously
+        // CRLF-framed events were never split and buffered forever). A "\r\n"
+        // split across two chunks is still handled by `lines()` / per-line
+        // `trim()` in `parse_event`.
+        self.buffer.push_str(&chunk.replace("\r\n", "\n"));
 
         let mut events = Vec::new();
 
@@ -47,24 +137,29 @@ impl SSEParser {
     /// Parses a single SSE event
     fn parse_event(&self, text: &str) -> Option<SSEEvent> {
         let mut event_type = None;
-        let mut data = None;
+        // 0.22.0 audit fix (Medium): multi-line `data:` fields are JOINED with
+        // "\n" per the SSE spec (previously each line overwrote the last, so
+        // only the final line survived).
+        let mut data_lines: Vec<String> = Vec::new();
 
         for line in text.lines() {
             if let Some(value) = line.strip_prefix("event:") {
                 event_type = Some(value.trim().to_string());
             } else if let Some(value) = line.strip_prefix("data:") {
-                data = Some(value.trim().to_string());
+                // `strip_prefix("data:")` + `trim` handles both "data: x" and
+                // the space-less "data:x" form.
+                data_lines.push(value.trim().to_string());
             }
         }
 
         // an event with only a data field still counts as valid
-        if data.is_some() {
+        if data_lines.is_empty() {
+            None
+        } else {
             Some(SSEEvent {
                 event: event_type,
-                data: data?,
+                data: data_lines.join("\n"),
             })
-        } else {
-            None
         }
     }
 }
@@ -286,6 +381,53 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert!(events[0].is_done());
+    }
+
+    // 0.22.0 audit fix (Medium): CRLF-framed events must parse.
+
+    #[test]
+    fn test_sse_parser_crlf_event_separator() {
+        let mut parser = SSEParser::new();
+        let events = parser.parse("data: {\"a\":1}\r\n\r\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "{\"a\":1}");
+    }
+
+    #[test]
+    fn test_sse_parser_crlf_multiple_events_across_chunks() {
+        let mut parser = SSEParser::new();
+        let events = parser.parse("data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\r\n\r\n");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].data, "{\"a\":1}");
+        assert_eq!(events[1].data, "{\"b\":2}");
+    }
+
+    #[test]
+    fn test_sse_parser_crlf_split_across_chunks() {
+        // The "\r\n" line ending is split across two pushed chunks.
+        let mut parser = SSEParser::new();
+        assert_eq!(parser.parse("data: {\"a\":1}\r\n").len(), 0);
+        let events = parser.parse("\r\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "{\"a\":1}");
+    }
+
+    // 0.22.0 audit fix (Medium): multi-line data fields must be joined.
+
+    #[test]
+    fn test_sse_parser_multiline_data_joined_with_newline() {
+        let mut parser = SSEParser::new();
+        let events = parser.parse("data: line1\ndata: line2\ndata: line3\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn test_sse_parser_data_without_space() {
+        let mut parser = SSEParser::new();
+        let events = parser.parse("data:{\"no\":\"space\"}\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "{\"no\":\"space\"}");
     }
 
     #[test]

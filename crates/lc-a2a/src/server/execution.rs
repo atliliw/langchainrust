@@ -82,8 +82,15 @@ pub(crate) async fn run_task(
         if stored.task.status.can_transition_to(&TaskStatus::Working) {
             stored.task.status = TaskStatus::Working;
             stored.touch();
-            let _ = store.upsert(stored).await;
-            publish_status(&event_bus, task_id, TaskStatus::Working, None);
+            // 0.22.0 audit fix: compare-and-update so a terminal state written
+            // concurrently (e.g. tasks/cancel) is not clobbered by this write.
+            if store
+                .compare_and_update(task_id, stored)
+                .await
+                .unwrap_or(false)
+            {
+                publish_status(&event_bus, task_id, TaskStatus::Working, None);
+            }
         }
     }
 
@@ -97,9 +104,16 @@ pub(crate) async fn run_task(
                     stored.result = Some(A2ATaskResult::new(output.clone()));
                     stored.error = None;
                     stored.touch();
-                    let _ = store.upsert(stored).await;
-                    publish_status(&event_bus, task_id, TaskStatus::Completed, None);
-                    publish_artifact(&event_bus, task_id, A2ATaskResult::new(output));
+                    // 0.22.0 audit fix: CAS so a concurrent cancel/complete
+                    // cannot be overwritten (check-then-act race).
+                    if store
+                        .compare_and_update(task_id, stored)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        publish_status(&event_bus, task_id, TaskStatus::Completed, None);
+                        publish_artifact(&event_bus, task_id, A2ATaskResult::new(output));
+                    }
                 }
             }
         }
@@ -116,13 +130,19 @@ pub(crate) async fn run_task(
                         stored.task.status = TaskStatus::InputRequired;
                         stored.error = Some(prompt.clone());
                         stored.touch();
-                        let _ = store.upsert(stored).await;
-                        publish_status(
-                            &event_bus,
-                            task_id,
-                            TaskStatus::InputRequired,
-                            Some(&prompt),
-                        );
+                        // 0.22.0 audit fix: CAS transition (see above).
+                        if store
+                            .compare_and_update(task_id, stored)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            publish_status(
+                                &event_bus,
+                                task_id,
+                                TaskStatus::InputRequired,
+                                Some(&prompt),
+                            );
+                        }
                     }
                 }
             } else if let Ok(Some(mut stored)) = store.get(task_id).await {
@@ -130,13 +150,19 @@ pub(crate) async fn run_task(
                     stored.task.status = TaskStatus::Failed;
                     stored.error = Some(e.to_string());
                     stored.touch();
-                    let _ = store.upsert(stored).await;
-                    publish_status(
-                        &event_bus,
-                        task_id,
-                        TaskStatus::Failed,
-                        Some(&e.to_string()),
-                    );
+                    // 0.22.0 audit fix: CAS transition (see above).
+                    if store
+                        .compare_and_update(task_id, stored)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        publish_status(
+                            &event_bus,
+                            task_id,
+                            TaskStatus::Failed,
+                            Some(&e.to_string()),
+                        );
+                    }
                 }
             }
         }
@@ -188,8 +214,15 @@ pub(crate) async fn run_workflow(
                 finalize.error = Some(format!("step `{step_id}` failed: {message}"));
                 let error = finalize.error.clone();
                 finalize.touch();
-                let _ = store.upsert(finalize).await;
-                publish_status(&event_bus, task_id, TaskStatus::Failed, error.as_deref());
+                // 0.22.0 audit fix: CAS so a concurrent cancel cannot be
+                // overwritten by the workflow's failure write.
+                if store
+                    .compare_and_update(task_id, finalize)
+                    .await
+                    .unwrap_or(false)
+                {
+                    publish_status(&event_bus, task_id, TaskStatus::Failed, error.as_deref());
+                }
             }
         }
         None => {
@@ -203,9 +236,16 @@ pub(crate) async fn run_workflow(
                 finalize.result = Some(task_result.clone());
                 finalize.error = None;
                 finalize.touch();
-                let _ = store.upsert(finalize).await;
-                publish_status(&event_bus, task_id, TaskStatus::Completed, None);
-                publish_artifact(&event_bus, task_id, task_result);
+                // 0.22.0 audit fix: CAS so a concurrent cancel cannot be
+                // overwritten by the workflow's completion write.
+                if store
+                    .compare_and_update(task_id, finalize)
+                    .await
+                    .unwrap_or(false)
+                {
+                    publish_status(&event_bus, task_id, TaskStatus::Completed, None);
+                    publish_artifact(&event_bus, task_id, task_result);
+                }
             }
         }
     }

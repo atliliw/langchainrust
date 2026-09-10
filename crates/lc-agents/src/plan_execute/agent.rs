@@ -7,7 +7,7 @@ use lc_core::language_models::BaseChatModel;
 use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
 
-use super::plan::StepStatus;
+use super::plan::{Plan, PlanStep, StepStatus};
 use super::planner::Planner;
 
 /// Plan-Execute Agent error type
@@ -140,10 +140,60 @@ impl PlanExecuteAgent {
                         let error_msg = e.to_string();
                         plan.mark_failed(step_id, error_msg.clone());
                         if replan_count < self.max_replans {
+                            // 0.22.0 C4 fix: carry the already-completed steps
+                            // (and their results) into the replan — the prompt
+                            // asks for the *remaining* work, and the completed
+                            // steps are spliced back so the summary keeps the
+                            // history instead of re-executing everything.
+                            let completed_steps: Vec<(String, String)> = plan
+                                .steps
+                                .iter()
+                                .filter(|s| s.status == StepStatus::Completed)
+                                .filter_map(|s| {
+                                    s.result
+                                        .as_ref()
+                                        .map(|r| (s.description.clone(), r.clone()))
+                                })
+                                .collect();
+                            let completed_block = if completed_steps.is_empty() {
+                                String::new()
+                            } else {
+                                completed_steps
+                                    .iter()
+                                    .map(|(d, r)| format!("- {d} → {r}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            };
                             plan = planner
-                                .replan(objective, &step_desc, &error_msg)
+                                .replan(
+                                    objective,
+                                    &step_desc,
+                                    &error_msg,
+                                    &completed_block,
+                                )
                                 .await
-                                .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
+                                .map_err(|e| {
+                                    PlanExecuteError::PlanningError(e.to_string())
+                                })?;
+                            // Splice the completed steps (with results) back at
+                            // the front so they show up in the summary and are
+                            // not re-executed (only Pending steps run).
+                            let mut merged: Vec<PlanStep> = Vec::new();
+                            let mut next_id = 0usize;
+                            for (desc, result) in &completed_steps {
+                                let mut st = PlanStep::new(next_id, desc.clone());
+                                st.status = StepStatus::Completed;
+                                st.result = Some(result.clone());
+                                merged.push(st);
+                                next_id += 1;
+                            }
+                            for s in plan.steps {
+                                if s.status != StepStatus::Completed {
+                                    merged.push(PlanStep::new(next_id, s.description));
+                                    next_id += 1;
+                                }
+                            }
+                            plan = Plan::new(objective, merged);
                             failed = true;
                             break;
                         } else {

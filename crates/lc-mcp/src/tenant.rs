@@ -90,26 +90,21 @@ impl TenantGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{start_fake_sse_server, PostMode};
-    use crate::MCPConfig;
+    use crate::test_support::{start_fake_stateless_server, StatelessMode};
     use serde_json::json;
 
-    fn fs_spec(sse_url: &str) -> GatewayServerSpec {
-        GatewayServerSpec::new("fs", MCPConfig::sse(sse_url))
+    fn fs_spec(url: &str) -> GatewayServerSpec {
+        GatewayServerSpec::new("fs", url)
     }
 
     /// Registry isolation: sync only A, tools do not leak into B; B calls its own registered Server on demand,
     /// filling its registry via its own sync, independent of A.
     #[tokio::test]
     async fn test_tenants_registry_isolated() {
-        let fake = start_fake_sse_server(PostMode::Quiet).await;
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
         let gw = TenantGateway::new();
-        gw.register("tenant_a", fs_spec(&fake.sse_url))
-            .await
-            .unwrap();
-        gw.register("tenant_b", fs_spec(&fake.sse_url))
-            .await
-            .unwrap();
+        gw.register("tenant_a", fs_spec(&fake.url)).await.unwrap();
+        gw.register("tenant_b", fs_spec(&fake.url)).await.unwrap();
 
         // Sync only A: the namespace fills only A, does not leak into B.
         gw.sync_all("tenant_a").await.unwrap();
@@ -122,7 +117,10 @@ mod tests {
         // B calls its own registered Server on demand: auto-sync, unrelated to A's registry.
         let out = gw.call("tenant_b", "fs:echo", json!({})).await;
         assert!(out.is_ok(), "B 租户的调用应成功");
-        assert_eq!(out.unwrap(), "echo");
+        assert!(
+            out.unwrap().contains("echo"),
+            "B 的调用应得到 echo 工具的输出"
+        );
         assert_eq!(
             gw.tools("tenant_b").await,
             vec!["fs:echo"],
@@ -133,9 +131,9 @@ mod tests {
     /// Audit isolation: tenant A's calls go only into A's audit, not polluting B.
     #[tokio::test]
     async fn test_tenant_audit_isolated() {
-        let fake = start_fake_sse_server(PostMode::Quiet).await;
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
         let gw = TenantGateway::new();
-        gw.register("a", fs_spec(&fake.sse_url)).await.unwrap();
+        gw.register("a", fs_spec(&fake.url)).await.unwrap();
 
         gw.call("a", "fs:echo", json!({})).await.unwrap();
         assert!(!gw.audit_log("a").await.is_empty(), "A 的调用应进 A 的审计");
@@ -150,7 +148,7 @@ mod tests {
     async fn test_remove_tenant_cleans_up() {
         let gw = TenantGateway::new();
         // register is lazy, no real server needed.
-        gw.register("a", fs_spec("http://localhost:1/sse"))
+        gw.register("a", fs_spec("http://127.0.0.1:1/mcp"))
             .await
             .unwrap();
         assert!(gw.tenant_ids().await.contains(&"a".to_string()));

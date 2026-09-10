@@ -16,7 +16,7 @@ mod message;
 mod model;
 mod task;
 
-pub use card::{AgentCard, AgentSkill};
+pub use card::{A2ATransport, AgentCard, AgentInterface, AgentSkill, A2A_VERSION_V101};
 pub use message::A2AMessage;
 pub use model::{
     metadata_keys, A2AErrorData, A2ARequest, A2AResponse, A2ATaskDetails, A2ATaskResult,

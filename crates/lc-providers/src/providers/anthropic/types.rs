@@ -1,15 +1,21 @@
 // src/language_models/providers/anthropic/types.rs
 //! Public and private types for the Anthropic API request/response format.
 
+use lc_core::tools::ToolCall;
 use serde::{Deserialize, Serialize};
 
 /// A token emitted during streaming, distinguishing between thinking and text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AnthropicStreamToken {
     /// A text content token (the final answer).
     Text(String),
     /// A thinking content token (extended reasoning).
     Thinking(String),
+    /// A complete tool call, emitted when its `content_block_stop` arrives
+    /// (0.22.0 C2 fix: tool calls are no longer silently dropped on the
+    /// streaming path — `input_json_delta` fragments are accumulated per
+    /// content-block index and flushed on stop).
+    ToolCall(ToolCall),
     /// Token usage reported at the end of the stream (`message_delta` event).
     /// Carried separately so the streaming path can observe usage without a
     /// separate non-streaming `chat` call.
@@ -127,10 +133,29 @@ pub struct AnthropicUsage {
 pub(crate) struct AnthropicStreamEvent {
     #[serde(rename = "type")]
     pub(crate) type_field: String,
+    /// Content-block index carried by `content_block_*` events (C2: keys
+    /// `input_json_delta` fragments to the right tool call).
+    #[serde(default)]
+    pub(crate) index: Option<usize>,
+    /// The starting content block of a `content_block_start` event.
+    pub(crate) content_block: Option<AnthropicStreamBlock>,
     pub(crate) delta: Option<AnthropicDelta>,
     /// Token usage from the `message_delta` event (stream end).
     #[serde(default)]
     pub(crate) usage: Option<AnthropicUsage>,
+}
+
+/// The `content_block` payload of a `content_block_start` stream event.
+#[derive(Deserialize)]
+pub(crate) struct AnthropicStreamBlock {
+    #[serde(rename = "type")]
+    pub(crate) type_field: String,
+    /// Tool call ID (present when type == "tool_use").
+    #[serde(default)]
+    pub(crate) id: String,
+    /// Tool name (present when type == "tool_use").
+    #[serde(default)]
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize)]
@@ -141,4 +166,7 @@ pub(crate) struct AnthropicDelta {
     pub(crate) text: String,
     #[serde(default)]
     pub(crate) thinking: String,
+    /// Incremental tool-call JSON from `input_json_delta` fragments (C2).
+    #[serde(default)]
+    pub(crate) partial_json: String,
 }

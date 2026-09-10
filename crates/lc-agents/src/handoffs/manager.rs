@@ -1,5 +1,6 @@
 //! HandoffManager + HandoffTool
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -13,13 +14,23 @@ use lc_core::tools::ToolError;
 
 use super::handoff::{Handoff, HandoffContext, HandoffError, HandoffRecord, HandoffResult};
 
+// Per-invocation (task-local) handoff chain, independent per concurrent
+// `run()`. Previously the chain was a single field on the shared
+// `HandoffManager`, so two concurrent runs calling `run()`/`execute_handoff`
+// cleared and pushed into the same `Vec` — corrupting each other's cycle
+// detection and depth guard (0.22.0 audit H-A7). Each `run()` scopes its own
+// chain; nested handoffs on the same task tree push/pop into it, so a run
+// never observes another run's traversal. Direct `execute_handoff` calls
+// outside a `run()` scope see no chain and skip the guards.
+tokio::task_local! {
+    static HANDOFF_CHAIN: RefCell<Vec<String>>;
+}
+
 /// Internal state of the Handoff manager (a single Mutex avoids deadlocks from inconsistent multi-lock acquisition order)
 struct HandoffState {
     agents: HashMap<String, Arc<AgentExecutor>>,
     primary: Option<String>,
     history: Vec<HandoffRecord>,
-    /// Current handoff chain (from primary, including the agent currently executing), for cycle detection (P1-7).
-    chain: Vec<String>,
 }
 
 /// Handoff manager: registers multiple Agents and supports task handoff
@@ -60,7 +71,6 @@ impl HandoffManager {
                 agents: HashMap::new(),
                 primary: None,
                 history: Vec::new(),
-                chain: Vec::new(),
             }),
             max_handoff_depth: 10,
         }
@@ -98,28 +108,41 @@ impl HandoffManager {
 
     /// Executes a handoff: gives the task to the target Agent
     pub async fn execute_handoff(&self, handoff: Handoff) -> Result<HandoffResult, HandoffError> {
-        let executor = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve executor + primary and apply the run-local chain guards.
+        let (executor, primary) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
-            // P1-7: handoff depth limit
-            if state.chain.len() >= self.max_handoff_depth {
-                return Err(HandoffError::MaxHandoffDepthExceeded(
-                    self.max_handoff_depth,
-                ));
-            }
-            // P1-7: cycle detection - the target is already in the chain, meaning an A→B→A cycle
-            if state.chain.contains(&handoff.target_agent) {
-                return Err(HandoffError::HandoffCycleDetected(
-                    handoff.target_agent.clone(),
-                ));
-            }
             let executor = state
                 .agents
                 .get(&handoff.target_agent)
                 .ok_or_else(|| HandoffError::AgentNotFound(handoff.target_agent.clone()))?
                 .clone();
-            state.chain.push(handoff.target_agent.clone());
-            executor
+            let primary = state.primary.clone();
+
+            // P1-7: depth + cycle guards against THIS run's chain. When there
+            // is no enclosing `run()` scope (a direct out-of-band call), the
+            // chain is absent and both guards are skipped.
+            HANDOFF_CHAIN
+                .try_with(|chain| {
+                    let mut chain = chain.borrow_mut();
+                    // P1-7: handoff depth limit
+                    if chain.len() >= self.max_handoff_depth {
+                        return Err(HandoffError::MaxHandoffDepthExceeded(
+                            self.max_handoff_depth,
+                        ));
+                    }
+                    // P1-7: cycle detection - the target is already in the chain, meaning an A→B→A cycle
+                    if chain.contains(&handoff.target_agent) {
+                        return Err(HandoffError::HandoffCycleDetected(
+                            handoff.target_agent.clone(),
+                        ));
+                    }
+                    chain.push(handoff.target_agent.clone());
+                    Ok(())
+                })
+                .unwrap_or(Ok(()))?;
+
+            (executor, primary)
         };
 
         // P2-4: fold the conversation summary from the handoff context into the target Agent's input, rather than transferring control raw.
@@ -133,24 +156,21 @@ impl HandoffManager {
         let result = match result {
             Ok(r) => r,
             Err(e) => {
-                self.state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .chain
-                    .pop();
+                let _ = HANDOFF_CHAIN.try_with(|chain| chain.borrow_mut().pop());
                 return Err(e);
             }
         };
 
+        let from = HANDOFF_CHAIN
+            .try_with(|chain| {
+                let mut chain = chain.borrow_mut();
+                chain.pop();
+                chain.last().cloned()
+            })
+            .unwrap_or_else(|_| primary)
+            .unwrap_or_default();
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.chain.pop();
-            let from = state
-                .chain
-                .last()
-                .cloned()
-                .or_else(|| state.primary.clone())
-                .unwrap_or_default();
             state.history.push(HandoffRecord {
                 from_agent: from,
                 to_agent: handoff.target_agent.clone(),
@@ -169,8 +189,8 @@ impl HandoffManager {
 
     /// Runs the primary Agent
     pub async fn run(&self, input: String) -> Result<String, HandoffError> {
-        let executor = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (executor, primary) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let primary = state
                 .primary
                 .clone()
@@ -181,20 +201,18 @@ impl HandoffManager {
                 .ok_or_else(|| HandoffError::AgentNotFound(primary.clone()))?
                 .clone();
             // P1-7: primary is the chain's start, taking part in cycle detection
-            state.chain.clear();
-            state.chain.push(primary);
-            executor
+            (executor, primary)
         };
-        let result = executor
-            .invoke(input)
+        // Scope a fresh chain for this invocation so concurrent `run()`s never
+        // observe or corrupt one another's traversal state (0.22.0 H-A7).
+        HANDOFF_CHAIN
+            .scope(RefCell::new(vec![primary]), async move {
+                executor
+                    .invoke(input)
+                    .await
+                    .map_err(|e| HandoffError::ExecutionError(e.to_string()))
+            })
             .await
-            .map_err(|e| HandoffError::ExecutionError(e.to_string()));
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .chain
-            .clear();
-        result
     }
 
     /// Gets the handoff history

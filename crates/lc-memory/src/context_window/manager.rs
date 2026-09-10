@@ -178,6 +178,21 @@ impl<M: BaseChatModel> ContextWindow<M> {
 
         kept.reverse();
 
+        // 0.22.0 H-M2: the kept suffix must not open on an orphaned Tool
+        // message (a tool result whose matching assistant tool_calls fell
+        // outside the window). A standalone tool message is malformed for
+        // OpenAI/Anthropic → 400. Drop leading Tool messages until the window
+        // opens on a non-Tool message.
+        while kept
+            .first()
+            .is_some_and(|m| matches!(m.message_type, lc_schema::MessageType::Tool { .. }))
+        {
+            kept.remove(0);
+            if kept.is_empty() {
+                break;
+            }
+        }
+
         let mut result = system_messages;
         result.extend(kept);
         Ok(result)

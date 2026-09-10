@@ -7,7 +7,7 @@
 //!
 //! - [`JsonLinesSink`] (default `jsonl` feature): append each event as one JSON
 //!   line to a file.
-//! - [`MongoSink`] (`mongodb` feature): insert each event as a document.
+//! - MongoSink (`mongodb` feature): insert each event as a document.
 //!
 //! Export failures are returned as [`ObsError`]; the framework logs a `warn` and
 //! the main flow continues — sinks never interrupt the agent.

@@ -28,7 +28,9 @@
 //! let task = client.send_task(A2AMessage::user("hello")).await?;
 //! ```
 
-mod signing;
+// `pub(crate)` so the server can reuse `constant_time_eq` for bearer-token
+// checks (0.22.0 audit fix).
+pub(crate) mod signing;
 mod sse;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +41,9 @@ use super::protocol::{
     AgentCard, TaskStatus, TraceContext,
 };
 
-pub use signing::{sign_agent_card, verify_card_signature};
+pub use signing::{
+    canonical_json, sign_agent_card, sign_card_jws, verify_card_jws, verify_card_signature,
+};
 pub use sse::A2ASseStream;
 
 /// Errors that can occur during A2A client operations.
@@ -107,8 +111,12 @@ impl From<A2AErrorData> for A2AError {
 pub struct A2AClient {
     /// Base URL of the remote agent (e.g. "http://localhost:8080").
     base_url: String,
-    /// HTTP client.
+    /// HTTP client for regular RPC requests (bounded total timeout).
     http: reqwest::Client,
+    /// HTTP client for SSE/streaming requests: no total timeout so a
+    /// long-lived stream is not cut off (0.22.0 audit fix H-P4). Connect
+    /// timeout still applies.
+    stream_http: reqwest::Client,
     /// Monotonic request ID counter.
     next_id: AtomicU64,
     /// Optional bearer token sent on every request.
@@ -145,13 +153,26 @@ impl A2AClient {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| A2AError::Http(format!("failed to build HTTP client: {e}")))?;
-        Ok(Self::with_http_client(base_url, http))
+        // 0.22.0 audit fix (H-P4): the 30s total timeout above covers the whole
+        // body read, so an SSE stream would be cut off at 30s. Streaming uses
+        // a client with only a connect timeout; fall back to the RPC client if
+        // this one cannot be built.
+        let stream_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| http.clone());
+        Ok(Self::with_http_client(base_url, http).with_stream_client(stream_http))
     }
 
     /// Create a client with a custom `reqwest::Client` (for timeouts, etc.).
+    ///
+    /// The given client is used for both RPC and streaming requests; if it
+    /// carries a total timeout, long-lived SSE streams will be cut off — the
+    /// caller owns that trade-off.
     pub fn with_http_client(base_url: impl Into<String>, http: reqwest::Client) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            stream_http: http.clone(),
             http,
             next_id: AtomicU64::new(1),
             auth_token: None,
@@ -160,6 +181,13 @@ impl A2AClient {
             card_secret: None,
             require_card_signature: false,
         }
+    }
+
+    /// Replace the client used for SSE/streaming requests (0.22.0 audit fix
+    /// H-P4). Typically a timeout-free client with a connect timeout.
+    fn with_stream_client(mut self, stream_http: reqwest::Client) -> Self {
+        self.stream_http = stream_http;
+        self
     }
 
     /// Start building a client with full configuration.
@@ -393,7 +421,33 @@ impl A2AClient {
         let poll_interval = Duration::from_secs(1);
 
         loop {
-            let details = self.get_task_details(task_id).await?;
+            // 0.22.0 audit fix: a single transient network hiccup used to fail
+            // the whole poll. Retry each GET a few times with a small backoff
+            // before giving up; only a task in a terminal state ends the poll.
+            let mut details = None;
+            let mut last_err: Option<A2AError> = None;
+            for attempt in 0..3u32 {
+                match self.get_task_details(task_id).await {
+                    Ok(d) => {
+                        details = Some(d);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt < 2 {
+                            tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+                        }
+                    }
+                }
+            }
+            let details = match details {
+                Some(d) => d,
+                None => {
+                    return Err(last_err.unwrap_or_else(|| {
+                        A2AError::Http("task poll failed without an error".to_string())
+                    }))
+                }
+            };
             match details.task.status {
                 TaskStatus::Completed => {
                     return details.result.ok_or_else(|| {
@@ -463,6 +517,14 @@ impl A2AClient {
         let resp = request.send().await?;
         let status = resp.status();
         if !status.is_success() {
+            // 0.22.0 audit fix: servers now surface auth failures as HTTP 401;
+            // prefer the JSON-RPC error body (if any) so API-level errors keep
+            // flowing through non-2xx statuses.
+            if let Ok(a2a_resp) = resp.json::<A2AResponse>().await {
+                if let Some(err) = a2a_resp.error {
+                    return Err(A2AError::from(err));
+                }
+            }
             return Err(A2AError::Http(format!(
                 "A2A request failed with status {}",
                 status
@@ -482,7 +544,10 @@ impl A2AClient {
     /// `tasks/get`. Events carry a `task.id`, so a caller receiving
     /// notifications for multiple tasks can filter by the id it cares about.
     pub async fn connect_sse(&self, sse_url: &str) -> Result<A2ASseStream, A2AError> {
-        let mut request = self.with_traceparent(self.http.get(sse_url));
+        // 0.22.0 audit fix (H-P4): use the streaming client (no total timeout)
+        // so a long-lived SSE stream is not terminated by the RPC client's
+        // 30s whole-body timeout.
+        let mut request = self.with_traceparent(self.stream_http.get(sse_url));
         if let Some(token) = &self.auth_token {
             request = request.bearer_auth(token);
         }
@@ -622,17 +687,29 @@ impl A2AClientBuilder {
                 self.base_url
             );
         }
-        let http = match self.http_client {
-            Some(client) => client,
-            None => reqwest::Client::builder()
-                .timeout(self.timeout)
-                .connect_timeout(self.connect_timeout)
-                .build()
-                .map_err(|e| A2AError::Http(format!("failed to build HTTP client: {}", e)))?,
+        let (http, stream_http) = match self.http_client {
+            Some(client) => (client.clone(), client),
+            None => {
+                let http = reqwest::Client::builder()
+                    .timeout(self.timeout)
+                    .connect_timeout(self.connect_timeout)
+                    .build()
+                    .map_err(|e| {
+                        A2AError::Http(format!("failed to build HTTP client: {}", e))
+                    })?;
+                // 0.22.0 audit fix (H-P4): a separate timeout-free client for
+                // SSE streams, mirroring `A2AClient::new`.
+                let stream_http = reqwest::Client::builder()
+                    .connect_timeout(self.connect_timeout)
+                    .build()
+                    .unwrap_or_else(|_| http.clone());
+                (http, stream_http)
+            }
         };
         Ok(A2AClient {
             base_url: self.base_url,
             http,
+            stream_http,
             next_id: AtomicU64::new(1),
             auth_token: self.bearer_token,
             trace_id: self.trace_id,

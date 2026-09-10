@@ -43,7 +43,7 @@ use serde_json::json;
 use std::pin::Pin;
 
 use self::types::*;
-use crate::openai::sse::{SSEParser, StreamToolCallAccumulator};
+use crate::openai::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
 use crate::ProviderError;
 use lc_callbacks::{RunTree, RunType};
 use lc_core::language_models::{
@@ -79,7 +79,8 @@ impl AzureOpenAIChat {
     pub fn new(config: AzureOpenAIConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
+            client: crate::retry::default_client(),
         }
     }
 
@@ -159,15 +160,19 @@ impl AzureOpenAIChat {
         let url = self.config.chat_url();
         let body = self.build_request_body(messages, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("api-key", &self.config.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AzureOpenAIError::Http(e.to_string()))?;
+        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        let response = crate::retry::send_with_retry(
+            || {
+                self.client
+                    .post(&url)
+                    .header("api-key", &self.config.api_key)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            },
+            &crate::retry::DEFAULT_RETRY,
+        )
+        .await
+        .map_err(|e| AzureOpenAIError::Http(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -241,7 +246,7 @@ impl AzureOpenAIChat {
         }
 
         let byte_stream = response.bytes_stream();
-        let parser = Arc::new(Mutex::new(SSEParser::new()));
+        let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         let parser_clone = parser.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, AzureOpenAIError>>(64);
 
@@ -252,6 +257,9 @@ impl AzureOpenAIChat {
             // chunk carries complete tool calls (mirrors OpenAI's stream loop).
             let mut tool_acc = StreamToolCallAccumulator::default();
             let mut tool_calls_emitted = false;
+            // 0.22.0 audit fix (Medium): `[DONE]` must also exit the outer
+            // byte-chunk loop, not just the inner event loop.
+            let mut done = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
@@ -262,13 +270,18 @@ impl AzureOpenAIChat {
                 };
 
                 let events = {
-                    let mut parser_guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-                    parser_guard.parse(&chunk_str)
+                    // 0.22.0 C1: byte-layer framing; only complete events are decoded
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::new();
+                    for text in guard.1.push(&chunk_bytes) {
+                        out.extend(guard.0.parse(&text));
+                    }
+                    out
                 };
 
                 for event in events {
                     if event.is_done() {
+                        done = true;
                         break;
                     }
                     // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
@@ -317,6 +330,9 @@ impl AzureOpenAIChat {
                             );
                         }
                     }
+                }
+                if done {
+                    break;
                 }
             }
             // 无 usage 结尾时,把累积的 tool_calls 以独立终束 chunk 刷出,

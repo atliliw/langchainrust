@@ -255,7 +255,7 @@ impl A2AServer {
             );
         }
 
-        let mut stored = match self.store.get(task_id).await {
+        let stored = match self.store.get(task_id).await {
             Ok(Some(s)) => s,
             Ok(None) | Err(_) => return task_not_found(req.id, task_id),
         };
@@ -268,25 +268,39 @@ impl A2AServer {
             // Idempotent: already finished, return it unchanged.
             return A2AResponse::ok(req.id, json!({ "task": stored.task }));
         }
-        if stored.task.status.can_transition_to(&TaskStatus::Cancelled) {
-            stored.task.status = TaskStatus::Cancelled;
-            stored.touch();
-            if self.store.upsert(stored.clone()).await.is_err() {
-                return A2AResponse::from_error_data(
-                    req.id,
-                    A2AErrorData::internal_error("task store write failed"),
-                );
+        // 0.22.0 audit fix: perform the transition through a compare-and-update
+        // so the check and the write are atomic — a concurrent terminal write
+        // (e.g. the chain completing between our read and our write) can no
+        // longer be clobbered by this cancel.
+        let mut cancelled = stored.clone();
+        cancelled.task.status = TaskStatus::Cancelled;
+        cancelled.touch();
+        let cancelled_task = cancelled.task.clone();
+        match self.store.compare_and_update(task_id, cancelled).await {
+            Ok(true) => {
+                publish_status(&self.event_bus, task_id, TaskStatus::Cancelled, None);
+                A2AResponse::ok(req.id, json!({ "task": cancelled_task }))
             }
-            publish_status(&self.event_bus, task_id, TaskStatus::Cancelled, None);
-            A2AResponse::ok(req.id, json!({ "task": stored.task }))
-        } else {
-            A2AResponse::from_error_data(
+            Ok(false) => {
+                // Lost the race: report the current state of the task.
+                match self.store.get(task_id).await {
+                    Ok(Some(now)) if now.task.status.is_terminal() => {
+                        A2AResponse::ok(req.id, json!({ "task": now.task }))
+                    }
+                    Ok(Some(now)) => A2AResponse::from_error_data(
+                        req.id,
+                        A2AErrorData::new(
+                            -32002,
+                            format!("Cannot cancel task in state {}", now.task.status),
+                        ),
+                    ),
+                    _ => task_not_found(req.id, task_id),
+                }
+            }
+            Err(_) => A2AResponse::from_error_data(
                 req.id,
-                A2AErrorData::new(
-                    -32002,
-                    format!("Cannot cancel task in state {}", stored.task.status),
-                ),
-            )
+                A2AErrorData::internal_error("task store write failed"),
+            ),
         }
     }
 

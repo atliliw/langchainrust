@@ -13,8 +13,11 @@
 //! - `GET /events` → SSE stream of [`TaskPushNotification`]s, only when
 //!   streaming was enabled with `with_streaming`
 //!
-//! A permissive CORS layer is applied by default so browser-based A2A clients
-//! can connect; lock it down before exposing the agent to untrusted callers.
+//! A CORS layer restricted to localhost origins is applied by default so
+//! browser-based A2A clients can connect during development; tighten
+//! `router()` with an explicit origin allowlist before exposing the agent to
+//! untrusted cross-origin callers (0.22.0 audit fix: the layer used to be
+//! all-open).
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -29,7 +32,7 @@ use tokio::net::TcpListener;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::protocol::{A2ARequest, A2AResponse, AgentCard};
 use crate::server::A2AServer;
@@ -63,18 +66,30 @@ impl A2AServer {
     }
 }
 
+/// 0.22.0 audit fix: the CORS layer used to allow every origin (`Any`),
+/// letting any website call the agent with the visitor's credentials.
+/// Conservative default: only localhost development origins are allowed
+/// cross-origin; requests from other origins get no `Access-Control-Allow-Origin`
+/// header and are blocked by the browser. Restrict or extend this in
+/// `router()` for real deployments.
+fn cors_layer() -> CorsLayer {
+    let is_localhost = |origin: &header::HeaderValue| {
+        let s = origin.to_str().unwrap_or("");
+        s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1")
+    };
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(move |origin, _| is_localhost(origin)))
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any)
+}
+
 /// Build the axum [`Router`] that exposes the server over HTTP.
 fn router(server: Arc<A2AServer>) -> Router {
     Router::new()
         .route(CARD_PATH, get(get_agent_card))
         .route("/", post(post_request))
         .route(SSE_PATH, get(sse_stream))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST])
-                .allow_headers(Any),
-        )
+        .layer(cors_layer())
         .with_state(server)
 }
 
@@ -101,7 +116,14 @@ async fn post_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let resp = server.handle_a2a_request_authenticated(req, bearer).await;
-    (StatusCode::OK, Json(resp)).into_response()
+    // 0.22.0 audit fix: an auth failure must surface as HTTP 401, not HTTP 200
+    // with an error body.
+    let status = if resp.error.as_ref().is_some_and(|e| e.code == 401) {
+        StatusCode::UNAUTHORIZED
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(resp)).into_response()
 }
 
 /// `GET /events` — SSE stream of task notifications (P2-1).
@@ -232,6 +254,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output, "hi");
+    }
+
+    #[tokio::test]
+    async fn serve_returns_http_401_on_auth_failure() {
+        // 0.22.0 audit fix: auth failure must surface as HTTP 401, not 200.
+        let server = A2AServer::new(Arc::new(EchoChain)).with_auth_token("secret-token");
+        let (base, _handle) = spawn(server).await;
+        let req = crate::protocol::A2ARequest::send_task(1, &A2AMessage::user("hi"));
+        let resp = reqwest::Client::new()
+            .post(format!("{base}/"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(&req).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn cors_allows_localhost_but_blocks_other_origins() {
+        // 0.22.0 audit fix: the CORS layer must not be all-open; localhost
+        // dev origins are allowed, everything else gets no allow-origin.
+        let server = A2AServer::new(Arc::new(EchoChain));
+        let (base, _handle) = spawn(server).await;
+        let client = reqwest::Client::new();
+        for origin in ["http://localhost:3000", "http://127.0.0.1:5173"] {
+            let resp = client
+                .get(format!("{base}/.well-known/agent-card.json"))
+                .header("Origin", origin)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some(origin),
+                "localhost origin {origin} should be allowed"
+            );
+        }
+        let resp = client
+            .get(format!("{base}/.well-known/agent-card.json"))
+            .header("Origin", "https://evil.example.com")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "non-localhost origins must not be allowed"
+        );
     }
 
     #[tokio::test]

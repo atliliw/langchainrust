@@ -13,6 +13,7 @@
 //! - Gemini (Google)
 
 mod error;
+mod retry;
 mod sampling;
 mod wrapper;
 

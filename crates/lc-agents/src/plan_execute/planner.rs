@@ -77,16 +77,28 @@ impl Planner {
         self.parse_plan(objective, &content)
     }
 
-    /// Replans (when a step fails)
+    /// Replans (when a step fails).
+    ///
+    /// 0.22.0 C4 fix: `completed` carries the already-finished steps and
+    /// their results; the prompt injects them and explicitly asks for a plan
+    /// of the *remaining* work, so a replan no longer re-executes everything
+    /// (duplicate tool calls / duplicate cost) and the caller can splice the
+    /// completed steps back into the returned plan.
     pub async fn replan(
         &self,
         objective: &str,
         failed_step: &str,
         reason: &str,
+        completed: &str,
     ) -> Result<Plan, AgentError> {
+        let completed_block = if completed.trim().is_empty() {
+            "(none)".to_string()
+        } else {
+            completed.to_string()
+        };
         let prompt = format!(
-            "原目标: {}\n之前步骤 '{}' 失败: {}\n请重新制定完整计划。输出 JSON 字符串数组 [\"步骤\", ...],只输出 JSON。",
-            objective, failed_step, reason
+            "原目标: {}\n已完成步骤及结果:\n{}\n失败步骤 '{}' 失败: {}\n请重新制定**剩余工作**的完整计划,不要重复已完成的步骤。输出 JSON 字符串数组 [\"步骤\", ...],只输出 JSON。",
+            objective, completed_block, failed_step, reason
         );
         let messages = vec![
             Message::system("你是规划助手,只输出 JSON。"),

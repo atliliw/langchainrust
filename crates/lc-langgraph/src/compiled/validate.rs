@@ -159,6 +159,20 @@ impl<S: StateSchema> CompiledGraph<S> {
             reachable.insert(current.clone());
 
             for edge in &self.edges {
+                // 0.22.0 H-A10 fix: FanIn edges carry multiple sources, so
+                // `edge.source()` (constant `"__fanin__"`) never matches a
+                // node name and a standard fan-out+fan-in topology was
+                // rejected as "Unreachable node". Handle FanIn on every pass:
+                // its target is reachable once all of its sources are.
+                if let GraphEdge::FanIn { sources, target } = edge {
+                    if sources.iter().all(|s| reachable.contains(s))
+                        && !reachable.contains(target)
+                        && target != END
+                    {
+                        to_visit.push(target.clone());
+                    }
+                    continue;
+                }
                 if edge.source() == current {
                     match edge {
                         GraphEdge::Fixed { target, .. } => {
@@ -189,14 +203,7 @@ impl<S: StateSchema> CompiledGraph<S> {
                                 }
                             }
                         }
-                        GraphEdge::FanIn { sources, target } => {
-                            if sources.iter().all(|s| reachable.contains(s))
-                                && !reachable.contains(target)
-                                && target != END
-                            {
-                                to_visit.push(target.clone());
-                            }
-                        }
+                        GraphEdge::FanIn { .. } => {}
                     }
                 }
             }

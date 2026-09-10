@@ -3,6 +3,64 @@ use serde_json::Value;
 
 use super::model::{default_input_modes, default_output_modes, default_protocol_version};
 
+/// A2A v1.0.1 protocol version (the first stable line; Agent Cards restructured
+/// to `supportedInterfaces[]` — incompatible with v0.3's single-declaration shape).
+pub const A2A_VERSION_V101: &str = "1.0.1";
+
+/// Transport binding of one agent interface (v1.0.1: three bindings,
+/// cumulative — a card may advertise several).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum A2ATransport {
+    /// JSON-RPC 2.0 over HTTP.
+    JsonRpc,
+    /// Plain HTTP+JSON.
+    HttpJson,
+    /// gRPC (see `a2a.proto`; the规范源 for all bindings).
+    Grpc,
+}
+
+/// One interface of an agent (v1.0.1 `supportedInterfaces[]` entry).
+///
+/// v1.0.1 breaks with v0.3: instead of a single protocol declaration on the
+/// card, each interface carries its own `protocolVersion`, transport binding,
+/// URL, and (enterprise multi-tenancy) optional tenant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentInterface {
+    /// Protocol version spoken on THIS interface (e.g. "1.0.1").
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: String,
+    /// Transport binding of this interface.
+    pub transport: A2ATransport,
+    /// Endpoint URL for this interface.
+    pub url: String,
+    /// Enterprise multi-tenancy: tenant this interface serves (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+}
+
+impl AgentInterface {
+    /// Creates an interface entry.
+    pub fn new(
+        protocol_version: impl Into<String>,
+        transport: A2ATransport,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            protocol_version: protocol_version.into(),
+            transport,
+            url: url.into(),
+            tenant: None,
+        }
+    }
+
+    /// Sets the tenant (enterprise multi-tenancy).
+    pub fn with_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.tenant = Some(tenant.into());
+        self
+    }
+}
+
 /// A skill that an agent can perform.
 ///
 /// Aligned with the structured skill objects required by the A2A v0.3
@@ -55,8 +113,22 @@ pub struct AgentCard {
     #[serde(skip_serializing_if = "Option::is_none", rename = "securitySchemes")]
     pub security_schemes: Option<Value>,
     /// Interfaces the agent exposes (e.g. `{"sse": true}`).
+    ///
+    /// Deprecated by v1.0.1's `supported_interfaces` (typed); kept for
+    /// v0.3-era readers. New cards should populate `supported_interfaces`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<Value>,
+    /// v1.0.1 typed interface list: each entry carries its own
+    /// `protocolVersion`, transport binding, URL and optional tenant.
+    ///
+    /// A v1.0.1-compliant card MUST have at least one interface here; the
+    /// legacy top-level `protocol_version`/`url` remain for v0.3 readers.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "supportedInterfaces"
+    )]
+    pub supported_interfaces: Vec<AgentInterface>,
     /// Provider/organization name (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -110,6 +182,7 @@ impl AgentCard {
             protocol_version: default_protocol_version(),
             security_schemes: None,
             interfaces: None,
+            supported_interfaces: Vec::new(),
             provider: None,
             documentation_url: None,
             authentication: None,
@@ -144,6 +217,39 @@ impl AgentCard {
     pub fn with_interfaces(mut self, interfaces: Value) -> Self {
         self.interfaces = Some(interfaces);
         self
+    }
+
+    /// Advertises a typed v1.0.1 interface.
+    pub fn with_supported_interface(mut self, interface: AgentInterface) -> Self {
+        self.supported_interfaces.push(interface);
+        self
+    }
+
+    /// v1.0.1 negotiation: picks the protocol version of the first supported
+    /// interface whose transport matches `transport` and whose
+    /// `protocol_version` is in `client_versions` (order = card priority).
+    /// Errors when nothing matches.
+    pub fn negotiate(
+        &self,
+        transport: A2ATransport,
+        client_versions: &[&str],
+    ) -> Result<AgentInterface, String> {
+        self.supported_interfaces
+            .iter()
+            .find(|i| {
+                i.transport == transport && client_versions.contains(&i.protocol_version.as_str())
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "no mutually supported interface: transport={transport:?} client_versions={client_versions:?}"
+                )
+            })
+    }
+
+    /// Whether the card is v1.0.1-shaped (has at least one typed interface).
+    pub fn is_v101(&self) -> bool {
+        !self.supported_interfaces.is_empty()
     }
 
     /// Set the provider/organization name.

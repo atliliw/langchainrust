@@ -12,6 +12,15 @@ use super::session::Session;
 use super::store::{SessionError, SessionStore};
 
 /// Session manager
+///
+/// Deprecated since 0.22.0: superseded by the event-sourced
+/// [`crate::EventSessionManager`] (append-only log, replay, fork,
+/// compaction, crash-safe appends). Kept functional until 0.23.0 — see
+/// `docs/internal/v0.22.0/MIGRATION.md` §2.
+#[deprecated(
+    since = "0.22.0",
+    note = "use lc_sessions::EventSessionManager (events API); removal in 0.23.0"
+)]
 pub struct SessionManager {
     store: Arc<dyn SessionStore>,
 
@@ -19,6 +28,14 @@ pub struct SessionManager {
     /// memory (window/summary-compressed history) plus the current user message; `save_context`
     /// records after each turn. Without it the original behavior is kept (full session history).
     memory: Option<Arc<Mutex<dyn BaseMemory>>>,
+
+    /// 0.22.0 H-M1: per-session memory **factory**. When set, each session gets a
+    /// fresh memory instance on first use, so one session's history never leaks
+    /// into another's context. Without it the legacy shared `memory` instance is
+    /// used (manager-level singleton → cross-session contamination).
+    memory_factory: Option<Arc<dyn Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static>>,
+    /// Lazily-created per-session memory instances, keyed by session id.
+    session_memories: Arc<Mutex<HashMap<String, Arc<Mutex<dyn BaseMemory>>>>>,
 
     /// Memory input key (must align with the memory instance's input_key; default `"input"`).
     memory_input_key: String,
@@ -38,12 +55,15 @@ pub struct SessionManager {
     max_context_messages: Option<usize>,
 }
 
+#[allow(deprecated)]
 impl SessionManager {
     /// Creates a new session manager backed by the given store
     pub fn new(store: Arc<dyn SessionStore>) -> Self {
         Self {
             store,
             memory: None,
+            memory_factory: None,
+            session_memories: Arc::new(Mutex::new(HashMap::new())),
             memory_input_key: "input".to_string(),
             memory_output_key: "output".to_string(),
             locks: Arc::new(Mutex::new(HashMap::new())),
@@ -79,6 +99,18 @@ impl SessionManager {
         self
     }
 
+    /// 0.22.0 H-M1: attaches a per-session memory **factory**. Each session
+    /// receives a fresh memory instance on first use, isolating history across
+    /// sessions (no cross-session contamination). Falls back to the shared
+    /// `with_memory` instance when the factory is absent.
+    pub fn with_memory_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> Arc<Mutex<dyn BaseMemory>> + Send + Sync + 'static,
+    {
+        self.memory_factory = Some(Arc::new(factory));
+        self
+    }
+
     /// P2-1: aligns the memory instance's custom input/output keys (defaults `"input"` / `"output"`).
     pub fn with_memory_keys(
         mut self,
@@ -92,7 +124,23 @@ impl SessionManager {
 
     /// P2-1: whether a memory component is attached.
     pub fn has_memory(&self) -> bool {
-        self.memory.is_some()
+        self.memory.is_some() || self.memory_factory.is_some()
+    }
+
+    /// 0.22.0 H-M1: resolves the memory for a session. With a factory attached,
+    /// each session gets (and reuses) its own fresh instance; otherwise the
+    /// legacy shared instance is returned.
+    async fn session_memory(&self, id: &str) -> Option<Arc<Mutex<dyn BaseMemory>>> {
+        if let Some(factory) = &self.memory_factory {
+            let mut map = self.session_memories.lock().await;
+            Some(
+                map.entry(id.to_string())
+                    .or_insert_with(|| factory())
+                    .clone(),
+            )
+        } else {
+            self.memory.clone()
+        }
     }
 
     /// Creates a new session, returning its ID
@@ -142,7 +190,9 @@ impl SessionManager {
         session.add_message(Message::human(&user_message));
 
         // P2-1: with memory attached, the LLM context = memory-compressed history + the current user message; without it the original logic runs.
-        let response = if let Some(memory) = &self.memory {
+        // H-M1: resolve this session's own memory (per-session factory instance, or the legacy shared one).
+        let session_memory = self.session_memory(id).await;
+        let response = if let Some(memory) = &session_memory {
             let history_messages = {
                 let mem = memory.lock().await;
                 let inputs = HashMap::from([(self.memory_input_key.clone(), user_message.clone())]);
@@ -172,7 +222,7 @@ impl SessionManager {
         let content = response.content.clone();
         session.add_message(Message::ai(content.clone()));
 
-        if let Some(memory) = &self.memory {
+        if let Some(memory) = &session_memory {
             let mut mem = memory.lock().await;
             let inputs = HashMap::from([(self.memory_input_key.clone(), user_message)]);
             let outputs = HashMap::from([(self.memory_output_key.clone(), content.clone())]);
@@ -242,6 +292,7 @@ impl SessionManager {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::memory_store::MemorySessionStore;

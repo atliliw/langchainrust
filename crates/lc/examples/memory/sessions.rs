@@ -1,3 +1,5 @@
+// The legacy SessionManager API is deprecated but functional (see MIGRATION.md).
+#![allow(deprecated)]
 //! Sessions example (runnable for real, needs an API key)
 //!
 //! Shows `SessionManager` integrated with windowed memory (lc-memory):

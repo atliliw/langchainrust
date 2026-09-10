@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
@@ -10,7 +11,10 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    stream_chain_with_callbacks, substitute_template, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Default Stuff prompt template.
@@ -41,6 +45,66 @@ pub struct StuffDocumentsChain {
 }
 
 impl StuffDocumentsChain {
+    /// Shared streaming body used by `stream` (config-less) and
+    /// `stream_with_config` (config threaded into the LLM stream).
+    async fn stream_body(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        if config.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(ChainError::StreamError("Operation cancelled".to_string()));
+        }
+
+        let input = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
+
+        // P2-7: guard empty documents on the stream path too, mirroring the
+        // other document chains — streaming with zero context would still call
+        // the LLM and emit a fabricated, reference-free answer.
+        if documents.is_empty() {
+            return Err(ChainError::ExecutionError(
+                "Document list is empty".to_string(),
+            ));
+        }
+
+        let context = self.format_documents(&documents);
+        let prompt = self.build_prompt(&context, input);
+        let messages = vec![Message::human(&prompt)];
+
+        let llm_stream = self
+            .llm
+            .stream_chat(messages, config)
+            .await
+            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
+
+        let stream = llm_stream.map(|result| match result {
+            Ok(chunk) => Ok(StreamToken {
+                token: chunk.text,
+                is_final: false,
+            }),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
+        });
+
+        let final_stream = stream.chain(futures_util::stream::once(async move {
+            Ok(StreamToken {
+                token: String::new(),
+                is_final: true,
+            })
+        }));
+
+        Ok(Box::pin(final_stream))
+    }
+
     /// Create a new [`StuffDocumentsChain`] with the given LLM.
     pub fn new<L>(llm: L) -> Self
     where
@@ -120,9 +184,14 @@ impl StuffDocumentsChain {
 
     /// Build prompt.
     pub fn build_prompt(&self, context: &str, input: &str) -> String {
-        self.prompt_template
-            .replace(&format!("{{{}}}", self.document_variable_name), context)
-            .replace("{input}", input)
+        // 0.22.0 audit fix (H-C2): single-pass substitution — document
+        // contents containing literal `{input}` / `{context}` are never
+        // re-replaced (the old two-pass `String::replace` let them inject).
+        let vars = HashMap::from([
+            (self.document_variable_name.clone(), context.to_string()),
+            ("input".to_string(), input.to_string()),
+        ]);
+        substitute_template(&self.prompt_template, &vars).0
     }
 
     /// Invoke with documents and input directly.
@@ -206,53 +275,28 @@ impl BaseChain for StuffDocumentsChain {
     /// Stuffs all documents into a single prompt, then streams the LLM
     /// response token by token.
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
-        self.validate_inputs(&inputs)?;
+        self.stream_body(inputs, None).await
+    }
 
-        let input = inputs
-            .get(&self.input_key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
-
-        let documents = crate::base::documents_from_input(inputs.get("documents"))?;
-
-        // P2-7: guard empty documents on the stream path too, mirroring the
-        // other document chains — streaming with zero context would still call
-        // the LLM and emit a fabricated, reference-free answer.
-        if documents.is_empty() {
-            return Err(ChainError::ExecutionError(
-                "Document list is empty".to_string(),
-            ));
-        }
-
-        let context = self.format_documents(&documents);
-        let prompt = self.build_prompt(&context, input);
-        let messages = vec![Message::human(&prompt)];
-
-        let llm_stream = self
-            .llm
-            .stream_chat(messages, None)
-            .await
-            .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
-
-        let stream = llm_stream.map(|result| match result {
-            Ok(chunk) => Ok(StreamToken {
-                token: chunk.text,
-                is_final: false,
-            }),
-            Err(e) => Err(ChainError::StreamError(format!(
-                "Stream token error: {}",
-                e
-            ))),
-        });
-
-        let final_stream = stream.chain(futures_util::stream::once(async move {
-            Ok(StreamToken {
-                token: String::new(),
-                is_final: true,
-            })
-        }));
-
-        Ok(Box::pin(final_stream))
+    /// Stream with config propagation.
+    ///
+    /// 0.22.0 audit fix (H-C3): thread the chain's `RunnableConfig` into
+    /// `stream_chat` (sampling overrides / cancellation token / callbacks)
+    /// instead of passing `None`.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(
+            self.name(),
+            inputs,
+            config.clone(),
+            output_key,
+            |inputs| async move { self.stream_body(inputs, config).await },
+        )
+        .await
     }
 
     fn name(&self) -> &str {
