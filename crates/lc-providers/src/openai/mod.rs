@@ -12,7 +12,7 @@ pub use assistants::{AssistantError, OpenAIAssistant};
 pub use chat::OpenAIChat;
 pub use chat::OpenAIError;
 pub use chat::StructuredOutputMethod;
-pub use config::OpenAIConfig;
+pub use config::{OpenAIConfig, OPENAI_MODELS};
 pub use multimodal::{DallEImageSize, TtsVoice};
 pub use response_format::{make_strict_schema, JsonSchemaSpec, ResponseFormat};
 pub use responses::{BuiltinTool, ResponsesConfig, ResponsesError, ResponsesModel};

@@ -8,6 +8,7 @@ use crate::{AgentAction, AgentError, AgentFinish, AgentOutput, AgentStep, BaseAg
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use lc_core::language_models::{BaseChatModel, LLMResult, TokenUsage};
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::{to_tool_definition, BaseTool, ToolCall, ToolDefinition};
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -190,13 +191,16 @@ impl BaseAgent for FunctionCallingAgent {
         &self,
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         let messages = self.build_messages(inputs, intermediate_steps);
 
+        // A18: forward the executor's config so the provider dispatches the
+        // planning-round `on_llm_*` callbacks.
         let result: LLMResult = crate::retry::retry_chat(
             self.llm.as_ref(),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -241,17 +245,19 @@ impl BaseAgent for FunctionCallingAgent {
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
         on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         let messages = self.build_messages(inputs, intermediate_steps);
 
-        let mut stream = match self.llm.stream_chat(messages, None).await {
+        // A18: stream planning carries the same config as non-streaming plan.
+        let mut stream = match self.llm.stream_chat(messages, config.cloned()).await {
             Ok(s) => s,
             Err(e) => {
                 log::warn!(
                     "stream_chat unavailable ({}), falling back to non-streaming plan",
                     e
                 );
-                let output = self.plan(intermediate_steps, inputs).await?;
+                let output = self.plan(intermediate_steps, inputs, config).await?;
                 if let AgentOutput::Finish(finish) = &output {
                     on_token(finish.output().unwrap_or("").to_string()).await;
                 }
@@ -302,7 +308,7 @@ impl BaseAgent for FunctionCallingAgent {
                 "streamed plan produced neither text nor tool_calls, \
                  falling back to non-streaming plan"
             );
-            let output = self.plan(intermediate_steps, inputs).await?;
+            let output = self.plan(intermediate_steps, inputs, config).await?;
             if let AgentOutput::Finish(finish) = &output {
                 on_token(finish.output().unwrap_or("").to_string()).await;
             }
@@ -601,7 +607,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("plan_stream should succeed");
 
@@ -647,7 +653,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("plan_stream should succeed");
 
@@ -680,7 +686,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("fallback plan should succeed");
 
@@ -720,7 +726,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("plan_stream should succeed");
 
@@ -768,7 +774,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("plan_stream should succeed");
 

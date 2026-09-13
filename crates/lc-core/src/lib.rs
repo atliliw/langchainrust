@@ -12,10 +12,12 @@
 
 pub mod batch;
 pub mod cache;
+pub mod cost;
 pub mod json_parse;
 pub mod judge;
 pub mod language_models;
 pub mod math;
+pub mod model_registry;
 pub mod observability;
 pub mod output_parsers;
 pub mod router_llm;
@@ -26,7 +28,11 @@ pub mod token_counter;
 pub mod tools;
 
 // Re-export key types at crate root for convenience
+pub use cost::{
+    CostError, CostRecord, CostReport, CostTracker, ModelPrice, ModelSpend, PricingTable,
+};
 pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseError};
+pub use model_registry::{ModelCapabilities, ModelInfo, ModelRegistry};
 
 pub use judge::{structured_call, truncate, StructuredJudgeError};
 

@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.22.1"
+langchainrust = "0.22.4"
 ```
 
 ## Feature Flags
@@ -13,7 +13,7 @@ LangChainRust uses feature flags to keep the default build lean:
 
 ```toml
 [dependencies.langchainrust]
-version = "0.22.1"
+version = "0.22.4"
 features = ["qdrant-integration"]  # Optional features
 ```
 
@@ -35,9 +35,9 @@ You can also use individual crates directly:
 
 ```toml
 [dependencies]
-lc-core = "0.22.1"
-lc-providers = "0.22.1"
-lc-agents = "0.22.1"
+lc-core = "0.22.4"
+lc-providers = "0.22.4"
+lc-agents = "0.22.4"
 ```
 
 ## Environment Variables

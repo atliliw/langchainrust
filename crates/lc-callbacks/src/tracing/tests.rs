@@ -450,11 +450,17 @@ fn span_without_model_gets_no_cost() {
     let tracer = Tracer::new(backend.clone());
 
     {
-        tracer.start("llm", SpanKind::Llm).with_tokens(usage(100, 100)).end();
+        tracer
+            .start("llm", SpanKind::Llm)
+            .with_tokens(usage(100, 100))
+            .end();
     }
 
     let spans = backend.spans();
-    assert!(spans[0].cost.is_none(), "unknown model must not mint a cost");
+    assert!(
+        spans[0].cost.is_none(),
+        "unknown model must not mint a cost"
+    );
 }
 
 #[test]

@@ -5,13 +5,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::ssrf::{guarded_get, url_points_to_private_ip};
+use crate::ssrf::{guarded_get, guarded_post_json};
 use lc_core::tools::ToolError;
 use lc_core::BaseTool;
 
 /// HTTP request tool (GET/POST) with SSRF protection.
 pub struct HTTPTool {
-    client: reqwest::Client,
+    /// Per-request timeout handed to the per-request pinned client.
+    timeout: Duration,
     allow_private_ips: bool,
 }
 
@@ -19,12 +20,7 @@ impl HTTPTool {
     /// Creates an HTTP tool with a 30s timeout and SSRF protection enabled.
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                // SSRF: disable auto-redirects, guarded_get re-checks each hop
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            timeout: Duration::from_secs(30),
             allow_private_ips: false,
         }
     }
@@ -32,11 +28,7 @@ impl HTTPTool {
     /// Creates an HTTP tool with a custom timeout (SSRF protection enabled).
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(timeout)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            timeout,
             allow_private_ips: false,
         }
     }
@@ -47,41 +39,23 @@ impl HTTPTool {
         self
     }
 
-    /// Check SSRF protection before making a request.
-    async fn check_ssrf(&self, url: &str) -> Result<(), ToolError> {
-        if self.allow_private_ips {
-            return Ok(());
-        }
-        if url_points_to_private_ip(url).await? {
-            return Err(ToolError::ExecutionFailed(
-                "Request to private/internal IP address is blocked by SSRF protection. \
-                 Call .with_allow_private_ips(true) to allow."
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Sends a GET request, following redirects with SSRF checks per hop.
     pub async fn get(&self, url: &str) -> Result<String, ToolError> {
-        // SSRF: guarded_get checks each hop and follows redirects manually
-        guarded_get(&self.client, url, !self.allow_private_ips)
+        // SSRF: guarded_get resolves once, validates every answer, pins the validated
+        // IPs, then follows redirects manually with the same treatment per hop.
+        guarded_get(url, !self.allow_private_ips, Some(self.timeout))
             .await?
             .text()
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     }
 
-    /// Sends a POST request with a JSON body (single-hop SSRF check).
+    /// Sends a POST request with a JSON body (single hop, IP-pinned SSRF guard).
     pub async fn post(&self, url: &str, body: Value) -> Result<String, ToolError> {
-        // POST has auto-redirect disabled (3xx returned as-is), a single-hop SSRF check suffices
-        self.check_ssrf(url).await?;
-        self.client
-            .post(url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+        // POST never follows redirects (the 3xx response is returned as-is); resolve-once
+        // plus IP pinning still closes the DNS-rebinding window on this single hop.
+        guarded_post_json(url, &body, !self.allow_private_ips, Some(self.timeout))
+            .await?
             .text()
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
@@ -158,8 +132,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_ssrf_blocks_localhost() {
+        // Rejection happens after resolve but before connect, so no listener is
+        // contacted — works offline even though Windows answers every loopback port.
         let tool = HTTPTool::new();
-        let result = tool.check_ssrf("http://127.0.0.1:6379/").await;
+        let result = tool.get("http://127.0.0.1:6379/").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("SSRF"));
     }
@@ -167,17 +143,18 @@ mod tests {
     #[tokio::test]
     async fn test_ssrf_blocks_cloud_metadata() {
         let tool = HTTPTool::new();
-        let result = tool
-            .check_ssrf("http://169.254.169.254/latest/meta-data/")
-            .await;
+        let result = tool.get("http://169.254.169.254/latest/meta-data/").await;
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("SSRF"));
     }
 
-    #[tokio::test]
-    async fn test_ssrf_allows_when_opt_in() {
-        let tool = HTTPTool::new().with_allow_private_ips(true);
-        let result = tool.check_ssrf("http://127.0.0.1:6379/").await;
-        assert!(result.is_ok());
+    #[test]
+    fn test_with_timeout_is_recorded() {
+        // The opt-in flag and custom timeout are plumbed into guarded_get as
+        // (!allow, Some(timeout)); assert the configuration side directly.
+        let tool = HTTPTool::with_timeout(Duration::from_secs(7)).with_allow_private_ips(true);
+        assert_eq!(tool.timeout, Duration::from_secs(7));
+        assert!(tool.allow_private_ips);
     }
 
     #[tokio::test]

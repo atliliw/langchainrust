@@ -257,7 +257,9 @@ mod tests {
         let fake = start_fake_stateless_server(StatelessMode::Normal).await;
         let client = StatelessMcpClient::connect(&fake.url);
 
-        let adapter = MCPToolAdapter::namespaced(client, "server_a", tool("echo"));
+        // A16: routing test — opt into unattended execution so the fail-closed gate lets the call through.
+        let adapter = MCPToolAdapter::namespaced(client, "server_a", tool("echo"))
+            .allow_unattended_execution();
         // BaseTool::name() → the external name carries the namespace prefix.
         assert_eq!(adapter.name(), "server_a:echo");
         assert_eq!(adapter.display_name(), "server_a:echo");

@@ -1,13 +1,13 @@
 //! OtelHandler example
 //!
-//! Shows how to use OpenTelemetry callbacks to trace LLM calls.
+//! Shows that the OpenTelemetry callback handler is available under the
+//! `opentelemetry` feature. This feature only records spans in-process
+//! (API-only, no SDK). For the real OTLP export pipeline and GenAI
+//! semantic-convention spans see the `otlp` example:
 //!
-//! # Run
 //! ```bash
-//! cargo run --example otel_tracing
+//! cargo run -p langchainrust --example otlp_tracing --features otlp
 //! ```
-//!
-//! Note: requires the `opentelemetry` feature.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

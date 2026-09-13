@@ -143,6 +143,17 @@ pub enum ToolError {
     /// an observation would defeat the guard it exists to enforce.
     #[error("Control abort: {0}")]
     ControlAbort(String),
+
+    /// Authorization denied (0.22.4 A16): the framework refused to dispatch the
+    /// tool call **before it ran** — the target server declares no unattended-execution
+    /// policy (the MCP fail-closed default), its sandbox rejected the arguments, or its
+    /// runtime approval gate denied this specific call.
+    ///
+    /// Distinct from [`ExecutionFailed`](ToolError::ExecutionFailed): the tool never
+    /// executed, so (unlike [`ControlAbort`](ToolError::ControlAbort)) feeding the reason
+    /// back as an observation lets the agent re-plan or ask for approval.
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 use super::{ToolDefinition, ToolRiskProfile};

@@ -6,9 +6,80 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use lc_callbacks::CallbackManager;
+use lc_callbacks::{CallbackManager, RunTree, RunType};
 
 use super::cancellation::CancellationToken;
+
+/// Reserved metadata key (UUID string): id of the parent run.
+///
+/// The enclosing chain/agent stamps it on the [`RunnableConfig`] handed to a
+/// planning LLM call so the provider-built [`RunTree`] joins the caller's trace
+/// tree instead of becoming a trace root. The key is reserved — downstream
+/// components strip it from the run's user-visible metadata.
+pub const RUN_META_PARENT_RUN_ID: &str = "__lc_parent_run_id";
+
+/// Reserved metadata key (UUID string): id of the trace root run.
+///
+/// See [`RUN_META_PARENT_RUN_ID`] for the linkage contract.
+pub const RUN_META_TRACE_ID: &str = "__lc_trace_id";
+
+/// Builds the [`RunTree`] a component dispatches its lifecycle callbacks
+/// against, applying the config every provider is expected to honor.
+///
+/// Behavior:
+///
+/// * tags and user metadata are copied from `config`;
+/// * the reserved keys [`RUN_META_PARENT_RUN_ID`] / [`RUN_META_TRACE_ID`] set
+///   the run's parent / trace linkage and are **not** copied into the run's
+///   own metadata (unparseable ids are ignored with a warning);
+/// * with no config the result is a plain root run.
+///
+/// Every chat provider builds its LLM run through this helper, so the
+/// observability contract is defined in one place.
+pub fn run_tree_from_config(
+    name: impl Into<String>,
+    run_type: RunType,
+    inputs: serde_json::Value,
+    config: Option<&RunnableConfig>,
+) -> RunTree {
+    let mut run = RunTree::new(name, run_type, inputs);
+    let Some(cfg) = config else {
+        return run;
+    };
+
+    for tag in &cfg.tags {
+        run = run.with_tag(tag.clone());
+    }
+    for (key, value) in &cfg.metadata {
+        if key == RUN_META_PARENT_RUN_ID || key == RUN_META_TRACE_ID {
+            continue;
+        }
+        run = run.with_metadata(key.clone(), value.clone());
+    }
+
+    if let Some(parent) = cfg
+        .metadata
+        .get(RUN_META_PARENT_RUN_ID)
+        .and_then(|v| v.as_str())
+    {
+        match Uuid::parse_str(parent) {
+            Ok(id) => run.parent_run_id = Some(id),
+            Err(_) => {
+                log::warn!("ignoring invalid {RUN_META_PARENT_RUN_ID} '{parent}' in RunnableConfig")
+            }
+        }
+    }
+    if let Some(trace) = cfg.metadata.get(RUN_META_TRACE_ID).and_then(|v| v.as_str()) {
+        match Uuid::parse_str(trace) {
+            Ok(id) => run.trace_id = Some(id),
+            Err(_) => {
+                log::warn!("ignoring invalid {RUN_META_TRACE_ID} '{trace}' in RunnableConfig")
+            }
+        }
+    }
+
+    run
+}
 
 /// Runnable execution configuration.
 #[derive(Debug, Clone, Default)]

@@ -15,13 +15,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use super::OllamaConfig;
-use crate::openai::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
+use crate::openai::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
 use crate::ProviderError;
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
-use lc_core::runnables::Runnable;
+use lc_core::runnables::{run_tree_from_config, Runnable};
 use lc_core::tools::{StructuredOutput, ToolCall, ToolDefinition};
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -86,12 +86,11 @@ impl OllamaChat {
                 "content": message.content,
             }),
             lc_schema::MessageType::Human => {
-                if message.has_images() {
-                    let mut content = vec![json!({"type": "text", "text": &message.content})];
-                    for img in &message.images {
-                        content.push(json!({"type": "image_url", "image_url": {"url": &img.url}}));
-                    }
-                    json!({"role": "user", "content": content})
+                // B7: shared multimodal block builder. The Ollama shim accepts
+                // image blocks; non-image attachments are rejected up front by
+                // resolve_message_media(Ollama).
+                if let Some(blocks) = crate::media::openai_user_blocks(message) {
+                    json!({"role": "user", "content": blocks})
                 } else {
                     json!({"role": "user", "content": &message.content})
                 }
@@ -205,9 +204,15 @@ impl OllamaChat {
 
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, OllamaError> {
         let url = format!("{}/chat/completions", self.config.base_url);
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Ollama)
+            .await
+            .map_err(|e| OllamaError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
         // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        // A14: non-idempotent POST — see retry::TransportRetryMode; use
+        // retry::SAFE_RETRY to forbid replaying a possibly-dispatched request.
         let response = crate::retry::send_with_retry(
             || {
                 self.client
@@ -256,6 +261,10 @@ impl OllamaChat {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OllamaError>> + Send>>, OllamaError>
     {
         let url = format!("{}/chat/completions", self.config.base_url);
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Ollama)
+            .await
+            .map_err(|e| OllamaError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
         let response = self
@@ -460,23 +469,15 @@ impl BaseChatModel for OllamaChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
-        let mut run = RunTree::new(
+        let mut run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
-
-        if let Some(ref cfg) = config {
-            for tag in &cfg.tags {
-                run = run.with_tag(tag.clone());
-            }
-            for (key, value) in &cfg.metadata {
-                run = run.with_metadata(key.clone(), value.clone());
-            }
-        }
 
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
@@ -543,13 +544,14 @@ impl BaseChatModel for OllamaChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
 
-        let run = RunTree::new(
+        let run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.len(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
 
         if let Some(ref cfg) = config {

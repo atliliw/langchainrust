@@ -4,7 +4,9 @@
 //! [`crate::extended::http`] keep a crate-local entry point. Any rule evolution
 //! (CGNAT ranges, new IPv6 special addresses, ...) happens only in `lc-core`.
 
-pub(crate) use lc_core::ssrf::{guarded_get, url_points_to_private_ip};
+#[cfg(feature = "browser-cdp")]
+pub(crate) use lc_core::ssrf::url_points_to_private_ip;
+pub(crate) use lc_core::ssrf::{guarded_get, guarded_post_json};
 
 #[cfg(test)]
 pub(crate) use lc_core::ssrf::is_private_ip;

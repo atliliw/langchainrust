@@ -9,16 +9,25 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::criteria::{Dataset, EvalError, Evaluator, PairwiseEvaluator, Predictor, Score};
+use super::criteria::{
+    Dataset, EvalError, Evaluator, PairwiseEvaluator, Predictor, RagEvaluator, Score,
+};
 
 /// Complete evaluation record for one example (includes the original text, for tracing low scores).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExampleReport {
     /// Example index in the dataset (0-based)
     pub index: usize,
+    /// Original model input (question/prompt) of the example
     pub input: String,
+    /// Ground-truth reference answer of the example
     pub reference: String,
+    /// What the predictor actually produced
     pub prediction: String,
+    /// Retrieved contexts this example was scored against (B9; empty for non-RAG datasets).
+    /// Old reports without this field deserialize to an empty vec.
+    #[serde(default)]
+    pub contexts: Vec<String>,
     /// Scores each evaluator assigned to this example (failed or not-run evaluators are absent)
     pub scores: HashMap<String, Score>,
 }
@@ -26,8 +35,11 @@ pub struct ExampleReport {
 /// Summary statistics for one evaluator (mean + population stddev + sample count).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScoreSummary {
+    /// Arithmetic mean of the evaluator's scores across the dataset
     pub mean: f64,
+    /// Population standard deviation across the dataset
     pub std: f64,
+    /// Number of examples this evaluator successfully scored
     pub count: usize,
 }
 
@@ -38,6 +50,7 @@ pub struct FailureRecord {
     pub index: usize,
     /// Failure stage: `"predict"` or an evaluator's `name()`
     pub stage: String,
+    /// Human-readable error message recorded for the failure
     pub error: String,
 }
 
@@ -53,14 +66,26 @@ pub struct Report {
     /// Cost ledger for the run (E1). Old reports without this field deserialize to the default.
     #[serde(default)]
     pub cost: crate::OverallCost,
+    /// Stable identifier of this evaluation run (B9): the join key against traces/spans.
+    ///
+    /// Set explicitly via [`EvalRunner::with_run_id`] or auto-generated as a UUID v4 when the
+    /// runner runs. The predictor receives it through [`Predictor::begin_run`] so a system
+    /// under test can stamp it (e.g. into `RunnableConfig.metadata["trace_id"]`, which the agent
+    /// executor propagates to callback/OTel spans). Old reports deserialize to an empty id.
+    #[serde(default)]
+    pub run_id: String,
 }
 
-/// Batch runner: holds both pointwise and pairwise evaluators.
+/// Batch runner: holds pointwise, pairwise, and RAG evaluators.
 pub struct EvalRunner {
     evaluators: Vec<Box<dyn Evaluator>>,
     pairwise: Vec<Box<dyn PairwiseEvaluator>>,
+    /// RAGAS-style evaluators taking the example's retrieved contexts (B9).
+    rag: Vec<Box<dyn RagEvaluator>>,
     /// USD price book used to turn reported token usage into cost (E1).
     price_book: crate::PriceBook,
+    /// Explicit run id; [`None`] means generate a fresh UUID v4 per [`EvalRunner::run`].
+    run_id: Option<String>,
 }
 
 impl EvalRunner {
@@ -69,13 +94,31 @@ impl EvalRunner {
         Self {
             evaluators,
             pairwise: Vec::new(),
+            rag: Vec::new(),
             price_book: crate::PriceBook::default_set(),
+            run_id: None,
         }
+    }
+
+    /// Pins the run id stamped into the report and handed to [`Predictor::begin_run`].
+    ///
+    /// Use this to correlate an evaluation run with an external trace/CI record. Without it,
+    /// each `run()` generates a fresh UUID v4.
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = Some(run_id.into());
+        self
     }
 
     /// Appends pairwise evaluators (P1-1, arena evaluation enters the unified report).
     pub fn with_pairwise(mut self, pairwise: Vec<Box<dyn PairwiseEvaluator>>) -> Self {
         self.pairwise.extend(pairwise);
+        self
+    }
+
+    /// Appends RAG evaluators (B9: context precision/recall, answer relevancy), scored with
+    /// each example's retrieved contexts in rank order.
+    pub fn with_rag_evaluators(mut self, rag: Vec<Box<dyn RagEvaluator>>) -> Self {
+        self.rag.extend(rag);
         self
     }
 
@@ -96,7 +139,15 @@ impl EvalRunner {
         dataset: &Dataset,
         predictor: &dyn Predictor,
     ) -> Result<Report, EvalError> {
-        Self::warn_duplicate_names(&self.evaluators, &self.pairwise);
+        Self::warn_duplicate_names(&self.evaluators, &self.pairwise, &self.rag);
+
+        // B9: resolve the run id once, tell the predictor, and carry it on the report so
+        // evaluation output can be joined to traces/spans produced by the system under test.
+        let run_id = self
+            .run_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        predictor.begin_run(&run_id).await;
 
         let mut per_example = Vec::with_capacity(dataset.len());
         let mut failures = Vec::new();
@@ -156,12 +207,32 @@ impl EvalRunner {
                     }),
                 }
             }
+            for ev in &self.rag {
+                match ev
+                    .eval_rag(&ex.input, &prediction, &ex.contexts, &ex.reference)
+                    .await
+                {
+                    Ok(s) => {
+                        per_name
+                            .entry(ev.name().to_string())
+                            .or_default()
+                            .push(s.value);
+                        scores.insert(ev.name().to_string(), s);
+                    }
+                    Err(e) => failures.push(FailureRecord {
+                        index: i,
+                        stage: ev.name().to_string(),
+                        error: e.to_string(),
+                    }),
+                }
+            }
 
             per_example.push(ExampleReport {
                 index: i,
                 input: ex.input.clone(),
                 reference: ex.reference.clone(),
                 prediction,
+                contexts: ex.contexts.clone(),
                 scores,
             });
         }
@@ -187,6 +258,7 @@ impl EvalRunner {
             summary,
             failures,
             cost,
+            run_id,
         })
     }
 
@@ -194,23 +266,24 @@ impl EvalRunner {
     fn warn_duplicate_names(
         evaluators: &[Box<dyn Evaluator>],
         pairwise: &[Box<dyn PairwiseEvaluator>],
+        rag: &[Box<dyn RagEvaluator>],
     ) {
-        let mut seen = HashSet::new();
-        for ev in evaluators {
-            if !seen.insert(ev.name()) {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut push = |name: &str| {
+            if !seen.insert(name.to_string()) {
                 log::warn!(
-                    "EvalRunner: duplicate evaluator name '{}', report data will be overwritten",
-                    ev.name()
+                    "EvalRunner: duplicate evaluator name '{name}', report data will be overwritten"
                 );
             }
+        };
+        for ev in evaluators {
+            push(ev.name());
         }
         for ev in pairwise {
-            if !seen.insert(ev.name()) {
-                log::warn!(
-                    "EvalRunner: duplicate evaluator name '{}', report data will be overwritten",
-                    ev.name()
-                );
-            }
+            push(ev.name());
+        }
+        for ev in rag {
+            push(ev.name());
         }
     }
 }
@@ -321,6 +394,81 @@ mod tests {
             (usd - expected).abs() < 1e-12,
             "got {usd}, expected {expected}"
         );
+    }
+
+    /// RAG evaluator that records how many contexts it received and scores that count > 0.
+    struct ContextCountingRag;
+    #[async_trait]
+    impl RagEvaluator for ContextCountingRag {
+        async fn eval_rag(
+            &self,
+            _input: &str,
+            _prediction: &str,
+            contexts: &[String],
+            _reference: &str,
+        ) -> Result<Score, EvalError> {
+            Ok(Score::new(if contexts.is_empty() { 0.0 } else { 1.0 })
+                .with_label(format!("{} contexts", contexts.len())))
+        }
+        fn name(&self) -> &str {
+            "rag_contexts"
+        }
+    }
+
+    #[tokio::test]
+    async fn rag_evaluators_receive_example_contexts_and_enter_report() {
+        let dataset = Dataset::new(vec![
+            crate::Example::with_contexts("q1", "a1", vec!["c0".into(), "c1".into()]),
+            crate::Example::new("q2", "a2"),
+        ]);
+        let runner =
+            EvalRunner::new(vec![]).with_rag_evaluators(vec![Box::new(ContextCountingRag)]);
+        let report = runner.run(&dataset, &UnmeteredPredictor).await.unwrap();
+
+        assert_eq!(report.per_example[0].contexts.len(), 2);
+        assert_eq!(
+            report.per_example[0].scores["rag_contexts"].value, 1.0,
+            "first example carries contexts"
+        );
+        assert_eq!(
+            report.per_example[1].scores["rag_contexts"].value, 0.0,
+            "second example has none"
+        );
+        assert_eq!(report.summary["rag_contexts"].count, 2);
+        // report carries a generated run id even when none was pinned
+        assert!(!report.run_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rag_evaluator_failure_is_isolated_per_item() {
+        struct FailingRag;
+        #[async_trait]
+        impl RagEvaluator for FailingRag {
+            async fn eval_rag(
+                &self,
+                _input: &str,
+                _prediction: &str,
+                _contexts: &[String],
+                _reference: &str,
+            ) -> Result<Score, EvalError> {
+                Err(EvalError::ParseError("rag judge broke".into()))
+            }
+            fn name(&self) -> &str {
+                "broken_rag"
+            }
+        }
+        let runner = EvalRunner::new(vec![Box::new(ConstantEvaluator)])
+            .with_rag_evaluators(vec![Box::new(FailingRag)]);
+        let report = runner
+            .run(&dataset2().await, &UnmeteredPredictor)
+            .await
+            .unwrap();
+        // pointwise evaluator still scored; the RAG failure is recorded, run not aborted
+        assert_eq!(report.per_example.len(), 2);
+        assert!(report.per_example[0].scores.contains_key("constant"));
+        assert!(!report.per_example[0].scores.contains_key("broken_rag"));
+        assert_eq!(report.failures.len(), 2);
+        assert!(report.failures.iter().all(|f| f.stage == "broken_rag"));
     }
 
     #[tokio::test]

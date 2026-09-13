@@ -9,7 +9,7 @@ use futures_util::Stream;
 use lc_agents::AgentExecutor;
 use lc_chains::BaseChain;
 
-use super::guardrail::{ChunkAction, GuardrailError, GuardrailsConfig};
+use super::guardrail::{ChunkAction, ChunkContext, GuardrailError, GuardrailsConfig};
 use super::runner::{GuardrailRunner, GuardrailViolation, OutputValidation};
 
 /// Error type for Guardable execution units.
@@ -239,33 +239,47 @@ impl GuardedAgent {
 
         // each phase holds its own runner clone to avoid borrowing `self` into the returned stream.
         let mut phase2_runner = self.runner.clone();
-        // phase-one state (sliding-window tail, violation-accumulating runner, accumulated output full) is shared across chunks.
+        // phase-one state (sliding-window tail, violation-accumulating runner, accumulated output) is shared across chunks.
         // `then`'s closure is FnMut: each invocation clones an Arc and moves it into the async block,
         // while the state itself stays in the Arc, persisting across chunks.
         let tail = Arc::new(tokio::sync::Mutex::new(String::new()));
         let phase1_runner = Arc::new(tokio::sync::Mutex::new(self.runner.clone()));
-        let full = Arc::new(tokio::sync::Mutex::new(String::new()));
-        let finalize_full = full.clone();
+        // raw model output (every raw token, pre-rewrite): the `full` view for whole-document rails.
+        let raw_full = Arc::new(tokio::sync::Mutex::new(String::new()));
+        // released output (post-rewrite): concatenating emitted chunks; re-validated by phase two.
+        let released = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let finalize_released = released.clone();
         const TAIL_WINDOW: usize = 24;
 
         let phase1 = raw_stream.then(move |item| {
             let tail = tail.clone();
             let runner = phase1_runner.clone();
-            let full = full.clone();
+            let raw_full = raw_full.clone();
+            let released = released.clone();
             async move {
                 let chunk = item.map_err(|e| GuardrailError::AgentError(e.to_string()))?;
                 let token = chunk.token;
-                // sliding-window probe: tail + chunk, so keywords split across chunks are still detected.
-                let probe = {
+                // sliding-window probe (`window`) + full raw candidate (`full`), built before any
+                // rewrite so every rail in the chain sees the same raw model output.
+                let (window, candidate) = {
                     let t = tail.lock().await;
-                    format!("{}{}", *t, token)
+                    let raw = raw_full.lock().await;
+                    (
+                        format!("{}{}", *t, token),
+                        format!("{}{}", *raw, token),
+                    )
                 };
-                let action = runner.lock().await.validate_stream_chunk(&probe).await;
+                let ctx = ChunkContext {
+                    token: &token,
+                    window: &window,
+                    full: &candidate,
+                };
+                let action = runner.lock().await.validate_stream_chunk(&ctx).await;
                 let emitted = match action {
-                    ChunkAction::Pass => token,
+                    ChunkAction::Pass => token.clone(),
                     ChunkAction::Replace(new_value) => new_value,
                     ChunkAction::Block => {
-                        let partial = tail.lock().await.clone();
+                        let partial = released.lock().await.clone();
                         return Err(GuardrailError::Blocked {
                             reason: "streaming output was blocked by a guardrail".to_string(),
                             partial: Some(partial),
@@ -276,9 +290,10 @@ impl GuardedAgent {
                         });
                     }
                 };
-                full.lock().await.push_str(&emitted);
-                // update the sliding window: keep only the most recent TAIL_WINDOW characters.
-                let new_tail: String = emitted
+                raw_full.lock().await.push_str(&token);
+                released.lock().await.push_str(&emitted);
+                // update the sliding window over RAW output: keep only the most recent TAIL_WINDOW characters.
+                let new_tail: String = window
                     .chars()
                     .rev()
                     .take(TAIL_WINDOW)
@@ -294,23 +309,38 @@ impl GuardedAgent {
             }
         });
 
+        // finalization: first let stateful rails (hold-back PII redaction) release their buffered
+        // tails, then run the terminal full-output re-check. Emits the flush deltas as ordinary
+        // chunks followed by one empty-token end marker.
         let finalize = futures_util::stream::once(async move {
-            let full_text = finalize_full.lock().await.clone();
+            let mut steps: Vec<Result<GuardableChunk, GuardrailError>> = Vec::new();
+            for text in phase2_runner.flush_stream().await {
+                finalize_released.lock().await.push_str(&text);
+                steps.push(Ok(GuardableChunk {
+                    token: text,
+                    is_final: false,
+                }));
+            }
+            let full_text = finalize_released.lock().await.clone();
             match phase2_runner.validate_output(&full_text).await {
                 // phase one has already emitted all (possibly rewritten) chunks, so concatenating them yields the full output;
                 // when phase two passes, emit only an empty-token end marker without re-outputting.
-                OutputValidation::Passed(_value) => Ok(GuardableChunk {
+                OutputValidation::Passed(_value) => steps.push(Ok(GuardableChunk {
                     token: String::new(),
                     is_final: true,
-                }),
-                OutputValidation::Blocked { reason, partial } => Err(GuardrailError::from_blocked(
-                    reason,
-                    partial,
-                    "final output re-check failed; please adjust your request and retry, or omit sensitive content"
-                        .to_string(),
+                })),
+                OutputValidation::Blocked { reason, partial } => steps.push(Err(
+                    GuardrailError::from_blocked(
+                        reason,
+                        partial,
+                        "final output re-check failed; please adjust your request and retry, or omit sensitive content"
+                            .to_string(),
+                    ),
                 )),
             }
-        });
+            steps
+        })
+        .flat_map(futures_util::stream::iter);
 
         Ok(Box::pin(phase1.chain(finalize)))
     }
@@ -329,6 +359,9 @@ impl GuardedAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guardrail::{OutputGuardrail, StreamingOutputGuardrail};
+    use crate::pii::{PiiKind, PiiRedactionGuardrail};
+    use crate::schema::SchemaOutputGuardrail;
     use crate::validators::MaxLengthGuardrail;
     use lc_agents::{BaseAgent, FunctionCallingAgent};
     use lc_chains::base::{ChainError, ChainResult, ChainStream, StreamToken};
@@ -452,8 +485,11 @@ mod tests {
         fn name(&self) -> &str {
             "BlockOnWorld"
         }
-        async fn validate_chunk(&self, chunk: &str) -> crate::guardrail::ChunkAction {
-            if chunk.contains("world") {
+        async fn validate_chunk(
+            &self,
+            ctx: &crate::guardrail::ChunkContext<'_>,
+        ) -> crate::guardrail::ChunkAction {
+            if ctx.window.contains("world") {
                 crate::guardrail::ChunkAction::Block
             } else {
                 crate::guardrail::ChunkAction::Pass
@@ -480,6 +516,151 @@ mod tests {
         }
         assert!(saw_error);
         assert!(!g.violations().is_empty());
+    }
+
+    /// Chain that emits a fixed script of tokens as a stream.
+    struct ScriptedChain {
+        tokens: Vec<&'static str>,
+    }
+    #[async_trait]
+    impl BaseChain for ScriptedChain {
+        fn input_keys(&self) -> Vec<&str> {
+            vec!["input"]
+        }
+        fn output_keys(&self) -> Vec<&str> {
+            vec!["output"]
+        }
+        async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            Ok(HashMap::new())
+        }
+        async fn stream(&self, _inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+            let tokens = self
+                .tokens
+                .iter()
+                .map(|t| {
+                    Ok(StreamToken {
+                        token: (*t).to_string(),
+                        is_final: false,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invoke_stream_pii_redacts_split_identifier() {
+        // B11: a phone number split across four chunks must never leak raw; the hold-back
+        // window withholds the tail, flush() releases the redacted remainder, and the
+        // terminal output re-check passes over the rewritten text.
+        let chain: Arc<dyn BaseChain> = Arc::new(ScriptedChain {
+            tokens: vec!["contact ", "138", "1234", "5678", " end"],
+        });
+        let rail = Arc::new(
+            PiiRedactionGuardrail::new()
+                .only([PiiKind::Phone])
+                .with_hold_back(20),
+        );
+        let config = GuardrailsConfig::new()
+            .with_streaming(rail.clone() as Arc<dyn StreamingOutputGuardrail>)
+            .with_output(rail as Arc<dyn OutputGuardrail>);
+        let mut g = GuardedAgent::from_chain(chain, config);
+        let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
+
+        use futures_util::StreamExt;
+        let mut collected = String::new();
+        let mut finals = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            if chunk.is_final {
+                finals += 1;
+            }
+            collected.push_str(&chunk.token);
+            // the complete number must never be observable in the released prefix
+            assert!(!collected.contains("13812345678"));
+        }
+        assert_eq!(collected, "contact [REDACTED_PHONE] end");
+        assert_eq!(finals, 1);
+        // the redaction is audited as interventions (chunk replace + rewritten flush),
+        // but nothing was blocked.
+        let violations = g.violations();
+        assert!(!violations.is_empty());
+        assert!(violations.iter().all(|v| !v.reason.contains("block")));
+    }
+
+    fn enum_answer_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "answer": { "type": "string", "enum": ["yes", "no"] }
+            },
+            "required": ["answer"]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_invoke_stream_schema_blocks_at_terminal() {
+        // B11: an enum violation is tolerated while JSON is still arriving (no false
+        // mid-stream block) but the terminal full-output check rejects the finished object.
+        let chain: Arc<dyn BaseChain> = Arc::new(ScriptedChain {
+            tokens: vec!["{\"answer\":", "\"maybe\"", "}"],
+        });
+        let rail = Arc::new(SchemaOutputGuardrail::new(enum_answer_schema()));
+        let config = GuardrailsConfig::new()
+            .with_streaming(rail.clone() as Arc<dyn StreamingOutputGuardrail>)
+            .with_output(rail as Arc<dyn OutputGuardrail>);
+        let mut g = GuardedAgent::from_chain(chain, config);
+        let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
+
+        use futures_util::StreamExt;
+        let mut ok_text = String::new();
+        let mut saw_block = false;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(c) => {
+                    assert!(!c.is_final, "no final marker may follow a terminal block");
+                    ok_text.push_str(&c.token);
+                }
+                Err(GuardrailError::Blocked {
+                    reason, partial, ..
+                }) => {
+                    saw_block = true;
+                    assert!(reason.contains("not one of"), "reason was: {reason}");
+                    assert_eq!(partial.unwrap(), "{\"answer\":\"maybe\"}");
+                }
+                Err(other) => panic!("expected Blocked, got {other:?}"),
+            }
+        }
+        assert!(saw_block);
+        assert_eq!(ok_text, "{\"answer\":\"maybe\"}");
+        assert!(!g.violations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invoke_stream_schema_valid_passes() {
+        // B11: schema-conformant output streamed in pieces passes phase one and phase two.
+        let chain: Arc<dyn BaseChain> = Arc::new(ScriptedChain {
+            tokens: vec!["{\"answer\":", "\"yes\"", "}"],
+        });
+        let rail = Arc::new(SchemaOutputGuardrail::new(enum_answer_schema()));
+        let config = GuardrailsConfig::new()
+            .with_streaming(rail.clone() as Arc<dyn StreamingOutputGuardrail>)
+            .with_output(rail as Arc<dyn OutputGuardrail>);
+        let mut g = GuardedAgent::from_chain(chain, config);
+        let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
+
+        use futures_util::StreamExt;
+        let mut collected = String::new();
+        let mut finals = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            if chunk.is_final {
+                finals += 1;
+            }
+            collected.push_str(&chunk.token);
+        }
+        assert_eq!(collected, "{\"answer\":\"yes\"}");
+        assert_eq!(finals, 1);
     }
 
     #[tokio::test]

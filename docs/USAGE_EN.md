@@ -29,11 +29,13 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Late Chunking ✨ v0.21.0
 - [Prompts](#prompts)
   - FewShotPrompt + ExampleSelectors
+  - Versioned Prompt Registry (PromptRegistry) ✨ v0.22.4
 - [Output Parsers](#output-parsers)
 - [Memory](#memory)
   - VectorStoreRetrieverMemory
   - MongoPersistentMemory ✨ v0.15.0
   - ContextWindow (Long Context Management) ✨ v0.4.1
+  - Two-Tier Semantic Memory (TwoTierMemory) ✨ v0.22.4
 - [LLM Cache](#llm-cache)
 - [Chains](#chains)
   - ConversationRetrievalChain
@@ -52,6 +54,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Agents](#agents)
   - Agent Hooks ✨ v0.11.0
   - Agent Streaming ✨ v0.12.0
+  - Agent Web SSE (Browser Event Stream) ✨ v0.22.4
   - AgentBuilder ✨ v0.14.0
   - Orchestrator ✨ v0.14.0
   - ToolPolicy ✨ v0.14.0
@@ -62,10 +65,13 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [Guardrails](#guardrails)
   - Guardable ✨ v0.15.0
   - Streaming Guardrails ✨ v0.15.0
+  - PII Redaction Guardrail (Rewrite, Don't Block) ✨ v0.22.4
+  - Schema Output Guardrail (Validate JSON While Streaming) ✨ v0.22.4
   - Audit Persistence ✨ v0.15.0
   - Retrieval Rail ✨ v0.21.0
   - AI Disclosure (disclose) ✨ v0.21.0
 - [Token Counter](#token-counter)
+  - Cost Ledger (PricingTable + CostTracker + Hard USD Gate) ✨ v0.22.4
 - [Sessions](#sessions)
   - Event Sourcing Rewrite ✨ v0.22.0 (recommended path)
   - Session Fork
@@ -157,7 +163,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.22.1"
+langchainrust = "0.22.4"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -369,6 +375,7 @@ LangChainRust supports multiple LLM providers with unified API:
 | **Azure** | `AzureChat` | Azure OpenAI, enterprise compliance |
 | **Cohere** | `CohereChat` | Command R+, RAG scenarios |
 | **Mistral** | `MistralChat` | Mistral Large/Medium |
+| **Any OpenAI-compatible endpoint** | `OpenAICompatibleChat` | Groq / OpenRouter / xAI presets + self-hosted vLLM, LM Studio, SGLang, internal gateways (v0.22.4) |
 
 #### Unified Client & Auto-Discovery ✨ v0.15.0
 
@@ -383,7 +390,7 @@ let llm = LLMClient::from_env()?;
 let response = llm.chat(vec![Message::human("Hello")], None).await?;
 
 // Any native provider can be wrapped too
-let client = LLMClient::from_llm(DeepSeekChat::from_env());
+let client = LLMClient::from_llm(DeepSeekChat::from_env_result()?);
 ```
 
 Errors are unified as `ProviderError`, with per-vendor variants (OpenAI / Anthropic / Gemini / Azure / Cohere / Ollama / DeepSeek / Qwen / Moonshot / Zhipu / Mistral); `config.streaming` decides whether `chat()` takes the streaming or plain path.
@@ -391,26 +398,77 @@ Errors are unified as `ProviderError`, with per-vendor variants (OpenAI / Anthro
 #### DeepSeek (Cost-Effective)
 
 ```rust
-use langchainrust::{DeepSeekChat, BaseChatModel};
+use langchainrust::{DeepSeekChat, DeepSeekConfig, BaseChatModel};
 use langchainrust::schema::Message;
 
-// From environment
-let llm = DeepSeekChat::from_env();
+// Read from environment variables
+let llm = DeepSeekChat::from_env_result()?;
 
-// Or manual config
-let llm = DeepSeekChat::with_model("deepseek-chat");
+// Or pick the model explicitly (config builder + new)
+let llm = DeepSeekChat::new(DeepSeekConfig::from_env_result()?.with_model("deepseek-chat"));
 
 let response = llm.chat(vec![
     Message::human("Explain Rust ownership"),
 ], None).await?;
 ```
 
+#### OpenAI-Compatible Endpoints: Groq / OpenRouter / xAI / Self-Hosted Gateways ✨ v0.22.4
+
+**The problem it solves:** the OpenAI Chat Completions protocol has become the de-facto industry standard — Groq, OpenRouter, xAI, and self-hosted vLLM, LM Studio, SGLang, the Ollama `/v1` shim, and corporate internal gateways all speak it. The old approach copied ~300 lines of delegation code per vendor (that is how DeepSeek/Qwen/Moonshot came to be), and adopting a vendor's new flagship model meant waiting for a framework release. v0.22.4 adds `OpenAICompatibleChat`: **one transport covers every compatible endpoint; vendors differ only in configuration** (base URL, auth, default model, error label). Streaming, tool calling, structured output, retries and callbacks all reuse the battle-tested `OpenAIChat` implementation.
+
+For hosted routers use the presets — `GroqChat` / `OpenRouterChat` / `XaiChat` are just type aliases for `OpenAICompatibleChat`:
+
+```rust
+use langchainrust::{OpenAICompatibleChat, BaseChatModel};
+use langchainrust::schema::Message;
+
+// Three env constructors, each with its own key / model / base_url variables
+let groq    = OpenAICompatibleChat::groq_from_env()?;        // GROQ_API_KEY
+let router  = OpenAICompatibleChat::openrouter_from_env()?;  // OPENROUTER_API_KEY + OPENROUTER_MODEL
+let xai     = OpenAICompatibleChat::xai_from_env()?;         // XAI_API_KEY
+let reply = groq.chat(vec![Message::human("hi")], None).await?;
+```
+
+| Preset | Base URL | Env variables | Default model |
+|---|---|---|---|
+| Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` (required), `GROQ_MODEL`, `GROQ_BASE_URL` (can point at a mirror) | `llama-3.3-70b-versatile` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (**required**, no default), optional `OPENROUTER_SITE_URL` + `OPENROUTER_SITE_NAME` for attribution | None — the model must be a vendor-qualified id like `anthropic/claude-sonnet-4-5` |
+| xAI | `https://api.x.ai/v1` | `XAI_API_KEY` (required), `XAI_MODEL`, `XAI_BASE_URL` | `grok-4` |
+
+The `GROQ_MODELS` / `XAI_MODELS` constants are only **non-exhaustive hint lists** — the model field accepts any string the endpoint can serve, so new models need no framework update; `DEFAULT_GROQ_MODEL` / `DEFAULT_XAI_MODEL` hold the default ids. OpenRouter's attribution headers (`HTTP-Referer`, `X-Title`, shown in its analytics/leaderboards) can be set manually with `config.with_openrouter_attribution(site_url, site_name)`.
+
+For self-hosted / private endpoints use the generic constructor; one important default is **keyless**:
+
+```rust
+use langchainrust::OpenAICompatibleConfig;
+
+// Local vLLM / LM Studio: no key by default, and no Authorization header is sent at all
+// (you never get an empty "Authorization: Bearer " header)
+let local = OpenAICompatibleChat::new(
+    OpenAICompatibleConfig::new("http://127.0.0.1:8000/v1/", "local-model"),
+);
+
+// Private gateway requiring auth: add a key and arbitrary headers (tenant header, gateway injection)
+let gw = OpenAICompatibleChat::new(
+    OpenAICompatibleConfig::new("https://gw.internal/v1", "qwen2.5-72b")
+        .with_api_key("sk-xxx")
+        .with_extra_header("X-Tenant", "acme"),
+);
+```
+
+- A trailing `/` on the base URL is normalized away (no `/v1//chat/completions`). The generic env constructor reads `OPENAI_COMPATIBLE_BASE_URL` (required), `OPENAI_COMPATIBLE_MODEL` (required) and `OPENAI_COMPATIBLE_API_KEY` (optional — unset means keyless).
+- Errors are uniformly wrapped as `ProviderError::OpenAICompatible { provider, source }`, where `provider` is the endpoint label (`"groq"` / `"openrouter"` / `"xai"` / the generic `"openai-compatible"`), also readable via `provider_label()` — an outage on one endpoint is never confused with another's.
+- Capabilities: `bind_tools(...)` / `with_tool_choice(...)` for function calling; `with_structured_output::<T>()` uses strict tool binding (works against any compatible backend); `with_json_schema_output::<T>()` uses server-side `response_format: json_schema` (requires backend support — unsupported models get an explicit 4xx, never a silent downgrade).
+- Security detail: `Debug` prints the key as `***`, so it cannot leak into logs by accident.
+
+**Boundaries:** it implements only the Chat Completions protocol; vendor-specific capabilities (the OpenAI Responses API, Anthropic extended thinking, etc.) still require their native types. It is a full `BaseChatModel` (the trait's error type is `ProviderError`), so it drops straight into agents and chains.
+
 #### Moonshot (Long Context)
 
 ```rust
 use langchainrust::MoonshotChat;
 
-let llm = MoonshotChat::with_model("moonshot-v1-128k");  // 128K context
+let llm = MoonshotChat::with_model("moonshot-v1-128k")?;  // 128K context; reads the key from the environment
 
 let response = llm.chat(vec![
     Message::human("Analyze this long document..."),
@@ -422,7 +480,7 @@ let response = llm.chat(vec![
 ```rust
 use langchainrust::QwenChat;
 
-let llm = QwenChat::from_env();  // Or QwenChat::with_model("qwen-plus")
+let llm = QwenChat::from_env_result()?;  // or QwenChat::new(QwenConfig::from_env_result()?.with_model("qwen-plus"))
 
 let response = llm.chat(vec![
     Message::human("Explain microservices in Chinese"),
@@ -434,7 +492,7 @@ let response = llm.chat(vec![
 ```rust
 use langchainrust::ZhipuChat;
 
-let llm = ZhipuChat::from_env();  // Or ZhipuChat::with_model("glm-4")
+let llm = ZhipuChat::with_model("glm-4")?;  // associated fn: reads the key from env and sets the model; from_env_result() also exists
 
 let response = llm.chat(vec![
     Message::human("Write Rust concurrent code"),
@@ -733,7 +791,9 @@ let example_prompt = PromptTemplate::new("Input: {input}\nOutput: {output}");
 let prompt = FewShotPromptTemplate::new(
     examples,
     example_prompt,
-    "Input: {input}\nOutput:",
+    "Here are some antonym examples:",    // prefix: the lead-in before the examples
+    "Input: {input}\nOutput:",            // suffix: the actual question template; must use input_variables
+    vec!["input".to_string()],            // input_variables: variables used in the suffix
 );
 ```
 
@@ -747,6 +807,58 @@ use langchainrust::prompts::LengthBasedExampleSelector;
 // Length-based: selects examples up to max length
 let selector = LengthBasedExampleSelector::new(examples).with_max_length(50);
 ```
+
+### Versioned Prompt Registry (PromptRegistry) ✨ v0.22.4
+
+**The pain point:** prompts are the most frequently tuned "code" in the whole system, but `&str` constants scattered across files make three things impossible — when online answers suddenly get worse, you cannot trace which prompt change caused it; rolling back means shipping a new release; several components share one string that anyone can quietly change, so a running evaluation cannot pin itself to "the version in effect at that time". `PromptRegistry` gives prompts an **append-only, addressable, auditable** registry.
+
+**Mechanism: namespace + version number + content hash, the trinity.**
+
+- **Namespace**: a slash-separated path such as `"customer/support/zh"`; every segment must be non-empty, characters are limited to `[A-Za-z0-9._-]`, total length ≤ 128 — anything malformed returns `PromptsError::InvalidNamespace`;
+- **Version number**: monotonically increasing from 1 within a namespace;
+- **Content hash**: each registration hashes the **exact template bytes** with SHA-256; `RegisteredPrompt { namespace, version, hash, template, variables }` carries both the number and the hash, and `variables` is parsed at registration time;
+- **Immutable**: stored versions are never mutated. A rollback is not an overwrite but a **re-publication of historical content as a new version** — consumers pinned to an old number are unaffected and the audit chain stays intact;
+- Thread-safe (`RwLock`); all operations take `&self`, so components share one registry cheaply through an `Arc`.
+
+```rust
+use langchainrust::{PromptRegistry, VersionSpec};
+
+let registry = PromptRegistry::new();
+let v1 = registry.register("customer/support/zh", "You are support. Question: {question}")?;
+let v2 = registry.register("customer/support/zh", "You are a senior support agent; empathize first. Question: {question}")?;
+assert_eq!(v1.version, 1);
+assert_eq!(v1.hash.len(), 64);                 // SHA-256 hex
+assert_eq!(v1.variables, vec!["question"]);   // placeholders parsed at registration
+
+// Three ways to address a version:
+let latest = registry.get("customer/support/zh")?;                  // current latest
+let pinned = registry.resolve("customer/support/zh", &1.into())?;   // exact number (VersionSpec::Number)
+let by_hash = registry.resolve("customer/support/zh", &v1.hash.as_str().into())?; // content hash
+assert_eq!(pinned.template, v1.template);
+
+// Text references: convenient in config/DB rows, resolved at runtime
+let tpl = registry.fetch("customer/support/zh@3")?;             // a ready-to-run PromptTemplate
+let _  = registry.resolve_ref("customer/support/zh")?;          // no @ means @latest
+let _  = registry.resolve_ref("customer/support/zh@latest")?;
+let _  = registry.resolve_ref("customer/support/zh@hash:9f2a1c0")?; // or a bare hex prefix
+```
+
+**Addressing rules and failure modes (always explicit errors, never silent guesses):**
+
+| Selector | Behavior |
+|---|---|
+| `VersionSpec::Latest` | Current latest version |
+| `VersionSpec::Number(n)` | Exact version; missing → `VersionNotFound` |
+| `VersionSpec::Hash(prefix)` | Full hash or a **unique prefix**; prefixes shorter than 7 characters or zero matches → `HashNotFound`; multiple matches → `AmbiguousHash { prefix, versions }`; a hash re-published by a rollback resolves to the **newest version carrying that content** (the content is identical) |
+
+**Two deliberate semantics:**
+
+1. **Registering identical consecutive content is a no-op** — when the text equals the current latest, the existing record is returned and the version number does not bump (so a daily publish script cannot create meaningless versions); but historical content legitimately recurring *after* a change (i.e. via rollback) is a new version.
+2. **Rollback is re-publication**: `let v3 = registry.rollback("customer/support/zh", 1)?;` yields version 3 with version 1's content; if the target is already the current latest, its record is returned unchanged.
+
+Inventory APIs: `history(ns) -> Vec<PromptVersionInfo { version, hash }>` (registration order, for audit/admin UIs), `namespaces()`, `len()` / `is_empty()`; `RegisteredPrompt::to_template()` builds a fresh `PromptTemplate` ready for `.format(&vars)?` or piping into an LCEL chain.
+
+**Boundary:** the registry is **purely in-memory** — it vanishes with the process. It solves in-process version governance and addressing; it ships no persistence, remote distribution, or auth. For cross-process sharing, the application stores template text (and hashes) in a database and loads them into the registry at startup.
 
 ---
 
@@ -856,6 +968,7 @@ Memory gives chains and agents "context": letting multi-turn conversations remem
 
 - Need cross-process persistence → use `MongoPersistentMemory` (below);
 - Need to cap per-call context length → use `ContextWindow` for automatic truncation/summarization;
+- Want to remember durable "facts about the user" across sessions → use the two-tier semantic memory `TwoTierMemory` (v0.22.4, see the end of this chapter);
 - All memories implement the unified `BaseChatMemory` trait — plug-and-play interchangeable.
 
 ### ConversationBufferMemory
@@ -995,6 +1108,122 @@ let fitted = cw.fit(messages).await?;
 |----------|----------|----------|
 | `Truncate` | Discard oldest messages over budget | Simple scenarios |
 | `Summarize` | LLM compresses old conversation into summary | Long conversations needing key info |
+
+### Two-Tier Semantic Memory: Cross-Session "Fact Memory" ✨ v0.22.4
+
+Every memory above manages **conversation history** — which messages go into the next prompt. v0.22.4 adds a second abstraction in `lc-memory` that manages **knowledge**: durable **facts** about the user/task distilled from completed turns ("the user prefers Rust", "the user is working on the langchainrust project"), isolated by namespace and recalled by meaning rather than by message timeline.
+
+**The pain point:** a conversation window cannot hold cross-session facts. Summary memory compresses "what was talked about", and facts erode across summarization rounds; besides, a summary only lives within its own session. Semantic memory stores "facts worth remembering long-term" separately, and at the start of a new session recalls entries semantically relevant to the current question to inject into the prompt — exactly the memory model of generative-agents-style systems.
+
+#### The unified `MemoryStore` interface
+
+All three stores (`ShortTermMemory` / `LongTermMemory` / `TwoTierMemory`) implement the same trait and can be shared with multiple executors via `Arc`:
+
+```rust
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn put(&self, namespace: &str, item: MemoryItem) -> Result<(), MemoryError>;
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<MemoryItem>, MemoryError>;
+    async fn search(&self, query: &MemoryQuery<'_>) -> Result<Vec<MemoryHit>, MemoryError>;
+    async fn forget(&self, namespace: &str, key: &str) -> Result<bool, MemoryError>;
+    async fn clear_namespace(&self, namespace: &str) -> Result<usize, MemoryError>;
+    async fn len_namespace(&self, namespace: &str) -> Result<usize, MemoryError>;
+}
+```
+
+- **The namespace is a hard isolation boundary**: typically one namespace per user (or per session); reads, writes, and semantic recall never cross namespaces. Blank namespace/key/text all produce explicit errors.
+- `MemoryItem::new(key, text)`: within a namespace the key should be stable — putting the same key again is an **update**, not a duplicate (content and access time refreshed). Default importance 0.5; `.with_importance(0.0..=1.0)` (clamped to [0,1] on write); optional `metadata: HashMap<String,String>`.
+- `MemoryQuery::new(namespace, text)` defaults to `k = 5`, `min_score = 0.0`; chainable `.k(10)` (clamped to a minimum of 1) and `.min_score(0.3)`.
+- A returned `MemoryHit { key, text, score, importance, tier: MemoryTier, metadata }` says whether the hit came from `MemoryTier::Short` or `Long`.
+- Both `get` and a `search` hit count as **one access** (`last_access_at` refreshed, `access_count +1`) — the counter the promotion mechanism below relies on.
+
+#### Where similarity comes from: `SemanticScorer` and the zero-dependency default
+
+```rust
+#[async_trait]
+pub trait SemanticScorer: Send + Sync {
+    async fn similarity(&self, query: &str, document: &str) -> f64; // [0,1]
+}
+```
+
+The default `LexicalScorer` **calls no model**: it Unicode-aware-tokenizes both texts and scores cosine similarity over term-frequency vectors — fully offline, deterministic, zero extra dependencies. That means the out-of-the-box "semantic" recall is really **lexical overlap** matching: asking "refund policy" recalls facts containing the words "refund" and "policy", but not a paraphrase like "how long until the returned item arrives". For genuine vector semantics, implement `SemanticScorer` yourself (calling your embedding model) and inject it via `ShortTermMemory::with_scorer(capacity, Arc::new(scorer))` or `LongTermMemory::with_config(weights, Arc::new(scorer))`; the store layer needs no changes.
+
+#### What the two tiers are
+
+| | Short term `ShortTermMemory::new(capacity)` | Long term `LongTermMemory::new()` |
+|---|---|---|
+| Capacity | Bounded per namespace; when full, **FIFO-evicts the oldest** (same-key updates take no new slot) | Unbounded — the read path **never deletes**; stale entries just sink in score |
+| Ranking | Pure similarity | Three-factor weighted decay score (below) |
+| Role | Working memory within this process | Consolidated durable facts |
+
+The long-term scoring formula (`DecayWeights`, the classic generative-agents approach):
+
+```
+score = 0.70 · similarity + 0.15 · 2^(−age / half_life · ln2) + 0.15 · importance
+```
+
+- Default weights: **similarity 0.7 / recency 0.15 / importance 0.15**, recency half-life **7 days** (every 7 days since last access, the recency term halves). Weights need not sum to 1; the final score is clamped to [0,1].
+- Tunable: `DecayWeights::new().with_weights(0.6, 0.2, 0.2).with_half_life(Duration::from_secs(3*24*3600))`.
+- Effect: frequently recalled facts stay "fresh", old high-importance facts can still surface, and old untouched facts naturally sink.
+
+#### `TwoTierMemory`: composing the tiers + promotion
+
+```rust
+use langchainrust::memory::{TwoTierMemory, MemoryItem, MemoryQuery, PromotionPolicy};
+use std::sync::Arc;
+
+let mem = Arc::new(
+    TwoTierMemory::new(64)  // short-tier capacity per namespace
+        .with_policy(
+            PromotionPolicy::new()              // default: importance >= 0.8 OR accessed >= 3 times
+                .with_min_importance(0.7)
+                .with_min_access_count(5),
+        ),
+);
+
+// Writes always land in the short tier first
+mem.put("user-42", MemoryItem::new("lang_pref", "User prefers Rust over Python").with_importance(0.9)).await?;
+
+// Trigger promotion manually (per namespace, or all namespaces):
+// qualifying short entries move to the long tier and are deleted from short
+let promoted = mem.consolidate_namespace("user-42").await?;
+
+// get: short tier first, then long; search: both tiers scored with the same
+// "long-term formula", de-duplicated by key (short wins), ranked together
+let hits = mem.search(&MemoryQuery::new("user-42", "which languages does he like").k(5)).await?;
+```
+
+Promotion is an **OR condition**: importance qualifies (high-value facts recognized at write time) **or** repeated access does (high-value facts earned through use). Re-promotion never creates duplicates — the long tier merges by key: earliest creation time kept, access counts accumulated, importance maxed, text updated to the newest, metadata merged.
+
+#### Wiring it to `AgentExecutor`: recall before, extraction after
+
+`lc-agents` ships an LLM fact extractor, `LlmMemoryExtractor` (exported at the facade crate root), and an executor switch that is **off by default**:
+
+```rust
+use langchainrust::{AgentExecutor, LlmMemoryExtractor};
+use langchainrust::memory::TwoTierMemory;
+
+let extractor = Arc::new(LlmMemoryExtractor::from_model(extraction_llm)); // or ::new(Arc::new(llm))
+let executor = executor.with_semantic_memory(
+    Arc::new(TwoTierMemory::new(64)), // store shareable across executors
+    "user-42",                        // namespace; the user id is the natural choice
+    extractor,
+);
+```
+
+Behavior per run once wired:
+
+1. **Recall before planning (best-effort)**: the user's input recalls the top 5 facts from that namespace, formatted as a delimited list and injected into the run's `inputs["semantic_memory"]`; for facts to reach the prompt, the prompt template needs a `{semantic_memory}` placeholder. The injected block is explicitly labeled "treat as untrusted data" — recalled content is data, not instructions. Store errors only log a warning and degrade to "no memory"; a memory failure **never takes down the main flow**.
+2. **Extraction after the answer (detached background task)**: a `tokio::spawn`ed task detached from the caller asks the extraction model to distill this turn's user/assistant exchange into a JSON array of facts → puts them into the short tier → immediately runs one promotion pass for that namespace. The caller **does not wait for extraction** after receiving the answer, so a slow model or network jitter never delays the reply; any failure inside the task is logged only.
+
+The extractor's fault tolerance is worth knowing: the model is asked to return just a JSON array (`{key, text, importance}`), yet the parser tolerates fenced code blocks and surrounding prose (via `parse_llm_json`), and also accepts `{"memories":[...]}` / `{"items":[...]}` envelopes; one bad item is skipped, not fatal; missing importance defaults to 0.5; a missing key is derived deterministically from the normalized fact text (extracting the same fact twice updates one row); at most 10 items per turn are accepted to keep a runaway model bounded; an empty assistant output short-circuits without a model call.
+
+#### Boundaries and caveats
+
+- **Pure in-memory, no built-in persistence**: all three stores are in-process structures (shareable across tasks via `Arc`); dropping them means forgetting. Cross-process/restart survival requires implementing `MemoryStore` yourself (Mongo, etc.) or taking application-level snapshots.
+- **The default scorer is lexical overlap, not vector semantics**; bring your own `SemanticScorer` for embedding-based recall.
+- Wiring it to the executor adds **one extraction model call per turn** (money/latency) — though it runs in a background task and never blocks the answer. Don't enable `with_semantic_memory` where you don't need it.
+- Recalled entries are model-external content and are already labeled untrusted data, but your template should avoid placing that block where executable instructions live.
 
 ## LLM Cache
 
@@ -2004,6 +2233,109 @@ let stream = agent.stream_research("Rust async runtimes comparison").await?;
 // FinalAnswer { content: "..." }
 ```
 
+### Agent Web SSE: Push Agent Events Straight to the Browser ✨ v0.22.4
+
+`AgentStreamEvent` originally lived only in-process: to show a live "typewriter text + tool-call progress" view on a web page, you had to convert the event stream to `text/event-stream` yourself — event naming, monotonic ids, idle heartbeats, reconnect de-duplication, and cancelling the run when the client goes away, each one a pitfall when missed. v0.22.4 builds that SSE bridge into the framework, split into a **dependency-free framing layer** and a **feature-gated axum serving layer**.
+
+**Layer one: the framework-neutral framer (zero HTTP dependencies, available by default)**
+
+`agent_sse_frames()` takes any `AgentStreamEvent` stream and yields a stream of `SseFrame`s already numbered, heartbeat-enabled, and terminated; `encode_sse_frame()` renders the exact SSE wire bytes. actix / rocket / a hand-rolled hyper service can all serve them directly:
+
+```rust
+use langchainrust::agents::{agent_sse_frames, encode_sse_frame, SseOptions};
+use std::time::Duration;
+
+// invoke_stream returns Pin<Box<dyn Stream<Item = AgentStreamEvent> + Send>>
+let events = streaming_agent.invoke_stream(user_input).await;
+
+let frames = agent_sse_frames(
+    events,
+    SseOptions::default()
+        .with_heartbeat(Duration::from_secs(20)) // emit ": keep-alive" comment frames while idle
+        .with_retry(Duration::from_secs(3))     // retry: reconnect hint (ms) on the first frame
+        .with_resume_from(last_event_id),       // suppress frames with id <= this (Last-Event-ID)
+);
+tokio::pin!(frames);
+while let Some(frame) = frames.next().await {
+    let bytes = encode_sse_frame(&frame); // already "id:..\nevent:..\ndata:..\n\n"
+    // write it into your own HTTP response body
+}
+```
+
+**Wire contract** (defined by `sse_event_name` / `sse_event_payload`; the fields are stable):
+
+| SSE `event:` | data (compact single-line JSON) |
+|---|---|
+| `text` | `{"content": "..."}` per-token text |
+| `tool_call` | `{"state": "started"\|"arguments_streaming"\|"arguments_complete"\|"executing"\|"completed"\|"failed", "tool_name", "call_id", ...}` — depending on state, also `partial_args` / `args` / `result` / `error` |
+| `tool_start` / `tool_end` | `{"name","input"}` / `{"name","output"}` |
+| `pipeline_step` | `{"step","detail": string\|null}` (CRAG/AdaptiveRAG/DeepResearch progress) |
+| `final_answer` | `{"content": "..."}` the complete answer |
+| `error` | `{"message": "..."}` execution failure |
+
+Every content frame carries a monotonic `id:` starting at **1**; a run always ends with an **unnumbered** `done` frame (`data:{"status":"done"}`) — on error, `error` is still followed by `done`, so the client only needs to recognize `done` as the terminator. `done` is deliberately id-less so a reconnect cannot mistake a new run for a continuation of the old one.
+
+**Layer two: the axum 0.7 router behind the `sse-server` feature (serve out of the box)**
+
+The `sse-server` feature of lc-agents provides a ready-made router; `POST` and `GET` are both supported on one path — native browser `EventSource` is GET-only, while programmatic `fetch()` clients prefer POST for long prompts:
+
+- `POST /agent/stream`: body `{"input":"...", "last_event_id": 12?}`;
+- `GET /agent/stream?input=...&last_event_id=...`: for `new EventSource(url)`;
+- Blank input returns 400; malformed JSON is rejected with 4xx before the stream opens.
+
+```rust
+// Requires enabling the lc-agents feature: sse-server (axum 0.7 + tower-http + tower)
+use langchainrust::agents::{
+    serve_agent_sse_on, agent_sse_router, AgentSseServerConfig,
+    AgentStreamFactory, StreamingFunctionCallingAgent,
+};
+use std::{sync::Arc, time::Duration};
+
+let agent = Arc::new(StreamingFunctionCallingAgent::new(chat_model));
+
+// Each HTTP request gets a brand-new event stream; Fn(String) -> impl Future
+// implements AgentStreamFactory automatically
+let factory: Arc<dyn AgentStreamFactory> = Arc::new(move |input: String| {
+    let agent = agent.clone();
+    async move { agent.invoke_stream(input).await }
+});
+
+// The router can be merged into your own axum Router; heartbeat defaults to 20s
+// (proxies commonly idle-cut connections at 30–60s)
+let router = agent_sse_router(factory.clone());
+// Or customize: heartbeat interval / disable (ZERO) / retry hint
+let router = agent_sse_router_with(factory.clone(), AgentSseServerConfig::default()
+    .with_heartbeat(Duration::from_secs(15))
+    .with_retry(Duration::from_secs(3)));
+
+// serve_agent_sse binds 0.0.0.0:port; for loopback/TLS/unix sockets/ephemeral test ports,
+// bind a TcpListener yourself and use serve_agent_sse_on
+serve_agent_sse_on(factory, listener).await?;
+```
+
+Front-end consumption (GET route, native EventSource):
+
+```javascript
+const es = new EventSource(`/agent/stream?input=${encodeURIComponent(prompt)}`);
+es.addEventListener('text', e => append(JSON.parse(e.data).content));
+es.addEventListener('tool_call', e => renderTool(JSON.parse(e.data)));
+es.addEventListener('final_answer', e => finish(JSON.parse(e.data).content));
+es.addEventListener('error', e => showError(JSON.parse(e.data).message));
+es.addEventListener('done', () => es.close());
+```
+
+**Disconnect/reconnect semantics (deliberately conservative by design):**
+
+- **Disconnect cancels**: HTTP client gone → response stream dropped → the framing task stops polling the agent → the agent producer observes a closed channel on its next send, and the run is cancelled promptly — no "page closed in the foreground while tokens keep burning in the background".
+- **No cross-connection run resumption**: the endpoint is stateless, so reconnecting starts a **new run**. A client may send a `Last-Event-ID` header (POST may also use the body field `last_event_id`; the **header wins**), and frames with id ≤ that value are suppressed within the new run — this serves dedupe-aware clients; it does not promise server-side rewinding/replay of a finished run.
+
+**Security boundaries:**
+
+- The built-in CORS layer allows only `http://localhost*` / `http://127.0.0.1*` origins (methods GET/POST/OPTIONS); other browser origins get no allow header. Tighten or replace it for real deployments.
+- **The endpoint has no built-in auth whatsoever.** `serve_agent_sse` binds `0.0.0.0` by default, i.e. anyone reachable on the network can use it; for remote exposure put it behind an authenticating reverse proxy, or bind your own listener (loopback / TLS).
+- Framing types (`agent_sse_frames` / `SseFrame` / `SseOptions`, …) are exported with `lc-agents`'s defaults and visible directly under `langchainrust::agents::*`; the **axum serving pieces exist only behind the `sse-server` feature** — the facade crate enables it only as a dev-dependency (so the example compiles), so ordinary dependencies pay no axum cost; downstream users who need the serving pieces enable the feature on their own `lc-agents` dependency.
+- A runnable end-to-end example lives at `crates/lc/examples/agent_sse_server.rs` (`cargo run -p langchainrust --example agent_sse_server`; defaults to `127.0.0.1:8090`; host/port/model come from the `AGENT_SSE_*` environment variables).
+
 ### AgentBuilder (Chained Construction) ✨ v0.14.0
 
 `AgentBuilder` offers chained construction to assemble the LLM, tools and execution parameters in one go; `max_iterations` is clamped to `[1, 100]` to avoid infinite loops.
@@ -2398,6 +2730,87 @@ while let Some(chunk) = stream.next().await {
 }
 ```
 
+### PII Redaction Guardrail: Rewrite Instead of Cutting the Whole Answer ✨ v0.22.4
+
+`SensitiveInfoGuardrail` disposes of output with **Block** — the moment anything resembling PII appears, the entire answer is withheld. But ticket-summary and conversation-transcription scenarios want "the content keeps flowing while the PII disappears": the new `PiiRedactionGuardrail` (v0.22.4) goes through the output-side **`Modify`** channel, replacing matched identifiers with fixed labels and letting the answer through.
+
+| `PiiKind` | What it matches | Replaced with | False-positive defense |
+|---|---|---|---|
+| `Email` | Email addresses | `[REDACTED_EMAIL]` | Word boundaries + domain shape |
+| `Phone` | Mainland-China mobile numbers: 11 digits starting `1[3-9]`, including `+86`/`86`/hyphen prefixes | `[REDACTED_PHONE]` | Word boundaries — an 11-digit substring inside a longer digit run does not match |
+| `NationalId` | 18-digit Chinese national ID (last char may be X) | `[REDACTED_NATIONAL_ID]` | **GB 11643 weighted checksum** — a failed checksum leaves the text untouched |
+| `CreditCard` | 15–19-digit bank/credit card numbers (spaces/hyphens allowed) | `[REDACTED_CREDIT_CARD]` | **Luhn checksum** — non-validating numbers are left alone |
+| `IpV4` | Dotted IPv4 | `[REDACTED_IP]` | Each of four octets ≤ 255, and adjacent digits/dots (version numbers, etc.) are excluded |
+
+Detection runs longest-and-most-specific first (card → national ID → phone → email → IP) so a short pattern cannot fire inside a longer identifier. This is **pure offline regex detection with zero model calls**; the trade-off is that coverage is exactly these five classes — semantic PII like names and postal addresses is out of scope.
+
+```rust
+use langchainrust::guardrails::{
+    GuardrailsConfig, PiiRedactionGuardrail, PiiKind,
+};
+use std::sync::Arc;
+
+// new() = all five classes on; only([...]) narrows; disable(PiiKind::IpV4) turns one off
+let pii = Arc::new(
+    PiiRedactionGuardrail::new()
+        .only([PiiKind::Email, PiiKind::Phone, PiiKind::CreditCard])
+        .with_hold_back(48),                  // streaming hold-back window; 48 chars by default
+);
+
+// One type implements both OutputGuardrail and StreamingOutputGuardrail:
+let config = GuardrailsConfig::new()
+    .with_output(pii.clone())              // whole-answer recheck: redact() then Modify-and-pass
+    .with_streaming(pii);                  // streaming increments: hold-back redaction
+// You can also skip the guardrail plumbing and just get the rewritten string:
+let safe = PiiRedactionGuardrail::new().redact("reach me at a@b.com or 13812345678");
+```
+
+**Why streaming needs hold-back:** characters already sent to the user cannot be taken back, and an identifier may be split across two model chunks (`"138"` + `"12345678"`) — per-chunk regex is always one beat too slow. The guardrail therefore always withholds the last 48 characters (covering the longest 19-digit card number with separators, and the 18-digit national ID) and releases the safe prefix only once later text proves "the identifier is no longer being written"; at stream end `flush()` emits the buffered tail.
+
+- **`ChunkAction::Replace("")` (empty string) means "hold this token back for now"** — it happens to the early chunks of every clean stream, so it is **not audited**; only a non-empty Replace (a real rewrite) immediately records one intervention.
+- `flush()` returns the three-state `FlushOutput`: `Empty` (nothing buffered) / `Release(text)` (original text released, not audited) / `Rewritten(text)` (the tail contains redaction labels; records one intervention). `GuardedAgent::invoke_stream` calls `flush_stream()` automatically at stream end, emits the tail delta as an ordinary chunk, then runs the whole-output recheck.
+- **One guardrail instance can serve only one guarded stream** (buffer state lives in a `Mutex` inside the instance); `GuardrailsConfig` is consumed at `GuardedAgent::new`, so concurrent streams each need their own instance. Sharing one instance between output and streaming as above is fine (whole-answer `validate` never touches streaming state), but do not share it across streams.
+- `with_hold_back(n)` can be lowered to reduce output latency, at the cost of possibly leaking an identifier when it is split unusually thinly across chunks.
+
+### Schema Output Guardrail: Validate JSON While It Is Being Generated ✨ v0.22.4
+
+The age-old structured-output problem: the model writes broken JSON (wrong types, missing required fields, extra properties), and you only find out when generation finishes and downstream `serde` blows up — money already spent, and the streaming UI has already shown the bad data to the user. `SchemaOutputGuardrail` pins output to a JSON Schema (the same source as `StructuredOutput<T>` / `schemars::schema_for!`): **lenient incremental validation during streaming catches deterministic errors early; a strict final check runs at stream end.**
+
+```rust
+use langchainrust::guardrails::{GuardrailsConfig, SchemaOutputGuardrail};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use std::sync::Arc;
+
+#[derive(Deserialize, JsonSchema)]
+struct Person { name: String, age: u32 }
+
+// Option one: derive the schema from the type with schemars; option two: SchemaOutputGuardrail::new(schema_value)
+let rail = Arc::new(SchemaOutputGuardrail::for_type::<Person>());
+let config = GuardrailsConfig::new()
+    .with_streaming(rail.clone())   // stateless and Clone — registering the same instance twice is safe
+    .with_output(rail);
+// schemars does not emit additionalProperties:false by default, but the guardrail still rejects
+// undeclared fields by default; to allow them:
+// SchemaOutputGuardrail::for_type::<Person>().allow_additional_properties()
+```
+
+**What the two phases catch (strictness is deliberately different):**
+
+| Check | Streaming increment (`validate_chunk` over accumulated raw text) | Final check (`validate_complete`) |
+|---|---|---|
+| Not yet valid JSON / unclosed brackets | Passed (document still being written) | Block |
+| Already-formed value of the wrong type (`age:"x"`) | **Block immediately** | Block |
+| Undeclared property (`strict_properties` on by default) | **Block immediately** | Block |
+| Missing required field | Tolerated | Block |
+| `enum`/`const` mismatch, oneOf arity | Mostly tolerated (zero oneOf matches *is* blocked) | Block |
+| Length/range/item-count bounds | Meaningless ("3" may yet become "30") | Block |
+| ` ```json ` fences and surrounding prose | — | Tolerated; the JSON slice is extracted automatically |
+
+Incremental parsing uses the same `PartialJsonParser` as the structured-output chapter (forgiving; can repair half-written JSON); a streaming Block deliberately carries no reason — the precise path-typed error like `$.age: expected type integer, got string` is produced by the final check. The supported Schema subset covers everything ordinary Rust types produce via schemars 1.x: type, properties/required/additionalProperties, items, enum/const, oneOf/anyOf/allOf, local `$ref`/`$defs`, and length/numeric bounds.
+
+It is **two independent gates** from the provider-side `response_format` / `with_json_schema_output`: the latter is "ask the model to write per-schema" (not supported by every backend), the former is "validate after it is written" (attachable on any backend), and the two stack; it also does not conflict with `with_structured_output` (tool-binding-style structured output) — the guardrail acts on the final text regardless of how it was generated.
+
 ### Audit Persistence ✨ v0.15.0
 
 The `AuditSink` trait + `FileAuditSink` (JSON Lines, append-only) persist violation records to disk for post-hoc analysis:
@@ -2484,8 +2897,8 @@ let tracked = TokenTrackingLLM::for_openai(OpenAIChat::new(OpenAIConfig::default
 
 let result = tracked.chat(vec![Message::human("hi")], None).await?;
 
-let usage = tracked.get_usage();                               // prompt / completion / total tokens
-let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
+let usage = tracked.get_usage().await;                               // prompt / completion / total tokens
+let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await; // USD
 ```
 
 ### What the four components do
@@ -2513,13 +2926,85 @@ let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()); // USD
 - **Real usage first**: `TokenTrackingLLM` prefers the real usage stats returned by the model API; it falls back to estimation only when the model does not return them.
 - **Non-invasive to the original model**: the tracked object is the wrapper itself; the wrapped model's behavior is unchanged — wrap it once and usage accumulates automatically.
 - **Built-in pricing**: `ModelPricing::gpt4o()` / `gpt4o_mini()` are built in; use `ModelPricing::new(prompt_per_1k, completion_per_1k)` to price other models.
-- **Computing cost**: `get_usage()` returns the accumulated prompt / completion / total tokens, and `estimate_cost(&pricing)` converts them to USD using the pricing.
+- **Computing cost**: `get_usage().await` returns the accumulated prompt / completion / total tokens, and `estimate_cost(&pricing).await` converts them to USD using the pricing (both methods are async).
 
 ### How to choose (in plain words)
 
 - Just want to "record a count per call and report a total at the end"? Wrap the model with `TokenTrackingLLM::for_openai(...)` + `estimate_cost`, and the whole chain is done.
 - To estimate a text's token count **before** sending a request (e.g. deciding whether to truncate), use `TiktokenCounter` (precise) or `CharRatioCounter` (estimate).
 - When Chinese content dominates and precision is not a priority, `CharRatioCounter` is enough; for real billing, use precise tokenization.
+
+### Cost Ledger: PricingTable + CostTracker + the Hard USD Gate ✨ v0.22.4
+
+The `ModelPricing` + `estimate_cost` pair above can only price **one wrapper**, after the fact. Production accounting is missing three things: cumulative **aggregation across models and runs** with per-model breakdowns, **event export** into monitoring systems, and a way to **actually stop** a run once its budget is spent. v0.22.4 fills the gap in `lc-core::cost` (re-exported directly at the facade crate root).
+
+**Three layers — "measurement" is deliberately kept separate from "enforcement":**
+
+1. **`ModelPrice` — the unit price.** The unit is always **USD per 1,000 tokens**, with input and output priced separately:
+   ```rust
+   use langchainrust::{ModelPrice, PricingTable, CostTracker};
+
+   let p = ModelPrice::new(2.5, 10.0);      // $2.5/1K in, $10/1K out
+   p.cost_of(1000, 500);                     // 2.5 + 5.0 = 7.5 (pure function)
+   ModelPrice::free();                        // local / open-source models — 0 is a valid price
+   p.blended_per_1k();                        // single figure for route cost comparison:
+                                             // a typical 3:1 input:output mix (0.75·in + 0.25·out)
+   ```
+2. **`PricingTable` — a price lookup keyed by (provider, model).** Provider-qualified entries win; when none matches, lookup falls back to a model-only entry (useful when the same model name is reached through different gateways):
+   ```rust
+   let table = PricingTable::new()
+       .with("openai", "gpt-4o", ModelPrice::new(2.5, 10.0))
+       .with_model_only("some-self-hosted-model", ModelPrice::free());
+   table.get(Some("openai"), "gpt-4o");  // the qualified entry shadows a same-named fallback
+   ```
+   - `PricingTable::builtin()` ships a 12-entry price snapshot for common models (as of 2026-09: gpt-4o / gpt-4o-mini / the gpt-4.1 family / o4-mini, claude-3-5-sonnet/haiku-latest, gemini-1.5-pro/flash, two Groq llama models, deepseek-chat). **This is a convenience seed, not a maintained source of truth** — vendors change prices often; real billing should go through the registry described next.
+   - The production path: `ModelRegistry::fetch(url).await?` pulls a fresh catalog from a remote endpoint (`fetch_with_client` accepts a custom reqwest client; you can also read local JSON with `from_json`, or hand-build it with `register` / `merge`), then convert it with `PricingTable::from_registry(&registry)`; load failures surface as `CostError::Fetch` / `CostError::Payload`.
+3. **`CostTracker` — a thread-safe cumulative ledger.** Build one per run, or share one `Arc` across a whole session; every LLM call becomes a line item:
+   ```rust
+   let tracker = Arc::new(
+       CostTracker::with_builtin_prices()       // or CostTracker::new(Arc::new(table))
+           .with_scope("session-user-42")        // label carried in reports/events
+           .with_metrics_sink(sink),             // optional: also export an ObsEvent::Cost per entry
+   );
+
+   let usd = tracker.record(Some("openai"), "gpt-4o", 1000, 500).await; // this entry's cost
+   tracker.record_usage(Some("openai"), "gpt-4o", &token_usage).await;  // or feed a TokenUsage directly
+
+   let total = tracker.total_cost_usd().await;  // the number the budget gate reads
+   let report = tracker.report().await;         // CostReport: total calls/tokens/cost +
+                                                // by_model breakdown keyed "openai/gpt-4o"
+   let each = tracker.records().await;          // per-entry CostRecord detail (oldest first)
+   tracker.reset().await;                       // zero out when starting a new run in the same session
+   ```
+
+**Two important degradation semantics (attaching a tracker can never break the agent's main loop):**
+
+- A model **missing from the table still counts calls and tokens — its price is simply 0**; missing price data degrades to "metering only", never an error.
+- A failed sink export only logs a `warn`; it does not propagate to the caller.
+
+**Automatic bookkeeping: hang the tracker on a wrapped LLM.** `TokenTrackingLLM` offers `.with_cost_tracker(arc)` and `.with_provider("openai")`: the wrapper is itself a `BaseChatModel` (since v0.20.1), so you drop it straight into the agent, and every `chat` / streaming / `bind_tools` call in the loop is priced and accumulated automatically; wrappers rebuilt via `with_temperature` / `with_max_tokens` / `bind_tools` share the same set of `Arc`s, so accounting never breaks. The model id is taken from the model field echoed in the response first, falling back to `model_name()` when it is empty.
+
+> Known streaming boundary: the streaming path has no complete text to estimate from, so **only the usage genuinely reported by the provider in the final chunk is counted**; providers that never report usage may bill as 0 on the streaming path. Non-streaming `chat` falls back to a tiktoken estimate when the model omits usage.
+
+**The hard USD gate: enforcement beyond measurement lives in the executor.** The tracker itself only measures; the actual hard stop reuses the §4.2 budget gate:
+
+```rust
+use langchainrust::{AgentExecutor, CostTracker, BudgetConfig};
+
+let tracker = Arc::new(CostTracker::with_builtin_prices());
+let tracked_llm = TokenTrackingLLM::for_openai(llm)?
+    .with_provider("openai")
+    .with_cost_tracker(tracker.clone());   // same Arc: the LLM writes entries
+let executor = AgentExecutor::new(agent, tools)
+    .with_cost_tracker(tracker.clone())    // same Arc: the executor reads the table
+    .with_budget(BudgetConfig {
+        max_cost_usd: Some(1.0),            // hard-stop after $1 cumulative
+        max_tool_calls: Some(20),           // the other four budget gates still compose
+        ..Default::default()
+    });
+```
+
+The executor reads `total_cost_usd()` **after every planning LLM call**; at or over the cap it returns `AgentError::BudgetExceeded(BudgetExceeded::Cost { limit, actual })` — so callers can distinguish a deliberate budget stop from a model that failed to converge; the streaming path checks after each LLM turn as well. Two asymmetries are intentional: **a tracker with no limit only measures, never blocks; a limit with no tracker never trips** (there is no spend to read — the value stays 0); bookkeeping requires the tracker's other end to be attached to a `TokenTrackingLLM` (or your own `record` call after each invocation).
 
 ---
 
@@ -2684,7 +3169,15 @@ Tests and single-process use `MemoryEventStore`; for multi-instance / cross-proc
 
 ## MCP
 
-[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. As of 0.22.0 lc-mcp is **stateless single-track**: every request is a self-contained JSON-RPC HTTP POST (with `Mcp-Method` / `Mcp-Name` routing headers and `_meta`). `StatelessMcpClient` connects to any MCP Server to obtain tools and adapts them as `BaseTool` for agents. The legacy handshake-based `MCPClient` (SSE/stdio transports) was removed in 0.22.0.
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. As of 0.22.4, lc-mcp ships **three client tracks** — pick by the shape of the peer:
+
+- **Stateless track `StatelessMcpClient` (since v0.22.0)**: the framework's own 2026-07-28 single-request protocol — every request is a self-contained JSON-RPC HTTP POST (with `Mcp-Method` / `Mcp-Name` routing headers and `_meta`), **no handshake, no session**; talks directly to a server started via `MCPServer::serve_http`.
+- **Official stdio track `StdioMcpClient` (since v0.22.4)**: spawns a local subprocess and runs the full `initialize` handshake — for local stdio servers in the Claude Desktop / Cursor ecosystem.
+- **Official Streamable HTTP track `StreamableMcpClient` (since v0.22.4)**: for remote Streamable HTTP servers deployed with the official TS/Python SDKs — full handshake, server-assigned `Mcp-Session-Id`, JSON/SSE content negotiation, and an optional OAuth 2.1 token provider.
+
+Tools from all three tracks are adapted to `BaseTool` through the same `MCPToolAdapter`.
+
+> **History**: 0.22.0 removed the old handshake-based `MCPClient` (SSE transport, the old stdio client, the event-stream/partial-content surface) in favor of a single track. 0.22.4 brought the two **official-protocol** tracks (stdio and Streamable HTTP) back under the banner of official-protocol compatibility — they coexist with the stateless track (not a feature-flagged either/or). Interoperability with the official **TypeScript SDK 1.30.0** and the **Python SDK** was verified 4/4 (client/server, both directions).
 
 ```rust
 use langchainrust::mcp::{MCPToolAdapter, StatelessMcpClient};
@@ -2697,10 +3190,20 @@ let client = StatelessMcpClient::connect("http://localhost:3001/mcp");
 let tools = client.list_tools().await?;           // tools/list
 println!("MCP tool count: {}", tools.len());
 
-// Adapt to a BaseTool list and hand it to an agent
+// Adapt to a BaseTool list and hand it to an agent.
+// Note: the adapter is fail-closed by default (RequireApproval) — with no approver
+// or sandbox attached, every call is rejected before leaving the process
+// (ToolError::PermissionDenied). For a fully trusted intranet server, explicitly
+// call allow_unattended_execution(); for production setups see
+// "Tool Execution Approval & Sandbox" below.
 let mcp_tools: Vec<Arc<dyn BaseTool>> = tools
     .into_iter()
-    .map(|def| Arc::new(MCPToolAdapter::new(client.clone(), def)) as Arc<dyn BaseTool>)
+    .map(|def| {
+        Arc::new(
+            MCPToolAdapter::new(client.clone(), def)
+                .allow_unattended_execution(),
+        ) as Arc<dyn BaseTool>
+    })
     .collect();
 let agent = FunctionCallingAgent::new(
     OpenAIChat::new(OpenAIConfig::default()),
@@ -2714,6 +3217,107 @@ client.close().await?;
 ```
 
 `client.call_tool(name, arguments)` calls a tool directly; `MCPToolAdapter::new(client, def)` wraps tools as adapters implementing `BaseTool` (`namespaced` variant carries a `server:tool` prefix); `.with_mrtr(...)` / `.with_answer_provider(...)` handle `input_required` multi-round requests; `.with_method_rate_limiter(...)` applies method-level rate limiting.
+
+**Failure semantics by track**: the stateless track has no connection lifecycle — `connect()` only constructs the client and sends nothing, so network/server errors surface immediately on the **first real request**, with no ~30s "waiting for auto-reconnect" hang; hitting the method-level rate limiter returns `-32002` locally without a network round trip; MRTR (multi-round task/request) without an answer provider returns `-32003`.
+
+### Tool Execution Approval & Sandbox (fail-closed) ✨ v0.22.4 (A16)
+
+`MCPToolAdapter` defaults to `ToolExecutionPolicy::RequireApproval`: with no allowance configured, a tool call is rejected **before it is sent to the server** (`ToolError::PermissionDenied`) — a remote tool can never execute behind the application's back. Three ways to allow execution, pick by trust level:
+
+```rust
+use langchainrust::mcp::{MCPToolAdapter, ServerSandbox, ToolCallApprover};
+
+// 1) Full trust (self-hosted intranet server / tests): explicitly accept unattended execution
+let trusted = MCPToolAdapter::new(client.clone(), def.clone())
+    .allow_unattended_execution();
+
+// 2) Sandbox: parameter-level allowlist, decided by ServerSandbox's ParamRule / EgressPolicy
+let sandboxed = MCPToolAdapter::from_client(std::sync::Arc::new(client_stdio.clone()), def.clone())
+    .with_sandbox(std::sync::Arc::new(sandbox));
+
+// 3) Runtime approval gate: every run asks the approver; a human "no" means PermissionDenied and nothing leaves the process
+let guarded = MCPToolAdapter::new(client.clone(), def)
+    .with_approver(std::sync::Arc::new(my_human_approver));
+```
+
+### Official stdio track: `StdioMcpClient` ✨ v0.22.4
+
+For official MCP servers in local-subprocess form (the `npx`/`uvx` servers in the Claude Desktop and Cursor ecosystems). Construction spawns the subprocess and completes the standard `initialize` handshake, yielding the server's declared capabilities/serverInfo:
+
+```rust
+use langchainrust::mcp::{StdioMcpClient, StdioCommand, MCPToolAdapter};
+use std::sync::Arc;
+use langchainrust::BaseTool;
+
+// Equivalent to running: npx -y @modelcontextprotocol/server-everything
+let command = StdioCommand::new("npx")
+    .arg("-y")
+    .arg("@modelcontextprotocol/server-everything");
+
+// connect returns Result: handshake failure (subprocess won't start, protocol version rejected) surfaces here
+let client = StdioMcpClient::connect(command).await?;
+
+// Explicit version-negotiation policy and per-request timeout (defaults: Degrade + 60s)
+// let client = StdioMcpClient::connect_with(
+//     command, VersionPolicy::Reject, Duration::from_secs(30)).await?;
+
+let tools = client.list_tools().await?;
+let _ = client.ping().await?; // official keep-alive probe
+
+// stdio clients also implement McpToolClient: adapt via from_client (fail-closed as above)
+let adapter = MCPToolAdapter::from_client(
+    Arc::new(client.clone()), tools.remove(0),
+).allow_unattended_execution();
+
+client.close().await?; // terminates the subprocess; a mid-connection death does not auto-reconnect (connection_lost)
+```
+
+### Official Streamable HTTP track: `StreamableMcpClient` ✨ v0.22.4
+
+For remote Streamable HTTP servers deployed with the official SDKs: after the `initialize` handshake the server assigns an `Mcp-Session-Id`, carried by every subsequent request/notification; the transport negotiates both JSON and SSE response content types, and the server may push asynchronous notifications via HTTP 202. After a drop, `reconnect()` rebuilds the session.
+
+```rust
+use langchainrust::mcp::{StreamableMcpClient, StaticBearerToken};
+use std::sync::Arc;
+
+// Unauthenticated endpoint: handshake + version negotiation (default Degrade, 60s per-request timeout)
+let client = StreamableMcpClient::connect("http://127.0.0.1:8765/mcp").await?;
+
+// Explicit policy/timeout:
+// let client = StreamableMcpClient::connect_with(
+//     url, VersionPolicy::Degrade, Duration::from_secs(60)).await?;
+
+// Fixed token (PAT / dev sidecar): on 401, one invalidate-and-retry is attempted automatically
+let client = StreamableMcpClient::connect_with_token_provider(
+    "https://mcp.example.com/mcp",
+    Arc::new(StaticBearerToken("pat-xxx".to_string())),
+).await?;
+
+// Full OAuth 2.1 refresh semantics: implement BearerTokenProvider yourself (next section)
+let client = StreamableMcpClient::connect_token(
+    url, Arc::new(oauth_provider), VersionPolicy::Degrade, Duration::from_secs(60),
+).await?;
+
+client.reconnect().await?; // re-handshake after session loss, get a fresh Mcp-Session-Id
+client.close().await?;
+```
+
+Both handshake tracks share the `VersionPolicy` negotiation policy: `Degrade` (default — when the peer declares a version outside the support list, pin the library's implemented version and continue) and `Reject` (strict — a version mismatch fails the handshake outright with code `-32005`; under stdio the subprocess is shut down too).
+
+### OAuth 2.1 protected remote servers ✨ v0.22.4
+
+Official Streamable HTTP servers commonly authorize as OAuth 2.1 **resource servers** (RFC 9728). lc-mcp provides the machine parts of the full flow; the parts needing a human (opening the consent page, receiving the redirect callback) stay with the embedding application:
+
+1. A request without a token gets a `401` with a `WWW-Authenticate: Bearer resource_metadata="…"` challenge — `OAuthChallenge::parse(header, ..)` extracts the resource-metadata address, realm, and scopes.
+2. `discover_protected_resource(url)` / `discover_authorization_server(metadata_url)` perform RFC 9728 / RFC 8414 discovery (metadata discovery and token-endpoint calls each time out at 10s).
+3. The application runs the **authorization code + PKCE** flow in a browser (often with DCR dynamic client registration): the caller keeps the verifier and computes `code_challenge` itself — the library adds no new crypto dependency.
+4. `OAuthTokenClient::new(token_endpoint, client_id)` handles token exchange: `exchange_authorization_code(code, redirect_uri, code_verifier)`, `refresh(..)`, `client_credentials(..)`.
+5. Implement `BearerTokenProvider` (`token()` returns the current access token; on 401 the transport calls `invalidate(token)` **exactly once** and retries with a fresh token — a second 401 propagates) and attach it via `connect_with_token_provider`. For fixed tokens, the built-in `StaticBearerToken` is enough.
+
+### Interoperability and the official server transport
+
+- 0.22.4 adds the `ping` handling the official SDKs' keep-alive depends on, plus the full HTTP status matrix (`400/404/405/406/415/401`) and JSON/SSE content negotiation; interoperability with the official **TypeScript SDK 1.30.0** and **Python SDK** was verified 4/4 across client/server in both directions.
+- Besides the stateless `serve_http`, the server now exposes an **official Streamable HTTP** endpoint: `MCPServer::serve_streamable_http(listener)` (called on `Arc<MCPServer>`, returns the endpoint URL immediately, accepts on a background task) — handshake, `Mcp-Session-Id` assignment, 202 notifications, Bearer challenge all included, so official SDK clients can connect directly. A minimal runnable example lives at `crates/lc-mcp/examples/streamable_echo_server.rs` (`cargo run -p lc-mcp --example streamable_echo_server`, supports `--port` / `--bearer`); the stdio counterpart is `stdio_echo_server.rs`.
 
 ---
 
@@ -2733,7 +3337,7 @@ let server = MCPServer::new()
 server.serve_stdio().await?;
 ```
 
-`server.handle_request(req)` for single-step JSON-RPC handling with custom transport; `server.serve_http(listener)` serves it as a stateless HTTP service (connect with `StatelessMcpClient::connect(url)`), see `examples/mcp_http_server.rs`.
+`server.handle_request(req)` handles one JSON-RPC step for a custom transport; `server.serve_http(listener)` (called on `Arc<MCPServer>`, returns the endpoint URL immediately) serves the framework's own stateless HTTP service — connect directly with `StatelessMcpClient::connect(url)`; example: `crates/lc/examples/mcp_http_server.rs`. `server.serve_streamable_http(listener)` serves the **official Streamable HTTP** protocol instead — official TS/Python SDK clients can connect directly (see "Interoperability and the official server transport" above); example: `crates/lc-mcp/examples/streamable_echo_server.rs`.
 
 ### ConnectionManager (Managed Registry) ✨ v0.15.0
 
@@ -3016,6 +3620,42 @@ let result = tool.run(r#"{"code": "print(sum(range(10)))"}"#).await?;
 
 > **Security boundary**: the built-in "dangerous import blacklist" (`os` / `sys` / `subprocess` / `__import__` / `eval` / `exec`, etc.) is **noise filtering, not a security boundary** — encoding-based bypasses like `__import__`, `"o"+"s"` concatenation, `().__class__` reflection, and unicode obfuscation slip through, and it also false-positives on string literals. Real isolation must go through the [code interpreter sandbox](#v050-new-features) (`LocalSandbox` subprocess + timeout); the blacklist only reduces the noise that reaches the sandbox. Do not rely on `PythonREPLTool` for isolation over untrusted input.
 
+### Hosted Search & CDP Browser ✨ v0.22.4
+
+**`HostedSearchTool` — three hosted search backends, no feature gate**: the built-in free DuckDuckGo page scraping is unstable in production and its result quality is limited; 0.22.4 wraps three commercial search APIs behind one tool with a pluggable `SearchBackend`, and **no feature needs enabling**:
+
+| Constructor | Backend | Key env var |
+|------|------|------|
+| `HostedSearchTool::tavily(key)` / `tavily_from_env()` | [Tavily](https://tavily.com) (popular for agents, with a synthesized answer) | `TAVILY_API_KEY` |
+| `HostedSearchTool::serper(key)` / `serper_from_env()` | [Serper](https://serper.dev) (Google results) | `SERPER_API_KEY` |
+| `HostedSearchTool::exa(key)` / `exa_from_env()` | [Exa](https://exa.ai) (semantic search) | `EXA_API_KEY` |
+
+Tool input is `HostedSearchInput { query, top_k: Option (default 5, hard cap 20 — over-limit values are clamped, not rejected), include_answer: Option<bool> (default true) }`; output carries the result list plus a synthesized answer when the backend supports it (Serper/Exa ignore the flag). You can also call it without an agent: `.search(query, top_k: Option<usize>, include_answer: Option<bool>).await`.
+
+```rust
+use langchainrust::HostedSearchTool;
+
+let search = HostedSearchTool::tavily_from_env()?; // Err if TAVILY_API_KEY is missing
+let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::BaseTool>;
+// Once handed to an agent, the model calls it with
+// {"query": "...", "top_k": 5, "include_answer": true}
+```
+
+**`CdpBrowserTool` — drive a local Chrome over CDP (`browser-cdp` feature)**: DuckDuckGo/`URLFetchTool` only fetch static HTML and are helpless against JS-rendered pages. `connect()` takes Chrome's **HTTP debugger base URL** (`http://127.0.0.1:9222` — it must start with `http://`/`https://`; passing `ws://` fails with `InvalidInput`). The tool first does `PUT /json/new` (falling back to `GET /json` and attaching to an existing page on older Chrome builds) to obtain that tab's `webSocketDebuggerUrl`, then speaks the Chrome DevTools Protocol over the WebSocket (plaintext `ws://` in the local case) and performs four operations on a fresh tab: `navigate` / `extract_text` (post-render body text) / `extract_links` / `metadata`. Input is `BrowserInput { operation, url, wait_ms: Option (extra settle time after the load event, max 10s) }`. SSRF posture matches the network tools: **private/loopback navigation targets are blocked by default** (this checks the page URL, not the debugger endpoint), explicitly allowed via `with_allow_private_urls(true)`. It is an opt-in feature (pulls in tokio-tungstenite):
+
+```toml
+langchainrust = { version = "0.22", features = ["browser-cdp"] }
+```
+
+```rust
+use langchainrust::CdpBrowserTool;
+
+// Chrome must be started with --remote-debugging-port=9222; connect takes the HTTP base (not ws://)
+let browser = CdpBrowserTool::connect("http://127.0.0.1:9222").await?;
+// This allows private *page* navigation targets; public targets need nothing
+let browser = browser.with_allow_private_urls(true);
+```
+
 ### Extended Tools (HTTPTool / FileTool / SQLTool)
 
 Three production-oriented tools added in v0.3.0, all implementing `BaseTool`.
@@ -3115,7 +3755,7 @@ DeepSeek's embedding model, 1536 dimensions. Lower cost than OpenAI.
 use langchainrust::{DeepSeekEmbeddings, Embeddings};
 use std::sync::Arc;
 
-let embeddings = Arc::new(DeepSeekEmbeddings::from_env());
+let embeddings = Arc::new(DeepSeekEmbeddings::from_env_result()?);
 
 let vector = embeddings.embed("Deep learning fundamentals").await?;
 ```
@@ -3128,7 +3768,7 @@ Alibaba Cloud Qwen's embedding model, 1536 dimensions. Better performance for Ch
 use langchainrust::{QwenEmbeddings, Embeddings};
 use std::sync::Arc;
 
-let embeddings = Arc::new(QwenEmbeddings::from_env());
+let embeddings = Arc::new(QwenEmbeddings::from_env_result()?);
 
 let vector = embeddings.embed("Qwen vector generation").await?;
 ```
@@ -3219,7 +3859,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.22.1", features = ["local-candle"] }
+langchainrust = { version = "0.22.4", features = ["local-candle"] }
 ```
 
 ```rust
@@ -3277,6 +3917,35 @@ for c in &chunks {
 ```
 
 **Caveat**: late chunking is not a silver bullet — self-contained short documents gain nothing; the model must support token-level output.
+
+### Vision Embeddings (One Shared Image-Text Vector Space) ✨ v0.22.4
+
+Plain `Embeddings` map only text to vectors; **multimodal embeddings** map **images and text into the same vector space** — that is what makes text-to-image / image-to-text search possible: index product photos, then retrieve them directly with "red sneakers". New in 0.22.4 (**no feature gates**):
+
+| Type | Backend | Dimension | Key |
+|------|------|------|------|
+| `CohereVisionEmbeddings` | Cohere Embed v4.0 (images must be inline bytes) | 1536 | `COHERE_API_KEY` |
+| `QwenVisionEmbeddings` | DashScope `multimodal-embedding-v1` (public URLs allowed, server-side fetch) | 1024 | `QWEN_API_KEY` |
+| `MockVisionEmbeddings` | Deterministic offline backend | configurable | none (tests) |
+
+Images are expressed via the vendor-neutral `ImageInput`: `ImageInput::from_url(url)` / `from_data_uri("data:image/png;base64,…")` / `from_base64(raw_base64, "image/png")`. The Cohere backend requires inline bytes and **explicitly rejects a plain `Url`** — the library will not fetch a caller-supplied URL on its behalf (that would route image traffic through the embedding vendor's network and dodge SSRF protection). To ingest from a URL, fetch it yourself and pass `Base64`, or use the DashScope backend, which supports URL references.
+
+```rust
+use langchainrust::embeddings::{
+    ImageInput, QwenVisionEmbeddings, VisionEmbeddings,
+};
+
+let vision = QwenVisionEmbeddings::from_env_result()?; // QWEN_API_KEY
+let img_vec = vision
+    .embed_image(&ImageInput::from_url("https://example.com/shoe.jpg"))
+    .await?;
+let text_vec = vision.embed_text("red sneakers").await?;
+// Both vectors live in one space and are L2-normalized; cosine directly gives cross-modal similarity
+let _ = vision.embed_images(&[img1, img2]).await?; // batch — HTTP backends send a single request
+assert_eq!(vision.dimension(), 1024);
+```
+
+Key contract: text queries must use the **same vision model's** `embed_text` — you cannot query an image index with vectors from a text-only `Embeddings` (the two model families do not share a vector space). Backends guarantee L2-normalized vectors and aligned batch counts (a mismatch errors loudly, never silently). The chunking/retrieval wrapper for multimodal RAG lives in [Multimodal RAG](#multimodal-rag).
 
 ## RAG
 
@@ -3402,7 +4071,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.1", features = ["chromadb"] }
+langchainrust = { version = "0.22.4", features = ["chromadb"] }
 ```
 
 ```rust
@@ -3521,6 +4190,64 @@ let found = store
 | `In` / `Nin` | in-set / not-in-set (value is an array) |
 
 Backends with filtering: in-memory / file / Qdrant / Pinecone / Chroma / LanceDB / Neo4j / PGVector (`pgvector-storage` feature). Third-party `VectorStore` implementations that want filtering override `similarity_search_with_filter` and translate `MetadataFilter` into their native query syntax; backends that don't rely on the default implementation (reporting `UnsupportedFilter` for filter requests). `SelfQueryRetriever` is built on top of this layer (see next section).
+
+<a id="multimodal-rag"></a>
+### Multimodal RAG (Mixed Image-Text Retrieval) ✨ v0.22.4
+
+In text-only RAG, images are second-class citizens — findable at best via alt text; their visual content never enters the index. Multimodal RAG uses [`VisionEmbeddings`](#vision-embeddings-one-shared-image-text-vector-space--v0224) to embed **images and text into one vector space**, so "what's in the picture" becomes answerable. Two wrappers (in `lc-rag`, no feature gate):
+
+**`MultimodalChunker` — splits an ordered mixed-media stream into modality-tagged `Document`s:**
+
+```rust
+use langchainrust::retrieval::{
+    ImageAsset, MediaBlock, MultimodalChunkConfig, MultimodalChunker,
+};
+
+let chunker = MultimodalChunker::with_config(
+    MultimodalChunkConfig::default()
+        .with_chunk_chars(800)                        // max chars per text chunk (UTF-8 boundary-safe); default None = one document per text block
+        .with_metadata("source", "product-manual-v3"), // common metadata inherited by every document
+);
+let blocks = vec![
+    MediaBlock::Text("Overview: these running shoes feature …".into()),
+    MediaBlock::Image(
+        ImageAsset::new("https://cdn.example.com/shoe-red.jpg")
+            .with_caption("Red sneakers, exterior view")
+            .with_mime("image/jpeg"),
+    ),
+    MediaBlock::Text("The size chart is as follows …".into()),
+];
+let docs = chunker.chunk(&blocks); // input order preserved; whitespace-only text blocks skipped; each image is its own document
+```
+
+An image document's body text is its caption (may be empty); modality information goes into reserved metadata keys: `mm_kind` (`text`/`image`), `mm_url`, `mm_caption`, `mm_mime` — `mm_*` is a reserved prefix and overwrites same-named common-metadata entries.
+
+**`MultimodalRetriever` — embeds both modalities with one vision model and retrieves:**
+
+```rust
+use std::sync::Arc;
+use langchainrust::embeddings::{ImageInput, QwenVisionEmbeddings};
+use langchainrust::retrieval::{ModalityFilter, MultimodalRetriever};
+use langchainrust::InMemoryVectorStore; // or any VectorStore (Qdrant/Pinecone/PG…)
+
+let vision = Arc::new(QwenVisionEmbeddings::from_env_result()?);
+let store = Arc::new(InMemoryVectorStore::new()); // dimension is pinned by the first vectors ingested
+let retriever = MultimodalRetriever::new(store.clone(), vision.clone());
+
+// Ingest: images via batched embed_image, text chunk by chunk via embed_text; original order is restored before writing
+retriever.add_documents(docs).await?;
+
+// Text query → mixed image/text hits (default Any); narrow to images-only or text-only
+let hits = retriever.retrieve_modality("red sneakers", 5, ModalityFilter::Images).await?;
+let scored = retriever.retrieve_with_scores_modality("size chart", 5, ModalityFilter::Any).await?;
+
+// The reverse: image-to-image / image-to-text (photo-to-same-product, finding the paragraph a figure belongs to)
+let more = retriever
+    .retrieve_by_image(&ImageInput::from_url("https://cdn.example.com/query.jpg"), 5, ModalityFilter::Any)
+    .await?;
+```
+
+**Key behaviors and boundaries**: ① query vectors must come from the same vision model (text goes through its `embed_text`, not a text-only embedding model); ② modality filtering is pushed down to the storage backend (`mm_kind` metadata filter) **and** re-checked on the result side — even a custom backend that silently ignores filters cannot leak the wrong modality into a narrowed query; ③ image-document `mm_url` accepts an http(s) URL or a complete `data:` URI (inline base64); ④ the Cohere backend cannot server-fetch URLs — resolve images to data URIs yourself before ingest, or use DashScope; ⑤ retrieval returns `Document`s; what the generation side does with images (multimodal LLM / caption fallback) is the application's decision.
 
 ---
 
@@ -3646,7 +4373,7 @@ for result in results {
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.22.1", features = ["qdrant-integration"] }
+langchainrust = { version = "0.22.4", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -3788,9 +4515,35 @@ graph.add_fan_in(vec!["crag".to_string(), "graph".to_string(), "vector".to_strin
 
 - `MemoryCheckpointer` — in-process (single-threaded)
 - `ThreadSafeMemoryCheckpointer` — concurrency-safe
-- `FileCheckpointer::new(path)` — persisted to disk (does **not** implement `Default`; the path must be explicit, failures propagate)
+- `FileCheckpointer::new(path)` — persisted to disk (does **not** implement `Default`; the path must be explicit, failures propagate; atomic writes — temp file then rename, so a crash never leaves a half-written checkpoint)
 
 Pair with `with_checkpointer` + `with_interrupt_before` for "pause → resume" workflows.
+
+### Persistent Checkpointers (SQLite / Postgres / Redis) ✨ v0.22.4
+
+In-memory/file checkpoints die with the process and cannot be shared across instances. 0.22.4 adds three production-grade backends, attached exactly like the in-memory ones (`.with_checkpointer(...)`), each behind its own feature: `checkpoint-sqlite` / `checkpoint-postgres` / `checkpoint-redis`.
+
+```rust
+// SQLite — rusqlite `bundled` (compiles the SQLite amalgamation from source;
+// no system libsqlite3 dependency), WAL journal + busy timeout; the file can be
+// reopened by another process (brief writer hand-off)
+let cp = SqliteCheckpointer::<MyState>::new("./data/graph.db", "thread-42")?;
+
+// Postgres — tokio-postgres; storage-side OCC via a conditional UPDATE
+let cp = PostgresCheckpointer::<MyState>::connect(
+    "host=127.0.0.1 user=app dbname=lg password=…", "thread-42").await?;
+// Or reuse an existing client: PostgresCheckpointer::with_client(client, "thread-42").await
+
+// Redis — Lua-scripted CAS: version compare and write in one script
+let cp = RedisCheckpointer::<MyState>::connect("redis://127.0.0.1/", "thread-42").await?;
+// Or reuse an existing MultiplexedConnection: RedisCheckpointer::with_connection(conn, "thread-42").await
+
+let compiled = graph.compile()?.with_checkpointer(std::sync::Arc::new(cp));
+```
+
+**Optimistic concurrency control (OCC)**: every checkpoint carries a version number and `update_state` means "I am editing based on version N". When the storage side finds the current version has already advanced under another writer, the write **fails as a whole** instead of overwriting that writer's edit, with `GraphError::CheckpointVersionConflict { checkpoint_id, expected, actual }` — the caller re-reads the latest state, merges, and retries (last-write-wins semantics are the caller's merge decision; the library never silently drops updates). Postgres decides in one conditional UPDATE (serialized across processes), Redis uses an atomic Lua CAS, SQLite relies on the file write lock plus a version recheck.
+
+**How to choose**: SQLite for single-process/edge deployments (zero ops); Postgres when you already run it and need multi-instance sharing plus the connection-pool ecosystem; Redis for ultra-low latency when you accept Redis persistence semantics and already operate it. All three implement the same Checkpointer trait — switching backends changes no graph code.
 
 ### Graph Definition Persistence ✨ v0.15.0
 
@@ -4352,7 +5105,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.1", features = ["opentelemetry"] }
+langchainrust = { version = "0.22.4", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -4366,6 +5119,24 @@ let manager = CallbackManager::new()
 ```
 
 Nested spans; export to Jaeger / Tempo / Grafana.
+
+**One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
+
+```toml
+langchainrust = { version = "0.22.4", features = ["otlp"] }
+```
+
+```rust
+// Builds a tracer provider from environment variables; keep the returned guard
+// alive for the lifetime of the process (dropping it flushes on shutdown)
+let _otlp = langchainrust::callbacks::otlp::install_otlp_pipeline()?;
+// Environment variables: OTEL_EXPORTER_OTLP_ENDPOINT (default http://localhost:4318,
+// /v1/traces appended automatically), OTEL_EXPORTER_OTLP_HEADERS (k1=v1,k2=v2),
+// OTEL_EXPORTER_OTLP_TIMEOUT (default 10s), OTEL_SERVICE_NAME (default langchainrust);
+// for explicit parameters use install_otlp_pipeline_with(OtlpConfig)
+```
+
+A minimal runnable example lives at `crates/lc/examples/otel/otlp_tracing.rs` (`--features otlp`).
 
 **GenAI semantic-convention alignment ✨ v0.21.0**: span attributes align with the OpenTelemetry GenAI semconv (development status) — `gen_ai.system`, `gen_ai.request.model`, `gen_ai.request.max_tokens` / `gen_ai.request.temperature`, `gen_ai.response.finish_reason`, `gen_ai.response.model`, token usage `gen_ai.client.token.usage.prompt_tokens` / `completion_tokens`, plus extension attributes `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.reasoning.output_tokens` (filled only when the provider reports them). LLM-call spans carry `gen_ai.operation.name = "chat"`, retrieval spans `"retrieve"`, and tool spans `gen_ai.tool.name` (`gen_ai.tool.*` is an extension namespace to be migrated once the standard stabilizes). Consumers like Langfuse / Grafana can filter and aggregate directly on `gen_ai.*` attributes.
 
@@ -4474,6 +5245,48 @@ if !report.failures.is_empty() {
 }
 ```
 
+### RAGAS: Three RAG-Specific Metrics ✨ v0.22.4
+
+RAG systems fail differently from plain QA: an answer that *looks* convincing while retrieval fed the wrong material; retrieved context that simply does not contain the information the answer needs; an answer that addresses a different question. RAGAS splits these into three independent metrics, all LLM-judge-driven (same lineage as Faithfulness: `bind_tools` structured call preferred, text fallback; within one metric evaluation the judge concurrency is capped at 4 to avoid rate limits):
+
+| Evaluator | Measures | Algorithm essentials | Inputs |
+|--------|---------|---------|------|
+| `ContextPrecision` | **Ranking quality** of retrieved context — are useful chunks near the top | per-chunk relevance verdict from the judge, rank-weighted precision | question + ordered contexts |
+| `ContextRecall` | How much of the reference answer's information is findable in retrieved context | split the reference answer into claims, attribute each to context, take the attributable fraction | reference answer + contexts |
+| `AnswerRelevancy` | Whether the answer is on-topic (checked without the reference answer — catches non-answers) | LLM reverse-generates N questions from the answer (default 3), averages their embedding cosine similarity to the real question | question + answer (+ an embedding model) |
+
+`ContextPrecision` / `ContextRecall` implement only `RagEvaluator` (the plain `Evaluator` has no contexts slot); `AnswerRelevancy` implements both traits and can also score inside a non-RAG runner.
+
+```rust
+use langchainrust::evaluation::{
+    AnswerRelevancy, ContextPrecision, ContextRecall, Dataset, EvalRunner, Example,
+};
+
+let dataset = Dataset::new(vec![
+    // RAG examples use with_contexts; pass contexts in retrieval rank order
+    Example::with_contexts(
+        "How many days of annual leave?",
+        "15 days",
+        vec!["Annual leave is 15 working days …".to_string(), "Reimbursement requires an invoice".to_string()],
+    ),
+]);
+
+let judge = OpenAIChat::new(config);                 // any BaseChatModel
+let runner = EvalRunner::new(vec![])
+    .with_rag_evaluators(vec![
+        Box::new(ContextPrecision::new(judge.clone())),       // an irrelevant chunk at rank 1 → low score
+        Box::new(ContextRecall::new(judge.clone())),
+        Box::new(AnswerRelevancy::new(judge, embeddings)),    // additionally needs Embeddings
+    ]);
+
+let report = runner.run(&dataset, &predictor).await?;
+// Overlong contexts: with_max_context_chars (default cap 2000 chars per chunk / per join)
+// Nothing-to-score cases such as empty contexts: with_empty_score(x) sets an explicit default
+// AnswerRelevancy::with_n_questions(5) changes the number of reverse-generated questions
+```
+
+Old JSONL datasets without a contexts column deserialize to an empty vec (`#[serde(default)]`); plain evaluators run as usual and RAG evaluators apply `with_empty_score`.
+
 > Underneath, they reuse `core::judge::structured_call`'s structured-decision path (forcing the LLM to emit JSON before parsing, with errors unified as `StructuredJudgeError`), so judge results stay machine-readable.
 
 ---
@@ -4504,7 +5317,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.1", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.22.4", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -4578,14 +5391,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.1", features = ["redis-storage"] }
+langchainrust = { version = "0.22.4", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.1", features = ["sqlite-storage"] }
+langchainrust = { version = "0.22.4", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -4686,7 +5499,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.22.1"
+lc-testkit = "0.22.4"
 ```
 
 ```rust
@@ -4732,26 +5545,41 @@ When to use:
 
 Layering: **A2A handles "Agent ↔ Agent communication"; MCP handles "Agent ↔ tools / data sources."** The two often work together — MCP supplies tools, Agents collaborate over A2A, and responsibilities stay clearer.
 
-### Protocol Flow
+### Protocol Flow and Task Lifecycle
 
-A typical A2A call flow (4 steps):
+A typical A2A call flow (discover → dispatch → follow up → wrap up):
 
-| Step | Operation | Role |
+| Step | JSON-RPC method / endpoint | Description |
 |---|---|---|
-| 1. Discover | `get_agent_card` fetches the remote agent's Agent Card | Client |
-| 2. Dispatch | `send_task` submits a task (`A2AMessage`) | Client → Server |
-| 3. Check progress | `get_task` queries status and result by task ID | Client |
-| 4. Cancel | `cancel_task` cancels an unfinished task | Client |
+| 1. Discover | `GET /.well-known/agent-card.json` | Fetch the remote agent's Agent Card |
+| 2. Dispatch | `tasks/send` | Submit a task (`A2AMessage`); the server returns `submitted` immediately while the chain runs in the background |
+| 3a. Poll | `tasks/get` | Query status, result and error by task ID |
+| 3b. Push | `GET /events` (SSE) | Subscribe to task-status pushes — no polling (requires server-side `with_streaming`) |
+| 3c. Follow-up | `tasks/send` with `taskId` | Supply more information to an `input-required` task, continuing multi-turn |
+| 4a. Cancel | `tasks/cancel` | Cancel an unfinished task |
+| 4b. List | `tasks/list` | List tasks by `TaskFilter` |
+| 4c. Orchestrate | `tasks/runWorkflow` | Submit an ordered multi-step workflow in one call (cap: 50 steps; runs in the background) |
 
-On the Server side, there are two corresponding endpoints:
+The task state machine has 9 states, and every transition is validated for legality (after a running task is cancelled, the background chain can never write it back to a live state):
+
+```
+submitted ──▶ working ──▶ completed
+                │  ├──▶ failed
+                │  ├──▶ input-required ──(continue with taskId)──▶ working
+                │  ├──▶ cancelled
+                └──▶ rejected / auth-required / expired
+```
+
+The Server side exposes **three endpoints** (not two):
 
 - `GET /.well-known/agent-card.json` → returns the Agent Card (the agent's self-description, for discovery)
-- `POST /` → receives and processes JSON-RPC requests (`handle_a2a_request`)
+- `POST /` → receives and processes JSON-RPC requests (`handle_a2a_request` / `handle_a2a_request_authenticated`)
+- `GET /events` → the SSE task-push stream (it emits events only after `with_streaming` is enabled)
 
 <a id="a2a-agent-protocol"></a>
 ### A2AServer (Expose Your Agent)
 
-`A2AServer` provides handler functions that you plug into any HTTP framework (axum, actix, warp) — it does NOT start its own HTTP listener.
+`A2AServer` provides handler functions that you plug into any HTTP framework (axum, actix, warp). The handler core itself starts no HTTP listener; the `axum` feature additionally ships a batteries-included server (next section).
 
 ```rust
 use langchainrust::a2a::{A2AServer, AgentCard};
@@ -4767,29 +5595,108 @@ let server = A2AServer::new(chain)
 // POST /                       → server.handle_a2a_request(body).await
 ```
 
-**Task Persistence**: Tasks from `tasks/send` are stored in an in-memory `RwLock<HashMap>`. `tasks/get` retrieves them, `tasks/cancel` transitions their status. For production, wrap with your own database-backed store.
+`A2AServer::new` accepts any `Arc<dyn BaseChain>`; when the backend is an agent with memory, wrap it directly with `A2AServer::from_agent(Arc<AgentExecutor>)` (internally it goes through the `AgentExecutorChain` adapter), so continuing the same task gets genuine multi-turn context continuity.
+
+Production capabilities are assembled via builders (all since v0.13.0 unless noted):
+
+| Method | Purpose |
+|---|---|
+| `with_auth_token(token)` | Require `Authorization: Bearer <token>` on every request; the card auto-declares `bearer`; constant-time comparison prevents timing leaks; `POST /` and `GET /events` are checked **the same way** (0.20.0 fixed a hole where the SSE endpoint had no auth at all) |
+| `with_store(Arc<dyn TaskStore>)` | Replace the default in-memory task store with your own database backend |
+| `with_max_tasks(n)` | Swap in an in-memory store of capacity n (LRU-evicts the longest-unupdated task); default 10,000 |
+| `with_task_ttl(Some(d))` | TTL for terminal tasks (default 24 hours, lazily cleaned on the read path; `None` disables expiry) |
+| `with_background_cleanup(interval)` | Additionally spawn a periodic background sweeper task |
+| `with_streaming(capacity)` | Enable the SSE push bus; the card auto-declares `{"sse": true}`; `subscribe()` returns the receiving end |
+| `with_skill_router` / `with_skill_map` | Dispatch tasks to different chains by the request's `skillId` (`SkillMapRouter::new().with_skill("translate", chain)`) |
+| `with_rate_limiter(Arc<RateLimiter>)` | Dual limiting — max concurrent requests plus requests-per-minute; over-limit calls get HTTP 429 |
+
+**Task persistence**: tasks are stored through the `TaskStore` trait (`upsert` / `get` / `list` / `delete` / `compare_and_update`); the default is an `InMemoryTaskStore` with LRU eviction — gone on process restart. The trait's built-in `compare_and_update` is a state-machine conditional replace (CAS); when you implement a database backend, override it with a real atomic conditional write so "cancel" and "chain completion" cannot overwrite each other's terminal state.
+
+**Idempotency and ownership**: a `tasks/send` carrying a `message_id` in request metadata is idempotent — retrying the same id only re-fetches the already-created task instead of running the chain twice (in-flight ids are atomically reserved; 0.20.0 also fixed a server bug where the loser of a reservation race never released it, permanently "poisoning" that id). A task may carry an `owner`; non-owners calling `tasks/get` / `tasks/cancel` are rejected (`-32003`).
+
+### Out-of-the-box axum server (`axum` feature)
+
+If you don't want to wire an HTTP framework yourself, enable the `axum` feature on `lc-a2a` and serve directly:
+
+```toml
+[dependencies]
+langchainrust = "0.22"
+lc-a2a = { version = "0.22.4", features = ["axum"] }
+```
+
+```rust
+// Routes: GET /.well-known/agent-card.json, POST /, GET /events (SSE)
+server.serve(8080).await?;              // binds 0.0.0.0:8080
+// Or server.serve_on(listener).await — custom address / TLS / ephemeral port
+```
+
+CORS allows only `http://localhost` / `http://127.0.0.1` origins by default (before the 0.22.0 audit it allowed any origin); for public-facing deployments tighten the origin allowlist yourself and add TLS plus rate limiting at the gateway in front. A full runnable example is at `crates/lc/examples/a2a_http_server.rs`.
 
 ### A2AClient (Call Remote Agent)
 
 ```rust
 use langchainrust::a2a::{A2AClient, A2AMessage};
 
-let client = A2AClient::new("http://remote-agent:8080".to_string()).unwrap();
+let client = A2AClient::new("http://remote-agent:8080")?;  // non-HTTPS only warns; 30s request / 10s connect timeout
 
-// Discover agent
+// Discover the agent (when the card is signed and a verification key is configured, this hard-verifies — see below)
 let card = client.get_agent_card().await?;
 
-// Send task
+// Send a task (returns submitted immediately; the chain runs remotely in the background)
 let task = client.send_task(A2AMessage::user("hello")).await?;
 
-// Get task
+// Query (task only) / query details (task + result + error)
 let task = client.get_task(&task.id).await?;
+let details = client.get_task_details(&task.id).await?;
 
-// Cancel task
+// Cancel the task
 let task = client.cancel_task(&task.id).await?;
 ```
 
-**Current boundary**: `tasks/send` / `tasks/get` / `tasks/cancel` and `AgentCard` are implemented; task state-machine extensions, auth (token), and streaming push are planned (⏳). A deployment example lives in the repo at `crates/lc/examples/a2a_http_server.rs` (axum HTTP wrapper).
+Full configuration goes through the builder — Bearer auth, HTTPS enforcement, timeouts, W3C `traceparent` tracing, and card-signature verification all live here:
+
+```rust
+let client = A2AClient::builder("https://agent.example.com")
+    .bearer_token("s3cr3t")                 // Authorization header on every request (including SSE)
+    .enforce_https(true)                    // building against non-HTTPS fails outright (default: warn only)
+    .timeout(Duration::from_secs(30))
+    .connect_timeout(Duration::from_secs(10))
+    .with_traceparent(TraceContext::new("trace-id", "parent-id"))  // also written to metadata trace_id
+    .card_verification_secret(b"shared-secret".to_vec())           // verify the card's JWS/hex signature
+    .require_card_signature(true)           // hard-fail when a signed card can't be verified, instead of just warning
+    .build()?;
+```
+
+**Waiting synchronously for results**: `send_task_and_wait(message, timeout)` polls `tasks/get` internally at 1s intervals (each individual GET retries 3 times with small backoff against a transient hiccup) and returns `A2ATaskResult` at a terminal state; when the remote side asks a follow-up question it returns `A2AError::InputRequired { task_id, prompt }` — answer with `resume_task(&task_id, message)` instead of burning the timeout. For "retries must never execute twice", use the idempotent `send_task_with_message_id` / `send_task_and_wait_with_message_id` variants.
+
+**Following via SSE streaming** (instead of polling):
+
+```rust
+// Subscribe first, dispatch after, so early events aren't lost; SSE uses a separate
+// HTTP client with no overall timeout — a long connection is never cut at 30s
+let mut stream = client
+    .send_task_streaming("http://remote-agent:8080/events", A2AMessage::user("produce a quarterly summary"))
+    .await?;
+while let Some(event) = stream.next().await {
+    let note: TaskPushNotification = event?;   // events carry task.id; filter when juggling multiple tasks
+}
+// To subscribe to an existing task only: client.connect_sse(url).await?
+```
+
+**Workflows**: `tasks/runWorkflow` submits an ordered sequence of steps in one call; the server executes them in the background with a hard cap of 50 steps:
+
+```rust
+use langchainrust::a2a::{A2ARequest, A2AWorkflow, WorkflowStep};
+
+let wf = A2AWorkflow::new(vec![
+    WorkflowStep::new("draft", "Write a first draft outline"),
+    WorkflowStep::with_skill("review", "Review it and suggest changes", "critic"),  // dispatched by skill (3-arg associated fn, not a builder)
+])
+.with_workflow_id("wf-001");
+let resp = client.post_request(A2ARequest::run_workflow(1, &wf)).await?;
+```
+
+A deployment example lives in the repo at `crates/lc/examples/a2a_http_server.rs` (axum HTTP wrapper).
 
 ### v1.0.1: Multi-Transport Declaration (supportedInterfaces) ✨ v0.22.0
 
@@ -4849,32 +5756,66 @@ verify_card_jws(&card, &jws, secret)?;
 // mismatch, is rejected outright
 ```
 
-Boundaries (honest disclosure):
-- **HS256 symmetric key**: the registry and clients share a secret; ES256 asymmetric signing is planned for 0.22.1;
+Boundaries (honest disclosure, as of v0.22.4):
+- **HS256 symmetric key**: the registry and clients share a secret; ES256 asymmetric signing was scheduled for 0.22.1 back in 0.22.0 but never actually landed in 0.22.1–0.22.4 — HS256 is still the only algorithm;
 - **Canonicalization is RFC 8785-lite** (recursive key ordering), not full JCS (number / unicode edge cases differ);
-- **Expiry is carried by the card's own `expiresAt` field**; the signature embeds no timestamp claim.
+- **Expiry is carried by the card's own `expiresAt` field**; the signature embeds no timestamp claim;
+- `A2ATransport::Grpc` is currently just an enum value you can put on a card — there is no gRPC wire binding in the crate (tonic codegen depends on protoc and is not hermetic; postponed since 0.22.0). The HTTP+JSON and JSON-RPC bindings are independently usable.
+
+### Enterprise Extension Building Blocks ✨ v0.13.0
+
+Beyond the basic trio (Card / send / get), `lc-a2a` ships a whole kit aimed at interconnecting hundreds or thousands of agents. Each is a standalone type you opt into; none affects the minimal happy path:
+
+| Module (`langchainrust::a2a::`) | Entry types | Problem it solves |
+|---|---|---|
+| Registry & discovery | `AgentRegistry` / `RegistryClient` | in-process registry (card lookup by skill keywords / data classification) and an HTTP client for a registry center |
+| Cross-org federation | `FederationGateway` + `CallPolicy` / `DataContract` | before an outbound call: org allowlist, skill allowlist, payload-size and data-classification checks; outbound metadata can be minimized; downstream cards verified hop by hop |
+| Skill routing | `SkillRouter` trait / `SkillMapRouter` | server-side dispatch of tasks to different chains by `skillId` |
+| Resilient client | `ResilientA2AClient` + `ResilienceConfig` | four layers: transport retries (exponential backoff) → SSE reconnect → overall wait deadline (after timeout you can resume waiting with the task id) → backup-agent chain |
+| Rate limiting | `RateLimiter` | dual gates — concurrency permits plus requests-per-minute; overflow gets 429 |
+| Trust & sandbox | `TrustRegistry` / `TrustedAgent` / `TrustConfig` / `SandboxConfig` | anti-impersonation / anti-tampering / trust decay over delegation hops; sandbox policies over read/write paths, domains, and payloads |
+| Horizontal scale | `SkillIndex` / `TaskSharder` / `StickyRouter` / `CircuitBreaker` / `HierarchyPolicy` / `DelegationGuard` / `TaskGraph` | inverted skill index, consistent task sharding, sticky routing, circuit breaking, superior/subordinate delegation policies with hop caps, an acyclic task graph |
+
+The most-used piece is the resilient client — back off and retry when the primary agent stutters, then roll to backup agents in order when it is unreachable:
+
+```rust
+use langchainrust::a2a::{A2AClient, A2AMessage, ResilientA2AClient, ResilienceConfig};
+
+let primary = A2AClient::new("https://agent-a.internal")?;
+let backup  = A2AClient::builder("https://agent-b.internal").bearer_token(token).build()?;
+let resilient = ResilientA2AClient::new(primary, ResilienceConfig::default())
+    .with_fallback(backup);
+
+let task = resilient.send_task(A2AMessage::user("hello")).await?;
+// For exactly-once across retries, use send_task_with_message_id instead
+```
 
 ### Key Behaviors and Boundaries
 
 | Capability | Status |
 |---|---|
-| `tasks/send` | Implemented (tasks stored in in-memory `RwLock<HashMap>`) |
-| `tasks/get` | Implemented (retrieves by task ID) |
-| `tasks/cancel` | Implemented (transitions task status) |
-| Agent Card discovery | Implemented |
-| v1.0.1 `supportedInterfaces` multi-transport declaration + negotiation | Implemented ✨ v0.22.0 |
-| Card signing JWS HS256 (RFC 8785-lite canonicalization) | Implemented ✨ v0.22.0 (ES256 / full JCS deferred to 0.22.1) |
-| gRPC binding | ⛔ Deferred to 0.22.1 (tonic codegen needs protoc, not hermetic) |
-| API key / Static Bearer auth | Implemented (configurable secret, HMAC/JWS mode) |
-| OAuth / OIDC binding | ⏳ Planned (0.22.1) |
-| Task state-machine extensions (submitted → working → terminal) | ⏳ Planned |
-| Streaming push | ⏳ Planned |
-| TLS / rate limiting | ⏳ Planned; add in the HTTP layer before production deployment |
+| `tasks/send` (background execution, 9-state machine, `message_id` idempotency, owner isolation) | Implemented |
+| `tasks/get` / `tasks/cancel` / `tasks/list` | Implemented |
+| Multi-turn resume (`input-required` → resume with `taskId`) | Implemented (`resume_task`; in-flight mutex on concurrent resumes) |
+| `tasks/runWorkflow` ordered workflows | Implemented (hard cap 50 steps; background execution since 0.20.0) |
+| SSE task push (`with_streaming` + `GET /events`) | Implemented (same auth posture as POST) |
+| Static Bearer auth (constant-time comparison, bearer declared on the card) | Implemented (`with_auth_token`) |
+| Pluggable `TaskStore` (default in-memory LRU 10,000 + TTL) | Trait implemented; the crate ships only the in-memory backend — bring your own database backend |
+| Out-of-the-box axum server | Implemented (`lc-a2a`'s `axum` feature; `serve` / `serve_on`) |
+| Enterprise kit: registry/discovery / federation gateway / resilience / rate limiting / trust / scale | Implemented ✨ v0.13.0 |
+| Agent Card discovery + v1.0.1 `supportedInterfaces` multi-transport declaration & negotiation | Implemented ✨ v0.22.0 |
+| Card signing JWS HS256 (RFC 8785-lite canonicalization) | Implemented ✨ v0.22.0 |
+| Distributed tracing | metadata `trace_id` + W3C `traceparent` header (configured via builder) |
+| gRPC binding | ⛔ Card enum value only, no implementation (postponed since 0.22.0) |
+| ES256 asymmetric signing / full JCS | ⛔ Planned for 0.22.1 back in 0.22.0; still not landed as of 0.22.4 |
+| OAuth / OIDC | ⛔ Static Bearer only out of the box; federation scenarios need a gateway in front |
+| TLS termination | ⛔ Not provided at the application layer — terminate at a reverse proxy / gateway in production |
 
 ### Production Notes
 
-- Task storage is in-memory and lost on process restart; for production, switch to a database-backed store (transactional, recoverable).
-- The spec requires auth; add token validation in your own HTTP layer so arbitrary task IDs can't be queried / canceled.
+- The default task store is in-memory and lost on process restart; for production implement the `TaskStore` trait against a database (remember to override `compare_and_update` with the database's atomic conditional update).
+- Authenticate with `with_auth_token` or inject identity at a front gateway — don't leave arbitrary task IDs queryable / cancelable; for multi-tenancy, put an `owner` in request metadata.
+- The client only warns on non-HTTPS addresses; for cross-network deployment use `builder().enforce_https(true)` or put a TLS gateway in front.
 - A deployment example lives in the repo at `crates/lc/examples/a2a_http_server.rs` (axum HTTP wrapper).
 
 ### How to Choose
@@ -4898,50 +5839,81 @@ When to use:
 - To skip hand-writing the "prompt JSON → parse → tolerate → convert" glue
 - When you need strong typing for output fields and want type safety at compile time
 
-### How It Works
+### How It Works: Two Same-Named APIs — Don't Mix Them Up
 
-The `StructuredOutputExt` trait provides `with_structured_output`, built on a "two-level priority":
+There are **two** `with_structured_output`s in the framework: same name, different shape:
 
-1. **Function calling first**: when the model supports function calling, the framework binds the schema to the model as a tool declaration; the model returns tool_calls, and the framework parses the target type directly from the structured arguments — done in one step, independent of text formatting.
-2. **Fall back to JsonOutputParser**: when the model doesn't support function calling, or returns no tool calls, it automatically falls back to `JsonOutputParser` — parsing the model's textual JSON (auto-stripping markdown code blocks, tolerantly repairing it) into the target type.
+1. **The provider's inherent method (tool-call constraint, recommended)**: `chat.with_structured_output::<T>()` on `OpenAIChat` (and `OpenAICompatibleChat`, `OllamaChat`, the Anthropic/Gemini/DeepSeek/Moonshot/Qwen/Zhipu chats, …) — it is **synchronous** and returns a `StructuredOutputMethod<T>` that binds the schema to the model as a strict tool declaration; you then call `invoke` with messages and `T` is parsed directly out of the structured tool arguments:
 
-One call, two paths switched automatically, fully transparent to the caller.
+   ```rust
+   use schemars::JsonSchema;
+   use serde::Deserialize;
+   use langchainrust::language_models::openai::OpenAIChat;
+   use langchainrust::schema::Message;
+
+   #[derive(JsonSchema, Deserialize)]
+   struct Answer {
+       city: String,
+       population: u64,
+   }
+
+   let chat = OpenAIChat::new(config);
+   let method = chat.with_structured_output::<Answer>();        // note: not async — returns a "method object"
+   let answer: Answer = method
+       .invoke(vec![Message::human("Which Japanese city has the largest population, and how large is it?")])
+       .await?;
+   ```
+
+2. **The generic trait method (any chat model; prompt injection + tolerant parsing)**: `StructuredOutputExt` is implemented for every `BaseChatModel` via a blanket impl; it takes a **hand-written JSON Schema + a prompt**, injects the schema into the system message, and deserializes the output through `JsonOutputParser` (markdown fences auto-stripped, tolerant repair):
+
+   ```rust
+   use langchainrust::StructuredOutputExt;
+
+   let schema = serde_json::json!({
+       "type": "object",
+       "properties": { "city": {"type":"string"}, "population": {"type":"integer"} },
+       "required": ["city", "population"]
+   });
+   let answer: Answer = chat
+       .with_structured_output::<Answer>(schema, "Which Japanese city has the largest population, and how large is it?")
+       .await?;
+   ```
+
+Choosing is simple: use #1 with OpenAI and its compatible backends (native tool calls — no reliance on the model voluntarily following a text format); use #2 when the model has no tool-calling support, or when all you hold is a generic `BaseChatModel`.
 
 ### Streaming Version: stream_structured_output
 
-`with_structured_output` gives you the "complete result"; `stream_structured_output` is the streaming version — JSON is parsed as it's generated, built on the `PartialJsonParser` incremental parser, so **a field is usable as soon as it comes out**. It suits frontend render-as-you-receive scenarios, e.g. "title comes first, author next, year last."
-
-### Code Example
+The `StreamingStructuredOutputExt` trait (likewise blanket-implemented for every `BaseChatModel`) provides the streaming version: JSON is incrementally parsed by `PartialJsonParser` as it is generated, so **a field is usable as soon as it comes out** — every successful parse yields a `T` (fields produced so far filled in, the rest at their defaults), with the final complete object at the end of the stream. It suits frontend render-as-you-receive scenarios, e.g. "title comes first, author next, year last."
 
 ```rust
-use langchainrust::StructuredOutputExt;
-use schemars::JsonSchema;
-use serde::Deserialize;
+use langchainrust::StreamingStructuredOutputExt;
+use futures_util::StreamExt;
 
-#[derive(JsonSchema, Deserialize)]
-struct Answer {
-    city: String,
-    population: u64,
+let mut stream = chat
+    .stream_structured_output::<Answer>(schema, "List three classic Rust books")
+    .await?;
+while let Some(item) = stream.next().await {
+    let partial: Answer = item?;   // the accumulating partial result
 }
-
-let llm = OpenAIChat::new(config);
-let answer: Answer = llm.with_structured_output::<Answer>().await?;
 ```
+
+> Note the trait bounds: in addition to `Deserialize + Serialize`, the streaming `T` also needs `Clone + PartialEq + Unpin` (used to deduplicate identical adjacent parse results).
 
 ### Key Behaviors
 
 | Behavior | Description |
 |---|---|
-| Schema definition | Declare the output structure with a Rust struct + `JsonSchema` / `Deserialize` derives |
-| Function calling first | Uses native tool_calls when supported, parses structured arguments directly |
-| Automatic fallback | Falls back to `JsonOutputParser` when function calling isn't supported / no tool_calls |
+| Schema definition | Declare the output structure with a Rust struct + `JsonSchema` / `Deserialize` derives (the provider method runs `schema_for!` automatically) |
+| Tool-call constraint | The methods on `OpenAIChat` and friends bind the schema as a strict tool and parse from tool arguments — no reliance on text formatting |
+| Generic fallback | `StructuredOutputExt` injects a schema prompt for any model and parses tolerantly via `JsonOutputParser` |
 | Type safety | Returns a compile-time determined strong type, no manual parsing |
-| Streaming version | `stream_structured_output` + `PartialJsonParser` parse as they generate |
+| Streaming version | `stream_structured_output` + `PartialJsonParser` parse as they generate, emitting a stream of partial results |
 
 ### How to Choose
 
-- "Get the complete result at once, with a determined type" → use `with_structured_output`.
-- "Use it as it's generated, render field by field" → use `stream_structured_output`.
+- OpenAI / a compatible backend, wanting "the complete result in one call, with a determined type" → `chat.with_structured_output::<T>()` then `invoke(messages)`.
+- Wanting to "use it as it's generated, render field by field" → `stream_structured_output(schema, prompt)`.
+- Wanting the **engine** to guarantee valid JSON at decode time (rather than parsing afterward) → `with_json_schema_output` in the next section.
 - Just want to parse output the model already produced (not make it return per a schema) → use a parser like `JsonOutputParser` or `TypedOutputParser` directly.
 
 ### Native JSON Schema Engine Constraints (with_json_schema_output) ✨ v0.21.0
@@ -4967,10 +5939,10 @@ let person: Person = method.invoke(vec![Message::human("Introduce Alice, 30.")])
 
 **Key behaviors**:
 
-- The schema is generated from the Rust type by **schemars 1.0**; `make_strict_schema` adds `additionalProperties: false` + full `required` automatically (strict mode requires it)
-- Only `OpenAIChat` and its compatible paths support this; other providers keep using `with_structured_output`
-- A server-side rejection (e.g. unsupported model) surfaces as an explicit 4xx error — no silent degradation
-- `PartialJsonParser` streaming incremental parsing remains the fallback and streaming path
+- The schema is generated from the Rust type by **schemars 1.x**; `make_strict_schema` adds `additionalProperties: false` + full `required` automatically (strict mode requires it)
+- Only `OpenAIChat` and, since v0.22.4, `OpenAICompatibleChat` provide this method (the latter forwards `response_format` verbatim — Groq/OpenRouter/xAI-style backends honor it only when the underlying model supports it); when unsupported the server explicitly returns 4xx — no silent degradation. Other providers such as `OllamaChat` only have the tool-binding variant `with_structured_output`
+- `AnthropicChat` / `GeminiChat` each have their own structured-output method types (`AnthropicStructuredOutputMethod` / `GeminiStructuredOutputMethod`)
+- `PartialJsonParser` streaming incremental parsing remains the generic fallback and the streaming path
 
 ---
 
@@ -5052,44 +6024,45 @@ store.clear().await?;
 <a id="computerusetool"></a>
 ## ComputerUseTool ✨ v0.4.1
 
-### Concept: Let an Agent Operate the Browser / Desktop
+### Concept: A Client for the Anthropic Computer Use Beta
 
-Ordinary tools let an Agent "call APIs, query data"; `ComputerUseTool` lets an Agent **operate the screen like a human** — screenshot the UI, move the mouse and click, type with the keyboard. It aligns with Anthropic's computer use API and suits automation tasks where "there's no ready-made interface, only UI operations." It provides screenshot, mouse click, and keyboard input capabilities.
+Ordinary tools let an Agent "call APIs, query data"; Anthropic's computer use lets a model drive a GUI through a "screenshot → coordinate click → keyboard input" loop. `ComputerUseTool` is a **client-side wrapper** for that protocol: it translates the six standard actions into a `computer_20250124` tool request, POSTs it to Anthropic `/v1/messages` (beta header `computer-use-2025-01-24`), and returns the response verbatim.
 
-When to use:
+> **Boundary (read this before using it):** this tool **does not operate the machine your program runs on** — it calls no system mouse/keyboard APIs and ships no VM or browser. The real GUI automation happens inside the hosted environment behind Anthropic's beta API. The tool is closer to an "action → computer-use request" forwarder: `ComputerUseOutput.result` is Anthropic's raw response text; only the `screenshot` action additionally extracts a base64 image from the response. The request body hard-codes the model `claude-sonnet-4-20250514` and `max_tokens=4096` (not configurable in this version).
 
-- Web / desktop apps have no usable API; you can only operate through the UI
-- Automating GUI flows like "fill form → click button → read result"
-- Having the Agent complete data entry, UI inspection, etc., through "look at the screen + operate"
+Six actions (same names as the Anthropic protocol):
 
-### Capabilities
+| Action | Required params | Notes |
+|---|---|---|
+| `screenshot` | — | Captures the current screen; the base64 image is extracted from the response |
+| `click` | `coordinate:[x,y]` (required) | Mouse click; `text:"right"` means right button, left by default |
+| `type` | `text` (required) | Type text |
+| `scroll` | `coordinate` + `direction` (up/down/left/right, all required) | Scroll; `amount` defaults to 3 |
+| `key_press` | `keys:["ctrl","a"]` (required) | Key combo, joined internally into `"ctrl+a"` |
+| `wait` | — | `duration_ms` defaults to 1000ms |
 
-| Capability | Purpose |
-|---|---|
-| Screenshot | Agent first "sees" the current screen and knows what the UI looks like |
-| Mouse click | Clicks a target position / element to select, submit, etc. |
-| Keyboard input | Fills text boxes, presses shortcuts |
+Coordinates are bounds-checked against the width/height given at construction; unknown action names or missing required params return `ToolError::InvalidInput` before any request is sent.
 
-### Hook It Up as a Tool
-
-`ComputerUseTool` implements `BaseTool`, so it can go into an Agent's tool list. The Agent calls it on demand in its "think → act → observe → think again" loop: screenshot to observe first → decide where to click → perform the click → screenshot again to confirm the result.
+### Construction and Wiring
 
 ```rust
 use langchainrust::ComputerUseTool;
 use std::sync::Arc;
 
-// Anthropic API mode (default)
-let tool = ComputerUseTool::new();
+// There is no new(); the only real constructor is new_anthropic(key, width, height)
+let tool = ComputerUseTool::new_anthropic("sk-ant-...", 1024, 768)
+    .with_base_url("https://api.anthropic.com")  // optional: official endpoint by default
+    .with_timeout(Duration::from_secs(60));      // optional: HTTP timeout, 60s by default
 
-// Use as BaseTool
+// Use as a BaseTool
 let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 ```
 
 ### Usage Notes
 
-- This is a tool with real side effects — it operates a real screen. Verify it first in a controlled environment (test page / isolated desktop) before hooking it up, and mind permission and security boundaries.
-- The Agent "sees" the UI through screenshots; screenshot quality directly affects how accurately it selects points and types.
-- The default is Anthropic API mode (see the code comment); whether other backends can be swapped in depends on what this tool version supports.
+- `Default::default()` exists but carries an **empty API key at 1024×768** — the first call fails with "API key is required". There is no `new()`; use `new_anthropic`.
+- There is currently exactly one `ComputerMode` variant (`AnthropicApi`); no local OS-automation backend exists.
+- Side effects happen in Anthropic's environment; billing and safety policy follow the Anthropic beta terms. Request failures and non-2xx responses (with the response body attached) become `ToolError::ExecutionFailed`.
 
 ---
 
@@ -5097,45 +6070,77 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 
 ### RouterLLM (Model Routing + Fallback)
 
-`RouterLLM` implements `BaseChatModel`, routing calls across a pool of heterogeneous models and falling back on failure.
+`RouterLLM` itself implements `BaseChatModel`: a strategy picks the primary model from a heterogeneous pool, and on failure the router falls back through the registered slots in order. To callers it is an ordinary chat model — a drop-in replacement.
 
-**Five routing strategies:**
+**Six routing strategies (the first five since v0.5.0; `LatencyWeighted` ✨ v0.22.4):**
 
 | Strategy | Behavior | Use Case |
 |----------|----------|----------|
-| `Fallback` | Primary fails → try next | Production fault tolerance |
-| `RoundRobin` | Rotate across models | Load balancing, rate-limit avoidance |
-| `LeastLatency` | Pick fastest recent model | Latency-sensitive |
-| `LowestCost` | Pick cheapest model | Cost optimization |
-| `InputDirected` | Custom closure over input text | Route by query complexity |
+| `Fallback` | Always try the registered primary first, then the next slot on failure | Production fault tolerance |
+| `RoundRobin` | Rotate the starting index per call to spread traffic evenly | Load balancing, smoothing rate-limit pressure |
+| `LeastLatency` | Pick the model with the lowest recent EMA latency (the exponential moving average is updated after every call) | Latency-sensitive, "always hit the fastest one" |
+| `LatencyWeighted(beta)` ✨ | Weighted lottery over `(1/latency)^beta` for the primary slot; untried models optimistically share the best latency (preserving exploration traffic); the draw is deterministic SplitMix64 with no new dependency | Want low latency without "starving" new models |
+| `LowestCost` | Pick the cheapest model | Cost optimization |
+| `InputDirected(Arc<Fn(&str)->usize>)` | A closure over the input text picks the primary; the rest back it up in order | Route by query complexity / language |
 
 ```rust
 use langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
 
-// 1. Fallback: primary + backups
+// 1. Fallback: primary + backups (convenience constructor)
 let router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
 let result = router.chat(messages, None).await?;
 
-// 2. Lowest cost routing
+// 2. Lowest-cost routing — prices can be supplied three ways:
+//    a) with_cost: a single relative cost number, the simplest option
 let router = RouterLLM::new(RoutingStrategy::LowestCost)
     .with_cost(cheap_model, 0.01)
     .with_cost(powerful_model, 0.03);
+//    b) with_priced_model + ModelPrice: real USD per-1K input/output prices;
+//       routing weight uses a 0.75/0.25 blended price, and the shared budget gate is fed
+//    c) with_registry(ModelRegistry) + with_model_as(model, "provider/model-id"):
+//       prices come from a JSON-fetchable catalog (ModelRegistry::fetch); unknown keys sort last
 
-// 3. Input-directed routing
+// 3. Input-directed routing (the closure returns the primary slot index)
 let router = RouterLLM::new(RoutingStrategy::InputDirected(Arc::new(|input| {
     if input.contains("code") { 1 } else { 0 }
 })))
 .with_model(general_model)
 .with_model(code_model);
 
-// 4. Least latency routing
-let router = RouterLLM::new(RoutingStrategy::LeastLatency)
+// 4. Latency-weighted routing (beta=1.0: a 100ms model is ~10x more likely
+//    to be drawn as primary than a 1000ms one)
+let router = RouterLLM::new(RoutingStrategy::LatencyWeighted(1.0))
     .with_model(fast_model)
     .with_model(slow_but_smart_model);
 
 // Works as a normal BaseChatModel — drop-in replacement
 let result = router.chat(messages, None).await?;
 let stream = router.stream_chat(messages, None).await?;
+```
+
+**Per-model rate limiting (`ModelRateLimit`, ✨ v0.22.4):** attach an admission gate to an individual slot — sliding-window RPS/RPM cap, concurrency cap, and a FIFO wait queue (`with_max_queue` rejects fast when full; `with_wait_timeout` yields to the next candidate model when the wait expires). For streaming calls the permit is held until the whole response body is consumed:
+
+```rust
+use langchainrust::ModelRateLimit;
+let limit = ModelRateLimit::per_minute(600)
+    .with_max_concurrent(20)
+    .with_max_queue(32)
+    .with_wait_timeout(Duration::from_secs(2));
+let router = RouterLLM::new(RoutingStrategy::Fallback)
+    .with_model_rate_limited(primary, limit)
+    .with_model(backup);       // automatically cuts over to backup when the primary is saturated
+```
+
+**Shared budget gate (`RouterBudget`, ✨ v0.22.4):** multiple routers can share one USD/token budget. Each call pre-deducts an estimated cost; once the gate trips, **paid slots are skipped outright while free/unpriced slots can still serve as the backstop**, and the actual model-reported usage is reconciled after the call. An over-budget error propagates along the existing fallback chain (named `RouterBudgetExceeded` in the facade because `BudgetExceeded` is already taken by the agent executor):
+
+```rust
+use langchainrust::RouterBudget;
+let budget = RouterBudget::with_cost_and_token_limits(5.0, 2_000_000); // $5 / 2M tokens
+let router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_priced_model(paid, price)
+    .with_model(free_local)
+    .with_budget(budget.clone());
+let _ = (budget.spent_usd(), budget.is_tripped(), budget.trips());  // observable readings
 ```
 
 ---
@@ -5175,43 +6180,71 @@ let answer = agent.invoke("What is Rust ownership?").await?;
 
 ### AdaptiveRAG
 
-LLM decides retrieval strategy per query: NoRetrieval (skip retrieval), SingleSearch (one query), MultiQuery (multiple angles).
+A fixed "retrieve then generate" pipeline is a bad deal for two query classes: greetings and common-sense questions pay for a pointless vector search, while complex comparisons are not covered by a single top-k. AdaptiveRAG adds one LLM routing call at the entrance and bins each query into one of three tiers:
+
+- **NoRetrieval**: the model answers from parametric knowledge and the retriever is never touched (`sources` is empty)
+- **SingleSearch**: the regular path — one retrieval (4 docs by default) then generation
+- **MultiQuery**: several rewritten queries (3 by default) are generated first, retrieved one by one, and merged before generation
 
 ```rust
-use langchainrust::agents::adaptive_rag::AdaptiveRAG;
+use langchainrust::agents::adaptive_rag::{AdaptiveRAG, RagDecision};
 
-let agent = AdaptiveRAG::new(llm, retriever);
+// The struct is AdaptiveRAG (not AdaptiveRAGAgent); new(llm, retriever)
+let agent = AdaptiveRAG::new(llm, retriever)
+    .with_retrieve_k(4)          // docs per query, 4 by default
+    .with_multi_query_count(3);  // rewritten queries in the MultiQuery tier, 3 by default
 
-// Complex question -> LLM picks MultiQuery, generates multiple queries
-let answer = agent.invoke("Compare tokio vs async-std scheduling").await?;
+// Complex question -> LLM picks MultiQuery, generating multiple query angles
+let result = agent.invoke("Compare tokio vs async-std scheduling").await?;
+assert_eq!(result.decision, RagDecision::MultiQuery);
+println!("{} (from {} sources)", result.answer, result.sources.len());
 
-// Simple greeting -> LLM picks NoRetrieval, skips retrieval entirely
-let answer = agent.invoke("Hello").await?;
+// Simple greeting -> LLM picks NoRetrieval, skipping retrieval entirely
+let result = agent.invoke("Hello").await?;
+assert!(result.sources.is_empty());
 ```
+
+It returns `AdaptiveRAGResult { answer, decision, sources }`; a routing-parse failure is an explicit `AdaptiveRAGError::DecisionParse`, never a silent degradation into some tier. Like CRAG it offers `stream()`: a `PipelineStep` (the routing decision) event comes first and `FinalAnswer` last, so a UI can show "why nothing was retrieved this time / how many rounds ran".
 
 ---
 
 ### GraphRAG (Knowledge Graph RAG)
 
-Vector search misses relationships. GraphRAG extracts entities + relations -> builds graph -> Label Propagation community detection -> community summaries -> query by community.
+Vector search misses relationships. GraphRAG extracts entities + relations → builds a graph → runs **hierarchical Leiden community detection** → summarizes each level → queries by community / neighborhood.
+
+> v0.22.4 change (B10): the community algorithm was replaced from early label-propagation / "tier" approximations with **deterministic weighted-modularity Leiden** (fast-local node moves + refinement guaranteed + aggregation; node traversal order is shuffled with a seeded SplitMix64, so identical input always yields the same result), with recursive hierarchy — at a coarser level the internal edges of a community are folded into self-loops before redetection. The old `community_size_tiers` configuration was removed.
 
 ```rust
-use langchainrust::{GraphRAG, GraphQueryMode};
+use langchainrust::{GraphRAG, GraphRAGConfig, GraphQueryMode, GraphGlobalLevel};
 
-let mut graph_rag = GraphRAG::new(llm);
-graph_rag.add_documents(&documents).await?;
+// Config is optional; the values shown are the new defaults
+let config = GraphRAGConfig::default()
+    .with_leiden_resolution(1.0)    // modularity resolution: higher → smaller communities
+    .with_leiden_seed(42)           // deterministic traversal seed
+    .with_max_community_levels(3);  // cap on recursive community levels
+let graph_rag = GraphRAG::new(llm).with_config(config);
 
-// Global query: search community summaries (macro questions)
+graph_rag.add_documents(&documents).await?;   // LLM entity/relation extraction into the graph only
+graph_rag.build_communities().await?;         // must be called explicitly: hierarchical Leiden
+                                              // + per-level LLM summaries
+
+// Global: search the coarsest-level summaries (macro questions; every entity is
+// covered by exactly one root community)
 let result = graph_rag.query("overall tech stack architecture", GraphQueryMode::Global).await?;
 
-// Local query: search entity neighbors (specific questions)
+// Local: neighborhood subgraph around relevant entities (specific questions)
 let result = graph_rag.query("Alice's advisor's students", GraphQueryMode::Local).await?;
 
-// Hybrid: combine both
+// Hybrid: community summaries + local neighborhood
 let result = graph_rag.query("...", GraphQueryMode::Hybrid).await?;
+
+// Level-aware: pick which level's summaries answer global/hybrid questions
+let _ = graph_rag.query("...", GraphQueryMode::GlobalAt(GraphGlobalLevel::Level(0))).await?; // base Leiden partition
+let _ = graph_rag.query("...", GraphQueryMode::GlobalAt(GraphGlobalLevel::All)).await?;      // all levels at once (more tokens)
+let _ = graph_rag.query("...", GraphQueryMode::HybridAt(GraphGlobalLevel::Coarsest)).await?;
 ```
 
-**Pipeline:** documents -> LLM entity+relation extraction -> graph building -> Label Propagation community detection -> LLM community summaries -> query (Global/Local/Hybrid). No external graph library dependency.
+**Pipeline:** documents → LLM entity+relation extraction (per-document caps, same-name dedup) → graph build → `build_communities()`: hierarchical Leiden → L0 summarized from intra-entity edges, upper levels from child-community summaries plus cross-community relation ROLLUP → five query modes (`Global` / `Local` / `Hybrid` / `GlobalAt(level)` / `HybridAt(level)`, with level selector `Coarsest` (default) / `Level(n)` / `All`). No external graph library — the graph lives in-process; observability methods `entity_count` / `relation_count` / `community_count` / `community_summaries` are available.
 
 ---
 
@@ -5251,7 +6284,7 @@ for citation in &report.citations {
 
 ### MCP Protocol Primitives
 
-The MCP spec defines 6 categories of primitives. In LangChainRust the client→server primitives with implemented call logic are `initialize` (handshake), `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `completion/complete`, plus streaming tool results (`notifications/tool_partial`) and cancellation (`notifications/cancelled`). All client→server primitives are **registration-based**: register a data source and they return real data; unregistered ones still return `method_not_found`. The server→host primitives `sampling::create_message` / `elicitation::create` are initiated by `MCPServer` and need an injected callback.
+The MCP spec defines 6 categories of primitives. In LangChainRust the client→server primitives with **implemented call logic** are: `initialize` (handshake), `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, `completion/complete`. Notifications (messages without an id) are no longer silently dropped either: `notifications/cancelled` (client requests cancelling a call), `notifications/progress` (progress), `notifications/roots/list_changed`, and `notifications/initialized` all have explicit dispatch — but as of v0.22.4 the handler bodies only log and reserve extension points; no real cancel/progress callbacks are wired yet. **The spec's streaming tool-result notification is not implemented** — do not assume tools support incremental output on that basis. All client→server primitives are **registration-based**: register a data source and they return real data; unregistered ones still return `method_not_found`. The server→host primitives `sampling/createMessage` / `elicitation/create` are initiated by `MCPServer` and need an injected callback.
 
 | Primitive | Status | Description |
 |-----------|--------|-------------|
@@ -5268,76 +6301,110 @@ The MCP spec defines 6 categories of primitives. In LangChainRust the client→s
 
 ### Code Interpreter Sandbox
 
-Safe code execution with `LocalSandbox` (subprocess + timeout).
+> **Security precondition (read first):** `SandboxTool` is **disabled by default** — without calling `.with_dangerously_allow(true)`, every execution request returns an error directly (the v0.20.0 hardening). The bundled `LocalSandbox` is nothing more than "subprocess + timeout" with **no OS-level isolation whatsoever**; the Python dangerous-import blocklist is explicitly called a *noise filter* in source comments (things like `__import__("o"+"s")` bypass it) and is **not a security boundary**. Untrusted code must run inside a container / VM / WASM, reached through your own `CodeSandbox` implementation. The old `WasmSandbox` / `E2BSandbox` were only ever interfaces whose bodies always returned "not implemented"; the v0.20.0 review deleted them together with the `sandbox-wasm` / `sandbox-e2b` features — a backend that is promised but cannot deliver is worse than none.
 
 ```rust
 use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox, SandboxTool, Language};
 
-// Direct sandbox usage
+// Use the backend directly: run(code, language, timeout_ms) -> Result<RunResult, SandboxError>
 let sandbox = LocalSandbox::new()
-    .with_python_path("python3");  // optional: custom interpreter path
+    .with_python_path("python3")   // optional; auto-detects python3 / python by default
+    .with_node_path("node");       // optional; JavaScript backend, "node" by default
 
 let result = sandbox.run("print(2 + 2)", Language::Python, 30_000).await?;
 assert_eq!(result.stdout.trim(), "4");
+// RunResult { stdout, stderr, exit_code, execution_time_ms }
 
-// Or wrap as a BaseTool for agent use
+// Wrap as a BaseTool for agent use — the execution switch must be opened explicitly
 let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
-    .with_timeout(30_000);  // 30 second timeout
+    .with_timeout(30_000)                  // 30s default; timeout maps to ToolError::Timeout (in seconds)
+    .with_dangerously_allow(true);         // without this line every tool call fails
 ```
 
-- **LocalSandbox**: subprocess execution, auto-kill on timeout, captures stdout/stderr, dangerous import check for Python (the only built-in backend)
+Backend capability boundaries (v0.22.4):
+
+- **Python**: `python -c` subprocess; a dangerous-import substring check (20 modules including os/subprocess/sys/socket/pickle; a hit is an error) runs first — restated: it can be bypassed and only stops casually-written dangerous code
+- **JavaScript**: `node -e` subprocess with no additional checks
+- **Rust**: the `Language::Rust` enum variant exists (full serialization/matching) but `LocalSandbox` returns `SandboxError::UnsupportedLanguage` directly — a compiled toolchain would be required, so it is deliberately unimplemented
+- Custom backend: implement the `CodeSandbox` trait's `async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError>` and the same `SandboxTool<S>` accepts it
 
 ---
 
 ### OpenAI Responses API
 
-Connect to `/v1/responses` with built-in tools: WebSearch, FileSearch, CodeInterpreter, ComputerUse -- one request, model handles tool calls automatically.
+Connects to `/v1/responses` (default base URL `https://api.openai.com/v1`, default model `gpt-4o`); the built-in tools run **hosted on OpenAI's side** — within one request the model decides retrieval/execution itself, and the framework takes no part in the tool loop.
 
 ```rust
 use langchainrust::language_models::openai::responses::{ResponsesModel, ResponsesConfig, BuiltinTool};
 
 let config = ResponsesConfig::new("your-api-key")
-    .with_model("gpt-4o")
+    .with_model("gpt-4o")                              // gpt-4o is the default
+    .with_temperature(0.2)
+    .with_max_tokens(2000)
     .with_builtin_tool(BuiltinTool::WebSearch)
     .with_builtin_tool(BuiltinTool::CodeInterpreter);
 
 let model = ResponsesModel::new(config);
+// ResponsesModel::from_env()? also exists, reading OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
 
 let result = model.chat(messages, None).await?;
-// result.content includes the final answer after tool execution
+// result.content    = the final text after the server ran the tools (refusals render as [Refusal: ...])
+// result.tool_calls = the server-side execution trace (web_search / file_search /
+//                     code_interpreter / computer_use) — recorded only, no backfill needed from you
 ```
+
+Boundaries and current state (v0.22.4 — know before using):
+
+- **Only the two fieldless variants `WebSearch` / `CodeInterpreter` are externally constructible.** The fields of `FileSearch { vector_store_ids }` and `ComputerUse { display_width, display_height }` are not `pub`, so the variants cannot be constructed outside the crate (crate-internal tests use them) — until those fields are opened, the two variants are effectively decoration for framework users.
+- Message differences from ordinary chat: tool messages are converted to `function_call_output` (`call_id` + output), and human messages support images (`input_image`, multimodal passthrough).
+- Tools execute on OpenAI's servers; `tool_calls` is just the **execution trace** mapped out of output items. There is no local ReAct loop here — the framework neither runs code for you nor backfills results.
+- `stream_chat` is supported: `response.output_text.delta` emits token by token, and the `response.completed` event carries real input/output token usage (`StreamChunk.token_usage`).
 
 ---
 
 ### Anthropic Extended Thinking
 
-Configure `budget_tokens` to let Claude think before answering. Thinking block exposed via `thinking_content` in `LLMResult`; streaming via `on_llm_thinking` callback.
+Configure a thinking budget so Claude emits a thinking block before the answer. On the non-streaming path the thinking text is exposed via `LLMResult.thinking_content: Option<String>` (when there is a thinking block but no answer text yet, `content` stays an empty string — thinking content is never mixed into the answer). On the streaming path, thinking increments **do not enter the data stream** — `stream_chat` drops thinking tokens from its output; they are observable only through a callback handler's `on_llm_thinking(run, chunk)`.
 
 ```rust
 use langchainrust::{AnthropicChat, AnthropicConfig};
 
 let config = AnthropicConfig::new("your-api-key")
-    .with_model("claude-sonnet-5");
+    // v0.22.4 aliases refreshed to 4.x: claude-opus-4-1 / claude-sonnet-4-5 / claude-haiku-4-5
+    // (plus two legacy 3.5 aliases); the env default still points at claude-3-5-sonnet-20241022
+    .with_model("claude-sonnet-4-5")
+    // Anthropic hard rule: max_tokens must exceed the thinking budget (the budget counts
+    // toward the output cap)
+    .with_max_tokens(12_000);
 let model = AnthropicChat::new(config)
-    .with_thinking(10000); // up to 10000 thinking tokens
+    .with_thinking(10_000); // budget in tokens; the API requires >= 1024
 
 let result = model.chat(messages, None).await?;
-println!("Thinking: {:?}", result.thinking_content);
+println!("Thinking: {:?}", result.thinking_content); // Some("...")
 println!("Answer: {}", result.content);
 ```
+
+Usage boundaries (v0.22.4):
+
+- The framework does **not** validate budget legality: a budget below 1024, or forgetting to raise `max_tokens` above the budget, fails with an error from the Anthropic API rather than at compile time.
+- With thinking on, sampling parameters such as temperature are constrained Anthropic-side (thinking mode permits only a few fixed values).
+- The thinking block's `signature` and `redacted_thinking` are not handled: thinking blocks from a previous turn are not sent back in multi-turn tool calls, so long agentic chains need their own evaluation.
+- The other switch lives on the config: `AnthropicConfig::with_thinking(ThinkingConfig::enabled(n))`, equivalent to the model-level shortcut; `with_prompt_caching(true)` additionally passes `cache_control` breakpoints through (v0.22.4).
 
 ---
 
 ### Streaming Structured Output
 
-`PartialJsonParser` incrementally parses streaming JSON into partial structs -- no need to wait for all tokens.
+`PartialJsonParser` incrementally parses streaming JSON into partial structs — a deserialization is attempted on every incoming batch of tokens, so a UI can render field by field instead of waiting for the full answer. This is the generic blanket path (every `BaseChatModel` gets it automatically); underneath it uses "schema system prompt + chunk-wise parsing", which is a different mechanism from the provider-native strict-tool structured output — see the [with_structured_output](#with_structured_output) chapter for the comparison.
 
 ```rust
 use langchainrust::core::structured_output::StreamingStructuredOutputExt;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(JsonSchema, Deserialize, Clone, PartialEq, Default)]
+// Full bounds on T: DeserializeOwned + Serialize + Clone + PartialEq + Unpin + Send + Sync
+// (PartialEq drives adjacent dedupe; Serialize is a hard bound — without it the code does not compile)
+#[derive(JsonSchema, Serialize, Deserialize, Clone, PartialEq, Default)]
 struct UserInfo {
     #[serde(default)]
     name: Option<String>,
@@ -5348,6 +6415,8 @@ struct UserInfo {
 }
 
 let schema = serde_json::to_value(schemars::schema_for!(UserInfo)).unwrap();
+// Arguments are (schema, prompt): internally it assembles two messages —
+// system (schema instructions) + human (prompt)
 let stream = model.stream_structured_output::<UserInfo>(schema, "Tell me about Alice, age 30").await?;
 pin_mut!(stream);
 while let Some(result) = stream.next().await {
@@ -5358,20 +6427,24 @@ while let Some(result) = stream.next().await {
 }
 ```
 
+Behavior details: fields must be "deserializable by default" (`Option` or `#[serde(default)]`), otherwise mid-stream half-JSON fails deserialization, that partial result is skipped, and only one value is produced once the JSON is complete; the handler de-duplicates adjacent identical results via `last_value`, never re-emitting an unchanged struct.
+
 ---
 
 ### Batch API
 
-`BatchClient` unifies OpenAI and Anthropic batch workflows: submit → poll → results, at 50% cost.
+`BatchClient` hides the two vendors' batch channels behind one interface: **OpenAI** (JSONL upload + `/v1/batches`) and **Anthropic** (`/v1/messages/batches`, an inline request array). Batch channels cost roughly half the real-time price, but results arrive with minutes-to-24-hours latency — they only fit non-urgent workloads such as offline evaluation, translation, and corpus generation.
 
 ```rust
-use langchainrust::batch::{BatchClient, BatchProvider, BatchRequest};
+// Path note: in the facade this lives under core::batch (the types are also re-exported at the crate root)
+use langchainrust::core::batch::{BatchClient, BatchProvider, BatchRequest};
 
 let client = BatchClient::new(BatchProvider::OpenAI, "your-api-key");
+// BatchProvider::Anthropic uses the same API
 
 let requests = vec![
     BatchRequest {
-        custom_id: "req-1".to_string(),
+        custom_id: "req-1".to_string(),   // your correlation id, returned unchanged
         model: "gpt-4o".to_string(),
         messages: vec![Message::human("Translate: Hello")],
         temperature: None,
@@ -5386,34 +6459,57 @@ let requests = vec![
     },
 ];
 
-let results = client.submit_and_wait(requests, 5000, 300_000).await?;
+// All-in-one: submit → poll every 5s → wait at most 300s, returning BatchError::Timeout on expiry
+let results = client.submit_and_wait(requests, 5_000, 300_000).await?;
 for result in results {
-    println!("{}: {:?}", result.custom_id, result.result?.content);
+    // One entry failing does not affect the others: each carries Result<LLMResult, BatchError>
+    match result.result {
+        Ok(llm) => println!("{}: {}", result.custom_id, llm.content),
+        Err(e)  => eprintln!("{} failed: {e}", result.custom_id),
+    }
 }
 ```
+
+You can also drive the lifecycle separately: `submit() -> BatchId`, `poll(&id) -> BatchStatus` (`InProgress` / `Completed` / `Failed` / `Expired` / `Cancelled`), `results(&id)`, `cancel(&id)` — convenient for persisting the batch id and resuming polling from another process.
 
 ---
 
 ### Tracing (Distributed Tracing)
 
-`Tracer` + `SpanGuard` (RAII) auto-manages parent-child spans. Backends: InMemory / Console / OTel.
+`Tracer` + `SpanGuard` (RAII) for manual instrumentation: when a guard drops, the span is settled (duration and parent-child relation written back to the backend automatically); calling `.end()` early also works. Three backends exist: `InMemoryTracingBackend` (for test assertions; `spans()` / `trace_tree()`), `ConsoleTracingBackend` (prints), and `OtelTracingBackend` (forwards to the OpenTelemetry global tracer — behind the `opentelemetry` feature; you wire the exporter yourself, then construct via `OtelTracingBackend::from_global("service-name")`).
 
 ```rust
-use langchainrust::callbacks::tracing::{Tracer, ConsoleTracingBackend, SpanKind};
+use langchainrust::callbacks::tracing::{
+    Tracer, ConsoleTracingBackend, SpanKind, SpanTokenUsage,
+};
 use std::sync::Arc;
 
+// SpanKind has exactly these 5 + 1 variants:
+// Llm / Chain / Tool / Retriever / Agent / Custom(String)
+// — there is no generic "Internal" variant.
 let tracer = Tracer::new(Arc::new(ConsoleTracingBackend));
-let span = tracer.start("agent_run", SpanKind::Internal);
+let span = tracer.start("agent_run", SpanKind::Agent);
 {
-    let _retrieve = tracer.start_child("retrieve", SpanKind::Internal);
+    // Parent-child linkage is maintained by a task-local span stack;
+    // when no span is active on the stack, start_child() degrades to a root span.
+    let _retrieve = tracer.start_child("retrieve", SpanKind::Retriever);
     let docs = retriever.retrieve(&query).await?;
-} // _retrieve drop -> child span auto-records end time
+} // _retrieve drops -> child span records its end time automatically
 {
-    let _generate = tracer.start_child("generate", SpanKind::Internal);
+    let mut generate = tracer.start_child("generate", SpanKind::Llm);
     let answer = llm.chat(messages, None).await?;
+    // Attach attributes before the span ends: tokens / cost / GenAI semantic convention / metadata
+    let _ = generate
+        .with_tokens(SpanTokenUsage { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 })
+        .with_cost(0.0021)
+        .with_gen_ai_request_model("gpt-4o");
 }
-span.end(); // span auto-records duration, token count, etc.
+span.end(); // even without an explicit end(), drop settles the span
 ```
+
+- Inside a concurrent task (`tokio::spawn`), call `init_task_span_stack().await` **before** `start_child` — the span stack is task-local and is not inherited across tasks. To link explicitly instead, pass the parent id with `start_child_with_parent(name, kind, parent_id)`.
+- Span attributes: `with_tokens(SpanTokenUsage { .. })` / `with_cost(f64)` / `with_gen_ai_request_model(..)` / `with_gen_ai_response_model(..)` / `with_metadata(key, serde_json::Value)`; on the failure path call `set_error(msg)` (`&mut self`) so the backend records the error marker.
+- This is a **manual** instrumentation API parallel to the callback system (`on_llm_start` and friends) — use it to add spans for non-model phases such as retrievers and business steps.
 
 ---
 
@@ -5484,7 +6580,7 @@ Additional improvements:
 <a id="v052-fixes"></a>
 ### Other v0.5.2 Changes
 
-- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — now properly declared
+- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — they were declared at the time, **but these two backends were ever only interface stubs whose bodies always returned "not implemented"; both backends and their features were removed wholesale in v0.20.0** (see [Code Interpreter Sandbox](#code-interpreter-sandbox) above). In v0.22.4 only `LocalSandbox` remains.
 - **Clippy zero warnings**: All clippy warnings resolved
 
 ---

@@ -157,6 +157,7 @@ impl BaseAgent for EchoAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         let input = inputs.get("input").cloned().unwrap_or_default();
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -1214,9 +1215,7 @@ fn message_id_table_is_bounded_and_evicts_oldest() {
         assert!(table.get(&format!("m{i}")).is_none(), "m{i} evicted");
     }
     assert!(table.get("m10").is_some());
-    assert!(table
-        .get(&format!("m{}", MAX_MESSAGE_IDS + 9))
-        .is_some());
+    assert!(table.get(&format!("m{}", MAX_MESSAGE_IDS + 9)).is_some());
 
     // In-place update (finishing an existing claim) must not evict or
     // double-queue the key.

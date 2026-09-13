@@ -29,7 +29,8 @@ pub enum CohereEmbedInputType {
 }
 
 impl CohereEmbedInputType {
-    fn as_str(&self) -> &'static str {
+    /// Wire token for the v2/embed `input_type` field.
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             CohereEmbedInputType::SearchQuery => "search_query",
             CohereEmbedInputType::SearchDocument => "search_document",

@@ -27,11 +27,11 @@ use std::sync::{Arc, Mutex};
 use self::types::*;
 use crate::openai::sse::SseByteFramer;
 use crate::ProviderError;
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
-use lc_core::runnables::Runnable;
+use lc_core::runnables::{run_tree_from_config, Runnable};
 use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
 use lc_schema::{Message, MessageType};
@@ -39,18 +39,18 @@ use lc_schema::{Message, MessageType};
 /// Gemini API base endpoint
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-/// Gemini model list
+/// Gemini model list (B5, v0.22.4 — Gemini 3 / 2.5 generation; non-exhaustive).
 pub const GEMINI_MODELS: [&str; 6] = [
-    "gemini-2.0-flash",      // Gemini 2.0 Flash (newest fast model)
-    "gemini-2.0-flash-lite", // Gemini 2.0 Flash Lite (lightweight)
-    "gemini-1.5-pro",        // Gemini 1.5 Pro (strong reasoning)
-    "gemini-1.5-flash",      // Gemini 1.5 Flash (fast and balanced)
-    "gemini-1.5-flash-8b",   // Gemini 1.5 Flash 8B (smaller, faster)
-    "gemini-2.0-flash-exp",  // Gemini 2.0 Flash experimental
+    "gemini-3-pro",          // Gemini 3 Pro (2026 flagship)
+    "gemini-3-flash",        // Gemini 3 Flash
+    "gemini-2.5-pro",        // Gemini 2.5 Pro (strong reasoning)
+    "gemini-2.5-flash",      // Gemini 2.5 Flash (fast and balanced)
+    "gemini-2.5-flash-lite", // Gemini 2.5 Flash Lite (lightweight)
+    "gemini-2.0-flash",      // Gemini 2.0 Flash (stable previous gen)
 ];
 
 /// Gemini config
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GeminiConfig {
     /// Gemini API key.
     pub api_key: String,
@@ -70,6 +70,23 @@ pub struct GeminiConfig {
     pub tools: Option<Vec<ToolDefinition>>,
     /// Tool choice mode: "auto" (AUTO), "none" (NONE), or "any" (ANY).
     pub tool_choice: Option<String>,
+}
+
+impl std::fmt::Debug for GeminiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("GeminiConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_output_tokens", &self.max_output_tokens)
+            .field("top_p", &self.top_p)
+            .field("top_k", &self.top_k)
+            .field("tools", &self.tools)
+            .field("tool_choice", &self.tool_choice)
+            .finish()
+    }
 }
 
 impl Default for GeminiConfig {
@@ -248,13 +265,38 @@ impl GeminiChat {
                     });
                 }
                 MessageType::Human => {
-                    contents.push(GeminiContent {
-                        role: Some("user".to_string()),
-                        parts: vec![GeminiPart {
+                    // B7: text part first, then one media part per attached medium.
+                    // The async entries resolve every reference (fetch-to-inline
+                    // for http(s), pass-through for gs://) before this runs.
+                    let mut parts: Vec<GeminiPart> = Vec::new();
+                    if !msg.content.is_empty() {
+                        parts.push(GeminiPart {
+                            text: Some(msg.content.clone()),
+                            function_call: None,
+                            function_response: None,
+                            inline_data: None,
+                            file_data: None,
+                        });
+                    }
+                    for media in msg.media_parts() {
+                        if let Some(media_part) = Self::media_to_part(&media) {
+                            parts.push(media_part);
+                        }
+                    }
+                    if parts.is_empty() {
+                        // Preserve prior behaviour: a bare user turn carries its
+                        // text (even if empty) as a single text part.
+                        parts.push(GeminiPart {
                             text: Some(msg.content),
                             function_call: None,
                             function_response: None,
-                        }],
+                            inline_data: None,
+                            file_data: None,
+                        });
+                    }
+                    contents.push(GeminiContent {
+                        role: Some("user".to_string()),
+                        parts,
                     });
                 }
                 MessageType::AI => {
@@ -264,6 +306,8 @@ impl GeminiChat {
                             text: Some(msg.content),
                             function_call: None,
                             function_response: None,
+                            inline_data: None,
+                            file_data: None,
                         }],
                     });
                 }
@@ -275,9 +319,7 @@ impl GeminiChat {
                     // "call", so the functionResponse.name never matched a real
                     // declaration and any multi-round tool dialog broke from the
                     // second round (0.22.0 audit H-P7).
-                    let function_name = tool_call_id
-                        .strip_prefix("call_")
-                        .unwrap_or(tool_call_id);
+                    let function_name = tool_call_id.strip_prefix("call_").unwrap_or(tool_call_id);
                     contents.push(GeminiContent {
                         role: Some("function".to_string()),
                         parts: vec![GeminiPart {
@@ -287,6 +329,8 @@ impl GeminiChat {
                                 name: function_name.to_string(),
                                 response: json!({"result": msg.content}),
                             }),
+                            inline_data: None,
+                            file_data: None,
                         }],
                     });
                 }
@@ -294,6 +338,52 @@ impl GeminiChat {
         }
 
         (contents, system_prompt)
+    }
+
+    /// B7: maps one unified [`lc_schema::MediaPart`] to a Gemini media part.
+    ///
+    /// Data URIs become `inline_data` (raw base64 + MIME); `gs://` references
+    /// become `file_data`. The async entries run the Gemini media policy via
+    /// `media::resolve_message_media` first — http(s) media is fetched
+    /// SSRF-safely into data URIs and MIME types are validated — so anything
+    /// that is neither a data URI nor a `gs://` reference is skipped
+    /// defensively rather than sent to the API.
+    fn media_to_part(part: &lc_schema::MediaPart<'_>) -> Option<GeminiPart> {
+        let url = part.url();
+
+        let (inline_data, file_data) = if let Some(gs_path) = url.strip_prefix("gs://") {
+            let mime = part
+                .mime_type()
+                .or_else(|| crate::media::mime_from_extension(url))?
+                .to_string();
+            (
+                None,
+                Some(GeminiFileData {
+                    file_uri: format!("gs://{gs_path}"),
+                    mime_type: mime,
+                }),
+            )
+        } else if let Some((uri_mime, data)) = crate::media::data_uri_parts(url) {
+            // An explicitly declared file MIME wins over the data-URI header.
+            let mime = part.mime_type().unwrap_or(uri_mime).to_string();
+            (
+                Some(GeminiInlineData {
+                    mime_type: mime,
+                    data: data.to_string(),
+                }),
+                None,
+            )
+        } else {
+            return None;
+        };
+
+        Some(GeminiPart {
+            text: None,
+            function_call: None,
+            function_response: None,
+            inline_data,
+            file_data,
+        })
     }
 
     /// Builds the API request body
@@ -305,6 +395,8 @@ impl GeminiChat {
                 text: Some(text),
                 function_call: None,
                 function_response: None,
+                inline_data: None,
+                file_data: None,
             }],
         });
 
@@ -425,9 +517,17 @@ impl GeminiChat {
             self.config.base_url, self.config.model
         );
 
+        // B7: inline http(s) media through the SSRF guard, allow gs:// through,
+        // and reject unsupported schemes/types before building the request.
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Gemini)
+            .await
+            .map_err(|e| GeminiError::ApiError(e.to_string()))?;
         let request_body = self.build_request(messages);
 
         // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        // A14: non-idempotent POST — see retry::TransportRetryMode; use
+        // retry::SAFE_RETRY to forbid replaying a possibly-dispatched request.
         let response = crate::retry::send_with_retry(
             || {
                 self.client
@@ -478,6 +578,11 @@ impl GeminiChat {
             self.config.base_url, self.config.model
         );
 
+        // B7: same media resolution as the non-streaming path.
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Gemini)
+            .await
+            .map_err(|e| GeminiError::ApiError(e.to_string()))?;
         let request_body = self.build_request(messages);
 
         let response = self
@@ -513,7 +618,6 @@ impl GeminiChat {
             let mut byte_stream = byte_stream;
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
-
                     // Extract complete events from the byte-level framer
                     let events = {
                         let mut buffer_guard =
@@ -560,7 +664,8 @@ impl GeminiChat {
                                         let token_usage = TokenUsage {
                                             prompt_tokens: usage.prompt_token_count.unwrap_or(0)
                                                 as usize,
-                                            completion_tokens: usage.candidates_token_count
+                                            completion_tokens: usage
+                                                .candidates_token_count
                                                 .unwrap_or(0)
                                                 as usize,
                                             total_tokens: usage.total_token_count.unwrap_or(0)
@@ -693,23 +798,15 @@ impl BaseChatModel for GeminiChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
-        let mut run = RunTree::new(
+        let mut run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
-
-        if let Some(ref cfg) = config {
-            for tag in &cfg.tags {
-                run = run.with_tag(tag.clone());
-            }
-            for (key, value) in &cfg.metadata {
-                run = run.with_metadata(key.clone(), value.clone());
-            }
-        }
 
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
@@ -774,13 +871,14 @@ impl BaseChatModel for GeminiChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
 
-        let run = RunTree::new(
+        let run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.len(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
 
         if let Some(ref cfg) = config {

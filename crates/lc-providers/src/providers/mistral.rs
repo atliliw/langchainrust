@@ -50,7 +50,7 @@ pub const MISTRAL_MODELS: [&str; 6] = [
 ];
 
 /// Mistral AI configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MistralConfig {
     /// Mistral API key.
     pub api_key: String,
@@ -62,6 +62,19 @@ pub struct MistralConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+}
+
+impl std::fmt::Debug for MistralConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("MistralConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for MistralConfig {
@@ -150,6 +163,8 @@ impl MistralConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }

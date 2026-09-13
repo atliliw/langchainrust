@@ -18,15 +18,16 @@ use std::pin::Pin;
 /// Moonshot API endpoint
 pub const MOONSHOT_BASE_URL: &str = "https://api.moonshot.cn/v1";
 
-/// Moonshot model list
-pub const MOONSHOT_MODELS: [&str; 3] = [
-    "moonshot-v1-8k",   // 8K context
-    "moonshot-v1-32k",  // 32K context
-    "moonshot-v1-128k", // 128K long-context
+/// Moonshot model list (B5, v0.22.4 — Kimi K2 added; non-exhaustive).
+pub const MOONSHOT_MODELS: [&str; 4] = [
+    "kimi-k2-0711-preview", // Kimi K2 (2025 flagship, agentic)
+    "moonshot-v1-8k",       // 8K context
+    "moonshot-v1-32k",      // 32K context
+    "moonshot-v1-128k",     // 128K long-context
 ];
 
 /// Moonshot config
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MoonshotConfig {
     /// Moonshot API key.
     pub api_key: String,
@@ -38,6 +39,19 @@ pub struct MoonshotConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+}
+
+impl std::fmt::Debug for MoonshotConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("MoonshotConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for MoonshotConfig {
@@ -125,6 +139,8 @@ impl MoonshotConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }

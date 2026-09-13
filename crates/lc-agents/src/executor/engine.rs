@@ -1,11 +1,14 @@
 // lc-agents/src/executor/engine.rs
 //! `AgentExecutor` — the execution loop (plan -> act -> observe).
 
-use super::budget::{budget_iteration_gate, budget_token_gate, budget_tool_gate, BudgetConfig};
+use super::budget::{
+    budget_cost_gate, budget_iteration_gate, budget_token_gate, budget_tool_gate, BudgetConfig,
+};
 use super::compaction::CompactionConfig;
 use super::hooks::{run_after_completion_hooks, run_before_completion_hooks};
+use super::semantic_memory::{SemanticMemoryHook, SEMANTIC_MEMORY_INPUT_KEY};
 use super::tools::{
-    execute_tool_for_stream, execute_tools_parallel_for_stream, tool_error_observation,
+    execute_tool_for_stream, execute_tools_parallel_for_stream, index_tools, tool_error_observation,
 };
 use super::{
     AgentError, BaseAgent, CACHE_NS, DEFAULT_MAX_CONCURRENCY, MAX_MAX_ITERATIONS,
@@ -21,10 +24,11 @@ use crate::streaming::state::AgentStreamEvent;
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use futures_util::Stream;
 use lc_callbacks::{CallbackManager, RunTree, RunType};
+use lc_core::cost::CostTracker;
 use lc_core::observability::{MetricsSink, ObsEvent};
-use lc_core::runnables::RunnableConfig;
+use lc_core::runnables::{RunnableConfig, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
 use lc_core::tools::BaseTool;
-use lc_memory::BaseMemory;
+use lc_memory::{BaseMemory, MemoryExtractor, TwoTierMemory};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -35,6 +39,29 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
+/// A18: builds the per-round [`RunnableConfig`] handed to
+/// [`BaseAgent::plan`]/[`BaseAgent::plan_stream`] for one agent run.
+///
+/// The config carries the effective callback manager plus reserved trace-linkage
+/// metadata (parent = this run's chain root, trace = root trace id), so the
+/// provider-built LLM [`RunTree`] is dispatched under the agent chain tree
+/// instead of becoming a trace root. Returns `None` when no callbacks are
+/// configured, preserving the pre-A18 behavior where providers fire nothing for
+/// observers-less executors (and zero per-round allocation happens).
+fn build_plan_config(
+    callbacks: &Option<Arc<CallbackManager>>,
+    root_run: &RunTree,
+) -> Option<RunnableConfig> {
+    let manager = callbacks.as_ref()?;
+    let trace_id = root_run.trace_id.unwrap_or(root_run.id);
+    Some(
+        RunnableConfig::new()
+            .with_callbacks(manager.clone())
+            .with_metadata(RUN_META_PARENT_RUN_ID, json!(root_run.id.to_string()))
+            .with_metadata(RUN_META_TRACE_ID, json!(trace_id.to_string())),
+    )
+}
+
 /// Agent executor.
 ///
 /// Responsible for executing the agent's decision loop: Plan -> Act -> Observe.
@@ -44,6 +71,11 @@ pub struct AgentExecutor {
 
     /// Available tools.
     pub(crate) tools: Vec<Arc<dyn BaseTool>>,
+
+    /// A11: prebuilt name → tool index for O(1) lookups. Kept in sync with `tools`
+    /// (built in `new`, extended in `with_memory_tool`, cloned in the merged-executor
+    /// copy); `index_tools` preserves first-match-wins on name collisions.
+    pub(crate) tools_by_name: HashMap<String, Arc<dyn BaseTool>>,
 
     /// Max iterations.
     pub(crate) max_iterations: usize,
@@ -104,6 +136,19 @@ pub struct AgentExecutor {
     /// (invoke / stream / resume). `None` = off (default). Failures are `warn` only.
     pub(crate) metrics_sink: Option<Arc<dyn MetricsSink>>,
 
+    /// B3 (0.22.4): shared USD spend tracker. Attach the same `Arc<CostTracker>`
+    /// that the tracking LLM (`TokenTrackingLLM::with_cost_tracker`) records into
+    /// and the `max_cost_usd` budget gate reads cumulative spend after each LLM
+    /// call. `None` = off (default); a cost limit without a tracker never trips.
+    pub(crate) cost_tracker: Option<Arc<CostTracker>>,
+
+    /// B4 (0.22.4): two-tier semantic memory hook. When present, each run recalls
+    /// relevant facts into `inputs["semantic_memory"]` before planning, and after a
+    /// successful answer spawns a **detached** extraction task (never blocking the
+    /// answer). `None` = off (default). Distinct from conversation `memory`
+    /// (history injected into the next prompt).
+    pub(crate) semantic_memory: Option<SemanticMemoryHook>,
+
     /// 0.22.0 C4 fix: what to do when the loop exhausts `max_iterations`
     /// without a final answer. Default **`Error`** — the previous placeholder
     /// string was indistinguishable from a real answer and downstream
@@ -137,9 +182,12 @@ pub enum MaxIterationsPolicy {
 impl AgentExecutor {
     /// Creates a new AgentExecutor.
     pub fn new(agent: Arc<dyn BaseAgent>, tools: Vec<Arc<dyn BaseTool>>) -> Self {
+        // A11: build the name index before `tools` is moved into the struct.
+        let tools_by_name = index_tools(&tools);
         Self {
             agent,
             tools,
+            tools_by_name,
             max_iterations: 10,
             verbose: false,
             memory: None,
@@ -157,6 +205,8 @@ impl AgentExecutor {
             compaction: None,
             resume_store: None,
             metrics_sink: None,
+            cost_tracker: None,
+            semantic_memory: None,
             on_max_iterations: MaxIterationsPolicy::default(),
             rule_of_two: false,
             spotlight_tool_output: false,
@@ -219,6 +269,10 @@ impl AgentExecutor {
         root: impl Into<PathBuf>,
     ) -> Result<Self, lc_memory::file_memory::FileMemoryError> {
         let tool: Arc<dyn BaseTool> = crate::executor::mount(root)?;
+        // A11: keep the name index consistent with the pushed tool (first-wins).
+        self.tools_by_name
+            .entry(tool.name().to_string())
+            .or_insert_with(|| tool.clone());
         self.tools.push(tool);
         Ok(self)
     }
@@ -320,11 +374,28 @@ impl AgentExecutor {
     ///     max_tokens: Some(10_000),
     ///     max_duration: Some(Duration::from_secs(60)),
     ///     max_iterations: Some(5),
+    ///     max_cost_usd: Some(1.0),
     /// };
     /// let executor = AgentExecutor::new(agent, tools).with_budget(budget);
     /// ```
     pub fn with_budget(mut self, budget: BudgetConfig) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    /// B3 (0.22.4): attaches a shared `CostTracker` used by the
+    /// `max_cost_usd` budget gate.
+    ///
+    /// Pass the **same `Arc`** that records the agent's LLM calls — typically
+    /// via `TokenTrackingLLM::with_cost_tracker` (or the equivalent tracked
+    /// model wrapper). After every planning call the executor reads
+    /// [`CostTracker::total_cost_usd`] and hard-stops with
+    /// [`AgentError::BudgetExceeded`] /
+    /// [`super::budget::BudgetExceeded::Cost`] once the configured spend is
+    /// reached. Attaching a tracker without a `max_cost_usd` limit only
+    /// measures; setting a limit without a tracker never trips.
+    pub fn with_cost_tracker(mut self, tracker: Arc<CostTracker>) -> Self {
+        self.cost_tracker = Some(tracker);
         self
     }
 
@@ -414,6 +485,28 @@ impl AgentExecutor {
     /// Sets memory.
     pub fn with_memory(mut self, memory: Arc<tokio::sync::Mutex<dyn BaseMemory>>) -> Self {
         self.memory = Some(memory);
+        self
+    }
+
+    /// B4 (v0.22.4): mounts two-tier semantic memory.
+    ///
+    /// - `store` — the shared [`TwoTierMemory`] (safe to share across executors;
+    ///   the `namespace` isolates this executor's facts).
+    /// - `namespace` — e.g. a user/session id; recall and extraction never cross it.
+    /// - `extractor` — turn-to-facts extractor, typically
+    ///   [`crate::LlmMemoryExtractor`].
+    ///
+    /// On every run the executor recalls relevant facts and injects them into the
+    /// prompt inputs under `semantic_memory`; after a successful answer it extracts
+    /// durable facts in a **detached background task** and promotes hot/important
+    /// facts from the short tier to the weighted-decay long tier. Off by default.
+    pub fn with_semantic_memory(
+        mut self,
+        store: Arc<TwoTierMemory>,
+        namespace: impl Into<String>,
+        extractor: Arc<dyn MemoryExtractor + Send + Sync>,
+    ) -> Self {
+        self.semantic_memory = Some(SemanticMemoryHook::new(store, namespace, extractor));
         self
     }
 
@@ -541,6 +634,9 @@ impl AgentExecutor {
         let mut steps = pending.steps;
         steps.push(AgentStep::new(action, observation));
 
+        // A18: resumed rounds observe the same callbacks / trace linkage.
+        let plan_config = build_plan_config(&self.callbacks, &root_run);
+
         let result = self
             .run_agent_loop_from(
                 pending.inputs,
@@ -548,6 +644,7 @@ impl AgentExecutor {
                 pending.iteration + 1,
                 &mut root_run,
                 &mut metrics,
+                plan_config.as_ref(),
             )
             .await;
 
@@ -566,9 +663,26 @@ impl AgentExecutor {
     /// A deterministic Agent always produces the same `AgentOutput` for the same
     /// `(inputs, steps)`, so this hash is the "LLM result" fingerprint; observations are
     /// part of the key, so the cache cannot wrongly hit across different tool results.
+    ///
+    /// The key must be reproducible across runs. `HashMap` iterates in an order seeded
+    /// per-instance (RandomState), so a bare hash of the map's JSON serialization differs
+    /// between two `invoke`s even with identical content — breaking cross-run hits. We
+    /// serialize inputs as *sorted* key/value pairs to make it canonical. (A10)
     fn cache_key(namespace: &str, inputs: &HashMap<String, String>, steps: &[AgentStep]) -> String {
         use std::hash::{Hash, Hasher};
-        let payload = json!({ "ns": namespace, "inputs": inputs, "steps": steps });
+
+        let mut input_keys: Vec<&String> = inputs.keys().collect();
+        input_keys.sort_unstable();
+        let inputs_repr: Vec<String> = input_keys
+            .iter()
+            .map(|k| {
+                // \x1f = unit separator, \x1e = record separator; both are
+                // forbidden in JSON keys, so they can't collide with content.
+                format!("{}\x1f{}\x1e", *k, inputs[*k])
+            })
+            .collect();
+
+        let payload = json!({ "ns": namespace, "inputs": inputs_repr, "steps": steps });
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         payload.to_string().hash(&mut hasher);
         format!("{:016x}", hasher.finish())
@@ -584,6 +698,7 @@ impl AgentExecutor {
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
         metrics: &mut AgentMetrics,
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         let cache = self.response_cache.as_ref();
         let key = cache.map(|_| Self::cache_key(&self.cache_namespace, inputs, intermediate_steps));
@@ -606,7 +721,7 @@ impl AgentExecutor {
         metrics.llm_calls += 1;
         // P2-9: rate-limit / quota check before the LLM call (Reject → abort this round).
         run_before_completion_hooks(&self.hooks, inputs)?;
-        let output = self.agent.plan(intermediate_steps, inputs).await?;
+        let output = self.agent.plan(intermediate_steps, inputs, config).await?;
         let usage = self.agent.last_token_usage();
         if let Some(usage) = &usage {
             metrics.add_token_usage(usage);
@@ -701,6 +816,15 @@ impl AgentExecutor {
             }
         }
 
+        // B4: semantic recall — best-effort, isolated by namespace. Injected as a
+        // delimited facts block under `semantic_memory`; prompt templates surface
+        // it with a {semantic_memory} placeholder.
+        if let Some(hook) = &self.semantic_memory {
+            if let Some(block) = hook.recall(&input).await {
+                inputs.insert(SEMANTIC_MEMORY_INPUT_KEY.to_string(), block);
+            }
+        }
+
         let intermediate_steps: Vec<AgentStep> = Vec::new();
 
         let mut metrics = AgentMetrics {
@@ -708,12 +832,17 @@ impl AgentExecutor {
             ..Default::default()
         };
 
+        // A18: build after trace stamping so the LLM runs inherit the stamped
+        // trace id and become children of this chain root.
+        let plan_config = build_plan_config(&self.callbacks, &root_run);
+
         let result = self
             .run_agent_loop(
                 inputs.clone(),
                 intermediate_steps,
                 &mut root_run,
                 &mut metrics,
+                plan_config.as_ref(),
             )
             .await;
 
@@ -749,6 +878,16 @@ impl AgentExecutor {
                         );
                     }
                 }
+            }
+        }
+
+        // B4: successful answer only — detached extraction + consolidation. The
+        // JoinHandle is deliberately dropped: semantic memory never blocks or
+        // fails the run, and errored rounds produce no facts (matching the
+        // conversation-memory contract of leaving the assistant slot empty).
+        if let Some(hook) = &self.semantic_memory {
+            if let Ok(output) = &result {
+                hook.spawn_extraction(input.clone(), output.clone());
             }
         }
 
@@ -823,6 +962,7 @@ impl AgentExecutor {
         // Arc-shared so metrics written here propagate back to this executor.
         let merged_executor = AgentExecutor {
             agent: self.agent.clone(),
+            tools_by_name: self.tools_by_name.clone(),
             tools: self.tools.clone(),
             max_iterations: self.max_iterations,
             verbose: self.verbose,
@@ -841,6 +981,8 @@ impl AgentExecutor {
             compaction: self.compaction.clone(),
             resume_store: self.resume_store.clone(),
             metrics_sink: self.metrics_sink.clone(),
+            cost_tracker: self.cost_tracker.clone(),
+            semantic_memory: self.semantic_memory.clone(),
             on_max_iterations: self.on_max_iterations,
             rule_of_two: self.rule_of_two,
             spotlight_tool_output: self.spotlight_tool_output,
@@ -853,6 +995,14 @@ impl AgentExecutor {
     ///
     /// Each step of the agent loop (tool calls, observations, final answer)
     /// is emitted as an `AgentStreamEvent` as soon as it occurs.
+    ///
+    /// # Error semantics (A9, unified)
+    /// The stream item is `Result<AgentStreamEvent, AgentError>`. A terminal
+    /// failure — a permission-policy rejection, a tool timeout, a guarded-tool
+    /// abort, or budget exhaustion (A-S2 / A-H1) — is delivered as an
+    /// `Err(AgentError)`, which terminates the stream. There is no successful
+    /// `Ok(AgentStreamEvent::Error { .. })`; that variant exists for infallible
+    /// streams (e.g. [`crate::StreamingFunctionCallingAgent`]) and in-band errors.
     ///
     /// # `Text` event granularity (F3, honest)
     ///
@@ -881,6 +1031,7 @@ impl AgentExecutor {
     ///         Ok(AgentStreamEvent::ToolEnd { name, output }) => { /* show result */ }
     ///         Ok(AgentStreamEvent::Text { content }) => { print!("{}", content); } /* model text */
     ///         Ok(AgentStreamEvent::FinalAnswer { content }) => { /* show answer */ }
+    ///         Err(e) => { /* terminal failure — the loop has ended */ }
     ///         _ => {}
     ///     }
     /// }
@@ -912,7 +1063,8 @@ impl AgentExecutor {
         }
 
         let agent = self.agent.clone();
-        let tools = self.tools.clone();
+        // A11: the stream loop looks tools up by name via the prebuilt index.
+        let tools_by_name = self.tools_by_name.clone();
         let max_iterations = self.max_iterations;
         let verbose = self.verbose;
         let tool_timeout = self.tool_timeout;
@@ -923,6 +1075,7 @@ impl AgentExecutor {
         let compaction = self.compaction.clone();
         let metrics_store = self.metrics_store.clone();
         let metrics_sink = self.metrics_sink.clone();
+        let cost_tracker = self.cost_tracker.clone();
         let on_max_iterations = self.on_max_iterations;
         // 0.22.0 audit fix (H-A1): the stream path previously dropped the
         // cross-cutting capabilities invoke has. Clone callbacks + memory into
@@ -930,6 +1083,9 @@ impl AgentExecutor {
         // history is loaded before the loop and the final answer is saved.
         let callbacks = self.callbacks.clone();
         let memory = self.memory.clone();
+        // B4: cloned into the 'static stream task like `memory`; recall runs
+        // before the loop, extraction spawns detached from the final answer.
+        let semantic_memory = self.semantic_memory.clone();
         // v0.22.1 §S8: copy the A1/A2 toggles so the spawned stream loop reads locals,
         // not `&self` (disjoint capture holds here; referencing `self.` would borrow the
         // whole executor into the `'static` task because `Mutex<dyn BaseMemory>` is invariant).
@@ -945,12 +1101,16 @@ impl AgentExecutor {
             // RunTree, dispatch on_chain_start and on_agent_start hooks, and load
             // memory variables into the inputs before the loop.
             //
-            // Remaining known gaps (honest): LLM-level `on_llm_*` callbacks,
-            // tool-level `on_tool_*` callbacks, and RunTree trace_id stamping from
-            // RunnableConfig metadata (stream() takes no config) are still not
-            // dispatched on this path — invoke's tool child-run tracing has no
-            // equivalent here because tool execution goes through
-            // `execute_tool_for_stream` without a RunTree.
+            // A18: planning-round `on_llm_*` callbacks are now dispatched on this
+            // path too — `plan_config` carries the same callbacks + trace linkage
+            // (`__lc_parent_run_id` / `__lc_trace_id`) the invoke path stamps, so
+            // the provider-built LLM runs are children of this chain root.
+            //
+            // Remaining known gaps (honest): tool-level `on_tool_*` callbacks and
+            // RunTree trace_id stamping from RunnableConfig metadata (stream()
+            // takes no config) are still not dispatched on this path — invoke's
+            // tool child-run tracing has no equivalent here because tool execution
+            // goes through `execute_tool_for_stream` without a RunTree.
             let mut root_run = RunTree::new(
                 "AgentExecutor",
                 RunType::Chain,
@@ -961,6 +1121,7 @@ impl AgentExecutor {
                     handler.on_chain_start(&root_run, &root_run.inputs).await;
                 }
             }
+            let plan_config = build_plan_config(&callbacks, &root_run);
             for hook in &hooks {
                 if let Err(e) = hook.on_agent_start(&input) {
                     log::warn!("Hook on_agent_start error: {}", e);
@@ -993,6 +1154,13 @@ impl AgentExecutor {
                             inputs.insert(key, s.to_string());
                         }
                     }
+                }
+            }
+
+            // B4: semantic recall, same best-effort semantics as invoke.
+            if let Some(hook) = &semantic_memory {
+                if let Some(block) = hook.recall(&input).await {
+                    inputs.insert(SEMANTIC_MEMORY_INPUT_KEY.to_string(), block);
                 }
             }
 
@@ -1030,7 +1198,7 @@ impl AgentExecutor {
                     let msg = e.to_string();
                     stream_chain_error(&callbacks, &mut root_run, &msg).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
-                    let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                    let _ = tx.send(Err(AgentError::Other(msg))).await;
                     return;
                 }
                 // F3: streaming planning — the agent forwards model text token by token
@@ -1070,7 +1238,12 @@ impl AgentExecutor {
                         }) as Pin<Box<dyn Future<Output = ()> + Send>>
                     };
                     match agent
-                        .plan_stream(&intermediate_steps, &inputs, &mut on_token)
+                        .plan_stream(
+                            &intermediate_steps,
+                            &inputs,
+                            &mut on_token,
+                            plan_config.as_ref(),
+                        )
                         .await
                     {
                         Ok(o) => o,
@@ -1082,7 +1255,7 @@ impl AgentExecutor {
                             }
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
-                            let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                            let _ = tx.send(Err(AgentError::Other(msg))).await;
                             return;
                         }
                     }
@@ -1103,6 +1276,16 @@ impl AgentExecutor {
                     let _ = tx.send(Err(err)).await;
                     return;
                 }
+                // B3 (0.22.4): cumulative USD spend gate, same semantics as invoke.
+                if let Some(tracker) = &cost_tracker {
+                    let spent = tracker.total_cost_usd().await;
+                    if let Some(err) = budget_cost_gate(budget.as_ref(), spent) {
+                        stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                        publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
+                        let _ = tx.send(Err(err)).await;
+                        return;
+                    }
+                }
 
                 match output {
                     AgentOutput::Finish(finish) => {
@@ -1118,6 +1301,10 @@ impl AgentExecutor {
                             {
                                 log::warn!("failed to save final answer to memory [stream]: {e}");
                             }
+                        }
+                        // B4: detached fact extraction, same as invoke.
+                        if let Some(hook) = &semantic_memory {
+                            hook.spawn_extraction(input.clone(), content.clone());
                         }
 
                         root_run.end(json!({"output": content.clone()}));
@@ -1171,7 +1358,7 @@ impl AgentExecutor {
                                     loop_start,
                                 )
                                 .await;
-                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                                let _ = tx.send(Err(AgentError::Other(msg))).await;
                                 return;
                             }
                         }
@@ -1183,15 +1370,11 @@ impl AgentExecutor {
                             }
                         };
 
-                        let _ = tx
-                            .send(Ok(AgentStreamEvent::ToolStart {
-                                name: tool_name.clone(),
-                                input: tool_input_str.clone(),
-                            }))
-                            .await;
-
-                        // Budget gate: check cumulative call count and wall-clock before
-                        // the tool runs.
+                        // A11: the budget gate runs **before** `ToolStart` is emitted.
+                        // Previously the gate ran after, so a rejection left an orphan
+                        // `ToolStart` with no matching `ToolEnd`/error. Order now mirrors
+                        // the invoke path: reject first, emit the start event only when
+                        // the call is actually allowed.
                         metrics.tool_calls += 1;
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
                             stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
@@ -1200,6 +1383,13 @@ impl AgentExecutor {
                             let _ = tx.send(Err(err)).await;
                             return;
                         }
+
+                        let _ = tx
+                            .send(Ok(AgentStreamEvent::ToolStart {
+                                name: tool_name.clone(),
+                                input: tool_input_str.clone(),
+                            }))
+                            .await;
 
                         // 0.20.0 A-H2: dropped mid-iteration → do not start a new tool.
                         if *cancel_rx.borrow() {
@@ -1214,7 +1404,7 @@ impl AgentExecutor {
                         // cannot recover from them by re-planning, so they end the
                         // stream hard, matching the non-streaming invoke path.
                         let observation = match execute_tool_for_stream(
-                            &tools,
+                            &tools_by_name,
                             &action,
                             tool_timeout,
                             spotlight_tool_output,
@@ -1236,7 +1426,7 @@ impl AgentExecutor {
                                     loop_start,
                                 )
                                 .await;
-                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                                let _ = tx.send(Err(AgentError::Other(msg))).await;
                                 return;
                             }
                         };
@@ -1265,12 +1455,22 @@ impl AgentExecutor {
                                         loop_start,
                                     )
                                     .await;
-                                    let _ =
-                                        tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                                    let _ = tx.send(Err(AgentError::Other(msg))).await;
                                     return;
                                 }
                             }
                         }
+                        // A11: budget gate runs **before** any `ToolStart` is emitted for the
+                        // batch, so a rejection leaves no orphan start events.
+                        metrics.tool_calls += actions.len();
+                        if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
+                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
+                                .await;
+                            let _ = tx.send(Err(err)).await;
+                            return;
+                        }
+
                         for action in &actions {
                             let tool_name = action.tool.clone();
                             let tool_input_str = match &action.tool_input {
@@ -1288,24 +1488,13 @@ impl AgentExecutor {
                                 .await;
                         }
 
-                        // Budget gate: check cumulative call count and wall-clock before
-                        // the parallel tools run.
-                        metrics.tool_calls += actions.len();
-                        if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
-                            publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
-                                .await;
-                            let _ = tx.send(Err(err)).await;
-                            return;
-                        }
-
                         // 0.20.0 A-H2: dropped mid-iteration → do not start a new batch.
                         if *cancel_rx.borrow() {
                             return;
                         }
 
                         let observations = match execute_tools_parallel_for_stream(
-                            &tools,
+                            &tools_by_name,
                             &actions,
                             tool_timeout,
                             max_concurrency,
@@ -1329,7 +1518,7 @@ impl AgentExecutor {
                                     loop_start,
                                 )
                                 .await;
-                                let _ = tx.send(Ok(AgentStreamEvent::Error { message: msg })).await;
+                                let _ = tx.send(Err(AgentError::Other(msg))).await;
                                 return;
                             }
                         };
@@ -1374,6 +1563,10 @@ impl AgentExecutor {
                     log::warn!("failed to save final answer to memory [stream]: {e}");
                 }
             }
+            // B4: detached fact extraction, same as invoke.
+            if let Some(hook) = &semantic_memory {
+                hook.spawn_extraction(input.clone(), content.clone());
+            }
             root_run.end(json!({"output": content.clone()}));
             if let Some(ref callbacks) = callbacks {
                 if let Some(ref outputs) = root_run.outputs {
@@ -1411,6 +1604,8 @@ impl std::fmt::Debug for AgentExecutor {
             .field("has_tool_policy", &self.tool_policy.is_some())
             .field("has_resume_store", &self.resume_store.is_some())
             .field("has_metrics_sink", &self.metrics_sink.is_some())
+            .field("has_cost_tracker", &self.cost_tracker.is_some())
+            .field("has_semantic_memory", &self.semantic_memory.is_some())
             .field(
                 "has_metrics",
                 &self
@@ -1493,5 +1688,42 @@ async fn publish_metrics(
         if let Err(e) = sink.export(&evt).await {
             log::warn!(target: "lc_agents::metrics", "agent metrics export failed: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_key_is_deterministic_across_runs() {
+        // Two runs with identical content must produce the same key, even
+        // though a freshly allocated HashMap may iterate in a different order.
+        let a: HashMap<String, String> = HashMap::from([
+            ("question".into(), "what is rust".into()),
+            ("user_id".into(), "42".into()),
+            ("session".into(), "abc".into()),
+        ]);
+        let b: HashMap<String, String> = HashMap::from([
+            ("session".into(), "abc".into()),
+            ("question".into(), "what is rust".into()),
+            ("user_id".into(), "42".into()),
+        ]);
+
+        let key_a = AgentExecutor::cache_key("ns", &a, &[]);
+        let key_b = AgentExecutor::cache_key("ns", &b, &[]);
+
+        assert_eq!(key_a, key_b, "identical inputs must hash to the same key");
+    }
+
+    #[test]
+    fn cache_key_differs_when_inputs_differ() {
+        let base: HashMap<String, String> = HashMap::from([("k".into(), "v".into())]);
+        let changed: HashMap<String, String> = HashMap::from([("k".into(), "other".into())]);
+
+        let key_base = AgentExecutor::cache_key("ns", &base, &[]);
+        let key_changed = AgentExecutor::cache_key("ns", &changed, &[]);
+
+        assert_ne!(key_base, key_changed);
     }
 }

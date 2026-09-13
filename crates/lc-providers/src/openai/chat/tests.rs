@@ -283,6 +283,71 @@ data: [DONE]\n\n";
         assert_eq!(calls[0].name(), "add");
         assert_eq!(calls[0].arguments(), r#"{"a":1}"#);
     }
+
+    /// A12: when the connection drops mid-stream — content chunks arrived but
+    /// neither `[DONE]` nor a `finish_reason` chunk did — the consumer must see
+    /// a terminal `StreamInterrupted` error instead of the partial text being
+    /// mistaken for a complete answer.
+    #[tokio::test]
+    async fn stream_chat_truncated_without_terminal_emits_error() {
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n";
+        let base_url = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut saw_partial = false;
+        let mut terminal: Option<Result<StreamChunk, OpenAIError>> = None;
+        while let Some(item) = stream.next().await {
+            if item.is_ok() {
+                saw_partial = true;
+            }
+            terminal = Some(item);
+        }
+
+        assert!(
+            saw_partial,
+            "partial chunks are still delivered before the error"
+        );
+        let err = terminal
+            .expect("stream yields at least one item")
+            .expect_err("truncated stream must end with an error, not a complete result");
+        assert!(
+            matches!(err, OpenAIError::StreamInterrupted(_)),
+            "expected StreamInterrupted, got {err:?}"
+        );
+    }
+
+    /// A12 regression guard: a stream that ends with a `finish_reason` chunk but
+    /// no explicit `[DONE]` sentinel (common among OpenAI-compatible servers)
+    /// is a normal completion and must NOT be flagged as interrupted.
+    #[tokio::test]
+    async fn stream_chat_finish_reason_without_done_completes_ok() {
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let base_url = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut chunks = 0usize;
+        while let Some(item) = stream.next().await {
+            item.expect("finish_reason chunk is a valid terminal");
+            chunks += 1;
+        }
+        assert!(chunks >= 1, "content delivered and stream closed cleanly");
+    }
 }
 
 /// 0.21.0 S3.1: `response_format` plumbing — engine-side structured output.
@@ -376,5 +441,100 @@ mod tests_response_format {
         );
         assert_eq!(body["tools"][0]["function"]["strict"], true);
         assert_eq!(body["tool_choice"], "auto");
+    }
+}
+
+// B5: optional auth + extra headers for generic OpenAI-compatible endpoints.
+mod tests_b5_headers {
+    use super::*;
+
+    #[test]
+    fn keyless_config_omits_authorization_and_keeps_extras() {
+        let config = OpenAIConfig {
+            send_auth: false,
+            extra_headers: vec![("X-Tenant".to_string(), "acme".to_string())],
+            ..Default::default()
+        };
+        let request = OpenAIChat::apply_headers(reqwest::Client::new().post("http://x"), &config)
+            .build()
+            .unwrap();
+        assert!(request.headers().get("Authorization").is_none());
+        assert_eq!(request.headers()["X-Tenant"], "acme");
+        assert_eq!(request.headers()["Content-Type"], "application/json");
+    }
+
+    #[test]
+    fn default_config_still_sends_bearer() {
+        let config = OpenAIConfig::new("sk-secret");
+        let request = OpenAIChat::apply_headers(reqwest::Client::new().post("http://x"), &config)
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers()["Authorization"].to_str().unwrap(),
+            "Bearer sk-secret"
+        );
+    }
+}
+
+// B7: unified multimodal request-body mapping (Chat Completions blocks).
+mod tests_b7_multimodal {
+    use super::*;
+    use lc_schema::{AudioContent, FileContent, ImageContent, Message, VideoContent};
+
+    #[test]
+    fn multimodal_user_emits_text_image_audio_video_file_blocks() {
+        let msg = Message::human("请看这些素材")
+            .with_image(ImageContent::from_url("data:image/png;base64,aW1n"))
+            .with_audio(AudioContent::from_base64_with_mime("YXVkaW8", "audio/wav"))
+            .with_video(VideoContent::from_url("https://cdn.example.com/clip.mp4"))
+            .with_file(FileContent::from_base64("ZG9j", "application/pdf").with_name("brief.pdf"));
+
+        let value = OpenAIChat::message_to_openai_format(&msg);
+        assert_eq!(value["role"], "user");
+        let blocks = value["content"]
+            .as_array()
+            .expect("multimodal user content must be a blocks array");
+
+        // Exact wire-shape snapshot.
+        let expected = serde_json::json!([
+            {"type": "text", "text": "请看这些素材"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1n"}},
+            {"type": "input_audio", "input_audio": {"data": "YXVkaW8", "format": "wav"}},
+            {"type": "input_video", "input_video": {"url": "https://cdn.example.com/clip.mp4"}},
+            {"type": "file", "file": {
+                "file_data": "data:application/pdf;base64,ZG9j",
+                "filename": "brief.pdf"
+            }},
+        ]);
+        assert_eq!(serde_json::json!(blocks), expected);
+    }
+
+    #[test]
+    fn plain_text_user_stays_a_string() {
+        let value = OpenAIChat::message_to_openai_format(&Message::human("just text"));
+        assert_eq!(value["role"], "user");
+        assert_eq!(value["content"], serde_json::json!("just text"));
+    }
+
+    #[test]
+    fn image_only_message_keeps_text_block_first() {
+        let msg = Message::human("看图")
+            .with_image(ImageContent::from_base64_with_mime("cG5n", "image/png"));
+        let value = OpenAIChat::message_to_openai_format(&msg);
+        let blocks = value["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image_url");
+        assert_eq!(blocks[1]["image_url"]["url"], "data:image/png;base64,cG5n");
+    }
+
+    #[test]
+    fn mp3_audio_uses_mp3_format_token() {
+        let msg = Message::human("听")
+            .with_audio(AudioContent::from_base64_with_mime("bXAz", "audio/mpeg"));
+        let value = OpenAIChat::message_to_openai_format(&msg);
+        let blocks = value["content"].as_array().unwrap();
+        assert_eq!(blocks[1]["type"], "input_audio");
+        assert_eq!(blocks[1]["input_audio"]["format"], "mp3");
     }
 }

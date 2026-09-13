@@ -1,6 +1,6 @@
 [package]
 name = "lc-agents"
-version = "0.22.1"
+version = "0.22.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Agent system for langchainrust — ReAct, FunctionCalling, PlanExecute, CRAG, AdaptiveRAG, DeepResearch, Handoffs, Streaming"
@@ -8,17 +8,17 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.85"
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.22.1" }
-lc-schema = { path = "../lc-schema", version = "0.22.1" }
-lc-shared = { path = "../lc-shared", version = "0.22.1" }
-lc-callbacks = { path = "../lc-callbacks", version = "0.22.1" }
-lc-memory = { path = "../lc-memory", version = "0.22.1", features = ["vectorstore-memory"] }
-lc-rag = { path = "../lc-rag", version = "0.22.1" }
-lc-providers = { path = "../lc-providers", version = "0.22.1" }
-lc-tools = { path = "../lc-tools", version = "0.22.1" }
-lc-embeddings = { path = "../lc-embeddings", version = "0.22.1" }
-lc-vector-stores = { path = "../lc-vector-stores", version = "0.22.1" }
-lc-prompts = { path = "../lc-prompts", version = "0.22.1" }
+lc-core = { path = "../lc-core", version = "0.22.4" }
+lc-schema = { path = "../lc-schema", version = "0.22.4" }
+lc-shared = { path = "../lc-shared", version = "0.22.4" }
+lc-callbacks = { path = "../lc-callbacks", version = "0.22.4" }
+lc-memory = { path = "../lc-memory", version = "0.22.4", features = ["vectorstore-memory"] }
+lc-rag = { path = "../lc-rag", version = "0.22.4" }
+lc-providers = { path = "../lc-providers", version = "0.22.4" }
+lc-tools = { path = "../lc-tools", version = "0.22.4" }
+lc-embeddings = { path = "../lc-embeddings", version = "0.22.4" }
+lc-vector-stores = { path = "../lc-vector-stores", version = "0.22.4" }
+lc-prompts = { path = "../lc-prompts", version = "0.22.4" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -31,6 +31,17 @@ regex = "1"
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = "1"
+
+# B8 (v0.22.4): optional axum SSE serving behind `sse-server`; mirrors
+# lc-a2a's feature gating so downstream lib users pay no HTTP dependency cost.
+axum = { version = "0.7", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+
+[features]
+default = []
+# text/event-stream agent endpoint: `agent_sse_router` (axum 0.7).
+sse-server = ["dep:axum", "dep:tower-http", "dep:tower"]
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -11,6 +11,10 @@ pub enum AnthropicError {
     Api(String),
     /// Response parsing error.
     Parse(String),
+    /// The SSE stream ended before the terminal `message_stop` event — the
+    /// connection dropped mid-generation and the partial output is truncated
+    /// (A12).
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for AnthropicError {
@@ -19,6 +23,11 @@ impl std::fmt::Display for AnthropicError {
             AnthropicError::Http(msg) => write!(f, "HTTP error: {}", msg),
             AnthropicError::Api(msg) => write!(f, "API error: {}", msg),
             AnthropicError::Parse(msg) => write!(f, "Parse error: {}", msg),
+            AnthropicError::StreamInterrupted(msg) => write!(
+                f,
+                "stream interrupted before message_stop (output truncated): {}",
+                msg
+            ),
         }
     }
 }

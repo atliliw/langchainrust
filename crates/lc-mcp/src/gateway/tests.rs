@@ -1,6 +1,9 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::*;
+use crate::auth::AuthScheme;
+use crate::execution::ToolCallApprover;
 use crate::sandbox::{ParamRule, ServerSandbox};
 use crate::test_support::{start_fake_stateless_server, StatelessMode};
 use crate::tool_timeout::ToolSpec;
@@ -95,7 +98,7 @@ async fn test_sync_is_idempotent() {
 async fn test_call_dispatches_with_auto_sync() {
     let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
-    gw.register(GatewayServerSpec::new("fs", &fake.url))
+    gw.register(GatewayServerSpec::new("fs", &fake.url).allow_unattended_execution())
         .await
         .unwrap();
 
@@ -161,7 +164,9 @@ async fn test_call_rate_limit_blocks_and_audits() {
     let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new();
     gw.register(
-        GatewayServerSpec::new("fs", &fake.url).with_rate_limit(1, Duration::from_secs(60)),
+        GatewayServerSpec::new("fs", &fake.url)
+            .allow_unattended_execution()
+            .with_rate_limit(1, Duration::from_secs(60)),
     )
     .await
     .unwrap();
@@ -211,6 +216,7 @@ async fn test_as_base_tools_builds_adapters() {
     let gw = MCPGateway::new();
     gw.register(
         GatewayServerSpec::new("fs", &fake.url)
+            .allow_unattended_execution()
             .with_timeout(ToolSpec::new("echo", Duration::from_secs(5))),
     )
     .await
@@ -259,7 +265,7 @@ async fn test_gateway_health_and_reap() {
 async fn test_audit_cap_keeps_newest() {
     let fake = start_fake_stateless_server(StatelessMode::Normal).await;
     let gw = MCPGateway::new().with_max_audit(1);
-    gw.register(GatewayServerSpec::new("fs", &fake.url))
+    gw.register(GatewayServerSpec::new("fs", &fake.url).allow_unattended_execution())
         .await
         .unwrap();
     gw.call("fs:echo", json!({})).await.expect("1st call");
@@ -268,4 +274,205 @@ async fn test_audit_cap_keeps_newest() {
     let log = gw.audit_log();
     assert_eq!(log.len(), 1, "ring buffer keeps only the newest 1");
     assert_eq!(log[0].tool, "fs:echo");
+}
+
+// ---------------------------------------------------------------------------
+// A16: fail-closed execution gate, approval hook, per-server auth.
+// ---------------------------------------------------------------------------
+
+/// Test approver whose decision is an externally flippable shared flag.
+struct FlagApprover {
+    allow: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl ToolCallApprover for FlagApprover {
+    async fn approve(
+        &self,
+        _server: &str,
+        tool: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(), String> {
+        if self.allow.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(format!("human declined {tool}"))
+        }
+    }
+}
+
+/// A16: a server registered without a sandbox, unattended opt-in or approval
+/// gate refuses tool execution before any `tools/call` goes out, and the
+/// denial is audited. (Auto-`sync` still performs `tools/list`: discovery is not
+/// an execution.)
+#[tokio::test]
+async fn test_call_without_execution_policy_is_denied() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let gw = MCPGateway::new();
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
+        .await
+        .unwrap();
+
+    let err = gw.call("fs:echo", json!({})).await.unwrap_err();
+    assert!(
+        matches!(err, ToolError::PermissionDenied(ref m) if m.contains("no unattended-execution policy")),
+        "bare registration must fail-closed, actual: {err}"
+    );
+
+    let methods = fake.method_headers_seen.lock().unwrap();
+    assert!(
+        !methods.iter().any(|m| m == "tools/call"),
+        "denied execution must never dispatch tools/call, saw: {methods:?}"
+    );
+    drop(methods);
+
+    let log = gw.audit_log();
+    let denial = log
+        .iter()
+        .find(|r| r.tool == "fs:echo")
+        .expect("denial should be audited");
+    assert!(!denial.allowed);
+    assert!(
+        denial
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("Permission denied"),
+        "{:?}",
+        denial.reason
+    );
+}
+
+/// A16: explicit unattended opt-in authorizes calls end to end.
+#[tokio::test]
+async fn test_explicit_unattended_policy_allows() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let gw = MCPGateway::new();
+    gw.register(GatewayServerSpec::new("fs", &fake.url).allow_unattended_execution())
+        .await
+        .unwrap();
+
+    let out = gw
+        .call("fs:echo", json!({}))
+        .await
+        .expect("explicit policy should allow");
+    assert!(out.contains("echo"), "actual: {out}");
+}
+
+/// A16: the runtime approval gate denies (and blocks dispatch) until it approves.
+#[tokio::test]
+async fn test_gateway_approval_gate_denies_then_allows() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let flag = Arc::new(AtomicBool::new(false));
+    let approver: Arc<dyn ToolCallApprover> = Arc::new(FlagApprover {
+        allow: flag.clone(),
+    });
+    let gw = MCPGateway::new().with_approver(approver);
+    // Default (fail-closed) server policy: every call needs the gate.
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
+        .await
+        .unwrap();
+
+    let err = gw.call("fs:echo", json!({})).await.unwrap_err();
+    assert!(
+        matches!(err, ToolError::PermissionDenied(ref m) if m.contains("human declined echo")),
+        "approver denial must surface, actual: {err}"
+    );
+    assert!(
+        !fake
+            .method_headers_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m == "tools/call"),
+        "denied call must not be dispatched"
+    );
+
+    // The user confirms: the next call is authorized and reaches the server.
+    flag.store(true, Ordering::SeqCst);
+    let out = gw
+        .call("fs:echo", json!({}))
+        .await
+        .expect("approved call should dispatch");
+    assert!(out.contains("echo"), "actual: {out}");
+}
+
+/// A16: an unattended server ignores the approver (the explicit policy wins).
+#[tokio::test]
+async fn test_unattended_server_bypasses_gateway_approver() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let approver: Arc<dyn ToolCallApprover> = Arc::new(FlagApprover {
+        allow: Arc::new(AtomicBool::new(false)),
+    });
+    let gw = MCPGateway::new().with_approver(approver);
+    gw.register(GatewayServerSpec::new("fs", &fake.url).allow_unattended_execution())
+        .await
+        .unwrap();
+
+    let out = gw
+        .call("fs:echo", json!({}))
+        .await
+        .expect("explicit unattended policy must not consult the approver");
+    assert!(out.contains("echo"), "actual: {out}");
+}
+
+/// A16: per-server auth flows spec → connection manager → every request,
+/// including the lazily-built `tools/list` and `tools/call`.
+#[tokio::test]
+async fn test_gateway_attaches_auth_header() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let gw = MCPGateway::new();
+    gw.register(
+        GatewayServerSpec::new("fs", &fake.url)
+            .with_auth(AuthScheme::Bearer("secret-123".to_string()))
+            .allow_unattended_execution(),
+    )
+    .await
+    .unwrap();
+
+    gw.call("fs:echo", json!({}))
+        .await
+        .expect("call should succeed");
+
+    let seen = fake.auth_headers_seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|h| h == "Bearer secret-123"),
+        "every request must carry the bearer token, saw: {seen:?}"
+    );
+    assert!(
+        seen.len() >= 2,
+        "both tools/list (auto-sync) and tools/call must be authenticated, saw: {seen:?}"
+    );
+}
+
+/// A16: adapters produced by `as_base_tools` carry the approval gate, so
+/// invoking an adapter directly cannot bypass the Gateway-level authorization.
+#[tokio::test]
+async fn test_as_base_tools_carry_approval_gate() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let flag = Arc::new(AtomicBool::new(false));
+    let approver: Arc<dyn ToolCallApprover> = Arc::new(FlagApprover {
+        allow: flag.clone(),
+    });
+    let gw = MCPGateway::new().with_approver(approver);
+    gw.register(GatewayServerSpec::new("fs", &fake.url))
+        .await
+        .unwrap();
+    gw.sync("fs").await.unwrap();
+
+    let tools = gw.as_base_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+
+    let err = tools[0].run("{}".into()).await.unwrap_err();
+    assert!(
+        matches!(err, ToolError::PermissionDenied(ref m) if m.contains("human declined echo")),
+        "direct adapter invocation must pass through the gate, actual: {err}"
+    );
+
+    flag.store(true, Ordering::SeqCst);
+    let out = tools[0]
+        .run("{}".into())
+        .await
+        .expect("after approval the adapter dispatches");
+    assert!(out.contains("echo"), "actual: {out}");
 }

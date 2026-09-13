@@ -2,9 +2,13 @@
 //! Tests for CompiledGraph
 
 use crate::checkpointer::ThreadSafeMemoryCheckpointer;
+use crate::compiled::types::{DynamicInjection, DynamicPlanner, DynamicTask};
 use crate::errors::GraphError;
 use crate::graph::{GraphBuilder, END, START};
 use crate::state::{AgentState, StateUpdate};
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_simple_linear_graph() {
@@ -28,6 +32,73 @@ async fn test_simple_linear_graph() {
 
     assert!(result.final_state.output.is_some());
     assert_eq!(result.recursion_count, 2);
+}
+
+/// A no-op planner so `invoke_dynamic` can run over a purely static fan-out graph.
+struct NoopPlanner;
+
+#[async_trait]
+impl DynamicPlanner<AgentState> for NoopPlanner {
+    async fn plan(
+        &self,
+        _tasks: &[DynamicTask],
+        _state: &AgentState,
+    ) -> Result<DynamicInjection<AgentState>, String> {
+        Ok(DynamicInjection {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_invoke_dynamic_runs_all_fanout_branches() {
+    // A8 regression: `invoke_dynamic` used to route through `find_next_node`, which
+    // returns only `targets[0]` for a FanOut edge — so b2 (and any state/effect it
+    // produced) was silently dropped. Now it must run every branch and merge.
+    let ran = Arc::new(AtomicUsize::new(0));
+
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node_fn("main", |_| {
+            Ok(StateUpdate::full(AgentState::new("x".to_string())))
+        })
+        .add_node_fn("b1", {
+            let ran = ran.clone();
+            move |_| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok(StateUpdate::unchanged())
+            }
+        })
+        .add_node_fn("b2", {
+            let ran = ran.clone();
+            move |_| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok(StateUpdate::unchanged())
+            }
+        })
+        .add_node_fn("join", |state| {
+            let mut s = state.clone();
+            s.set_output("done".to_string());
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "main")
+        .add_fan_out("main", vec!["b1".to_string(), "b2".to_string()])
+        .add_fan_in(vec!["b1".to_string(), "b2".to_string()], "join")
+        .add_edge("join", END)
+        .compile()
+        .unwrap();
+
+    let result = compiled
+        .invoke_dynamic(AgentState::new("input".to_string()), &NoopPlanner)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        2,
+        "both fan-out branches must have executed, not just targets[0]"
+    );
+    assert_eq!(result.final_state.output.as_deref(), Some("done"));
 }
 
 #[tokio::test]

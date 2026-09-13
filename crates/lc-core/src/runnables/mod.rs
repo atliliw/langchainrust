@@ -50,7 +50,7 @@ pub use assign::RunnableAssign;
 pub use binding::RunnableBinding;
 pub use branch::RunnableBranch;
 pub use cancellation::CancellationToken;
-pub use config::RunnableConfig;
+pub use config::{run_tree_from_config, RunnableConfig, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
 pub use configurable::{RunnableConfigurable, RunnableConfigurableFields};
 pub use error::LcelError;
 pub use ext::RunnableExt;

@@ -796,16 +796,26 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         &self,
         scored_chunks: &[(usize, f64)],
     ) -> HashMap<String, Vec<(usize, f64)>> {
+        // A7: group via the authoritative `parent_to_leaves` map, which is
+        // populated from the `parent_id` passed to `add_chunk_index`. Chunk ids
+        // are rendered as `{parent}::{segment}`, so reconstructing the parent by
+        // splitting on "::" corrupts any parent_id that contains the separator
+        // itself (e.g. "ns::parent::id" collapsed to "ns").
+        let scores: HashMap<usize, f64> = scored_chunks.iter().copied().collect();
         let mut stats: HashMap<String, Vec<(usize, f64)>> = HashMap::new();
 
-        for (chunk_idx, score) in scored_chunks {
-            if let Some(chunk_id) = self.index.chunk_id_list.get(*chunk_idx) {
-                let parent_id = chunk_id.split("::").next().unwrap_or_default().to_string();
-                stats
-                    .entry(parent_id)
-                    .or_default()
-                    .push((*chunk_idx, *score));
+        for (parent_id, leaves) in &self.index.parent_to_leaves {
+            let mut matched: Vec<(usize, f64)> = leaves
+                .iter()
+                .filter_map(|idx| scores.get(idx).map(|score| (*idx, *score)))
+                .collect();
+            if matched.is_empty() {
+                continue;
             }
+            // Chunk-index order is segment order — keep fallback leaf chunks in
+            // document reading order rather than score order.
+            matched.sort_by_key(|(idx, _)| *idx);
+            stats.insert(parent_id.clone(), matched);
         }
 
         stats

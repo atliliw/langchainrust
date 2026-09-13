@@ -18,18 +18,21 @@ use std::pin::Pin;
 /// Qwen API endpoint (DashScope)
 pub const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
-/// Qwen model list
+/// Qwen model list (B5, v0.22.4 — Qwen3 generation; non-exhaustive).
+///
+/// `qwen-plus` / `qwen-turbo` / `qwen-max` are commercial aliases that
+/// DashScope auto-upgrades to the current generation server-side.
 pub const QWEN_MODELS: [&str; 6] = [
-    "qwen-turbo",           // fast tier
-    "qwen-plus",            // Plus version
-    "qwen-max",             // Max version
-    "qwen-max-longcontext", // long-context
-    "qwen2.5-72b-instruct", // Qwen2.5 open-source
-    "qwen-coder-plus",      // code-specialized
+    "qwen3-coder-plus",              // Qwen3 code-specialized commercial
+    "qwen-max",                      // Max version (auto-upgraded alias)
+    "qwen-plus",                     // Plus version (auto-upgraded alias)
+    "qwen-turbo",                    // fast tier (auto-upgraded alias)
+    "qwen3-235b-a22b-instruct-2507", // Qwen3 235B-A22B open-weight serving id
+    "qwen-coder-plus",               // code-specialized (previous gen)
 ];
 
 /// Qwen config
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QwenConfig {
     /// Qwen API key.
     pub api_key: String,
@@ -41,6 +44,19 @@ pub struct QwenConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+}
+
+impl std::fmt::Debug for QwenConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("QwenConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for QwenConfig {
@@ -127,6 +143,8 @@ impl QwenConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }

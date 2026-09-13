@@ -47,6 +47,15 @@ pub enum ProviderError {
     Zhipu(OpenAIError),
     /// Mistral API error (OpenAI-compatible endpoint).
     Mistral(OpenAIError),
+    /// B5: any OpenAI-compatible endpoint reached through the generic client
+    /// (Groq, OpenRouter, xAI, vLLM, LM Studio, private gateways, …). The
+    /// `provider` label identifies which preset or custom endpoint failed.
+    OpenAICompatible {
+        /// Endpoint label (`"groq"`, `"openrouter"`, `"xai"`, `"openai-compatible"`).
+        provider: String,
+        /// Underlying OpenAI-protocol error.
+        source: OpenAIError,
+    },
     /// Configuration error (missing/malformed environment variables, etc.).
     Config(String),
     /// Testkit harness error (recording/replay failures from `lc-testkit`).
@@ -69,6 +78,9 @@ impl std::fmt::Display for ProviderError {
             ProviderError::Moonshot(e) => write!(f, "Moonshot error: {e}"),
             ProviderError::Zhipu(e) => write!(f, "Zhipu error: {e}"),
             ProviderError::Mistral(e) => write!(f, "Mistral error: {e}"),
+            ProviderError::OpenAICompatible { provider, source } => {
+                write!(f, "{provider} (OpenAI-compatible) error: {source}")
+            }
             ProviderError::Config(msg) => write!(f, "Configuration error: {msg}"),
             ProviderError::Testkit(msg) => write!(f, "Testkit error: {msg}"),
         }
@@ -91,6 +103,7 @@ impl std::error::Error for ProviderError {
             ProviderError::Moonshot(e) => Some(e),
             ProviderError::Zhipu(e) => Some(e),
             ProviderError::Mistral(e) => Some(e),
+            ProviderError::OpenAICompatible { source, .. } => Some(source),
             ProviderError::Config(_) => None,
             ProviderError::Testkit(_) => None,
         }
@@ -204,6 +217,26 @@ mod tests {
         assert!(matches!(
             lcel,
             lc_core::LcelError::Provider(ref msg) if msg.contains("DeepSeek error")
+        ));
+    }
+
+    /// B5: generic OpenAI-compatible errors carry the preset label and source.
+    #[test]
+    fn openai_compatible_error_label_and_source() {
+        let e = ProviderError::OpenAICompatible {
+            provider: "groq".to_string(),
+            source: OpenAIError::Api("HTTP 429: slow down".to_string()),
+        };
+        let text = e.to_string();
+        assert!(text.contains("groq"), "{text}");
+        assert!(text.contains("OpenAI-compatible"), "{text}");
+        assert!(text.contains("429"), "{text}");
+        assert!(std::error::Error::source(&e).is_some());
+
+        let lcel: lc_core::LcelError = e.into();
+        assert!(matches!(
+            lcel,
+            lc_core::LcelError::Provider(ref msg) if msg.contains("groq")
         ));
     }
 }

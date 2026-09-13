@@ -346,6 +346,7 @@ mod tests {
             &self,
             intermediate_steps: &[AgentStep],
             _inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             if !intermediate_steps.is_empty() {
                 return Ok(AgentOutput::Finish(AgentFinish::new(
@@ -515,6 +516,7 @@ mod tests {
             &self,
             _intermediate_steps: &[AgentStep],
             inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             *self.received.lock().unwrap_or_else(|e| e.into_inner()) = inputs.get("input").cloned();
             Ok(AgentOutput::Finish(AgentFinish::new(

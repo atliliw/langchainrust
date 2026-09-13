@@ -31,19 +31,23 @@
 mod base;
 pub mod handlers;
 mod langsmith_client;
+#[cfg(feature = "otlp")]
+pub mod otlp;
+pub mod pricing;
 mod run_tree;
 mod run_type;
-pub mod pricing;
+#[cfg(feature = "opentelemetry")]
+mod semconv;
 pub mod tracing;
 
 pub use base::{CallbackHandler, CallbackManager};
-pub use pricing::{estimate_cost_usd, price_for, ModelPrice};
 #[cfg(feature = "opentelemetry")]
 pub use handlers::OtelHandler;
 pub use handlers::{
     FileCallbackHandler, GenericHandler, LangSmithHandler, LogFormat, StdOutHandler,
 };
 pub use langsmith_client::{LangSmithClient, LangSmithConfig, LangSmithError};
+pub use pricing::{estimate_cost_usd, price_for, ModelPrice};
 pub use run_tree::{RunCreate, RunTree, RunUpdate};
 pub use run_type::RunType;
 
@@ -51,7 +55,7 @@ pub use run_type::RunType;
 #[cfg(feature = "opentelemetry")]
 pub use tracing::OtelTracingBackend;
 pub use tracing::{
-    clear_span_stack, init_task_span_stack, aggregate_cost, ConsoleTracingBackend,
+    aggregate_cost, clear_span_stack, init_task_span_stack, ConsoleTracingBackend,
     InMemoryTracingBackend, SpanGuard, SpanId, SpanKind, SpanStatus, SpanTokenUsage, TraceNode,
     TraceSpan, Tracer, TracingBackend,
 };

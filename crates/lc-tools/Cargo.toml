@@ -1,6 +1,6 @@
 [package]
 name = "lc-tools"
-version = "0.22.1"
+version = "0.22.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Built-in tools for langchainrust — Calculator, DateTime, URLFetch, etc."
@@ -8,8 +8,8 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.85"
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.22.1" }
-lc-tools-derive = { path = "../lc-tools-derive", version = "0.22.1" }
+lc-core = { path = "../lc-core", version = "0.22.4" }
+lc-tools-derive = { path = "../lc-tools-derive", version = "0.22.4" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -23,6 +23,10 @@ serde_yaml = "0.9"
 url = "2"
 urlencoding = "2"
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+# B6 (0.22.4): Playwright/Chrome DevTools Protocol browser tool. Plain `ws://`
+# only (the debugger endpoint is local), so no TLS stack is pulled in.
+futures-util = { version = "0.3", optional = true }
+tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["connect", "handshake"] }
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -30,4 +34,6 @@ tempfile = "3.0"
 [features]
 default = []
 sqlite-storage = ["rusqlite"]
+# B6 (0.22.4): enable the CDP browser tool (`lc_tools::browser::CdpBrowserTool`).
+browser-cdp = ["dep:futures-util", "dep:tokio-tungstenite"]
 

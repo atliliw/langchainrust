@@ -5,7 +5,7 @@
 //! Works alongside `executor.rs` (struct + builder + invoke/stream entry points) and
 //! `plan.rs` (cached planning).
 
-use super::budget::{budget_iteration_gate, budget_token_gate, budget_tool_gate};
+use super::budget::{budget_cost_gate, budget_iteration_gate, budget_token_gate, budget_tool_gate};
 use super::engine::{AgentExecutor, MaxIterationsPolicy};
 use super::tools::{run_tool_with_timeout, tool_error_observation};
 use super::AgentError;
@@ -15,6 +15,7 @@ use crate::metrics::AgentMetrics;
 use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{RunTree, RunType};
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolError;
 use serde_json::json;
 use std::collections::HashMap;
@@ -80,8 +81,9 @@ impl AgentExecutor {
         intermediate_steps: Vec<AgentStep>,
         root_run: &mut RunTree,
         metrics: &mut AgentMetrics,
+        config: Option<&RunnableConfig>,
     ) -> Result<String, AgentError> {
-        self.run_agent_loop_from(inputs, intermediate_steps, 0, root_run, metrics)
+        self.run_agent_loop_from(inputs, intermediate_steps, 0, root_run, metrics, config)
             .await
     }
 
@@ -97,6 +99,8 @@ impl AgentExecutor {
         start_iteration: usize,
         root_run: &mut RunTree,
         metrics: &mut AgentMetrics,
+        // A18: per-round planning config (callbacks + trace linkage).
+        config: Option<&RunnableConfig>,
     ) -> Result<String, AgentError> {
         // Budget gate (§4.2): start the loop timer, used by the max_duration /
         // max_iterations checks.
@@ -139,13 +143,24 @@ impl AgentExecutor {
             }
 
             let output = self
-                .plan_cached(&intermediate_steps, &inputs, metrics)
+                .plan_cached(&intermediate_steps, &inputs, metrics, config)
                 .await?;
 
             // Budget gate: cumulative tokens after an LLM call; hard-stops when the limit
             // is exceeded.
             if let Some(err) = budget_token_gate(self.budget.as_ref(), metrics) {
                 return Err(err);
+            }
+
+            // B3 (0.22.4): cumulative USD spend gate after the LLM call. Reads the
+            // shared CostTracker — the same Arc the tracking LLM records into, so the
+            // spend reflects the call that just returned. No tracker → no measurement
+            // → the limit cannot trip.
+            if let Some(tracker) = &self.cost_tracker {
+                let spent = tracker.total_cost_usd().await;
+                if let Some(err) = budget_cost_gate(self.budget.as_ref(), spent) {
+                    return Err(err);
+                }
             }
 
             match output {
@@ -360,10 +375,10 @@ impl AgentExecutor {
         resume_ctx: Option<&ResumeContext<'_>>,
         pre_decided: Option<ApprovalDecision>,
     ) -> Result<String, AgentError> {
+        // A11: O(1) name lookup via the prebuilt index instead of a linear scan.
         let tool = self
-            .tools
-            .iter()
-            .find(|t| t.name() == action.tool)
+            .tools_by_name
+            .get(&action.tool)
             .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
 
         let _input_str = match &action.tool_input {

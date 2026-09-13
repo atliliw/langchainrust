@@ -90,3 +90,77 @@ fn test_with_structured_output_binds_tool() {
     let _method: GeminiStructuredOutputMethod<TestOutput> = chat.with_structured_output();
     // Just verify it compiles and the method is callable
 }
+
+// B7: unified multimodal request-body mapping (inlineData / fileData parts).
+mod b7_multimodal {
+    use super::*;
+    use lc_schema::{AudioContent, FileContent, ImageContent, Message, VideoContent};
+
+    fn chat() -> GeminiChat {
+        GeminiChat::new(GeminiConfig::new("test-key"))
+    }
+
+    #[test]
+    fn data_uri_media_becomes_inline_data_parts() {
+        let msg = Message::human("素材")
+            .with_image(ImageContent::from_url("data:image/png;base64,aW1n"))
+            .with_audio(AudioContent::from_base64_with_mime("YXVk", "audio/wav"))
+            .with_video(VideoContent::from_base64("dmlk"))
+            .with_file(FileContent::from_base64("ZG9j", "application/pdf"));
+
+        let request = chat().build_request(vec![msg]);
+        let value = serde_json::to_value(&request).unwrap();
+        let parts = value["contents"][0]["parts"].as_array().unwrap();
+
+        let expected = json!([
+            {"text": "素材"},
+            {"inline_data": {"mime_type": "image/png", "data": "aW1n"}},
+            {"inline_data": {"mime_type": "audio/wav", "data": "YXVk"}},
+            {"inline_data": {"mime_type": "video/mp4", "data": "dmlk"}},
+            {"inline_data": {"mime_type": "application/pdf", "data": "ZG9j"}},
+        ]);
+        assert_eq!(json!(parts), expected);
+    }
+
+    #[test]
+    fn gs_uri_becomes_file_data_with_extension_mime() {
+        // The sync mapper accepts gs:// directly; the async resolver is what
+        // confines gs:// to Gemini policy and inlines every other scheme.
+        let msg = Message::human("图").with_image(ImageContent::from_url("gs://bucket/a.png"));
+
+        let request = chat().build_request(vec![msg]);
+        let value = serde_json::to_value(&request).unwrap();
+        let parts = value["contents"][0]["parts"].as_array().unwrap();
+
+        assert_eq!(
+            json!(&parts[1]),
+            json!({
+                "file_data": {
+                    "file_uri": "gs://bucket/a.png",
+                    "mime_type": "image/png"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn plain_text_message_is_unchanged() {
+        let request = chat().build_request(vec![Message::human("hello")]);
+        let value = serde_json::to_value(&request).unwrap();
+        let parts = value["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(json!(parts), json!([{"text": "hello"}]));
+    }
+
+    #[test]
+    fn hosted_url_is_skipped_by_sync_mapper() {
+        // Without async resolution a bare http(s) URL cannot map to a Gemini
+        // part; it is skipped rather than sent in a shape the API rejects.
+        let msg =
+            Message::human("x").with_image(ImageContent::from_url("https://example.com/a.png"));
+        let request = chat().build_request(vec![msg]);
+        let value = serde_json::to_value(&request).unwrap();
+        let parts = value["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "x");
+    }
+}

@@ -30,6 +30,7 @@ use tokio::sync::watch;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
+use crate::auth::AuthScheme;
 use crate::client_stateless::StatelessMcpClient;
 use crate::health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
 use crate::protocol::MCPError;
@@ -50,6 +51,9 @@ pub struct ServerSpec {
     pub max_idle: Duration,
     /// Health-breaker threshold (P2-5): tripped and removed after N consecutive failures (default 3).
     pub max_failures: u32,
+    /// Per-server authentication (0.22.4 A16): attached to every request the
+    /// lazily-built client sends. `None` sends unauthenticated requests.
+    pub auth: Option<AuthScheme>,
 }
 
 impl ServerSpec {
@@ -61,6 +65,7 @@ impl ServerSpec {
             keep_alive: false,
             max_idle: Duration::from_secs(300),
             max_failures: 3,
+            auth: None,
         }
     }
 
@@ -79,6 +84,13 @@ impl ServerSpec {
     /// Sets the health-breaker threshold (P2-5): trips after N consecutive failures, refusing requests until the backoff elapses.
     pub fn with_max_failures(mut self, max_failures: u32) -> Self {
         self.max_failures = max_failures.max(1);
+        self
+    }
+
+    /// Attaches per-server authentication (A16): the lazily-built client sends
+    /// it on every request (e.g. `Authorization: Bearer <token>`).
+    pub fn with_auth(mut self, auth: AuthScheme) -> Self {
+        self.auth = Some(auth);
         self
     }
 }
@@ -111,8 +123,14 @@ impl ManagedServer {
     /// Lazily gets the client: connects on the first call, reuses afterwards; also refreshes the last-used time.
     ///
     /// Breaker gating (P2-5): `Open` with the backoff still running → fast-fail (no more requests to a
-    /// broken Server). Connect success/failure feeds the breaker — success recovers, failure advances the
-    /// failure count.
+    /// broken Server).
+    ///
+    /// A17: stateless construction is purely local and infallible, so it must
+    /// NOT feed the breaker. Feeding it a success here let zero-cost client
+    /// churn (`release`/idle-reap → re-acquire) reset the consecutive-failure
+    /// count, diluting and delaying the trip of a persistently failing node.
+    /// Breaker state moves only on real outcomes: probes ([`ManagedServer::probe`])
+    /// and reported call results ([`ConnectionManager::report`]).
     async fn client(&self) -> Result<StatelessMcpClient, MCPError> {
         {
             let breaker = self.breaker.lock().await;
@@ -135,8 +153,15 @@ impl ManagedServer {
             );
             // Stateless construction is infallible (no handshake): failures
             // surface on the first request and feed the breaker there.
-            *guard = Some(StatelessMcpClient::connect(self.spec.url.clone()));
-            self.breaker.lock().await.record_success();
+            // A16: attach the per-server auth scheme when the spec declares one.
+            let client = match self.spec.auth.clone() {
+                Some(auth) => StatelessMcpClient::connect_with_auth(self.spec.url.clone(), auth),
+                None => StatelessMcpClient::connect(self.spec.url.clone()),
+            };
+            *guard = Some(client);
+            // A17: no record_success() here — no real request happened yet (see
+            // the method docs); the success/failure of the first request feeds
+            // the breaker through `probe()` / `ConnectionManager::report()`.
         }
         *self.last_used.lock().await = Instant::now();
         Ok(guard
@@ -147,7 +172,8 @@ impl ManagedServer {
 
     /// Health probe (P2-5): `list_tools` acts as the probe; the result feeds the breaker.
     ///
-    /// A connect failure was already recorded inside `client()`; do not count it again here.
+    /// A17: client acquisition no longer feeds the breaker, so the probe
+    /// result recorded here is the only outcome a probe contributes.
     async fn probe(&self) -> Result<(), MCPError> {
         *self.last_probe.lock().await = Some(Instant::now());
         let client = match self.client().await {
@@ -628,5 +654,80 @@ mod tests {
         let manager = ConnectionManager::new();
         let err = manager.health("ghost").await.unwrap_err();
         assert!(err.to_string().contains("not registered"), "{}", err);
+    }
+
+    /// A16: a `ServerSpec::with_auth` scheme rides along on the lazily-built
+    /// client — the bearer header is present on the first (and every) request.
+    #[tokio::test]
+    async fn test_auth_scheme_attached_to_requests() {
+        use crate::auth::AuthScheme;
+        use crate::test_support::{start_fake_stateless_server, StatelessMode};
+
+        let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+        let manager = ConnectionManager::new();
+        manager
+            .register(
+                ServerSpec::new("authsrv", fake.url.as_str())
+                    .with_auth(AuthScheme::Bearer("mgr-token".to_string())),
+            )
+            .await
+            .unwrap();
+
+        let client = manager.client("authsrv").await.expect("lazy client");
+        client
+            .list_tools()
+            .await
+            .expect("authenticated tools/list should succeed");
+
+        let seen = fake.auth_headers_seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|h| h == "Bearer mgr-token"),
+            "managed client must send the configured bearer token, saw: {seen:?}"
+        );
+    }
+
+    /// A17: purely local client churn (release → lazy re-acquisition) must not
+    /// reset the breaker's consecutive-failure count. Stateless construction
+    /// and `close()` do no network I/O, so only real request/probe outcomes
+    /// move the breaker; repeated zero-cost acquisitions against a failing
+    /// node must not dilute the count and delay the trip.
+    #[tokio::test]
+    async fn test_local_rebuilds_do_not_reset_breaker_failures() {
+        let manager = ConnectionManager::new();
+        manager
+            .register(ServerSpec::new("bad", DEAD_URL).with_max_failures(3))
+            .await
+            .expect("register should succeed");
+
+        // Two failed real calls feed the breaker (the gateway's report path).
+        manager.report("bad", false).await.unwrap();
+        manager.report("bad", false).await.unwrap();
+
+        // Zero-cost local churn: release the client and re-acquire, repeatedly.
+        for _ in 0..5 {
+            manager.release("bad").await.unwrap();
+            manager
+                .client("bad")
+                .await
+                .expect("2 failures < threshold; client acquisition must still be served");
+        }
+
+        // One more real (failed) probe must land on count 3 and trip the
+        // breaker. Had rebuilds reset the count, this probe would show
+        // Degraded (count 1) instead of Down.
+        let h = manager
+            .health("bad")
+            .await
+            .expect("health probe should not error");
+        assert_eq!(
+            h.failures, 3,
+            "local rebuilds must not dilute the consecutive-failure count"
+        );
+        assert_eq!(h.status, HealthStatus::Down);
+        manager
+            .client("bad")
+            .await
+            .err()
+            .expect("the tripped breaker must fast-fail acquisition");
     }
 }

@@ -134,6 +134,7 @@ async fn tracked_llm_plugs_into_function_calling_agent_and_counts() {
         .plan(
             &[],
             &HashMap::from([("input".to_string(), "hi".to_string())]),
+            None,
         )
         .await
         .expect("plan should succeed");

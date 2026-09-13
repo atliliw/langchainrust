@@ -24,6 +24,27 @@ pub enum ObsEvent {
     TokenUsage(TokenUsage),
     /// Aggregated metrics of one agent run (exported once at the end).
     AgentMetrics(AgentMetrics),
+    /// Priced USD cost of one LLM call (B3; exported as it happens).
+    Cost(CostEvent),
+}
+
+/// Priced cost of one LLM call (emitted by `CostTracker`).
+#[derive(Debug, Clone, Serialize)]
+pub struct CostEvent {
+    /// Run/session label when the tracker was scoped with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Provider slug (`"openai"`, ...); `None` when undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model id as reported by the model.
+    pub model: String,
+    /// Prompt tokens of the call.
+    pub prompt_tokens: usize,
+    /// Completion tokens of the call.
+    pub completion_tokens: usize,
+    /// Priced USD cost (0.0 when no price entry matched).
+    pub cost_usd: f64,
 }
 
 /// Pluggable observability sink. The framework only provides the interface and
@@ -75,5 +96,24 @@ mod tests {
         assert_eq!(v["llm_calls"], 2);
         assert_eq!(v["tool_calls"], 1);
         assert_eq!(v["total_tokens"], 30);
+    }
+
+    #[test]
+    fn obs_event_cost_serializes_with_kind_tag() {
+        let json = serde_json::to_string(&ObsEvent::Cost(CostEvent {
+            scope: Some("run-7".to_string()),
+            provider: Some("openai".to_string()),
+            model: "gpt-4o-mini".to_string(),
+            prompt_tokens: 1000,
+            completion_tokens: 1000,
+            cost_usd: 0.75,
+        }))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "cost");
+        assert_eq!(v["scope"], "run-7");
+        assert_eq!(v["provider"], "openai");
+        assert_eq!(v["model"], "gpt-4o-mini");
+        assert_eq!(v["cost_usd"], 0.75);
     }
 }

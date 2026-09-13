@@ -90,6 +90,12 @@ pub struct Example {
     pub input: String,
     /// Reference answer
     pub reference: String,
+    /// Retrieved RAG contexts, in retrieval rank order (top-ranked first).
+    ///
+    /// B9 (v0.22.4): consumed by [`RagEvaluator`]s (context precision/recall).
+    /// Old JSONL rows without this field deserialize to an empty vec.
+    #[serde(default)]
+    pub contexts: Vec<String>,
 }
 
 impl Example {
@@ -98,6 +104,20 @@ impl Example {
         Self {
             input: input.into(),
             reference: reference.into(),
+            contexts: Vec::new(),
+        }
+    }
+
+    /// Constructs a RAG evaluation example with retrieved contexts (rank order preserved).
+    pub fn with_contexts(
+        input: impl Into<String>,
+        reference: impl Into<String>,
+        contexts: Vec<String>,
+    ) -> Self {
+        Self {
+            input: input.into(),
+            reference: reference.into(),
+            contexts,
         }
     }
 }
@@ -175,6 +195,28 @@ pub trait PairwiseEvaluator: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// RAG evaluator trait (RAGAS-style): scores a prediction together with the retrieved
+/// contexts, which a plain [`Evaluator`] has no slot for.
+///
+/// Contexts are passed in **retrieval rank order** (top-ranked chunk first) — rank-aware
+/// metrics such as context precision depend on it. B9 (v0.22.4): accepted by `EvalRunner`
+/// alongside [`Evaluator`] / [`PairwiseEvaluator`]; the runner takes contexts from
+/// [`Example::contexts`].
+#[async_trait]
+pub trait RagEvaluator: Send + Sync {
+    /// Scores a single prediction given the question, retrieved contexts, and reference answer.
+    async fn eval_rag(
+        &self,
+        input: &str,
+        prediction: &str,
+        contexts: &[String],
+        reference: &str,
+    ) -> Result<Score, EvalError>;
+
+    /// Evaluator name (used in report summaries)
+    fn name(&self) -> &str;
+}
+
 /// Predictor trait (the object under evaluation: LLMChain / Agent, etc.)
 #[async_trait]
 pub trait Predictor: Send + Sync {
@@ -187,6 +229,13 @@ pub trait Predictor: Send + Sync {
     async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
         None
     }
+
+    /// Called once before the dataset loop with the evaluation run id (B9).
+    ///
+    /// Default no-op. A system under test that runs chains/agents can store the id and put it
+    /// into `RunnableConfig.metadata["trace_id"]`; the agent executor then propagates it to
+    /// callback/OTel spans, making the eval report's run id the join key to traces.
+    async fn begin_run(&self, _run_id: &str) {}
 }
 
 #[cfg(test)]
@@ -236,6 +285,19 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, EvalError::IoError(_)));
+    }
+
+    #[tokio::test]
+    async fn test_contexts_round_trip_and_old_row_default() {
+        // old row without contexts still parses, contexts empty
+        let old: Example = serde_json::from_str(r#"{"input":"q","reference":"r"}"#).unwrap();
+        assert!(old.contexts.is_empty());
+
+        // new row keeps contexts in their declared (rank) order
+        let with_ctx = Example::with_contexts("q", "r", vec!["top".into(), "second".into()]);
+        let json = serde_json::to_string(&with_ctx).unwrap();
+        let back: Example = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.contexts, vec!["top", "second"]);
     }
 
     #[tokio::test]

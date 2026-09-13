@@ -276,8 +276,11 @@ impl SpanGuard {
             Some(m) => m.to_string(),
             None => return,
         };
-        self.span.cost =
-            crate::pricing::estimate_cost_usd(tokens.prompt_tokens, tokens.completion_tokens, &model);
+        self.span.cost = crate::pricing::estimate_cost_usd(
+            tokens.prompt_tokens,
+            tokens.completion_tokens,
+            &model,
+        );
     }
 
     /// Manually end the span now instead of waiting for Drop.

@@ -147,15 +147,16 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 let fan_out_targets = graph.find_fan_out_targets(&current_node).await;
                 if let Some(targets) = fan_out_targets {
                     recursion_count += 1;
-                    let branch_results =
-                        match graph.execute_parallel_branches(&targets, &state, recursion_count).await
-                        {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let _ = tx.send(Err(e)).await;
-                                return;
-                            }
-                        };
+                    let branch_results = match graph
+                        .execute_parallel_branches(&targets, &state, recursion_count)
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
+                    };
                     let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
                     for (name, inv) in branch_results {
                         parallel_branches.push(ParallelBranch {
@@ -395,9 +396,9 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 return true;
             }
         }
-        self.edges.iter().any(|e| {
-            matches!(e, GraphEdge::FanIn { sources, .. } if sources.iter().any(|s| s == node))
-        })
+        self.edges.iter().any(
+            |e| matches!(e, GraphEdge::FanIn { sources, .. } if sources.iter().any(|s| s == node)),
+        )
     }
 
     pub(super) async fn find_fan_out_targets(&self, current: &str) -> Option<Vec<String>> {

@@ -1,6 +1,6 @@
 // lc-agents/src/executor/budget.rs
 //! Budget gates (§4.2): `BudgetConfig` hard-limit configuration + `BudgetExceeded`
-//! over-limit details + three gate-check functions (shared by the invoke / stream paths).
+//! over-limit details + four gate-check functions (shared by the invoke / stream paths).
 //!
 //! The `AgentExecutor` control loop is all-off by default (`None` field = unlimited) and
 //! existing behavior is unchanged; once enabled via `.with_budget(BudgetConfig { .. })`,
@@ -26,6 +26,10 @@ pub struct BudgetConfig {
     /// Iteration cap (tightens `AgentExecutor::max_iterations`; hitting it returns an error
     /// instead of the placeholder return path used at the iteration limit).
     pub max_iterations: Option<usize>,
+    /// Cumulative USD spend cap (read from the shared
+    /// `lc_core::cost::CostTracker`; has no effect when the executor carries no
+    /// cost tracker). Measured after each LLM call.
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Details of a budget over-limit.
@@ -56,6 +60,13 @@ pub enum BudgetExceeded {
     Iterations {
         /// Effective limit (already `min`'d with `AgentExecutor::max_iterations`).
         limit: usize,
+    },
+    /// Cumulative USD spend exceeded.
+    Cost {
+        /// Configured USD limit.
+        limit: f64,
+        /// Actual cumulative USD spend at trigger time.
+        actual: f64,
     },
 }
 
@@ -111,6 +122,25 @@ pub(crate) fn budget_token_gate(
     None
 }
 
+/// Budget gate (§4.2): cumulative USD-spend check after an LLM call. The caller
+/// reads `CostTracker::total_cost_usd()` and passes the value in; when no
+/// tracker is attached the measured spend stays `0.0`, so a cost limit without
+/// a tracker simply never trips (measurement and enforcement stay explicit).
+pub(crate) fn budget_cost_gate(
+    budget: Option<&BudgetConfig>,
+    current_cost_usd: f64,
+) -> Option<AgentError> {
+    let budget = budget?;
+    let limit = budget.max_cost_usd?;
+    if current_cost_usd >= limit {
+        return Some(AgentError::BudgetExceeded(BudgetExceeded::Cost {
+            limit,
+            actual: current_cost_usd,
+        }));
+    }
+    None
+}
+
 /// Budget gate (§4.2): checks cumulative call count and wall-clock before a tool runs.
 ///
 /// `metrics.tool_calls` is already incremented, so the check uses `> limit` — allowing
@@ -139,4 +169,43 @@ pub(crate) fn budget_tool_gate(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cost_cfg(limit: f64) -> BudgetConfig {
+        BudgetConfig {
+            max_cost_usd: Some(limit),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cost_gate_without_budget_is_inert() {
+        assert!(budget_cost_gate(None, 9_999.0).is_none());
+    }
+
+    #[test]
+    fn cost_gate_without_limit_is_inert_even_with_budget() {
+        assert!(budget_cost_gate(Some(&BudgetConfig::default()), 9_999.0).is_none());
+    }
+
+    #[test]
+    fn cost_gate_below_limit_passes() {
+        assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 0.99).is_none());
+    }
+
+    #[test]
+    fn cost_gate_at_and_above_limit_stops() {
+        match budget_cost_gate(Some(&cost_cfg(1.0)), 1.0) {
+            Some(AgentError::BudgetExceeded(BudgetExceeded::Cost { limit, actual })) => {
+                assert_eq!(limit, 1.0);
+                assert_eq!(actual, 1.0);
+            }
+            other => panic!("expected Cost stop at the limit, got {other:?}"),
+        }
+        assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 1.5).is_some());
+    }
 }

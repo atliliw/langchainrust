@@ -89,6 +89,7 @@ mod tests {
             &self,
             _intermediate_steps: &[AgentStep],
             inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             let input = inputs.get("input").cloned().unwrap_or_default();
             Ok(AgentOutput::Finish(AgentFinish::new(
@@ -107,6 +108,7 @@ mod tests {
             &self,
             _intermediate_steps: &[AgentStep],
             _inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             Err(AgentError::Other("boom".to_string()))
         }

@@ -1,6 +1,6 @@
 [package]
 name = "lc-callbacks"
-version = "0.22.1"
+version = "0.22.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Callback and tracing infrastructure for langchainrust"
@@ -8,7 +8,7 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version = "1.85"
 
 [dependencies]
-lc-schema = { path = "../lc-schema", version = "0.22.1" }
+lc-schema = { path = "../lc-schema", version = "0.22.4" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -23,10 +23,33 @@ log = "0.4"
 [features]
 default = []
 opentelemetry = ["dep:opentelemetry"]
+# B9: OTLP export pipeline (HTTP/JSON over reqwest). Pulls the OTel SDK; the API-only
+# `opentelemetry` feature stays dependency-light for in-process attribute recording.
+otlp = [
+    "opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+]
 
 [dependencies.opentelemetry]
 version = "0.27"
 optional = true
 
+[dependencies.opentelemetry_sdk]
+version = "0.27"
+optional = true
+features = ["trace", "rt-tokio"]
+
+[dependencies.opentelemetry-otlp]
+version = "0.27"
+default-features = false
+optional = true
+features = ["trace", "http-json", "reqwest-client"]
+
 [dev-dependencies]
 tempfile = "3.0"
+
+# In-memory span exporter lets the handler attribute tests run offline (no collector).
+[dev-dependencies.opentelemetry_sdk]
+version = "0.27"
+features = ["trace", "testing", "rt-tokio"]

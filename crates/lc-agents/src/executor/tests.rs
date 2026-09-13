@@ -14,8 +14,8 @@ use lc_core::runnables::RunnableConfig;
 use lc_core::tools::{BaseTool, ToolError};
 use lc_embeddings::{EmbeddingError, Embeddings};
 use lc_memory::{
-    BaseMemory, ConversationBufferMemory, ConversationSummaryBufferMemory,
-    VectorStoreRetrieverMemory,
+    BaseMemory, ConversationBufferMemory, ConversationSummaryBufferMemory, MemoryError,
+    MemoryExtractor, MemoryItem, MemoryStore, TwoTierMemory, VectorStoreRetrieverMemory,
 };
 use lc_tools::Calculator;
 use lc_vector_stores::InMemoryVectorStore;
@@ -37,6 +37,7 @@ async fn test_agent_executor_with_memory() {
             &self,
             _intermediate_steps: &[AgentStep],
             inputs: &HashMap<String, String>,
+            _config: Option<&RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             // If history exists, check if it contains previous info
             if let Some(history) = inputs.get("history") {
@@ -94,6 +95,7 @@ async fn test_agent_executor_saves_memory_on_error() {
             &self,
             _intermediate_steps: &[AgentStep],
             _inputs: &HashMap<String, String>,
+            _config: Option<&RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             Err(AgentError::Other("deliberate failure".to_string()))
         }
@@ -175,6 +177,7 @@ impl BaseAgent for HistoryNameAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if let Some(history) = inputs.get("history") {
             if history.contains("Zhang San") {
@@ -354,6 +357,7 @@ impl BaseAgent for TestFinishAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Finish(AgentFinish::new(
             "hello".to_string(),
@@ -371,6 +375,7 @@ impl BaseAgent for TestToolAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -449,6 +454,7 @@ impl BaseAgent for TestStreamingAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Finish(AgentFinish::new(
             "hello world".to_string(),
@@ -461,6 +467,7 @@ impl BaseAgent for TestStreamingAgent {
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
         on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         // Simulate streaming chat: split the whole answer into 4 tokens and forward
         // them one by one.
@@ -573,6 +580,7 @@ impl BaseAgent for CountingAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let input = inputs.get("input").cloned().unwrap_or_default();
@@ -663,6 +671,7 @@ impl BaseAgent for DeclaredToolsAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -777,6 +786,7 @@ impl BaseAgent for InjectionProbeAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -912,6 +922,7 @@ impl BaseAgent for RelentlessActionAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Action(AgentAction {
             tool: "counter".to_string(),
@@ -1096,6 +1107,7 @@ impl BaseAgent for ImmediateFinishAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Finish(AgentFinish::new(
             "done".to_string(),
@@ -1128,6 +1140,7 @@ async fn invoke_exports_agent_metrics_once() {
             assert_eq!(m.tool_calls, 0);
         }
         ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
+        ObsEvent::Cost(_) => panic!("unexpected event kind"),
     }
 }
 
@@ -1151,6 +1164,7 @@ async fn stream_exports_agent_metrics_once() {
     match &captured[0] {
         ObsEvent::AgentMetrics(_) => {}
         ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
+        ObsEvent::Cost(_) => panic!("unexpected event kind"),
     }
 }
 
@@ -1167,4 +1181,266 @@ async fn sink_failure_is_warned_and_invoke_succeeds() {
     let result = executor.invoke("hi".to_string()).await;
     assert!(result.is_ok(), "sink failure must not fail invoke");
     assert!(executor.last_metrics().is_some(), "metrics still recorded");
+}
+
+// ============ B4 (v0.22.4): two-tier semantic memory wiring ============
+
+use std::time::{Duration, Instant};
+
+/// Short-tier capacity used by the B4 executor tests.
+const B4_SHORT_CAPACITY: usize = 16;
+
+/// Extractor that counts calls, sleeps `delay`, then returns one
+/// high-importance fact (which consolidation must promote to the long tier).
+struct DelayedExtractor {
+    delay: Duration,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl MemoryExtractor for DelayedExtractor {
+    async fn extract(
+        &self,
+        _namespace: &str,
+        _user_input: &str,
+        _assistant_output: &str,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        Ok(vec![MemoryItem::new(
+            "prefers_dark_mode",
+            "the user prefers dark mode",
+        )
+        .with_importance(0.95)])
+    }
+}
+
+/// Extractor returning no facts — used where only recall is under test.
+struct NoopExtractor;
+
+#[async_trait]
+impl MemoryExtractor for NoopExtractor {
+    async fn extract(
+        &self,
+        _namespace: &str,
+        _user_input: &str,
+        _assistant_output: &str,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Finishes with whatever was recalled under `semantic_memory`, or `NO_RECALL`.
+struct RecallProbeAgent;
+
+#[async_trait]
+impl BaseAgent for RecallProbeAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        let answer = inputs
+            .get("semantic_memory")
+            .cloned()
+            .unwrap_or_else(|| "NO_RECALL".to_string());
+        Ok(AgentOutput::Finish(AgentFinish::new(answer, String::new())))
+    }
+}
+
+/// Always errors — used to assert no extraction runs on failed turns.
+struct AlwaysFailingAgent;
+
+#[async_trait]
+impl BaseAgent for AlwaysFailingAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        Err(AgentError::Other("planned failure".to_string()))
+    }
+}
+
+/// Polls `predicate` until true or the timeout elapses (background extraction
+/// has no completion signal by design — the executor drops the JoinHandle).
+async fn wait_for<P, Fut>(timeout: Duration, mut predicate: P) -> bool
+where
+    P: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if predicate().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// Gate 1 (namespace isolation): a fact stored under namespace `alice` is
+/// recalled on alice's run but never on bob's run against the same shared store.
+#[tokio::test]
+async fn semantic_recall_isolated_by_namespace_at_executor_level() {
+    let store = Arc::new(TwoTierMemory::new(B4_SHORT_CAPACITY));
+    store
+        .put(
+            "alice",
+            MemoryItem::new("pref", "the user prefers dark mode"),
+        )
+        .await
+        .unwrap();
+
+    let alice = AgentExecutor::new(Arc::new(RecallProbeAgent), vec![]).with_semantic_memory(
+        store.clone(),
+        "alice",
+        Arc::new(NoopExtractor),
+    );
+    let bob = AgentExecutor::new(Arc::new(RecallProbeAgent), vec![]).with_semantic_memory(
+        store.clone(),
+        "bob",
+        Arc::new(NoopExtractor),
+    );
+
+    let alice_out = alice
+        .invoke("do I prefer dark mode?".to_string())
+        .await
+        .unwrap();
+    assert!(
+        alice_out.contains("the user prefers dark mode"),
+        "alice should recall her own fact, got: {alice_out}"
+    );
+
+    let bob_out = bob
+        .invoke("do I prefer dark mode?".to_string())
+        .await
+        .unwrap();
+    assert_eq!(bob_out, "NO_RECALL", "bob must not see alice's fact");
+}
+
+/// Gate 3 (background extraction does not block the main loop): with an
+/// extractor that sleeps 200 ms, `invoke` returns immediately; the fact lands
+/// in the store afterwards and consolidation promotes it short→long.
+#[tokio::test]
+async fn semantic_extraction_is_detached_on_invoke_path() {
+    let store = Arc::new(TwoTierMemory::new(B4_SHORT_CAPACITY));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extractor = Arc::new(DelayedExtractor {
+        delay: Duration::from_millis(200),
+        calls: calls.clone(),
+    });
+    let executor = AgentExecutor::new(Arc::new(ImmediateFinishAgent), vec![]).with_semantic_memory(
+        store.clone(),
+        "alice",
+        extractor,
+    );
+
+    let started = Instant::now();
+    let answer = executor
+        .invoke("remember my preference".to_string())
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(answer, "done");
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "invoke blocked on the slow extractor: {elapsed:?}"
+    );
+
+    let promoted = wait_for(Duration::from_secs(2), || async {
+        store.long_term().len_namespace("alice").await.unwrap_or(0) > 0
+    })
+    .await;
+    assert!(
+        promoted,
+        "extracted fact was not promoted to long-term memory"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store.short_term().len_namespace("alice").await.unwrap(),
+        0,
+        "consolidation removes promoted items from the short tier"
+    );
+    let stored = store.get("alice", "prefers_dark_mode").await.unwrap();
+    assert!(stored.is_some(), "promoted fact is readable by key");
+}
+
+/// Gate 3 parity (stream path): extraction is detached after `FinalAnswer` too.
+#[tokio::test]
+async fn semantic_extraction_is_detached_on_stream_path() {
+    let store = Arc::new(TwoTierMemory::new(B4_SHORT_CAPACITY));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extractor = Arc::new(DelayedExtractor {
+        delay: Duration::from_millis(200),
+        calls: calls.clone(),
+    });
+    let executor = AgentExecutor::new(Arc::new(ImmediateFinishAgent), vec![]).with_semantic_memory(
+        store.clone(),
+        "alice",
+        extractor,
+    );
+
+    let started = Instant::now();
+    let events: Vec<_> = executor
+        .stream("remember my preference".to_string())
+        .collect()
+        .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "stream blocked on the slow extractor: {elapsed:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Ok(crate::AgentStreamEvent::FinalAnswer { .. }))),
+        "stream must deliver a final answer: {events:?}"
+    );
+
+    let populated = wait_for(Duration::from_secs(2), || async {
+        store
+            .get("alice", "prefers_dark_mode")
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    assert!(populated, "extracted fact never landed after stream");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// A failed turn spawns no extraction at all — errored rounds produce no facts.
+#[tokio::test]
+async fn semantic_extraction_skipped_on_failed_run() {
+    let store = Arc::new(TwoTierMemory::new(B4_SHORT_CAPACITY));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let extractor = Arc::new(DelayedExtractor {
+        delay: Duration::from_millis(10),
+        calls: calls.clone(),
+    });
+    let executor = AgentExecutor::new(Arc::new(AlwaysFailingAgent), vec![]).with_semantic_memory(
+        store.clone(),
+        "alice",
+        extractor,
+    );
+
+    let err = executor
+        .invoke("doomed".to_string())
+        .await
+        .expect_err("run fails");
+    assert!(err.to_string().contains("planned failure"));
+
+    // Give a hypothetical (incorrect) post-error spawn time to land.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "extractor must not run on error"
+    );
+    assert_eq!(store.len_namespace("alice").await.unwrap(), 0);
 }

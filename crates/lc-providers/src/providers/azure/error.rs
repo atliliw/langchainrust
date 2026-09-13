@@ -11,6 +11,10 @@ pub enum AzureOpenAIError {
     Api(String),
     /// Response parsing error.
     Parse(String),
+    /// The SSE stream ended before a terminal marker (`[DONE]`, or a chunk
+    /// carrying `finish_reason`) — the connection dropped mid-generation and
+    /// the partial output is truncated (A12, mirrors `OpenAIError`).
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for AzureOpenAIError {
@@ -19,6 +23,11 @@ impl std::fmt::Display for AzureOpenAIError {
             AzureOpenAIError::Http(msg) => write!(f, "Azure OpenAI HTTP error: {}", msg),
             AzureOpenAIError::Api(msg) => write!(f, "Azure OpenAI API error: {}", msg),
             AzureOpenAIError::Parse(msg) => write!(f, "Azure OpenAI parse error: {}", msg),
+            AzureOpenAIError::StreamInterrupted(msg) => write!(
+                f,
+                "Azure OpenAI stream interrupted before terminal event (output truncated): {}",
+                msg
+            ),
         }
     }
 }

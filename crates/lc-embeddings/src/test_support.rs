@@ -3,7 +3,7 @@
 //! embeddings JSON responses, for batch-alignment tests that do not rely on a real network (P0-1).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Minimal HTTP stub: the first `failures_before_success` requests return `transient_status`,
@@ -253,4 +253,88 @@ pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send 
     });
 
     format!("http://{}", addr)
+}
+
+/// Starts an HTTP stub that replies 200 with a fixed JSON body and records
+/// every request body (parsed as JSON) in arrival order.
+///
+/// Returns `(base_url, recorded_bodies)`. Used by the B7 vision backends for
+/// request-shape snapshot tests against provider-native dialects (Cohere v2
+/// `images`, DashScope `input.contents`) that [`spawn_embeddings_stub`]
+/// cannot express.
+pub async fn spawn_json_recording_stub(
+    response_body: serde_json::Value,
+) -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+    spawn_json_handler_stub(Arc::new(move |_| response_body.clone())).await
+}
+
+/// Starts an HTTP stub that computes each JSON response from the received
+/// request body via `handler`, recording the bodies in arrival order.
+///
+/// Returns `(base_url, recorded_bodies)`. Bodies that fail to parse as JSON
+/// are not recorded and receive an empty-object response.
+pub async fn spawn_json_handler_stub(
+    handler: Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>,
+) -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = bodies.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let recorded = recorded.clone();
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                // Read the header section (up to \r\n\r\n).
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                let header_str = String::from_utf8_lossy(&header).to_lowercase();
+                let content_length: usize = header_str
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+
+                let response_body = match serde_json::from_slice::<serde_json::Value>(&body) {
+                    Ok(value) => {
+                        recorded
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(value.clone());
+                        handler(value).to_string()
+                    }
+                    Err(_) => "{}".to_string(),
+                };
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+
+    (format!("http://{}", addr), bodies)
 }

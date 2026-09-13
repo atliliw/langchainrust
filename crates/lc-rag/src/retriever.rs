@@ -28,6 +28,10 @@ pub enum RetrieverError {
 
     /// No results
     NoResults,
+
+    /// A document handed to a retriever is malformed for its modality
+    /// (e.g. an image document missing its reference). B7 multimodal retrieval.
+    InvalidDocument(String),
 }
 
 impl std::fmt::Display for RetrieverError {
@@ -38,6 +42,7 @@ impl std::fmt::Display for RetrieverError {
             RetrieverError::LlmError(msg) => write!(f, "LLM error: {}", msg),
             RetrieverError::InvalidFilter(msg) => write!(f, "invalid filter: {}", msg),
             RetrieverError::NoResults => write!(f, "no relevant documents found"),
+            RetrieverError::InvalidDocument(msg) => write!(f, "invalid document: {msg}"),
         }
     }
 }

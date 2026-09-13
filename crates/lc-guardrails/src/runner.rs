@@ -5,7 +5,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::guardrail::{
-    ChunkAction, GuardrailError, GuardrailsConfig, InputGuardrailResult, OutputGuardrailResult,
+    ChunkAction, ChunkContext, GuardrailError, GuardrailsConfig, InputGuardrailResult,
+    OutputGuardrailResult,
 };
 
 /// Violation log cap: beyond it the oldest record is dropped to prevent unbounded memory growth (P1-2).
@@ -157,25 +158,38 @@ impl GuardrailRunner {
         }
     }
 
-    /// Phase one of the two-phase streaming check: validates each incremental chunk (possibly a `tail + chunk`).
+    /// Phase one of the two-phase streaming check: validates each incremental token.
     ///
-    /// Returns a [`ChunkAction`]: pass / pass after rewrite / block and drop.
+    /// Returns a [`ChunkAction`]: pass / pass after rewrite / block and drop. A previous rail's
+    /// `Replace` becomes the `token` seen by later rails; `window`/`full` stay the raw candidate
+    /// views so detection context is not lost.
     /// The second re-check of the full output is handled by [`GuardrailRunner::validate_output`] (P1-4).
-    pub async fn validate_stream_chunk(&mut self, chunk: &str) -> ChunkAction {
-        let mut action = ChunkAction::Pass;
+    pub async fn validate_stream_chunk(&mut self, ctx: &ChunkContext<'_>) -> ChunkAction {
+        let mut rewritten: Option<String> = None;
         // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
         let guardrails = self.config.streaming_guardrails.clone();
         for g in &guardrails {
-            match g.validate_chunk(chunk).await {
+            let probe = ChunkContext {
+                token: rewritten.as_deref().unwrap_or(ctx.token),
+                window: ctx.window,
+                full: ctx.full,
+            };
+            match g.validate_chunk(&probe).await {
                 ChunkAction::Pass => {}
                 ChunkAction::Replace(new_value) => {
-                    self.record_violation(GuardrailViolation {
-                        guardrail_name: g.name().to_string(),
-                        stage: "stream".to_string(),
-                        reason: "chunk replaced".to_string(),
-                    })
-                    .await;
-                    action = ChunkAction::Replace(new_value);
+                    // An empty replacement means the rail is speculatively buffering the token
+                    // (hold-back): it fires on every early chunk of a perfectly clean stream, so
+                    // logging each as an intervention would flood the audit trail with false
+                    // events. Such a release is audited once, from `flush_stream`.
+                    if !new_value.is_empty() {
+                        self.record_violation(GuardrailViolation {
+                            guardrail_name: g.name().to_string(),
+                            stage: "stream".to_string(),
+                            reason: "chunk replaced".to_string(),
+                        })
+                        .await;
+                    }
+                    rewritten = Some(new_value);
                 }
                 ChunkAction::Block => {
                     self.record_violation(GuardrailViolation {
@@ -188,7 +202,39 @@ impl GuardrailRunner {
                 }
             }
         }
-        action
+        match rewritten {
+            Some(new_value) => ChunkAction::Replace(new_value),
+            None => ChunkAction::Pass,
+        }
+    }
+
+    /// Drains stateful streaming rails at end of stream: hold-back buffers (e.g. PII redaction
+    /// that keeps a suffix so identifiers split across chunks cannot leak) release their tail.
+    ///
+    /// Verbatim tails ([`FlushOutput::Release`](crate::guardrail::FlushOutput::Release)) are
+    /// returned without an audit record; a rewritten tail
+    /// ([`FlushOutput::Rewritten`](crate::guardrail::FlushOutput::Rewritten)) is also recorded
+    /// as an intervention.
+    pub async fn flush_stream(&mut self) -> Vec<String> {
+        let guardrails = self.config.streaming_guardrails.clone();
+        let mut released = Vec::new();
+        for g in &guardrails {
+            let output = g.flush().await;
+            if output.is_rewrite() {
+                self.record_violation(GuardrailViolation {
+                    guardrail_name: g.name().to_string(),
+                    stage: "stream".to_string(),
+                    reason: "buffered tail released after rewrite".to_string(),
+                })
+                .await;
+            }
+            if let Some(text) = output.into_text() {
+                if !text.is_empty() {
+                    released.push(text);
+                }
+            }
+        }
+        released
     }
 
     /// Returns a snapshot of violation records (a clone of the shared log).
@@ -282,8 +328,8 @@ mod tests {
         fn name(&self) -> &str {
             "KeywordStreamGuard"
         }
-        async fn validate_chunk(&self, chunk: &str) -> ChunkAction {
-            if chunk.contains("SECRET") {
+        async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
+            if ctx.window.contains("SECRET") {
                 ChunkAction::Block
             } else {
                 ChunkAction::Pass
@@ -298,9 +344,9 @@ mod tests {
         fn name(&self) -> &str {
             "RedactStreamGuard"
         }
-        async fn validate_chunk(&self, chunk: &str) -> ChunkAction {
-            if chunk.contains("secret") {
-                ChunkAction::Replace(chunk.replace("secret", "***"))
+        async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
+            if ctx.token.contains("secret") {
+                ChunkAction::Replace(ctx.token.replace("secret", "***"))
             } else {
                 ChunkAction::Pass
             }
@@ -414,10 +460,12 @@ mod tests {
         let config = GuardrailsConfig::new().with_streaming(Arc::new(KeywordStreamGuard));
         let mut runner = GuardrailRunner::new(config);
         // sliding-window probe contains SECRET -> Block
-        assert_eq!(
-            runner.validate_stream_chunk("x SECRET y").await,
-            ChunkAction::Block
-        );
+        let ctx = ChunkContext {
+            token: "y",
+            window: "x SECRET y",
+            full: "x SECRET y",
+        };
+        assert_eq!(runner.validate_stream_chunk(&ctx).await, ChunkAction::Block);
         assert_eq!(runner.violations().len(), 1);
     }
 
@@ -425,7 +473,12 @@ mod tests {
     async fn test_runner_stream_chunk_replace() {
         let config = GuardrailsConfig::new().with_streaming(Arc::new(RedactStreamGuard));
         let mut runner = GuardrailRunner::new(config);
-        match runner.validate_stream_chunk("a secret b").await {
+        let ctx = ChunkContext {
+            token: "a secret b",
+            window: "a secret b",
+            full: "a secret b",
+        };
+        match runner.validate_stream_chunk(&ctx).await {
             ChunkAction::Replace(v) => assert_eq!(v, "a *** b"),
             other => panic!("应为 Replace, 实际: {:?}", other),
         }

@@ -99,18 +99,83 @@ pub enum ChunkAction {
     Block,
 }
 
+/// Context handed to a streaming guardrail for each token.
+///
+/// All three views are derived from the **raw** model output, before any rail rewrite,
+/// so every rail in a chain sees the same candidate text:
+///
+/// - [`token`](Self::token): just the text emitted in this step;
+/// - [`window`](Self::window): the recent tail followed by `token` — the sliding-window probe
+///   that catches keywords / identifiers split across chunks (`"passwo" + "rd"`);
+/// - [`full`](Self::full): every raw token seen so far including this one — the view a
+///   stateful rail needs for whole-document checks (e.g. incremental JSON schema validation).
+#[derive(Debug, Clone, Copy)]
+pub struct ChunkContext<'a> {
+    /// The raw token emitted in this step.
+    pub token: &'a str,
+    /// Sliding-window probe: recent tail + [`token`](Self::token).
+    pub window: &'a str,
+    /// Full raw candidate output: all previous raw tokens + [`token`](Self::token).
+    pub full: &'a str,
+}
+
+/// End-of-stream output of a stateful streaming rail's buffer (see
+/// [`StreamingOutputGuardrail::flush`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlushOutput {
+    /// Nothing buffered.
+    Empty,
+    /// Buffered tail released verbatim: no intervention, not audited as a violation.
+    Release(String),
+    /// Buffered tail released after rewriting (e.g. redaction): audited as an intervention.
+    Rewritten(String),
+}
+
+impl FlushOutput {
+    /// Returns the released text for [`FlushOutput::Release`] / [`FlushOutput::Rewritten`].
+    pub fn into_text(self) -> Option<String> {
+        match self {
+            FlushOutput::Empty => None,
+            FlushOutput::Release(text) | FlushOutput::Rewritten(text) => Some(text),
+        }
+    }
+
+    /// Whether the buffered tail was released after a rewrite.
+    pub fn is_rewrite(&self) -> bool {
+        matches!(self, FlushOutput::Rewritten(_))
+    }
+}
+
 /// Streaming output guardrail trait (P1-4)
 ///
 /// Phase one: quickly check each incremental chunk, blocking sensitive information before it is
-/// shown to the user. The caller maintains a sliding window (`tail + chunk`) to avoid keywords
-/// split across chunks (e.g. `"passwo" + "rd"`). The second re-check after the full output is
-/// handled by [`OutputGuardrail`] (`GuardrailRunner::validate_output`).
+/// shown to the user. [`ChunkContext`] gives both the sliding-window probe (`window`, to catch
+/// keywords split across chunks like `"passwo" + "rd"`) and the full accumulated output
+/// (`full`, for whole-document checks such as incremental schema validation).
+///
+/// [`ChunkAction::Replace`] carries the text to **emit for this token** (not the rewritten
+/// window); a stateful rail that withholds a suffix (hold-back buffering so identifiers split
+/// across chunks cannot leak) releases it from [`flush`](Self::flush) at end of stream.
+///
+/// An *empty* `Replace` means "buffer this token for now": it is not audited as a separate
+/// intervention (it happens on every early chunk even when the output is clean), whereas the
+/// buffered tail released by [`flush`](Self::flush) is audited once.
+///
+/// The second re-check after the full output is handled by [`OutputGuardrail`]
+/// (`GuardrailRunner::validate_output`).
 #[async_trait]
 pub trait StreamingOutputGuardrail: Send + Sync {
     /// The guardrail's name.
     fn name(&self) -> &str;
-    /// Incrementally checks a chunk (possibly a `tail + chunk` combined string).
-    async fn validate_chunk(&self, chunk: &str) -> ChunkAction;
+    /// Incrementally checks one streaming token.
+    async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction;
+    /// End-of-stream hook: stateful rails that buffer output (hold-back redaction) return the
+    /// buffered remainder so it is not dropped. [`FlushOutput::Release`] passes the tail
+    /// through without an audit record; [`FlushOutput::Rewritten`] additionally records a
+    /// violation. Defaults to [`FlushOutput::Empty`].
+    async fn flush(&self) -> FlushOutput {
+        FlushOutput::Empty
+    }
 }
 
 /// Guardrails configuration

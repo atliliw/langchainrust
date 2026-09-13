@@ -3,12 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::AuthScheme;
 use crate::connection_manager::ServerSpec;
+use crate::execution::ToolExecutionPolicy;
 use crate::sandbox::ServerSandbox;
 use crate::tool_namespace::ToolConflict;
 use crate::tool_timeout::ToolSpec;
 
-/// A single server's Gateway policy (conflict / timeout / sandbox / static layer).
+/// A single server's Gateway policy (conflict / timeout / execution gate / static layer).
 ///
 /// Rate limiting is not part of the policy: the limiter's runtime state lives in `rate_limiters`,
 /// so the policy only needs to build the limiter from it at register time; no duplicate storage.
@@ -16,7 +18,8 @@ use crate::tool_timeout::ToolSpec;
 pub(crate) struct ServerPolicy {
     pub(crate) conflict: ToolConflict,
     pub(crate) timeout: Option<ToolSpec>,
-    pub(crate) sandbox: Option<Arc<ServerSandbox>>,
+    /// How unattended tool execution is authorized (0.22.4 A16); fail-closed default.
+    pub(crate) execution: ToolExecutionPolicy,
     /// All tools of this server go into the static layer automatically (P2-3).
     pub(crate) pin_all: bool,
 }
@@ -38,8 +41,14 @@ pub struct GatewayServerSpec {
     pub conflict: ToolConflict,
     /// Default per-tool timeout (P2-4): applied uniformly to all tools of this server.
     pub default_timeout: Option<ToolSpec>,
-    /// Per-server security sandbox (P2-6).
-    pub sandbox: Option<Arc<ServerSandbox>>,
+    /// How unattended execution of this server's tools is authorized (A16).
+    ///
+    /// Defaults to fail-closed [`ToolExecutionPolicy::RequireApproval`]: calls
+    /// are refused until you attach a sandbox ([`GatewayServerSpec::with_sandbox`])
+    /// or explicitly opt in ([`GatewayServerSpec::allow_unattended_execution`]).
+    pub execution: ToolExecutionPolicy,
+    /// Per-server authentication (A16): attached to every request.
+    pub auth: Option<AuthScheme>,
     /// Rate limit (P2-8): `(max_calls, window)`; `None` means no limit.
     pub rate_limit: Option<(usize, Duration)>,
     /// All tools of this server go into the static layer for persistent injection (P2-3).
@@ -48,6 +57,10 @@ pub struct GatewayServerSpec {
 
 impl GatewayServerSpec {
     /// Creates a Gateway server declaration.
+    ///
+    /// The server starts fail-closed (A16): its tools cannot execute until the
+    /// registration declares either a sandbox, explicit unattended execution,
+    /// or the Gateway gets an approval gate.
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -57,7 +70,8 @@ impl GatewayServerSpec {
             max_failures: 3,
             conflict: ToolConflict::Prefix,
             default_timeout: None,
-            sandbox: None,
+            execution: ToolExecutionPolicy::default(),
+            auth: None,
             rate_limit: None,
             pin_all: false,
         }
@@ -93,9 +107,28 @@ impl GatewayServerSpec {
         self
     }
 
-    /// Attaches a per-server security sandbox (P2-6).
+    /// Attaches a per-server security sandbox (P2-6) and authorizes unattended
+    /// execution for calls whose arguments pass the sandbox (A16).
     pub fn with_sandbox(mut self, sandbox: Arc<ServerSandbox>) -> Self {
-        self.sandbox = Some(sandbox);
+        self.execution = ToolExecutionPolicy::Sandboxed(sandbox);
+        self
+    }
+
+    /// Explicitly opts this server into unattended, unrestricted execution (A16).
+    ///
+    /// Deliberate escape hatch from the fail-closed default — use for fully
+    /// trusted servers only (local sidecars, tests). A human-in-the-loop
+    /// deployment instead leaves the default policy and configures an approval
+    /// gate on the Gateway.
+    pub fn allow_unattended_execution(mut self) -> Self {
+        self.execution = ToolExecutionPolicy::AllowUnattended;
+        self
+    }
+
+    /// Attaches per-server authentication (A16), sent on every request the
+    /// lazily-built client makes (e.g. bearer tokens for an authenticated MCP server).
+    pub fn with_auth(mut self, auth: AuthScheme) -> Self {
+        self.auth = Some(auth);
         self
     }
 
@@ -116,6 +149,9 @@ impl GatewayServerSpec {
         let mut spec = ServerSpec::new(&self.name, self.url.clone())
             .with_max_idle(self.max_idle)
             .with_max_failures(self.max_failures);
+        if let Some(auth) = &self.auth {
+            spec = spec.with_auth(auth.clone());
+        }
         if self.keep_alive {
             spec = spec.keep_alive();
         }

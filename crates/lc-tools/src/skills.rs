@@ -70,7 +70,9 @@ impl Skill {
         let dir = dir.into();
         let skill_path = dir.join("SKILL.md");
         if !skill_path.is_file() {
-            return Err(SkillError::MissingSkillFile(skill_path.display().to_string()));
+            return Err(SkillError::MissingSkillFile(
+                skill_path.display().to_string(),
+            ));
         }
         let raw = fs::read_to_string(&skill_path)?;
         let (frontmatter, body) = parse_frontmatter(&raw, &skill_path)?;
@@ -146,7 +148,10 @@ fn parse_frontmatter(raw: &str, path: &Path) -> Result<(SkillFrontmatter, String
     })?;
     let rest = &stripped[after_open..];
     let close = rest.find("\n---").ok_or_else(|| {
-        SkillError::Frontmatter(format!("{}: no closing --- for frontmatter", path.display()))
+        SkillError::Frontmatter(format!(
+            "{}: no closing --- for frontmatter",
+            path.display()
+        ))
     })?;
     let yaml = &rest[..close];
     let body = &rest[close + 4..];
@@ -174,18 +179,24 @@ mod tests {
         let frontmatter = format!("---\nname: {name}\ndescription: {description}\n---\n\n");
         let p = dir.join("SKILL.md");
         let mut f = std::fs::File::create(&p).unwrap();
-        f.write_all(format!("{frontmatter}{body}").as_bytes()).unwrap();
+        f.write_all(format!("{frontmatter}{body}").as_bytes())
+            .unwrap();
         p
     }
 
     #[test]
     fn parses_frontmatter_and_body() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill(dir.path(), "web_search", "Searches the web", "Do a search then summarize.");
+        write_skill(
+            dir.path(),
+            "web_search",
+            "Searches the web",
+            "Do a search then summarize.",
+        );
         let skill = Skill::load(dir.path()).unwrap();
         assert_eq!(skill.name(), "web_search");
         assert_eq!(skill.description(), "Searches the web");
-        assert_eq!(skill.full_text().contains("Do a search then summarize."), true);
+        assert!(skill.full_text().contains("Do a search then summarize."));
     }
 
     #[test]
@@ -194,8 +205,8 @@ mod tests {
         write_skill(dir.path(), "secret", "Just a name", "<!-- SECRET BODY -->");
         let skill = Skill::load(dir.path()).unwrap();
         assert_eq!(skill.disclosure_view(), "secret: Just a name");
-        assert_eq!(skill.disclosure_view().contains("SECRET BODY"), false);
-        assert_eq!(skill.full_text().contains("SECRET BODY"), true);
+        assert!(!skill.disclosure_view().contains("SECRET BODY"));
+        assert!(skill.full_text().contains("SECRET BODY"));
     }
 
     #[test]

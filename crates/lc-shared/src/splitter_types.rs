@@ -53,9 +53,14 @@ pub struct RecursiveCharacterSplitter {
 
 impl RecursiveCharacterSplitter {
     /// Create a new recursive character splitter
+    ///
+    /// `chunk_size` is clamped to a minimum of 1: a value of `0` — whether
+    /// passed directly or via a user-supplied separator list that shrank the
+    /// effective window to nothing — used to make a single character always
+    /// exceed the quota and recurse forever, blowing the stack.
     pub fn new(chunk_size: usize, chunk_overlap: usize) -> Self {
         Self {
-            chunk_size,
+            chunk_size: chunk_size.max(1),
             chunk_overlap,
             separators: vec![
                 "\n\n".to_string(), // paragraph
@@ -134,8 +139,19 @@ impl RecursiveCharacterSplitter {
                     &[]
                 };
 
-                let sub_chunks = self.split_text_recursive(&split_with_sep, next_separators);
-                chunks.extend(sub_chunks);
+                // Hard stop when separators are exhausted: splitting by
+                // character and pushing each piece guarantees termination
+                // even if a piece still exceeds `chunk_size`. Without this
+                // guard, an empty separator slice (a degenerate config) was
+                // reached by a too-large split and recursed forever.
+                if next_separators.is_empty() {
+                    for c in split_with_sep.chars() {
+                        chunks.push(c.to_string());
+                    }
+                } else {
+                    let sub_chunks = self.split_text_recursive(&split_with_sep, next_separators);
+                    chunks.extend(sub_chunks);
+                }
             } else if current_chunk.chars().count() + split_with_sep.chars().count()
                 > self.chunk_size
             {
@@ -270,5 +286,19 @@ mod tests {
         let chunks = splitter.split_text(text);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], "Short text");
+    }
+
+    #[test]
+    fn test_chunk_size_zero_does_not_stack_overflow() {
+        // Regression for the infinite-recursion stack overflow: chunk_size = 0
+        // used to make every single character exceed the quota forever.
+        let splitter = RecursiveCharacterSplitter::new(0, 0);
+        let chunks = splitter.split_text("This text is long enough to need splitting");
+
+        assert!(!chunks.is_empty());
+        // chunk_size is clamped to >= 1, so every emitted chunk is <= 1 char.
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= 1);
+        }
     }
 }

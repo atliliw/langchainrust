@@ -39,6 +39,8 @@ pub struct FakeStatelessServer {
     pub request_count: Arc<AtomicUsize>,
     /// `Mcp-Method` header values seen (routing-header contract).
     pub method_headers_seen: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Full `Authorization` header values seen (A16 per-server auth contract).
+    pub auth_headers_seen: Arc<std::sync::Mutex<Vec<String>>>,
     /// Parsed `_meta` payloads seen (self-contained-request contract).
     pub metas_seen: Arc<std::sync::Mutex<Vec<crate::protocol::RequestMeta>>>,
     /// `requestState` values seen on resent requests.
@@ -49,7 +51,7 @@ pub struct FakeStatelessServer {
 ///
 /// Accepts POST requests with a JSON-RPC body; every response is a plain HTTP
 /// 200 JSON-RPC envelope (no SSE, no handshake). Headers `Mcp-Method` /
-/// `_meta` are recorded for contract assertions.
+/// `Authorization` / `_meta` are recorded for contract assertions.
 pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessServer {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
@@ -58,11 +60,13 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
     let addr = listener.local_addr().unwrap();
     let request_count = Arc::new(AtomicUsize::new(0));
     let method_headers_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let auth_headers_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let metas_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let request_states_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let rc = request_count.clone();
     let mh = method_headers_seen.clone();
+    let ah = auth_headers_seen.clone();
     let ms = metas_seen.clone();
     let rs = request_states_seen.clone();
     tokio::spawn(async move {
@@ -73,6 +77,7 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
             };
             let rc = rc.clone();
             let mh = mh.clone();
+            let ah = ah.clone();
             let ms = ms.clone();
             let rs = rs.clone();
             tokio::spawn(async move {
@@ -81,13 +86,19 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
                 loop {
                     let _ = rc.fetch_add(1, Ordering::SeqCst);
                     let mut method_header = String::new();
+                    let mut auth_header = String::new();
                     for (k, v) in &headers {
                         if k.eq_ignore_ascii_case("mcp-method") {
                             method_header = v.clone();
+                        } else if k.eq_ignore_ascii_case("authorization") {
+                            auth_header = v.clone();
                         }
                     }
                     if !method_header.is_empty() {
                         mh.lock().unwrap().push(method_header);
+                    }
+                    if !auth_header.is_empty() {
+                        ah.lock().unwrap().push(auth_header);
                     }
 
                     if mode == StatelessMode::Unauth {
@@ -191,6 +202,7 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
         url: format!("http://{addr}/mcp"),
         request_count,
         method_headers_seen,
+        auth_headers_seen,
         metas_seen,
         request_states_seen,
     }

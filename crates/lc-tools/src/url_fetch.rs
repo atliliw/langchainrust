@@ -99,23 +99,17 @@ pub struct URLFetchOutput {
 
 /// Web page fetching tool
 pub struct URLFetchTool {
-    /// HTTP client
-    client: reqwest::Client,
     /// Whether access to private/internal IPs is allowed (default false)
     allow_private_ips: bool,
 }
 
 impl URLFetchTool {
     /// Creates a web fetching tool (SSRF protection enabled by default).
+    ///
+    /// The HTTP client is built per request inside `guarded_get` so the
+    /// validated DNS answers can be pinned onto it (A3 DNS-rebinding closure).
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .user_agent("LangChainRust/0.1 (URL Fetch Tool)")
-                // SSRF: disable auto-redirects, guarded_get re-checks each hop
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
             allow_private_ips: false,
         }
     }
@@ -139,8 +133,15 @@ impl URLFetchTool {
             ));
         }
 
-        // SSRF: guarded_get checks each hop and follows redirects manually (both the first hop and every redirect target are re-checked against intranet addresses)
-        let response = guarded_get(&self.client, url, !self.allow_private_ips).await?;
+        // SSRF: guarded_get checks each hop, pins the validated IPs, and follows
+        // redirects manually (both the first hop and every redirect target are
+        // re-resolved and re-checked against intranet addresses).
+        let response = guarded_get(
+            url,
+            !self.allow_private_ips,
+            Some(std::time::Duration::from_secs(30)),
+        )
+        .await?;
 
         let status = response.status();
         if !status.is_success() {

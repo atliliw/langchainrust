@@ -4,6 +4,7 @@
 use crate::types::{AgentFinish, AgentOutput, AgentStep};
 use async_trait::async_trait;
 use lc_core::language_models::TokenUsage;
+use lc_core::runnables::RunnableConfig;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -62,6 +63,13 @@ pub trait BaseAgent: Send + Sync {
     /// # Arguments
     /// * `intermediate_steps` - History of executed steps.
     /// * `inputs` - User input.
+    /// * `config` - Per-run config for this planning round. The executor
+    ///   supplies a config carrying its callback manager plus trace-linkage
+    ///   metadata, so the LLM provider fires `on_llm_*` for every planning
+    ///   round and the LLM run joins the agent chain's trace tree; `None`
+    ///   means "no observers configured" and providers dispatch nothing
+    ///   (the pre-0.22.4 behavior). Implementations forward it verbatim to
+    ///   `chat` / `stream_chat` and never inspect or strip it.
     ///
     /// # Returns
     /// * `AgentOutput::Action` - Action to execute.
@@ -70,6 +78,7 @@ pub trait BaseAgent: Send + Sync {
         &self,
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError>;
 
     /// Plans the next action, streaming any model text through `on_token` as it
@@ -101,8 +110,9 @@ pub trait BaseAgent: Send + Sync {
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
         on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
-        let output = self.plan(intermediate_steps, inputs).await?;
+        let output = self.plan(intermediate_steps, inputs, config).await?;
         if let AgentOutput::Finish(finish) = &output {
             on_token(finish.output().unwrap_or("").to_string()).await;
         }
@@ -151,6 +161,7 @@ mod compaction;
 mod engine;
 mod file_memory_tool;
 mod hooks;
+mod semantic_memory;
 #[cfg(test)]
 mod tests;
 mod tools;

@@ -155,7 +155,7 @@ impl SensitiveInfoGuardrail {
 
     /// Luhn checksum validation for credit card numbers.
     /// Returns true if the digit sequence passes the Luhn check.
-    fn luhn_check(digits: &str) -> bool {
+    pub(crate) fn luhn_check(digits: &str) -> bool {
         let digits: Vec<u32> = digits.chars().filter_map(|c| c.to_digit(10)).collect();
         if digits.len() < 13 || digits.len() > 19 {
             return false;

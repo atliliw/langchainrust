@@ -254,6 +254,7 @@ mod tests {
             &self,
             _intermediate_steps: &[AgentStep],
             _inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<AgentOutput, AgentError> {
             Ok(AgentOutput::Finish(AgentFinish::new(
                 "executed by factory".to_string(),

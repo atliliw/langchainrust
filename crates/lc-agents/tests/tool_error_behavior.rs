@@ -61,6 +61,7 @@ impl BaseAgent for FailThenFinishAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -88,6 +89,7 @@ impl BaseAgent for ParallelFailThenFinishAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Actions(vec![
@@ -316,6 +318,7 @@ impl BaseAgent for CallAbortAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -342,6 +345,7 @@ impl BaseAgent for ParallelAbortAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Actions(vec![
@@ -482,6 +486,7 @@ impl BaseAgent for ParallelGhostThenFinishAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Actions(vec![

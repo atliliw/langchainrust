@@ -117,7 +117,7 @@ impl OpenAIChat {
             // Fetch from URL through the SSRF-guarded GET (0.20.0 S4 P1): the audio
             // URL is caller-supplied, so it must not be able to reach private/internal
             // addresses or be redirected into the intranet.
-            let response = lc_core::ssrf::guarded_get(&self.client, &audio.url, true)
+            let response = lc_core::ssrf::guarded_get(&audio.url, true, None)
                 .await
                 .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
             response

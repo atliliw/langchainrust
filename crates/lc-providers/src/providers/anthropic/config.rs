@@ -10,13 +10,16 @@ use crate::ProviderError;
 /// Anthropic API endpoint.
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
-/// Claude model list.
+/// Claude model list (B5, v0.22.4 — refreshed to the Claude 4.x aliases).
+///
+/// Non-exhaustive: the `model` field accepts any provider string, including
+/// dated snapshots such as `claude-sonnet-4-5-20250929`.
 pub const CLAUDE_MODELS: [&str; 5] = [
-    "claude-3-5-sonnet-20241022", // Claude 3.5 Sonnet
-    "claude-3-5-haiku-20241022",  // Claude 3.5 Haiku
-    "claude-3-opus-20240229",     // Claude 3 Opus
-    "claude-3-sonnet-20240229",   // Claude 3 Sonnet
-    "claude-3-haiku-20240307",    // Claude 3 Haiku
+    "claude-opus-4-1",          // Claude Opus 4.1
+    "claude-sonnet-4-5",        // Claude Sonnet 4.5
+    "claude-haiku-4-5",         // Claude Haiku 4.5
+    "claude-3-5-sonnet-latest", // Claude 3.5 Sonnet (legacy alias)
+    "claude-3-5-haiku-latest",  // Claude 3.5 Haiku (legacy alias)
 ];
 
 /// Type of extended thinking mode.
@@ -71,7 +74,7 @@ impl Default for ThinkingConfig {
 }
 
 /// Anthropic Claude configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AnthropicConfig {
     /// Anthropic API key.
     pub api_key: String,
@@ -95,6 +98,24 @@ pub struct AnthropicConfig {
     /// prompt and the last tool definition, marking the stable prefix for prompt caching
     /// (B1 transparent passthrough). Defaults to off so behavior is unchanged unless opted in.
     pub prompt_caching: bool,
+}
+
+impl std::fmt::Debug for AnthropicConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("AnthropicConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("temperature", &self.temperature)
+            .field("system_prompt", &self.system_prompt)
+            .field("thinking", &self.thinking)
+            .field("tools", &self.tools)
+            .field("tool_choice", &self.tool_choice)
+            .field("prompt_caching", &self.prompt_caching)
+            .finish()
+    }
 }
 
 impl Default for AnthropicConfig {

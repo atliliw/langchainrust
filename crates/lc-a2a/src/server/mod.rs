@@ -89,10 +89,10 @@ use super::protocol::{
     A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2ATask, A2AWorkflow, AgentCard, AgentSkill,
     TaskFilter, TaskPushNotification, TaskStatus,
 };
-use crate::client::signing::constant_time_eq;
 use super::rate_limiter::RateLimiter;
 use super::router::{SkillMapRouter, SkillRouter};
 use super::store::{InMemoryTaskStore, StoredTask, TaskStore, DEFAULT_MAX_TASKS};
+use crate::client::signing::constant_time_eq;
 
 use execution::{run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX_WORKFLOW_STEPS};
 use handlers::{forbidden, publish_status, task_details_response, task_not_found};

@@ -17,11 +17,11 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 
 use super::OpenAIConfig;
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
-use lc_core::runnables::Runnable;
+use lc_core::runnables::{run_tree_from_config, Runnable};
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -36,6 +36,22 @@ pub struct OpenAIChat {
 }
 
 impl OpenAIChat {
+    /// B5: attaches the standard JSON content type, the optional bearer token
+    /// (`send_auth`), and any caller-supplied extra headers to a request.
+    pub(crate) fn apply_headers(
+        mut builder: reqwest::RequestBuilder,
+        config: &OpenAIConfig,
+    ) -> reqwest::RequestBuilder {
+        builder = builder.header("Content-Type", "application/json");
+        if config.send_auth {
+            builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
+        }
+        for (name, value) in &config.extra_headers {
+            builder = builder.header(name, value);
+        }
+        builder
+    }
+
     /// Creates a new OpenAIChat with the given configuration.
     pub fn new(config: OpenAIConfig) -> Self {
         Self {
@@ -60,12 +76,11 @@ impl OpenAIChat {
                 "content": message.content,
             }),
             lc_schema::MessageType::Human => {
-                if message.has_images() {
-                    let mut content = vec![json!({"type": "text", "text": &message.content})];
-                    for img in &message.images {
-                        content.push(json!({"type": "image_url", "image_url": {"url": &img.url}}));
-                    }
-                    json!({"role": "user", "content": content})
+                // B7: one shared multimodal block builder (text + image/audio/
+                // video/PDF file); plain text keeps its string form so existing
+                // request bodies stay byte-identical.
+                if let Some(blocks) = crate::media::openai_user_blocks(message) {
+                    json!({"role": "user", "content": blocks})
                 } else {
                     json!({"role": "user", "content": &message.content})
                 }
@@ -310,23 +325,15 @@ impl BaseChatModel for OpenAIChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
-        let mut run = RunTree::new(
+        let mut run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
-
-        if let Some(ref cfg) = config {
-            for tag in &cfg.tags {
-                run = run.with_tag(tag.clone());
-            }
-            for (key, value) in &cfg.metadata {
-                run = run.with_metadata(key.clone(), value.clone());
-            }
-        }
 
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
@@ -412,13 +419,14 @@ impl BaseChatModel for OpenAIChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
 
-        let run = RunTree::new(
+        let run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.len(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
 
         if let Some(ref cfg) = config {
@@ -474,18 +482,20 @@ impl OpenAIChat {
         messages: Vec<Message>,
     ) -> Result<LLMResult, OpenAIError> {
         let url = format!("{}/chat/completions", self.config.base_url);
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::OpenAi)
+            .await
+            .map_err(|e| OpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
         // 0.22.0 audit fix (H-P2): non-streaming requests are retried on
         // 429/5xx/transport errors with exponential backoff.
+        // A14: this is a non-idempotent POST — under DEFAULT_RETRY a
+        // post-dispatch timeout (and a 5xx that reached the upstream) can be
+        // replayed and double-billed. Swap in retry::SAFE_RETRY here to limit
+        // transport retries to provably pre-dispatch failures.
         let response = crate::retry::send_with_retry(
-            || {
-                self.client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", self.config.api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-            },
+            || Self::apply_headers(self.client.post(&url), &self.config).json(&body),
             &crate::retry::DEFAULT_RETRY,
         )
         .await
@@ -552,17 +562,17 @@ impl OpenAIChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>, OpenAIError>
     {
-        use super::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
+        use super::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
         use std::sync::{Arc, Mutex};
 
         let url = format!("{}/chat/completions", self.config.base_url);
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::OpenAi)
+            .await
+            .map_err(|e| OpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
+        let response = Self::apply_headers(self.client.post(&url), &self.config)
             .json(&body)
             .send()
             .await
@@ -593,6 +603,14 @@ impl OpenAIChat {
             // 0.22.0 audit fix (Medium): `[DONE]` must also exit the outer
             // byte-chunk loop, not just the inner event loop.
             let mut done = false;
+            // A12: a clean stream must carry a terminal signal — either the SSE
+            // `[DONE]` sentinel or a chunk whose choice has a non-null
+            // `finish_reason`. If the connection closes first (proxy reset, server
+            // crash, timeout), the streamed text is truncated and must be reported as
+            // an error instead of silently returned as a complete answer. Accepting
+            // `finish_reason` alone keeps OpenAI-compatible providers that close the
+            // body right after the terminal chunk (no `[DONE]`) working.
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H2 fix: propagate network errors to the consumer
                 // Must be done OUTSIDE the mutex scope to avoid Send issue
@@ -620,6 +638,7 @@ impl OpenAIChat {
                 for event in events {
                     if event.is_done() {
                         done = true;
+                        saw_terminal = true;
                         break;
                     }
                     // Failed SSE chunks are no longer silently dropped: log an error,
@@ -637,6 +656,13 @@ impl OpenAIChat {
                                         tool_acc.push(delta);
                                     }
                                 }
+                            }
+                            // A12: a choice with `finish_reason` is a terminal marker —
+                            // the model signalled the end of generation (`stop`,
+                            // `tool_calls`, `length`, …). This is the fallback signal for
+                            // OpenAI-compatible servers that omit `[DONE]`.
+                            if chunk.choices.iter().any(|c| c.finish_reason.is_some()) {
+                                saw_terminal = true;
                             }
                             // OpenAI carries usage at the end of the stream (usually in the
                             // last chunk before `[DONE]`). Emit it as a standalone chunk: empty
@@ -676,6 +702,18 @@ impl OpenAIChat {
                 if done {
                     break;
                 }
+            }
+            // A12: the byte stream ended (server closed the connection) without any
+            // terminal marker (`[DONE]` or `finish_reason`). The text/tool-calls sent
+            // so far are a truncated prefix, not a complete answer — report that and
+            // stop, rather than flushing partial tool calls and completing normally.
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(OpenAIError::StreamInterrupted(
+                        "connection closed before [DONE] or finish_reason".to_string(),
+                    )))
+                    .await;
+                return;
             }
             // Some compatible providers end the stream without a usage chunk. If tool
             // calls were accumulated but never emitted, flush them as a dedicated

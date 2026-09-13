@@ -500,7 +500,7 @@ mod tests {
         let fake = start_fake_stateless_server(StatelessMode::Normal).await;
         let gateway = MCPGateway::new();
         gateway
-            .register(GatewayServerSpec::new("fs", &fake.url))
+            .register(GatewayServerSpec::new("fs", &fake.url).allow_unattended_execution())
             .await
             .unwrap();
 

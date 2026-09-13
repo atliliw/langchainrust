@@ -51,6 +51,15 @@
 //! ```
 
 pub mod checkpointer;
+/// Durable Postgres checkpointer (B2, `checkpoint-postgres` feature).
+#[cfg(feature = "checkpoint-postgres")]
+pub mod checkpointer_postgres;
+/// Durable Redis checkpointer (B2, `checkpoint-redis` feature).
+#[cfg(feature = "checkpoint-redis")]
+pub mod checkpointer_redis;
+/// Durable SQLite checkpointer (B2, `checkpoint-sqlite` feature).
+#[cfg(feature = "checkpoint-sqlite")]
+pub mod checkpointer_sqlite;
 pub mod compiled;
 pub mod edge;
 /// Graph error types and result aliases.
@@ -86,3 +95,10 @@ pub use subgraph::{SubgraphBuilder, SubgraphNode};
 
 #[cfg(feature = "mongodb-persistence")]
 pub use persistence::{MongoConfig, MongoPersistence};
+
+#[cfg(feature = "checkpoint-postgres")]
+pub use checkpointer_postgres::PostgresCheckpointer;
+#[cfg(feature = "checkpoint-redis")]
+pub use checkpointer_redis::RedisCheckpointer;
+#[cfg(feature = "checkpoint-sqlite")]
+pub use checkpointer_sqlite::SqliteCheckpointer;

@@ -94,7 +94,9 @@ mod tests {
     use serde_json::json;
 
     fn fs_spec(url: &str) -> GatewayServerSpec {
-        GatewayServerSpec::new("fs", url)
+        // A16: the fail-closed gate requires an explicit execution policy;
+        // these tests exercise tenant isolation, so opt into unattended runs.
+        GatewayServerSpec::new("fs", url).allow_unattended_execution()
     }
 
     /// Registry isolation: sync only A, tools do not leak into B; B calls its own registered Server on demand,

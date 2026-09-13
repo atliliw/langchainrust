@@ -84,22 +84,32 @@ pub use agents::{
     AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, AllowAll,
     ApprovalDecision, ApprovalHandler, BaseAgent, BudgetConfig, BudgetExceeded, CRAGError,
     CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FileResumeStore,
-    FunctionCallingAgent, HandoffManager, MemoryResumeStore, Orchestrator, OrchestratorRunnable,
-    PendingApproval, PlanExecuteAgent, PlanExecuteError, PromptInjectionHook, RagDecision,
-    ReActAgent, ResearchError, ResearchReport, ResumeStore, ReviewOrchestrator, ReviewVerdict,
-    RunContext, SequentialPipeline, StreamingFunctionCallingAgent, TaskAdapter, TokenBudgetHook,
-    ToolInput, ToolPolicy, ToolRisk,
+    FunctionCallingAgent, HandoffManager, LlmMemoryExtractor, MemoryResumeStore, Orchestrator,
+    OrchestratorRunnable, PendingApproval, PlanExecuteAgent, PlanExecuteError, PromptInjectionHook,
+    RagDecision, ReActAgent, ResearchError, ResearchReport, ResumeStore, ReviewOrchestrator,
+    ReviewVerdict, RunContext, SequentialPipeline, StreamingFunctionCallingAgent, TaskAdapter,
+    TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk,
 };
 pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
+};
+pub use core::cost::{
+    CostError, CostRecord, CostReport, CostTracker, ModelPrice, ModelSpend, PricingTable,
 };
 pub use core::language_models::wrap_chat_model;
 pub use core::language_models::{
     predict_tools, LLMResult, MultimodalError, MultimodalModel, PredictToolsError, StreamChunk,
     TokenUsage,
 };
+pub use core::model_registry::{ModelCapabilities, ModelInfo, ModelRegistry};
 pub use core::observability::{AgentMetrics, MetricsSink, ObsError, ObsEvent};
-pub use core::router_llm::{RouterError, RouterLLM, RoutingStrategy};
+// B13 (0.22.4): `BudgetExceeded` is renamed at the umbrella boundary because
+// the agent executor already exports its own `agents::BudgetExceeded` enum.
+pub use core::router_llm::BudgetExceeded as RouterBudgetExceeded;
+pub use core::router_llm::{
+    BudgetKind, ModelRateLimit, RateLimitReason, RouterBudget, RouterError, RouterLLM,
+    RoutingStrategy,
+};
 pub use core::token_counter::{ModelPricing, TiktokenCounter, TokenCounter, TokenTrackingLLM};
 pub use core::tools::to_tool_definition;
 pub use core::tools::StructuredOutput;
@@ -140,21 +150,25 @@ pub use evaluation::{
     Predictor, RegexMatch, Report, Score, StringDistance, Verdict,
 };
 pub use guardrails::{
-    ForbiddenWordsGuardrail, GuardedAgent, GuardrailError, GuardrailRunner, GuardrailsConfig,
-    InputGuardrail, MaxLengthGuardrail, OutputGuardrail, SensitiveInfoGuardrail,
+    ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
+    GuardrailRunner, GuardrailsConfig, InputGuardrail, MaxLengthGuardrail, OutputGuardrail,
+    PiiKind, PiiRedactionGuardrail, SchemaOutputGuardrail, SensitiveInfoGuardrail,
 };
 pub use language_models::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
     AnthropicStructuredOutputMethod, AssistantError, DeepSeekChat, DeepSeekConfig, GeminiChat,
-    GeminiConfig, GeminiError, GeminiStructuredOutputMethod, LLMClient, MoonshotChat,
-    MoonshotConfig, OllamaChat, OllamaConfig, OpenAIAssistant, OpenAIChat, OpenAIConfig, QwenChat,
-    QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
+    GeminiConfig, GeminiError, GeminiStructuredOutputMethod, GroqChat, LLMClient, MoonshotChat,
+    MoonshotConfig, OllamaChat, OllamaConfig, OpenAIAssistant, OpenAIChat, OpenAICompatibleChat,
+    OpenAICompatibleConfig, OpenAIConfig, OpenRouterChat, QwenChat, QwenConfig, ThinkingConfig,
+    ThinkingType, XaiChat, ZhipuChat, ZhipuConfig,
 };
 pub use memory::{
     BaseMemory, ChatMessageHistory, ContextWindow, ConversationBufferMemory,
     ConversationBufferWindowMemory, ConversationSummaryBufferMemory, ConversationSummaryMemory,
-    MemoryData, MemoryError, PersistenceConfig, PersistentMemory, RunnableWithMessageHistory,
-    SharedMemory, Strategy,
+    DecayWeights, LexicalScorer, LongTermMemory, MemoryData, MemoryError, MemoryExtractor,
+    MemoryHit, MemoryItem, MemoryQuery, MemoryStore, MemoryTier, PersistenceConfig,
+    PersistentMemory, PromotionPolicy, RunnableWithMessageHistory, SemanticScorer, SharedMemory,
+    ShortTermMemory, StoredMemory, Strategy, TwoTierMemory,
 };
 
 #[cfg(feature = "vectorstore-memory")]
@@ -163,9 +177,16 @@ pub use schema::{ImageContent, Message, MessageType};
 pub use tools::{
     Calculator, CalculatorInput, CodeSandbox, ComputerMode, ComputerUseInput, ComputerUseOutput,
     ComputerUseTool, DateTimeInput, DateTimeTool, DuckDuckGoSearchTool, FileTool, HTTPTool,
-    Language, LocalSandbox, MathInput, PythonREPLInput, PythonREPLTool, RunResult, SandboxError,
-    SandboxTool, SearchInput, SimpleMathTool, URLFetchInput, URLFetchTool, WikipediaInput,
-    WikipediaTool,
+    HostedSearchTool, Language, LocalSandbox, MathInput, PythonREPLInput, PythonREPLTool,
+    RunResult, SandboxError, SandboxTool, SearchInput, SimpleMathTool, URLFetchInput, URLFetchTool,
+    WikipediaInput, WikipediaTool,
+};
+
+// B6 (0.22.4): CDP browser tool is opt-in (pulls tokio-tungstenite, plain
+// `ws://` only); hosted search itself is re-exported unconditionally above.
+#[cfg(feature = "browser-cdp")]
+pub use tools::browser::{
+    BrowserInput, BrowserOutput, CdpBrowser, CdpBrowserTool, NavigationInfo, PageLink, PageMetadata,
 };
 
 pub use chains::{
@@ -237,8 +258,8 @@ pub use retrieval::{
     SitemapLoader, TextLoader, TextSplitter, WebScraperLoader,
 };
 pub use retrieval::{
-    GraphCommunity, GraphEntity, GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult,
-    GraphRelation, GraphStore, QueryMode as GraphQueryMode,
+    GlobalLevel as GraphGlobalLevel, GraphCommunity, GraphEntity, GraphRAG, GraphRAGConfig,
+    GraphRAGError, GraphRAGResult, GraphRelation, GraphStore, QueryMode as GraphQueryMode,
 };
 pub use retrieval::{HyDEConfig, HyDEError, HyDERetriever};
 pub use retrieval::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
@@ -247,10 +268,13 @@ pub use retrieval::{MultiQueryConfig, MultiQueryError, MultiQueryRetriever, Stat
 // Prompts
 pub use prompts::{
     ChatPromptTemplate, ExampleSelector, FewShotPromptTemplate, LengthBasedExampleSelector,
-    PromptTemplate,
+    PromptRegistry, PromptTemplate, PromptVersionInfo, RegisteredPrompt, VersionSpec,
+    MIN_HASH_PREFIX,
 };
 
 // Callbacks
+#[cfg(feature = "otlp")]
+pub use callbacks::otlp;
 #[cfg(feature = "opentelemetry")]
 pub use callbacks::OtelHandler;
 pub use callbacks::{
@@ -296,3 +320,11 @@ pub use langgraph::{
     StateSchema, StateUpdate, StepEntry, StreamEvent, SubgraphBuilder, SubgraphNode,
     ThreadSafeMemoryCheckpointer, END, START,
 };
+
+// B2 (0.22.4): durable LangGraph checkpointers.
+#[cfg(feature = "checkpoint-postgres")]
+pub use langgraph::PostgresCheckpointer;
+#[cfg(feature = "checkpoint-redis")]
+pub use langgraph::RedisCheckpointer;
+#[cfg(feature = "checkpoint-sqlite")]
+pub use langgraph::SqliteCheckpointer;

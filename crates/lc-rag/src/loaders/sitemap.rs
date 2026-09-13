@@ -78,28 +78,10 @@ impl SitemapLoader {
             .collect()
     }
 
-    /// Crawls a single page
+    /// Crawls a single page through the shared SSRF-hardened helper
     async fn fetch_page(url: &str, timeout: Duration) -> Result<String, LoaderError> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| LoaderError::Other(format!("failed to build HTTP client: {}", e)))?;
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| LoaderError::Other(format!("HTTP request failed {}: {}", url, e)))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(LoaderError::Other(format!(
-                "HTTP error {}: {}",
-                url, status
-            )));
-        }
-        response
-            .text()
-            .await
-            .map_err(|e| LoaderError::Other(format!("failed to read response {}: {}", url, e)))
+        let (_final_url, body) = super::guarded_fetch(url, timeout).await?;
+        Ok(body)
     }
 }
 

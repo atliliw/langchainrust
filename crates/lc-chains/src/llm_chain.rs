@@ -73,7 +73,10 @@ impl LLMChain {
                 token: chunk.text,
                 is_final: false,
             }),
-            Err(e) => Err(ChainError::StreamError(format!("Stream token error: {}", e))),
+            Err(e) => Err(ChainError::StreamError(format!(
+                "Stream token error: {}",
+                e
+            ))),
         });
         let final_stream = stream.chain(futures_util::stream::once(async move {
             Ok(StreamToken {

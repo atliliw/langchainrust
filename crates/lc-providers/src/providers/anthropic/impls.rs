@@ -6,11 +6,11 @@ use futures_util::{Stream, StreamExt};
 use serde_json::json;
 use std::pin::Pin;
 
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
-use lc_core::runnables::Runnable;
+use lc_core::runnables::{run_tree_from_config, Runnable};
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -137,23 +137,15 @@ impl BaseChatModel for AnthropicChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:chat", self.config.model));
 
-        let mut run = RunTree::new(
+        let mut run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
-
-        if let Some(ref cfg) = config {
-            for tag in &cfg.tags {
-                run = run.with_tag(tag.clone());
-            }
-            for (key, value) in &cfg.metadata {
-                run = run.with_metadata(key.clone(), value.clone());
-            }
-        }
 
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
@@ -219,13 +211,14 @@ impl BaseChatModel for AnthropicChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("{}:stream", self.config.model));
 
-        let run = RunTree::new(
+        let run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.len(),
                 "model": self.config.model,
             }),
+            config.as_ref(),
         );
 
         if let Some(ref cfg) = config {

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tokio::time::sleep;
 
-use crate::client_stateless::StatelessMcpClient;
 use crate::protocol::MCPError;
+use crate::tool_client::McpToolClient;
 use crate::types::MCPToolResult;
 
 /// A single tool's timeout declaration (P2-4).
@@ -48,7 +48,7 @@ impl ToolSpec {
 /// Hard cap semantics preserved from the push-era implementation: past
 /// `spec.max_timeout` the call aborts even if it might still finish.
 pub async fn call_tool_with_timeout(
-    client: &StatelessMcpClient,
+    client: &dyn McpToolClient,
     name: &str,
     arguments: Value,
     spec: &ToolSpec,
@@ -93,7 +93,7 @@ pub async fn call_tool_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client_stateless::MrtrConfig;
+    use crate::client_stateless::{MrtrConfig, StatelessMcpClient};
     use crate::test_support::{start_fake_stateless_server, StatelessMode};
     use serde_json::json;
 

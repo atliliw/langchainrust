@@ -1,6 +1,6 @@
 [package]
 name = "lc-langgraph"
-version = "0.22.1"
+version = "0.22.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "LangGraph - Graph-based orchestration framework for building stateful LLM applications"
@@ -24,7 +24,33 @@ tempfile = "3.0"
 [features]
 default = []
 mongodb-persistence = ["mongodb"]
+# Durable graph checkpointers (B2, 0.22.4)
+checkpoint-sqlite = ["dep:rusqlite"]
+checkpoint-postgres = ["dep:tokio-postgres"]
+checkpoint-redis = ["dep:redis"]
 
 [dependencies.mongodb]
 version = "2.8"
 optional = true
+
+# B2 durable checkpoint backends.
+# rusqlite `bundled` builds the SQLite amalgamation from source, so the
+# SQLite backend needs no system library (the same pin/feature set the
+# umbrella `lc` crate already ships).
+[dependencies.rusqlite]
+version = "0.31"
+features = ["bundled"]
+optional = true
+
+[dependencies.tokio-postgres]
+version = "0.7"
+optional = true
+
+[dependencies.redis]
+version = "0.25"
+features = ["tokio-comp"]
+optional = true
+
+[[example]]
+name = "durable_checkpoint"
+required-features = ["checkpoint-sqlite"]

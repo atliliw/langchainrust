@@ -8,6 +8,9 @@
 //! - Qwen (Alibaba Cloud / DashScope)
 //! - Local: `BagOfWordsEmbeddings` (always available) and `LocalEmbeddings` (ONNX, feature-gated)
 //! - `MockEmbeddings` for testing
+//!
+//! Multimodal (image+text shared space) backends live behind
+//! [`VisionEmbeddings`]: Cohere Embed v4 and DashScope `multimodal-embedding-v1`.
 
 mod cohere;
 mod deepseek;
@@ -18,6 +21,9 @@ pub mod openai_compat;
 mod qwen;
 mod retry;
 pub mod token_level;
+mod vision;
+mod vision_cohere;
+mod vision_qwen;
 
 #[cfg(test)]
 mod test_support;
@@ -45,6 +51,17 @@ pub use qwen::{QwenEmbeddings, QwenEmbeddingsConfig, QWEN_EMBED_MODEL};
 pub use token_level::{
     char_spans_to_byte_spans, LocalTokenLevelEmbeddings, TokenEmbedding, TokenLevelEmbeddings,
     TokenSpan,
+};
+// B7 (v0.22.4): cross-modal vision embeddings — trait, mock, and the Cohere
+// Embed v4 / DashScope multimodal-embedding-v1 backends.
+pub use vision::{ImageInput, MockVisionEmbeddings, VisionEmbeddings};
+pub use vision_cohere::{
+    CohereVisionEmbeddings, CohereVisionEmbeddingsConfig, COHERE_VISION_DIMENSION,
+    COHERE_VISION_EMBED_MODEL,
+};
+pub use vision_qwen::{
+    QwenVisionEmbeddings, QwenVisionEmbeddingsConfig, QWEN_VISION_BASE_URL, QWEN_VISION_DIMENSION,
+    QWEN_VISION_EMBED_MODEL,
 };
 
 #[cfg(feature = "fastembed")]

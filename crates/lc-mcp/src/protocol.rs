@@ -3,7 +3,7 @@
 //! MCP is built on JSON-RPC 2.0; this module defines the request/response/error types.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// MCP protocol version (the version this library currently implements, sent as the requested version at `initialize`).
 pub const MCP_VERSION: &str = "2024-11-05";
@@ -30,6 +30,19 @@ pub const MCP_NAME_HEADER: &str = "Mcp-Name";
 /// JSON-RPC error code for authorization failures on the stateless track
 /// (maps to HTTP 401 at the transport boundary).
 pub const MCP_ERROR_UNAUTHORIZED: i32 = -32001;
+
+/// JSON-RPC error code for a request that timed out before the peer answered
+/// (no response was received; the call may or may not have run server-side).
+pub const MCP_ERROR_REQUEST_TIMEOUT: i32 = -32004;
+
+/// JSON-RPC error code for a protocol-version negotiation rejection
+/// (strict policy; the server declared an unsupported `protocolVersion`).
+pub const MCP_ERROR_VERSION_UNSUPPORTED: i32 = -32005;
+
+/// JSON-RPC error code for a Streamable HTTP session the server no longer
+/// recognizes (HTTP 404 / bad `Mcp-Session-Id`): the client must run a new
+/// `initialize` handshake to obtain a fresh session before retrying.
+pub const MCP_ERROR_SESSION_LOST: i32 = -32006;
 
 /// Self-contained per-request metadata for the stateless track: replaces the
 /// deleted `initialize` handshake / session id. Serialized as the JSON-RPC
@@ -127,6 +140,43 @@ pub enum VersionPolicy {
     Degrade,
     /// Strict mode: an unsupported version fails the handshake and rejects the connection.
     Reject,
+}
+
+/// Applies the version policy to the server-declared protocol version.
+///
+/// Shared by every handshake track (stdio, Streamable HTTP). Returns
+/// `(negotiated_version, supported)`: when the server version is in
+/// [`SUPPORTED_PROTOCOL_VERSIONS`] it is pinned as-is; otherwise
+/// [`VersionPolicy::Degrade`] pins the library's [`MCP_VERSION`] while
+/// [`VersionPolicy::Reject`] fails with [`MCP_ERROR_VERSION_UNSUPPORTED`].
+pub fn negotiate_protocol_version(
+    server_version: &str,
+    policy: VersionPolicy,
+) -> Result<(String, bool), MCPError> {
+    if SUPPORTED_PROTOCOL_VERSIONS.contains(&server_version) {
+        return Ok((server_version.to_string(), true));
+    }
+    match policy {
+        VersionPolicy::Degrade => Ok((MCP_VERSION.to_string(), false)),
+        VersionPolicy::Reject => Err(MCPError::new(
+            MCP_ERROR_VERSION_UNSUPPORTED,
+            format!(
+                "MCP server negotiated unsupported protocol version '{server_version}' \
+                 (supported: {SUPPORTED_PROTOCOL_VERSIONS:?})"
+            ),
+        )),
+    }
+}
+
+/// Builds a JSON-RPC notification envelope (no `id`, no response expected).
+///
+/// Shared by every transport track for `notifications/initialized` and peers.
+pub fn notification_message(method: &str, params: Option<Value>) -> Value {
+    let mut message = json!({"jsonrpc": "2.0", "method": method});
+    if let Some(params) = params {
+        message["params"] = params;
+    }
+    message
 }
 
 /// The version negotiation result of one handshake (P2-10).
@@ -265,6 +315,20 @@ impl MCPError {
     pub fn is_connection_lost(&self) -> bool {
         self.code == -32000
     }
+
+    /// The Streamable HTTP session is gone server-side (HTTP 404 / unknown
+    /// `Mcp-Session-Id`); a fresh `initialize` handshake is required.
+    pub fn session_lost() -> Self {
+        Self::new(
+            MCP_ERROR_SESSION_LOST,
+            "MCP Streamable HTTP session lost: re-initialize required",
+        )
+    }
+
+    /// Whether this is a session-lost error.
+    pub fn is_session_lost(&self) -> bool {
+        self.code == MCP_ERROR_SESSION_LOST
+    }
 }
 
 impl std::fmt::Display for MCPError {
@@ -352,5 +416,45 @@ mod tests {
     fn test_error_display() {
         let err = MCPError::new(-1, "boom");
         assert_eq!(format!("{}", err), "MCP Error [-1]: boom");
+    }
+
+    #[test]
+    fn negotiate_supported_version_is_pinned() {
+        let (negotiated, supported) =
+            negotiate_protocol_version(MCP_VERSION, VersionPolicy::Reject).unwrap();
+        assert_eq!(negotiated, MCP_VERSION);
+        assert!(supported);
+    }
+
+    #[test]
+    fn negotiate_unknown_version_degrades() {
+        let (negotiated, supported) =
+            negotiate_protocol_version("1999-01-01", VersionPolicy::Degrade).unwrap();
+        assert_eq!(negotiated, MCP_VERSION);
+        assert!(!supported);
+    }
+
+    #[test]
+    fn negotiate_unknown_version_rejects() {
+        let err = negotiate_protocol_version("1999-01-01", VersionPolicy::Reject).unwrap_err();
+        assert_eq!(err.code, MCP_ERROR_VERSION_UNSUPPORTED);
+    }
+
+    #[test]
+    fn session_lost_error_class() {
+        assert!(MCPError::session_lost().is_session_lost());
+        assert!(!MCPError::connection_lost().is_session_lost());
+    }
+
+    #[test]
+    fn notification_envelope_shape() {
+        let bare = notification_message("notifications/initialized", None);
+        assert_eq!(bare["jsonrpc"], "2.0");
+        assert_eq!(bare["method"], "notifications/initialized");
+        assert!(bare.get("id").is_none());
+        assert!(bare.get("params").is_none());
+
+        let with_params = notification_message("notifications/x", Some(json!({"a": 1})));
+        assert_eq!(with_params["params"]["a"], 1);
     }
 }

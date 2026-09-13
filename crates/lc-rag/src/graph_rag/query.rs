@@ -40,12 +40,57 @@ fn format_relation(r: &super::graph_store::Relation, store: &GraphStore) -> Stri
 /// Query mode selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryMode {
-    /// Global query: aggregates community summaries.
+    /// Global query over the coarsest (top of each hierarchy subtree)
+    /// community summaries.
     Global,
     /// Local query: retrieves a neighborhood subgraph around relevant entities.
     Local,
-    /// Hybrid query: combines global and local context.
+    /// Hybrid query: combines coarsest community summaries with local context.
     Hybrid,
+    /// Global query restricted to summaries at a chosen [`GlobalLevel`].
+    GlobalAt(GlobalLevel),
+    /// Hybrid query using summaries at a chosen [`GlobalLevel`].
+    HybridAt(GlobalLevel),
+}
+
+/// Selects which hierarchy level's community summaries a global/hybrid
+/// query answers from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlobalLevel {
+    /// Coarsest level only: communities with no parent. This covers every
+    /// entity exactly once (each hierarchy subtree contributes its root)
+    /// with the fewest, broadest summaries — the map-reduce default.
+    #[default]
+    Coarsest,
+    /// Exactly the given level (0 is the base Leiden partition).
+    Level(usize),
+    /// Every level's summaries (broad overviews together with fine-grained
+    /// base communities; costs more tokens).
+    All,
+}
+
+/// Returns the ids of communities selected by `level`, in storage order.
+/// Summary vectors are indexed by [`super::graph_store::Community::id`].
+fn select_summary_ids(store: &GraphStore, level: GlobalLevel) -> Vec<usize> {
+    store
+        .communities()
+        .iter()
+        .filter(|c| match level {
+            GlobalLevel::Coarsest => c.parent.is_none(),
+            GlobalLevel::Level(l) => c.level == l,
+            GlobalLevel::All => true,
+        })
+        .map(|c| c.id)
+        .collect()
+}
+
+/// Human-readable level name for error messages.
+fn level_name(level: GlobalLevel) -> String {
+    match level {
+        GlobalLevel::Coarsest => "coarsest".to_string(),
+        GlobalLevel::Level(l) => format!("level {l}"),
+        GlobalLevel::All => "any level".to_string(),
+    }
 }
 
 /// Result of a GraphRAG query.
@@ -101,21 +146,35 @@ Provide a comprehensive answer synthesizing both the community-level and local-l
 
 Answer:"#;
 
-/// Executes a **global** query: aggregates community summaries and asks the LLM.
+/// Executes a **global** query: aggregates the selected hierarchy level's
+/// community summaries and asks the LLM.
 pub async fn global_query<M: BaseChatModel>(
     llm: &M,
     store: &GraphStore,
     question: &str,
     max_context_tokens: Option<usize>,
+    level: GlobalLevel,
 ) -> Result<GraphRAGResult, super::GraphRAGError> {
-    let summaries = store.community_summaries();
-    if summaries.is_empty() {
+    let all_summaries = store.community_summaries();
+    if all_summaries.is_empty() {
         return Err(super::GraphRAGError::QueryError(
             "No community summaries available. Call build_communities() first.".into(),
         ));
     }
 
-    let summaries_text = truncate_summaries(summaries, max_context_tokens);
+    let selected_ids = select_summary_ids(store, level);
+    if selected_ids.is_empty() {
+        return Err(super::GraphRAGError::QueryError(format!(
+            "No communities at the {} hierarchy level.",
+            level_name(level)
+        )));
+    }
+
+    let selected: Vec<String> = selected_ids
+        .iter()
+        .filter_map(|id| all_summaries.get(*id).cloned())
+        .collect();
+    let summaries_text = truncate_summaries(&selected, max_context_tokens);
     let question_str = question.to_string();
     let prompt = format_template(
         GLOBAL_QUERY_PROMPT,
@@ -128,10 +187,16 @@ pub async fn global_query<M: BaseChatModel>(
         .await
         .map_err(|e| super::GraphRAGError::LLMError(e.to_string()))?;
 
-    let sources: Vec<String> = store
-        .communities()
+    let sources: Vec<String> = selected_ids
         .iter()
-        .flat_map(|c| c.entities.iter().cloned())
+        .flat_map(|id| {
+            store
+                .communities()
+                .iter()
+                .find(|c| c.id == *id)
+                .into_iter()
+                .flat_map(|c| c.entities.iter().cloned())
+        })
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
@@ -139,7 +204,11 @@ pub async fn global_query<M: BaseChatModel>(
     Ok(GraphRAGResult {
         answer: response.content.trim().to_string(),
         sources,
-        mode: QueryMode::Global,
+        mode: if level == GlobalLevel::Coarsest {
+            QueryMode::Global
+        } else {
+            QueryMode::GlobalAt(level)
+        },
     })
 }
 
@@ -221,20 +290,34 @@ pub async fn local_query<M: BaseChatModel>(
     })
 }
 
-/// Executes a **hybrid** query: combines global community summaries with
-/// local subgraph context.
+/// Executes a **hybrid** query: combines community summaries at the selected
+/// hierarchy level with local subgraph context.
 pub async fn hybrid_query<M: BaseChatModel>(
     llm: &M,
     store: &GraphStore,
     question: &str,
     max_context_tokens: Option<usize>,
     entity_matcher: Option<&dyn super::matcher::EntityMatcher>,
+    level: GlobalLevel,
 ) -> Result<GraphRAGResult, super::GraphRAGError> {
-    let summaries = store.community_summaries();
-    let summaries_text = if summaries.is_empty() {
-        "No community summaries available.".to_string()
+    let all_summaries = store.community_summaries();
+    let selected_ids = if all_summaries.is_empty() {
+        Vec::new()
     } else {
-        truncate_summaries(summaries, max_context_tokens)
+        select_summary_ids(store, level)
+    };
+    let summaries_text = if all_summaries.is_empty() {
+        "No community summaries available.".to_string()
+    } else if selected_ids.is_empty() {
+        // Summaries exist but none at the requested level: answer with the
+        // local subgraph only rather than silently mixing in another level.
+        format!("No community summaries at the {} level.", level_name(level))
+    } else {
+        let selected: Vec<String> = selected_ids
+            .iter()
+            .filter_map(|id| all_summaries.get(*id).cloned())
+            .collect();
+        truncate_summaries(&selected, max_context_tokens)
     };
 
     let seed_entities = match entity_matcher {
@@ -296,14 +379,22 @@ pub async fn hybrid_query<M: BaseChatModel>(
         .map_err(|e| super::GraphRAGError::LLMError(e.to_string()))?;
 
     let mut sources: Vec<String> = seed_entities;
-    if !summaries.is_empty() {
-        sources.push(format!("{} community summaries", summaries.len()));
+    if !selected_ids.is_empty() {
+        sources.push(format!(
+            "{} community summaries ({})",
+            selected_ids.len(),
+            level_name(level)
+        ));
     }
 
     Ok(GraphRAGResult {
         answer: response.content.trim().to_string(),
         sources,
-        mode: QueryMode::Hybrid,
+        mode: if level == GlobalLevel::Coarsest {
+            QueryMode::Hybrid
+        } else {
+            QueryMode::HybridAt(level)
+        },
     })
 }
 
@@ -474,6 +565,75 @@ mod tests {
         let via_matcher =
             KeywordMatcher::new().find_relevant("Rust programming", &store, usize::MAX);
         assert_eq!(via_delegate, via_matcher);
+    }
+
+    fn hierarchy_store() -> GraphStore {
+        let mut store = GraphStore::new();
+        // Level 0: ids 0,1,2; level 1: id 3 = {0,1}; id 2 stays unparented.
+        store.set_communities(vec![
+            super::super::graph_store::Community {
+                id: 0,
+                entities: vec!["a".into(), "b".into()],
+                level: 0,
+                parent: Some(3),
+            },
+            super::super::graph_store::Community {
+                id: 1,
+                entities: vec!["c".into(), "d".into()],
+                level: 0,
+                parent: Some(3),
+            },
+            super::super::graph_store::Community {
+                id: 2,
+                entities: vec!["e".into(), "f".into()],
+                level: 0,
+                parent: None,
+            },
+            super::super::graph_store::Community {
+                id: 3,
+                entities: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+                level: 1,
+                parent: None,
+            },
+        ]);
+        store.set_community_summaries(vec![
+            "base-0".into(),
+            "base-1".into(),
+            "base-2".into(),
+            "rollup-3".into(),
+        ]);
+        store
+    }
+
+    #[test]
+    fn select_coarsest_picks_every_subtree_root() {
+        let store = hierarchy_store();
+        // The rolled-up root (id 3) plus the level-0 community that never
+        // merged (id 2): every entity is covered exactly once.
+        assert_eq!(
+            select_summary_ids(&store, GlobalLevel::Coarsest),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn select_exact_level_filters_by_level() {
+        let store = hierarchy_store();
+        assert_eq!(
+            select_summary_ids(&store, GlobalLevel::Level(0)),
+            vec![0, 1, 2]
+        );
+        assert_eq!(select_summary_ids(&store, GlobalLevel::Level(1)), vec![3]);
+        assert!(select_summary_ids(&store, GlobalLevel::Level(9)).is_empty());
+    }
+
+    #[test]
+    fn select_all_returns_every_community() {
+        let store = hierarchy_store();
+        assert_eq!(
+            select_summary_ids(&store, GlobalLevel::All),
+            vec![0, 1, 2, 3]
+        );
     }
 
     #[test]

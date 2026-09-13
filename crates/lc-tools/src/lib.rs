@@ -8,6 +8,7 @@
 //! - `SimpleMathTool`: Advanced math operations
 //! - `PythonREPLTool`: Python code execution (disabled by default)
 //! - `DuckDuckGoSearchTool`: Web search via DuckDuckGo
+//! - `HostedSearchTool`: hosted search backends (Tavily / Serper / Exa), see [`hosted_search`]
 //! - `URLFetchTool`: Web page fetching and parsing
 //! - `WikipediaTool`: Wikipedia search
 //! - `FileTool`: Sandboxed file operations
@@ -16,10 +17,13 @@
 //! - `ComputerUseTool`: Screen interaction via Anthropic API
 //! - `SandboxTool` / `LocalSandbox`: Code execution sandbox
 
+#[cfg(feature = "browser-cdp")]
+pub mod browser;
 mod calculator;
 mod datetime;
 mod expr_eval;
 pub mod extended;
+pub mod hosted_search;
 mod math;
 mod python_repl;
 pub mod sandbox;
@@ -34,11 +38,12 @@ pub use datetime::{DateTimeInput, DateTimeOutput, DateTimeTool};
 pub use extended::{
     ComputerMode, ComputerUseInput, ComputerUseOutput, ComputerUseTool, FileTool, HTTPTool,
 };
+pub use hosted_search::HostedSearchTool;
 pub use math::{MathInput, MathOutput, SimpleMathTool};
 pub use python_repl::{PythonREPLInput, PythonREPLOutput, PythonREPLTool};
 pub use sandbox::{CodeSandbox, Language, LocalSandbox, RunResult, SandboxError, SandboxTool};
-pub use skills::{Skill, SkillError, SkillFrontmatter};
 pub use search::{DuckDuckGoSearchTool, SearchInput, SearchOutput};
+pub use skills::{Skill, SkillError, SkillFrontmatter};
 pub use url_fetch::{URLFetchInput, URLFetchOutput, URLFetchTool};
 pub use wikipedia::{WikipediaInput, WikipediaOutput, WikipediaTool};
 

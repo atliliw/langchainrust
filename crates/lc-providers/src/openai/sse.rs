@@ -81,7 +81,11 @@ fn find_event_end(buf: &[u8]) -> Option<(usize, usize)> {
             }
             // "\n\r\n" can only be the tail of "\r\n\r\n"; require the
             // leading \r so we never mis-frame "\n\r\n" alone.
-            if i + 2 < buf.len() && buf[i + 1] == b'\r' && buf[i + 2] == b'\n' && i >= 1 && buf[i - 1] == b'\r'
+            if i + 2 < buf.len()
+                && buf[i + 1] == b'\r'
+                && buf[i + 2] == b'\n'
+                && i >= 1
+                && buf[i - 1] == b'\r'
             {
                 return Some((4, i - 1));
             }

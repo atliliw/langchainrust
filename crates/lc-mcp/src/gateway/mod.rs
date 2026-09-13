@@ -12,6 +12,10 @@
 //! - **P2-6** per-server security sandbox ([`ServerSandbox`](crate::sandbox::ServerSandbox));
 //! - **Rate limiting**: fixed-window limit per server ([`RateLimiter`]);
 //! - **Unified audit**: the Gateway entry records every allow/block ([`GatewayAuditRecord`]).
+//! - **Fail-closed execution gate (0.22.4 A16)**: a registered server's tools do not execute
+//!   until the spec declares a sandbox ([`GatewayServerSpec::with_sandbox`]), explicit
+//!   unattended execution ([`GatewayServerSpec::allow_unattended_execution`]), or the Gateway
+//!   carries a [`ToolCallApprover`] confirmation gate.
 //!
 //! # Unified registry
 //!
@@ -29,6 +33,7 @@
 //! gw.register(
 //!     GatewayServerSpec::new("fs", "http://mcp-fs.internal:8080/mcp")
 //!         .with_conflict(ToolConflict::Prefix)
+//!         .allow_unattended_execution() // or .with_sandbox(..) / gw.with_approver(..)
 //!         .with_rate_limit(60, Duration::from_secs(60)),
 //! ).await?;
 //! gw.sync("fs").await?;                      // pull tools into the unified registry
@@ -54,6 +59,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::connection_manager::ConnectionManager;
+use crate::execution::{authorize_call, ToolCallApprover};
 use crate::health::ServerHealth;
 use crate::protocol::MCPError;
 use crate::tool_adapter::{from_mcp_error, result_to_string_or_error, MCPToolAdapter};
@@ -89,6 +95,9 @@ pub struct MCPGateway {
     synced: RwLock<HashSet<String>>,
     /// Per-server rate limiter.
     rate_limiters: Mutex<HashMap<String, RateLimiter>>,
+    /// Runtime per-call approval gate (A16): consulted for servers left on the
+    /// default [`crate::ToolExecutionPolicy::RequireApproval`] policy.
+    approver: RwLock<Option<Arc<dyn ToolCallApprover>>>,
     /// Unified audit ring buffer.
     audit: Arc<StdMutex<VecDeque<GatewayAuditRecord>>>,
     max_audit: usize,
@@ -111,6 +120,7 @@ impl MCPGateway {
             discovery: RwLock::new(ToolDiscovery::new()),
             synced: RwLock::new(HashSet::new()),
             rate_limiters: Mutex::new(HashMap::new()),
+            approver: RwLock::new(None),
             audit: Arc::new(StdMutex::new(VecDeque::new())),
             max_audit: 1000,
         }
@@ -120,6 +130,26 @@ impl MCPGateway {
     pub fn with_max_audit(mut self, max_audit: usize) -> Self {
         self.max_audit = max_audit.max(1);
         self
+    }
+
+    /// Attaches a runtime approval gate (A16): every call to a server left on
+    /// the default fail-closed policy is presented to the approver
+    /// (`server` = namespace, `tool` = raw server-side name, arguments) before
+    /// dispatch; a denial becomes [`ToolError::PermissionDenied`] and is audited.
+    ///
+    /// Servers with their own sandbox or an explicit unattended-execution opt-in
+    /// do not consult the approver.
+    pub fn with_approver(mut self, approver: Arc<dyn ToolCallApprover>) -> Self {
+        self.approver = RwLock::new(Some(approver));
+        self
+    }
+
+    /// Installs or replaces (or with `None`, clears) the approval gate at
+    /// runtime — the shared-gateway counterpart of [`MCPGateway::with_approver`]
+    /// for containers such as [`crate::TenantGateway`] that build the Gateway
+    /// themselves.
+    pub async fn set_approver(&self, approver: Option<Arc<dyn ToolCallApprover>>) {
+        *self.approver.write().await = approver;
     }
 
     /// Registers a server (lazy: no connection, no tool pull — only stores the declaration + policy).
@@ -135,7 +165,7 @@ impl MCPGateway {
         let policy = ServerPolicy {
             conflict: spec.conflict,
             timeout: spec.default_timeout,
-            sandbox: spec.sandbox,
+            execution: spec.execution,
             pin_all: spec.pin_all,
         };
         self.policies.write().await.insert(spec.name, policy);
@@ -231,8 +261,10 @@ impl MCPGateway {
 
     /// Unified call entry: dispatches to the right server by the `server:tool` full name.
     ///
-    /// Internal order: resolve (auto-`sync` by prefix if unsynced) → rate limit → get the client
-    /// (lazy connection + breaker gate) → sandbox parameter check → timed call. Every allow/block is recorded in the unified audit.
+    /// Internal order: resolve (auto-`sync` by prefix if unsynced) → rate limit → the A16
+    /// fail-closed execution gate (sandbox / explicit unattended opt-in / approval) → get the
+    /// client (lazy connection + breaker gate) → timed call. Every allow/block is recorded in the
+    /// unified audit. A gate denial happens before any network I/O.
     pub async fn call(&self, full_name: &str, arguments: Value) -> Result<String, ToolError> {
         let (server, raw) = match self.resolve(full_name).await {
             Some(x) => x,
@@ -270,22 +302,31 @@ impl MCPGateway {
             }
         }
 
+        // A16 fail-closed execution gate: sandbox parameter check, explicit
+        // unattended opt-in, or runtime approval. Runs BEFORE the client is
+        // built: a denial must perform no network I/O at all.
+        let execution = {
+            let policies = self.policies.read().await;
+            policies.get(&server).map(|p| p.execution.clone())
+        }
+        .unwrap_or_default();
+        let approver = self.approver.read().await.clone();
+        if let Err(e) = authorize_call(
+            &execution,
+            approver.as_ref(),
+            full_name,
+            &server,
+            &raw,
+            &arguments,
+        )
+        .await
+        {
+            self.record(&server, full_name, false, Some(e.to_string()));
+            return Err(e);
+        }
+
         // Get the client: lazy connection + breaker gate (P2-1 / P2-5).
         let client = self.manager.client(&server).await.map_err(from_mcp_error)?;
-
-        // Sandbox: parameter-level least privilege (P2-6).
-        let sandbox = self
-            .policies
-            .read()
-            .await
-            .get(&server)
-            .and_then(|p| p.sandbox.clone());
-        if let Some(sb) = sandbox {
-            if let Err(e) = sb.check_call(&raw, &arguments) {
-                self.record(&server, full_name, false, Some(e.to_string()));
-                return Err(ToolError::InvalidInput(e.to_string()));
-            }
-        }
 
         // Timed call (P2-4); on failure record an audit entry and keep code/message.
         let timeout = self
@@ -318,19 +359,27 @@ impl MCPGateway {
 
     /// Converts the unified registry into a `BaseTool` adapter list (for attaching to an Agent).
     ///
-    /// Each adapter automatically carries the namespace prefix + per-server timeout + sandbox.
-    /// Tools must be `sync`ed first before they can be converted.
+    /// Each adapter automatically carries the namespace prefix + per-server timeout and the
+    /// same A16 fail-closed execution gate the unified `call` entry enforces (sandbox / explicit
+    /// unattended opt-in / the Gateway's approval gate) — invoking an adapter directly cannot
+    /// bypass it. Tools must be `sync`ed first before they can be converted.
     pub async fn as_base_tools(&self) -> Result<Vec<Arc<dyn BaseTool>>, MCPError> {
+        let approver = self.approver.read().await.clone();
         let mut out = Vec::new();
         for nt in self.tools().await {
             let client = self.manager.client(&nt.server).await?;
             let policy = self.policies.read().await.get(&nt.server).cloned();
-            let mut adapter = MCPToolAdapter::namespaced(client, &nt.server, nt.definition);
+            let execution = policy
+                .as_ref()
+                .map(|p| p.execution.clone())
+                .unwrap_or_default();
+            let mut adapter = MCPToolAdapter::namespaced(client, &nt.server, nt.definition)
+                .with_execution_policy(execution);
+            if let Some(approver) = approver.clone() {
+                adapter = adapter.with_approver(approver);
+            }
             if let Some(t) = policy.as_ref().and_then(|p| p.timeout.clone()) {
                 adapter = adapter.with_timeout(t);
-            }
-            if let Some(sb) = policy.as_ref().and_then(|p| p.sandbox.clone()) {
-                adapter = adapter.with_sandbox(sb);
             }
             out.push(Arc::new(adapter) as Arc<dyn BaseTool>);
         }

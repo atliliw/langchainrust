@@ -12,7 +12,7 @@ pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
 pub const COHERE_MODELS: [&str; 4] = ["command-r-plus", "command-r", "command", "command-light"];
 
 /// Cohere configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CohereConfig {
     /// Cohere API key.
     pub api_key: String,
@@ -26,6 +26,20 @@ pub struct CohereConfig {
     pub max_tokens: Option<usize>,
     /// Optional system preamble for the model.
     pub preamble: Option<String>,
+}
+
+impl std::fmt::Debug for CohereConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("CohereConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("preamble", &self.preamble)
+            .finish()
+    }
 }
 
 impl Default for CohereConfig {

@@ -204,6 +204,7 @@ mod tests {
             &self,
             _intermediate_steps: &[crate::types::AgentStep],
             _inputs: &HashMap<String, String>,
+            _config: Option<&lc_core::runnables::RunnableConfig>,
         ) -> Result<crate::types::AgentOutput, crate::base::AgentError> {
             Ok(crate::types::AgentOutput::Finish(
                 crate::types::AgentFinish::new("answer".to_string(), String::new()),

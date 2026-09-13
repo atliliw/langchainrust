@@ -41,6 +41,9 @@ pub mod deep_research;
 pub mod function_calling;
 pub mod handoffs;
 pub mod hooks;
+/// B4 (v0.22.4): LLM-backed semantic-memory extractor turning a completed turn
+/// into durable [`lc_memory::MemoryItem`]s.
+pub mod memory_extractor;
 pub mod metrics;
 pub mod orchestrator;
 /// Module alias preserving the historical `lc_agents::orchestration` path.
@@ -78,6 +81,7 @@ pub use hooks::{
     ContentFilterHook, ErrorAction, HookError, LoggingHook, PromptInjectionHook, StreamAction,
     TokenBudgetHook, ToolCallAction, ToolCallContext, ToolResultContext,
 };
+pub use memory_extractor::LlmMemoryExtractor;
 pub use metrics::AgentMetrics;
 pub use orchestrator::{
     parse_review_verdict, review_envelope, task_adapter, FanOutFanIn, Orchestrator,
@@ -88,6 +92,18 @@ pub use policy::{ToolPolicy, ToolRisk};
 pub use react::ReActAgent;
 pub use resume::{FileResumeStore, MemoryResumeStore, PendingApproval, ResumeError, ResumeStore};
 pub use retry::RetryConfig;
-pub use streaming::{AgentStreamEvent, StreamingFunctionCallingAgent, ToolCallState};
+// B8 (v0.22.4): framework-neutral SSE framing is always exported; the axum
+// serving pieces come in under the `sse-server` feature.
+pub use streaming::{
+    agent_sse_frames, encode_sse_frame, sse_event_name, sse_event_payload, AgentEventStream,
+    AgentSseRequest, AgentStreamEvent, SseFrame, SseOptions, StreamingFunctionCallingAgent,
+    ToolCallState,
+};
+#[cfg(feature = "sse-server")]
+pub use streaming::{
+    agent_sse_get_handler, agent_sse_handler, agent_sse_router, agent_sse_router_with,
+    serve_agent_sse, serve_agent_sse_on, AgentSseQuery, AgentSseServerConfig, AgentSseState,
+    AgentStreamFactory, AgentStreamFuture, DEFAULT_SSE_HEARTBEAT,
+};
 pub use task::AgentTask;
 pub use types::{AgentAction, AgentFinish, AgentOutput, AgentStep, ToolInput};

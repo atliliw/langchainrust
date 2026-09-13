@@ -24,6 +24,30 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()>;
     /// State and recursion budget of the most recently saved checkpoint.
     async fn last(&self) -> GraphResult<Option<(S, usize)>>;
+
+    /// Replace the state stored in an existing checkpoint (the LangGraph
+    /// `updateState` analogue), using optimistic concurrency control.
+    ///
+    /// `expected_version` is the version of the state the edit is based on
+    /// (every fresh checkpoint starts at version `1`, and each successful
+    /// `update_state` bumps it). When the stored version has moved on because
+    /// another writer edited the checkpoint first, the call fails with
+    /// [`GraphError::CheckpointVersionConflict`] instead of overwriting that
+    /// edit. Returns the new version.
+    ///
+    /// Backends without edit support keep the default implementation, which
+    /// fails with [`GraphError::CheckpointError`].
+    async fn update_state(
+        &self,
+        checkpoint_id: &str,
+        state: &S,
+        expected_version: u64,
+    ) -> GraphResult<u64> {
+        let _ = (state, expected_version);
+        Err(GraphError::CheckpointError(format!(
+            "update_state is not supported on checkpoint '{checkpoint_id}' by this checkpointer",
+        )))
+    }
 }
 
 /// Checkpoint data structure
@@ -48,6 +72,16 @@ pub struct CheckpointData<S: StateSchema> {
     /// restarting from zero (M6).
     #[serde(default)]
     pub recursion_count: usize,
+    /// Optimistic-concurrency version: `1` for a fresh checkpoint, bumped on
+    /// every [`Checkpointer::update_state`]. Backed by an atomic compare-and
+    /// swap in the durable checkpointers.
+    #[serde(default = "initial_version")]
+    pub version: u64,
+}
+
+/// Fresh checkpoints start at version 1 (0 only occurs in pre-0.22.4 files).
+fn initial_version() -> u64 {
+    1
 }
 
 impl<S: StateSchema> CheckpointData<S> {
@@ -60,6 +94,7 @@ impl<S: StateSchema> CheckpointData<S> {
             metadata: HashMap::new(),
             seq: 0,
             recursion_count: 0,
+            version: 1,
         }
     }
 
@@ -136,10 +171,45 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
             .map(|d| (d.state.clone(), d.recursion_count)))
     }
 
+    async fn update_state(
+        &self,
+        checkpoint_id: &str,
+        state: &S,
+        expected_version: u64,
+    ) -> GraphResult<u64> {
+        update_locked(&self.checkpoints, checkpoint_id, state, expected_version).await
+    }
+
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
         self.checkpoints.lock().await.remove(checkpoint_id);
         Ok(())
     }
+}
+
+/// In-memory OCC edit shared by [`MemoryCheckpointer`] and
+/// [`ThreadSafeMemoryCheckpointer`]: bump the version only while holding the
+/// map lock, so two concurrent edits cannot both succeed against the same
+/// base version.
+async fn update_locked<S: StateSchema>(
+    checkpoints: &Mutex<HashMap<String, CheckpointData<S>>>,
+    checkpoint_id: &str,
+    state: &S,
+    expected_version: u64,
+) -> GraphResult<u64> {
+    let mut guard = checkpoints.lock().await;
+    let data = guard.get_mut(checkpoint_id).ok_or_else(|| {
+        GraphError::CheckpointError(format!("Checkpoint '{checkpoint_id}' not found"))
+    })?;
+    if data.version != expected_version {
+        return Err(GraphError::CheckpointVersionConflict {
+            checkpoint_id: checkpoint_id.to_string(),
+            expected: expected_version,
+            actual: data.version,
+        });
+    }
+    data.state = state.clone();
+    data.version += 1;
+    Ok(data.version)
 }
 
 /// Thread-safe memory checkpointer
@@ -203,6 +273,15 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
             .map(|d| (d.state.clone(), d.recursion_count)))
     }
 
+    async fn update_state(
+        &self,
+        checkpoint_id: &str,
+        state: &S,
+        expected_version: u64,
+    ) -> GraphResult<u64> {
+        update_locked(&self.checkpoints, checkpoint_id, state, expected_version).await
+    }
+
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
         self.checkpoints.lock().await.remove(checkpoint_id);
         Ok(())
@@ -213,6 +292,10 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
 pub struct FileCheckpointer<S: StateSchema> {
     directory: std::path::PathBuf,
     next_seq: AtomicU64,
+    /// Serializes the read-check-write critical section of `update_state`
+    /// within this process (cross-process OCC is provided by the SQLite /
+    /// Postgres / Redis backends, not by plain JSON files).
+    update_lock: Mutex<()>,
     _phantom: std::marker::PhantomData<S>,
 }
 
@@ -232,6 +315,7 @@ impl<S: StateSchema> FileCheckpointer<S> {
         Ok(Self {
             directory: dir,
             next_seq: AtomicU64::new(0),
+            update_lock: Mutex::new(()),
             _phantom: std::marker::PhantomData,
         })
     }
@@ -354,6 +438,41 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         let data: CheckpointData<S> = serde_json::from_str(&json)
             .map_err(|e| GraphError::CheckpointError(format!("Deserialize error: {}", e)))?;
         Ok(Some((data.state, data.recursion_count)))
+    }
+
+    async fn update_state(
+        &self,
+        checkpoint_id: &str,
+        state: &S,
+        expected_version: u64,
+    ) -> GraphResult<u64> {
+        let _guard = self.update_lock.lock().await;
+        let path = self.checkpoint_path(checkpoint_id)?;
+        let json = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| GraphError::CheckpointError(format!("Read error: {}", e)))?;
+        let mut data: CheckpointData<S> = serde_json::from_str(&json)
+            .map_err(|e| GraphError::CheckpointError(format!("Deserialize error: {}", e)))?;
+        if data.version != expected_version {
+            return Err(GraphError::CheckpointVersionConflict {
+                checkpoint_id: checkpoint_id.to_string(),
+                expected: expected_version,
+                actual: data.version,
+            });
+        }
+        data.state = state.clone();
+        data.version += 1;
+
+        let json = serde_json::to_string_pretty(&data)
+            .map_err(|e| GraphError::CheckpointError(format!("Serialize error: {}", e)))?;
+        let tmp_path = self.directory.join(format!("{checkpoint_id}.json.tmp"));
+        tokio::fs::write(&tmp_path, &json)
+            .await
+            .map_err(|e| GraphError::CheckpointError(format!("Write error: {}", e)))?;
+        tokio::fs::rename(&tmp_path, &path)
+            .await
+            .map_err(|e| GraphError::CheckpointError(format!("Atomic rename error: {}", e)))?;
+        Ok(data.version)
     }
 
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
@@ -521,6 +640,71 @@ mod tests {
         let (state, recursion_count) = checkpointer.last().await.unwrap().unwrap();
         assert_eq!(state.input, "b");
         assert_eq!(recursion_count, 12);
+    }
+
+    #[tokio::test]
+    async fn test_update_state_occ_memory() {
+        let checkpointer = ThreadSafeMemoryCheckpointer::<AgentState>::new();
+        let id = checkpointer
+            .save(&AgentState::new("v1".to_string()), 0)
+            .await
+            .unwrap();
+
+        // First edit based on version 1 succeeds and bumps to 2.
+        let version = checkpointer
+            .update_state(&id, &AgentState::new("v2".to_string()), 1)
+            .await
+            .unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(checkpointer.load(&id).await.unwrap().input, "v2");
+
+        // A stale edit still based on version 1 must be rejected, not overwrite.
+        let conflict = checkpointer
+            .update_state(&id, &AgentState::new("v3-stale".to_string()), 1)
+            .await
+            .unwrap_err();
+        match conflict {
+            GraphError::CheckpointVersionConflict {
+                expected, actual, ..
+            } => {
+                assert_eq!(expected, 1);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("expected CheckpointVersionConflict, got {other:?}"),
+        }
+        assert_eq!(checkpointer.load(&id).await.unwrap().input, "v2");
+
+        // An edit based on the current version 2 succeeds.
+        checkpointer
+            .update_state(&id, &AgentState::new("v3".to_string()), 2)
+            .await
+            .unwrap();
+        assert_eq!(checkpointer.load(&id).await.unwrap().input, "v3");
+    }
+
+    #[tokio::test]
+    async fn test_update_state_missing_and_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let checkpointer = FileCheckpointer::<AgentState>::new(temp_dir.path()).unwrap();
+        let id = checkpointer
+            .save(&AgentState::new("disk-v1".to_string()), 0)
+            .await
+            .unwrap();
+        checkpointer
+            .update_state(&id, &AgentState::new("disk-v2".to_string()), 1)
+            .await
+            .unwrap();
+        assert_eq!(checkpointer.load(&id).await.unwrap().input, "disk-v2");
+        // Stale version conflicts on disk too.
+        assert!(checkpointer
+            .update_state(&id, &AgentState::new("stale".to_string()), 1)
+            .await
+            .is_err());
+        // Unknown checkpoint id errors rather than inserting.
+        assert!(checkpointer
+            .update_state("missing", &AgentState::new("x".to_string()), 1)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

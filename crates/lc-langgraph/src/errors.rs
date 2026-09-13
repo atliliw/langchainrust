@@ -30,6 +30,21 @@ pub enum GraphError {
     #[error("Checkpoint error: {0}")]
     CheckpointError(String),
 
+    /// Optimistic-concurrency conflict while editing a checkpoint
+    /// (`Checkpointer::update_state`): the stored version no longer matches
+    /// the version the caller expected.
+    #[error(
+        "Checkpoint version conflict on '{checkpoint_id}': expected {expected}, found {actual}"
+    )]
+    CheckpointVersionConflict {
+        /// Checkpoint the edit targeted.
+        checkpoint_id: String,
+        /// Version the edit was based on.
+        expected: u64,
+        /// Version currently stored.
+        actual: u64,
+    },
+
     /// A state update or merge failed.
     #[error("State error: {0}")]
     StateError(String),

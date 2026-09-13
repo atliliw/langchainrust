@@ -115,29 +115,11 @@ impl WebScraperLoader {
         }
     }
 
-    /// Crawls a single page
+    /// Crawls a single page through the shared SSRF-hardened helper; returns the
+    /// post-redirect final URL alongside the body so metadata/link resolution use the
+    /// real destination.
     async fn fetch_page(url: &str, timeout: Duration) -> Result<(String, String), LoaderError> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| LoaderError::Other(format!("failed to build HTTP client: {}", e)))?;
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| LoaderError::Other(format!("HTTP request failed {}: {}", url, e)))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(LoaderError::Other(format!(
-                "HTTP error {}: {}",
-                url, status
-            )));
-        }
-        let html = response
-            .text()
-            .await
-            .map_err(|e| LoaderError::Other(format!("failed to read response {}: {}", url, e)))?;
-        Ok((url.to_string(), html))
+        super::guarded_fetch(url, timeout).await
     }
 }
 

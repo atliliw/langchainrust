@@ -7,8 +7,21 @@ use std::env;
 use crate::openai::response_format::ResponseFormat;
 use crate::ProviderError;
 
+/// A **non-exhaustive** hint list of current OpenAI model ids (B5, v0.22.4).
+///
+/// The `model` field accepts any string, so newer ids work without a crate
+/// upgrade; this list only documents the 2025–2026 flagship line.
+pub const OPENAI_MODELS: [&str; 6] = [
+    "gpt-5",       // GPT-5 flagship
+    "gpt-5-mini",  // GPT-5 balanced tier
+    "gpt-4o",      // GPT-4o
+    "gpt-4o-mini", // GPT-4o mini
+    "o3",          // reasoning
+    "o4-mini",     // small reasoning
+];
+
 /// OpenAI configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAIConfig {
     /// OpenAI API key.
     pub api_key: String,
@@ -37,6 +50,35 @@ pub struct OpenAIConfig {
     /// Response format constraint (0.21.0 S3.1): engine-side structured output
     /// (`json_object` / `json_schema`). `None` keeps the default text mode.
     pub response_format: Option<ResponseFormat>,
+    /// B5: additional HTTP headers attached to every request (e.g. OpenRouter
+    /// attribution headers, tenant headers on private gateways).
+    pub extra_headers: Vec<(String, String)>,
+    /// B5: whether to send the `Authorization: Bearer` header. Keyless local
+    /// endpoints (LM Studio, vLLM, Ollama's OpenAI shim) set this to `false`.
+    pub send_auth: bool,
+}
+
+impl std::fmt::Debug for OpenAIConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` on a config never leaks the secret.
+        f.debug_struct("OpenAIConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("top_p", &self.top_p)
+            .field("frequency_penalty", &self.frequency_penalty)
+            .field("presence_penalty", &self.presence_penalty)
+            .field("streaming", &self.streaming)
+            .field("organization", &self.organization)
+            .field("tools", &self.tools)
+            .field("tool_choice", &self.tool_choice)
+            .field("response_format", &self.response_format)
+            .field("extra_headers", &self.extra_headers)
+            .field("send_auth", &self.send_auth)
+            .finish()
+    }
 }
 
 impl Default for OpenAIConfig {
@@ -55,6 +97,8 @@ impl Default for OpenAIConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }
@@ -145,6 +189,27 @@ impl OpenAIConfig {
         self.response_format = Some(format);
         self
     }
+
+    /// B5: append an extra HTTP header sent on every request.
+    pub fn with_extra_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// B5: append multiple extra HTTP headers sent on every request.
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers.extend(headers);
+        self
+    }
+
+    /// B5: control whether the `Authorization: Bearer` header is sent.
+    ///
+    /// Set to `false` for keyless local OpenAI-compatible endpoints
+    /// (LM Studio, vLLM, Ollama's `/v1` shim).
+    pub fn with_send_auth(mut self, send_auth: bool) -> Self {
+        self.send_auth = send_auth;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +270,17 @@ mod tests {
         restore("OPENAI_API_KEY", old_key);
         restore("OPENAI_BASE_URL", old_url);
         restore("OPENAI_MODEL", old_model);
+    }
+
+    #[test]
+    fn test_debug_redacts_api_key() {
+        let config = OpenAIConfig::new("sk-my-secret-key-123");
+        let debug = format!("{:?}", config);
+        assert!(
+            !debug.contains("sk-my-secret-key-123"),
+            "Debug output must not contain the raw API key"
+        );
+        assert!(debug.contains("***"));
     }
 
     #[test]

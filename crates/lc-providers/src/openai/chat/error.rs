@@ -15,6 +15,11 @@ pub enum OpenAIError {
     Parse(String),
     /// Configuration error (missing/malformed environment variables, etc.).
     Config(String),
+    /// The SSE stream ended before a terminal marker (`[DONE]`, or a chunk
+    /// carrying `finish_reason`) was observed — i.e. the connection dropped
+    /// mid-generation. A12: the partial text streamed so far is truncated and
+    /// must not be presented as a complete answer.
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for OpenAIError {
@@ -24,6 +29,11 @@ impl std::fmt::Display for OpenAIError {
             OpenAIError::Api(msg) => write!(f, "API error: {}", msg),
             OpenAIError::Parse(msg) => write!(f, "Parse error: {}", msg),
             OpenAIError::Config(msg) => write!(f, "Configuration error: {}", msg),
+            OpenAIError::StreamInterrupted(msg) => write!(
+                f,
+                "stream interrupted before terminal event (output truncated): {}",
+                msg
+            ),
         }
     }
 }

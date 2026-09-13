@@ -14,10 +14,62 @@
 //! be safely resumed mid-flight, so only non-streaming (`chat_internal`-style)
 //! requests are retried.
 //!
+//! # Non-idempotent request boundary (A14)
+//!
+//! Chat/completion calls are **non-idempotent POSTs**: replaying one after the
+//! request has already reached the provider can execute (and bill) the
+//! generation twice. Retries are therefore safe only when the failure
+//! provably happened *before dispatch*:
+//!
+//! - DNS / TCP / TLS connect failures ([`reqwest::Error::is_connect`]) mean
+//!   the TCP/TLS handshake never completed, so the request could not have
+//!   reached the application → always safe to replay.
+//! - A **timeout** or other `is_request` error is ambiguous: with only
+//!   `connect_timeout` configured a timeout is usually a connect-phase
+//!   failure, but a per-request/overall timeout can fire *after* the server
+//!   accepted the request and started generating — and, in reqwest 0.12,
+//!   `is_request()` is `true` even for that post-dispatch timeout, so it is
+//!   not a trustworthy pre-dispatch signal.
+//! - Response-body / decode errors ([`reqwest::Error::is_body`] /
+//!   [`reqwest::Error::is_decode`]) are never retried: the server already
+//!   produced the response.
+//!
+//! The historical default ([`TransportRetryMode::AllTransportErrors`], used by
+//! [`DEFAULT_RETRY`]) also retries timeouts — this is a deliberate
+//! availability-vs-double-billing tradeoff and is **unchanged**. Deployments
+//! that prefer strict at-most-once semantics can opt into
+//! [`TransportRetryMode::PreDispatchOnly`] via [`SAFE_RETRY`]. The same
+//! ambiguity applies to 429/5xx responses: a 502 can be returned *after* the
+//! upstream processed the request, so HTTP-status retries are likewise
+//! best-effort, not guaranteed safe.
+//!
 //! The backoff pattern mirrors `retry.rs` in lc-embeddings / lc-agents
 //! (`base_delay * 2^attempt`, capped at `max_delay`).
 
 use std::time::Duration;
+
+/// Selects which transport-level errors are retried for a (non-idempotent)
+/// request. See the module docs ("Non-idempotent request boundary (A14)") for
+/// the double-billing tradeoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportRetryMode {
+    /// Retry every transport error the implementation has historically
+    /// retried: connect failure, request-builder error, **and timeout**.
+    ///
+    /// Availability-first (the historical default). A timeout can fire after
+    /// the request was dispatched, so a retry may execute the generation twice.
+    AllTransportErrors,
+    /// Retry only errors that provably occur during connection establishment
+    /// ([`reqwest::Error::is_connect`]: DNS/TCP/TLS failure — including a
+    /// connect timeout). Request-phase errors and timeouts are not retried:
+    /// `is_request`/`is_timeout` can fire after the server accepted the
+    /// request (in reqwest 0.12 a post-dispatch timeout has both flags set).
+    ///
+    /// Opt-in via [`SAFE_RETRY`]; exercised in tests even though no default
+    /// provider call site selects it (A14 keeps historical behavior).
+    #[allow(dead_code)]
+    PreDispatchOnly,
+}
 
 /// Exponential backoff retry configuration.
 #[derive(Debug, Clone, Copy)]
@@ -28,13 +80,33 @@ pub(crate) struct RetryConfig {
     pub base_delay: Duration,
     /// Upper bound for backoff delay.
     pub max_delay: Duration,
+    /// Which transport errors are eligible for retry (A14 boundary).
+    pub transport: TransportRetryMode,
 }
 
 /// Default retry policy: at most 3 attempts, base 500ms, cap 8s.
+///
+/// Transport mode is [`TransportRetryMode::AllTransportErrors`] — the
+/// historical behavior, kept unchanged by A14 (timeouts are retried).
 pub(crate) const DEFAULT_RETRY: RetryConfig = RetryConfig {
     max_attempts: 3,
     base_delay: Duration::from_millis(500),
     max_delay: Duration::from_secs(8),
+    transport: TransportRetryMode::AllTransportErrors,
+};
+
+/// Strict retry policy for non-idempotent POSTs: same bounds as
+/// [`DEFAULT_RETRY`], but transport retries are limited to provably
+/// pre-dispatch errors ([`TransportRetryMode::PreDispatchOnly`]). Opt in at a
+/// call site (`send_with_retry(builder, &SAFE_RETRY)`) where double-billing a
+/// generation outweighs a lost retry. Not referenced by default provider
+/// paths by design (A14 preserves historical behavior), hence the allow.
+#[allow(dead_code)]
+pub(crate) const SAFE_RETRY: RetryConfig = RetryConfig {
+    max_attempts: 3,
+    base_delay: Duration::from_millis(500),
+    max_delay: Duration::from_secs(8),
+    transport: TransportRetryMode::PreDispatchOnly,
 };
 
 /// The shared default HTTP client for all providers (0.22.0 audit H-P1).
@@ -55,7 +127,9 @@ pub(crate) fn default_client() -> reqwest::Client {
 /// - 429 / 5xx: retry (bounded jitter, capped at `max_delay`, `Retry-After`
 ///   honored when larger);
 /// - other 4xx: return immediately (permanent failure, retrying is pointless);
-/// - connect-level transport errors: retry; the final error is returned as-is.
+/// - transport errors: retried according to `retry.transport` — see
+///   [`TransportRetryMode`] and the module-level A14 boundary discussion; the
+///   final error is returned as-is.
 ///
 /// The caller keeps handling status codes and bodies after receiving the
 /// response, so error semantics are unchanged from the un-retried path.
@@ -92,7 +166,7 @@ pub(crate) async fn send_with_retry(
                 return Ok(response);
             }
             Err(e) => {
-                if attempt + 1 < retry.max_attempts && is_retryable_error(&e) {
+                if attempt + 1 < retry.max_attempts && is_retryable_error(&e, retry.transport) {
                     let delay = next_backoff(attempt, None, retry, entropy());
                     log::warn!(
                         "provider transport error: {e} (attempt {}/{}), retrying in {:?}",
@@ -115,10 +189,27 @@ fn is_transient(status: &reqwest::StatusCode) -> bool {
     status.as_u16() == 429 || status.as_u16() >= 500
 }
 
-/// Whether a transport error is worth retrying: connect failures and timeouts
-/// are transient; builder errors are programming errors and are not.
-fn is_retryable_error(e: &reqwest::Error) -> bool {
-    e.is_connect() || e.is_timeout() || e.is_request()
+/// Whether a transport error is worth retrying under `mode`.
+///
+/// Only connect-phase failures (DNS/TCP/TLS handshake, `is_connect`) are
+/// provably pre-dispatch: the request could not have reached the server.
+/// `is_request` is deliberately excluded from the strict mode — in reqwest
+/// 0.12 a timeout while awaiting response headers reports `is_request() ==
+/// true`, so it cannot be treated as "never dispatched". Timeouts and other
+/// request-phase errors are retried only under
+/// [`TransportRetryMode::AllTransportErrors`] (the historical default).
+/// Response-body/decoding errors are never retried under either mode.
+fn is_retryable_error(e: &reqwest::Error, mode: TransportRetryMode) -> bool {
+    match mode {
+        // Only the connect phase (DNS/TCP/TLS handshake) is provably
+        // pre-dispatch. `is_request` is NOT: in reqwest 0.12 a timeout while
+        // waiting for response headers reports `is_request() == true` even
+        // though the request may already have been processed.
+        TransportRetryMode::PreDispatchOnly => e.is_connect(),
+        TransportRetryMode::AllTransportErrors => {
+            e.is_connect() || e.is_timeout() || e.is_request()
+        }
+    }
 }
 
 /// Computes the delay before the next retry attempt (pure, unit-testable).
@@ -282,6 +373,16 @@ mod tests {
             max_attempts: 3,
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(5),
+            transport: TransportRetryMode::AllTransportErrors,
+        }
+    }
+
+    /// [`SAFE_RETRY`] with near-zero delays for tests.
+    fn fast_safe_retry() -> RetryConfig {
+        RetryConfig {
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+            ..SAFE_RETRY
         }
     }
 
@@ -351,6 +452,134 @@ mod tests {
         assert!(
             elapsed >= Duration::from_millis(10),
             "Retry-After should raise each retry delay to the 5ms cap (elapsed {elapsed:?})"
+        );
+    }
+
+    /// A14: stub that completes the TCP handshake and drains the request, but
+    /// never sends a response. A per-request timeout then fires *after* the
+    /// request was dispatched — the ambiguous case the retry boundary is about.
+    /// Returns `(base_url, accepted_connections)`.
+    async fn spawn_blackhole_stub() -> (String, std::sync::Arc<AtomicUsize>) {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                // Hold the connection open without ever responding; cancelled
+                // when the test runtime shuts down.
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while head.len() < 64 * 1024 {
+                        if socket.read_exact(&mut byte).await.is_err() {
+                            return;
+                        }
+                        head.push(byte[0]);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    drop(socket);
+                });
+            }
+        });
+        (format!("http://{addr}"), accepted)
+    }
+
+    #[tokio::test]
+    async fn post_dispatch_timeout_is_retried_by_default_mode() {
+        // Historical behavior (unchanged by A14): timeouts are retried even
+        // though the request may already have reached the server.
+        let (base_url, accepted) = spawn_blackhole_stub().await;
+        let client = reqwest::Client::new();
+
+        let result = send_with_retry(
+            || {
+                client
+                    .post(&base_url)
+                    .timeout(Duration::from_millis(100))
+                    .json(&serde_json::json!({"m": 1}))
+            },
+            &fast_retry(),
+        )
+        .await;
+
+        assert!(result.is_err(), "all attempts time out");
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            3,
+            "default mode replays the timed-out (possibly dispatched) request"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_dispatch_timeout_is_not_retried_in_predispatch_only_mode() {
+        // Strict A14 mode: once the request is in flight, a timeout is terminal.
+        let (base_url, accepted) = spawn_blackhole_stub().await;
+        let client = reqwest::Client::new();
+
+        let result = send_with_retry(
+            || {
+                client
+                    .post(&base_url)
+                    .timeout(Duration::from_millis(100))
+                    .json(&serde_json::json!({"m": 1}))
+            },
+            &fast_safe_retry(),
+        )
+        .await;
+
+        assert!(result.is_err(), "the single attempt times out");
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "PreDispatchOnly must not replay a request that may have been processed"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_failure_is_still_retried_in_predispatch_only_mode() {
+        // A closed local port refuses the TCP handshake: the request never
+        // reached a server, so even the strict mode retries all attempts.
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let url = format!("http://{addr}");
+        // `no_proxy` so an ambient corporate HTTP proxy cannot answer for a
+        // refused localhost connection (which would look like a 5xx response).
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let result = send_with_retry(
+            || client.post(&url).json(&serde_json::json!({"m": 1})),
+            &fast_safe_retry(),
+        )
+        .await;
+
+        assert!(result.is_err(), "connect refused every time");
+        // No server-side counter exists; the retry loop completing within the
+        // test budget asserts attempts == max_attempts implicitly. Assert the
+        // classifier contract directly instead:
+        let err = result.unwrap_err();
+        assert!(
+            is_retryable_error(&err, TransportRetryMode::PreDispatchOnly),
+            "connect refused must be retryable in PreDispatchOnly (connect={}, request={}, timeout={})",
+            err.is_connect(),
+            err.is_request(),
+            err.is_timeout()
+        );
+        assert!(
+            is_retryable_error(&err, TransportRetryMode::AllTransportErrors),
+            "connect refused must be retryable under the default mode too"
         );
     }
 }

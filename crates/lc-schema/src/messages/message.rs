@@ -9,6 +9,108 @@ use lc_shared::tools::ToolCall;
 use super::audio::AudioContent;
 use super::file::FileContent;
 use super::image::ImageContent;
+use super::video::VideoContent;
+
+/// Modality of a media attachment on a multimodal message.
+///
+/// B7 (v0.22.4): the common vocabulary used by the provider-neutral
+/// [`MediaPart`] view; each chat backend maps these onto its own wire blocks
+/// (`image_url` / `input_audio` / `input_video` / `file`, Anthropic
+/// `image`/`document`, Gemini `inline_data`/`file_data`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modality {
+    /// Still image (vision input).
+    Image,
+    /// Audio clip (e.g. voice input / transcription inside a chat turn).
+    Audio,
+    /// Video clip.
+    Video,
+    /// Attached file/document (e.g. PDF).
+    File,
+}
+
+/// One media attachment of a [`Message`], exposed by [`Message::media_parts`].
+///
+/// This is the provider-neutral unified view (B7, v0.22.4) over the parallel
+/// `images` / `audio` / `videos` / `files` vectors: provider request builders
+/// iterate [`Message::media_parts`] once instead of each growing their own
+/// modality-specific special cases.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MediaPart<'a> {
+    /// An image attachment.
+    Image(&'a ImageContent),
+    /// An audio attachment.
+    Audio(&'a AudioContent),
+    /// A video attachment.
+    Video(&'a VideoContent),
+    /// A file/document attachment.
+    File(&'a FileContent),
+}
+
+impl<'a> MediaPart<'a> {
+    /// Returns the attachment's modality.
+    pub fn modality(&self) -> Modality {
+        match self {
+            MediaPart::Image(_) => Modality::Image,
+            MediaPart::Audio(_) => Modality::Audio,
+            MediaPart::Video(_) => Modality::Video,
+            MediaPart::File(_) => Modality::File,
+        }
+    }
+
+    /// Returns the raw value (https URL, `gs://` URI, or `data:` URI).
+    pub fn url(&self) -> &str {
+        match self {
+            MediaPart::Image(m) => &m.url,
+            MediaPart::Audio(m) => &m.url,
+            MediaPart::Video(m) => &m.url,
+            MediaPart::File(m) => &m.url,
+        }
+    }
+
+    /// Returns the explicit MIME type if the attachment carries one.
+    ///
+    /// [`FileContent`] can store an out-of-band MIME type; for data URIs the
+    /// type embedded in the `data:` prefix is parsed instead.
+    pub fn mime_type(&self) -> Option<&str> {
+        match self {
+            MediaPart::File(f) => f.mime_type.as_deref().or_else(|| data_uri_mime(&f.url)),
+            MediaPart::Image(i) => data_uri_mime(&i.url),
+            MediaPart::Audio(a) => data_uri_mime(&a.url),
+            MediaPart::Video(v) => data_uri_mime(&v.url),
+        }
+    }
+
+    /// Returns the optional filename (file attachments only).
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            MediaPart::File(f) => f.name.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw base64 payload if the value is a base64 data URI.
+    pub fn base64_data(&self) -> Option<&str> {
+        let url = self.url();
+        url.split_once(',')
+            .filter(|(prefix, _)| prefix.contains("base64"))
+            .map(|(_, data)| data)
+    }
+
+    /// Returns whether the value is a `data:` URI.
+    pub fn is_data_uri(&self) -> bool {
+        self.url().starts_with("data:")
+    }
+}
+
+/// Extracts the MIME segment from a data URI (`data:<mime>;base64,...`).
+pub(crate) fn data_uri_mime(url: &str) -> Option<&str> {
+    url.strip_prefix("data:")?
+        .split([';', ','])
+        .next()
+        .filter(|mime| !mime.is_empty())
+}
 
 /// Message type classification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -40,6 +142,10 @@ pub struct Message {
     /// Audio content (multimodal audio)
     #[serde(default)]
     pub audio: Vec<AudioContent>,
+
+    /// Video content (multimodal video) — B7 (v0.22.4)
+    #[serde(default)]
+    pub videos: Vec<VideoContent>,
 
     /// File content (multimodal document)
     #[serde(default)]
@@ -73,6 +179,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::System,
             name: None,
@@ -88,6 +195,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
@@ -103,6 +211,7 @@ impl Message {
             content: content.into(),
             images: vec![ImageContent::from_url(image_url)],
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
@@ -118,6 +227,7 @@ impl Message {
             content: content.into(),
             images,
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
@@ -133,6 +243,23 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: vec![audio],
+            videos: Vec::new(),
+            files: Vec::new(),
+            message_type: MessageType::Human,
+            name: None,
+            additional_kwargs: HashMap::new(),
+            id: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Creates a human message with video content.
+    pub fn human_with_video(content: impl Into<String>, video: VideoContent) -> Self {
+        Self {
+            content: content.into(),
+            images: Vec::new(),
+            audio: Vec::new(),
+            videos: vec![video],
             files: Vec::new(),
             message_type: MessageType::Human,
             name: None,
@@ -148,6 +275,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: vec![file],
             message_type: MessageType::Human,
             name: None,
@@ -163,6 +291,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::AI,
             name: None,
@@ -178,6 +307,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::AI,
             name: None,
@@ -193,6 +323,7 @@ impl Message {
             content: content.into(),
             images: Vec::new(),
             audio: Vec::new(),
+            videos: Vec::new(),
             files: Vec::new(),
             message_type: MessageType::Tool {
                 tool_call_id: tool_call_id.into(),
@@ -234,6 +365,12 @@ impl Message {
         self
     }
 
+    /// Adds video content to the message.
+    pub fn with_video(mut self, video: VideoContent) -> Self {
+        self.videos.push(video);
+        self
+    }
+
     /// Adds file content to the message.
     pub fn with_file(mut self, file: FileContent) -> Self {
         self.files.push(file);
@@ -250,14 +387,36 @@ impl Message {
         !self.audio.is_empty()
     }
 
+    /// Returns whether the message has video content.
+    pub fn has_videos(&self) -> bool {
+        !self.videos.is_empty()
+    }
+
     /// Returns whether the message has file content.
     pub fn has_files(&self) -> bool {
         !self.files.is_empty()
     }
 
-    /// Returns whether the message has any multimodal content (images, audio, or files).
+    /// Returns whether the message has any multimodal content (images, audio,
+    /// video, or files).
     pub fn is_multimodal(&self) -> bool {
-        self.has_images() || self.has_audio() || self.has_files()
+        self.has_images() || self.has_audio() || self.has_videos() || self.has_files()
+    }
+
+    /// Provider-neutral view over every attachment, in canonical order
+    /// (images → audio → video → files, each in insertion order).
+    ///
+    /// B7 (v0.22.4): chat backends map this single stream onto their wire
+    /// blocks instead of special-casing the parallel content vectors.
+    pub fn media_parts(&self) -> Vec<MediaPart<'_>> {
+        let mut parts: Vec<MediaPart<'_>> = Vec::with_capacity(
+            self.images.len() + self.audio.len() + self.videos.len() + self.files.len(),
+        );
+        parts.extend(self.images.iter().map(MediaPart::Image));
+        parts.extend(self.audio.iter().map(MediaPart::Audio));
+        parts.extend(self.videos.iter().map(MediaPart::Video));
+        parts.extend(self.files.iter().map(MediaPart::File));
+        parts
     }
 
     /// Returns the message type as a string.
@@ -367,5 +526,82 @@ mod tests {
         assert!(!Message::ai("plain").has_tool_calls());
         let empty = Message::ai_with_tool_calls("no calls", vec![]);
         assert!(!empty.has_tool_calls());
+    }
+
+    // --- B7: video + unified MediaPart view ---
+
+    #[test]
+    fn test_human_with_video() {
+        let msg = Message::human_with_video(
+            "看视频",
+            VideoContent::from_url("https://example.com/clip.mp4"),
+        );
+        assert!(msg.has_videos());
+        assert!(msg.is_multimodal());
+        assert_eq!(msg.videos.len(), 1);
+        assert_eq!(msg.videos[0].url, "https://example.com/clip.mp4");
+    }
+
+    #[test]
+    fn test_with_video_builder() {
+        let msg = Message::human("视频")
+            .with_video(VideoContent::from_url("https://example.com/a.mp4"))
+            .with_video(VideoContent::from_base64("abc"));
+        assert_eq!(msg.videos.len(), 2);
+    }
+
+    #[test]
+    fn test_video_field_defaults_on_old_json() {
+        // Messages serialized before the videos field existed must still deserialize.
+        let json = r#"{"content":"hi","type":"human","images":[],"audio":[],"files":[]}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert!(msg.videos.is_empty());
+        assert!(!msg.has_videos());
+    }
+
+    #[test]
+    fn test_media_parts_canonical_order_and_modality() {
+        let msg = Message::human("mixed")
+            .with_image(ImageContent::from_url("https://e.com/a.png"))
+            .with_audio(AudioContent::from_url("https://e.com/a.mp3"))
+            .with_video(VideoContent::from_url("https://e.com/a.mp4"))
+            .with_file(FileContent::from_base64("abc", "application/pdf"));
+
+        let parts = msg.media_parts();
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0].modality(), Modality::Image);
+        assert_eq!(parts[1].modality(), Modality::Audio);
+        assert_eq!(parts[2].modality(), Modality::Video);
+        assert_eq!(parts[3].modality(), Modality::File);
+        assert_eq!(parts[2].url(), "https://e.com/a.mp4");
+        assert_eq!(parts[3].name(), None);
+        assert_eq!(parts[3].mime_type(), Some("application/pdf"));
+        assert_eq!(parts[3].base64_data(), Some("abc"));
+    }
+
+    #[test]
+    fn test_media_part_data_uri_mime() {
+        let img = ImageContent::from_base64_with_mime("zzz", "image/webp");
+        let msg = Message::human("h").with_image(img);
+        let part = &msg.media_parts()[0];
+        assert!(part.is_data_uri());
+        assert_eq!(part.mime_type(), Some("image/webp"));
+        assert_eq!(part.base64_data(), Some("zzz"));
+
+        // Plain URL: no embedded MIME, no base64.
+        let plain = Message::human_with_image("h", "https://example.com/x.jpg");
+        let p = &plain.media_parts()[0];
+        assert!(!p.is_data_uri());
+        assert_eq!(p.mime_type(), None);
+    }
+
+    #[test]
+    fn test_file_part_explicit_mime_and_name() {
+        let file = FileContent::from_url_with_mime("https://e.com/d.pdf", "application/pdf")
+            .with_name("d.pdf");
+        let msg = Message::human_with_file("读文件", file);
+        let part = &msg.media_parts()[0];
+        assert_eq!(part.mime_type(), Some("application/pdf"));
+        assert_eq!(part.name(), Some("d.pdf"));
     }
 }

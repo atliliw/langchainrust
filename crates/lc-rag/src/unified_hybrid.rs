@@ -229,11 +229,20 @@ impl UnifiedHybridIndex {
                 );
             }
 
+            // Index documents with `embed_documents`, not `embed_query`: for
+            // dual-encoder backends the query vector space and the document
+            // vector space differ, so storing documents in the query space
+            // silently breaks retrieval. (A6)
             let embedding = self
                 .embeddings
-                .embed_query(&chunk.content)
+                .embed_documents(&[chunk.content.as_str()])
                 .await
-                .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
+                .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    VectorStoreError::EmbeddingError("embed_documents returned no vector".into())
+                })?;
 
             chunk_docs.push(Document::new(chunk.content.clone()).with_id(chunk.chunk_id.clone()));
             chunk_embeddings.push(embedding);
@@ -370,8 +379,12 @@ impl UnifiedHybridIndex {
                     vector_score: vector_scores.get(&doc_id).copied(),
                     vector_rank: vector_ranks.get(&doc_id).copied(),
                     matched_chunks: vec![doc_id.clone()],
-                    // H49: use "::" separator consistent with chunk_id format
-                    parent_id: Some(doc_id.split("::").next().unwrap_or_default().to_string()),
+                    // A7: `doc_id` is already the authoritative parent_id — both
+                    // bm25 results (`with_id(r.parent_id)`) and vector results
+                    // (`with_id(chunk.parent_id)`) set it from `document_store`.
+                    // Slicing it on "::" would corrupt any parent_id itself
+                    // containing the separator.
+                    parent_id: Some(doc_id.clone()),
                 }
             })
             .collect();
@@ -467,6 +480,242 @@ impl UnifiedHybridIndex {
         self.vector_store.clear().await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lc_embeddings::{l2_normalize, EmbeddingError};
+    use lc_vector_stores::InMemoryVectorStore;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Deterministic word -> bucket hash for the toy dual encoder below.
+    fn bucket_of(word: &str, dim: usize) -> usize {
+        word.bytes().fold(0usize, |acc, b| {
+            acc.wrapping_add((b as usize).wrapping_mul(31))
+        }) % dim
+    }
+
+    /// Toy **dual encoder**: the document encoder and the query encoder are
+    /// asymmetric, mirroring models whose query and document vector spaces
+    /// differ in real deployment.
+    ///
+    /// - `embed_documents(T)` multi-hot-encodes *every* word of T (a document
+    ///   representation);
+    /// - `embed_query(T)` encodes only the *first* word of T (a query
+    ///   representation).
+    ///
+    /// Both land in the same ambient space and share the word→bucket mapping,
+    /// so a one-word query matches a document containing that word **only when
+    /// the document was indexed through `embed_documents`**. If the index
+    /// mistakenly embeds chunks through `embed_query` (the A6 bug), the stored
+    /// vectors contain just each chunk's first word and the query vector has
+    /// zero cosine similarity with them — vector retrieval silently returns
+    /// nothing. Call counters additionally pin which method each path uses.
+    struct DualEncoderMock {
+        dim: usize,
+        embed_document_calls: AtomicUsize,
+        embed_query_calls: AtomicUsize,
+    }
+
+    impl DualEncoderMock {
+        fn new(dim: usize) -> Arc<Self> {
+            Arc::new(Self {
+                dim,
+                embed_document_calls: AtomicUsize::new(0),
+                embed_query_calls: AtomicUsize::new(0),
+            })
+        }
+
+        fn document_embedding(&self, text: &str) -> Vec<f32> {
+            let mut v = vec![0.0f32; self.dim];
+            for word in text.split_whitespace() {
+                v[bucket_of(word, self.dim)] = 1.0;
+            }
+            l2_normalize(&mut v);
+            v
+        }
+
+        fn query_embedding(&self, text: &str) -> Vec<f32> {
+            let mut v = vec![0.0f32; self.dim];
+            if let Some(first) = text.split_whitespace().next() {
+                v[bucket_of(first, self.dim)] = 1.0;
+            }
+            l2_normalize(&mut v);
+            v
+        }
+    }
+
+    #[async_trait]
+    impl Embeddings for DualEncoderMock {
+        async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            if text.trim().is_empty() {
+                return Err(EmbeddingError::EmptyInput);
+            }
+            self.embed_query_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.query_embedding(text))
+        }
+
+        async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            if texts.iter().any(|t| t.trim().is_empty()) {
+                return Err(EmbeddingError::EmptyInput);
+            }
+            // One call per indexed chunk (the index batches one chunk per call).
+            self.embed_document_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(texts.iter().map(|t| self.document_embedding(t)).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+
+        fn model_name(&self) -> &str {
+            "dual-encoder-mock"
+        }
+    }
+
+    fn small_index(embeddings: Arc<dyn Embeddings>) -> UnifiedHybridIndex {
+        let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
+        let config = HybridIndexConfig::new()
+            .with_chunk_size(80)
+            .with_top_k(5, 5);
+        UnifiedHybridIndex::with_config(embeddings, vector_store, 32, config)
+    }
+
+    /// A6: indexing goes through `embed_documents` (once per chunk) and
+    /// retrieval through `embed_query`; with a genuinely asymmetric dual
+    /// encoder the matching document is still returned by the *vector* path.
+    #[tokio::test]
+    async fn indexing_uses_embed_documents_and_retrieval_embed_query() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = small_index(embeddings);
+
+        // ~10 chunks at chunk_size 80, and every chunk contains "zebra".
+        let doc_text = std::iter::repeat(
+            "zebra rust is a systems programming language that runs blazingly fast",
+        )
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" . ");
+        let parent = index
+            .add_document(Document::new(doc_text).with_id("doc-zebra"))
+            .await
+            .unwrap();
+        assert_eq!(parent, "doc-zebra");
+
+        let chunk_count = index.chunk_count().await;
+        assert!(
+            chunk_count >= 5,
+            "expected several chunks, got {chunk_count}"
+        );
+        assert_eq!(
+            mock.embed_document_calls.load(Ordering::SeqCst),
+            chunk_count,
+            "each chunk must be indexed via one embed_documents call"
+        );
+        assert_eq!(
+            mock.embed_query_calls.load(Ordering::SeqCst),
+            0,
+            "indexing must never call embed_query"
+        );
+
+        // A distractor without the query word; RRF must rank the zebra doc on top.
+        index
+            .add_document(
+                Document::new(
+                    "python is a scripting language used for glue code and automation tasks",
+                )
+                .with_id("doc-python"),
+            )
+            .await
+            .unwrap();
+
+        let results = index.retrieve_with_details("zebra", 3).await.unwrap();
+        assert_eq!(
+            mock.embed_query_calls.load(Ordering::SeqCst),
+            1,
+            "retrieval must embed the query exactly once"
+        );
+        assert!(!results.is_empty(), "expected hybrid results");
+
+        let top = &results[0];
+        assert_eq!(top.document.id.as_deref(), Some("doc-zebra"));
+        // The decisive A6 assertion: the vector leg contributed. Under the old
+        // embed_query-indexing path the query vector was orthogonal to every
+        // stored chunk vector, so vector_score/vector_rank would be None.
+        assert!(
+            top.vector_rank.is_some(),
+            "vector retrieval must match the indexed document (vector_rank was None)"
+        );
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.document.id.as_deref() == Some("doc-python")),
+            "distractor without the query word must not be retrieved"
+        );
+    }
+
+    /// A7: a parent id containing the internal `::` separator must survive
+    /// chunk id derivation (`{parent}::{segment}`) and come back verbatim from
+    /// `retrieve_with_details` — the old `split("::")` reconstruction mangled
+    /// it into the first segment ("ns").
+    #[tokio::test]
+    async fn parent_id_containing_separator_round_trips_intact() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = small_index(embeddings);
+
+        const PARENT_ID: &str = "ns::parent::id";
+        let doc_text = std::iter::repeat(
+            "zebra migration patterns follow seasonal rain across the savanna plains",
+        )
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" . ");
+        let returned = index
+            .add_document(Document::new(doc_text).with_id(PARENT_ID))
+            .await
+            .unwrap();
+        assert_eq!(returned, PARENT_ID);
+
+        // Chunk metadata carries the full parent id and chunk ids are unique.
+        let chunks = index
+            .document_store()
+            .get_chunks_for_parent(PARENT_ID)
+            .await
+            .unwrap();
+        assert!(chunks.len() >= 2, "expected multiple chunks");
+        let mut ids: Vec<&str> = chunks.iter().map(|c| c.chunk_id.as_str()).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "chunk ids must not collide");
+        assert!(
+            chunks.iter().all(|c| c.parent_id == PARENT_ID),
+            "every chunk must point at the full parent id"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.chunk_id.starts_with(&format!("{PARENT_ID}::"))),
+            "chunk ids keep the parent id as an exact prefix"
+        );
+
+        let results = index.retrieve_with_details("zebra", 5).await.unwrap();
+        let hit = results
+            .iter()
+            .find(|r| r.parent_id.as_deref() == Some(PARENT_ID))
+            .expect("result must carry the full '::'-containing parent_id");
+        assert_eq!(hit.document.id.as_deref(), Some(PARENT_ID));
+        assert!(!hit.matched_chunks.is_empty());
+
+        // And no result must surface the mangled first-segment form.
+        assert!(
+            !results.iter().any(|r| r.parent_id.as_deref() == Some("ns")),
+            "parent_id must not be reconstructed by splitting on '::'"
+        );
     }
 }
 

@@ -4,9 +4,25 @@
 use super::AgentError;
 use crate::types::{AgentAction, ToolInput};
 use lc_core::tools::{BaseTool, ToolError};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+
+/// A11: build an O(1) name → tool index from a tool list.
+///
+/// The prior lookups were `tools.iter().find(|t| t.name() == name)` — O(n) on every
+/// tool call. `entry().or_insert_with` preserves the original "first match wins"
+/// semantics exactly: the linear scan returned the *first* tool whose name matched,
+/// and `or_insert_with` keeps the first-inserted entry when names collide.
+pub(crate) fn index_tools(tools: &[Arc<dyn BaseTool>]) -> HashMap<String, Arc<dyn BaseTool>> {
+    let mut map: HashMap<String, Arc<dyn BaseTool>> = HashMap::with_capacity(tools.len());
+    for tool in tools {
+        map.entry(tool.name().to_string())
+            .or_insert_with(|| tool.clone());
+    }
+    map
+}
 
 /// A1 Spotlighting — open marker wrapping untrusted tool output.
 ///
@@ -59,18 +75,18 @@ pub(crate) async fn run_tool_with_timeout(
 
 /// Helper: execute a single tool for streaming (no RunTree dependency).
 ///
+/// A11: takes the prebuilt name → tool index (an O(1) lookup) instead of a raw slice.
 /// `spotlight`/`rule_of_two` mirror the executor's A1/A2 toggles so the streaming path
 /// (which cannot read `AgentExecutor` fields) applies the same guards as invoke.
 pub(crate) async fn execute_tool_for_stream(
-    tools: &[Arc<dyn BaseTool>],
+    tools: &HashMap<String, Arc<dyn BaseTool>>,
     action: &AgentAction,
     timeout: Option<Duration>,
     spotlight: bool,
     rule_of_two: bool,
 ) -> Result<String, AgentError> {
     let tool = tools
-        .iter()
-        .find(|t| t.name() == action.tool)
+        .get(&action.tool)
         .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
 
     // A2: block a tool that arms all three risk properties (v0.22.1 §S8).
@@ -115,7 +131,7 @@ pub(crate) async fn execute_tool_for_stream(
 /// `ControlAbort` / input serialization) in any one tool propagates hard as `Err` so
 /// the caller ends the stream instead of feeding a re-plan loop that cannot recover.
 pub(crate) async fn execute_tools_parallel_for_stream(
-    tools: &[Arc<dyn BaseTool>],
+    tools: &HashMap<String, Arc<dyn BaseTool>>,
     actions: &[AgentAction],
     timeout: Option<Duration>,
     max_concurrency: usize,
@@ -149,4 +165,57 @@ pub(crate) async fn execute_tools_parallel_for_stream(
         }
     }
     Ok(observations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    /// Minimal named tool for the A11 index tests.
+    struct NamedTool(&'static str);
+
+    #[async_trait]
+    impl BaseTool for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "A11 index test tool"
+        }
+        async fn run(&self, input: String) -> Result<String, ToolError> {
+            Ok(input)
+        }
+    }
+
+    fn named(name: &'static str) -> Arc<dyn BaseTool> {
+        Arc::new(NamedTool(name))
+    }
+
+    #[test]
+    fn index_resolves_each_tool_by_name() {
+        let tools: Vec<Arc<dyn BaseTool>> = vec![named("alpha"), named("beta"), named("gamma")];
+        let idx = index_tools(&tools);
+        assert!(idx.contains_key("alpha"));
+        assert!(idx.contains_key("beta"));
+        assert!(idx.contains_key("gamma"));
+        assert!(!idx.contains_key("delta"));
+        assert_eq!(idx.len(), 3);
+    }
+
+    #[test]
+    fn index_preserves_first_match_on_name_collision() {
+        // The old linear `find` returned the *first* tool whose name matched; the
+        // index uses `or_insert_with`, so the first-inserted entry must win too —
+        // otherwise the O(1) optimization would silently change which tool runs.
+        let first = named("dup");
+        let second = named("dup");
+        let tools: Vec<Arc<dyn BaseTool>> = vec![first.clone(), second.clone()];
+        let idx = index_tools(&tools);
+        let resolved = idx.get("dup").unwrap();
+        assert!(
+            Arc::ptr_eq(resolved, &first),
+            "first-inserted tool must win on name collision"
+        );
+    }
 }

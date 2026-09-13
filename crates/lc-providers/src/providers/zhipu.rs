@@ -18,16 +18,16 @@ use std::pin::Pin;
 /// Zhipu API endpoint
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
-/// Zhipu GLM model list
+/// Zhipu GLM model list (B5, v0.22.4 — GLM-4.5/4.6 generation; non-exhaustive).
 pub const ZHIPU_MODELS: [&str; 4] = [
-    "glm-4",       // GLM-4 base model
-    "glm-4-flash", // GLM-4 fast tier
-    "glm-4-plus",  // GLM-4 Plus
-    "glm-4-long",  // GLM-4 long-context
+    "glm-4.6",     // GLM-4.6 (2025 flagship)
+    "glm-4.5",     // GLM-4.5
+    "glm-4.5-air", // GLM-4.5 Air (lightweight)
+    "glm-4-plus",  // GLM-4 Plus (previous gen)
 ];
 
 /// Zhipu config
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ZhipuConfig {
     /// Zhipu API key.
     pub api_key: String,
@@ -39,6 +39,19 @@ pub struct ZhipuConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+}
+
+impl std::fmt::Debug for ZhipuConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("ZhipuConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for ZhipuConfig {
@@ -125,6 +138,8 @@ impl ZhipuConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }

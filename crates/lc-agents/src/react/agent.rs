@@ -10,6 +10,7 @@ use crate::{AgentAction, AgentError, AgentOutput, AgentStep, BaseAgent, ToolInpu
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use lc_core::language_models::{BaseChatModel, TokenUsage};
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -201,6 +202,7 @@ impl BaseAgent for ReActAgent {
         &self,
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         // Get the user input
         let input = inputs
@@ -216,11 +218,12 @@ impl BaseAgent for ReActAgent {
         // Create the message
         let messages = vec![Message::human(prompt_text)];
 
-        // Call the LLM
+        // Call the LLM. A18: forward the executor's config verbatim so the
+        // provider fires `on_llm_*` for this planning round.
         let result = crate::retry::retry_chat(
             self.llm.as_ref(),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -255,6 +258,7 @@ impl BaseAgent for ReActAgent {
         intermediate_steps: &[AgentStep],
         inputs: &HashMap<String, String>,
         on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+        config: Option<&RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         let input = inputs
             .get("input")
@@ -263,14 +267,15 @@ impl BaseAgent for ReActAgent {
         let prompt_text = self.build_prompt(input, intermediate_steps, history);
         let messages = vec![Message::human(prompt_text)];
 
-        let mut stream = match self.llm.stream_chat(messages, None).await {
+        // A18: stream planning carries the same config as non-streaming plan.
+        let mut stream = match self.llm.stream_chat(messages, config.cloned()).await {
             Ok(s) => s,
             Err(e) => {
                 log::warn!(
                     "stream_chat unavailable ({}), falling back to non-streaming plan",
                     e
                 );
-                let output = self.plan(intermediate_steps, inputs).await?;
+                let output = self.plan(intermediate_steps, inputs, config).await?;
                 if let AgentOutput::Finish(finish) = &output {
                     on_token(finish.output().unwrap_or("").to_string()).await;
                 }
@@ -340,6 +345,8 @@ mod tests {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 
@@ -494,7 +501,7 @@ mod tests {
         };
 
         let output = agent
-            .plan_stream(&[], &inputs, &mut on_token)
+            .plan_stream(&[], &inputs, &mut on_token, None)
             .await
             .expect("plan_stream should parse to Finish");
 

@@ -110,8 +110,14 @@ impl AnthropicChat {
     pub(crate) fn message_to_anthropic_format(message: &Message) -> AnthropicMessage {
         match &message.message_type {
             lc_schema::MessageType::Human => {
-                // If the message has images, build a content blocks array
-                if message.has_images() {
+                // B7: unified multimodal mapping over every attached medium.
+                // Images become base64 `image` blocks; PDF files become base64
+                // `document` blocks. The Messages API accepts neither audio/video
+                // nor hosted URLs — the async entry points run
+                // `media::resolve_message_media` (Anthropic policy) first, which
+                // rejects audio/video and non-PDF files and SSRF-safely inlines
+                // http(s) URLs before this pure mapper runs.
+                if message.is_multimodal() {
                     let mut content_parts: Vec<AnthropicContentBlock> = vec![];
 
                     // Add text content first
@@ -121,13 +127,28 @@ impl AnthropicChat {
                         });
                     }
 
-                    // Add image blocks — Anthropic requires base64-encoded images
-                    for img in &message.images {
-                        if let Some(source) = Self::image_to_anthropic_source(img) {
-                            content_parts.push(AnthropicContentBlock::Image { source });
+                    for part in message.media_parts() {
+                        match part {
+                            lc_schema::MediaPart::Image(img) => {
+                                // URL-based images that aren't data URIs are skipped
+                                // (Anthropic doesn't support URL-based image sources;
+                                // the resolver fetches them into data URIs upstream).
+                                if let Some(source) = Self::image_to_anthropic_source(img) {
+                                    content_parts.push(AnthropicContentBlock::Image { source });
+                                }
+                            }
+                            lc_schema::MediaPart::File(file) => {
+                                if let Some((source, filename)) =
+                                    Self::file_to_anthropic_document(file)
+                                {
+                                    content_parts
+                                        .push(AnthropicContentBlock::Document { source, filename });
+                                }
+                            }
+                            // Audio/video never reach here over the network path:
+                            // the Anthropic media policy rejects them explicitly.
+                            lc_schema::MediaPart::Audio(_) | lc_schema::MediaPart::Video(_) => {}
                         }
-                        // URL-based images that aren't data URIs are silently skipped
-                        // (Anthropic doesn't support URL-based image sources)
                     }
 
                     if content_parts.is_empty() {
@@ -211,6 +232,39 @@ impl AnthropicChat {
             // The image is silently skipped
             None
         }
+    }
+
+    /// Converts a FileContent into an Anthropic `document` block source.
+    ///
+    /// The Messages API only supports inline base64 PDF documents. Hosted
+    /// files and non-PDF types return `None` here; `media::resolve_message_media`
+    /// enforces both constraints (explicit error, never a silent drop) and
+    /// rewrites http(s) URLs into data URIs before request building.
+    fn file_to_anthropic_document(
+        file: &lc_schema::FileContent,
+    ) -> Option<(AnthropicImageSource, Option<String>)> {
+        if !file.is_base64() {
+            return None;
+        }
+        let mime = file.mime_type.clone().or_else(|| {
+            file.url
+                .strip_prefix("data:")?
+                .split(';')
+                .next()
+                .map(str::to_string)
+        })?;
+        if mime != "application/pdf" {
+            return None;
+        }
+        let data = file.base64_data()?;
+        Some((
+            AnthropicImageSource {
+                source_type: "base64".to_string(),
+                media_type: mime,
+                data: data.to_string(),
+            },
+            file.name.clone(),
+        ))
     }
 
     pub(crate) fn build_request_body(
@@ -330,9 +384,18 @@ impl AnthropicChat {
         messages: Vec<Message>,
     ) -> Result<LLMResult, AnthropicError> {
         let url = format!("{}/messages", self.config.base_url);
+        // B7: fetch inline-only media through the SSRF guard and reject
+        // modalities the Messages API does not support (audio/video, non-PDF).
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Anthropic)
+            .await
+            .map_err(|e| AnthropicError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
         // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        // A14: non-idempotent POST — DEFAULT_RETRY may replay a post-dispatch
+        // timeout/5xx and double-bill; use retry::SAFE_RETRY to retry only
+        // provably pre-dispatch transport failures.
         let response = crate::retry::send_with_retry(
             || {
                 self.client
@@ -439,6 +502,11 @@ impl AnthropicChat {
         AnthropicError,
     > {
         let url = format!("{}/messages", self.config.base_url);
+        // B7: same media resolution as the non-streaming path.
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::Anthropic)
+            .await
+            .map_err(|e| AnthropicError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
         let response = self
@@ -480,9 +548,13 @@ impl AnthropicChat {
             // complete ToolCall. Previously only text/thinking deltas were
             // handled and tool calls fell into `_ => {}` silently.
             let mut tool_blocks: HashMap<usize, (String, String, String)> = HashMap::new();
+            // A12: Anthropic ends every successful stream with a terminal
+            // `message_stop` event. If the connection closes first (proxy reset,
+            // server error, timeout), the text streamed so far is a truncated prefix;
+            // track the marker and error after the loop instead of completing silently.
+            let mut saw_message_stop = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
-
                     // Extract complete SSE events from the byte-level framer
                     let events = {
                         let mut buffer_guard =
@@ -515,6 +587,12 @@ impl AnthropicChat {
                                             .await;
                                         return;
                                     }
+                                    if event.type_field == "message_stop" {
+                                        // A12: the canonical terminal event for an
+                                        // Anthropic SSE stream.
+                                        saw_message_stop = true;
+                                        continue;
+                                    }
                                     if event.type_field == "message_delta" {
                                         // message_delta at the end of the stream carries usage; emit it as
                                         // a standalone token so the streaming path also gets the full call usage.
@@ -545,7 +623,11 @@ impl AnthropicChat {
                                                 let index = event.index.unwrap_or_default();
                                                 tool_blocks.insert(
                                                     index,
-                                                    (block.id.clone(), block.name.clone(), String::new()),
+                                                    (
+                                                        block.id.clone(),
+                                                        block.name.clone(),
+                                                        String::new(),
+                                                    ),
                                                 );
                                             }
                                         }
@@ -637,6 +719,15 @@ impl AnthropicChat {
                     let _ = tx.send(Err(AnthropicError::Http(e.to_string()))).await;
                     return;
                 }
+            }
+            // A12: the connection closed without a terminal `message_stop` event —
+            // whatever text streamed so far is truncated, not a complete answer.
+            if !saw_message_stop {
+                let _ = tx
+                    .send(Err(AnthropicError::StreamInterrupted(
+                        "connection closed before message_stop".to_string(),
+                    )))
+                    .await;
             }
         });
 
@@ -853,7 +944,10 @@ mod tests {
         let chat = AnthropicChat::new(config);
         let msg = Message::system("be concise");
         let body = chat.build_request_body(vec![msg], false);
-        assert_eq!(body["system"], "be concise", "caching off: keep byte-identical string");
+        assert_eq!(
+            body["system"], "be concise",
+            "caching off: keep byte-identical string"
+        );
     }
 
     #[test]
@@ -862,7 +956,9 @@ mod tests {
         let chat = AnthropicChat::new(config);
         let msg = Message::system("be concise");
         let body = chat.build_request_body(vec![msg], false);
-        let system = body["system"].as_array().expect("caching on emits a block array");
+        let system = body["system"]
+            .as_array()
+            .expect("caching on emits a block array");
         assert_eq!(system.len(), 1);
         assert_eq!(system[0]["type"], "text");
         assert_eq!(system[0]["text"], "be concise");
@@ -873,18 +969,19 @@ mod tests {
     fn prompt_caching_on_caches_last_tool() {
         let config = AnthropicConfig::new("test-key").with_prompt_caching(true);
         let tools = vec![
-            ToolDefinition::new("a", "tool a").with_parameters(
-                json!({"type":"object","properties":{"x":{"type":"string"}}}),
-            ),
-            ToolDefinition::new("b", "tool b").with_parameters(
-                json!({"type":"object","properties":{"y":{"type":"string"}}}),
-            ),
+            ToolDefinition::new("a", "tool a")
+                .with_parameters(json!({"type":"object","properties":{"x":{"type":"string"}}})),
+            ToolDefinition::new("b", "tool b")
+                .with_parameters(json!({"type":"object","properties":{"y":{"type":"string"}}})),
         ];
         let chat = AnthropicChat::new(config).bind_tools(tools);
         let body = chat.build_request_body(vec![], false);
         let arr = body["tools"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
-        assert!(arr[0].get("cache_control").is_none(), "only the last tool is cached");
+        assert!(
+            arr[0].get("cache_control").is_none(),
+            "only the last tool is cached"
+        );
         assert_eq!(arr[1]["cache_control"]["type"], "ephemeral");
     }
 
@@ -928,5 +1025,70 @@ mod tests {
         assert_eq!(blocks[1]["type"], "image");
         assert_eq!(blocks[1]["source"]["type"], "base64");
         assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    }
+
+    // --- B7 multimodal mapping ---
+
+    #[test]
+    fn b7_image_and_pdf_file_become_image_and_document_blocks() {
+        let config = AnthropicConfig::new("test-key");
+        let chat = AnthropicChat::new(config);
+        let msg = Message::human("读图和附件")
+            .with_image(lc_schema::ImageContent::from_base64_with_mime(
+                "aW1n",
+                "image/png",
+            ))
+            .with_file(
+                lc_schema::FileContent::from_base64("ZG9j", "application/pdf")
+                    .with_name("brief.pdf"),
+            );
+
+        let body = chat.build_request_body(vec![msg], false);
+        let messages = body["messages"].as_array().unwrap();
+        let blocks = messages[0]["content"].as_array().unwrap();
+
+        let expected = serde_json::json!([
+            {"type": "text", "text": "读图和附件"},
+            {"type": "image", "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1n"
+            }},
+            {"type": "document", "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "ZG9j"
+            }, "filename": "brief.pdf"},
+        ]);
+        assert_eq!(serde_json::json!(blocks), expected);
+    }
+
+    #[test]
+    fn b7_pdf_without_explicit_mime_uses_data_uri_mime() {
+        // Fetch-rewritten files carry the MIME in the data URI only.
+        let file = lc_schema::FileContent {
+            url: "data:application/pdf;base64,ZmV0Y2g=".to_string(),
+            mime_type: None,
+            name: None,
+        };
+        let (source, filename) =
+            AnthropicChat::file_to_anthropic_document(&file).expect("data-URI PDF maps");
+        assert_eq!(source.media_type, "application/pdf");
+        assert_eq!(source.data, "ZmV0Y2g=");
+        assert!(filename.is_none());
+    }
+
+    #[test]
+    fn b7_non_pdf_document_is_skipped_by_sync_mapper() {
+        // The async entry points reject non-PDF files outright; the pure
+        // mapper simply does not emit a block for them.
+        let csv = lc_schema::FileContent::from_base64("YQ==", "text/csv");
+        assert!(AnthropicChat::file_to_anthropic_document(&csv).is_none());
+    }
+
+    #[test]
+    fn b7_hosted_pdf_url_is_skipped_by_sync_mapper() {
+        let pdf = lc_schema::FileContent::from_url("https://example.com/brief.pdf");
+        assert!(AnthropicChat::file_to_anthropic_document(&pdf).is_none());
     }
 }

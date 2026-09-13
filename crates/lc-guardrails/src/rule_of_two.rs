@@ -77,7 +77,7 @@ mod tests {
                         continue;
                     }
                     assert_eq!(triage(&p), RuleOfTwoVerdict::Allowed, "{u} {s} {c}");
-                    assert_eq!(p.count_armed() < RULE_OF_TWO_ARMED_THRESHOLD, true);
+                    assert!(p.count_armed() < RULE_OF_TWO_ARMED_THRESHOLD, "{u} {s} {c}");
                 }
             }
         }
@@ -86,6 +86,9 @@ mod tests {
     #[test]
     fn default_profile_is_allowed() {
         // default all-false → never intercepted (zero behavior change)
-        assert_eq!(triage(&ToolRiskProfile::default()), RuleOfTwoVerdict::Allowed);
+        assert_eq!(
+            triage(&ToolRiskProfile::default()),
+            RuleOfTwoVerdict::Allowed
+        );
     }
 }

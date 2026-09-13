@@ -57,6 +57,7 @@ impl BaseAgent for SingleCallAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         self.plan_calls.fetch_add(1, Ordering::SeqCst);
         Ok(AgentOutput::Action(AgentAction {

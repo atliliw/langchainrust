@@ -78,7 +78,9 @@ fn cors_layer() -> CorsLayer {
         s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1")
     };
     CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(move |origin, _| is_localhost(origin)))
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            is_localhost(origin)
+        }))
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any)
 }

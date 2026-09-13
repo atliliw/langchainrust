@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use super::counter::{TokenCounter, TrackerTokenUsage};
 use super::tiktoken::TiktokenCounter;
 use super::TokenCounterError;
+use crate::cost::CostTracker;
 
 /// LLM wrapper with token statistics
 ///
@@ -33,6 +34,11 @@ pub struct TokenTrackingLLM<L: BaseChatModel> {
     /// Optional observability sink (v0.20.2): exports a `TokenUsage` event after
     /// each call that reports usage. `None` by default — behavior unchanged.
     metrics_sink: Option<Arc<dyn MetricsSink>>,
+    /// Optional cost tracker (B3): prices and aggregates every counted call.
+    cost_tracker: Option<Arc<CostTracker>>,
+    /// Provider slug used when pricing calls (`"openai"`, ...); `None` prices by
+    /// model-only table entries.
+    provider: Option<String>,
 }
 
 impl<L: BaseChatModel> TokenTrackingLLM<L> {
@@ -43,6 +49,8 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
             counter,
             usage: Arc::new(Mutex::new(TrackerTokenUsage::new())),
             metrics_sink: None,
+            cost_tracker: None,
+            provider: None,
         }
     }
 
@@ -58,6 +66,23 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
     /// rebuilt by `bind_tools`/`with_temperature`/`with_max_tokens`.
     pub fn with_metrics_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
         self.metrics_sink = Some(sink);
+        self
+    }
+
+    /// Attaches a [`CostTracker`] (B3): every counted call is priced under the
+    /// model's provider/id and aggregated on the shared tracker. Share one
+    /// `Arc<CostTracker>` across models/runs to get per-run or per-session
+    /// totals. The tracker keeps working when the model has no price entry
+    /// (tokens/calls counted, cost 0).
+    pub fn with_cost_tracker(mut self, tracker: Arc<CostTracker>) -> Self {
+        self.cost_tracker = Some(tracker);
+        self
+    }
+
+    /// Declares the provider slug (`"openai"`, `"anthropic"`, ...) used when
+    /// looking up prices. Defaults to `None` (model-only table lookup).
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
         self
     }
 
@@ -97,6 +122,19 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
             ));
 
         self.usage.lock().await.add(prompt, completion);
+
+        // B3: price the call on the shared tracker (no-op without a tracker;
+        // unpriced models aggregate tokens/calls at zero cost).
+        if let Some(tracker) = &self.cost_tracker {
+            let model = if result.model.is_empty() {
+                self.llm.model_name().to_string()
+            } else {
+                result.model.clone()
+            };
+            tracker
+                .record(self.provider.as_deref(), &model, prompt, completion)
+                .await;
+        }
 
         // v0.20.2: export a TokenUsage event once counted (real or estimate).
         // Failure is only warned — never propagated to the caller.
@@ -202,12 +240,14 @@ where
         Self: Sized,
     {
         // A rebuilt wrapper shares the same counter + usage Arcs, so the count
-        // survives parameter overrides.
+        // (and cost aggregation) survives parameter overrides.
         Self {
             llm: self.llm.with_temperature(temp),
             counter: self.counter.clone(),
             usage: self.usage.clone(),
             metrics_sink: self.metrics_sink.clone(),
+            cost_tracker: self.cost_tracker.clone(),
+            provider: self.provider.clone(),
         }
     }
 
@@ -220,6 +260,8 @@ where
             counter: self.counter.clone(),
             usage: self.usage.clone(),
             metrics_sink: self.metrics_sink.clone(),
+            cost_tracker: self.cost_tracker.clone(),
+            provider: self.provider.clone(),
         }
     }
 }
@@ -248,16 +290,32 @@ where
         // tiktoken estimates — there is no complete text to count — so the
         // counted usage may be 0 for providers that never report it
         // (v0.20.1 known boundary; estimation fallback moved to 0.21.0).
+        let model_name = self.llm.model_name().to_string();
         let stream = self.llm.stream_chat(messages, config).await?;
         let usage = self.usage.clone();
         let sink = self.metrics_sink.clone();
+        let cost_tracker = self.cost_tracker.clone();
+        let provider = self.provider.clone();
         let stream = stream.then(move |item| {
             let usage = usage.clone();
             let sink = sink.clone();
+            let cost_tracker = cost_tracker.clone();
+            let provider = provider.clone();
+            let model_name = model_name.clone();
             async move {
                 if let Ok(chunk) = &item {
                     if let Some(u) = &chunk.token_usage {
                         usage.lock().await.add(u.prompt_tokens, u.completion_tokens);
+                        if let Some(tracker) = &cost_tracker {
+                            tracker
+                                .record(
+                                    provider.as_deref(),
+                                    &model_name,
+                                    u.prompt_tokens,
+                                    u.completion_tokens,
+                                )
+                                .await;
+                        }
                         if let Some(sink) = &sink {
                             let evt = ObsEvent::TokenUsage(u.clone());
                             if let Err(e) = sink.export(&evt).await {
@@ -286,6 +344,8 @@ where
             counter: self.counter.clone(),
             usage: self.usage.clone(),
             metrics_sink: self.metrics_sink.clone(),
+            cost_tracker: self.cost_tracker.clone(),
+            provider: self.provider.clone(),
         }))
     }
 }
@@ -702,6 +762,7 @@ mod tests {
                 assert_eq!(u.total_tokens, 120);
             }
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
+            ObsEvent::Cost(_) => panic!("unexpected event kind"),
         }
     }
 
@@ -736,6 +797,7 @@ mod tests {
         match &captured[0] {
             ObsEvent::TokenUsage(u) => assert_eq!(u.total_tokens, 65),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
+            ObsEvent::Cost(_) => panic!("unexpected event kind"),
         }
     }
 
@@ -779,6 +841,98 @@ mod tests {
         match &captured[0] {
             ObsEvent::TokenUsage(u) => assert_eq!(u.prompt_tokens, 100),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
+            ObsEvent::Cost(_) => panic!("unexpected event kind"),
         }
+    }
+
+    // --- B3: CostTracker integration ---------------------------------------
+
+    use crate::cost::{CostTracker, ModelPrice, PricingTable};
+
+    #[tokio::test]
+    async fn chat_prices_calls_on_shared_cost_tracker() {
+        let table = PricingTable::new().with("mock", "mock-model", ModelPrice::new(2.0, 8.0));
+        let tracker = Arc::new(CostTracker::new(Arc::new(table)));
+        let tracked = tracked_mock(
+            Some(TokenUsage {
+                prompt_tokens: 1000,
+                completion_tokens: 500,
+                total_tokens: 1500,
+            }),
+            false,
+        )
+        .with_provider("mock")
+        .with_cost_tracker(tracker.clone());
+
+        tracked
+            .chat(vec![Message::human("hi")], None)
+            .await
+            .unwrap();
+        tracked
+            .chat(vec![Message::human("hi")], None)
+            .await
+            .unwrap();
+
+        // 2 * (1000*2/1k + 500*8/1k) = 2 * 6 = 12
+        assert_eq!(tracker.total_cost_usd().await, 12.0);
+        let report = tracker.report().await;
+        assert_eq!(report.calls, 2);
+        assert_eq!(report.by_model["mock/mock-model"].cost_usd, 12.0);
+    }
+
+    #[tokio::test]
+    async fn stream_prices_terminal_usage_on_cost_tracker() {
+        let table = PricingTable::new().with("mock", "mock-model", ModelPrice::new(1.0, 2.0));
+        let tracker = Arc::new(CostTracker::new(Arc::new(table)));
+        let llm = MockChatModel {
+            chat_usage: None,
+            stream_usage: Some(TokenUsage {
+                prompt_tokens: 1000,
+                completion_tokens: 1000,
+                total_tokens: 2000,
+            }),
+            tool_capable: false,
+        };
+        let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
+            .with_provider("mock")
+            .with_cost_tracker(tracker.clone());
+
+        let stream = tracked
+            .stream_chat(vec![Message::human("hi")], None)
+            .await
+            .unwrap();
+        let _: Vec<_> = stream.collect().await;
+
+        // 1000*1/1k + 1000*2/1k = 3
+        assert_eq!(tracker.total_cost_usd().await, 3.0);
+    }
+
+    #[tokio::test]
+    async fn cost_tracker_survives_temperature_and_tool_rebuilds() {
+        // "mock-model" is not in the built-in table: calls count but price zero.
+        let tracker = Arc::new(CostTracker::with_builtin_prices());
+        let tracked = tracked_mock(
+            Some(TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 10,
+                total_tokens: 20,
+            }),
+            true,
+        )
+        .with_cost_tracker(tracker.clone());
+
+        let rebuilt = tracked.with_temperature(0.1).with_max_tokens(64);
+        rebuilt
+            .chat(vec![Message::human("hi")], None)
+            .await
+            .unwrap();
+        let bound = rebuilt
+            .bind_tools(vec![ToolDefinition::new("t", "t")])
+            .unwrap();
+        bound.chat(vec![Message::human("hi")], None).await.unwrap();
+
+        // Unpriced "mock-model" => cost 0, but both rebuilt wrappers count.
+        assert_eq!(tracker.report().await.calls, 2);
+        assert_eq!(tracker.total_cost_usd().await, 0.0);
     }
 }

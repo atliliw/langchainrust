@@ -190,12 +190,8 @@ impl<S: StateSchema + 'static> StateGraph<S> {
             ))
         };
 
-        let mut compiled = CompiledGraph::new(
-            self.nodes.clone(),
-            self.edges.clone(),
-            entry,
-            merge_reducer,
-        );
+        let mut compiled =
+            CompiledGraph::new(self.nodes.clone(), self.edges.clone(), entry, merge_reducer);
 
         for (name, router) in &self.conditional_routers {
             compiled.add_router(name.clone(), router.clone());
@@ -390,7 +386,6 @@ mod tests {
 
     use crate::compiled::types::StreamEvent;
     use crate::state::{AppendMessagesReducer, MessageEntry, MessageRole};
-    use futures_util::StreamExt;
 
     /// C3-1: a field reducer registered via `set_reducer` merges its field
     /// into the state instead of being dropped (previously the registered
@@ -501,9 +496,7 @@ mod tests {
             .collect();
         // All three writers survive: source (main path) + both branches.
         assert!(
-            contents.contains(&"main-path")
-                && contents.contains(&"b1")
-                && contents.contains(&"b2"),
+            contents.contains(&"main-path") && contents.contains(&"b1") && contents.contains(&"b2"),
             "merge must keep main-path + all branch writes, got {contents:?}"
         );
         assert_eq!(result.final_state.output.as_deref(), Some("merged"));
@@ -549,11 +542,7 @@ mod tests {
                 _ => None,
             })
             .expect("stream should end");
-        let contents: Vec<&str> = end
-            .messages
-            .iter()
-            .map(|m| m.content.as_str())
-            .collect();
+        let contents: Vec<&str> = end.messages.iter().map(|m| m.content.as_str()).collect();
         assert!(
             contents.contains(&"s-b1") && contents.contains(&"s-b2"),
             "stream must execute all fan-out branches, got {contents:?}"
@@ -569,9 +558,15 @@ mod tests {
         graph.add_node_fn("source", |state: &AgentState| {
             Ok(StateUpdate::full(state.clone()))
         });
-        graph.add_node_fn("b1", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
-        graph.add_node_fn("b2", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
-        graph.add_node_fn("merge", |state: &AgentState| Ok(StateUpdate::full(state.clone())));
+        graph.add_node_fn("b1", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        });
+        graph.add_node_fn("b2", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        });
+        graph.add_node_fn("merge", |state: &AgentState| {
+            Ok(StateUpdate::full(state.clone()))
+        });
         graph.set_entry_point("source");
         graph.add_fan_out("source", vec!["b1".into(), "b2".into()]);
         graph.add_fan_in(vec!["b1".into(), "b2".into()], "merge");

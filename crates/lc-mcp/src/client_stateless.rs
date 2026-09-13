@@ -94,6 +94,17 @@ impl Clone for StatelessMcpClient {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::tool_client::McpToolClient for StatelessMcpClient {
+    async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError> {
+        StatelessMcpClient::list_tools(self).await
+    }
+
+    async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
+        StatelessMcpClient::call_tool(self, name, arguments).await
+    }
+}
+
 impl StatelessMcpClient {
     /// Connects to a stateless endpoint — there is no handshake; this only
     /// constructs the transport and pins the `_meta`.

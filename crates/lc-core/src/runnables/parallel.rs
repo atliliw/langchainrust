@@ -10,11 +10,13 @@ use super::config::RunnableConfig;
 use super::error::LcelError;
 use super::runnable_trait::Runnable;
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use futures_util::Stream;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// A `Runnable` that runs multiple steps in parallel on the same input.
 ///
@@ -167,11 +169,23 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
     type Error = LcelError;
 
     /// Execute all steps in parallel using tokio tasks.
+    ///
+    /// Concurrency is bounded by `config.max_concurrency` (Semaphore), and all
+    /// tasks are awaited via `join_all` so an early error cannot orphan the
+    /// remaining in-flight tasks (a dropped `JoinHandle` only detaches — it
+    /// does not cancel). (A2)
     async fn invoke(
         &self,
         input: I,
         config: Option<RunnableConfig>,
     ) -> Result<HashMap<String, Value>, LcelError> {
+        let limit = config
+            .as_ref()
+            .and_then(|c| c.max_concurrency)
+            .unwrap_or(self.steps.len())
+            .max(1);
+        let semaphore = Arc::new(Semaphore::new(limit));
+
         let mut handles = Vec::with_capacity(self.steps.len());
 
         for (key, step) in &self.steps {
@@ -179,8 +193,15 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
             let step = step.clone();
             let input = input.clone();
             let config = config.clone();
+            let sem = semaphore.clone();
 
             let handle = tokio::spawn(async move {
+                // Tasks beyond the limit park on the permit, so max_concurrency
+                // is a true cap on in-flight step execution.
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| LcelError::Other(format!("parallel semaphore: {e}")))?;
                 let value = step.invoke(input, config).await?;
                 Ok::<(String, Value), LcelError>((key, value))
             });
@@ -188,11 +209,13 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
             handles.push(handle);
         }
 
+        let joined = join_all(handles).await;
         let mut results = HashMap::new();
-        for handle in handles {
-            let (k, v) = handle
-                .await
-                .map_err(|e| LcelError::Other(format!("parallel task join error: {}", e)))??;
+        for res in joined {
+            // Outer = JoinError (task panicked/cancelled), inner = LcelError.
+            let inner =
+                res.map_err(|e| LcelError::Other(format!("parallel task join error: {e}")))?;
+            let (k, v) = inner?;
             results.insert(k, v);
         }
 
@@ -305,6 +328,106 @@ mod tests {
         assert_eq!(
             result.get("upper").unwrap(),
             &Value::String("length=5".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_respects_max_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mk = |in_flight: Arc<AtomicUsize>, peak: Arc<AtomicUsize>| {
+            RunnableLambda::new_async(move |_: String| {
+                let a = in_flight.clone();
+                let b = peak.clone();
+                async move {
+                    let cur = a.fetch_add(1, Ordering::SeqCst) + 1;
+                    b.fetch_max(cur, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    a.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<i32, LcelError>(1)
+                }
+            })
+        };
+
+        let parallel = RunnableParallel::<String>::new()
+            .with("a", mk(in_flight.clone(), peak.clone()))
+            .with("b", mk(in_flight.clone(), peak.clone()))
+            .with("c", mk(in_flight.clone(), peak.clone()))
+            .with("d", mk(in_flight.clone(), peak.clone()));
+
+        let config = RunnableConfig::new().with_max_concurrency(2);
+        let result = parallel
+            .invoke("x".to_string(), Some(config))
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 4);
+
+        // With a cap of 2, we should never see more than 2 steps in flight.
+        assert!(
+            peak.load(Ordering::SeqCst) <= 2,
+            "peak concurrency {} exceeded cap 2",
+            peak.load(Ordering::SeqCst)
+        );
+    }
+
+    /// A2: when one step fails, `invoke` must still await the other spawned
+    /// tasks before returning the error. A dropped `JoinHandle` only detaches a
+    /// task (it does not cancel it), so the previous early-return-on-first-error
+    /// implementation orphaned in-flight work: the call returned before the
+    /// surviving steps' side effects happened.
+    #[tokio::test]
+    async fn parallel_failure_waits_for_other_steps_instead_of_orphaning() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let slow = |completed: Arc<AtomicUsize>| {
+            RunnableLambda::new_async(move |_: String| {
+                let done = completed.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    done.fetch_add(1, Ordering::SeqCst);
+                    Ok::<i32, LcelError>(1)
+                }
+            })
+        };
+
+        let failing = RunnableLambda::new_async(|_: String| async move {
+            // Fails immediately — much faster than the three sleeping steps.
+            Err::<i32, LcelError>(LcelError::Other("deliberate step failure".to_string()))
+        });
+
+        let parallel = RunnableParallel::<String>::new()
+            .with("a", slow(completed.clone()))
+            .with("boom", failing)
+            .with("c", slow(completed.clone()))
+            .with("d", slow(completed.clone()));
+
+        let start = Instant::now();
+        let err = parallel.invoke("x".to_string(), None).await.unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(
+            err.to_string().contains("deliberate step failure"),
+            "expected the step error, got: {err}"
+        );
+        // When the error surfaces, all three surviving steps have run to
+        // completion — join_all folded the full task set.
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            3,
+            "surviving steps must finish before invoke returns the error"
+        );
+        // The old detach-on-first-error implementation returned in ~0ms while
+        // the surviving tasks were still sleeping.
+        assert!(
+            elapsed >= Duration::from_millis(45),
+            "invoke returned after {elapsed:?} — orphaned steps were not awaited"
         );
     }
 }

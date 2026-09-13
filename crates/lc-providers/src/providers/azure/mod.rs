@@ -43,13 +43,13 @@ use serde_json::json;
 use std::pin::Pin;
 
 use self::types::*;
-use crate::openai::sse::{SseByteFramer, SSEParser, StreamToolCallAccumulator};
+use crate::openai::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
 use crate::ProviderError;
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
-use lc_core::runnables::Runnable;
+use lc_core::runnables::{run_tree_from_config, Runnable};
 use lc_core::RunnableConfig;
 use lc_schema::Message;
 
@@ -97,12 +97,10 @@ impl AzureOpenAIChat {
                 "content": message.content,
             }),
             lc_schema::MessageType::Human => {
-                if message.has_images() {
-                    let mut content = vec![json!({"type": "text", "text": &message.content})];
-                    for img in &message.images {
-                        content.push(json!({"type": "image_url", "image_url": {"url": &img.url}}));
-                    }
-                    json!({"role": "user", "content": content})
+                // B7: shared multimodal blocks (Azure chat completions speaks
+                // the same dialect as OpenAI).
+                if let Some(blocks) = crate::media::openai_user_blocks(message) {
+                    json!({"role": "user", "content": blocks})
                 } else {
                     json!({"role": "user", "content": &message.content})
                 }
@@ -158,9 +156,15 @@ impl AzureOpenAIChat {
     /// Internal chat implementation (no callback overhead).
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, AzureOpenAIError> {
         let url = self.config.chat_url();
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::OpenAi)
+            .await
+            .map_err(|e| AzureOpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
         // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
+        // A14: non-idempotent POST — see retry::TransportRetryMode; use
+        // retry::SAFE_RETRY to forbid replaying a possibly-dispatched request.
         let response = crate::retry::send_with_retry(
             || {
                 self.client
@@ -224,6 +228,10 @@ impl AzureOpenAIChat {
         use std::sync::{Arc, Mutex};
 
         let url = self.config.chat_url();
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::OpenAi)
+            .await
+            .map_err(|e| AzureOpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
         let response = self
@@ -260,6 +268,9 @@ impl AzureOpenAIChat {
             // 0.22.0 audit fix (Medium): `[DONE]` must also exit the outer
             // byte-chunk loop, not just the inner event loop.
             let mut done = false;
+            // A12: require a terminal marker (`[DONE]` or `finish_reason`); a
+            // connection that closes first delivered a truncated answer.
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
@@ -282,6 +293,7 @@ impl AzureOpenAIChat {
                 for event in events {
                     if event.is_done() {
                         done = true;
+                        saw_terminal = true;
                         break;
                     }
                     // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
@@ -299,6 +311,10 @@ impl AzureOpenAIChat {
                                         tool_acc.push(delta);
                                     }
                                 }
+                            }
+                            // A12: a non-null `finish_reason` is a terminal marker.
+                            if chunk.choices.iter().any(|c| c.finish_reason.is_some()) {
+                                saw_terminal = true;
                             }
                             // Azure OpenAI 与 OpenAI 同构:末尾 chunk 携带 usage。
                             // 0.20.0 S3.2:同时携带累积的完整 tool_calls。
@@ -334,6 +350,15 @@ impl AzureOpenAIChat {
                 if done {
                     break;
                 }
+            }
+            // A12: connection closed without `[DONE]`/`finish_reason` — truncated.
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(AzureOpenAIError::StreamInterrupted(
+                        "connection closed before [DONE] or finish_reason".to_string(),
+                    )))
+                    .await;
+                return;
             }
             // 无 usage 结尾时,把累积的 tool_calls 以独立终束 chunk 刷出,
             // 保证流式路径不丢失工具调用(0.20.0 S3.2)。
@@ -447,23 +472,15 @@ impl BaseChatModel for AzureOpenAIChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("azure-{}:chat", self.config.deployment_name));
 
-        let mut run = RunTree::new(
+        let mut run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>(),
                 "deployment": self.config.deployment_name,
             }),
+            config.as_ref(),
         );
-
-        if let Some(ref cfg) = config {
-            for tag in &cfg.tags {
-                run = run.with_tag(tag.clone());
-            }
-            for (key, value) in &cfg.metadata {
-                run = run.with_metadata(key.clone(), value.clone());
-            }
-        }
 
         if let Some(ref cfg) = config {
             if let Some(ref callbacks) = cfg.callbacks {
@@ -530,13 +547,14 @@ impl BaseChatModel for AzureOpenAIChat {
             .and_then(|c| c.run_name.clone())
             .unwrap_or_else(|| format!("azure-{}:stream", self.config.deployment_name));
 
-        let run = RunTree::new(
+        let run = run_tree_from_config(
             run_name,
             RunType::Llm,
             json!({
                 "messages": messages.len(),
                 "deployment": self.config.deployment_name,
             }),
+            config.as_ref(),
         );
 
         if let Some(ref cfg) = config {

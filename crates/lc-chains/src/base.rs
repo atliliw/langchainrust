@@ -335,9 +335,7 @@ pub trait BaseChain: Send + Sync {
             inputs,
             config,
             output_key,
-            |inputs| async move {
-                self.stream(inputs).await
-            },
+            |inputs| async move { self.stream(inputs).await },
         )
         .await
     }
@@ -445,10 +443,7 @@ where
     };
 
     Ok(Box::pin(end_stream_on_completion(
-        stream,
-        run,
-        callbacks,
-        output_key,
+        stream, run, callbacks, output_key,
     )))
 }
 
@@ -515,13 +510,13 @@ mod tests {
     #[test]
     fn test_substitute_template_no_value_rescan() {
         let mut vars = HashMap::new();
-        vars.insert("question".to_string(), "value with {summaries} inside".to_string());
+        vars.insert(
+            "question".to_string(),
+            "value with {summaries} inside".to_string(),
+        );
         vars.insert("summaries".to_string(), "SHOULD_NOT_APPEAR".to_string());
         let (out, missing) = substitute_template("Q: {question} S: {summaries}", &vars);
-        assert_eq!(
-            out,
-            "Q: value with {summaries} inside S: SHOULD_NOT_APPEAR"
-        );
+        assert_eq!(out, "Q: value with {summaries} inside S: SHOULD_NOT_APPEAR");
         assert!(missing.is_empty());
     }
 

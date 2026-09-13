@@ -694,9 +694,7 @@ impl A2AClientBuilder {
                     .timeout(self.timeout)
                     .connect_timeout(self.connect_timeout)
                     .build()
-                    .map_err(|e| {
-                        A2AError::Http(format!("failed to build HTTP client: {}", e))
-                    })?;
+                    .map_err(|e| A2AError::Http(format!("failed to build HTTP client: {}", e)))?;
                 // 0.22.0 audit fix (H-P4): a separate timeout-free client for
                 // SSE streams, mirroring `A2AClient::new`.
                 let stream_http = reqwest::Client::builder()

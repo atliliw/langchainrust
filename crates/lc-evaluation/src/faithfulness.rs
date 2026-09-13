@@ -37,7 +37,10 @@ pub struct Faithfulness<M: BaseChatModel> {
 }
 
 /// Splits an answer into atomic claims (split on period, question mark, exclamation mark, semicolon, newline).
-fn split_claims(prediction: &str) -> Vec<String> {
+///
+/// B9: shared with the RAGAS context-recall evaluator, which splits the *reference* answer
+/// into claims the same way.
+pub(crate) fn split_claims(prediction: &str) -> Vec<String> {
     prediction
         .split(['。', '.', '!', '?', '；', ';', '\n'])
         .map(|s| s.trim().to_string())
@@ -192,7 +195,9 @@ fn verdict_tool() -> ToolDefinition {
 
 /// Parses "yes/no". With no yes/no marker returns `None` (parse failure, reported by the caller),
 /// rather than silently defaulting to false — so an off-topic LLM reply is not read as "unfaithful".
-fn parse_yes_no(raw: &str) -> Option<bool> {
+///
+/// B9: shared by the RAGAS boolean judges in `ragas.rs`.
+pub(crate) fn parse_yes_no(raw: &str) -> Option<bool> {
     let lower = raw.to_lowercase();
     // check negatives first (so negated phrasings are not caught by the positive keywords; negatives take precedence over positives)
     if lower.contains("否")

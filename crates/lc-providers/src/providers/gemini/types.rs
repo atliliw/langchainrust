@@ -59,6 +59,31 @@ pub(crate) struct GeminiPart {
     pub(crate) function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) function_response: Option<GeminiFunctionResponse>,
+    /// B7: inline base64 media (`inlineData`: image/audio/video/PDF bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) inline_data: Option<GeminiInlineData>,
+    /// B7: hosted media reference (`fileData`: `gs://` File API URIs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) file_data: Option<GeminiFileData>,
+}
+
+/// Inline base64 media payload (Gemini `inlineData`).
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct GeminiInlineData {
+    /// MIME type of the media (e.g. `image/png`, `audio/wav`, `video/mp4`,
+    /// `application/pdf`).
+    pub(crate) mime_type: String,
+    /// Raw base64-encoded media bytes (data-URI payload without its header).
+    pub(crate) data: String,
+}
+
+/// Hosted media reference (Gemini `fileData`, typically a `gs://` URI).
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct GeminiFileData {
+    /// File API URI (e.g. `gs://bucket/file.png`).
+    pub(crate) file_uri: String,
+    /// MIME type of the referenced media.
+    pub(crate) mime_type: String,
 }
 
 /// A function call returned by the model (in the response).

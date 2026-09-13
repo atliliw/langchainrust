@@ -3,8 +3,8 @@
 //! RAG (Retrieval-Augmented Generation) module for LangChainRust.
 //!
 //! Provides document loaders, text splitters, retrievers, BM25 search,
-//! hybrid retrieval, GraphRAG, HyDE, multi-query, reranking, and
-//! a full RAG pipeline builder.
+//! hybrid retrieval, GraphRAG, HyDE, multi-query, reranking,
+//! multimodal (image+text) retrieval, and a full RAG pipeline builder.
 
 pub mod adapter;
 pub mod bm25;
@@ -15,6 +15,7 @@ pub mod hyde;
 pub mod late_chunking;
 pub mod loaders;
 pub mod multi_query;
+pub mod multimodal;
 pub mod parent_document;
 pub mod pipeline;
 pub mod reranking;
@@ -57,6 +58,14 @@ pub use multi_query::{
     MultiQueryConfig, MultiQueryError, MultiQueryRetriever, StaticQueryGenerator,
 };
 
+// B7 (v0.22.4): image+text chunking and cross-modal retrieval over one
+// shared vision embedding space.
+pub use multimodal::{
+    ImageAsset, MediaBlock, ModalityFilter, MultimodalChunkConfig, MultimodalChunker,
+    MultimodalRetriever, MM_CAPTION_KEY, MM_KIND_IMAGE, MM_KIND_KEY, MM_KIND_TEXT, MM_MIME_KEY,
+    MM_URL_KEY,
+};
+
 pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
 pub use late_chunking::{late_chunk, pool_tokens, LateChunk, LateChunkConfig};
 
@@ -67,12 +76,15 @@ pub use reranking::{
 pub use graph_rag::{
     Community as GraphCommunity, Entity as GraphEntity, GraphStore, Relation as GraphRelation,
 };
-pub use graph_rag::{GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult, QueryMode};
+pub use graph_rag::{
+    GlobalLevel, GraphRAG, GraphRAGConfig, GraphRAGError, GraphRAGResult, QueryMode,
+};
 
 // Re-export key types from dependency crates for convenience
 pub use lc_embeddings::{
     cosine_similarity, EmbeddingError, Embeddings, MockEmbeddings, OpenAIEmbeddings,
 };
+pub use lc_embeddings::{ImageInput, VisionEmbeddings};
 pub use lc_vector_stores::{
     ChunkDocument, ChunkedDocumentStore, ChunkedDocumentStoreTrait, ChunkedVectorStore,
     DocumentStore, InMemoryDocumentStore,

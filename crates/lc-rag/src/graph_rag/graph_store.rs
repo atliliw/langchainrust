@@ -33,15 +33,24 @@ pub struct Relation {
     pub doc_id: Option<String>,
 }
 
-/// A community of entities detected by community detection.
+/// A community of entities detected by hierarchical Leiden community
+/// detection.
 #[derive(Debug, Clone)]
 pub struct Community {
-    /// Community index.
+    /// Globally unique community id. Communities are stored level by level,
+    /// so a community's id also indexes its summary in the parallel summary
+    /// vector.
     pub id: usize,
-    /// Entity ids belonging to this community.
+    /// Entity ids belonging to this community. Communities above level 0
+    /// contain the union of their children's entities.
     pub entities: Vec<String>,
-    /// Size tier level of the community.
+    /// Hierarchy level: 0 is the base Leiden partition; higher levels group
+    /// communities from the level below (parent-child containment).
     pub level: usize,
+    /// Id of the coarser community at `level + 1` containing this one.
+    /// `None` when this community has no coarser grouping (or it is at the
+    /// top level).
+    pub parent: Option<usize>,
 }
 
 /// In-memory graph store backed by adjacency lists.
@@ -313,6 +322,7 @@ mod tests {
             id: 0,
             entities: vec!["e1".to_string(), "e2".to_string()],
             level: 0,
+            parent: None,
         }]);
         assert_eq!(store.communities().len(), 1);
 

@@ -5,12 +5,16 @@
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use regex::Regex;
 
 use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
+
+/// H8/A5: default per-HTTP-request timeout — a hung target site must not block the loader forever.
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 static SCRIPT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<script.*?</script>").unwrap());
@@ -59,19 +63,10 @@ impl HTMLLoader {
         WHITESPACE_RE.replace_all(&text, " ").trim().to_string()
     }
 
-    /// Fetches HTML content from a URL
+    /// Fetches HTML content from a URL, routed through the shared SSRF-hardened helper
     async fn fetch_html(url: &str) -> Result<String, LoaderError> {
-        let response = reqwest::get(url)
-            .await
-            .map_err(|e| LoaderError::Other(format!("HTTP request failed: {}", e)))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(LoaderError::Other(format!("HTTP error: {}", status)));
-        }
-        response
-            .text()
-            .await
-            .map_err(|e| LoaderError::Other(format!("failed to read response: {}", e)))
+        let (_final_url, body) = super::guarded_fetch(url, DEFAULT_HTTP_TIMEOUT).await?;
+        Ok(body)
     }
 }
 

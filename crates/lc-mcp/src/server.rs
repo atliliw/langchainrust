@@ -29,14 +29,14 @@ use lc_core::BaseTool;
 /// 0.22.0 C8 hardening: maximum accepted request body (1 MiB). A larger
 /// `Content-Length` is rejected with 413 and a stream exceeding it aborts —
 /// without the cap a single connection could grow `buf` unboundedly (OOM).
-const HTTP_MAX_BODY_BYTES: usize = 1024 * 1024;
+pub(crate) const HTTP_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// 0.22.0 C8 hardening: per-request socket read deadline. A slow-loris
 /// connection that never finishes its headers is reaped instead of holding
 /// a task + file descriptor forever.
-const HTTP_READ_TIMEOUT_SECS: u64 = 30;
+pub(crate) const HTTP_READ_TIMEOUT_SECS: u64 = 30;
 /// 0.22.0 C8 hardening: maximum concurrently served connections. Accept waits
 /// for a permit instead of spawning unbounded tasks.
-const HTTP_MAX_CONCURRENT_CONNECTIONS: usize = 256;
+pub(crate) const HTTP_MAX_CONCURRENT_CONNECTIONS: usize = 256;
 
 /// MCP Server - exposes a set of `BaseTool`s as MCP tools
 pub struct MCPServer {
@@ -77,7 +77,8 @@ impl MCPServer {
         }
     }
 
-    /// 0.22.0 C8: requires authenticated requests on [`Self::serve_http`].
+    /// 0.22.0 C8: requires authenticated requests on [`Self::serve_http`] and
+    /// [`Self::serve_streamable_http`].
     ///
     /// Every request must carry `Authorization: Bearer <token>` and pass
     /// `validator.validate(token)`; failures get HTTP 401. Recommended for
@@ -85,6 +86,11 @@ impl MCPServer {
     pub fn with_token_validator(mut self, validator: Arc<dyn TokenValidator>) -> Self {
         self.auth_validator = Some(validator);
         self
+    }
+
+    /// Authenticator shared by the stateless and Streamable HTTP servers.
+    pub(crate) fn token_validator(&self) -> Option<&Arc<dyn TokenValidator>> {
+        self.auth_validator.as_ref()
     }
 
     /// Registers a tool
@@ -193,6 +199,15 @@ impl MCPServer {
                     error: None,
                 }
             }
+            // MCP lifecycle liveness probe: every server MUST answer `ping`
+            // with an empty result (used by official SDK keep-alives and the
+            // Streamable HTTP client).
+            "ping" => MCPResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Some(req.id),
+                result: Some(json!({})),
+                error: None,
+            },
             "tools/list" => {
                 let tools: Vec<MCPToolDefinition> = self
                     .tools
@@ -574,24 +589,23 @@ impl MCPServer {
                     let _permit = permit; // released on connection close
                     loop {
                         // C8: reap connections that never finish a request.
-                        let request =
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(HTTP_READ_TIMEOUT_SECS),
-                                read_http_request(&mut sock),
-                            )
-                            .await
-                            {
-                                Err(_) => {
-                                    let _ = sock
+                        let request = match tokio::time::timeout(
+                            std::time::Duration::from_secs(HTTP_READ_TIMEOUT_SECS),
+                            read_http_request(&mut sock),
+                        )
+                        .await
+                        {
+                            Err(_) => {
+                                let _ = sock
                                         .write_all(
                                             b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                                         )
                                         .await;
-                                    return;
-                                }
-                                Ok(Err(_)) => return, // closed / malformed transport
-                                Ok(Ok(req)) => req,
-                            };
+                                return;
+                            }
+                            Ok(Err(_)) => return, // closed / malformed transport
+                            Ok(Ok(req)) => req,
+                        };
                         if request.first_line.is_empty() {
                             return;
                         }
@@ -675,6 +689,25 @@ impl MCPServer {
         format!("http://{addr}/mcp")
     }
 
+    /// Serves this MCP server over the **official Streamable HTTP transport**
+    /// (B1, 0.22.4): one POST endpoint speaking the 2025-03-26 MCP streamable
+    /// HTTP protocol — `initialize` handshake, per-session `Mcp-Session-Id`,
+    /// JSON or SSE response bodies (content-negotiated via `Accept`), and
+    /// HTTP 202 for notifications — so official TS/Python SDK clients and
+    /// [`crate::StreamableMcpClient`] can connect.
+    ///
+    /// This is distinct from [`Self::serve_http`], which remains the
+    /// self-contained 2026-07-28 stateless track (no handshake).
+    ///
+    /// - `listener`: an already-bound `TcpListener`; bind `127.0.0.1:0` for
+    ///   local/CI use.
+    ///
+    /// Returns the endpoint URL immediately; the accept loop runs on a
+    /// background task until the listener is closed.
+    pub fn serve_streamable_http(self: Arc<Self>, listener: tokio::net::TcpListener) -> String {
+        crate::transport::streamable_http_server::serve(self, listener)
+    }
+
     /// Handles a notification the server receives (a message without an id).
     ///
     /// P0-4: explicitly dispatches MCP standard notifications instead of dropping them:
@@ -733,16 +766,16 @@ async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, json: &str) -> Result<(
 
 /// One parsed HTTP request (0.22.0 C8: `body` is `None` when the connection
 /// closed mid-body — the caller answers 400 instead of slicing out of bounds).
-struct HttpRequest {
-    first_line: String,
-    headers: Vec<(String, String)>,
-    body: Option<String>,
+pub(crate) struct HttpRequest {
+    pub(crate) first_line: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) body: Option<String>,
 }
 
 /// Reads one HTTP request from the socket.
 /// `Err(())` = transport closed (or an oversized header line); the caller
 /// closes the connection. Body reads are bounded by [`HTTP_MAX_BODY_BYTES`].
-async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Result<HttpRequest, ()> {
+pub(crate) async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Result<HttpRequest, ()> {
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
@@ -1376,11 +1409,7 @@ mod tests {
     use crate::auth::StaticBearerValidator;
 
     /// POSTs one raw HTTP request and returns (status_line, body).
-    async fn post_raw(
-        addr: &str,
-        authorization: Option<&str>,
-        body: &str,
-    ) -> (String, String) {
+    async fn post_raw(addr: &str, authorization: Option<&str>, body: &str) -> (String, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
         let mut req = format!(

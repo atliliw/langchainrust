@@ -18,16 +18,20 @@ use std::pin::Pin;
 /// DeepSeek API endpoint
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 
-/// DeepSeek model list
-pub const DEEPSEEK_MODELS: [&str; 4] = [
-    "deepseek-chat",     // general-purpose chat model
-    "deepseek-coder",    // code-specialized model
-    "deepseek-reasoner", // reasoning model (R1)
-    "deepseek-v3",       // V3 version
+/// DeepSeek model list (B5, v0.22.4; non-exhaustive).
+///
+/// DeepSeek serves its current chat flagship behind the stable
+/// `deepseek-chat` alias and the reasoning flagship behind `deepseek-reasoner`
+/// (server-side upgrades, including V4-generation models, need no client
+/// change); dated ids are accepted by the `model` field as the provider
+/// publishes them.
+pub const DEEPSEEK_MODELS: [&str; 2] = [
+    "deepseek-chat",     // current chat flagship alias (V3/V4 server-side)
+    "deepseek-reasoner", // reasoning flagship alias (R-series server-side)
 ];
 
 /// DeepSeek config
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeepSeekConfig {
     /// DeepSeek API key.
     pub api_key: String,
@@ -39,6 +43,19 @@ pub struct DeepSeekConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+}
+
+impl std::fmt::Debug for DeepSeekConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("DeepSeekConfig")
+            .field("api_key", &"***")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for DeepSeekConfig {
@@ -126,6 +143,8 @@ impl DeepSeekConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            extra_headers: Vec::new(),
+            send_auth: true,
         }
     }
 }

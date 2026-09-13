@@ -21,9 +21,11 @@
 
 mod bleu;
 mod criteria;
+mod export;
 mod faithfulness;
 mod pairwise;
 pub mod price;
+mod ragas;
 mod results;
 mod rules;
 mod runner;
@@ -34,12 +36,15 @@ pub use price::{OverallCost, Price, PriceBook, TokenUsage};
 mod test_support;
 
 pub use bleu::Bleu;
-pub use criteria::{Dataset, EvalError, Evaluator, Example, PairwiseEvaluator, Predictor, Score};
+pub use criteria::{
+    Dataset, EvalError, Evaluator, Example, PairwiseEvaluator, Predictor, RagEvaluator, Score,
+};
 pub use faithfulness::Faithfulness;
 pub use pairwise::{PairwiseJudge, Verdict};
+pub use ragas::{AnswerRelevancy, ContextPrecision, ContextRecall};
 pub use results::{EmbeddingSimilarity, ExactMatch, LLMAsJudge, StringDistance};
 pub use rules::{ContainsKeyword, LengthCheck, RegexMatch};
-pub use runner::{EvalRunner, Report};
+pub use runner::{EvalRunner, ExampleReport, FailureRecord, Report, ScoreSummary};
 
 #[cfg(test)]
 mod integration_tests;

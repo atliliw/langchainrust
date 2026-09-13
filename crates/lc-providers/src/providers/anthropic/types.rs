@@ -48,6 +48,15 @@ pub enum AnthropicContentBlock {
         /// The image source.
         source: AnthropicImageSource,
     },
+    /// Document content block (B7: PDF, base64-encoded).
+    #[serde(rename = "document")]
+    Document {
+        /// The document source (`source_type = "base64"`, PDF media type).
+        source: AnthropicImageSource,
+        /// Optional filename hint.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+    },
     /// Tool use content block (from assistant).
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -68,9 +77,11 @@ pub enum AnthropicContentBlock {
     },
 }
 
-/// Image source for Anthropic's image content block.
+/// Base64 media source for Anthropic image/document content blocks.
 ///
-/// Anthropic only supports base64-encoded images (no URL-based images).
+/// The Messages API accepts only inline base64 media (no hosted URLs); B7 URL
+/// attachments are fetched SSRF-guarded and rewritten to data URIs by
+/// `crate::media` before request building.
 #[derive(Serialize, Clone, Debug)]
 pub struct AnthropicImageSource {
     /// Source type (e.g. "base64").
@@ -153,12 +164,16 @@ impl AnthropicUsage {
 
     /// Prompt tokens that actually had to be recomputed: input minus cache reads.
     pub fn cache_miss_tokens(&self) -> usize {
-        self.input_tokens.saturating_sub(self.cache_read_input_tokens)
+        self.input_tokens
+            .saturating_sub(self.cache_read_input_tokens)
     }
 
     /// `(creation, read)` cache breakdown for observability.
     pub fn cache_breakdown(&self) -> (usize, usize) {
-        (self.cache_creation_input_tokens, self.cache_read_input_tokens)
+        (
+            self.cache_creation_input_tokens,
+            self.cache_read_input_tokens,
+        )
     }
 }
 
@@ -193,7 +208,13 @@ pub(crate) struct AnthropicStreamBlock {
 
 #[derive(Deserialize)]
 pub(crate) struct AnthropicDelta {
-    #[serde(rename = "type")]
+    /// A12-adjacent fix: real `message_delta` events carry
+    /// `delta: {"stop_reason": ..., "stop_sequence": ...}` with **no** `type`
+    /// field. Without a default, the entire event failed to deserialize and its
+    /// terminal `usage` was silently lost on the streaming path (text/thinking
+    /// deltas always carry `type` as before; the `message_delta` branch
+    /// continues before matching on this field).
+    #[serde(default, rename = "type")]
     pub(crate) type_field: String,
     #[serde(default)]
     pub(crate) text: String,

@@ -25,6 +25,7 @@ pub mod context_window;
 pub mod decay;
 pub mod file_memory;
 pub mod persistent;
+pub mod semantic;
 pub mod summary;
 pub mod summary_buffer;
 pub mod window;
@@ -47,6 +48,11 @@ pub use context_window::{ContextWindow, Strategy};
 pub use decay::{ForgetConfig, ForgettingMemory};
 pub use file_memory::{FileMemoryError, FileMemoryStore, MemoryEntry};
 pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};
+pub use semantic::{
+    DecayWeights, LexicalScorer, LongTermMemory, MemoryExtractor, MemoryHit, MemoryItem,
+    MemoryQuery, MemoryStore, MemoryTier, PromotionPolicy, SemanticScorer, ShortTermMemory,
+    StoredMemory, TwoTierMemory,
+};
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;
 pub use window::ConversationBufferWindowMemory;

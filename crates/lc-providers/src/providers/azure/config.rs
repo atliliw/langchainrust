@@ -9,7 +9,7 @@ use crate::ProviderError;
 pub const AZURE_DEFAULT_API_VERSION: &str = "2024-02-15-preview";
 
 /// Azure OpenAI configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AzureOpenAIConfig {
     /// Azure OpenAI resource endpoint (e.g., <https://myresource.openai.azure.com>).
     pub endpoint: String,
@@ -27,6 +27,22 @@ pub struct AzureOpenAIConfig {
     pub max_tokens: Option<usize>,
     /// Top-p for nucleus sampling.
     pub top_p: Option<f32>,
+}
+
+impl std::fmt::Debug for AzureOpenAIConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A13: redact the API key so `{:?}` never leaks the secret.
+        f.debug_struct("AzureOpenAIConfig")
+            .field("endpoint", &self.endpoint)
+            .field("deployment_name", &self.deployment_name)
+            .field("api_key", &"***")
+            .field("api_version", &self.api_version)
+            .field("model", &self.model)
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .field("top_p", &self.top_p)
+            .finish()
+    }
 }
 
 impl AzureOpenAIConfig {

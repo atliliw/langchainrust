@@ -3,7 +3,9 @@
 //! LLM provider integrations for langchainrust.
 //!
 //! This crate provides unified chat model interfaces for:
-//! - OpenAI (GPT-4, GPT-3.5)
+//! - OpenAI (GPT-5 / GPT-4o / o-series)
+//! - Generic OpenAI-compatible endpoints ([`openai_compatible`]): Groq,
+//!   OpenRouter, xAI (Grok), and arbitrary self-hosted/private base URLs
 //! - Ollama (local LLMs like Llama, Mistral)
 //! - DeepSeek (cost-effective Chinese LLM)
 //! - Moonshot (long-context Kimi)
@@ -13,6 +15,7 @@
 //! - Gemini (Google)
 
 mod error;
+mod media;
 mod retry;
 mod sampling;
 mod wrapper;
@@ -23,6 +26,9 @@ pub mod client;
 pub mod ollama;
 /// OpenAI API integration.
 pub mod openai;
+/// B5: generic OpenAI-compatible endpoint support (Groq, OpenRouter, xAI,
+/// vLLM, LM Studio, private gateways) — one transport, named presets.
+pub mod openai_compatible;
 /// Third-party provider integrations.
 pub mod providers;
 
@@ -31,15 +37,20 @@ pub use error::ProviderError;
 pub use ollama::{OllamaChat, OllamaConfig};
 pub use openai::{
     AssistantError, BuiltinTool, OpenAIAssistant, OpenAIChat, OpenAIConfig, ResponsesConfig,
-    ResponsesError, ResponsesModel,
+    ResponsesError, ResponsesModel, OPENAI_MODELS,
+};
+pub use openai_compatible::{
+    GroqChat, OpenAICompatibleChat, OpenAICompatibleConfig, OpenRouterChat, XaiChat,
+    DEFAULT_GROQ_MODEL, DEFAULT_XAI_MODEL, GROQ_BASE_URL, GROQ_MODELS, OPENROUTER_BASE_URL,
+    XAI_BASE_URL, XAI_MODELS,
 };
 pub use providers::{
     AnthropicChat, AnthropicConfig, AnthropicError, AnthropicStreamToken,
     AnthropicStructuredOutputMethod, AnthropicUsage, AzureOpenAIChat, AzureOpenAIConfig,
-    AzureOpenAIError,
-    CohereChat, CohereConfig, CohereError, DeepSeekChat, DeepSeekConfig, GeminiChat, GeminiConfig,
-    GeminiError, GeminiStructuredOutputMethod, MistralChat, MistralConfig, MoonshotChat,
-    MoonshotConfig, QwenChat, QwenConfig, ThinkingConfig, ThinkingType, ZhipuChat, ZhipuConfig,
+    AzureOpenAIError, CohereChat, CohereConfig, CohereError, DeepSeekChat, DeepSeekConfig,
+    GeminiChat, GeminiConfig, GeminiError, GeminiStructuredOutputMethod, MistralChat,
+    MistralConfig, MoonshotChat, MoonshotConfig, QwenChat, QwenConfig, ThinkingConfig,
+    ThinkingType, ZhipuChat, ZhipuConfig,
 };
 pub use wrapper::{wrap_chat_model, ChatModelWrapper};
 

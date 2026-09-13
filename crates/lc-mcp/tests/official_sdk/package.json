@@ -1,0 +1,10 @@
+{
+  "name": "lc-mcp-official-sdk-interop",
+  "version": "0.22.4",
+  "private": true,
+  "type": "module",
+  "description": "Official MCP TypeScript SDK assets for the lc-mcp interop gate (B1). Not published; npm install in this directory before running run_interop.ps1.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

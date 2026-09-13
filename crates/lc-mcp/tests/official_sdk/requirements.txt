@@ -1,0 +1,2 @@
+# Official Python MCP SDK for the B1 interop gate.
+mcp>=1.0.0

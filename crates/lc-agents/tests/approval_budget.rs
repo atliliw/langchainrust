@@ -17,6 +17,7 @@ use lc_agents::{
     AgentError, AgentExecutor, AgentStreamEvent, AllowAll, ApprovalDecision, ApprovalHandler,
     BaseAgent, BudgetConfig, BudgetExceeded,
 };
+use lc_core::cost::{CostTracker, ModelPrice, PricingTable};
 use lc_core::language_models::TokenUsage;
 use lc_core::tools::{BaseTool, ToolError};
 
@@ -53,6 +54,7 @@ impl BaseAgent for ActOnceAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -79,6 +81,7 @@ impl BaseAgent for LoopAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Action(AgentAction {
             tool: "recorder".to_string(),
@@ -99,6 +102,7 @@ impl BaseAgent for TokenLoopAgent {
         &self,
         _intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         Ok(AgentOutput::Action(AgentAction {
             tool: "recorder".to_string(),
@@ -117,6 +121,40 @@ impl BaseAgent for TokenLoopAgent {
     }
 }
 
+/// Agent that prices one LLM call into a shared [`CostTracker`] on every plan
+/// (B3: drives the `max_cost_usd` gate deterministically, no network).
+struct CostLoopAgent {
+    tracker: Arc<CostTracker>,
+}
+
+#[async_trait]
+impl BaseAgent for CostLoopAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        // 1k input @ $2/1k + 1k output @ $8/1k = exactly $10 per plan.
+        self.tracker
+            .record(Some("mock"), "priced-model", 1_000, 1_000)
+            .await;
+        Ok(AgentOutput::Action(AgentAction {
+            tool: "recorder".to_string(),
+            tool_input: ToolInput::Object {
+                value: serde_json::json!({"x": 1}),
+            },
+            log: "loop".to_string(),
+        }))
+    }
+}
+
+/// Shared tracker pricing the CostLoopAgent's calls at $10/plan.
+fn ten_dollar_per_plan_tracker() -> Arc<CostTracker> {
+    let table = PricingTable::new().with("mock", "priced-model", ModelPrice::new(2.0, 8.0));
+    Arc::new(CostTracker::new(table))
+}
+
 /// Agent that keeps trying the same tool after a Deny (for resume-semantics tests: retries when it sees a DENIED observation).
 struct ResumeAgent;
 
@@ -126,6 +164,7 @@ impl BaseAgent for ResumeAgent {
         &self,
         intermediate_steps: &[AgentStep],
         _inputs: &HashMap<String, String>,
+        _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         if intermediate_steps.is_empty() {
             return Ok(AgentOutput::Action(AgentAction {
@@ -363,6 +402,68 @@ async fn budget_max_iterations_stops() {
     );
 }
 
+/// B3 max_cost_usd: each plan records $10; cap $25 lets two tools run ($20),
+/// then the 3rd plan trips the gate at $30 with BudgetExceeded::Cost.
+#[tokio::test]
+async fn budget_max_cost_stops() {
+    let tracker = ten_dollar_per_plan_tracker();
+    let agent = Arc::new(CostLoopAgent {
+        tracker: tracker.clone(),
+    });
+    let (executor, calls, _inputs) = recorder_harness(agent);
+    let executor = executor
+        .with_cost_tracker(tracker.clone())
+        .with_budget(BudgetConfig {
+            max_cost_usd: Some(25.0),
+            ..Default::default()
+        });
+    let err = executor.invoke("go".to_string()).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AgentError::BudgetExceeded(BudgetExceeded::Cost {
+                limit: 25.0,
+                actual
+            }) if (actual - 30.0).abs() < 1e-9
+        ),
+        "got: {err:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "前两次计划消费 $20 放行,第三次累计 $30 熔断,工具只执行 2 次"
+    );
+    assert!(
+        (tracker.total_cost_usd().await - 30.0).abs() < 1e-9,
+        "熔断时测量值应为 $30"
+    );
+}
+
+/// B3: a tracker without a `max_cost_usd` limit only measures — the gate never
+/// trips and the recorded spend stays queryable after the loop.
+#[tokio::test]
+async fn cost_tracker_without_limit_only_measures() {
+    let tracker = ten_dollar_per_plan_tracker();
+    let agent = Arc::new(CostLoopAgent {
+        tracker: tracker.clone(),
+    });
+    let (executor, calls, _inputs) = recorder_harness(agent);
+    let executor = executor
+        .with_cost_tracker(tracker.clone())
+        .with_max_iterations(2);
+    // No budget at all: the loop ends on the iteration policy, not Cost.
+    let err = executor.invoke("go".to_string()).await.unwrap_err();
+    assert!(
+        matches!(err, AgentError::MaxIterationsReached),
+        "measurement-only tracker must not trigger a cost stop, got: {err:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(
+        (tracker.total_cost_usd().await - 20.0).abs() < 1e-9,
+        "两次计划累计应测量为 $20"
+    );
+}
+
 /// Default-off: with no gates attached, behavior matches existing behavior.
 #[tokio::test]
 async fn defaults_off_behavior_unchanged() {
@@ -422,6 +523,40 @@ async fn stream_budget_tool_calls() {
     );
 }
 
+/// A11(b): a budget-rejected tool call must emit **no orphan `ToolStart`** — every
+/// `ToolStart` needs a matching `ToolEnd`. Regression for the reorder that moved the
+/// budget gate ahead of the start-event emission on the streaming path.
+#[tokio::test]
+async fn stream_budget_reject_emits_no_orphan_toolstart() {
+    let (executor, calls, _inputs) = recorder_harness(Arc::new(LoopAgent));
+    let executor = executor.with_budget(BudgetConfig {
+        max_tool_calls: Some(2),
+        ..Default::default()
+    });
+    let events = stream_events(&executor, "go").await;
+
+    // Two actual executions (the budget permits 2), then a hard Err. Before the
+    // A11 reorder, the gate ran after `ToolStart`, so a 3rd orphan start event was
+    // emitted for the call that was then rejected. Every start must now pair with
+    // an end: start count == end count == 2.
+    let starts = events
+        .iter()
+        .filter(|e| matches!(e, Ok(AgentStreamEvent::ToolStart { .. })))
+        .count();
+    let ends = events
+        .iter()
+        .filter(|e| matches!(e, Ok(AgentStreamEvent::ToolEnd { .. })))
+        .count();
+    assert_eq!(starts, 2, "两个执行各配一个 ToolStart,无第三个孤立 start");
+    assert_eq!(ends, 2, "start/end 成对闭合");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(
+        matches!(events.last(), Some(Err(AgentError::BudgetExceeded(_)))),
+        "末事件应为 Err(BudgetExceeded),got: {:?}",
+        events.last()
+    );
+}
+
 /// Streaming max_iterations: tightens the default iteration cap; exceeding it terminates with Err instead of a placeholder FinalAnswer.
 #[tokio::test]
 async fn stream_budget_iterations() {
@@ -469,6 +604,37 @@ async fn stream_budget_tokens() {
             })))
         ),
         "got: {:?}",
+        events.last()
+    );
+}
+
+/// B3 streaming max_cost_usd: same semantics as invoke — two tools run ($20),
+/// the 3rd plan ($30) terminates the stream with Err(BudgetExceeded::Cost).
+#[tokio::test]
+async fn stream_budget_cost() {
+    let tracker = ten_dollar_per_plan_tracker();
+    let agent = Arc::new(CostLoopAgent {
+        tracker: tracker.clone(),
+    });
+    let (executor, calls, _inputs) = recorder_harness(agent);
+    let executor = executor
+        .with_cost_tracker(tracker)
+        .with_budget(BudgetConfig {
+            max_cost_usd: Some(25.0),
+            ..Default::default()
+        });
+    let events = stream_events(&executor, "go").await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "流式也应恰好执行 2 次工具");
+    assert!(
+        matches!(
+            events.last(),
+            Some(Err(AgentError::BudgetExceeded(BudgetExceeded::Cost {
+                limit: 25.0,
+                actual
+            }))) if (*actual - 30.0).abs() < 1e-9
+        ),
+        "末事件应为 Err(BudgetExceeded::Cost $30),got: {:?}",
         events.last()
     );
 }

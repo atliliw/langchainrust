@@ -28,21 +28,105 @@ pub struct ModelPrice {
 
 /// `(model substring, price)`. Ordered most-specific first so `find` picks the best match.
 const PRICE_TABLE: &[(&str, ModelPrice)] = &[
-    ("claude-3-5-sonnet", ModelPrice { input_usd_per_1m: 3.0, output_usd_per_1m: 15.0 }),
-    ("claude-3-5-haiku", ModelPrice { input_usd_per_1m: 0.80, output_usd_per_1m: 4.0 }),
-    ("claude-3-opus", ModelPrice { input_usd_per_1m: 15.0, output_usd_per_1m: 75.0 }),
-    ("claude-3-sonnet", ModelPrice { input_usd_per_1m: 3.0, output_usd_per_1m: 15.0 }),
-    ("claude-3-haiku", ModelPrice { input_usd_per_1m: 0.25, output_usd_per_1m: 1.25 }),
+    (
+        "claude-3-5-sonnet",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "claude-3-5-haiku",
+        ModelPrice {
+            input_usd_per_1m: 0.80,
+            output_usd_per_1m: 4.0,
+        },
+    ),
+    (
+        "claude-3-opus",
+        ModelPrice {
+            input_usd_per_1m: 15.0,
+            output_usd_per_1m: 75.0,
+        },
+    ),
+    (
+        "claude-3-sonnet",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "claude-3-haiku",
+        ModelPrice {
+            input_usd_per_1m: 0.25,
+            output_usd_per_1m: 1.25,
+        },
+    ),
     // generic claude fallback last among claude entries
-    ("claude", ModelPrice { input_usd_per_1m: 3.0, output_usd_per_1m: 15.0 }),
-    ("gpt-4o-mini", ModelPrice { input_usd_per_1m: 0.15, output_usd_per_1m: 0.60 }),
-    ("gpt-4o", ModelPrice { input_usd_per_1m: 2.50, output_usd_per_1m: 10.0 }),
-    ("gpt-4-turbo", ModelPrice { input_usd_per_1m: 10.0, output_usd_per_1m: 30.0 }),
-    ("gpt-4", ModelPrice { input_usd_per_1m: 30.0, output_usd_per_1m: 60.0 }),
-    ("gpt-3.5-turbo", ModelPrice { input_usd_per_1m: 0.50, output_usd_per_1m: 1.50 }),
-    ("deepseek-reasoner", ModelPrice { input_usd_per_1m: 0.55, output_usd_per_1m: 2.19 }),
-    ("deepseek-chat", ModelPrice { input_usd_per_1m: 0.27, output_usd_per_1m: 1.10 }),
-    ("qwen", ModelPrice { input_usd_per_1m: 0.50, output_usd_per_1m: 2.0 }),
+    (
+        "claude",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "gpt-4o-mini",
+        ModelPrice {
+            input_usd_per_1m: 0.15,
+            output_usd_per_1m: 0.60,
+        },
+    ),
+    (
+        "gpt-4o",
+        ModelPrice {
+            input_usd_per_1m: 2.50,
+            output_usd_per_1m: 10.0,
+        },
+    ),
+    (
+        "gpt-4-turbo",
+        ModelPrice {
+            input_usd_per_1m: 10.0,
+            output_usd_per_1m: 30.0,
+        },
+    ),
+    (
+        "gpt-4",
+        ModelPrice {
+            input_usd_per_1m: 30.0,
+            output_usd_per_1m: 60.0,
+        },
+    ),
+    (
+        "gpt-3.5-turbo",
+        ModelPrice {
+            input_usd_per_1m: 0.50,
+            output_usd_per_1m: 1.50,
+        },
+    ),
+    (
+        "deepseek-reasoner",
+        ModelPrice {
+            input_usd_per_1m: 0.55,
+            output_usd_per_1m: 2.19,
+        },
+    ),
+    (
+        "deepseek-chat",
+        ModelPrice {
+            input_usd_per_1m: 0.27,
+            output_usd_per_1m: 1.10,
+        },
+    ),
+    (
+        "qwen",
+        ModelPrice {
+            input_usd_per_1m: 0.50,
+            output_usd_per_1m: 2.0,
+        },
+    ),
 ];
 
 /// Looks up the list price for a model name by most-specific substring match.
@@ -60,7 +144,11 @@ pub fn price_for(model: &str) -> Option<ModelPrice> {
 /// Estimates the USD cost of a call from its token counts and model name.
 ///
 /// `None` when the model is not in the price table.
-pub fn estimate_cost_usd(prompt_tokens: usize, completion_tokens: usize, model: &str) -> Option<f64> {
+pub fn estimate_cost_usd(
+    prompt_tokens: usize,
+    completion_tokens: usize,
+    model: &str,
+) -> Option<f64> {
     let price = price_for(model)?;
     Some(
         prompt_tokens as f64 / 1e6 * price.input_usd_per_1m

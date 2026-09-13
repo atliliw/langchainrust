@@ -205,6 +205,49 @@ impl<S: StateSchema> CompiledGraph<S> {
                 )));
             }
 
+            // A8 fix: a dynamically-routed edge may enter a FanOut. Previously this
+            // path only ran `find_next_node`, which returns `targets[0]` and silently
+            // dropped every other branch (state/effects). Handle FanOut exactly like
+            // `invoke`: run all branches, then merge on top of the pre-fan-out state.
+            let fan_out_targets = self.find_fan_out_targets(&current_node).await;
+            if let Some(targets) = fan_out_targets {
+                recursion_count += 1;
+                let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
+                for (name, inv) in branch_results {
+                    parallel_branches.push(ParallelBranch {
+                        name: name.clone(),
+                        final_state: inv.final_state.clone(),
+                        steps: inv.steps.clone(),
+                    });
+                    steps.push(ExecutionStep::ParallelNode {
+                        branch: name,
+                        metadata: HashMap::new(),
+                    });
+                }
+
+                let merge_target = self.find_fan_in_target(&targets).await;
+                let base = state.clone();
+                state = self.merge_parallel_states(&parallel_branches, &base)?;
+                current_node = merge_target.unwrap_or_else(|| END.to_string());
+
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        current_node.clone(),
+                    ));
+                }
+                continue;
+            }
+
             let next_node = self.find_next_node(&current_node, &state).await?;
 
             if let Some(ref checkpointer) = self.checkpointer {
