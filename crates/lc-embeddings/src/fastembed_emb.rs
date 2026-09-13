@@ -228,10 +228,13 @@ impl Embeddings for FastEmbedEmbeddings {
             // 0.21.0 BUG-2 (P0-1 alignment contract): provider 返回的向量数与
             // 请求批次数不符必须显式报错，禁止静默返回对齐错误的向量。
             // 同仓 ONNX 路径（local/nn）、openai/cohere/openai_compat 均已强制。
-            Ok(Self::aligned_batch(
+            // 注意 `aligned_batch` 本身已返回 Result（spawn_blocking 闭包直接
+            // 透传），不要再包 `Ok`——否则三层嵌套导致 fastembed feature 编译失败
+            // （docs.rs all-features E0308，0.22.5 修复）。
+            Self::aligned_batch(
                 result.into_iter().map(|v| v.to_vec()).collect(),
                 str_vec.len(),
-            ))
+            )
         })
         .await
         .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?

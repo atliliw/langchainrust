@@ -3593,6 +3593,8 @@ let tool = URLFetchTool::new().with_allow_private_ips(true); // 显式放行
 
 实现要点：`is_private_ip` 是全 crate 唯一实现（禁止复制逻辑），覆盖 127.0.0.0/8、10/8、172.16/12、192.168/16、169.254.169.254、IPv6 内网段及 IPv4-mapped IPv6（`::ffff:127.0.0.1`）；自动重定向被禁用，改为 `guarded_get` 逐跳重查，堵住"首跳公网、重定向进内网"的绕过。
 
+> **v0.22.4 加固（DNS 重绑定窗口闭合）**：旧实现在"检查时解析一次、真正建连时再解析一次"，两次解析之间存在 TOCTOU 窗口（检查看到公网 IP、建连被 rebinding 到内网）。现在**每一跳只解析一次**：取到 DNS 返回的**全部**地址（混合应答里只要有一个内网地址就拒绝），校验通过后用 reqwest 的 `resolve_to_addrs` 把本次连接**钉死在已校验的地址**上（URL 主机名不变，Host 头/TLS SNI 不受影响）；重定向在传输层禁用、手动逐跳跟随，每一跳重新解析/校验/钉 IP。JSON POST（`guarded_post_json`）同样钉 IP。网段表按 RFC 6890/5735/7913 补全（CGNAT `100.64.0.0/10`、基准测试 `198.18.0.0/15`、TEST-NET 等）。sitemap / web-scraper / HTML 三个 loader 与 provider 的消息媒体 URL、Whisper 音频抓取也统一走这条守卫路径；loader 响应体有 **1 MiB 硬上限**（逐 chunk 检查，超限报错而非截断）。
+
 ### WikipediaTool
 
 搜索 Wikipedia 文章摘要。适合 Agent 需要查询百科知识的场景。
@@ -5057,6 +5059,8 @@ let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
 ### CallbackHandler 生命周期 ✨ v0.15.0
 
 实现 `CallbackHandler` 即可接入回调系统。每个 Run 有三段生命周期回调：`on_run_start` → `on_run_end` / `on_run_error`；组件级钩子（`on_llm_start/end/new_token/thinking/error`、`on_chain_*`、`on_tool_*`、`on_retriever_*`）可选覆盖，默认空实现。`StdOutHandler` 的 `verbose` 开关控制是否打印组件级细节。
+
+> **v0.22.4**：Agent 执行器在**规划阶段**（`BaseAgent::plan` / `plan_stream`，含 ReAct 与 Function-Calling 每一轮规划）也会带上当前 Run 的回调配置——此前规划 LLM 调用对回调/追踪不可见，现在 `on_llm_*` 钩子、LangSmith 与 OTel 都能收到这些调用。注意这是 `BaseAgent::plan`/`plan_stream` trait 方法签名的破坏性变更：末尾新增 `config: Option<&RunnableConfig>` 参数，自定义实现需同步更新（执行器内部已自动传入，直接使用内置 Agent 不受影响）。
 
 ### LangSmith 追踪
 

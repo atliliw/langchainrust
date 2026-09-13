@@ -3585,6 +3585,8 @@ let tool = URLFetchTool::new().with_allow_private_ips(true); // explicitly allow
 
 Implementation details: `is_private_ip` is the crate-wide single implementation (no duplicated logic), covering 127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254.169.254, IPv6 private ranges and IPv4-mapped IPv6 (`::ffff:127.0.0.1`); automatic redirects are disabled in favor of `guarded_get`, which re-checks each hop — closing the "public first hop, redirect into private network" bypass.
 
+> **v0.22.4 hardening (DNS-rebinding window closed)**: the old flow resolved once for the check and again when connecting — a TOCTOU window in which a rebinding attacker could present a public IP at check time and an internal IP at connect time. Each hop now resolves **exactly once**: **every** returned address must be public (a mixed answer containing a single private address is rejected), and the validated addresses are pinned for the actual connection via reqwest's `resolve_to_addrs` (the URL hostname is unchanged, so the `Host` header and TLS SNI are unaffected). Redirects are disabled at the transport layer and followed manually, with re-resolve/re-validate/re-pin on every hop. JSON POSTs (`guarded_post_json`) are pinned the same way. The range table follows RFC 6890/5735/7913 (CGNAT `100.64.0.0/10`, benchmarking `198.18.0.0/15`, TEST-NET, …). The sitemap / web-scraper / HTML loaders and provider-side message-media URLs plus the Whisper audio fetch share the same guarded path; loader responses have a hard **1 MiB body cap** (checked per chunk; oversize is an error, not truncation).
+
 ### WikipediaTool
 
 Search Wikipedia article summaries. Use when an Agent needs to look up encyclopedic knowledge.
@@ -5043,6 +5045,8 @@ let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
 ### CallbackHandler Lifecycle ✨ v0.15.0
 
 Implementing `CallbackHandler` plugs you into the callback system. Every Run has a three-phase lifecycle: `on_run_start` → `on_run_end` / `on_run_error`; component-level hooks (`on_llm_start/end/new_token/thinking/error`, `on_chain_*`, `on_tool_*`, `on_retriever_*`) are optional to override, with no-op defaults. `StdOutHandler`'s `verbose` flag controls whether component-level detail is printed.
+
+> **v0.22.4**: the agent executor now propagates the run's callback configuration into the **planning** calls (`BaseAgent::plan` / `plan_stream`, including every ReAct and Function-Calling planning round). Previously these LLM calls were invisible to callbacks/tracing; the `on_llm_*` hooks, LangSmith, and OTel now receive them. This is a breaking change to the `BaseAgent::plan`/`plan_stream` trait signatures — a new final `config: Option<&RunnableConfig>` parameter; custom implementations must be updated accordingly (the executor passes it automatically, so using the built-in agents needs no changes).
 
 ### LangSmith Tracing
 

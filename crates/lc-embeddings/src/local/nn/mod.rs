@@ -772,7 +772,12 @@ impl LocalEmbeddingsBuilder {
     }
 }
 
-#[async_trait]
+// `TokenLevelEmbeddings` 是 `trait_variant::make` 生成的原生 RPITIT trait
+// （方法返回 `impl Future + Send`），这里**不能**再套 `#[async_trait]`：
+// async_trait 会把方法改写成 `Pin<Box<dyn Future>>` 且生命周期绑定方式不同，
+// 新版编译器报 E0195（lifetime parameters do not match the trait definition，
+// docs.rs all-features 红灯，0.22.5 修复）。原生 `async fn` 实现 RPITIT 自
+// 1.75 起稳定，MSRV 1.85 可用。
 impl crate::TokenLevelEmbeddings for LocalEmbeddings {
     /// Token-level embeddings from the ONNX model's 3D output — no pooling,
     /// one vector per real (non-special, non-pad) token with its byte span.

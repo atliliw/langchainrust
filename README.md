@@ -170,7 +170,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **`#[tool]` macro** | Define a tool from a plain function — auto-converted to `BaseTool`; `StructuredTool` gives typed in/out with automatic JSON. |
 | **Sandbox** | `SandboxTool` + `LocalSandbox` (subprocess + timeout). Tool-code execution is isolated — the Python blacklist is documented as *noise filtering, not a security boundary*. |
 | **Extended tools** | `HTTPTool`, `FileTool` (sandboxed), `SQLTool` (read-only, `sqlite-storage` feature), `ComputerUseTool` (screen interaction). |
-| **Security** | SSRF protection (`is_private_ip`) on URL/HTTP tools, path sandboxing, risk classification via `ToolPolicy`. |
+| **Security** | SSRF protection (`is_private_ip`) on URL/HTTP tools with per-hop DNS resolution, all-answers validation, and IP pinning that closes the DNS-rebinding TOCTOU window (v0.22.4); path sandboxing; risk classification via `ToolPolicy`. |
 
 ### Vector Stores
 
