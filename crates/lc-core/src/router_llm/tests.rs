@@ -682,6 +682,15 @@ async fn observed_call_latencies_reorder_least_latency_routing() {
     assert_eq!(fast2.call_count(), 1);
 
     // Now both have latency data; the next call must lead with the fast one.
+    //
+    // Seed the EMA directly rather than relying on the scripted 80 ms / 5 ms
+    // delays: under `start_paused`, tokio sleeps consume ZERO wall-clock time,
+    // while production measures latency with std::time::Instant, so the samples
+    // recorded during r2 were sub-microsecond noise whose order flipped under
+    // cargo-llvm-cov instrumentation (and could flip on any loaded runner).
+    *router2.slots[0].latency_ms.lock().unwrap() = 80.0; // slow2
+    *router2.slots[1].latency_ms.lock().unwrap() = 5.0; // fast2
+
     let r3 = invoke(&router2).await.unwrap();
     assert_eq!(r3.content, "fast2-reply");
     assert_eq!(fast2.call_count(), 2);

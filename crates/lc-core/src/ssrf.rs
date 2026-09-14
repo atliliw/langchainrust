@@ -150,15 +150,23 @@ fn parse_http_url(url: &str) -> Result<url::Url, ToolError> {
 /// disagree (see [`pinned_client`]) — the previous check-then-re-resolve
 /// implementation left a DNS-rebinding (TOCTOU) window.
 async fn resolve_url_addrs(parsed: &url::Url) -> Result<Vec<SocketAddr>, ToolError> {
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| ToolError::InvalidInput("URL has no host".to_string()))?;
     let port = parsed.port_or_known_default().unwrap_or(80);
 
     // IP literal: no DNS lookup at all, just attach the URL port.
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
+    //
+    // Must match on `Url::host()`'s typed enum rather than parsing
+    // `host_str()`: for IPv6 literals `host_str()` keeps the square brackets
+    // ("[::1]"), which fails `IpAddr` parsing and falls through to DNS. Linux
+    // getaddrinfo rejects the bracketed name with EAI_NONAME while Windows
+    // tolerates it — so the IPv6 branch silently worked only on Windows.
+    let host = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => return Ok(vec![SocketAddr::new(IpAddr::V4(ip), port)]),
+        Some(url::Host::Ipv6(ip)) => return Ok(vec![SocketAddr::new(IpAddr::V6(ip), port)]),
+        Some(url::Host::Domain(h)) => h,
+        None => {
+            return Err(ToolError::InvalidInput("URL has no host".to_string()));
+        }
+    };
 
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
         .await
@@ -194,13 +202,20 @@ fn ensure_all_public(addrs: &[SocketAddr]) -> Result<(), ToolError> {
 /// and certificate validation are unaffected. IP-literal hosts need no pin:
 /// reqwest connects to the literal directly, which is the validated address.
 fn pinned_client(
-    host: &str,
+    parsed: &url::Url,
     addrs: &[SocketAddr],
     timeout: Option<Duration>,
 ) -> Result<reqwest::Client, ToolError> {
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     builder = builder.timeout(timeout.unwrap_or(DEFAULT_GUARDED_TIMEOUT));
-    if host.parse::<IpAddr>().is_err() {
+    // Typed host enum: a bracketed IPv6 literal from host_str() would fail
+    // IpAddr parsing and be mis-pinned as a DNS name (see resolve_url_addrs).
+    let is_ip_literal = matches!(
+        parsed.host(),
+        Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_))
+    );
+    if !is_ip_literal {
+        let host = parsed.host_str().expect("host checked above");
         builder = builder.resolve_to_addrs(host, addrs);
     }
     builder
@@ -237,12 +252,11 @@ pub async fn guarded_get(
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         let parsed = parse_http_url(&current)?;
-        let host = parsed.host_str().expect("host checked above").to_string();
         let addrs = resolve_url_addrs(&parsed).await?;
         if check_ssrf {
             ensure_all_public(&addrs)?;
         }
-        let client = pinned_client(&host, &addrs, timeout)?;
+        let client = pinned_client(&parsed, &addrs, timeout)?;
 
         let resp = client
             .get(&current)
@@ -280,12 +294,11 @@ pub async fn guarded_post_json(
     timeout: Option<Duration>,
 ) -> Result<reqwest::Response, ToolError> {
     let parsed = parse_http_url(url)?;
-    let host = parsed.host_str().expect("host checked above").to_string();
     let addrs = resolve_url_addrs(&parsed).await?;
     if check_ssrf {
         ensure_all_public(&addrs)?;
     }
-    let client = pinned_client(&host, &addrs, timeout)?;
+    let client = pinned_client(&parsed, &addrs, timeout)?;
 
     client
         .post(url)
@@ -444,6 +457,20 @@ mod tests {
         let url = parse_http_url("https://8.8.8.8/").unwrap();
         let addrs = resolve_url_addrs(&url).await.unwrap();
         assert_eq!(addrs, vec!["8.8.8.8:443".parse::<SocketAddr>().unwrap()]);
+
+        // Bracketed IPv6 literal (incl. IPv4-mapped) must NOT fall through to
+        // DNS: host_str() keeps the brackets, which IpAddr::parse rejects and
+        // Linux getaddrinfo rejects with EAI_NONAME (Windows tolerated it).
+        let url = parse_http_url("http://[::ffff:169.254.169.254]/latest").unwrap();
+        let addrs = resolve_url_addrs(&url).await.unwrap();
+        assert_eq!(
+            addrs,
+            vec!["[::ffff:169.254.169.254]:80".parse::<SocketAddr>().unwrap()]
+        );
+
+        let url = parse_http_url("http://[::1]:9000/").unwrap();
+        let addrs = resolve_url_addrs(&url).await.unwrap();
+        assert_eq!(addrs, vec!["[::1]:9000".parse::<SocketAddr>().unwrap()]);
     }
 
     #[tokio::test]

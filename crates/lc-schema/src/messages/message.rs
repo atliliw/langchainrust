@@ -48,7 +48,7 @@ pub enum MediaPart<'a> {
     File(&'a FileContent),
 }
 
-impl<'a> MediaPart<'a> {
+impl MediaPart<'_> {
     /// Returns the attachment's modality.
     pub fn modality(&self) -> Modality {
         match self {

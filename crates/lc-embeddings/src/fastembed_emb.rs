@@ -220,6 +220,10 @@ impl Embeddings for FastEmbedEmbeddings {
             let mut model = model.lock().map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
             })?;
+            // 批次大小从源 Vec 取:新版 fastembed 的 `embed` 按值消费迭代器
+            // (str_vec 被 move),事后再借用 str_vec.len() 是 E0382(all-features
+            // 编译失败)。text_vec 仍在作用域内,长度恒等。
+            let expected = text_vec.len();
             let str_vec: Vec<&str> = text_vec.iter().map(|s| s.as_str()).collect();
             let result = model.embed(str_vec, None).map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed batch inference failed: {}", e))
@@ -231,10 +235,7 @@ impl Embeddings for FastEmbedEmbeddings {
             // 注意 `aligned_batch` 本身已返回 Result（spawn_blocking 闭包直接
             // 透传），不要再包 `Ok`——否则三层嵌套导致 fastembed feature 编译失败
             // （docs.rs all-features E0308，0.22.5 修复）。
-            Self::aligned_batch(
-                result.into_iter().map(|v| v.to_vec()).collect(),
-                str_vec.len(),
-            )
+            Self::aligned_batch(result.into_iter().map(|v| v.to_vec()).collect(), expected)
         })
         .await
         .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?
