@@ -786,7 +786,9 @@ mod tests {
         #[cfg(unix)]
         {
             let link = root.join("link");
-            std::os::unix::fs::symlink(&base.join("secret.txt"), &link).unwrap();
+            // symlink 的 original 按 AsRef<Path> 按值接收,无需借用
+            //(unix-only 模块,Windows 本机 clippy 看不到这行)。
+            std::os::unix::fs::symlink(base.join("secret.txt"), &link).unwrap();
             assert!(matches!(
                 sandbox.check(&AccessRequest::ReadPath(link)),
                 Err(SecurityError::SandboxDenied(_))

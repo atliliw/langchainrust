@@ -79,7 +79,8 @@ impl WeightedGraph {
         }
         // Sorted neighbors make traversal order (and hence results) stable.
         for neighbors in &mut graph.adj {
-            neighbors.sort_by(|a, b| a.0.cmp(&b.0));
+            // sort_by_key:只按键列(usize)取键(clippy::unnecessary_sort_by)。
+            neighbors.sort_by_key(|&(neighbor, _)| neighbor);
         }
         graph
     }
@@ -393,7 +394,7 @@ fn aggregate(graph: &WeightedGraph, refined: &Partition, members: &[Vec<usize>])
         }
     }
     for neighbors in &mut aggregated.adj {
-        neighbors.sort_by(|a, b| a.0.cmp(&b.0));
+        neighbors.sort_by_key(|&(neighbor, _)| neighbor);
     }
 
     let mut aggregated_members = vec![Vec::new(); k];

@@ -16,8 +16,8 @@
 //!
 //! Opt-In parity with `OtelHandler`: tool-call arguments/results can contain
 //! secrets or PII, so they are recorded only after an explicit
-//! [`McpInstrumentation::with_tool_payloads(true)`], and truncated to
-//! `max_payload_chars` (default 2048).
+//! [`McpInstrumentation::with_tool_payloads`] opt-in (call it with `true`), and
+//! truncated to `max_payload_chars` (default 2048).
 
 use std::future::Future;
 
