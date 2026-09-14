@@ -144,15 +144,17 @@ fn bench_tokenizer(c: &mut Criterion) {
         });
     });
 
-    // Benchmark tokenizing a large document
-    let large_text: String = (0..100)
-        .map(|i| {
-            format!(
-                "Paragraph {} about Rust programming and systems design. ",
-                i
-            )
-        })
-        .collect();
+    // Benchmark tokenizing a large document.
+    // write! 而非 `(0..100).map(format!).collect()`(clippy::format_collect)。
+    use std::fmt::Write as _;
+    let mut large_text = String::new();
+    for i in 0..100 {
+        write!(
+            &mut large_text,
+            "Paragraph {i} about Rust programming and systems design. "
+        )
+        .unwrap();
+    }
 
     group.bench_function("large_100_paragraphs", |b| {
         b.iter(|| {

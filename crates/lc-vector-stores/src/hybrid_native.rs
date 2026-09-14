@@ -98,8 +98,9 @@ impl NativeHybridQuery {
 /// opt-in by construction. Callers check
 /// [`NativeHybridSearch::supports_native_hybrid`] before issuing a query; a
 /// mismatch returns a config error instead of a silent client fallback.
-/// The Qdrant implementation lives in [`crate::qdrant`] (fields/methods are
-/// crate-visible there).
+/// The Qdrant implementation lives on the re-exported
+/// [`crate::QdrantVectorStore`] type (its backing module stays crate-private,
+/// so linking `crate::qdrant` directly trips rustdoc::private_intra_doc_links).
 #[async_trait]
 pub trait NativeHybridSearch: Send + Sync {
     /// Whether this store can fuse hybrid branches server-side.

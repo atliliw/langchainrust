@@ -265,7 +265,9 @@ impl FileMemoryStore {
                 .unwrap_or(std::time::UNIX_EPOCH);
             entries.push(MemoryEntry { name, modified });
         }
-        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+        // 新→旧:clippy::unnecessary_sort_by 要求用 sort_by_key + Reverse
+        //(SystemTime: Copy,键直接取字段值)。
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
         Ok(entries)
     }
 }

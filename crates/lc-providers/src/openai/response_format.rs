@@ -83,6 +83,15 @@ pub fn make_strict_schema(schema: &mut serde_json::Value) {
                 make_strict_schema(value);
             }
         }
+        // 显式排序:serde_json 的 Map 在 `preserve_order` feature 下是 IndexMap
+        //(workspace 任一 crate 拉入该 feature 就会被统一启用,键序=插入序),
+        // 无该 feature 时是 BTreeMap(字典序)。线上 strict schema 的 `required`
+        // 不能依赖这个差异——固定字典序,也让相关测试在两种后端下都稳定。
+        required.sort_by(|a, b| {
+            a.as_str()
+                .unwrap_or_default()
+                .cmp(b.as_str().unwrap_or_default())
+        });
         obj.insert("required".to_string(), serde_json::Value::Array(required));
     }
 
