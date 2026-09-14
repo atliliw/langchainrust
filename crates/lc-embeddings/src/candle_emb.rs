@@ -313,7 +313,9 @@ mod tests {
     #[test]
     fn mean_pool_all_masked_row_is_zero() {
         let hidden = vec![1.0, 2.0];
-        let rows = mean_pool_rows(&hidden, 1, 1, 2, &vec![vec![0]]).unwrap();
+        // 形参收 &[Vec<usize>],直接传切片字面量,无需 vec! 套 vec!
+        // (stable clippy::useless_vec;该模块 Linux CI 才编译,本机 gnu 无 ort 预构建)。
+        let rows = mean_pool_rows(&hidden, 1, 1, 2, &[vec![0]]).unwrap();
         assert_eq!(rows[0], vec![0.0, 0.0]);
         assert!(rows[0].iter().all(|v| v.is_finite()));
     }
@@ -321,7 +323,7 @@ mod tests {
     /// Short tensor errors instead of panicking on the index.
     #[test]
     fn mean_pool_short_tensor_errors() {
-        let err = mean_pool_rows(&[1.0, 2.0], 1, 2, 2, &vec![vec![1, 1]]).unwrap_err();
+        let err = mean_pool_rows(&[1.0, 2.0], 1, 2, 2, &[vec![1, 1]]).unwrap_err();
         assert!(matches!(err, EmbeddingError::ParseError(_)));
     }
 

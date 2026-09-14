@@ -143,7 +143,7 @@ fn test_pool_rows_batch_mismatch() {
     ));
 }
 
-/// 0.21.0 S5.2: 	oken_rows_from_3d keeps only kept positions, slices rows by dim.
+/// 0.21.0 S5.2: token_rows_from_3d keeps only kept positions, slices rows by dim.
 #[test]
 fn test_token_rows_from_3d_filters_and_slices() {
     // shape [1, 3, 2]: 3 positions, dim 2. keep = [true, false, true].
