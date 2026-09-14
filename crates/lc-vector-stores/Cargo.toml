@@ -32,7 +32,13 @@ mongodb = { version = "2.8", optional = true }
 redis = { version = "0.25", optional = true, features = ["tokio-comp"] }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
-pgvector = { version = "0.4", features = ["sqlx"], optional = true }
+# 必须精确钉在 0.4.1:0.4.2 把自己的 sqlx 要求从 ^0.8 放宽成 >=0.8, <0.10。
+# sqlx 0.9.0 发布后,无锁解析(cargo-semver-checks 的外部临时工程、以及任何
+# 新装本 crate 的下游)会给 pgvector 那条边选 0.9、给我们这条 ^0.8 边选 0.8,
+# 0.x 次版本号不兼容、两套 sqlx-core 共存,pgeqvector::Vector 的 trait 实现
+# 落在 0.9 上而本 crate 按 0.8 编译 → 6 个 E0277(pgvector.rs)。0.4.1 要求 ^0.8,
+# 解析器只能统一到单一 0.8.x。
+pgvector = { version = "=0.4.1", features = ["sqlx"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
