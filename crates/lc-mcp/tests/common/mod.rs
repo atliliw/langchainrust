@@ -379,12 +379,9 @@ async fn handle_connection(
                 "method": "notifications/progress",
                 "params": {"progressToken": req_method}
             });
-            write_sse(
-                &mut sock,
-                [notification, envelope].into_iter(),
-                &session_header,
-            )
-            .await
+            // write_sse 的第二参收 IntoIterator,数组直接传入即可
+            // (stable clippy::useless_conversion;该集成测试本机不参与 lint)。
+            write_sse(&mut sock, [notification, envelope], &session_header).await
         }
     }
 }

@@ -266,8 +266,21 @@ jobs:
           echo "semver baseline(上一发布版本)= $BASELINE"
           echo "BASELINE=$BASELINE" >> "$GITHUB_OUTPUT"
 
-      - name: Run semver checks
-        run: cargo semver-checks --workspace --baseline-version ${{ steps.baseline.outputs.BASELINE }}
+      # facade(langchainrust)不能随工作区一起 --all-features 做基线 rustdoc:
+      # 已发布的 0.23.0 manifest 里 lc-vector-stores 声明 pgvector ^0.4,无锁解析
+      # 会拿到 0.4.2(其 sqlx 要求已放宽到 <0.10)+ sqlx 0.9,与 0.8 分裂成两套
+      # sqlx-core,基线 rustdoc 六连 E0277——已发布制品永远修不了(修复在 32b3c0a)。
+      # 成员 crate 走工作区图(受 Cargo.lock 统一)不受影响;facade 单独按 docs.rs
+      # 的显式 feature 清单检查(本就排除 pgvector-storage,与 docs.rs 构建面一致)。
+      - name: Run semver checks (workspace members)
+        run: cargo semver-checks --workspace --exclude langchainrust --baseline-version ${{ steps.baseline.outputs.BASELINE }}
+
+      - name: Run semver checks (facade with docs.rs feature set)
+        run: |
+          cargo semver-checks -p langchainrust \
+            --baseline-version ${{ steps.baseline.outputs.BASELINE }} \
+            --only-explicit-features \
+            --features experimental,qdrant-integration,mongodb-persistence,redis-storage,sqlite-storage,checkpoint-sqlite,checkpoint-postgres,checkpoint-redis,opentelemetry,local-embeddings,fastembed,vectorstore-memory,observability,observability-mongodb,browser-cdp
 
   # ==================== WASM 兼容检查 ====================
   # 目前只有数据模型层(lc-shared / lc-schema)对 wasm32-unknown-unknown 干净
