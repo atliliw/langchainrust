@@ -16,6 +16,11 @@ jobs:
   pre-publish:
     name: Pre-publish Checks
     runs-on: ubuntu-latest
+    env:
+      # 覆盖仓库 rust-toolchain.toml 的 1.85 钉版(其优先级高于 dtolnay action
+      # 装的 stable)。cargo-semver-checks 0.50 MSRV 已到 1.93,在 1.85 下从源码
+      # `cargo install` 必然编译失败——与 ci.yml semver job 的处理保持一致。
+      RUSTUP_TOOLCHAIN: stable
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
@@ -86,6 +91,10 @@ jobs:
     name: Publish to crates.io
     needs: pre-publish
     runs-on: ubuntu-latest
+    env:
+      # 同 pre-publish:覆盖 rust-toolchain.toml 的 1.85 钉版,确保 cargo publish
+      # 的 verify 构建在 stable 上(部分门控依赖 MSRV 高于 1.85)。
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
