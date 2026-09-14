@@ -11,12 +11,24 @@ use std::path::PathBuf;
 fn heading_regex(level: usize) -> &'static regex::Regex {
     use std::sync::LazyLock;
     static HEADING_RE: [LazyLock<regex::Regex>; 6] = [
-        LazyLock::new(|| regex::Regex::new(r"^#[ \t]+(.+)").unwrap()),
-        LazyLock::new(|| regex::Regex::new(r"^##[ \t]+(.+)").unwrap()),
-        LazyLock::new(|| regex::Regex::new(r"^###[ \t]+(.+)").unwrap()),
-        LazyLock::new(|| regex::Regex::new(r"^####[ \t]+(.+)").unwrap()),
-        LazyLock::new(|| regex::Regex::new(r"^#####[ \t]+(.+)").unwrap()),
-        LazyLock::new(|| regex::Regex::new(r"^######[ \t]+(.+)").unwrap()),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^#[ \t]+(.+)").expect("static regex literal must compile")
+        }),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^##[ \t]+(.+)").expect("static regex literal must compile")
+        }),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^###[ \t]+(.+)").expect("static regex literal must compile")
+        }),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^####[ \t]+(.+)").expect("static regex literal must compile")
+        }),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^#####[ \t]+(.+)").expect("static regex literal must compile")
+        }),
+        LazyLock::new(|| {
+            regex::Regex::new(r"^######[ \t]+(.+)").expect("static regex literal must compile")
+        }),
     ];
     &HEADING_RE[level.saturating_sub(1).min(5)]
 }

@@ -45,6 +45,7 @@ pub use synthesizer::SynthesisOutput;
 pub use types::{Citation, ResearchReport};
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::BaseTool;
 use lc_schema::Message;
 
@@ -111,6 +112,17 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
     /// Returns a `ResearchReport` containing the markdown report,
     /// citations, sub-topics, and round count.
     pub async fn research(&self, topic: &str) -> Result<ResearchReport, ResearchError> {
+        self.research_with_config(topic, None).await
+    }
+
+    /// Runs the full deep research pipeline with a [`RunnableConfig`] so the
+    /// planning, synthesis, and follow-up-planning LLM calls emit
+    /// `on_llm_start/end` to the configured callbacks/OTel backend (T6, v0.23.0).
+    pub async fn research_with_config(
+        &self,
+        topic: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ResearchReport, ResearchError> {
         if self.searchers.is_empty() {
             return Err(ResearchError::Search(
                 "no search tools configured; add at least one with with_searcher()".to_string(),
@@ -119,7 +131,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
 
         let mut all_results: Vec<SearchResult> = Vec::new();
         let mut rounds_completed: usize = 0;
-        let current_plan = self.plan(topic).await?;
+        let current_plan = self.plan(topic, config).await?;
         let mut follow_up_queries: Vec<String> = Vec::new();
 
         for round in 0..self.max_rounds {
@@ -143,7 +155,13 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
 
             // Synthesize report from accumulated results
             let (markdown, gaps) = self
-                .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+                .synthesize(
+                    topic,
+                    &current_plan,
+                    &all_results,
+                    self.max_source_tokens,
+                    config,
+                )
                 .await?;
 
             if gaps.is_empty() || round + 1 >= self.max_rounds {
@@ -161,12 +179,18 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             }
 
             // Generate follow-up queries for the next round
-            follow_up_queries = self.generate_follow_ups(topic, &gaps).await?;
+            follow_up_queries = self.generate_follow_ups(topic, &gaps, config).await?;
         }
 
         // Final synthesis if we exhausted rounds
         let (markdown, _) = self
-            .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+            .synthesize(
+                topic,
+                &current_plan,
+                &all_results,
+                self.max_source_tokens,
+                config,
+            )
             .await?;
         let citations = self.build_citations(&all_results);
         Ok(ResearchReport {
@@ -210,7 +234,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             detail: Some("Decomposing topic into subtopics...".to_string()),
         });
 
-        let current_plan = self.plan(topic).await?;
+        let current_plan = self.plan(topic, None).await?;
 
         events.push(AgentStreamEvent::PipelineStep {
             step: "planned".to_string(),
@@ -264,7 +288,13 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             });
 
             let (markdown, gaps) = self
-                .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+                .synthesize(
+                    topic,
+                    &current_plan,
+                    &all_results,
+                    self.max_source_tokens,
+                    None,
+                )
                 .await?;
 
             if gaps.is_empty() || round + 1 >= self.max_rounds {
@@ -279,13 +309,19 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
             });
 
             // Generate follow-up queries for the next round
-            follow_up_queries = self.generate_follow_ups(topic, &gaps).await?;
+            follow_up_queries = self.generate_follow_ups(topic, &gaps, None).await?;
         }
 
         // Final if we exhausted rounds without a final synthesis
         if final_markdown.is_empty() {
             let (markdown, _) = self
-                .synthesize(topic, &current_plan, &all_results, self.max_source_tokens)
+                .synthesize(
+                    topic,
+                    &current_plan,
+                    &all_results,
+                    self.max_source_tokens,
+                    None,
+                )
                 .await?;
             final_markdown = markdown;
             final_citations = self.build_citations(&all_results);
@@ -310,8 +346,12 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
 
     // -- Private helpers -------------------------------------------------------
 
-    async fn plan(&self, topic: &str) -> Result<ResearchPlan, ResearchError> {
-        planner::plan(&self.llm, topic, self.max_subtopics).await
+    async fn plan(
+        &self,
+        topic: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ResearchPlan, ResearchError> {
+        planner::plan(&self.llm, topic, self.max_subtopics, config).await
     }
 
     async fn search(&self, queries: &[String]) -> Result<Vec<SearchResult>, ResearchError> {
@@ -324,14 +364,16 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         plan: &ResearchPlan,
         results: &[SearchResult],
         max_source_tokens: Option<usize>,
+        config: Option<&RunnableConfig>,
     ) -> Result<(String, Vec<String>), ResearchError> {
-        synthesizer::synthesize(&self.llm, topic, plan, results, max_source_tokens).await
+        synthesizer::synthesize(&self.llm, topic, plan, results, max_source_tokens, config).await
     }
 
     async fn generate_follow_ups(
         &self,
         topic: &str,
         gaps: &[String],
+        config: Option<&RunnableConfig>,
     ) -> Result<Vec<String>, ResearchError> {
         let prompt = format!(
             "Research topic: {}\n\n\
@@ -356,7 +398,7 @@ impl<M: BaseChatModel> DeepResearchAgent<M> {
         let response = crate::retry::retry_chat(
             &self.llm,
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await

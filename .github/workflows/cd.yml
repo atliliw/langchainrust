@@ -33,11 +33,13 @@ jobs:
 
       # 0.20.0 S2.2:发布门禁脚本化。原本的 fmt/clippy/test/doc 手工步骤固化为
       # `scripts/release-gate.sh --all-features`(含磁盘预检、semver-checks 基线、
-      # security-scan、全 workspace 版本一致性)。这里保留两件脚本不做的事:
+      # security-scan、全 workspace 版本一致性)。这里保留三件脚本不做的事:
       #   1) tag 版本 vs facade crate 版本一致性——release-gate 第 8 步只查各
       #      crate 相互一致,不对比 tag。
       #   2) 安装 cargo-semver-checks——release-gate 第 6 步在 CI 模式要真实
       #      运行(本地未装时脚本才 warn+跳过)。
+      #   3) 从 crates.io 动态解析 semver 基线(见下方 Resolve 步骤)——
+      #      0.22.5 前 BASELINE 硬编码 0.19.0,停更多个版本无人更新。
       # 注意:根 Cargo.toml 是虚拟 workspace,无 version 字段;发布版本以
       # facade crate(crates/lc/Cargo.toml,package = "langchainrust")为准。
       # (旧写法 grep 根 Cargo.toml 得到空值,tag 检查必然失败——0.20.0 修正。)
@@ -56,12 +58,26 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
 
+      # semver 基线动态取 crates.io 上 facade crate(langchainrust)的最新稳定版,
+      # 即「上一发布版本」。不再硬编码(0.19.0 停更多次发版无人更新,基线失真)。
+      # 发布动作本身在 publish job 完成,此刻新版本尚未上传,查到的必然是上一版。
+      - name: Resolve semver baseline from crates.io
+        id: baseline
+        run: |
+          BASELINE=$(curl -fsS https://index.crates.io/la/ng/langchainrust | python3 -c 'import json,sys; rows=[json.loads(l) for l in sys.stdin if l.strip()]; v=[r["vers"] for r in rows if not r.get("yanked") and "-" not in r["vers"]]; print(v[-1] if v else "")')
+          if [ -z "$BASELINE" ]; then
+            echo "ERROR: 无法从 crates.io 解析 semver 基线版本" >&2
+            exit 1
+          fi
+          echo "semver baseline(上一发布版本)= $BASELINE"
+          echo "BASELINE=$BASELINE" >> "$GITHUB_OUTPUT"
+
       - name: Run release gate
         run: bash scripts/release-gate.sh --all-features
         env:
           OPENAI_API_KEY: test-key
-          # semver 基线 = 上一发布版本;每次发版前更新
-          BASELINE: "0.19.0"
+          # semver 基线 = crates.io 最新稳定版(上一步动态解析,无需发版手改)
+          BASELINE: ${{ steps.baseline.outputs.BASELINE }}
           # CI runner 磁盘有限,降低告警阈值(该步只 warn 不 fail)
           MIN_FREE_GB: "2"
 
@@ -88,8 +104,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # 虚拟 workspace 根目录不能直接 cargo publish;由脚本按 cargo metadata
+      # 拓扑序交错发布全部 23 crate(已发布版本自动跳过,可断点续跑)。
+      # token 经环境变量注入(cargo publish 默认读取),不出现在命令行参数里。
+      - name: Publish workspace crates in dependency order
+        run: bash scripts/publish-crates.sh
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -157,10 +176,60 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ==================== docs.rs 发布后回查(T1,v0.23)====================
+  # 0.20 起 docs.rs 一直构建失败但无人知晓。发布完成后轮询 builds 页,直到
+  # 出现 succeeded / failed 标记;failed 让本 job 红。docs.rs 队列可能排队
+  # 数分钟~十几分钟,30 分钟超时、20s 一轮。仅 HTML 页面可用(builds.json
+  # 已 404),状态行形如 `(succeeded|failed)"><div ...><span class="fa ...
+  # fa-check|fa-xmark`。
+  verify-docs-rs:
+    name: Verify docs.rs Build
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Poll docs.rs build result
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # tag 带 v 前缀(v0.23.0),docs.rs 路径用裸版本号(0.23.0)
+          VERSION="${TAG#v}"
+          NAME=langchainrust
+          URL="https://docs.rs/crate/$NAME/$VERSION/builds"
+          echo "Polling $URL ..."
+          for i in $(seq 1 90); do
+            HTML=$(curl -fsSL "$URL" 2>/dev/null || true)
+            if [ -n "$HTML" ]; then
+              # builds 页每个构建一行,class 即终态:`succeeded"><div class=...`
+              # 或 `failed"><div class=...`(图标 fa-check / fa-xmark,不依赖图标
+              # 判断;builds.json API 已下线只有 HTML)。首行 = 最近一次构建。
+              ROW=$(printf '%s' "$HTML" | grep -oE '(succeeded|failed)"><div class="pure-g"' | head -1 | sed 's/">.*//')
+              case "$ROW" in
+                succeeded)
+                  echo "✅ docs.rs build for $NAME $VERSION succeeded"
+                  echo "### ✅ docs.rs build succeeded" >> "$GITHUB_STEP_SUMMARY"
+                  echo "https://docs.rs/$NAME/$VERSION" >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                  ;;
+                failed)
+                  echo "::error::docs.rs build FAILED for $NAME $VERSION — see $URL"
+                  echo "### ❌ docs.rs build failed" >> "$GITHUB_STEP_SUMMARY"
+                  echo "Build log: $URL" >> "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                  ;;
+              esac
+            fi
+            echo "  ($i) no terminal build status yet, retrying in 20s"
+            sleep 20
+          done
+          echo "::error::docs.rs build for $NAME $VERSION did not finish within 30 minutes"
+          exit 1
+
   # ==================== 发布通知 ====================
   notify:
     name: Notify on Success
-    needs: [publish, create-release]
+    # docs.rs 回查通过后才宣告发布成功(可能排队十几分钟,值得等)
+    needs: [publish, create-release, verify-docs-rs]
     runs-on: ubuntu-latest
     if: success()
     steps:

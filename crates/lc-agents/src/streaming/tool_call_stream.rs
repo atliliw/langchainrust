@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_providers::ProviderError;
 use lc_schema::Message;
 
@@ -47,12 +48,25 @@ impl StreamingFunctionCallingAgent {
         &self,
         input: String,
     ) -> Pin<Box<dyn Stream<Item = AgentStreamEvent> + Send>> {
+        self.invoke_stream_with_config(input, None).await
+    }
+
+    /// Streams execution with a [`RunnableConfig`] so the streamed LLM call
+    /// emits `on_llm_start/end` to the configured callbacks/OTel backend
+    /// (T6, v0.23.0).
+    pub async fn invoke_stream_with_config(
+        &self,
+        input: String,
+        config: Option<&RunnableConfig>,
+    ) -> Pin<Box<dyn Stream<Item = AgentStreamEvent> + Send>> {
         let (tx, rx) = mpsc::channel(32);
         let llm = self.llm.clone();
         let messages = vec![Message::human(input)];
+        // The spawned task is `'static`, so the config must be owned here.
+        let config = config.cloned();
 
         tokio::spawn(async move {
-            let mut stream = match llm.stream_chat(messages, None).await {
+            let mut stream = match llm.stream_chat(messages, config).await {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = tx

@@ -255,7 +255,7 @@ impl LLMRouterChain {
             for keyword in dest.keywords() {
                 if input.contains(keyword) {
                     let len = keyword.len();
-                    if best_match.is_none() || len > best_match.unwrap().1 {
+                    if best_match.is_none_or(|(_, best_len)| len > best_len) {
                         best_match = Some((dest, len));
                     }
                 }

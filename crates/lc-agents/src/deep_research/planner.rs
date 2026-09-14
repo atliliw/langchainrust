@@ -3,6 +3,7 @@
 //! search queries for each sub-topic using the LLM.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_schema::Message;
 
 use super::ResearchError;
@@ -36,10 +37,14 @@ impl ResearchPlan {
 }
 
 /// Uses the LLM to decompose a topic into sub-topics with search queries.
+///
+/// T6 (v0.23.0): `config` carries callbacks/OTel so the planning LLM call is
+/// visible (`on_llm_start/end`); pass `None` to run untraced.
 pub async fn plan<M: BaseChatModel>(
     llm: &M,
     topic: &str,
     max_subtopics: usize,
+    config: Option<&RunnableConfig>,
 ) -> Result<ResearchPlan, ResearchError> {
     let prompt = format!(
         "Decompose the following research topic into at most {} sub-topics. \
@@ -63,10 +68,14 @@ pub async fn plan<M: BaseChatModel>(
         Message::human(prompt),
     ];
 
-    let response =
-        crate::retry::retry_chat(llm, messages, None, &crate::retry::RetryConfig::default())
-            .await
-            .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
+    let response = crate::retry::retry_chat(
+        llm,
+        messages,
+        config.cloned(),
+        &crate::retry::RetryConfig::default(),
+    )
+    .await
+    .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
 
     let subtopics = parse_subtopics(&response.content)?;
     Ok(ResearchPlan {

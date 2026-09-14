@@ -11,36 +11,42 @@ use serde::{Deserialize, Serialize};
 use crate::ssrf::guarded_get;
 use lc_core::tools::{BaseTool, Tool, ToolError};
 
-static SCRIPT_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"<script[^>]*>.*?</script>").unwrap());
-
-static STYLE_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"<style[^>]*>.*?</style>").unwrap());
-
-static TAG_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
-
-static WHITESPACE_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"\s+").unwrap());
-
-static LINK_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r#"<a[^>]+href\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap());
-
-static IMG_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    Regex::new(r#"<img[^>]+src\s*=\s*['"]([^'"]+)['"][^>]*>"#).unwrap()
+static SCRIPT_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<script[^>]*>.*?</script>").expect("static regex literal must compile")
 });
 
-static TITLE_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"<title[^>]*>(.*?)</title>").unwrap());
+static STYLE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<style[^>]*>.*?</style>").expect("static regex literal must compile")
+});
+
+static TAG_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"<[^>]+>").expect("static regex literal must compile"));
+
+static WHITESPACE_REGEX: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"\s+").expect("static regex literal must compile"));
+
+static LINK_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<a[^>]+href\s*=\s*['"]([^'"]+)['"][^>]*>"#)
+        .expect("static regex literal must compile")
+});
+
+static IMG_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"<img[^>]+src\s*=\s*['"]([^'"]+)['"][^>]*>"#)
+        .expect("static regex literal must compile")
+});
+
+static TITLE_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"<title[^>]*>(.*?)</title>").expect("static regex literal must compile")
+});
 
 static DESC_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r#"<meta[^>]+name\s*=\s*['"]description['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#)
-        .unwrap()
+        .expect("static regex literal must compile")
 });
 
 static KW_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r#"<meta[^>]+name\s*=\s*['"]keywords['"][^>]+content\s*=\s*['"]([^'"]+)['"]"#)
-        .unwrap()
+        .expect("static regex literal must compile")
 });
 
 /// Extracts links from HTML and dedups them (preserving first-occurrence order).

@@ -59,7 +59,10 @@ pub fn project(events: &[SessionEvent]) -> Result<ProjectedSession, SessionError
                     events: Vec::new(),
                 });
             }
-            turns.last_mut().unwrap()
+            // INVARIANT: 上面刚 push(或 turns 本就非空),last_mut 必为 Some。
+            turns
+                .last_mut()
+                .expect("a turn was just pushed or already present")
         }};
     }
 

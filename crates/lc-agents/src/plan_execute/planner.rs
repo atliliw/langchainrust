@@ -1,6 +1,7 @@
 //! Planner - generates / replans execution plans with the LLM
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolDefinition;
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -48,8 +49,16 @@ impl Planner {
         Self { llm }
     }
 
-    /// Generates an execution plan
-    pub async fn plan(&self, objective: &str) -> Result<Plan, AgentError> {
+    /// Generates an execution plan.
+    ///
+    /// T6 (v0.23.0): `config` carries callbacks/OTel so the planning LLM call is
+    /// visible (`on_llm_start/end`), matching the executor main link wired in
+    /// 0.22.4 A18. Pass `None` to run without tracing.
+    pub async fn plan(
+        &self,
+        objective: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<Plan, AgentError> {
         let prompt = format!(
             "为以下目标制定执行计划,输出 JSON 字符串数组,每项是一个步骤描述。\n\
              目标: {}\n\
@@ -65,7 +74,7 @@ impl Planner {
             self.llm.as_ref(),
             Some(plan_tool()),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -90,6 +99,7 @@ impl Planner {
         failed_step: &str,
         reason: &str,
         completed: &str,
+        config: Option<&RunnableConfig>,
     ) -> Result<Plan, AgentError> {
         let completed_block = if completed.trim().is_empty() {
             "(none)".to_string()
@@ -108,7 +118,7 @@ impl Planner {
             self.llm.as_ref(),
             Some(plan_tool()),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await

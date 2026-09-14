@@ -47,6 +47,9 @@ pub struct StdioMcpClient {
     /// need server-declared capability details.
     initialize_result: Value,
     request_timeout: Duration,
+    /// T10: optional `tools/call` OTel instrumentation.
+    #[cfg(feature = "opentelemetry")]
+    instrumentation: Option<std::sync::Arc<crate::instrument::McpInstrumentation>>,
 }
 
 impl StdioMcpClient {
@@ -118,7 +121,19 @@ impl StdioMcpClient {
             },
             initialize_result: result,
             request_timeout,
+            #[cfg(feature = "opentelemetry")]
+            instrumentation: None,
         })
+    }
+
+    /// Attaches OpenTelemetry `tools/call` instrumentation (T10).
+    #[cfg(feature = "opentelemetry")]
+    pub fn with_instrumentation(
+        mut self,
+        instrumentation: std::sync::Arc<crate::instrument::McpInstrumentation>,
+    ) -> Self {
+        self.instrumentation = Some(instrumentation);
+        self
     }
 
     /// Protocol negotiation result of the completed handshake.
@@ -168,8 +183,30 @@ impl StdioMcpClient {
         Ok(tools)
     }
 
-    /// `tools/call`, mirroring the stateless client.
+    /// `tools/call`, mirroring the stateless client (emits a `tools/call
+    /// {name}` OTel client span when instrumentation is attached — T10).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
+        #[cfg(feature = "opentelemetry")]
+        if let Some(instr) = &self.instrumentation {
+            return instr
+                .record_tool_call(
+                    name,
+                    &arguments,
+                    crate::instrument::NETWORK_TRANSPORT_PIPE,
+                    &self.info.negotiated,
+                    None,
+                    self.call_tool_direct(name, arguments.clone()),
+                )
+                .await;
+        }
+        self.call_tool_direct(name, arguments).await
+    }
+
+    async fn call_tool_direct(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<MCPToolResult, MCPError> {
         let params = json!({"name": name, "arguments": arguments});
         let result = self.send("tools/call", Some(params)).await?;
         serde_json::from_value(result)

@@ -51,6 +51,7 @@ mod tests_q3_q4 {
             content: content.map(|s| s.to_string()),
             reasoning_content: reasoning.map(|s| s.to_string()),
             tool_calls: None,
+            refusal: None,
         }
     }
 
@@ -64,6 +65,8 @@ mod tests_q3_q4 {
                 prompt_tokens: 10,
                 completion_tokens: 20,
                 total_tokens: 30,
+                reasoning_tokens: None,
+                completion_tokens_details: None,
             }),
         );
 

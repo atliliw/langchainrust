@@ -5,6 +5,7 @@
 //! retrieve -> grade_documents -> [transform_query + web_search | keep] -> generate
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::token_counter::count_tokens;
 use lc_core::tools::BaseTool;
 use lc_rag::RetrieverTrait;
@@ -127,17 +128,28 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
 
     /// Runs the full CRAG pipeline.
     pub async fn run(&self, query: &str) -> Result<CRAGResult, CRAGError> {
+        self.run_with_config(query, None).await
+    }
+
+    /// Runs the full CRAG pipeline with a [`RunnableConfig`], so the grading and
+    /// query-rewrite LLM calls emit `on_llm_start/end` to callbacks/OTel
+    /// (T6, v0.23.0).
+    pub async fn run_with_config(
+        &self,
+        query: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<CRAGResult, CRAGError> {
         let mut state = CRAGState::new(query);
 
         // Step 1: Retrieve documents
         self.retrieve(&mut state).await?;
 
         // Step 2: Grade documents
-        self.grade_documents(&mut state).await?;
+        self.grade_documents(&mut state, config).await?;
 
         // Step 3: Decide whether to correct
         if state.avg_score < self.grade_threshold {
-            self.correct(&mut state).await?;
+            self.correct(&mut state, config).await?;
         }
 
         // Step 4: Filter documents by threshold
@@ -193,10 +205,14 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     }
 
     /// Step 2: Grade each document for relevance.
-    pub(crate) async fn grade_documents(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
+    pub(crate) async fn grade_documents(
+        &self,
+        state: &mut CRAGState,
+        config: Option<&RunnableConfig>,
+    ) -> Result<(), CRAGError> {
         let grader = DocumentGrader::new(self.llm);
         let results = grader
-            .grade_all(&state.current_query, &state.documents)
+            .grade_all(&state.current_query, &state.documents, config)
             .await
             .map_err(CRAGError::GradingError)?;
 
@@ -231,11 +247,15 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
     /// Instead of a single rewrite, this generates multiple alternative queries
     /// via `generate_alternatives`, retrieves documents for each in parallel,
     /// and merges results with deduplication before re-grading.
-    pub(crate) async fn correct(&self, state: &mut CRAGState) -> Result<(), CRAGError> {
+    pub(crate) async fn correct(
+        &self,
+        state: &mut CRAGState,
+        config: Option<&RunnableConfig>,
+    ) -> Result<(), CRAGError> {
         // Generate alternative queries for broader retrieval coverage
         let rewriter = QueryRewriter::new(self.llm);
         let alternatives = rewriter
-            .generate_alternatives(&state.query, 3)
+            .generate_alternatives(&state.query, 3, config)
             .await
             .map_err(CRAGError::RewritingError)?;
 
@@ -277,7 +297,7 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
             state.documents = all_docs;
 
             // Re-grade the new documents
-            self.grade_documents(state).await?;
+            self.grade_documents(state, config).await?;
         } else {
             // All retrievals failed — keep original state
             return Err(CRAGError::NoDocumentsRetrieved);

@@ -55,6 +55,9 @@ pub struct StreamableMcpClient {
     policy: VersionPolicy,
     request_timeout: Duration,
     next_id: AtomicU64,
+    /// T10: optional `tools/call` OTel instrumentation.
+    #[cfg(feature = "opentelemetry")]
+    instrumentation: Option<Arc<crate::instrument::McpInstrumentation>>,
 }
 
 impl std::fmt::Debug for StreamableMcpClient {
@@ -133,19 +136,36 @@ impl StreamableMcpClient {
             policy,
             request_timeout,
             next_id: AtomicU64::new(2), // initialize used id 1
+            #[cfg(feature = "opentelemetry")]
+            instrumentation: None,
         })
+    }
+
+    /// Attaches OpenTelemetry `tools/call` instrumentation (T10).
+    #[cfg(feature = "opentelemetry")]
+    pub fn with_instrumentation(
+        mut self,
+        instrumentation: Arc<crate::instrument::McpInstrumentation>,
+    ) -> Self {
+        self.instrumentation = Some(instrumentation);
+        self
     }
 
     /// Protocol negotiation result of the completed handshake (or the latest
     /// [`StreamableMcpClient::reconnect`]).
     pub fn protocol_info(&self) -> ProtocolInfo {
-        self.info.read().unwrap().clone()
+        // Lock-poison 恢复:读写锁在 panic 时留下毒化值,恢复比传播更恰当
+        // (INVARIANT:握手已成功,||中被换入的值是完整结果)。
+        self.info.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Full `initialize` result: `protocolVersion`, `capabilities`,
     /// `serverInfo`.
     pub fn initialize_result(&self) -> Value {
-        self.initialize_result.read().unwrap().clone()
+        self.initialize_result
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Server-declared capabilities (empty object when absent).
@@ -167,8 +187,11 @@ impl StreamableMcpClient {
     pub async fn reconnect(&self) -> Result<(), MCPError> {
         self.transport.clear_session();
         let (info, result) = initialize(&self.transport, self.policy, self.request_timeout).await?;
-        *self.info.write().unwrap() = info;
-        *self.initialize_result.write().unwrap() = result;
+        *self.info.write().unwrap_or_else(|e| e.into_inner()) = info;
+        *self
+            .initialize_result
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = result;
         Ok(())
     }
 
@@ -211,8 +234,32 @@ impl StreamableMcpClient {
         Ok(tools)
     }
 
-    /// `tools/call`.
+    /// `tools/call` (emits a `tools/call {name}` OTel client span when
+    /// instrumentation is attached — T10).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
+        #[cfg(feature = "opentelemetry")]
+        if let Some(instr) = &self.instrumentation {
+            let info = self.protocol_info();
+            let session_id = self.session_id();
+            return instr
+                .record_tool_call(
+                    name,
+                    &arguments,
+                    crate::instrument::NETWORK_TRANSPORT_TCP,
+                    &info.negotiated,
+                    session_id.as_deref(),
+                    self.call_tool_direct(name, arguments.clone()),
+                )
+                .await;
+        }
+        self.call_tool_direct(name, arguments).await
+    }
+
+    async fn call_tool_direct(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<MCPToolResult, MCPError> {
         let params = json!({"name": name, "arguments": arguments});
         let result = self.send("tools/call", Some(params)).await?;
         serde_json::from_value(result)

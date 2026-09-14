@@ -144,6 +144,17 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
     /// 4. Generate answer from filtered documents
     /// 5. Optional: hallucination check
     pub async fn invoke(&self, query: &str) -> Result<CRAGResult, CRAGError> {
+        self.invoke_with_config(query, None).await
+    }
+
+    /// Invokes the CRAG agent with a [`lc_core::runnables::RunnableConfig`] so
+    /// the grading and query-rewrite LLM calls emit `on_llm_start/end` to the
+    /// configured callbacks/OTel backend (T6, v0.23.0).
+    pub async fn invoke_with_config(
+        &self,
+        query: &str,
+        config: Option<&lc_core::runnables::RunnableConfig>,
+    ) -> Result<CRAGResult, CRAGError> {
         let web_ref: Option<&dyn BaseTool> = self.web_fallback.as_ref().map(|b| b.as_ref());
 
         let mut graph = CRAGGraph::new(&self.llm, &self.retriever, web_ref, self.grade_threshold)
@@ -158,7 +169,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
             graph = graph.with_max_context_tokens(tokens);
         }
 
-        graph.run(query).await
+        graph.run_with_config(query, config).await
     }
 
     /// Streams the CRAG agent execution, emitting pipeline step events.
@@ -236,7 +247,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
             detail: Some("Grading document relevance...".to_string()),
         });
 
-        graph.grade_documents(&mut state).await?;
+        graph.grade_documents(&mut state, None).await?;
 
         events.push(AgentStreamEvent::PipelineStep {
             step: "graded".to_string(),
@@ -250,7 +261,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> CorrectiveRAGAgent<M, R> {
                 detail: Some("Score below threshold, rewriting query...".to_string()),
             });
 
-            graph.correct(&mut state).await?;
+            graph.correct(&mut state, None).await?;
 
             events.push(AgentStreamEvent::PipelineStep {
                 step: "corrected".to_string(),

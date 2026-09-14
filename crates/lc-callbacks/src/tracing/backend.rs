@@ -214,6 +214,27 @@ impl TracingBackend for OtelTracingBackend {
                     semconv::GEN_AI_USAGE_OUTPUT_TOKENS,
                     tokens.completion_tokens as i64,
                 ));
+                // T10: Development-stability usage extensions, mirroring
+                // OtelHandler's provider-token attribution (the two OTel
+                // surfaces share these names via `semconv`).
+                for (value, attr) in [
+                    (
+                        tokens.cache_read_input_tokens,
+                        semconv::GEN_AI_USAGE_CACHE_READ,
+                    ),
+                    (
+                        tokens.cache_write_input_tokens,
+                        semconv::GEN_AI_USAGE_CACHE_WRITE,
+                    ),
+                    (
+                        tokens.reasoning_output_tokens,
+                        semconv::GEN_AI_USAGE_REASONING,
+                    ),
+                ] {
+                    if let Some(n) = value {
+                        s.set_attribute(KeyValue::new(attr, n as i64));
+                    }
+                }
             }
             if let Some(reason) = &span.gen_ai_finish_reason {
                 s.set_attribute(KeyValue::new(
@@ -344,6 +365,7 @@ mod otel_backend_tests {
             prompt_tokens: 10,
             completion_tokens: 4,
             total_tokens: 14,
+            ..Default::default()
         });
         span.status = crate::SpanStatus::Error("TimeoutError: 30s".into());
 
@@ -379,6 +401,61 @@ mod otel_backend_tests {
             Some("TimeoutError")
         );
         assert!(exported.events.iter().any(|e| e.name == "exception"));
+    }
+
+    #[test]
+    fn end_span_emits_cache_and_reasoning_usage_extensions() {
+        // T10: the tracing OTel backend must attribute the same Development
+        // extension usage names as OtelHandler (no drift between surfaces).
+        let (backend, exporter) = backend_with_exporter();
+        let mut span = make_span("t".into(), None, "chat", crate::SpanKind::Llm);
+        span.tokens = Some(crate::SpanTokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            cache_read_input_tokens: Some(80),
+            cache_write_input_tokens: Some(10),
+            reasoning_output_tokens: Some(5),
+        });
+
+        backend.start_span(&span);
+        backend.end_span(&span);
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let exported = &spans[0];
+        assert_eq!(
+            exported
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == semconv::GEN_AI_USAGE_CACHE_READ)
+                .and_then(|kv| match kv.value {
+                    opentelemetry::Value::I64(v) => Some(v),
+                    _ => None,
+                }),
+            Some(80)
+        );
+        assert_eq!(
+            exported
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == semconv::GEN_AI_USAGE_CACHE_WRITE)
+                .and_then(|kv| match kv.value {
+                    opentelemetry::Value::I64(v) => Some(v),
+                    _ => None,
+                }),
+            Some(10)
+        );
+        assert_eq!(
+            exported
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == semconv::GEN_AI_USAGE_REASONING)
+                .and_then(|kv| match kv.value {
+                    opentelemetry::Value::I64(v) => Some(v),
+                    _ => None,
+                }),
+            Some(5)
+        );
     }
 
     #[test]

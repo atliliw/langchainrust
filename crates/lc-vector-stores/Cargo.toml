@@ -1,16 +1,16 @@
 [package]
 name = "lc-vector-stores"
-version = "0.22.4"
+version = "0.23.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Vector store implementations for langchainrust — InMemory, File, Qdrant, MongoDB, Redis, SQLite, ChromaDB, Pinecone, PGVector"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [dependencies]
-lc-shared = { path = "../lc-shared", version = "0.22.4" }
-lc-core = { path = "../lc-core", version = "0.22.4" }
-lc-embeddings = { path = "../lc-embeddings", version = "0.22.4" }
+lc-shared = { path = "../lc-shared", version = "0.23.0" }
+lc-core = { path = "../lc-core", version = "0.23.0" }
+lc-embeddings = { path = "../lc-embeddings", version = "0.23.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -24,7 +24,10 @@ reqwest = { version = "0.12", features = ["json"] }
 thiserror = "2.0"
 
 # Optional dependencies (feature-gated)
-qdrant-client = { version = "1.7", optional = true }
+# T7 (v0.23.0): 钉在 1.18 线 —— 1.19 起 qdrant-client 升到 reqwest 0.13 /
+# tonic 0.14,会与工作区其余部分(reqwest 0.12 / tonic 0.12)并存两套 HTTP/gRPC
+# 大栈。~1.18 是最后一条与全仓单栈一致的版本线。
+qdrant-client = { version = "~1.18", optional = true }
 mongodb = { version = "2.8", optional = true }
 redis = { version = "0.25", optional = true, features = ["tokio-comp"] }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }

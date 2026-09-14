@@ -98,6 +98,15 @@ pub struct AnthropicConfig {
     /// prompt and the last tool definition, marking the stable prefix for prompt caching
     /// (B1 transparent passthrough). Defaults to off so behavior is unchanged unless opted in.
     pub prompt_caching: bool,
+    /// T5 (v0.23.0): an explicit cache TTL for the per-breakpoint `cache_control`
+    /// markers. When set (e.g. `"1h"`), every caching breakpoint emits
+    /// `{"type":"ttl","ttl":<ttl>}` instead of the ephemeral marker — Anthropic's
+    /// long-lived prompt cache, useful for a stable system prefix that outlives the
+    /// 5-minute ephemeral window. Applied to the same breakpoints `prompt_caching`
+    /// controls (system prompt + last tool definition) so the static prefix is cached
+    /// independently of the conversation tail. `None` (default) falls back to
+    /// `prompt_caching`'s ephemeral marker.
+    pub prompt_cache_ttl: Option<String>,
 }
 
 impl std::fmt::Debug for AnthropicConfig {
@@ -114,6 +123,7 @@ impl std::fmt::Debug for AnthropicConfig {
             .field("tools", &self.tools)
             .field("tool_choice", &self.tool_choice)
             .field("prompt_caching", &self.prompt_caching)
+            .field("prompt_cache_ttl", &self.prompt_cache_ttl)
             .finish()
     }
 }
@@ -131,6 +141,7 @@ impl Default for AnthropicConfig {
             tools: None,
             tool_choice: None,
             prompt_caching: false,
+            prompt_cache_ttl: None,
         }
     }
 }
@@ -217,6 +228,23 @@ impl AnthropicConfig {
     /// cached across turns.
     pub fn with_prompt_caching(mut self, on: bool) -> Self {
         self.prompt_caching = on;
+        self.prompt_cache_ttl = None;
+        self
+    }
+
+    /// T5 (v0.23.0): enables explicit prompt caching with a long-lived TTL on every
+    /// caching breakpoint. Emits `cache_control: {"type":"ttl","ttl":<ttl>}` (Anthropic's
+    /// long-lived prompt cache) instead of the ephemeral marker, applied to the same
+    /// breakpoints as [`Self::with_prompt_caching`] (system prefix + last tool). Use e.g.
+    /// `"1h"` for a stable system prompt that should outlive the 5-minute ephemeral window;
+    /// the conversation tail is unaffected, letting the static prefix be cached
+    /// independently.
+    ///
+    /// Setting a TTL also turns `prompt_caching` on; call `with_prompt_caching(false)` after
+    /// to clear the TTL and stay un-cached.
+    pub fn with_prompt_cache_ttl(mut self, ttl: impl Into<String>) -> Self {
+        self.prompt_caching = true;
+        self.prompt_cache_ttl = Some(ttl.into());
         self
     }
 }

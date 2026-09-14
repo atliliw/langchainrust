@@ -10,11 +10,29 @@ use lc_vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
 
 use crate::bm25::{AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult};
 use crate::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
+use crate::mmr::mmr as select_mmr;
 use crate::retriever::{RetrieverError, RetrieverTrait};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Hybrid 融合策略。
+///
+/// 默认 `Rrf` 只按排名融合,不读绝对分值;`Weighted` 把 BM25 与向量的
+/// 原始分数各自 min-max 归一化到 \[0,1\] 后加权线性相加(RRF 保持默认)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FusionMode {
+    /// Reciprocal Rank Fusion:按排名合成,分数只作 tie-break+展示。
+    Rrf,
+    /// 加权线性融合:`w_bm25·norm_bm25 + w_vector·norm_vector`。
+    Weighted {
+        /// BM25 归一化分数权重
+        bm25_weight: f32,
+        /// 向量相似度归一化分数权重
+        vector_weight: f32,
+    },
+}
 
 /// Unified hybrid index configuration
 pub struct HybridIndexConfig {
@@ -26,12 +44,14 @@ pub struct HybridIndexConfig {
     pub bm25_k: usize,
     /// Number of vector retrieval results
     pub vector_k: usize,
-    /// RRF fusion parameter k
+    /// RRF fusion parameter k (Rrf mode only)
     pub rrf_k: usize,
     /// Threshold for merging leaf chunks into parent documents
     pub merge_threshold: f32,
     /// Minimum score threshold for vector retrieval (P1-2); default 0.0 keeps the old behavior.
     pub min_score: f32,
+    /// 融合策略;默认 RRF,换 `Weighted` 需同时给权重。见 [`FusionMode`]。
+    pub fusion: FusionMode,
 }
 
 impl Default for HybridIndexConfig {
@@ -44,6 +64,7 @@ impl Default for HybridIndexConfig {
             rrf_k: RRF_K,
             merge_threshold: 0.5,
             min_score: 0.0,
+            fusion: FusionMode::Rrf,
         }
     }
 }
@@ -84,9 +105,39 @@ impl HybridIndexConfig {
         self.min_score = min_score;
         self
     }
+
+    /// Sets the fusion strategy. RRF is the default; switching to `Weighted`
+    /// blends min-max-normalized BM25/vector scores with the given weights.
+    pub fn with_fusion(mut self, fusion: FusionMode) -> Self {
+        self.fusion = fusion;
+        self
+    }
+}
+
+/// 把一腿的原始分数(可正可负可零)线性归一化到 \[0,1\]。空表返回空;若
+/// max == min(单元素或全同值)该腿所有出现项都记为 1.0——避免归一化把
+/// 唯一一项压成 0 而让加权融合中这一腿彻底失声。
+fn min_max_normalize(scores: &HashMap<String, f32>) -> HashMap<String, f64> {
+    if scores.is_empty() {
+        return HashMap::new();
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for v in scores.values() {
+        min = min.min(*v);
+        max = max.max(*v);
+    }
+    if max - min <= f32::EPSILON {
+        return scores.keys().map(|k| (k.clone(), 1.0)).collect();
+    }
+    scores
+        .iter()
+        .map(|(k, v)| (k.clone(), ((v - min) / (max - min)) as f64))
+        .collect()
 }
 
 /// Hybrid search result (with detailed scores and rank information)
+#[derive(Debug, Clone)]
 pub struct HybridSearchResult {
     /// The retrieved document
     pub document: Document,
@@ -336,31 +387,53 @@ impl UnifiedHybridIndex {
             .map(|(doc, score)| (doc.id.clone().unwrap_or_default(), *score))
             .collect();
 
-        let mut rrf_scores: HashMap<String, (f64, Document)> = HashMap::new();
+        // 融合分:按 config.fusion 选 RRF(默认,只排名)或加权线性(各腿分数
+        // 各自 min-max 归一化后按权重相加)。
+        let fused_scores: HashMap<String, (f64, Document)> = match self.config.fusion {
+            FusionMode::Rrf => {
+                let mut scores: HashMap<String, (f64, Document)> = HashMap::new();
+                for (doc, _) in &bm25_results {
+                    let doc_id = doc.id.clone().unwrap_or_default();
+                    let rank = bm25_ranks.get(&doc_id).copied().unwrap_or(999);
+                    let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
+                    scores
+                        .entry(doc_id.clone())
+                        .and_modify(|(s, _)| *s += contribution)
+                        .or_insert((contribution, doc.clone()));
+                }
+                for (doc, _) in &vector_results {
+                    let doc_id = doc.id.clone().unwrap_or_default();
+                    let rank = vector_ranks.get(&doc_id).copied().unwrap_or(999);
+                    let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
+                    scores
+                        .entry(doc_id.clone())
+                        .and_modify(|(s, _)| *s += contribution)
+                        .or_insert((contribution, doc.clone()));
+                }
+                scores
+            }
+            FusionMode::Weighted {
+                bm25_weight,
+                vector_weight,
+            } => {
+                let norm_bm25 = min_max_normalize(&bm25_scores);
+                let norm_vector = min_max_normalize(&vector_scores);
+                let mut scores: HashMap<String, (f64, Document)> = HashMap::new();
+                for (doc, _) in bm25_results.iter().chain(vector_results.iter()) {
+                    let doc_id = doc.id.clone().unwrap_or_default();
+                    // 并集权重:某腿没命中该 id 时该腿记 0(只由另一腿贡献)。
+                    let combined = bm25_weight as f64
+                        * norm_bm25.get(&doc_id).copied().unwrap_or(0.0)
+                        + vector_weight as f64 * norm_vector.get(&doc_id).copied().unwrap_or(0.0);
+                    scores
+                        .entry(doc_id.clone())
+                        .or_insert_with(|| (combined, doc.clone()));
+                }
+                scores
+            }
+        };
 
-        for (doc, _) in &bm25_results {
-            let doc_id = doc.id.clone().unwrap_or_default();
-            let rank = bm25_ranks.get(&doc_id).copied().unwrap_or(999);
-            let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
-
-            rrf_scores
-                .entry(doc_id.clone())
-                .and_modify(|(score, _)| *score += contribution)
-                .or_insert((contribution, doc.clone()));
-        }
-
-        for (doc, _) in &vector_results {
-            let doc_id = doc.id.clone().unwrap_or_default();
-            let rank = vector_ranks.get(&doc_id).copied().unwrap_or(999);
-            let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
-
-            rrf_scores
-                .entry(doc_id.clone())
-                .and_modify(|(score, _)| *score += contribution)
-                .or_insert((contribution, doc.clone()));
-        }
-
-        let mut results: Vec<(String, f64, Document)> = rrf_scores
+        let mut results: Vec<(String, f64, Document)> = fused_scores
             .into_iter()
             .map(|(id, (score, doc))| (id, score, doc))
             .collect();
@@ -390,6 +463,78 @@ impl UnifiedHybridIndex {
             .collect();
 
         Ok(hybrid_results)
+    }
+
+    /// MMR 多样性重排:先把 BM25+向量按当前融合策略融合出 `cand_k` 个候选,
+    /// 再对候选内容用文档编码器取向量,按 `lambda` 在「相关(RRF/加权分)」
+    /// 与「和已选集合最不相似」之间贪心重排,返回重排后至多 `k` 个结果。
+    ///
+    /// - `cand_k` 应大于 `k`,给去重留出候选池。
+    /// - `lambda ∈ \[0,1\]`:1=纯相关(即退换为融合排序),0=纯去重。
+    /// - 融合分在候选池内 min-max 归一化到 \[0,1\] 后再进 MMR:RRF 分是
+    ///   ~0.01 量级的倒数排名和、Weighted 分已在 \[0,1\],不归一化 λ 的
+    ///   「相关/多样」天平在两种融合策略下语义不一致(池内全等分时记 1.0)。
+    /// - 这是显式后处理,会为 `cand_k` 个候选额外调用一次文档编码器。
+    pub async fn retrieve_mmr(
+        &self,
+        query: &str,
+        cand_k: usize,
+        k: usize,
+        lambda: f32,
+    ) -> Result<Vec<HybridSearchResult>, VectorStoreError> {
+        let pool = self.retrieve_with_details(query, cand_k).await?;
+        if pool.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 只为候选池取向量:文档编码器批量一次,供 MMR 算两两余弦相似。
+        let contents: Vec<&str> = pool.iter().map(|r| r.document.content.as_str()).collect();
+        let vectors = self
+            .embeddings
+            .embed_documents(&contents)
+            .await
+            .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
+
+        // 相关分池内归一化,与 mmr.rs 手算单测(余弦 ∈ [-1,1]、相关 ∈ [0,1])
+        // 保持同一量纲。
+        let mut rel_min = f64::INFINITY;
+        let mut rel_max = f64::NEG_INFINITY;
+        for r in &pool {
+            rel_min = rel_min.min(r.rrf_score);
+            rel_max = rel_max.max(r.rrf_score);
+        }
+        let rel_span = rel_max - rel_min;
+        let normalize = |score: f64| {
+            if rel_span <= f64::EPSILON {
+                1.0
+            } else {
+                (score - rel_min) / rel_span
+            }
+        };
+
+        let ranked: Vec<(String, f64, Vec<f32>)> = pool
+            .iter()
+            .zip(vectors)
+            .map(|(r, v)| {
+                (
+                    r.document.id.clone().unwrap_or_default(),
+                    normalize(r.rrf_score),
+                    v,
+                )
+            })
+            .collect();
+
+        let order = select_mmr(&ranked, lambda, k);
+
+        let by_id: HashMap<String, HybridSearchResult> = pool
+            .into_iter()
+            .map(|r| (r.document.id.clone().unwrap_or_default(), r))
+            .collect();
+
+        Ok(order
+            .into_iter()
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect())
     }
 
     async fn vector_search(&self, query: &str) -> Result<Vec<Document>, VectorStoreError> {
@@ -479,6 +624,39 @@ impl UnifiedHybridIndex {
 
         self.vector_store.clear().await?;
 
+        Ok(())
+    }
+}
+
+/// P0-1: `UnifiedHybridIndex` implements `RetrieverTrait`.
+///
+/// The inherent `retrieve()` / `add_documents()` methods take precedence over the trait
+/// methods during method resolution, so calling them directly does not recurse.
+#[async_trait]
+impl RetrieverTrait for UnifiedHybridIndex {
+    async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
+        let results = self.retrieve(query, k).await?;
+        Ok(results.into_iter().map(|r| r.document).collect())
+    }
+
+    async fn retrieve_with_scores(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<SearchResult>, RetrieverError> {
+        let results = self.retrieve(query, k).await?;
+        Ok(results
+            .into_iter()
+            .map(|r| SearchResult {
+                document: r.document,
+                // RetrievedDocument.score is f64, normalized to SearchResult's f32
+                score: r.score as f32,
+            })
+            .collect())
+    }
+
+    async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
+        self.add_documents(documents).await?;
         Ok(())
     }
 }
@@ -593,10 +771,10 @@ mod tests {
         let index = small_index(embeddings);
 
         // ~10 chunks at chunk_size 80, and every chunk contains "zebra".
-        let doc_text = std::iter::repeat(
+        let doc_text = std::iter::repeat_n(
             "zebra rust is a systems programming language that runs blazingly fast",
+            8,
         )
-        .take(8)
         .collect::<Vec<_>>()
         .join(" . ");
         let parent = index
@@ -668,10 +846,10 @@ mod tests {
         let index = small_index(embeddings);
 
         const PARENT_ID: &str = "ns::parent::id";
-        let doc_text = std::iter::repeat(
+        let doc_text = std::iter::repeat_n(
             "zebra migration patterns follow seasonal rain across the savanna plains",
+            8,
         )
-        .take(8)
         .collect::<Vec<_>>()
         .join(" . ");
         let returned = index
@@ -717,37 +895,261 @@ mod tests {
             "parent_id must not be reconstructed by splitting on '::'"
         );
     }
-}
 
-/// P0-1: `UnifiedHybridIndex` implements `RetrieverTrait`.
-///
-/// The inherent `retrieve()` / `add_documents()` methods take precedence over the trait
-/// methods during method resolution, so calling them directly does not recurse.
-#[async_trait]
-impl RetrieverTrait for UnifiedHybridIndex {
-    async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
-        let results = self.retrieve(query, k).await?;
-        Ok(results.into_iter().map(|r| r.document).collect())
+    /// Finds a toy-hash **collision token**: a different BM25 token that lands
+    /// in the same embedding bucket as `word`. The vector leg then matches the
+    /// collider while the lexical leg (different string) cannot — this is what
+    /// lets the weighted-fusion tests isolate each leg deterministically.
+    fn collision_token(word: &str, dim: usize) -> String {
+        let target = bucket_of(word, dim);
+        (0..10_000)
+            .map(|i| format!("col{i}"))
+            .find(|cand| cand != word && bucket_of(cand, dim) == target)
+            .expect("a collision token exists within the scan range")
     }
 
-    async fn retrieve_with_scores(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<SearchResult>, RetrieverError> {
-        let results = self.retrieve(query, k).await?;
-        Ok(results
+    /// Picks `n` tokens whose toy-hash buckets are pairwise distinct and all
+    /// different from `avoid`'s bucket, so the hand-computed cosine geometry in
+    /// the MMR tests is exact (no accidental bucket overlaps).
+    fn distinct_bucket_tokens(n: usize, avoid: &str, dim: usize) -> Vec<String> {
+        let mut used = std::collections::HashSet::new();
+        used.insert(bucket_of(avoid, dim));
+        let mut out = Vec::new();
+        let mut i = 0;
+        while out.len() < n {
+            let cand = format!("tk{i}");
+            if used.insert(bucket_of(&cand, dim)) {
+                out.push(cand);
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// T11: min-max normalization edges — empty map, a constant leg (every
+    /// occurrence scores 1.0 so the weighted leg is not silenced), and the
+    /// regular 0/1 mapping.
+    #[test]
+    fn min_max_normalize_edges() {
+        assert!(min_max_normalize(&HashMap::new()).is_empty());
+
+        let constant: HashMap<String, f32> = [("a".to_string(), 3.0), ("b".to_string(), 3.0)]
             .into_iter()
-            .map(|r| SearchResult {
-                document: r.document,
-                // RetrievedDocument.score is f64, normalized to SearchResult's f32
-                score: r.score as f32,
-            })
-            .collect())
+            .collect();
+        let norm = min_max_normalize(&constant);
+        assert_eq!(norm.get("a"), Some(&1.0));
+        assert_eq!(norm.get("b"), Some(&1.0));
+
+        let spread: HashMap<String, f32> = [
+            ("a".to_string(), 0.0f32),
+            ("b".to_string(), 2.0),
+            ("c".to_string(), 1.0),
+        ]
+        .into_iter()
+        .collect();
+        let norm = min_max_normalize(&spread);
+        assert_eq!(norm.get("a"), Some(&0.0));
+        assert_eq!(norm.get("b"), Some(&1.0));
+        assert_eq!(norm.get("c"), Some(&0.5));
     }
 
-    async fn add_documents(&self, documents: Vec<Document>) -> Result<(), RetrieverError> {
-        self.add_documents(documents).await?;
-        Ok(())
+    /// Builds a single-chunk-per-doc index with the given fusion mode.
+    async fn weighted_index(
+        embeddings: Arc<dyn Embeddings>,
+        fusion: FusionMode,
+        docs: &[(&str, &str)],
+    ) -> UnifiedHybridIndex {
+        let vector_store: Arc<dyn VectorStore> = Arc::new(InMemoryVectorStore::new());
+        let config = HybridIndexConfig::new()
+            .with_chunk_size(80)
+            .with_top_k(5, 5)
+            .with_fusion(fusion);
+        let index = UnifiedHybridIndex::with_config(embeddings, vector_store, 32, config);
+        for (id, content) in docs {
+            index
+                .add_document(Document::new(*content).with_id(*id))
+                .await
+                .unwrap();
+        }
+        index
+    }
+
+    /// T11: weighted linear fusion — the two weights decide which leg wins.
+    ///
+    /// Geometry (dim 32):
+    /// - `lex`: contains "zebra" → BM25 hit. Its vector carries zebra plus 7
+    ///   distinct other buckets, so the query cosine is diluted to 1/√8.
+    /// - `vec`: a single zebra-bucket **collision token** (different string) →
+    ///   invisible to BM25, but its document vector is the zebra unit vector,
+    ///   cosine 1.0.
+    ///
+    /// So (bm25=1, vector=0) must rank `lex` first; the reverse weighting must
+    /// rank `vec` first. Default RRF is unaffected.
+    #[tokio::test]
+    async fn weighted_fusion_weights_control_which_leg_wins() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let collider = collision_token("zebra", 32);
+        let filler = distinct_bucket_tokens(7, "zebra", 32);
+        let lex_content = std::iter::once("zebra".to_string())
+            .chain(filler)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let docs = [("lex", lex_content.as_str()), ("vec", collider.as_str())];
+
+        let lexical = weighted_index(
+            embeddings.clone(),
+            FusionMode::Weighted {
+                bm25_weight: 1.0,
+                vector_weight: 0.0,
+            },
+            &docs,
+        )
+        .await;
+        let results = lexical.retrieve_with_details("zebra", 2).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].document.id.as_deref(), Some("lex"));
+        assert_eq!(results[0].bm25_rank, Some(1));
+
+        let vectorial = weighted_index(
+            embeddings,
+            FusionMode::Weighted {
+                bm25_weight: 0.0,
+                vector_weight: 1.0,
+            },
+            &docs,
+        )
+        .await;
+        let results = vectorial.retrieve_with_details("zebra", 2).await.unwrap();
+        assert_eq!(results[0].document.id.as_deref(), Some("vec"));
+        assert!(
+            results[0].bm25_score.is_none(),
+            "vec never hits the BM25 leg"
+        );
+    }
+
+    /// T11 MMR geometry: d2 is a near-duplicate of d1 (4 shared filler tokens),
+    /// d3 shares only "zebra" with them. d1 tops both legs (highest query cosine
+    /// 1/√5 and shortest doc for BM25 length normalization).
+    async fn mmr_index(embeddings: Arc<dyn Embeddings>, fusion: FusionMode) -> UnifiedHybridIndex {
+        let toks = distinct_bucket_tokens(11, "zebra", 32);
+        let d1 = std::iter::once("zebra".to_string())
+            .chain(toks[0..4].iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let d2 = std::iter::once("zebra".to_string())
+            .chain(toks[0..5].iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let d3 = std::iter::once("zebra".to_string())
+            .chain(toks[5..11].iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        weighted_index(
+            embeddings,
+            fusion,
+            &[
+                ("d1", d1.as_str()),
+                ("d2", d2.as_str()),
+                ("d3", d3.as_str()),
+            ],
+        )
+        .await
+    }
+
+    /// T11: λ=1 means pure relevance — MMR must return the fusion ranking
+    /// verbatim (pool-internal normalization is monotonic).
+    #[tokio::test]
+    async fn mmr_lambda_one_preserves_fusion_order() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = mmr_index(embeddings, FusionMode::Rrf).await;
+
+        let fused: Vec<String> = index
+            .retrieve_with_details("zebra", 3)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.document.id.unwrap_or_default())
+            .collect();
+
+        let mmr_order: Vec<String> = index
+            .retrieve_mmr("zebra", 3, 3, 1.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.document.id.unwrap_or_default())
+            .collect();
+
+        assert_eq!(mmr_order, fused);
+        assert_eq!(
+            mmr_order.iter().collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from([
+                &"d1".to_string(),
+                &"d2".to_string(),
+                &"d3".to_string()
+            ])
+        );
+    }
+
+    /// T11: λ=0 means pure diversity — after d1 the near-duplicate d2 must be
+    /// skipped in favour of the dissimilar d3.
+    #[tokio::test]
+    async fn mmr_lambda_zero_jumps_to_dissimilar_candidate() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = mmr_index(embeddings, FusionMode::Rrf).await;
+
+        let order: Vec<String> = index
+            .retrieve_mmr("zebra", 3, 3, 0.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.document.id.unwrap_or_default())
+            .collect();
+
+        assert_eq!(order.len(), 3);
+        // The fused top result can be any of the three (the two legs can rank
+        // the short/long docs oppositely and tie under RRF), but MMR's
+        // invariant is layout-independent: the near-duplicate pair d1/d2 must
+        // never occupy the top two slots together — the dissimilar d3 has to
+        // break into the first two positions.
+        let top_two: std::collections::HashSet<&String> = order[0..2].iter().collect();
+        assert!(
+            top_two.contains(&"d3".to_string()),
+            "diversity must surface the dissimilar d3 in the top two; got {top_two:?}"
+        );
+        assert!(
+            !(top_two.contains(&"d1".to_string()) && top_two.contains(&"d2".to_string())),
+            "the near-duplicate pair must not own both top slots; got {top_two:?}"
+        );
+        // The extra embed_documents call is the single batched MMR re-embed
+        // (one per indexed chunk happened during ingest).
+        assert!(mock.embed_document_calls.load(Ordering::SeqCst) > 3);
+    }
+
+    /// T11: k truncates the MMR result; cand_k only sizes the candidate pool.
+    #[tokio::test]
+    async fn mmr_truncates_to_k() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = mmr_index(embeddings, FusionMode::Rrf).await;
+
+        let order = index.retrieve_mmr("zebra", 3, 2, 0.5).await.unwrap();
+        assert_eq!(order.len(), 2);
+    }
+
+    /// T11: an empty pool stays empty (no spurious embed call, no panic).
+    #[tokio::test]
+    async fn mmr_empty_when_nothing_matches() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let docs: [(&str, &str); 0] = [];
+        let index = weighted_index(embeddings, FusionMode::Rrf, &docs).await;
+        assert!(index
+            .retrieve_mmr("zebra", 3, 3, 0.5)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

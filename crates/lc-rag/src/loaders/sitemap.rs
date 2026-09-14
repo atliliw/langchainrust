@@ -13,8 +13,9 @@ use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
 
 /// M59: compile regex once using LazyLock instead of on every call
-static LOC_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap());
+static LOC_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<loc>\s*(.*?)\s*</loc>").expect("static regex literal must compile")
+});
 
 /// H8: default per-HTTP-request timeout — a hung target site will not block forever.
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);

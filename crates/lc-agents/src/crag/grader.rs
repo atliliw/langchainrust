@@ -4,6 +4,7 @@
 //! Uses an LLM to score document relevance against a query.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolDefinition;
 use lc_schema::Message;
 use lc_vector_stores::Document;
@@ -39,6 +40,7 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
         &self,
         query: &str,
         document: &Document,
+        config: Option<&RunnableConfig>,
     ) -> Result<GradeResult, GraderError> {
         let prompt = build_grade_prompt(query, &document.content);
 
@@ -48,7 +50,7 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
             self.llm,
             Some(grade_tool()),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -69,10 +71,20 @@ impl<'a, M: BaseChatModel> DocumentGrader<'a, M> {
         &self,
         query: &str,
         documents: &[Document],
+        config: Option<&RunnableConfig>,
     ) -> Result<Vec<GradeResult>, GraderError> {
         use futures_util::future::join_all;
 
-        let futures: Vec<_> = documents.iter().map(|doc| self.grade(query, doc)).collect();
+        // Each parallel grade future needs its own owned config (the shared
+        // reference cannot be moved into the join_all iterator); the async
+        // block owns `cfg` and lends it to `grade` for the call duration.
+        let futures: Vec<_> = documents
+            .iter()
+            .map(|doc| {
+                let cfg = config.cloned();
+                async move { self.grade(query, doc, cfg.as_ref()).await }
+            })
+            .collect();
 
         let results = join_all(futures).await;
         // Collect results, returning the first error if any

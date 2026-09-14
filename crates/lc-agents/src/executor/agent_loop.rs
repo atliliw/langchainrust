@@ -14,7 +14,10 @@ use crate::hooks::{ToolCallAction, ToolCallContext, ToolResultContext};
 use crate::metrics::AgentMetrics;
 use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
-use lc_callbacks::{RunTree, RunType};
+use lc_callbacks::{
+    semconv::{GEN_AI_TOOL_CALL_ID, GEN_AI_TOOL_DESCRIPTION},
+    RunTree, RunType,
+};
 use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolError;
 use serde_json::json;
@@ -504,6 +507,13 @@ impl AgentExecutor {
             RunType::Tool,
             json!({"input": input_for_tool.clone()}),
         );
+        // T10: 2026 GenAI tool-span attributes. The description is Recommended;
+        // the provider tool-call id (empty for locally-originated calls) is
+        // stamped when present. OtelHandler reads both from run metadata.
+        tool_run = tool_run.with_metadata(GEN_AI_TOOL_DESCRIPTION, json!(tool.description()));
+        if !tool_ctx.tool_id.is_empty() {
+            tool_run = tool_run.with_metadata(GEN_AI_TOOL_CALL_ID, json!(tool_ctx.tool_id.clone()));
+        }
 
         if let Some(ref callbacks) = self.callbacks {
             for handler in callbacks.handlers() {

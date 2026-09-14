@@ -229,6 +229,31 @@ pub struct StreamUsage {
     pub completion_tokens: usize,
     /// Total token count
     pub total_tokens: usize,
+    /// T5 (v0.23.0): reasoning-token accounting (OpenAI-compatible, both nesting styles).
+    #[serde(default)]
+    pub reasoning_tokens: Option<usize>,
+    /// OpenAI-style `completion_tokens_details.reasoning_tokens` (nested reporting).
+    #[serde(default)]
+    pub completion_tokens_details: Option<StreamCompletionTokensDetails>,
+}
+
+/// T5 (v0.23.0): OpenAI-style `completion_tokens_details` on a streaming usage chunk.
+#[derive(Debug, Deserialize, Clone)]
+pub struct StreamCompletionTokensDetails {
+    /// Reasoning-token count reported under the nested form.
+    #[serde(default)]
+    pub reasoning_tokens: Option<usize>,
+}
+
+impl StreamUsage {
+    /// T5 (v0.23.0): the reasoning-token count across nesting styles, if reported.
+    pub fn reasoning_tokens(&self) -> Option<usize> {
+        self.reasoning_tokens.or_else(|| {
+            self.completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+        })
+    }
 }
 
 /// Choice in a streaming response

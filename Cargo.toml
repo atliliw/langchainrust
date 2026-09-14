@@ -26,9 +26,17 @@ members = [
 ]
 resolver = "3"
 
-# MSRV 承诺 1.85(与各 crate rust-version 一致,见 rust-toolchain.toml)。
+# MSRV 承诺 1.85(默认特性;23 个 crate 经 [workspace.package] 统一继承,
+# 见 rust-toolchain.toml 与 crates/lc/README.md 的 MSRV 分层说明)。
+# 注意:rust-version 不是 [workspace] 的合法键(会触发 "unused manifest key:
+# workspace.rust-version" 告警),workspace 级声明必须放在 [workspace.package]
+# 下由成员 `rust-version.workspace = true` 继承(T3,v0.23 修正)。
 # resolver "3" 启用 MSRV 感知解析:在 cargo 1.84+ 上解析依赖时自动排除
 # `rust-version > 1.85` 的版本。2026-08 依赖漂移实测:icu 2.x / time 0.3.55 /
 # ort-sys 均要求 rustc ≥ 1.88,单靠锁版本(update --precise)会被 cookie_store/
 # ureq 等约束链挡住,resolver 3 在解析层根治。
+# 分层:默认特性 MSRV 1.85;feature `local-embeddings`/`fastembed`/`local-candle`
+# (ort/candle 门控)实际需要 rustc ≥ 1.88,无法在 per-feature 层声明
+# (cargo 只支持 per-package rust-version),以文档 + CI 分层兜底。
+[workspace.package]
 rust-version = "1.85"

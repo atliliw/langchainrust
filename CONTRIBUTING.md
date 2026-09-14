@@ -112,6 +112,47 @@ let value = some_option.ok_or(MyError::InvalidInput("missing value".into()))?;
 let value = some_option.unwrap();
 ```
 
+**Error type policy (T9, v0.23):** new error types MUST derive `thiserror::Error`
+(one-liner `#[derive(Debug, thiserror::Error)]`). Do NOT introduce new handwritten
+`impl Display` error types. We have a legacy set of handwritten errors (~57 sites)
+— do not batch-migrate them; migrate one opportunistically when you edit that file.
+
+**Unwrap policy (T8):** `unwrap()` is banned on error/propagation paths — always
+propagate with `?` + a typed error. True invariants may keep `.expect("...")` with a
+rationale string, or use lock-poison recovery `unwrap_or_else(|e| e.into_inner())`
+where recovery beats propagation (e.g. `Mutex`/`RwLock` reads). Compile-time-literal
+`Regex::new(...)`/capture-group-0 `get(0)` are the canonical invariant form. We don't
+aim for zero; we aim for no silent panic on external/bad input.
+
+**Async trait policy (T9):** new trait methods use `impl Trait` in fn args and native
+RPITIT / `trait_variant::make` for codegen. Keep `#[async_trait]` **only** where you
+need `dyn` object-safety. Mixing both on one trait has caused real release-breaking
+lifetime bugs (0.22.4 `local-embeddings` E0195).
+
+### MSRV & Features (T3, v0.23)
+
+The workspace declares MSRV **1.85 for default features only**, in one place:
+`[workspace.package] rust-version` in the root `Cargo.toml`; every crate inherits
+it via `rust-version.workspace = true` (note: `rust-version` is not a valid
+`[workspace]` key — putting it there only produces an "unused manifest key"
+warning). Some feature-gated dependencies require a newer toolchain:
+
+- `fastembed` / `local-candle` / `local-embeddings` → ORT/Candle (`ort-sys`, etc.) need
+  `rustc ≥ 1.88`. These CANNOT be compiled on an MSRV 1.85 toolchain; they are never
+  default features.
+- All-features builds and docs.rs (`[package.metadata.docs.rs]` feature lists) run on
+  **stable** in CI — never assume a feature compiles on MSRV.
+- Per-package `rust-version` is supported by Cargo but **not** per-feature; document
+  feature toolchain requirements near the feature definition.
+- The `all-features` clippy/rustdoc jobs in CI (`clippy-all-features` +
+  `doc --all-features`) are the source of truth for feature-gated code. If a feature
+  doesn't compile there, it is broken — fix it in that job, don't hide it behind MSRV.
+- The `feature-matrix` job (`cargo-hack --each-feature` for every gated crate +
+  facade `--feature-powerset --depth 2`) additionally catches single-feature and
+  feature-pair breakage that all-features builds mask (the 0.22.4 fastembed
+  incident was exactly this class). Run the same command locally before adding a
+  new `#[cfg(feature = ...)]` code path.
+
 ### Naming Conventions
 
 - **Struct/Enum**: PascalCase (`OpenAIChat`, `AgentError`)
@@ -224,6 +265,25 @@ cargo test --all-features
 # Run ignored tests (requires real API keys)
 cargo test -- --ignored
 ```
+
+## Release Discipline (T2, v0.23)
+
+Releases are **tag-driven and CI-only**. Do NOT `cargo publish` from a local shell as a
+shortcut — a fastembed/local-embeddings all-features compile error historically shipped
+that way (docs.rs was red from 0.20 → 0.22.4).
+
+- Publishing path: push a `vX.Y.Z` tag → `cd.yml` runs `scripts/release-gate.sh
+  --all-features` on ubuntu → publishes all 23 crates in dependency order via
+  `scripts/publish-crates.sh` (leaf → root, idempotent, resumable).
+- Before tagging: the facade `crates/lc/Cargo.toml` `version`, every dependent crate's
+  version, and the tag must all match; CHANGELOG must be bumped.
+- **Docs.rs green is a release gate**: after publish, docs.rs must show
+  `succeeded` for the facade. If it fails, cut a hotfix immediately — do not let a red
+  docs build accumulate across versions.
+- Semver baseline is resolved dynamically from crates.io at CI time (the previous
+  published version), so you never hand-edit a baseline.
+- See `scripts/publish-crates.sh` header for env vars, and the checklists under
+  `docs/internal/v*/RELEASE_CHECKLIST.md`.
 
 ## Good First Issues
 

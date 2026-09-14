@@ -10,12 +10,16 @@ use super::guardrail::{
     InputGuardrail, InputGuardrailResult, OutputGuardrail, OutputGuardrailResult,
 };
 
-static OPENAI_KEY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[sS][kK]-[a-zA-Z0-9]{20,}").unwrap());
-static EMAIL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap());
-static CREDIT_CARD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(\d[\s-]*){15,18}\d\b").unwrap());
+static OPENAI_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[sS][kK]-[a-zA-Z0-9]{20,}").expect("static regex literal must compile")
+});
+static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+        .expect("static regex literal must compile")
+});
+static CREDIT_CARD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(\d[\s-]*){15,18}\d\b").expect("static regex literal must compile")
+});
 
 /// High-false-positive "mention" keywords (P2-2): plain mentions (e.g. "how to store passwords
 /// safely") do not count as leaks and by default only `log::warn`, never Block; concrete patterns

@@ -5,6 +5,7 @@
 //! rewritten to improve retrieval quality.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_schema::Message;
 
 /// Query rewriting error types.
@@ -35,14 +36,21 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
     ///
     /// The rewriter generates alternative phrasings that may match
     /// documents the original query missed.
-    pub async fn rewrite(&self, query: &str) -> Result<String, RewriterError> {
+    ///
+    /// T6 (v0.23.0): `config` carries callbacks/OTel so the rewrite LLM call is
+    /// visible (`on_llm_start/end`); pass `None` to run untraced.
+    pub async fn rewrite(
+        &self,
+        query: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<String, RewriterError> {
         let prompt = build_rewrite_prompt(query);
 
         let messages = vec![Message::human(&prompt)];
         let result = crate::retry::retry_chat(
             self.llm,
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -63,6 +71,7 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
         &self,
         query: &str,
         count: usize,
+        config: Option<&RunnableConfig>,
     ) -> Result<Vec<String>, RewriterError> {
         let prompt = build_alternatives_prompt(query, count);
 
@@ -70,7 +79,7 @@ impl<'a, M: BaseChatModel> QueryRewriter<'a, M> {
         let result = crate::retry::retry_chat(
             self.llm,
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await

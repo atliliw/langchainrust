@@ -96,12 +96,16 @@ impl StreamableHttpTransport {
 
     /// The current session id assigned by the server, if any.
     pub fn session_id(&self) -> Option<String> {
-        self.session.lock().unwrap().clone()
+        // 锁中毒只意味着持锁线程曾 panic,内部数据仍可用,恢复优于传播。
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Clears the assigned session (the client re-initializes afterwards).
     pub fn clear_session(&self) {
-        *self.session.lock().unwrap() = None;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// POSTs one JSON-RPC request and returns the matching response, reading

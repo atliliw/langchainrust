@@ -70,9 +70,105 @@ jobs:
       # 1.85 clippy 已本地验证全 workspace --all-targets -D warnings 零 lint
       # (2026-08-29)。
       # 不跑 --all-features:feature 门控依赖(ort-sys/tonic 等,rust-version ≥ 1.88)
-      # 属 MSRV 承诺之外盲区,由 release-gate.sh 在 stable 上单独覆盖。
+      # 属 MSRV 承诺之外盲区,由下方 clippy-all-features job 在 stable 上覆盖。
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ==================== 全特性 Clippy(stable)====================
+  # 与 cd.yml 的 release-gate.sh --all-features 对齐:feature 门控代码
+  # (ort-sys/tonic/fastembed 等,rustc ≥ 1.88,MSRV 1.85 编不了)的 lint 与
+  # 编译回归在「每次 push」暴露,而不是等到发 tag 当天才炸。
+  # 0.22.4 事故:fastembed 的 all-features 编译错只在发布后才被发现。
+  clippy-all-features:
+    name: Clippy Lints (all features)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-allfeat-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-allfeat-cargo-
+
+      - name: Run clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ==================== 特性组合矩阵(cargo-hack)====================
+  # T1 (v0.23):feature 幂矩阵。单个 feature 的编译错(all-features 之外、clippy
+  # 默认特性之外)在「单 feature 组合坏掉」时逐个暴露,而不是躲进 all-features
+  # 一起炸。0.22.4 的 fastembed E0308 / local-embeddings E0195 正是这一档(单
+  # feature 编译错,但被合并到 all-features 里)。
+  #   - `--each-feature` 覆盖所有真有 feature 门控的 crate:lc-embeddings
+  #     (fastembed/local-candle/local-embeddings)、lc-vector-stores(qdrant/
+  #     mongodb/redis/sqlite/pgvector)、lc-langgraph(4 个 checkpoint 后端)、
+  #     lc-memory、lc-observability、lc-callbacks、lc-tools、lc-a2a(axum)、
+  #     lc-agents(sse-server)。实测 lc-providers 无任何 feature(provider 不靠
+  #     feature 门控),不纳入。任一个 feature 单独 `cargo check` 失败 → 本 job 红。
+  #   - facade(langchainrust)跑 `--feature-powerset --depth 2`:两两组合的编译
+  #     回归。排掉重 ML feature(fastembed/local-candle/local-embeddings)——它们
+  #     的单 feature 已由上面 lc-embeddings 的 each-feature 覆盖,且拉入 ort/candle
+  #     拖慢 powerset;其余组合(存储/checkpoint/observability 等)逐一 check。
+  #   - `--no-dev-deps`:仅验证 feature 门控代码本身能否编译,不重复编 dev-deps。
+  #   - cargo-hack 与 feature 门控依赖都在 stable;本机 windows-gnu 对 ort-sys
+  #     是盲区(lc-embeddings 一组本地无法预演),此验证责任在 Linux CI(与 docs.rs
+  #     对齐);其余 8 crate 共 43 个组合已在 windows-gnu 本地全绿。
+  feature-matrix:
+    name: Feature Matrix (cargo-hack)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-featmatrix-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-featmatrix-cargo-
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
+
+      - name: Check every feature of feature-gated crates
+        run: |
+          # lc-embeddings 仅在 Linux 可验(ort-sys 无 windows-gnu 预编译)。
+          cargo hack check --package lc-embeddings --each-feature --no-dev-deps
+          cargo hack check --package lc-vector-stores --each-feature --no-dev-deps
+          cargo hack check --package lc-langgraph --each-feature --no-dev-deps
+          cargo hack check --package lc-memory --each-feature --no-dev-deps
+          cargo hack check --package lc-observability --each-feature --no-dev-deps
+          cargo hack check --package lc-callbacks --each-feature --no-dev-deps
+          cargo hack check --package lc-tools --each-feature --no-dev-deps
+          cargo hack check --package lc-a2a --each-feature --no-dev-deps
+          cargo hack check --package lc-agents --each-feature --no-dev-deps
+
+      - name: Check facade feature powerset (depth 2, excluding heavy ML features)
+        run: |
+          cargo hack check --package langchainrust --feature-powerset --depth 2 \
+            --exclude-features fastembed,local-candle,local-embeddings --no-dev-deps
 
   # ==================== 测试 ====================
   test:
@@ -138,8 +234,8 @@ jobs:
   # 「Test all features」步骤(feature 门控依赖需更高 rustc)。
 
   # ==================== semver 检查 ====================
-  # 对比每个 crate 最近一次发布(registry 上的 0.15.x)与当前源码的公开 API 差异。
-  # 0.x 序列里 0.15→0.16 允许破坏性 minor;本门禁确保破坏都在计划内、
+  # 对比每个 crate 与 crates.io 最新稳定版(动态解析,即上一发布版本)的公开
+  # API 差异。0.x 序列里 minor 允许破坏性变更;本门禁确保破坏都在计划内、
   # 非预期的破坏(baseline 分析结果)会以编译错误的形式暴露出来。
   semver:
     name: SemVer Checks
@@ -156,10 +252,22 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
 
-      # 当前版本已是 0.20.0(crates.io 尚未发布),必须显式给 baseline 0.19.0,
-      # 否则工具自动取同版本(0.20.0)基线会报找不到。
-      - name: Run semver checks (baseline 0.19.0)
-        run: cargo semver-checks --workspace --baseline-version 0.19.0
+      # 基线动态取 crates.io 上 facade crate(langchainrust)最新稳定版 = 上一发布
+      # 版本(0.22.5 前硬编码 0.19.0,停更多个版本导致基线失真、job 长期红)。
+      # 发版后同版本基线无 diff 自动通过;发版前的 push 比对的正是上一版 API。
+      - name: Resolve semver baseline from crates.io
+        id: baseline
+        run: |
+          BASELINE=$(curl -fsS https://index.crates.io/la/ng/langchainrust | python3 -c 'import json,sys; rows=[json.loads(l) for l in sys.stdin if l.strip()]; v=[r["vers"] for r in rows if not r.get("yanked") and "-" not in r["vers"]]; print(v[-1] if v else "")')
+          if [ -z "$BASELINE" ]; then
+            echo "ERROR: 无法从 crates.io 解析 semver 基线版本" >&2
+            exit 1
+          fi
+          echo "semver baseline(上一发布版本)= $BASELINE"
+          echo "BASELINE=$BASELINE" >> "$GITHUB_OUTPUT"
+
+      - name: Run semver checks
+        run: cargo semver-checks --workspace --baseline-version ${{ steps.baseline.outputs.BASELINE }}
 
   # ==================== WASM 兼容检查 ====================
   # 目前只有数据模型层(lc-shared / lc-schema)对 wasm32-unknown-unknown 干净
@@ -207,10 +315,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # 对齐 v0.20.0 计划 S5 门禁:rustdoc 不跑 --all-features(feature 门控
-      # 依赖的 rustdoc 警告属 MSRV 盲区之外,由 release-gate.sh 在 stable 上覆盖)。
+      # 默认特性 rustdoc(MSRV 盲区之外的门控依赖不在内)。
       - name: Build documentation
         run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # 全特性 rustdoc:与 cd.yml release-gate --all-features 对齐,每次 push
+      # 兜底 feature 门控 API 的文档(0.22.5 修过 fastembed all-features rustdoc E0308)。
+      - name: Build documentation (all features)
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 

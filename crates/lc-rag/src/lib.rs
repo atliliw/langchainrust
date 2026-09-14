@@ -14,6 +14,7 @@ pub mod hybrid;
 pub mod hyde;
 pub mod late_chunking;
 pub mod loaders;
+pub mod mmr;
 pub mod multi_query;
 pub mod multimodal;
 pub mod parent_document;
@@ -52,7 +53,10 @@ pub use bm25::{
 };
 
 pub use hybrid::{filter_by_score, reciprocal_rank_fusion, RetrievalSource, RetrievedDocument};
-pub use unified_hybrid::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
+// T11 (0.23): pure MMR selection (id, relevance, embedding) used as the vector-side
+// diversity post-processor behind `UnifiedHybridIndex::retrieve_mmr`.
+pub use mmr::mmr;
+pub use unified_hybrid::{FusionMode, HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 
 pub use multi_query::{
     MultiQueryConfig, MultiQueryError, MultiQueryRetriever, StaticQueryGenerator,
@@ -67,7 +71,7 @@ pub use multimodal::{
 };
 
 pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
-pub use late_chunking::{late_chunk, pool_tokens, LateChunk, LateChunkConfig};
+pub use late_chunking::{late_chunk, late_index_in, pool_tokens, LateChunk, LateChunkConfig};
 
 pub use reranking::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,

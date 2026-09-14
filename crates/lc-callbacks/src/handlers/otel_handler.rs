@@ -13,18 +13,31 @@
 //! let manager = CallbackManager::new().add_handler(std::sync::Arc::new(OtelHandler::from_global("langchainrust")));
 //! ```
 //!
-//! # GenAI semantic conventions (B9, v0.22.4)
+//! # GenAI semantic conventions (B9 v0.22.4, T10 v0.23)
 //!
-//! Attributes follow the stabilized OTel GenAI semantic conventions
-//! (March 2025 stable release):
+//! Core attributes follow the stabilized OTel GenAI semantic conventions
+//! (March 2025 stable release); the agent / tool-call / usage-extension and
+//! events surfaces follow the 2026 draft (`gen-ai-agent-spans.md`,
+//! `gen-ai-events.md`, `mcp.md`, all still Development stability — see
+//! [`crate::semconv`]):
 //!
 //! - `gen_ai.provider.name` (the stabilized rename of experimental
 //!   `gen_ai.system`), `gen_ai.operation.name`, `gen_ai.request.model`,
 //!   `gen_ai.response.model`
 //! - token usage as `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`
+//!   plus the Development extensions `gen_ai.usage.cache_read.input_tokens`,
+//!   `gen_ai.usage.cache_write.input_tokens` (2026 rename of
+//!   `cache_creation`; both provider payload spellings are accepted) and
+//!   `gen_ai.usage.reasoning.output_tokens`
 //! - `gen_ai.response.finish_reasons` as a **string array**
 //! - `gen_ai.request.temperature` / `gen_ai.request.max_tokens`
-//! - tool spans carry `gen_ai.tool.name`, retriever spans use
+//! - tool spans carry `gen_ai.tool.name` (always) and, when the executor
+//!   supplied them, `gen_ai.tool.call.id` / `gen_ai.tool.description`;
+//!   `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` are Opt-In and
+//!   emitted only after [`OtelHandler::with_tool_payloads`]
+//! - agent roots are emitted as `invoke_agent` spans (the executor stamps
+//!   the run metadata; a run carrying `gen_ai.operation.name = "plan"`
+//!   becomes a `plan` span); retriever spans use
 //!   `gen_ai.operation.name = "retrieve"` (RAG retrieval is still under
 //!   development upstream)
 //! - chat span names follow `chat {model}` and tool spans
@@ -32,15 +45,16 @@
 //! - input messages are recorded as `gen_ai.system.message` /
 //!   `gen_ai.user.message` / `gen_ai.assistant.message` /
 //!   `gen_ai.tool.message` events with `gen_ai.message.content`; the model
-//!   answer is recorded as a `gen_ai.choice.message` event. Message bodies
-//!   are truncated to [`OtelHandler::with_max_message_chars`] (2048 default).
+//!   answer is recorded as a `gen_ai.choice.message` event. These per-message
+//!   events are the **pre-2025 experimental form** (removed from the current
+//!   registry) and are kept because shipping backends still key off them. The
+//!   registry's replacement, a single opt-in
+//!   `gen_ai.client.inference.operation.details` event with structured
+//!   `gen_ai.input.messages` / `gen_ai.output.messages`, is emitted only
+//!   after [`OtelHandler::with_operation_details_event`]. Message bodies are
+//!   truncated to [`OtelHandler::with_max_message_chars`] (2048 default).
 //! - errors set the span status to error plus `error.type` and an
 //!   `exception` event carrying `exception.message`.
-//!
-//! Provider extensions the registry had not stabilized when this was written
-//! keep their 0.21 names: `gen_ai.usage.cache_read.input_tokens`,
-//! `gen_ai.usage.cache_creation.input_tokens`,
-//! `gen_ai.usage.reasoning.output_tokens`.
 //!
 //! # Data-source fallback
 //!
@@ -68,10 +82,12 @@ use crate::run_tree::RunTree;
 use lc_schema::{Message, MessageType};
 
 use crate::semconv::{
-    error_type, truncate, ERROR_TYPE, GEN_AI_CHOICE_INDEX, GEN_AI_MESSAGE_CONTENT,
-    GEN_AI_OPERATION_NAME, GEN_AI_PROVIDER_NAME, GEN_AI_REQUEST_MAX_TOKENS, GEN_AI_REQUEST_MODEL,
+    error_type, truncate, ERROR_TYPE, EVENT_INFERENCE_DETAILS, GEN_AI_AGENT_NAME,
+    GEN_AI_CHOICE_INDEX, GEN_AI_INPUT_MESSAGES, GEN_AI_MESSAGE_CONTENT, GEN_AI_OPERATION_NAME,
+    GEN_AI_OUTPUT_MESSAGES, GEN_AI_PROVIDER_NAME, GEN_AI_REQUEST_MAX_TOKENS, GEN_AI_REQUEST_MODEL,
     GEN_AI_REQUEST_TEMPERATURE, GEN_AI_RESPONSE_FINISH_REASONS, GEN_AI_RESPONSE_MODEL,
-    GEN_AI_TOOL_NAME, GEN_AI_USAGE_CACHE_CREATION, GEN_AI_USAGE_CACHE_READ,
+    GEN_AI_TOOL_CALL_ARGUMENTS, GEN_AI_TOOL_CALL_ID, GEN_AI_TOOL_CALL_RESULT,
+    GEN_AI_TOOL_DESCRIPTION, GEN_AI_TOOL_NAME, GEN_AI_USAGE_CACHE_READ, GEN_AI_USAGE_CACHE_WRITE,
     GEN_AI_USAGE_INPUT_TOKENS, GEN_AI_USAGE_OUTPUT_TOKENS, GEN_AI_USAGE_REASONING, RUN_ID_ATTR,
     TRACE_ID_ATTR,
 };
@@ -91,6 +107,17 @@ pub struct OtelHandler {
     spans: Arc<Mutex<HashMap<String, BoxedSpan>>>,
     /// Maximum message-body length recorded in span events.
     max_message_chars: usize,
+    /// Opt-in (2026 semconv): record `gen_ai.tool.call.arguments` /
+    /// `gen_ai.tool.call.result` on tool spans. Default off because payloads
+    /// may carry secrets/PII.
+    record_tool_payloads: bool,
+    /// Opt-in (2026 events model): emit the
+    /// `gen_ai.client.inference.operation.details` snapshot event on chat
+    /// spans. Default off; the legacy per-message events stay on regardless.
+    record_details_event: bool,
+    /// Chat-run id → serialized `gen_ai.input.messages` snapshot, captured at
+    /// `on_llm_start` so the details event (emitted at end) can carry inputs.
+    details_inputs: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl OtelHandler {
@@ -100,6 +127,9 @@ impl OtelHandler {
             tracer,
             spans: Arc::new(Mutex::new(HashMap::new())),
             max_message_chars: DEFAULT_MAX_MESSAGE_CHARS,
+            record_tool_payloads: false,
+            record_details_event: false,
+            details_inputs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -112,6 +142,25 @@ impl OtelHandler {
     /// span events (default 2048). Set to a large value to capture full bodies.
     pub fn with_max_message_chars(mut self, max: usize) -> Self {
         self.max_message_chars = max;
+        self
+    }
+
+    /// Opt in to `gen_ai.tool.call.arguments` (on start) and
+    /// `gen_ai.tool.call.result` (on end) attributes on tool spans. Both are
+    /// Opt-In in the 2026 semconv and may contain secrets or PII; default off.
+    /// Bodies are truncated to the [`OtelHandler::with_max_message_chars`] cap.
+    pub fn with_tool_payloads(mut self, enabled: bool) -> Self {
+        self.record_tool_payloads = enabled;
+        self
+    }
+
+    /// Opt in to the 2026 events-model snapshot event
+    /// `gen_ai.client.inference.operation.details` on chat spans, carrying
+    /// structured `gen_ai.input.messages` / `gen_ai.output.messages` plus the
+    /// operation/usage attributes. Default off; the legacy
+    /// `gen_ai.*.message` events are emitted either way.
+    pub fn with_operation_details_event(mut self, enabled: bool) -> Self {
+        self.record_details_event = enabled;
         self
     }
 
@@ -165,6 +214,8 @@ impl OtelHandler {
     /// Record an error on the span (error status + `error.type` + exception
     /// event) and end it.
     async fn fail_span(&self, run: &RunTree, error: &str) {
+        // Drop any pending details-event input snapshot for this run.
+        self.details_inputs.lock().await.remove(&run.id.to_string());
         let mut spans = self.spans.lock().await;
         if let Some(span) = spans.get_mut(&run.id.to_string()) {
             let err_type = error_type(error);
@@ -201,6 +252,16 @@ impl CallbackHandler for OtelHandler {
     }
 
     async fn on_llm_start(&self, run: &RunTree, messages: &[Message]) {
+        // 2026 events model: stash the structured input snapshot for the
+        // `…operation.details` event emitted at end (Opt-In).
+        if self.record_details_event {
+            let input_json = messages_json(messages, self.max_message_chars);
+            self.details_inputs
+                .lock()
+                .await
+                .insert(run.id.to_string(), input_json);
+        }
+
         // Semconv span name: `chat {model}` when the requested model is known.
         let model = resolve_request_model(run);
         let span_name = match &model {
@@ -238,6 +299,13 @@ impl CallbackHandler for OtelHandler {
     }
 
     async fn on_llm_end(&self, run: &RunTree, response: &str) {
+        // Take the Opt-In details-event input snapshot before the span lock
+        // (lock ordering: details_inputs is never held across spans).
+        let details_input = if self.record_details_event {
+            self.details_inputs.lock().await.remove(&run.id.to_string())
+        } else {
+            None
+        };
         // Response-level semconv attributes (resolved from metadata with
         // fallback to run.outputs, where providers actually put them).
         let mut spans = self.spans.lock().await;
@@ -274,17 +342,84 @@ impl CallbackHandler for OtelHandler {
                 if let Some(c) = tokens.get("completion_tokens").and_then(|v| v.as_u64()) {
                     span.set_attribute(KeyValue::new(GEN_AI_USAGE_OUTPUT_TOKENS, c as i64));
                 }
-                // 0.21.0 S6.4: cache / reasoning token attribution (extension
-                // names — providers report these only on some models).
+                // 0.21.0 S6.4 / T10: cache / reasoning token attribution
+                // (Development-stability extension names — providers report
+                // these only on some models). Cache *write* accepts both the
+                // 2026 provider spelling and the Anthropic legacy key, emitting
+                // the 2026-draft `gen_ai.usage.cache_write.input_tokens`.
                 for (key, attr) in [
                     ("cache_read_input_tokens", GEN_AI_USAGE_CACHE_READ),
-                    ("cache_creation_input_tokens", GEN_AI_USAGE_CACHE_CREATION),
+                    ("cache_write_input_tokens", GEN_AI_USAGE_CACHE_WRITE),
+                    ("cache_creation_input_tokens", GEN_AI_USAGE_CACHE_WRITE),
                     ("reasoning_output_tokens", GEN_AI_USAGE_REASONING),
                 ] {
                     if let Some(n) = tokens.get(key).and_then(|v| v.as_u64()) {
                         span.set_attribute(KeyValue::new(attr, n as i64));
                     }
                 }
+            }
+
+            // Opt-In (2026 events model): one snapshot event carrying the
+            // operation attributes plus structured input/output messages.
+            if self.record_details_event {
+                let output_json = serde_json::to_string(&serde_json::json!([{
+                    "role": "assistant",
+                    "content": truncate(response, self.max_message_chars),
+                }]))
+                .unwrap_or_else(|_| "[]".to_string());
+                let mut attrs = vec![
+                    KeyValue::new(GEN_AI_OPERATION_NAME, "chat".to_string()),
+                    KeyValue::new(
+                        GEN_AI_INPUT_MESSAGES,
+                        details_input.unwrap_or_else(|| "[]".to_string()),
+                    ),
+                    KeyValue::new(GEN_AI_OUTPUT_MESSAGES, output_json),
+                ];
+                let request_model = resolve_request_model(run);
+                if let Some(provider) = resolve_provider(run, request_model.as_deref()) {
+                    attrs.push(KeyValue::new(GEN_AI_PROVIDER_NAME, provider));
+                }
+                if let Some(m) = request_model {
+                    attrs.push(KeyValue::new(GEN_AI_REQUEST_MODEL, m));
+                }
+                if let Some(m) =
+                    metadata_str(run, "response_model").or_else(|| outputs_str(run, "model"))
+                {
+                    attrs.push(KeyValue::new(GEN_AI_RESPONSE_MODEL, m));
+                }
+                if let Some(reason) =
+                    metadata_str(run, "finish_reason").or_else(|| outputs_str(run, "finish_reason"))
+                {
+                    attrs.push(KeyValue::new(
+                        GEN_AI_RESPONSE_FINISH_REASONS,
+                        Value::Array(Array::String(vec![StringValue::from(reason)])),
+                    ));
+                }
+                if let Some(tokens) = run
+                    .metadata
+                    .get("token_usage")
+                    .and_then(|v| v.as_object())
+                    .or_else(|| {
+                        run.outputs
+                            .as_ref()
+                            .and_then(|o| o.get("token_usage"))
+                            .and_then(|v| v.as_object())
+                    })
+                {
+                    for (key, attr) in [
+                        ("prompt_tokens", GEN_AI_USAGE_INPUT_TOKENS),
+                        ("completion_tokens", GEN_AI_USAGE_OUTPUT_TOKENS),
+                        ("cache_read_input_tokens", GEN_AI_USAGE_CACHE_READ),
+                        ("cache_write_input_tokens", GEN_AI_USAGE_CACHE_WRITE),
+                        ("cache_creation_input_tokens", GEN_AI_USAGE_CACHE_WRITE),
+                        ("reasoning_output_tokens", GEN_AI_USAGE_REASONING),
+                    ] {
+                        if let Some(n) = tokens.get(key).and_then(|v| v.as_u64()) {
+                            attrs.push(KeyValue::new(attr, n as i64));
+                        }
+                    }
+                }
+                span.add_event(EVENT_INFERENCE_DETAILS.to_string(), attrs);
             }
 
             // gen_ai.choice.message: the produced answer.
@@ -312,10 +447,24 @@ impl CallbackHandler for OtelHandler {
     }
 
     async fn on_chain_start(&self, run: &RunTree, _inputs: &serde_json::Value) {
-        self.start_span("chain", run).await;
+        // T10: explicit instrumentation may reclassify a chain run as a GenAI
+        // agent operation (`invoke_agent` for the executor root, `plan` for
+        // planner components). When stamped, span naming follows the 2026
+        // convention `{operation} {agent.name}` (name suffix only when known).
+        let operation = metadata_str(run, GEN_AI_OPERATION_NAME);
+        let agent_name = metadata_str(run, GEN_AI_AGENT_NAME);
+        let (span_name, op_value) = match (&operation, &agent_name) {
+            (Some(op), Some(name)) => (format!("{op} {name}"), op.clone()),
+            (Some(op), None) => (op.clone(), op.clone()),
+            (None, _) => ("chain".to_string(), "chain".to_string()),
+        };
+        self.start_span(&span_name, run).await;
         let mut spans = self.spans.lock().await;
         if let Some(span) = spans.get_mut(&run.id.to_string()) {
-            span.set_attribute(KeyValue::new(GEN_AI_OPERATION_NAME, "chain".to_string()));
+            span.set_attribute(KeyValue::new(GEN_AI_OPERATION_NAME, op_value));
+            if let Some(name) = agent_name {
+                span.set_attribute(KeyValue::new(GEN_AI_AGENT_NAME, name));
+            }
         }
     }
     async fn on_chain_end(&self, run: &RunTree, _outputs: &serde_json::Value) {
@@ -325,7 +474,7 @@ impl CallbackHandler for OtelHandler {
         self.fail_span(run, error).await;
     }
 
-    async fn on_tool_start(&self, run: &RunTree, tool_name: &str, _input: &str) {
+    async fn on_tool_start(&self, run: &RunTree, tool_name: &str, input: &str) {
         // Semconv span name: `execute_tool {tool}`.
         self.start_span(&format!("execute_tool {tool_name}"), run)
             .await;
@@ -336,9 +485,32 @@ impl CallbackHandler for OtelHandler {
                 "execute_tool".to_string(),
             ));
             span.set_attribute(KeyValue::new(GEN_AI_TOOL_NAME, tool_name.to_string()));
+            // T10: Recommended tool attributes when the executor stamped them
+            // (provider tool-call id + the tool's own description).
+            if let Some(call_id) = metadata_str(run, GEN_AI_TOOL_CALL_ID) {
+                span.set_attribute(KeyValue::new(GEN_AI_TOOL_CALL_ID, call_id));
+            }
+            if let Some(description) = metadata_str(run, GEN_AI_TOOL_DESCRIPTION) {
+                span.set_attribute(KeyValue::new(GEN_AI_TOOL_DESCRIPTION, description));
+            }
+            if self.record_tool_payloads {
+                span.set_attribute(KeyValue::new(
+                    GEN_AI_TOOL_CALL_ARGUMENTS,
+                    truncate(input, self.max_message_chars),
+                ));
+            }
         }
     }
-    async fn on_tool_end(&self, run: &RunTree, _output: &str) {
+    async fn on_tool_end(&self, run: &RunTree, output: &str) {
+        if self.record_tool_payloads {
+            let mut spans = self.spans.lock().await;
+            if let Some(span) = spans.get_mut(&run.id.to_string()) {
+                span.set_attribute(KeyValue::new(
+                    GEN_AI_TOOL_CALL_RESULT,
+                    truncate(output, self.max_message_chars),
+                ));
+            }
+        }
         self.end_span(run).await;
     }
     async fn on_tool_error(&self, run: &RunTree, error: &str) {
@@ -451,6 +623,33 @@ fn message_event_name(message_type: &MessageType) -> &'static str {
         // stable event attributes, content is what gets exported.
         MessageType::Tool { .. } => "gen_ai.tool.message",
     }
+}
+
+/// 2026 events-model role spelling for structured message arrays.
+fn message_role(message_type: &MessageType) -> &'static str {
+    match message_type {
+        MessageType::System => "system",
+        MessageType::Human => "user",
+        MessageType::AI => "assistant",
+        MessageType::Tool { .. } => "tool",
+    }
+}
+
+/// Serializes messages as the `[{"role": …, "content": …}]` structured form
+/// used by `gen_ai.input.messages` on the Opt-In details event. Each body is
+/// truncated independently; serialization of plain string objects never fails,
+/// but the `unwrap_or` keeps that contract honest.
+fn messages_json(messages: &[Message], max_chars: usize) -> String {
+    let payload: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": message_role(&m.message_type),
+                "content": truncate(&m.content, max_chars),
+            })
+        })
+        .collect();
+    serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string())
 }
 
 #[cfg(test)]
@@ -680,6 +879,212 @@ mod tests {
         assert_eq!(attr_i64(span, GEN_AI_REQUEST_MAX_TOKENS), Some(512));
         assert_eq!(attr_i64(span, GEN_AI_USAGE_CACHE_READ), Some(80));
         assert_eq!(attr_i64(span, GEN_AI_USAGE_REASONING), Some(5));
+    }
+
+    #[tokio::test]
+    async fn cache_write_accepts_new_and_legacy_provider_keys() {
+        // 2026 spelling.
+        let (h, exporter) = handler_with_exporter();
+        let run = llm_run();
+        h.on_llm_start(&run, &[]).await;
+        let mut ended = run.clone();
+        ended.end(json!({
+            "token_usage": {
+                "prompt_tokens": 100u64,
+                "completion_tokens": 10u64,
+                "cache_write_input_tokens": 40u64,
+            }
+        }));
+        h.on_llm_end(&ended, "").await;
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(attr_i64(&spans[0], GEN_AI_USAGE_CACHE_WRITE), Some(40));
+
+        // Anthropic legacy spelling maps to the renamed attribute.
+        let (h, exporter) = handler_with_exporter();
+        h.on_llm_start(&run, &[]).await;
+        let mut ended_legacy = run.clone();
+        ended_legacy.end(json!({
+            "token_usage": {
+                "prompt_tokens": 100u64,
+                "completion_tokens": 10u64,
+                "cache_creation_input_tokens": 7u64,
+            }
+        }));
+        h.on_llm_end(&ended_legacy, "").await;
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(attr_i64(&spans[0], GEN_AI_USAGE_CACHE_WRITE), Some(7));
+    }
+
+    #[tokio::test]
+    async fn chain_run_uses_stamped_agent_operation_and_span_name() {
+        let (h, exporter) = handler_with_exporter();
+
+        // Executor root: stamped `invoke_agent`, no agent name.
+        let mut root = RunTree::new("AgentExecutor", crate::RunType::Chain, json!({}));
+        root.metadata
+            .insert(GEN_AI_OPERATION_NAME.into(), json!("invoke_agent"));
+        h.on_chain_start(&root, &json!({})).await;
+        h.on_chain_end(&root, &json!({})).await;
+
+        // Planner component: stamped `plan` with an agent name.
+        let mut planner = root.create_child("planner", crate::RunType::Chain, json!({}));
+        planner
+            .metadata
+            .insert(GEN_AI_OPERATION_NAME.into(), json!("plan"));
+        planner
+            .metadata
+            .insert(GEN_AI_AGENT_NAME.into(), json!("researcher"));
+        h.on_chain_start(&planner, &json!({})).await;
+        h.on_chain_end(&planner, &json!({})).await;
+
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 2);
+        let agent = spans.iter().find(|s| s.name == "invoke_agent").unwrap();
+        assert_eq!(
+            attr_str(agent, GEN_AI_OPERATION_NAME).as_deref(),
+            Some("invoke_agent")
+        );
+        assert_eq!(attr_str(agent, GEN_AI_AGENT_NAME), None);
+        let plan = spans.iter().find(|s| s.name == "plan researcher").unwrap();
+        assert_eq!(
+            attr_str(plan, GEN_AI_OPERATION_NAME).as_deref(),
+            Some("plan")
+        );
+        assert_eq!(
+            attr_str(plan, GEN_AI_AGENT_NAME).as_deref(),
+            Some("researcher")
+        );
+    }
+
+    #[tokio::test]
+    async fn unstamped_chain_run_keeps_legacy_chain_span() {
+        let (h, exporter) = handler_with_exporter();
+        let run = RunTree::new("ordinary-chain", crate::RunType::Chain, json!({}));
+        h.on_chain_start(&run, &json!({})).await;
+        h.on_chain_end(&run, &json!({})).await;
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans[0].name, "chain");
+        assert_eq!(
+            attr_str(&spans[0], GEN_AI_OPERATION_NAME).as_deref(),
+            Some("chain")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_span_carries_call_id_and_description_from_metadata() {
+        let (h, exporter) = handler_with_exporter();
+        let mut run = RunTree::new("calc", crate::RunType::Tool, json!({}));
+        run.metadata
+            .insert(GEN_AI_TOOL_CALL_ID.into(), json!("call_42"));
+        run.metadata
+            .insert(GEN_AI_TOOL_DESCRIPTION.into(), json!("adds numbers"));
+        h.on_tool_start(&run, "calculator", "1+1").await;
+        h.on_tool_end(&run, "2").await;
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = &spans[0];
+        assert_eq!(
+            attr_str(span, GEN_AI_TOOL_CALL_ID).as_deref(),
+            Some("call_42")
+        );
+        assert_eq!(
+            attr_str(span, GEN_AI_TOOL_DESCRIPTION).as_deref(),
+            Some("adds numbers")
+        );
+        // Opt-In payloads stay off by default.
+        assert_eq!(attr_str(span, GEN_AI_TOOL_CALL_ARGUMENTS), None);
+        assert_eq!(attr_str(span, GEN_AI_TOOL_CALL_RESULT), None);
+    }
+
+    #[tokio::test]
+    async fn tool_payloads_are_opt_in() {
+        let exporter2 = InMemorySpanExporterBuilder::new().build();
+        let provider = TracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(Box::new(exporter2.clone())))
+            .build();
+        let h = OtelHandler::new(BoxedTracer::new(Box::new(provider.tracer("t"))))
+            .with_tool_payloads(true)
+            .with_max_message_chars(4);
+
+        let run = RunTree::new("calc", crate::RunType::Tool, json!({}));
+        h.on_tool_start(&run, "calculator", "123456789").await;
+        h.on_tool_end(&run, "987654321").await;
+
+        let spans = exporter2.get_finished_spans().unwrap();
+        let span = &spans[0];
+        assert_eq!(
+            attr_str(span, GEN_AI_TOOL_CALL_ARGUMENTS).as_deref(),
+            Some("1234…")
+        );
+        assert_eq!(
+            attr_str(span, GEN_AI_TOOL_CALL_RESULT).as_deref(),
+            Some("9876…")
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_details_event_is_opt_in_snapshot() {
+        // Default off: no details event on the chat span.
+        let (h, exporter) = handler_with_exporter();
+        let run = llm_run();
+        h.on_llm_start(&run, &[Message::human("hi")]).await;
+        h.on_llm_end(&run, "hello").await;
+        let spans = exporter.get_finished_spans().unwrap();
+        assert!(!spans[0]
+            .events
+            .iter()
+            .any(|e| e.name == EVENT_INFERENCE_DETAILS));
+
+        // Opted in: one details event with structured input/output JSON and
+        // the operation attributes.
+        let exporter2 = InMemorySpanExporterBuilder::new().build();
+        let provider = TracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(Box::new(exporter2.clone())))
+            .build();
+        let h = OtelHandler::new(BoxedTracer::new(Box::new(provider.tracer("t"))))
+            .with_operation_details_event(true);
+
+        let run = llm_run();
+        h.on_llm_start(&run, &[Message::human("hi")]).await;
+        let mut ended = run.clone();
+        ended.end(json!({
+            "model": "gpt-4o-mini-2024-07-18",
+            "token_usage": {"prompt_tokens": 11u64, "completion_tokens": 3u64,
+                            "cache_read_input_tokens": 2u64},
+            "finish_reason": "stop",
+        }));
+        h.on_llm_end(&ended, "hello").await;
+
+        let spans = exporter2.get_finished_spans().unwrap();
+        let event = spans[0]
+            .events
+            .iter()
+            .find(|e| e.name == EVENT_INFERENCE_DETAILS)
+            .expect("details event emitted when opted in");
+        let event_attr = |key: &str| {
+            event
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        let inputs = event_attr(GEN_AI_INPUT_MESSAGES).unwrap();
+        assert!(inputs.contains("\"role\":\"user\""), "inputs: {inputs}");
+        assert!(inputs.contains("\"content\":\"hi\""));
+        let outputs = event_attr(GEN_AI_OUTPUT_MESSAGES).unwrap();
+        assert!(outputs.contains("\"role\":\"assistant\""));
+        assert!(outputs.contains("hello"));
+        assert_eq!(event_attr(GEN_AI_OPERATION_NAME).as_deref(), Some("chat"));
+        assert_eq!(event_attr(GEN_AI_PROVIDER_NAME).as_deref(), Some("openai"));
+        assert_eq!(
+            event_attr(GEN_AI_RESPONSE_MODEL).as_deref(),
+            Some("gpt-4o-mini-2024-07-18")
+        );
+        // Legacy per-message events are still emitted (backends consume them).
+        assert!(spans[0]
+            .events
+            .iter()
+            .any(|e| e.name == "gen_ai.user.message"));
     }
 
     #[test]

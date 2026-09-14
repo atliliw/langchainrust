@@ -544,6 +544,19 @@ impl OpenAIChat {
 
         let thinking_content = message.reasoning_content.clone().filter(|c| !c.is_empty());
 
+        // T5 (v0.23.0): surface otherwise-silent reasoning/refusal fields so a reasoning
+        // model's chain-of-thought spend is observable and a model *refusal* (OpenRouter
+        // safety filter) is not mistaken for an empty completion.
+        if let Some(r) = usage.as_ref().and_then(OpenAIUsage::reasoning_tokens) {
+            log::info!(target: "lc_providers::openai::reasoning", "reasoning_tokens={r}");
+        }
+        if let Some(ref r) = message.refusal {
+            log::warn!(
+                target: "lc_providers::openai::refusal",
+                "model refusal surfaced (content={}): {r}", content
+            );
+        }
+
         LLMResult {
             content,
             model,
@@ -676,6 +689,14 @@ impl OpenAIChat {
                                     completion_tokens: usage.completion_tokens,
                                     total_tokens: usage.total_tokens,
                                 };
+                                // T5 (v0.23.0): surface reasoning-token spend on the
+                                // terminal usage chunk too, mirroring the non-stream path.
+                                if let Some(r) = usage.reasoning_tokens() {
+                                    log::info!(
+                                        target: "lc_providers::openai::reasoning",
+                                        "reasoning_tokens={r}"
+                                    );
+                                }
                                 let tool_calls = tool_acc.build();
                                 if !tool_calls.is_empty() {
                                     tool_calls_emitted = true;
@@ -800,6 +821,11 @@ struct OpenAIMessage {
     content: Option<String>,
     /// Reasoning chain-of-thought content from reasoning models (e.g. glm-5.2, DeepSeek-R1)
     reasoning_content: Option<String>,
+    /// T5 (v0.23.0): OpenRouter / OpenAI can return `message.refusal` when the model
+    /// declines to answer (safety filter). Previously silently dropped; now surfaced as
+    /// a log so a refusal is not mistaken for an empty completion.
+    #[serde(default)]
+    refusal: Option<String>,
     tool_calls: Option<Vec<lc_core::tools::ToolCall>>,
 }
 
@@ -809,4 +835,31 @@ struct OpenAIUsage {
     prompt_tokens: usize,
     completion_tokens: usize,
     total_tokens: usize,
+    /// T5 (v0.23.0): reasoning-token accounting. Some reasoning providers (OpenAI's
+    /// `completion_tokens_details.reasoning_tokens`) report it nested, others
+    /// (DeepSeek/GLM) at the usage top level; both are captured. All fields are
+    /// `#[serde(default)]` so providers that omit them keep deserializing.
+    #[serde(default)]
+    reasoning_tokens: Option<usize>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct CompletionTokensDetails {
+    /// OpenAI-style `completion_tokens_details.reasoning_tokens`.
+    #[serde(default)]
+    reasoning_tokens: Option<usize>,
+}
+
+impl OpenAIUsage {
+    /// T5 (v0.23.0): the reasoning-token count across nesting styles, if reported.
+    fn reasoning_tokens(&self) -> Option<usize> {
+        self.reasoning_tokens.or_else(|| {
+            self.completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+        })
+    }
 }

@@ -1,7 +1,7 @@
 // lc-vector-stores/src/qdrant.rs
 //! Qdrant vector store implementation
 
-use crate::hybrid_native::{FusionMethod, NativeHybridQuery, NativeHybridSearch};
+use crate::hybrid_native::{NativeHybridQuery, NativeHybridSearch};
 use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 use async_trait::async_trait;
 use qdrant_client::{
@@ -779,9 +779,7 @@ impl NativeHybridSearch for QdrantVectorStore {
 
         let mut builder = QueryPointsBuilder::new(&self.config.collection_name)
             .prefetch(prefetches)
-            .query(qdrant_client::qdrant::Query::new_fusion(Fusion::from(
-                query.fusion,
-            )))
+            .query(Query::new_fusion(Fusion::from(query.fusion)))
             .limit(query.limit as u64)
             .with_payload(true);
 

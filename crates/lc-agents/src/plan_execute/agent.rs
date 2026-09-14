@@ -106,9 +106,22 @@ impl PlanExecuteAgent {
 
     /// Runs the full task: plan -> execute each step -> replan on failure -> summarize
     pub async fn run(&self, objective: &str) -> Result<String, PlanExecuteError> {
+        self.run_with_config(objective, None).await
+    }
+
+    /// Runs the full task with a [`lc_core::runnables::RunnableConfig`] so the
+    /// planning/replanning
+    /// LLM calls emit `on_llm_start/end` to the configured callbacks/OTel
+    /// backend (T6, v0.23.0). The per-step executor was already traced in 0.22.4
+    /// A18; this closes the gap on the planner side.
+    pub async fn run_with_config(
+        &self,
+        objective: &str,
+        config: Option<&lc_core::runnables::RunnableConfig>,
+    ) -> Result<String, PlanExecuteError> {
         let planner = Planner::new(self.llm.clone());
         let mut plan = planner
-            .plan(objective)
+            .plan(objective, config)
             .await
             .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
 
@@ -134,7 +147,7 @@ impl PlanExecuteAgent {
                     }
                 };
 
-                match self.execute_step(&step_desc).await {
+                match self.execute_step(&step_desc, config).await {
                     Ok(result) => plan.mark_completed(step_id, result),
                     Err(e) => {
                         let error_msg = e.to_string();
@@ -165,7 +178,7 @@ impl PlanExecuteAgent {
                                     .join("\n")
                             };
                             plan = planner
-                                .replan(objective, &step_desc, &error_msg, &completed_block)
+                                .replan(objective, &step_desc, &error_msg, &completed_block, config)
                                 .await
                                 .map_err(|e| PlanExecuteError::PlanningError(e.to_string()))?;
                             // Splice the completed steps (with results) back at
@@ -219,7 +232,14 @@ impl PlanExecuteAgent {
     }
 
     /// Executes a single step: prefers the agent from `agent_factory`, falling back to FunctionCallingAgent (P1-2)
-    async fn execute_step(&self, step: &str) -> Result<String, PlanExecuteError> {
+    ///
+    /// T6 (v0.23.0): `config` is forwarded to the executor so per-step LLM calls
+    /// share the same callbacks/OTel trace as the planning calls.
+    async fn execute_step(
+        &self,
+        step: &str,
+        config: Option<&lc_core::runnables::RunnableConfig>,
+    ) -> Result<String, PlanExecuteError> {
         let agent: Arc<dyn BaseAgent> = match &self.agent_factory {
             Some(factory) => factory(),
             None => Arc::new(FunctionCallingAgent::from_arc(
@@ -230,7 +250,7 @@ impl PlanExecuteAgent {
         };
         let executor = AgentExecutor::new(agent, self.tools.clone()).with_max_iterations(5);
         executor
-            .invoke(step.to_string())
+            .invoke_with_config(step.to_string(), config.cloned())
             .await
             .map_err(|e| PlanExecuteError::StepExecutionError(e.to_string()))
     }
@@ -268,7 +288,7 @@ mod tests {
     async fn test_execute_step_uses_agent_factory() {
         let agent = PlanExecuteAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![])
             .with_agent_factory(Arc::new(|| Arc::new(FakeAgent) as Arc<dyn BaseAgent>));
-        let result = agent.execute_step("step 1").await.unwrap();
+        let result = agent.execute_step("step 1", None).await.unwrap();
         assert_eq!(result, "executed by factory");
     }
 }

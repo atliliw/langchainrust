@@ -1,11 +1,11 @@
 [package]
 name = "lc-tools-derive"
-version = "0.22.4"
+version = "0.23.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Procedural macro for deriving BaseTool implementations from functions"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [lib]
 proc-macro = true

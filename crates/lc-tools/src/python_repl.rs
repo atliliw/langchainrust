@@ -85,11 +85,13 @@ const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
 /// inside string literals — an inherent limitation of string-level interception,
 /// see the security-positioning note on [`contains_dangerous_code`].
 static DANGEROUS_CALL_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    // INVARIANT: DANGEROUS_BUILTIN_CALLS 全是字母/下划线常量标识符,join("|")
+    // 不可能引入正则元字符,模板其余部分是静态字面量,编译必然成功。
     Regex::new(&format!(
         r"\b(?:{})\s*\(",
         DANGEROUS_BUILTIN_CALLS.join("|")
     ))
-    .unwrap()
+    .expect("pattern built from word-only const list must compile")
 });
 
 /// Check if Python code contains dangerous imports or builtin calls.

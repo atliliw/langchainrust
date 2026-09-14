@@ -16,11 +16,16 @@ use lc_vector_stores::Document;
 /// H8/A5: default per-HTTP-request timeout — a hung target site must not block the loader forever.
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-static SCRIPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<script.*?</script>").unwrap());
-static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<style.*?</style>").unwrap());
-static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
-static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static SCRIPT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<script.*?</script>").expect("static regex literal must compile")
+});
+static STYLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)<style.*?</style>").expect("static regex literal must compile")
+});
+static TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[^>]+>").expect("static regex literal must compile"));
+static WHITESPACE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("static regex literal must compile"));
 
 /// HTML loader: strips script/style, removes tags, decodes entities, extracts plain text
 pub struct HTMLLoader {

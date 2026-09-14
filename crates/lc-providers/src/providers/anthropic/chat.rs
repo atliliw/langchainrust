@@ -310,14 +310,15 @@ impl AnthropicChat {
         if !system_text.is_empty() {
             // B1 transparent passthrough: with prompt caching enabled, the system prompt
             // becomes a content-block array whose (only) block carries an explicit
-            // `cache_control: {"type":"ephemeral"}` breakpoint. Anthropic only honors
-            // cache_control on content-block arrays, so the plain-string form is used
-            // when caching is off to keep the request byte-identical to before.
-            if self.config.prompt_caching {
+            // `cache_control` breakpoint. Anthropic only honors cache_control on
+            // content-block arrays, so the plain-string form is used when caching is off
+            // to keep the request byte-identical to before.
+            // T5: the breakpoint marker honours an explicit TTL when configured.
+            if let Some(marker) = self.cache_marker() {
                 body["system"] = json!([{
                     "type": "text",
                     "text": system_text,
-                    "cache_control": {"type": "ephemeral"},
+                    "cache_control": marker,
                 }]);
             } else {
                 body["system"] = json!(system_text);
@@ -358,17 +359,23 @@ impl AnthropicChat {
                 .collect();
             // B1: cache the last tool definition too (the most stable, largest prefix).
             // Anthropic allows `cache_control` on tool entries for prompt caching.
-            if self.config.prompt_caching {
+            // T5: the breakpoint marker honours an explicit TTL when configured.
+            if let Some(marker) = self.cache_marker() {
                 if let Some(last) = anthropic_tools.last_mut() {
-                    last["cache_control"] = json!({"type": "ephemeral"});
+                    last["cache_control"] = marker;
                 }
             }
             body["tools"] = json!(anthropic_tools);
         }
 
-        // H7: Inject tool_choice if configured
+        // H7: Inject tool_choice if configured. Anthropic's `tool_choice` accepts the
+        // reserved literals `auto | none | any | required` (a bare `{"type": <literal>}`
+        // — `any`/`required` force tool use, i.e. "strict") plus a specific tool
+        // (`{"type":"tool","name":<name>}`). T5: recognise the full reserved set so
+        // `with_tool_choice("required")`/`("none")` emit the literal instead of being
+        // misread as a tool *name*.
         if let Some(ref choice) = self.config.tool_choice {
-            if choice == "auto" || choice == "any" {
+            if matches!(choice.as_str(), "auto" | "any" | "required" | "none") {
                 body["tool_choice"] = json!({"type": choice});
             } else {
                 // Specific tool name
@@ -377,6 +384,19 @@ impl AnthropicChat {
         }
 
         body
+    }
+
+    /// T5 (v0.23.0): the `cache_control` marker for every caching breakpoint, or
+    /// `None` when prompt caching is off. `with_prompt_cache_ttl` wins (long-lived
+    /// TTL cache) over the ephemeral marker from `prompt_caching`.
+    fn cache_marker(&self) -> Option<serde_json::Value> {
+        if let Some(ref ttl) = self.config.prompt_cache_ttl {
+            return Some(json!({"type": "ttl", "ttl": ttl}));
+        }
+        if self.config.prompt_caching {
+            return Some(json!({"type": "ephemeral"}));
+        }
+        None
     }
 
     pub(crate) async fn chat_internal(

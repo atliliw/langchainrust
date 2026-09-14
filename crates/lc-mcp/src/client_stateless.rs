@@ -79,6 +79,9 @@ pub struct StatelessMcpClient {
     rate_limiter: Option<Arc<Mutex<MethodRateLimiter>>>,
 
     request_id: AtomicU64,
+    /// T10: optional `tools/call` OTel instrumentation.
+    #[cfg(feature = "opentelemetry")]
+    instrumentation: Option<Arc<crate::instrument::McpInstrumentation>>,
 }
 
 impl Clone for StatelessMcpClient {
@@ -90,6 +93,8 @@ impl Clone for StatelessMcpClient {
             answers: self.answers.clone(),
             rate_limiter: self.rate_limiter.clone(),
             request_id: AtomicU64::new(self.request_id.load(Ordering::SeqCst)),
+            #[cfg(feature = "opentelemetry")]
+            instrumentation: self.instrumentation.clone(),
         }
     }
 }
@@ -116,6 +121,8 @@ impl StatelessMcpClient {
             answers: None,
             rate_limiter: None,
             request_id: AtomicU64::new(1),
+            #[cfg(feature = "opentelemetry")]
+            instrumentation: None,
         }
     }
 
@@ -129,7 +136,19 @@ impl StatelessMcpClient {
             answers: None,
             rate_limiter: None,
             request_id: AtomicU64::new(1),
+            #[cfg(feature = "opentelemetry")]
+            instrumentation: None,
         }
+    }
+
+    /// Attaches OpenTelemetry `tools/call` instrumentation (T10).
+    #[cfg(feature = "opentelemetry")]
+    pub fn with_instrumentation(
+        mut self,
+        instrumentation: Arc<crate::instrument::McpInstrumentation>,
+    ) -> Self {
+        self.instrumentation = Some(instrumentation);
+        self
     }
 
     /// Overrides the MRTR round-trip limit.
@@ -246,8 +265,30 @@ impl StatelessMcpClient {
         Ok(tools)
     }
 
-    /// `tools/call` (MRTR-aware).
+    /// `tools/call` (MRTR-aware; emits a `tools/call {name}` OTel client span
+    /// when instrumentation is attached — T10).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
+        #[cfg(feature = "opentelemetry")]
+        if let Some(instr) = &self.instrumentation {
+            return instr
+                .record_tool_call(
+                    name,
+                    &arguments,
+                    crate::instrument::NETWORK_TRANSPORT_TCP,
+                    &self.meta.protocol_version,
+                    None,
+                    self.call_tool_direct(name, arguments.clone()),
+                )
+                .await;
+        }
+        self.call_tool_direct(name, arguments).await
+    }
+
+    async fn call_tool_direct(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<MCPToolResult, MCPError> {
         let params = json!({"name": name, "arguments": arguments});
         let result = self.send("tools/call", Some(params)).await?;
         serde_json::from_value(result)

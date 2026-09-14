@@ -36,8 +36,10 @@ pub mod otlp;
 pub mod pricing;
 mod run_tree;
 mod run_type;
-#[cfg(feature = "opentelemetry")]
-mod semconv;
+// Pure attribute-name vocabulary (no OTel SDK types): compiled even without
+// the `opentelemetry` feature so instrumentation (e.g. lc-agents stamping run
+// metadata) can reference the names without pulling in the SDK.
+pub mod semconv;
 pub mod tracing;
 
 pub use base::{CallbackHandler, CallbackManager};

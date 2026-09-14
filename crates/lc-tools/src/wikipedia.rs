@@ -158,10 +158,12 @@ impl WikipediaTool {
 
 /// Strips HTML tags
 fn strip_html(html: &str) -> String {
-    static TAG_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]+>").unwrap());
-    static WHITESPACE_RE: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+    static TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"<[^>]+>").expect("static regex literal must compile")
+    });
+    static WHITESPACE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\s+").expect("static regex literal must compile")
+    });
 
     let result = TAG_RE.replace_all(html, "");
     WHITESPACE_RE.replace_all(&result, " ").trim().to_string()

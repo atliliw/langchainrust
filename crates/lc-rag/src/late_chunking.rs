@@ -6,7 +6,7 @@
 //! references ("the company", "this plan") embed without their antecedent and
 //! fail to match queries phrased against the antecedent. Late chunking keeps
 //! the full document in one embedding pass (preserving cross-token attention)
-//! and only *pools* per chunk afterwards 鈥?the query flow is unchanged.
+//! and only *pools* per chunk afterwards — the query flow is unchanged.
 //!
 //! Requires a token-level embedder ([`TokenLevelEmbeddings`], e.g.
 //! Qwen3-Embedding / BGE-M3 / Jina v3); pooled-only models cannot implement
@@ -14,6 +14,7 @@
 
 use lc_embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings};
 use lc_embeddings::EmbeddingError;
+use lc_vector_stores::{Document, VectorStore, VectorStoreError};
 
 /// Configuration for late chunking.
 #[derive(Debug, Clone)]
@@ -140,7 +141,7 @@ pub struct LateChunk {
 /// into a single L2-normalized vector.
 ///
 /// Pure helper so the pooling math is unit-testable without an embedder.
-/// Tokens spanning a boundary contribute to both sides 鈥?that is the point of
+/// Tokens spanning a boundary contribute to both sides — that is the point of
 /// late chunking (context leaks across chunk borders by design). Returns
 /// `Err(EmptyInput)` when no token intersects (caller-side bug, not a valid
 /// chunk).
@@ -176,7 +177,7 @@ pub fn pool_tokens(
 /// 2. slide a byte window ([`LateChunkConfig`]) over the token list;
 /// 3. pool each window into a chunk vector.
 ///
-/// Generic over the embedder (static dispatch 鈥?the [`TokenLevelEmbeddings`]
+/// Generic over the embedder (static dispatch — the [`TokenLevelEmbeddings`]
 /// trait is RPITIT-based and not dyn-compatible by design; see its module docs).
 pub async fn late_chunk<E: TokenLevelEmbeddings>(
     embedder: &E,
@@ -197,12 +198,52 @@ pub async fn late_chunk<E: TokenLevelEmbeddings>(
     Ok(chunks)
 }
 
+/// Pipeline glue (T12, v0.23): late-pool one whole document and write the
+/// pooled chunks straight into any [`VectorStore`].
+///
+/// This closes the end-to-end path the free functions above set up but did not
+/// deliver: **one token-level pass** over the full text (instead of N per-chunk
+/// `embed_documents` calls), then **pool** along [`LateChunkConfig`] windows and
+/// **ingest** — the stored vectors carry full-document context (cross-chunk
+/// references embed with their antecedent, which is exactly why you late-chunk).
+///
+/// Scope is deliberately vector-side and backend-agnostic: pair it with a BM25
+/// retriever fed the same chunk texts for a hybrid index. Each stored
+/// [`Document`]'s id is `{parent_key}:{index}`, its text the original windowed
+/// slice, its embedding the pooled (already L2-normalized) vector.
+///
+/// See `crates/lc-rag/examples/late_chunking.rs` for a retrieval demo.
+pub async fn late_index_in<E: TokenLevelEmbeddings>(
+    vector_store: &dyn VectorStore,
+    embedder: &E,
+    parent_key: &str,
+    text: &str,
+    config: &LateChunkConfig,
+) -> Result<Vec<String>, VectorStoreError> {
+    config
+        .validate()
+        .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
+    let chunks = late_chunk(embedder, text, config)
+        .await
+        .map_err(|e| VectorStoreError::EmbeddingError(e.to_string()))?;
+    if chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let docs: Vec<Document> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Document::new(c.text.clone()).with_id(format!("{parent_key}:{i}")))
+        .collect();
+    let embeddings: Vec<Vec<f32>> = chunks.into_iter().map(|c| c.vector).collect();
+    vector_store.add_documents(docs, embeddings).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use lc_embeddings::token_level::{TokenEmbedding, TokenSpan};
 
-    /// Whitespace tokenizer over fixed-size vectors 鈥?same shape as the
+    /// Whitespace tokenizer over fixed-size vectors — same shape as the
     /// `lc-embeddings` test mock; keeps pooling tests model-free.
     fn token_embeddings(text: &str) -> Vec<TokenEmbedding> {
         let mut out = Vec::new();
@@ -383,5 +424,57 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, EmbeddingError::Config(_)));
+    }
+
+    /// T12 glue: `late_index_in` writes correctly-id'd, pooled chunks into a
+    /// plain vector backend, and the store round-trips them back on search.
+    #[tokio::test]
+    async fn late_index_in_ingests_pooled_chunks() {
+        struct MockTokenEmbeddings;
+
+        impl lc_embeddings::token_level::TokenLevelEmbeddings for MockTokenEmbeddings {
+            async fn embed_tokens(
+                &self,
+                text: &str,
+            ) -> Result<Vec<TokenEmbedding>, EmbeddingError> {
+                Ok(token_embeddings(text))
+            }
+        }
+
+        let store = lc_vector_stores::InMemoryVectorStore::new();
+        let text = "alpha beta gamma delta epsilon";
+        let config = LateChunkConfig {
+            chunk_size: 16,
+            chunk_overlap: 0,
+        };
+        let ids = late_index_in(&store, &MockTokenEmbeddings, "doc", text, &config)
+            .await
+            .unwrap();
+        // One whole-document pass → two pooled chunks, deterministically id'd.
+        assert_eq!(ids, vec!["doc:0".to_string(), "doc:1".to_string()]);
+
+        // The pooled vectors are actually retrievable through the same backend.
+        let hits = store.similarity_search(&[1.0, 1.0], 2).await.unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits.iter()
+                .any(|h| h.document.content == "alpha beta gamma")
+                && hits.iter().any(|h| h.document.content == " delta epsilon")
+        );
+
+        // A degenerate doc (empty embedder output → no chunks) is a clean no-op.
+        struct EmptyEmbeddings;
+        impl lc_embeddings::token_level::TokenLevelEmbeddings for EmptyEmbeddings {
+            async fn embed_tokens(
+                &self,
+                _text: &str,
+            ) -> Result<Vec<TokenEmbedding>, EmbeddingError> {
+                Ok(Vec::new())
+            }
+        }
+        let ids = late_index_in(&store, &EmptyEmbeddings, "empty", "", &config)
+            .await
+            .unwrap();
+        assert!(ids.is_empty());
     }
 }

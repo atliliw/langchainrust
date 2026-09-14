@@ -1,20 +1,20 @@
 [package]
 name = "lc-chains"
-version = "0.22.4"
+version = "0.23.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Chain compositions for langchainrust — LLMChain, SequentialChain, RetrievalQA, etc."
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.22.4" }
-lc-schema = { path = "../lc-schema", version = "0.22.4" }
-lc-shared = { path = "../lc-shared", version = "0.22.4" }
-lc-memory = { path = "../lc-memory", version = "0.22.4" }
-lc-rag = { path = "../lc-rag", version = "0.22.4" }
-lc-callbacks = { path = "../lc-callbacks", version = "0.22.4" }
-lc-providers = { path = "../lc-providers", version = "0.22.4" }
+lc-core = { path = "../lc-core", version = "0.23.0" }
+lc-schema = { path = "../lc-schema", version = "0.23.0" }
+lc-shared = { path = "../lc-shared", version = "0.23.0" }
+lc-memory = { path = "../lc-memory", version = "0.23.0" }
+lc-rag = { path = "../lc-rag", version = "0.23.0" }
+lc-callbacks = { path = "../lc-callbacks", version = "0.23.0" }
+lc-providers = { path = "../lc-providers", version = "0.23.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

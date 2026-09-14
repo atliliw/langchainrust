@@ -8,6 +8,7 @@
 //! - **MultiQuery**: The query is complex and needs multiple search angles.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::tools::ToolDefinition;
 use lc_rag::RetrieverTrait;
 use lc_schema::Message;
@@ -80,13 +81,24 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
 
     /// Invokes the adaptive RAG pipeline for the given query.
     pub async fn invoke(&self, query: &str) -> Result<AdaptiveRAGResult, AdaptiveRAGError> {
+        self.invoke_with_config(query, None).await
+    }
+
+    /// Invokes the adaptive RAG pipeline with a [`RunnableConfig`] so the
+    /// routing and multi-query-planning LLM calls emit `on_llm_start/end` to
+    /// the configured callbacks/OTel backend (T6, v0.23.0).
+    pub async fn invoke_with_config(
+        &self,
+        query: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<AdaptiveRAGResult, AdaptiveRAGError> {
         // Step 1: Route the query.
-        let decision = self.route(query).await?;
+        let decision = self.route(query, config).await?;
 
         match decision {
             RagDecision::NoRetrieval => self.generate_no_retrieval(query).await,
             RagDecision::SingleSearch => self.generate_single_search(query).await,
-            RagDecision::MultiQuery => self.generate_multi_query(query).await,
+            RagDecision::MultiQuery => self.generate_multi_query(query, config).await,
         }
     }
 
@@ -113,7 +125,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
             detail: Some("Classifying query...".to_string()),
         });
 
-        let decision = self.route(query).await?;
+        let decision = self.route(query, None).await?;
 
         events.push(AgentStreamEvent::PipelineStep {
             step: "routed".to_string(),
@@ -146,7 +158,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
                     step: "multi_query".to_string(),
                     detail: Some("Generating multiple queries...".to_string()),
                 });
-                let result = self.generate_multi_query(query).await?;
+                let result = self.generate_multi_query(query, None).await?;
                 events.push(AgentStreamEvent::PipelineStep {
                     step: "generating".to_string(),
                     detail: Some(format!("Sources: {} documents", result.sources.len())),
@@ -166,7 +178,14 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
     // -- Routing -----------------------------------------------------------
 
     /// Asks the LLM to classify the query.
-    async fn route(&self, query: &str) -> Result<RagDecision, AdaptiveRAGError> {
+    ///
+    /// T6 (v0.23.0): `config` carries callbacks/OTel so the routing LLM call is
+    /// visible (`on_llm_start/end`); pass `None` to run untraced.
+    async fn route(
+        &self,
+        query: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<RagDecision, AdaptiveRAGError> {
         let prompt = ROUTING_PROMPT.replace("{query}", query);
         let messages = vec![Message::human(&prompt)];
 
@@ -175,7 +194,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
             &self.llm,
             Some(route_tool()),
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await
@@ -243,8 +262,9 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
     async fn generate_multi_query(
         &self,
         query: &str,
+        config: Option<&RunnableConfig>,
     ) -> Result<AdaptiveRAGResult, AdaptiveRAGError> {
-        let alternative_queries = self.generate_queries(query).await?;
+        let alternative_queries = self.generate_queries(query, config).await?;
 
         // Combine original + alternatives.
         let all_queries: Vec<String> = std::iter::once(query.to_string())
@@ -272,7 +292,14 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
     }
 
     /// Asks the LLM to generate alternative query variants.
-    async fn generate_queries(&self, query: &str) -> Result<Vec<String>, AdaptiveRAGError> {
+    ///
+    /// T6 (v0.23.0): `config` carries callbacks/OTel so the query-planning LLM
+    /// call is visible; pass `None` to run untraced.
+    async fn generate_queries(
+        &self,
+        query: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<Vec<String>, AdaptiveRAGError> {
         let prompt = MULTI_QUERY_PROMPT
             .replace("{count}", &self.multi_query_count.to_string())
             .replace("{question}", query);
@@ -281,7 +308,7 @@ impl<M: BaseChatModel, R: RetrieverTrait> AdaptiveRAG<M, R> {
         let result = crate::retry::retry_chat(
             &self.llm,
             messages,
-            None,
+            config.cloned(),
             &crate::retry::RetryConfig::default(),
         )
         .await

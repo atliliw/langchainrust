@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-09-14
+
+"Trust" release: make "it installs, it compiles, the docs build, the providers are truthful" machine-guaranteed rather than manual. All 23 crates uniformly bumped to 0.23.0; MSRV stays 1.85 (default features) with local-model features documented as needing rustc ≥ 1.88. Evidence per item: `docs/internal/v0.23.0/EXECUTION_PLAN.md`; release steps: `docs/internal/v0.23.0/RELEASE_CHECKLIST.md`.
+
+### Added
+
+- **Release discipline gates** — `scripts/publish-crates.sh` hard-refuses any non-CI, non-dry-run local publish (exit 2), and the CD pipeline gained a `verify-docs-rs` job that watches docs.rs until the first build line reports succeeded before the release is declared green. MCP caching: Anthropic per-breakpoint cache TTL (`AnthropicConfig::with_prompt_cache_ttl`) and strict `tool_choice` literals (`auto|any|required|none`) now hit the correct wire shape; OpenAI/Compatible layer maps `reasoning` usage tokens end-to-end (top-level and nested), parses `refusal`, and keeps reasoning out of `content`.
+- **Offline provider test cassettes** (`lc-providers`): 13 recorded loopback fixtures covering Anthropic/OpenAI non-stream, stream, thinking+tool_call, cache usage, and error/truncated-stream paths — no API key, no network. The retry default client now `.no_proxy()`, closing the Clash/127.0.0.1 proxy-hijack flakiness on loopback.
+- **OTel GenAI semconv aligned to the 2026 registry** (`lc-callbacks`, `lc-agents`, `lc-mcp`): `cache_creation` → `cache_write` (both provider spellings accepted); agent root runs classified `gen_ai.operation.name="invoke_agent"`; tool child runs carry `gen_ai.tool.description` and — when a provider tool-call id exists — `gen_ai.tool.call.id`; opt-in `gen_ai.tool.call.arguments/result` payloads and the new `gen_ai.client.inference.operation.details` event (`OtelHandler::with_tool_payloads(true)` / `with_operation_details_event(true)`), both truncated at 2048 chars. Legacy per-message events stay on by default. lc-mcp gained feature-gated `tools/call` client spans (`McpInstrumentation`; `opentelemetry` cargo feature): CLIENT-kind spans named `tools/call {tool}` with `mcp.method.name`, `gen_ai.operation.name="execute_tool"`, `mcp.protocol.version`, `mcp.session.id` (streamable only), `network.transport`, and `error.type` (`-32603`-style JSON-RPC codes / `tool_error`) on failure.
+- **MMR diversity reranking + weighted hybrid fusion** (`lc-rag`): a pure `mmr(candidates, λ, k)` greedy selector and `UnifiedHybridIndex::retrieve_mmr(query, cand_k, k, λ)` post-processor (pool-internal relevance min-max normalization keeps λ comparable to the cosine term), plus `FusionMode::Weighted { bm25_weight, vector_weight }` linear fusion (per-leg min-max normalized) alongside RRF (still the default).
+- **Late-chunking end-to-end glue** (`lc-rag`): `late_index_in(&vector_store, &embedder, parent_key, text, &config)` closes "one token-level pass → pooled chunks → into any `VectorStore`", with a runnable offline `late_chunking` example.
+
+### Changed
+
+- **CI feature matrix** (`cargo-hack`): every gate-controlled crate is covered per-feature and the facade by a depth-2 feature powerset; docs are built workspace-wide (default and all-features) under `RUSTDOCFLAGS=-D warnings`. This fixes a long-standing `--each-features` typo that meant the feature-matrix job had never actually run.
+- **MSRV declared per-package** via `[workspace.package] rust-version = "1.85"` (the old `[workspace] rust-version` key was a no-op warning); local-model features' higher floor is documented in the facade README and CONTRIBUTING.
+- **Dependency double-stack collapsed** (`lc-vector-stores`): `qdrant-client` pinned `~1.18` drops the whole second HTTP/gRPC stack — reqwest is now single-version 0.12.28, tonic 0.12.3, prost 0.13.5; `Cargo.lock` shrank ~197 lines. The remaining duplicates are upstream transitive clusters gated by MSRV 1.85 and explicitly accepted.
+- **`AgentExecutor` split for maintainability** (`lc-agents`): the 1729-line `engine.rs` slimmed to 1050 by moving the streaming executor into `executor/stream.rs` (705 lines, byte-identical move, public API unchanged; a compile-time interrupt list — not dynamic `interrupt()` — is still the mechanism, with dynamic interrupt/state-history on the 0.24 roadmap).
+- **Code style policy hardened in CONTRIBUTING**: new error types must use `thiserror`; new async traits use native RPITIT / `trait_variant` (`#[async_trait]` only for `dyn`-safety) — the 0.22.4 `local-embeddings` dual-style compile failure is the cited precedent.
+
+### Fixed
+
+- **Zero production `.unwrap()`** (audited across tracked `src/`): external-input paths use `?` or graceful fallback, poisoned locks recover, invariant panics carry an `// INVARIANT` comment and descriptive `expect`. Two real bugs were caught and fixed along the way: session-id nibble decoding in the MCP streamable HTTP server and the longest-keyword-match condition in router chains (`is_none_or`).
+- **`plan(.., None)` traces lost in nine workflows** (`lc-agents`): CRAG, AdaptiveRAG, DeepResearch, PlanExecute planner/replan, and the streaming agent invoked their planning LLM calls with no `RunnableConfig`, so the most token-expensive calls emitted no `on_llm_start`/`on_llm_end` and joined no OTel trace. Each now routes through a per-run config (new `*_with_config` entry points, old ones delegate to `None` — zero behavior change).
+- **axum 0.8 SSE retry frame**: the `retry: 3000` (no space) assertion no longer matched axum 0.8's `retry: 3000`; the test accepts both legal spellings.
+
 ## [0.22.4] - 2026-09-13
 
 Security, correctness and breadth release closing an audited defect track (A1–A18) and a 13-item capability track (B1–B13). All 23 crates are uniformly bumped to 0.22.4; MSRV stays 1.85. Remote sandbox execution was explicitly excluded from this release. Full evidence per item: `docs/internal/v0.22.4/EXECUTION_PLAN.md`; publish topology: `docs/internal/v0.22.4/RELEASE_PROPOSAL.md`.

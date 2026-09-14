@@ -118,7 +118,8 @@ impl RouterChain {
             for keyword in dest.keywords() {
                 if input.contains(keyword) {
                     let len = keyword.len();
-                    if best_match.is_none() || len > best_match.unwrap().1 {
+                    // 首个命中,或关键字严格更长(最长匹配优先)。
+                    if best_match.is_none_or(|(_, best_len)| len > best_len) {
                         best_match = Some((dest, len));
                     }
                 }

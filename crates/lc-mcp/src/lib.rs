@@ -41,6 +41,8 @@ pub mod elicitation;
 pub mod execution;
 pub mod gateway;
 pub mod health;
+#[cfg(feature = "opentelemetry")]
+pub mod instrument;
 pub mod oauth2;
 pub mod orchestrate;
 pub mod prompts;
@@ -89,6 +91,8 @@ pub use gateway::{
     GatewayAuditRecord, GatewayServerSpec, MCPGateway, MethodRateLimiter, RateLimiter,
 };
 pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
+#[cfg(feature = "opentelemetry")]
+pub use instrument::McpInstrumentation;
 pub use oauth2::{
     discover_authorization_server, discover_protected_resource, AuthorizationServerMetadata,
     BearerTokenProvider, OAuthChallenge, OAuthTokenClient, OAuthTokenResponse,

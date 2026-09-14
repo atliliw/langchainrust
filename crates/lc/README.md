@@ -142,6 +142,17 @@ langchainrust = { version = "0.22.4", features = ["opentelemetry"] }         # O
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
+### Rust version requirements (MSRV)
+
+- **Default features: Rust 1.85+** — this is the workspace MSRV, enforced in CI
+  and used for MSRV-aware dependency resolution (`resolver = "3"`).
+- The local-model features **`local-embeddings`** (ONNX via `ort`),
+  **`fastembed`**, and **`local-candle`** (candle) pull crates that require a
+  newer toolchain (currently **Rust 1.88+**). Cargo cannot declare an MSRV per
+  feature, so this layering is documented rather than compile-enforced: use
+  these three features only with a recent stable Rust. docs.rs builds them on
+  the latest nightly automatically.
+
 ---
 
 ## Quick Start

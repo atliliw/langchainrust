@@ -1,15 +1,15 @@
 [package]
 name = "lc-a2a"
-version = "0.22.4"
+version = "0.23.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A2A (Agent-to-Agent) protocol support for langchainrust — client, server, and protocol types."
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.85"
+rust-version.workspace = true
 
 [dependencies]
-lc-chains = { path = "../lc-chains", version = "0.22.4" }
-lc-agents = { path = "../lc-agents", version = "0.22.4" }
+lc-chains = { path = "../lc-chains", version = "0.23.0" }
+lc-agents = { path = "../lc-agents", version = "0.23.0" }
 async-trait = "0.1"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -20,12 +20,14 @@ reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 sha2 = "0.10"
 hmac = "0.12"
-axum = { version = "0.7", optional = true }
+# T7 (v0.23): axum bump 0.7 → 0.8 removes the 0.7/0.8 dual-stack from the
+# all-features graph (the SSE/handler APIs used here are stable across both).
+axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 
 [dev-dependencies]
-lc-core = { path = "../lc-core", version = "0.22.4" }
+lc-core = { path = "../lc-core", version = "0.23.0" }
 
 [features]
 default = []

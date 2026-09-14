@@ -39,11 +39,13 @@ use uuid::Uuid;
 
 use crate::{Document, FilterOp, MetadataFilter, SearchResult, VectorStore, VectorStoreError};
 
-static TABLE_NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
+static TABLE_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("static regex literal must compile")
+});
 
-static META_KEY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap());
+static META_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").expect("static regex literal must compile")
+});
 
 /// Validate that a table name is safe for SQL interpolation.
 ///

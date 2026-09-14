@@ -74,12 +74,14 @@ impl PiiKind {
 
 fn card_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b\d(?:[ -]?\d){14,18}\b").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"\b\d(?:[ -]?\d){14,18}\b").expect("static regex literal must compile")
+    })
 }
 
 fn national_id_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b\d{17}[\dXx]\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"\b\d{17}[\dXx]\b").expect("static regex literal must compile"))
 }
 
 fn phone_re() -> &'static Regex {
@@ -88,26 +90,34 @@ fn phone_re() -> &'static Regex {
     // matching inside a longer digit run. Country-code-prefixed forms (`+86`, glued or
     // hyphenated) are handled by [`phone_prefixed_re`] in an earlier pass, because a glued
     // prefix leaves no word boundary before the `1`.
-    RE.get_or_init(|| Regex::new(r"\b1[3-9]\d{9}\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"\b1[3-9]\d{9}\b").expect("static regex literal must compile"))
 }
 
 fn phone_prefixed_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // Group 1 is a consumed left boundary (start of text or a non-word, non-`+` char) so a
     // prefixed number cannot match inside a longer digit run; the closure reinserts it.
-    RE.get_or_init(|| Regex::new(r"(^|[^\w+])(\+?86[-\s]?1[3-9]\d{9})\b").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"(^|[^\w+])(\+?86[-\s]?1[3-9]\d{9})\b")
+            .expect("static regex literal must compile")
+    })
 }
 
 fn email_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+            .expect("static regex literal must compile")
+    })
 }
 
 fn ipv4_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // neighbor-digit/dot rejection (5-part versions etc.) is done in the replacement closure,
     // since the `regex` crate does not support look-around.
-    RE.get_or_init(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("static regex literal must compile")
+    })
 }
 
 /// Output guardrail that redacts PII instead of blocking.
@@ -172,7 +182,10 @@ impl PiiRedactionGuardrail {
             out = match kind {
                 PiiKind::CreditCard => card_re()
                     .replace_all(&out, |caps: &Captures| {
-                        let matched = caps.get(0).unwrap().as_str();
+                        let matched = caps
+                            .get(0)
+                            .expect("capture group 0 always present on a Regex match")
+                            .as_str();
                         let digits: String =
                             matched.chars().filter(|c| c.is_ascii_digit()).collect();
                         if SensitiveInfoGuardrail::luhn_check(&digits) {
@@ -184,7 +197,10 @@ impl PiiRedactionGuardrail {
                     .into_owned(),
                 PiiKind::NationalId => national_id_re()
                     .replace_all(&out, |caps: &Captures| {
-                        let matched = caps.get(0).unwrap().as_str();
+                        let matched = caps
+                            .get(0)
+                            .expect("capture group 0 always present on a Regex match")
+                            .as_str();
                         if valid_china_id(matched) {
                             Cow::Borrowed(PiiKind::NationalId.label())
                         } else {
@@ -207,7 +223,9 @@ impl PiiRedactionGuardrail {
                     .into_owned(),
                 PiiKind::IpV4 => ipv4_re()
                     .replace_all(&out, |caps: &Captures| {
-                        let m = caps.get(0).unwrap();
+                        let m = caps
+                            .get(0)
+                            .expect("capture group 0 always present on a Regex match");
                         let bytes = out.as_bytes();
                         let neighbor_dot_or_digit = |i: Option<usize>| {
                             i.map(|idx| matches!(bytes[idx], b'.' | b'0'..=b'9'))
@@ -253,15 +271,21 @@ impl StreamingOutputGuardrail for PiiRedactionGuardrail {
     }
 
     async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
-        self.stream_raw.lock().unwrap().push_str(ctx.token);
+        self.stream_raw
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_str(ctx.token);
         let redacted = {
-            let raw = self.stream_raw.lock().unwrap();
+            let raw = self.stream_raw.lock().unwrap_or_else(|e| e.into_inner());
             self.redact(&raw)
         };
 
         let total = redacted.chars().count();
         let release = total.saturating_sub(self.hold_back);
-        let mut released = self.stream_released.lock().unwrap();
+        let mut released = self
+            .stream_released
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if release <= *released {
             // the new token is still inside the hold-back window: emit nothing yet.
             return ChunkAction::Replace(String::new());
@@ -280,8 +304,11 @@ impl StreamingOutputGuardrail for PiiRedactionGuardrail {
     }
 
     async fn flush(&self) -> FlushOutput {
-        let raw = std::mem::take(&mut *self.stream_raw.lock().unwrap());
-        let mut released_count = self.stream_released.lock().unwrap();
+        let raw = std::mem::take(&mut *self.stream_raw.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut released_count = self
+            .stream_released
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let redacted = self.redact(&raw);
         let tail: String = redacted.chars().skip(*released_count).collect();
         *released_count = 0;

@@ -51,7 +51,7 @@ impl From<crate::RunType> for SpanKind {
 }
 
 /// Token usage recorded in a span.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SpanTokenUsage {
     /// Number of tokens in the prompt.
     pub prompt_tokens: usize,
@@ -59,6 +59,16 @@ pub struct SpanTokenUsage {
     pub completion_tokens: usize,
     /// Total number of tokens.
     pub total_tokens: usize,
+    /// `gen_ai.usage.cache_read.input_tokens` (Development extension).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<usize>,
+    /// `gen_ai.usage.cache_write.input_tokens` (Development extension; 2026
+    /// rename of `cache_creation`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<usize>,
+    /// `gen_ai.usage.reasoning.output_tokens` (Development extension).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<usize>,
 }
 
 /// Status of a span.

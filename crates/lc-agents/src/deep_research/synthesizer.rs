@@ -4,6 +4,7 @@
 //! any remaining information gaps for follow-up rounds.
 
 use lc_core::language_models::BaseChatModel;
+use lc_core::runnables::RunnableConfig;
 use lc_core::token_counter::count_tokens;
 use lc_schema::Message;
 
@@ -31,6 +32,7 @@ pub async fn synthesize<M: BaseChatModel>(
     plan: &ResearchPlan,
     results: &[SearchResult],
     max_source_tokens: Option<usize>,
+    config: Option<&RunnableConfig>,
 ) -> Result<(String, Vec<String>), ResearchError> {
     let subtopics_text = plan
         .subtopics
@@ -89,10 +91,14 @@ pub async fn synthesize<M: BaseChatModel>(
         Message::human(prompt),
     ];
 
-    let response =
-        crate::retry::retry_chat(llm, messages, None, &crate::retry::RetryConfig::default())
-            .await
-            .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
+    let response = crate::retry::retry_chat(
+        llm,
+        messages,
+        config.cloned(),
+        &crate::retry::RetryConfig::default(),
+    )
+    .await
+    .map_err(|e| ResearchError::Llm(format!("{:?}", e)))?;
 
     parse_synthesis(&response.content)
 }

@@ -1,14 +1,19 @@
 [package]
 name = "lc-mcp"
-version = "0.22.4"
+version = "0.23.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "MCP (Model Context Protocol) client for langchainrust"
 repository = "https://github.com/atliliw/langchainrust"
-rust-version = "1.85"
+rust-version.workspace = true
+
+[features]
+default = []
+# T10: MCP `tools/call` OpenTelemetry client spans (2026 mcp.md semconv).
+opentelemetry = ["dep:opentelemetry"]
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.22.4" }
+lc-core = { path = "../lc-core", version = "0.23.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -22,3 +27,13 @@ log = "0.4"
 # P1-4: stderr 采集用 tracing(开 `log` feature,事件同时进入 log facade,
 # 与工作区 `env_logger` 兼容,不引入双日志体系)。
 tracing = { version = "0.1", features = ["log"] }
+
+# T10: API-only OTel dependency for the feature-gated `instrument` module.
+[dependencies.opentelemetry]
+version = "0.27"
+optional = true
+
+# In-memory span exporter for the instrumentation tests (offline, no collector).
+[dev-dependencies.opentelemetry_sdk]
+version = "0.27"
+features = ["trace", "testing", "rt-tokio"]

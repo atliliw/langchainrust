@@ -12,7 +12,7 @@ use lc_core::BaseTool;
 /// Lazy-compiled regex for extracting table names from SQL.
 static TABLE_NAME_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)")
-        .unwrap()
+        .expect("static regex literal must compile")
 });
 
 /// SQL query tool (read-only SELECT, table whitelist)

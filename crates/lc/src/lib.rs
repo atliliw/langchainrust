@@ -257,12 +257,12 @@ pub use retrieval::{
     RetrieverRunnable, RetrieverTrait, SelfQueryRetriever, SemanticSplitter, SimilarityRetriever,
     SitemapLoader, TextLoader, TextSplitter, WebScraperLoader,
 };
+pub use retrieval::{FusionMode, HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 pub use retrieval::{
     GlobalLevel as GraphGlobalLevel, GraphCommunity, GraphEntity, GraphRAG, GraphRAGConfig,
     GraphRAGError, GraphRAGResult, GraphRelation, GraphStore, QueryMode as GraphQueryMode,
 };
 pub use retrieval::{HyDEConfig, HyDEError, HyDERetriever};
-pub use retrieval::{HybridIndexConfig, HybridSearchResult, UnifiedHybridIndex};
 pub use retrieval::{MultiQueryConfig, MultiQueryError, MultiQueryRetriever, StaticQueryGenerator};
 
 // Prompts

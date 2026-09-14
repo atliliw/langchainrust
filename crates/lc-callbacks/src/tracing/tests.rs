@@ -90,6 +90,7 @@ fn test_span_guard_with_tokens() {
             prompt_tokens: 10,
             completion_tokens: 20,
             total_tokens: 30,
+            ..Default::default()
         };
         let guard = tracer.start("llm_call", SpanKind::Llm).with_tokens(usage);
         guard.end();
@@ -297,6 +298,7 @@ fn test_span_serialization_roundtrip() {
             prompt_tokens: 10,
             completion_tokens: 20,
             total_tokens: 30,
+            ..Default::default()
         }),
         cost: Some(0.005),
         latency_ms: Some(1000),
@@ -386,6 +388,7 @@ fn usage(prompt: usize, completion: usize) -> SpanTokenUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: prompt + completion,
+        ..Default::default()
     }
 }
 

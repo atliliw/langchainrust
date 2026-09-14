@@ -129,9 +129,6 @@ pub(crate) mod fixtures {
     use std::collections::HashMap;
 
     pub(crate) fn scored_point(id: u64, score: f32, content: &str, source: &str) -> ScoredPoint {
-        let mut point = ScoredPoint::default();
-        point.id = Some(PointId::from(id.to_string()));
-        point.score = score;
         let mut payload = HashMap::new();
         payload.insert(
             "content".to_string(),
@@ -141,8 +138,12 @@ pub(crate) mod fixtures {
             "source".to_string(),
             qdrant_client::qdrant::Value::from(source),
         );
-        point.payload = payload;
-        point
+        ScoredPoint {
+            id: Some(PointId::from(id.to_string())),
+            score,
+            payload,
+            ..Default::default()
+        }
     }
 }
 

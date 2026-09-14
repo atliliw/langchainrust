@@ -48,10 +48,13 @@ pub struct MapRerankDocumentsChain {
 }
 
 // Pre-compiled regex patterns for score extraction.
-static SCORE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:relevance\s*score|相关性评分)\s*[:：]\s*(\d+)").unwrap());
-static SCORE_RE2: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)score\s*[:：]\s*(\d+)").unwrap());
+static SCORE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:relevance\s*score|相关性评分)\s*[:：]\s*(\d+)")
+        .expect("static regex literal must compile")
+});
+static SCORE_RE2: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)score\s*[:：]\s*(\d+)").expect("static regex literal must compile")
+});
 
 /// Truncate a string to at most `max_len` characters, respecting char boundaries.
 fn truncate_str(s: &str, max_len: usize) -> &str {

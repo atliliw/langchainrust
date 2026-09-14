@@ -162,6 +162,7 @@ mod engine;
 mod file_memory_tool;
 mod hooks;
 mod semantic_memory;
+mod stream;
 #[cfg(test)]
 mod tests;
 mod tools;

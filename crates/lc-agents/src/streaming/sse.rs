@@ -1141,10 +1141,11 @@ mod axum_tests {
         )
         .await;
         let body = body_text(response).await;
-        // axum 0.7 hand-rolls `retry:` without the optional space; either
-        // spelling is spec-valid (our own encoder emits `retry: 3000`).
+        // The space after the colon is optional in the SSE spec: axum 0.7
+        // hand-rolled `retry:` without it, axum 0.8 emits `retry: 3000` (our own
+        // encoder also includes the space). Accept both spellings.
         assert!(
-            body.starts_with("retry:3000\nid: 1\n"),
+            body.starts_with("retry:3000\nid: 1\n") || body.starts_with("retry: 3000\nid: 1\n"),
             "unexpected stream start: {body:?}"
         );
     }

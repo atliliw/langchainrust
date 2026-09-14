@@ -14,8 +14,11 @@ use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
 
 /// M60: compile regexes once using LazyLock instead of on every call
-static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<w:t[^>]*>(.*?)</w:t>").unwrap());
-static PARA_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"</w:p>").unwrap());
+static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<w:t[^>]*>(.*?)</w:t>").expect("static regex literal must compile")
+});
+static PARA_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"</w:p>").expect("static regex literal must compile"));
 
 /// DOCX document loader
 ///

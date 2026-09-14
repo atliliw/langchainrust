@@ -377,8 +377,15 @@ fn new_session_id() -> String {
     getrandom::fill(&mut bytes).expect("getrandom always succeeds on supported targets");
     let mut id = String::with_capacity(32);
     for byte in bytes {
-        id.push(std::char::from_digit(u32::from(byte) >> 4, 16).unwrap());
-        id.push(std::char::from_digit(u32::from(byte) & 0x0f, 16).unwrap());
+        // INVARIANT: 入参是 0..=15 的半字节(>>4 / &0x0f),基数 16 下 from_digit 必为 Some。
+        id.push(
+            std::char::from_digit(u32::from(byte) >> 4, 16)
+                .expect("high nibble 0..=15 is always a valid base-16 digit"),
+        );
+        id.push(
+            std::char::from_digit(u32::from(byte) & 0x0f, 16)
+                .expect("low nibble 0..=15 is always a valid base-16 digit"),
+        );
     }
     id
 }

@@ -114,9 +114,17 @@ pub(crate) const SAFE_RETRY: RetryConfig = RetryConfig {
 /// A connect timeout guards against hanging TCP handshakes. There is
 /// deliberately **no total `.timeout()`** — it would kill long-running SSE
 /// streams mid-generation.
+///
+/// T4 (v0.23.0): `.no_proxy()` — reqwest otherwise auto-detects the system
+/// proxy and routes **loopback** base_urls (offline cassette tests, LAN gateways)
+/// through it, so a machine with a proxy (e.g. Clash at `127.0.0.1:7890`) returns
+/// the proxy's own 502 instead of hitting the provider. Provider calls to a
+/// caller-supplied base_url should not be silently rerouted through a system
+/// proxy; callers that need one set it explicitly.
 pub(crate) fn default_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .no_proxy()
         .build()
         .unwrap_or_default()
 }

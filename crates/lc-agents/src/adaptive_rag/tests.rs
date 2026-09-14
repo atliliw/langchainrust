@@ -320,7 +320,7 @@ async fn test_route_uses_tool_call_decision() {
     };
     let retriever = MockRetriever::new(vec![]);
     let rag = AdaptiveRAG::new(llm, retriever);
-    let decision = rag.route("some query").await.unwrap();
+    let decision = rag.route("some query", None).await.unwrap();
     assert_eq!(decision, RagDecision::MultiQuery);
 }
 

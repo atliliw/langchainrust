@@ -16,12 +16,15 @@ use lc_vector_stores::Document;
 const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // M9: Pre-compile regexes once instead of on every call.
-static HREF_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r#"href\s*=\s*["']([^"']+)["']"#).unwrap());
-static DOMAIN_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"https?://([^/]+)").unwrap());
-static DOMAIN_PREFIX_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"https?://[^/]+").unwrap());
+static HREF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"href\s*=\s*["']([^"']+)["']"#).expect("static regex literal must compile")
+});
+static DOMAIN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"https?://([^/]+)").expect("static regex literal must compile")
+});
+static DOMAIN_PREFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"https?://[^/]+").expect("static regex literal must compile")
+});
 
 /// Web page scraper loader
 ///
