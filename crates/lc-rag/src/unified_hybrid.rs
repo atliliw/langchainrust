@@ -1114,13 +1114,17 @@ mod tests {
         // invariant is layout-independent: the near-duplicate pair d1/d2 must
         // never occupy the top two slots together — the dissimilar d3 has to
         // break into the first two positions.
-        let top_two: std::collections::HashSet<&String> = order[0..2].iter().collect();
+        // HashSet<&str>:contains 直接收 &str,免去临时 String
+        //(clippy::unnecessary_to_owned;注意 HashSet<&String> 没有
+        // Borrow<str> 实现,必须把集合元素类型本身改成 &str)。
+        let top_two: std::collections::HashSet<&str> =
+            order[0..2].iter().map(String::as_str).collect();
         assert!(
-            top_two.contains(&"d3".to_string()),
+            top_two.contains("d3"),
             "diversity must surface the dissimilar d3 in the top two; got {top_two:?}"
         );
         assert!(
-            !(top_two.contains(&"d1".to_string()) && top_two.contains(&"d2".to_string())),
+            !(top_two.contains("d1") && top_two.contains("d2")),
             "the near-duplicate pair must not own both top slots; got {top_two:?}"
         );
         // The extra embed_documents call is the single batched MMR re-embed

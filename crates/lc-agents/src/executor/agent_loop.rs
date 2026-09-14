@@ -270,7 +270,9 @@ impl AgentExecutor {
                         }
                     }
 
-                    for (action, observation) in actions.into_iter().zip(observations.into_iter()) {
+                    // zip 第二参数本身收 IntoIterator,不必显式 .into_iter()
+                    // (stable clippy::useless_conversion)。
+                    for (action, observation) in actions.into_iter().zip(observations) {
                         intermediate_steps.push(AgentStep::new(action, observation));
                     }
                 }

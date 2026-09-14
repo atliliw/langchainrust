@@ -300,7 +300,9 @@ impl MapRerankDocumentsChain {
             ));
         }
 
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        // 分数降序:sort_by_key + Reverse(u32: Copy,不移动 String)
+        // (clippy::unnecessary_sort_by)。
+        results.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
 
         if self.verbose {
             println!("\n--- Rerank phase ---");
@@ -394,7 +396,9 @@ impl BaseChain for MapRerankDocumentsChain {
             ));
         }
 
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        // 分数降序:sort_by_key + Reverse(u32: Copy,不移动 String)
+        // (clippy::unnecessary_sort_by)。
+        results.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
         let top_results: Vec<(u32, String)> = results.into_iter().take(self.top_k).collect();
 
         let stream = futures_util::stream::once(async move {

@@ -566,9 +566,9 @@ impl AgentExecutor {
                             }
                         };
 
-                        for (action, observation) in
-                            actions.into_iter().zip(observations.into_iter())
-                        {
+                        // zip 第二参数收 IntoIterator,去掉多余 .into_iter()
+                        // (stable clippy::useless_conversion)。
+                        for (action, observation) in actions.into_iter().zip(observations) {
                             let _ = tx
                                 .send(Ok(AgentStreamEvent::ToolEnd {
                                     name: action.tool.clone(),
