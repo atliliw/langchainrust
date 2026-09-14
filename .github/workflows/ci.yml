@@ -398,6 +398,12 @@ jobs:
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
 
+      - name: Pre-build stdio interop fixtures
+        # cargo-llvm-cov 以 `--tests` 跑用例且使用独立 target 目录,不会构建
+        # examples;lc-mcp/tests/stdio_interop.rs 在 target/debug/examples 下
+        # 预置二进制,缺失时 10 个用例全部 panic。
+        run: cargo build -p lc-mcp --examples
+
       - name: Generate coverage
         run: cargo llvm-cov --workspace --fail-under-lines 50 --lcov --output-path lcov.info
         env:

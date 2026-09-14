@@ -10,7 +10,7 @@
 //! - `GET /.well-known/agent-card.json` → the [`AgentCard`]
 //! - `POST /` → `handle_a2a_request_authenticated` (bearer token enforced when
 //!   the server was configured with `with_auth_token`)
-//! - `GET /events` → SSE stream of [`TaskPushNotification`]s, only when
+//! - `GET /events` → SSE stream of [`crate::protocol::TaskPushNotification`]s, only when
 //!   streaming was enabled with `with_streaming`
 //!
 //! A CORS layer restricted to localhost origins is applied by default so

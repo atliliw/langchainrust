@@ -156,7 +156,7 @@ impl SimpleMathTool {
                 "factorial value too large, maximum supported is 20".to_string(),
             ));
         }
-        let result = self.compute_factorial(n);
+        let result = Self::compute_factorial(n);
         Ok(MathOutput {
             result: result as f64,
             operation: "factorial".to_string(),
@@ -164,11 +164,13 @@ impl SimpleMathTool {
         })
     }
 
-    fn compute_factorial(&self, n: u64) -> u64 {
+    // 无实例状态:关联函数而非方法(否则 stable clippy::only_used_in_recursion
+    // 会报 `&self` 只在递归调用中出现;1.85 的 clippy 没有此 lint)。
+    fn compute_factorial(n: u64) -> u64 {
         if n == 0 || n == 1 {
             1
         } else {
-            n * self.compute_factorial(n - 1)
+            n * Self::compute_factorial(n - 1)
         }
     }
 

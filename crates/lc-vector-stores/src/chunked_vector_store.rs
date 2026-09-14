@@ -76,7 +76,7 @@ impl ChunkedVectorStore {
             ));
         }
 
-        for (chunk_id, embedding) in chunk_ids.into_iter().zip(embeddings.into_iter()) {
+        for (chunk_id, embedding) in chunk_ids.into_iter().zip(embeddings) {
             self.add_chunk_vector(chunk_id, embedding).await?;
         }
 
@@ -140,7 +140,7 @@ impl VectorStore for ChunkedVectorStore {
 
         let mut ids = Vec::new();
 
-        for (doc, embedding) in documents.into_iter().zip(embeddings.into_iter()) {
+        for (doc, embedding) in documents.into_iter().zip(embeddings) {
             let chunk_id = doc
                 .id
                 .clone()

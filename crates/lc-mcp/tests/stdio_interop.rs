@@ -49,6 +49,14 @@ fn echo_server() -> StdioCommand {
     StdioCommand::new(fixture("stdio_echo_server"))
 }
 
+/// Echo server in `--silent-init` mode: it reads `initialize` but never
+/// replies, giving timeout tests a server that deterministically cannot answer
+/// (instead of racing a 1ns timer against a live, fast child — a race the
+/// child can win on a warm runner).
+fn silent_init_server() -> StdioCommand {
+    echo_server().arg("--silent-init")
+}
+
 #[tokio::test]
 async fn initialize_handshake_negotiates_protocol() {
     let client = StdioMcpClient::connect(echo_server())
@@ -252,16 +260,16 @@ async fn stdio_namespaced_adapter_strips_prefix_on_wire() {
 
 #[tokio::test]
 async fn request_timeout_is_enforced() {
-    // The demo server answers everything; use a near-zero timeout against the
-    // initialize call itself by connecting through the low-level API path:
-    // connect_with with a 1ns timeout must fail rather than hang forever.
-    // (The child is shut down on failure, so no orphan process remains.)
+    // Against a server that never answers initialize, a short timeout must
+    // always fire (deterministic — the old 1ns-timeout-against-live-server
+    // version lost the race when the warm child replied first). The child is
+    // killed on failure, so no orphan process remains.
     let result = StdioMcpClient::connect_with(
-        echo_server(),
+        silent_init_server(),
         VersionPolicy::Degrade,
-        Duration::from_nanos(1),
+        Duration::from_millis(200),
     )
     .await;
-    let err = result.expect_err("1ns timeout cannot complete an initialize round trip");
+    let err = result.expect_err("silent server must hit the initialize timeout");
     assert_eq!(err.code, lc_mcp::MCP_ERROR_REQUEST_TIMEOUT, "{err}");
 }

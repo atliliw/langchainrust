@@ -551,7 +551,7 @@ impl VectorStore for PGVectorStore {
              metadata = EXCLUDED.metadata, embedding = EXCLUDED.embedding",
             self.table
         );
-        for (doc, emb) in documents.into_iter().zip(embeddings.into_iter()) {
+        for (doc, emb) in documents.into_iter().zip(embeddings) {
             let id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
             query(&sql)
                 .bind(&id)

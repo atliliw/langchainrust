@@ -275,19 +275,15 @@ impl ComputerUseTool {
                     ));
                 }
             }
-            "type" => {
-                if input.text.is_none() {
-                    return Err(ToolError::InvalidInput(
-                        "'type' action requires 'text' field".to_string(),
-                    ));
-                }
+            "type" if input.text.is_none() => {
+                return Err(ToolError::InvalidInput(
+                    "'type' action requires 'text' field".to_string(),
+                ));
             }
-            "key_press" => {
-                if input.keys.is_none() {
-                    return Err(ToolError::InvalidInput(
-                        "'key_press' action requires 'keys' field".to_string(),
-                    ));
-                }
+            "key_press" if input.keys.is_none() => {
+                return Err(ToolError::InvalidInput(
+                    "'key_press' action requires 'keys' field".to_string(),
+                ));
             }
             _ => {}
         }

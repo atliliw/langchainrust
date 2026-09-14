@@ -131,7 +131,7 @@ impl VectorStore for FileVectorStore {
         let mut data = self.data.write().await;
         let mut ids = Vec::new();
 
-        for (doc, embedding) in documents.into_iter().zip(embeddings.into_iter()) {
+        for (doc, embedding) in documents.into_iter().zip(embeddings) {
             // validate the dimension
             if !embedding.is_empty() && embedding.len() != data.dimension {
                 return Err(VectorStoreError::StorageError(format!(

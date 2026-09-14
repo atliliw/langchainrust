@@ -50,7 +50,7 @@ impl VectorStore for InMemoryVectorStore {
         let mut store = self.documents.write().await;
         let mut ids = Vec::new();
 
-        for (doc, embedding) in documents.into_iter().zip(embeddings.into_iter()) {
+        for (doc, embedding) in documents.into_iter().zip(embeddings) {
             let id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
 
             let vector_doc = VectorDocument {

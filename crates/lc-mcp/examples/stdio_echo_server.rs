@@ -24,6 +24,9 @@
 //! - `--negotiate-version <v>`: announce protocol version `v` in the
 //!   `initialize` result regardless of what the client requested, simulating
 //!   a server pinned to an incompatible version.
+//! - `--silent-init`: read and swallow the `initialize` frame but never reply,
+//!   so request-timeout tests have a deterministic server that cannot answer
+//!   (replaces a racy 1ns timeout racing a live, fast server).
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -36,11 +39,13 @@ const SERVER_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 
 fn main() {
     let mut die_after_init = false;
+    let mut silent_init = false;
     let mut forced_version: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--die-after-init" => die_after_init = true,
+            "--silent-init" => silent_init = true,
             "--negotiate-version" => forced_version = args.next(),
             _ => {}
         }
@@ -50,7 +55,9 @@ fn main() {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    eprintln!("[echo-stdio] server starting (die_after_init={die_after_init})");
+    eprintln!(
+        "[echo-stdio] server starting (die_after_init={die_after_init}, silent_init={silent_init})"
+    );
 
     while let Some(Ok(line)) = stdin.next() {
         if line.trim().is_empty() {
@@ -90,6 +97,13 @@ fn main() {
         match method {
             "initialize" => {
                 eprintln!("[echo-stdio] initialize");
+                if silent_init {
+                    // Fixture mode: swallow initialize and every later frame
+                    // without ever writing a reply. The client must time out;
+                    // it kills this process (or closes stdin → EOF → exit) on
+                    // drop, so no orphan server remains.
+                    continue;
+                }
                 send(
                     &mut out,
                     id,

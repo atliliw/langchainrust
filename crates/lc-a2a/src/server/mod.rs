@@ -373,7 +373,7 @@ impl A2AServer {
         bearer: Option<&str>,
     ) -> A2AResponse {
         if let Err(resp) = self.check_auth(bearer) {
-            return resp;
+            return *resp;
         }
         self.handle_a2a_request(req).await
     }
@@ -386,14 +386,26 @@ impl A2AServer {
     /// Shared by the JSON-RPC handler and the SSE streaming endpoint so a
     /// `with_auth_token` server cannot be bypassed by connecting to `/events`
     /// directly (0.20.0 S4 G1).
-    pub(crate) fn check_auth(&self, bearer: Option<&str>) -> Result<(), A2AResponse> {
+    // Err 装箱:A2AResponse 最宽 136+ 字节,clippy::result_large_err 要求收窄;
+    // 401 响应是仅有的 Err 形态,装箱后调用方按需解包。
+    pub(crate) fn check_auth(&self, bearer: Option<&str>) -> Result<(), Box<A2AResponse>> {
         if let Some(expected) = &self.expected_token {
             match bearer {
-                None => return Err(A2AResponse::error(0, 401, "Authentication required")),
+                None => {
+                    return Err(Box::new(A2AResponse::error(
+                        0,
+                        401,
+                        "Authentication required",
+                    )))
+                }
                 // 0.22.0 audit fix: compare in constant time so the check does
                 // not leak the expected token through early-exit timing.
                 Some(token) if !constant_time_eq(token, expected) => {
-                    return Err(A2AResponse::error(0, 401, "Invalid authentication token"));
+                    return Err(Box::new(A2AResponse::error(
+                        0,
+                        401,
+                        "Invalid authentication token",
+                    )));
                 }
                 Some(_) => {}
             }
