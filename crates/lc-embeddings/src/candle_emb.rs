@@ -144,7 +144,7 @@ pub(crate) fn mean_pool_rows(
         )));
     }
     let mut out = vec![vec![0.0f32; hidden_size]; batch];
-    for b in 0..batch {
+    for (b, out_row) in out.iter_mut().enumerate() {
         let mask = masks
             .get(b)
             .ok_or_else(|| EmbeddingError::ParseError("missing attention mask row".to_string()))?;
@@ -156,11 +156,11 @@ pub(crate) fn mean_pool_rows(
             count += 1;
             let base = (b * seq_len + s) * hidden_size;
             for d in 0..hidden_size {
-                out[b][d] += hidden[base + d];
+                out_row[d] += hidden[base + d];
             }
         }
         if count > 0 {
-            for v in &mut out[b] {
+            for v in out_row {
                 *v /= count as f32;
             }
         }

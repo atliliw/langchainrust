@@ -22,6 +22,10 @@ use std::sync::{Arc, Condvar, Mutex};
 // - tokenizers::Tokenizer::from_file/encode_batch(..., add_special_tokens)
 // - Encoding::get_ids/get_attention_mask/get_type_ids; tokenizer.get_padding()/token_to_id()
 
+/// Raw output of one ONNX run: `(output shape, flattened f32 data, per-row
+/// attention masks, fed (padded/truncated) sequence length)`.
+type RunTensorsOutput = (Vec<usize>, Vec<f32>, Vec<Vec<i64>>, usize);
+
 /// Default per-batch text count cap for dynamic-batch models.
 const DEFAULT_MAX_BATCH: usize = 32;
 /// Default truncation cap (in tokens per text) when the sequence dimension is dynamic (excess truncated).
@@ -232,7 +236,7 @@ impl LocalInner {
     fn run_tensors(
         &self,
         encodings: &[tokenizers::Encoding],
-    ) -> Result<(Vec<usize>, Vec<f32>, Vec<Vec<i64>>, usize), EmbeddingError> {
+    ) -> Result<RunTensorsOutput, EmbeddingError> {
         if encodings.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
@@ -384,8 +388,8 @@ impl LocalInner {
                         }
                     }
                     if count > 0 {
-                        for d in 0..dim {
-                            result[b][d] /= count as f32;
+                        for v in &mut result[b] {
+                            *v /= count as f32;
                         }
                     }
                 }
@@ -444,8 +448,8 @@ impl LocalInner {
         }
         let seq = out_seq.min(fed_seq_len).min(keep.len());
         let mut rows = Vec::new();
-        for s in 0..seq {
-            if !keep[s] {
+        for (s, &keep_s) in keep.iter().enumerate().take(seq) {
+            if !keep_s {
                 continue;
             }
             let base = s * dim;
@@ -478,16 +482,12 @@ impl LocalInner {
         let encodings = self.tokenize(&[text.to_string()])?;
         let (shape_vec, data, mask_rows, fed_seq_len) = self.run_tensors(&encodings)?;
 
-        let encoding = encodings
-            .first()
-            .ok_or_else(|| EmbeddingError::EmptyInput)?;
+        let encoding = encodings.first().ok_or(EmbeddingError::EmptyInput)?;
         // tokenizers offsets are char positions of the original text.
         let offsets: Vec<(usize, usize)> = encoding.get_offsets().to_vec();
         // `get_special_tokens_mask` is u32 (1 = special).
         let special: Vec<u32> = encoding.get_special_tokens_mask().to_vec();
-        let mask = mask_rows
-            .first()
-            .ok_or_else(|| EmbeddingError::EmptyInput)?;
+        let mask = mask_rows.first().ok_or(EmbeddingError::EmptyInput)?;
 
         // One keep-sequence drives both the row selection and the offset filter.
         let seq = fed_seq_len.min(offsets.len());
@@ -561,7 +561,7 @@ impl LocalInner {
     /// - static batch=1 → only sequential execution (batch_cap=1);
     /// - static batch=N → per-batch cap `min(N, max_batch)`;
     /// - dynamic batch (-1) → use `max_batch` directly.
-    /// Same for the sequence dimension: static uses the value, dynamic uses `max_seq_len`.
+    ///   Same for the sequence dimension: static uses the value, dynamic uses `max_seq_len`.
     fn infer_input_capability(
         session: &ort::session::Session,
         max_batch: usize,
