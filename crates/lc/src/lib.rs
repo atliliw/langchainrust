@@ -79,16 +79,17 @@ pub mod a2a;
 
 // Re-export the commonly used types
 pub use agents::{
-    parse_review_verdict, review_envelope, task_adapter, AdaptiveRAG, AdaptiveRAGError,
-    AdaptiveRAGResult, AgentAction, AgentBuilder, AgentError, AgentEventRunnable, AgentExecutor,
-    AgentFinish, AgentOutput, AgentRunnable, AgentStep, AgentStreamEvent, AgentTask, AllowAll,
-    ApprovalDecision, ApprovalHandler, BaseAgent, BudgetConfig, BudgetExceeded, CRAGError,
-    CRAGResult, Citation, CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FileResumeStore,
-    FunctionCallingAgent, HandoffManager, LlmMemoryExtractor, MemoryResumeStore, Orchestrator,
-    OrchestratorRunnable, PendingApproval, PlanExecuteAgent, PlanExecuteError, PromptInjectionHook,
-    RagDecision, ReActAgent, ResearchError, ResearchReport, ResumeStore, ReviewOrchestrator,
-    ReviewVerdict, RunContext, SequentialPipeline, StreamingFunctionCallingAgent, TaskAdapter,
-    TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk,
+    parse_review_verdict, parse_supervisor_decision, review_envelope, supervisor_envelope,
+    task_adapter, AdaptiveRAG, AdaptiveRAGError, AdaptiveRAGResult, AgentAction, AgentBuilder,
+    AgentError, AgentEventRunnable, AgentExecutor, AgentFinish, AgentOutput, AgentRunnable,
+    AgentStep, AgentStreamEvent, AgentTask, AllowAll, ApprovalDecision, ApprovalGate,
+    ApprovalHandler, BaseAgent, BudgetConfig, BudgetExceeded, CRAGError, CRAGResult, Citation,
+    CorrectiveRAGAgent, DeepResearchAgent, FanOutFanIn, FileResumeStore, FunctionCallingAgent,
+    HandoffManager, LlmMemoryExtractor, MemoryResumeStore, Orchestrator, OrchestratorRunnable,
+    PendingApproval, PlanExecuteAgent, PlanExecuteError, PromptInjectionHook, RagDecision,
+    ReActAgent, ResearchError, ResearchReport, ResumeStore, ReviewOrchestrator, ReviewVerdict,
+    RunContext, SequentialPipeline, StreamingFunctionCallingAgent, Supervisor, SupervisorNext,
+    TaskAdapter, TokenBudgetHook, ToolInput, ToolPolicy, ToolRisk, SUPERVISOR_FINISH,
 };
 pub use core::batch::{
     BatchClient, BatchError, BatchId, BatchProvider, BatchRequest, BatchResult, BatchStatus,
@@ -145,9 +146,10 @@ pub use core::{
     ToolRegistry,
 };
 pub use evaluation::{
-    Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator,
-    ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, PairwiseEvaluator, PairwiseJudge,
-    Predictor, RegexMatch, Report, Score, StringDistance, Verdict,
+    compare_reports, Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner,
+    Evaluator, ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, MetricDelta,
+    PairwiseEvaluator, PairwiseJudge, Predictor, RegexMatch, Regression, Report, ReportComparison,
+    Score, StringDistance, Verdict,
 };
 pub use guardrails::{
     ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
@@ -251,6 +253,11 @@ pub use retrieval::{
 pub use retrieval::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,
 };
+// v0.23/v0.24 retrieval depth: hosted neural rerankers, small-to-big retrieval,
+// MMR diversity selection and the token-level late-chunking entry points.
+pub use retrieval::{late_chunk, late_index_in, LateChunk, LateChunkConfig};
+pub use retrieval::{mmr, SentenceWindowRetriever};
+pub use retrieval::{rerank_async, AsyncReranker, CohereRerank, JinaRerank};
 pub use retrieval::{
     CSVLoader, DocumentLoader, DocxLoader, HTMLLoader, JSONLoader, LoaderError, MarkdownLoader,
     PDFLoader, ParentDocumentRetriever, RecursiveCharacterSplitter, Retriever, RetrieverError,
@@ -311,14 +318,14 @@ pub use a2a::{
 // LangGraph
 pub use langgraph::{
     AgentState, AppendMessagesReducer, AppendReducer, AppendStepsReducer, AsyncFn,
-    AsyncFunctionRouter, AsyncNode, CheckpointData, Checkpointer, CompiledGraph, ConditionalEdge,
-    EdgeDefinition, EdgeTarget, EdgeType, ExecutionStep, FileCheckpointer, FilePersistence,
-    FunctionRouter, GraphBuilder, GraphDefinition, GraphEdge, GraphError, GraphExecution,
-    GraphInvocation, GraphNode, GraphPersistence, GraphResult, MemoryCheckpointer,
-    MemoryPersistence, MessageEntry, MessageRole, NodeConfig, NodeDefinition, NodeResult, NodeType,
-    ParallelBranch, ParallelInvocation, Reducer, ReplaceReducer, RouterDefinition, StateGraph,
-    StateSchema, StateUpdate, StepEntry, StreamEvent, SubgraphBuilder, SubgraphNode,
-    ThreadSafeMemoryCheckpointer, END, START,
+    AsyncFunctionRouter, AsyncNode, CheckpointData, CheckpointInfo, Checkpointer, CompiledGraph,
+    ConditionalEdge, EdgeDefinition, EdgeTarget, EdgeType, ExecutionStep, FileCheckpointer,
+    FilePersistence, FunctionRouter, GraphBuilder, GraphDefinition, GraphEdge, GraphError,
+    GraphExecution, GraphInvocation, GraphNode, GraphPersistence, GraphResult, InterruptibleNode,
+    MemoryCheckpointer, MemoryPersistence, MessageEntry, MessageRole, NodeConfig, NodeDefinition,
+    NodeResult, NodeType, ParallelBranch, ParallelInvocation, PendingInterrupt, Reducer,
+    ReplaceReducer, RouterDefinition, StateGraph, StateSchema, StateUpdate, StepEntry, StreamEvent,
+    SubgraphBuilder, SubgraphNode, ThreadSafeMemoryCheckpointer, END, START,
 };
 
 // B2 (0.22.4): durable LangGraph checkpointers.

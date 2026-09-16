@@ -57,6 +57,9 @@
   - Agent Web SSE（浏览器事件流） ✨ v0.22.4
   - AgentBuilder ✨ v0.14.0
   - Orchestrator ✨ v0.14.0
+  - Supervisor 子 Agent 动态路由 ✨ v0.24.0
+  - ApprovalGate 图路径审批门 ✨ v0.24.0
+  - 并行工具调用（信号量限流） ✨ v0.24.0
   - ToolPolicy ✨ v0.14.0
   - 上下文压缩（CompactionConfig） ✨ v0.21.0
 - [Plan-Execute 智能体](#plan-execute-agent)
@@ -102,8 +105,11 @@
   - Contextual Retrieval ✨ v0.21.0
   - 语义缓存（SemanticCache） ✨ v0.21.0
 - [BM25](#bm25)
+  - 小到大检索（句子窗口 / 父文档） ✨ v0.24.0
 - [混合检索](#hybrid-retrieval)
   - 原生混合搜索（Qdrant Query API） ✨ v0.21.0
+  - Weighted 加权融合 + MMR 多样性 ✨ v0.23.0
+  - Late Chunking 双腿注入 ✨ v0.24.0
 - [文档加载器](#document-loaders)
   - HTMLLoader
   - DocxLoader ✨ v0.4.1
@@ -113,6 +119,7 @@
 - [HyDE 检索器](#hyde-retriever)
 - [SelfQueryRetriever](#selfqueryretriever) ✨ v0.18.0
 - [重排序](#reranking)
+  - 神经重排序（Cohere / Jina 交叉编码器） ✨ v0.24.0
 - [回调](#callbacks)
   - OtelHandler
 - [评估](#evaluation)
@@ -120,11 +127,15 @@
   - EvalRunner
   - LLMAsJudge ✨ v0.15.0
   - PairwiseJudge ✨ v0.15.0
+  - trace → golden → 回归门禁 ✨ v0.24.0
 - [LangGraph](#langgraph)
   - Reducer ✨ v0.15.0
   - 边类型 ✨ v0.15.0
   - Checkpointer 家族 ✨ v0.15.0
   - 子图 / 动态规划 / 流式 ✨ v0.15.0
+  - 节点内动态中断 / 恢复（interrupt + resume） ✨ v0.24.0
+  - 审批 / 恢复收敛（ApprovalGate） ✨ v0.24.0
+  - 状态历史与时间旅行（fork_from） ✨ v0.24.0
 - [A2A 智能体协议](#a2a-agent-protocol) ✨ v0.4.1
   - v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
   - 卡片签名（JWS HS256） ✨ v0.22.0
@@ -163,7 +174,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.22.4"
+langchainrust = "0.24.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -639,6 +650,8 @@ let response = llm.chat(vec![
     Message::human("Hello!"),
 ], None).await?;
 ```
+
+> **截断流不再被当成完整回答（✨ v0.24.0）**：Ollama 曾是唯一不检查终止标记的 chat provider——字节流提前 EOF（本地模型进程崩了 / 连接被切断）时会带着半截内容**成功返回**。v0.24.0 起解析器跟踪 `saw_terminal`（`[DONE]` 或 `choice.finish_reason`），EOF 前没见到终止标记就返回 `OllamaError::StreamInterrupted(String)`（`#[non_exhaustive]` 新变体，携带已收到的部分内容），与 OpenAI / Azure / Anthropic / Gemini 的契约对齐。升级时注意为这个新错误变体补一个 match 分支。
 
 ### 多模态视觉
 
@@ -2384,6 +2397,44 @@ let result = pipeline.run("Rust async runtimes".to_string()).await?;
 
 `OrchestratorRunnable` 把它们包装成 LCEL `Runnable`,可进入 `pipe()` 管道(见 LCEL 适配器一节)。
 
+### Supervisor：LLM 动态路由子 Agent ✨ v0.24.0
+
+**解决什么问题**：`SequentialPipeline` 的阶段表是写死的,`FanOutFanIn` 每轮都向全员广播——两者都不会根据任务内容决定"下一步该谁干"。多专才 Agent 场景(检索员 / 编码员 / 写手 / 审查员)需要的是一个**路由模型每轮决定**下一个子任务交给哪个具名 worker、或者判定工作已完成。v0.24.0 新增 `Supervisor`:每个 worker 是 `Orchestrator` trait 后面一个完整独立的 Agent(自己的执行器、预算、hooks),worker 的回答回填进路由模型的 scratchpad,下一轮路由基于前序 worker 的真实产出。
+
+```rust
+use langchainrust::{AgentTask, Orchestrator, RunContext, Supervisor, TaskAdapter};
+use std::sync::Arc;
+
+// 任意 String -> String 的 Orchestrator(AgentExecutor、其他 pipeline……)
+// 经 TaskAdapter 适配成 AgentTask -> String 的 worker。
+let researcher: Arc<dyn Orchestrator<Input = AgentTask, Output = String>> =
+    Arc::new(TaskAdapter::new(Arc::new(research_executor)));
+let writer = Arc::new(TaskAdapter::new(Arc::new(writer_executor)));
+
+let supervisor = Supervisor::new(
+    router_llm,                                         // String -> String 的路由模型
+    vec![
+        ("researcher".to_string(), researcher),
+        ("writer".to_string(), writer),
+    ],
+    8,                                                  // 最大委派轮数(max_rounds)
+);
+
+let answer = supervisor
+    .run_with_context(
+        AgentTask::new("写一页 RAG 重排序技术简报"),
+        &RunContext::new_random(),
+    )
+    .await?;
+```
+
+契约与边界:
+
+- **只有一层**子 Agent 递归:worker 是叶子 orchestrator,不能再继续委派;
+- 路由受 `max_rounds` 约束(构造后可用 `.with_max_rounds(n)` 调整,小于 1 自动夹到 1)。模型始终不发 `SUPERVISOR_FINISH` 时运行**报错而不是无限循环**;
+- 决策协议:优先解析 JSON `{"next":"<worker>","task":"..."}` / `{"next":"FINISH","answer":"..."}`;弱模型输出不规整时回退 `<<<NEXT>>>` 分隔符格式——解析在 `parse_supervisor_decision`,提示词信封在 `supervisor_envelope(objective, worker_names, round, history)`,`SUPERVISOR_FINISH` 常量即 `"FINISH"`;
+- 入口是 trait 方法 `run_with_context(input, &RunContext)`(不是固有方法 `.run`);`RunContext::new(id)` / `new_random()` 携带运行 id,`AgentTask::new(objective)` 还可链式挂期望产出与允许工具清单。
+
 ### Agent Hooks（五类安全控制） ✨ v0.11.0
 
 Hooks 在 Agent 执行生命周期插入安全控制:
@@ -2662,6 +2713,17 @@ while let Some(event) = stream.next().await {
 
 - 事件流给到的是 LLM 文本与工具调用的**状态变化**；`ToolCall` 事件描述"调用走到哪一步"，工具执行的结果会回流给 LLM 做下一步决策，但结果正文本身不出现在事件流里。
 - 该 Agent 的流式面聚焦于 LLM 输出 + 工具调用状态；如果只需要工具执行层面的细粒度事件，可另看 `Executor::stream` 的能力面——两者视角不同。
+
+### 并行工具调用（有界并发） ✨ v0.24.0
+
+模型一轮返回多个 tool call 时,执行器**并发**执行它们,但并发度由信号量封顶(`AgentExecutor::with_max_concurrency`,默认 `DEFAULT_MAX_CONCURRENCY = 8`),而不是来多少起多少任务——对外部 API 配额、数据库连接和本机资源都可控:
+
+```rust
+let executor = AgentExecutor::new(agent, tools)
+    .with_max_concurrency(4);   // 单轮最多 4 个工具调用同时在飞
+```
+
+工具观察值按**模型给出的调用顺序**(而非完成先后)zip 回 actions,因此多工具轮次的喂回序列是确定的;`invoke` 与流式两条路径给出同样的顺序保证。
 
 ---
 
@@ -3018,7 +3080,7 @@ let executor = AgentExecutor::new(agent, tools)
 
 ## Sessions
 
-> **⚠️ v0.22.0 起推荐事件溯源路径**：本节前半部分介绍的 `SessionManager` 已标 `#[deprecated]`（0.23.0 移除，功能保留）。新代码请直接用 [`EventSessionManager`](#事件溯源重写--v0220推荐路径)（见下方"事件溯源重写"节）；存量代码升级后仍可编译运行，只会出现 deprecation 警告。
+> **⚠️ v0.22.0 起推荐事件溯源路径**：本节前半部分介绍的 `SessionManager` 已标 `#[deprecated]`（原计划 0.23.0 移除；截至 0.24.0 仍随 crate 保留、可编译运行，仅发出 deprecation 警告）。新代码请直接用 [`EventSessionManager`](#事件溯源重写--v0220推荐路径)（见下方"事件溯源重写"节）；存量代码升级后仍可编译运行，只会出现 deprecation 警告。
 
 **解决什么问题**：多轮对话必须记住上下文——用户上一轮说了什么、助手怎么回的。但"记在哪、怎么存、怎么取"是每个应用都要重复实现的样板。`SessionManager` 把会话抽象成生命周期管理：创建会话 → 往里写对话 → 随时取历史 → 归档/清理。同时天然支持**多会话隔离**：每个会话有独立 id 和归属用户，不同用户、不同话题的对话互不串扰。
 
@@ -3123,7 +3185,7 @@ let history = manager.history(&id).await?;   // 投影后的 Vec<Message>
 // 清理/归档/删除:向 EventStore 追加 Metadata 事件(日志不可变,见下文"事件类型")
 ```
 
-**旧 API → 新 API 对照**（旧 `SessionManager` / `SessionManagerRunnable` 标 `#[deprecated]`，保留到 0.23.0 移除，`#[allow(deprecated)]` 可静默）：
+**旧 API → 新 API 对照**（旧 `SessionManager` / `SessionManagerRunnable` 自 0.22.0 起标 `#[deprecated]`，原计划 0.23.0 移除；截至 0.24.0 仍保留可用，`#[allow(deprecated)]` 可静默警告）：
 
 | 旧（0.21.x） | 新（0.22.0） | 语义变化 |
 |---|---|---|
@@ -3134,7 +3196,7 @@ let history = manager.history(&id).await?;   // 投影后的 Vec<Message>
 | （无） | `fork_session(&id, branch, until)` | **新**：从主干复制前缀到新分支，主干不受影响 |
 | `max_context_messages(n)`（消息计数窗） | `with_max_context_turns(n)`（轮窗） | n=1 含完整上一轮 + 当前消息；保证 user/ai 成对、无孤儿工具结果 |
 | （无） | `with_auto_compaction(AutoCompaction)` | **新**：超 N 轮自动追加确定性 Snapshot 事件（无 LLM 调用） |
-| `clear / archive / delete_session` | 直接向 `EventStore` 追加 `Metadata` 事件(0.23.0 提供封装方法) | 事件日志不可变,"清理"变为追加状态事件 |
+| `clear / archive / delete_session` | 直接向 `EventStore` 追加 `Metadata` 事件（截至 0.24.0 仍由调用方直接追加，封装方法尚未落地） | 事件日志不可变,"清理"变为追加状态事件 |
 | `SessionStore`（自定义存储 trait） | `EventStore` | 四方法：`append / append_batch / read / fork`；append 幂等键 `(session, branch, id)` |
 
 ### 会话分叉（fork）
@@ -3154,7 +3216,7 @@ experiment.chat(&id, &llm, "分支消息".to_string()).await?;
 
 - **幂等追加**：`append` 以 `(session_id, branch, id)` 为幂等键，同一事件重放不会重复写入——进程在"追加到一半"崩溃后，重启重放残缺批次是安全的。
 - **投影（project）**：`project(&events)` / `to_session(&events)` 从事件流重建会话状态；孤儿工具结果（有 tool result 无对应 tool call）在投影时被检测并报错，保证喂给 LLM 的历史永远成对合法。
-- **检查点占位**：`SessionCheckpoint` trait + `NoopCheckpoint` 已就位，持久化检查点（把投影落库）在 0.23.0 接入。
+- **检查点占位**：`SessionCheckpoint` trait + `NoopCheckpoint` 已就位；持久化检查点（把投影落库）原计划 0.23.0 接入，截至 0.24.0 仍只有 no-op 实现，恢复时需全量重放事件日志。
 
 ### 事件类型
 
@@ -3653,7 +3715,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 **`CdpBrowserTool`——CDP 驱动本地 Chrome（`browser-cdp` feature）**：DuckDuckGo/`URLFetchTool` 只能拿静态 HTML，对 JS 渲染页面无能为力。`connect()` 收的是 Chrome **HTTP 调试基址**（`http://127.0.0.1:9222`，必须以 `http://`/`https://` 开头，传 `ws://` 直接 `InvalidInput`）：工具先 `PUT /json/new`（旧版 Chrome 回退 `GET /json` 附着现有页）拿到该标签页的 `webSocketDebuggerUrl`，再用 WebSocket（本机场景即明文 `ws://`）走 Chrome DevTools Protocol 执行四种操作：`navigate` / `extract_text`（渲染后正文）/ `extract_links` / `metadata`，输入 `BrowserInput { operation, url, wait_ms: Option（load 事件后额外等待，上限 10s）}`。SSRF 姿态与网络工具一致：**默认禁止内网/回环目标**，`with_allow_private_urls(true)` 显式放行。它是 opt-in feature（拉入 tokio-tungstenite）：
 
 ```toml
-langchainrust = { version = "0.22", features = ["browser-cdp"] }
+langchainrust = { version = "0.24", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3870,7 +3932,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.22.4", features = ["local-candle"] }
+langchainrust = { version = "0.24.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4082,7 +4144,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["chromadb"] }
+langchainrust = { version = "0.24.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4326,6 +4388,45 @@ for result in results {
 }
 ```
 
+### 小到大检索：句子窗口 / 父文档 ✨ v0.24.0
+
+`ChunkedBM25Retriever` 的父文档合并是**阈值门控**的(同一父文档命中比例过线才合并)。v0.24.0 补了两个"无条件小到大"的检索器,思路同 LlamaIndex 的 sentence-window / parent-document:**用最小的语义单元保证命中精度,喂给 LLM 的却是它周围的完整上下文**。
+
+**句子窗口**——以单句建索引,命中后返回该句前后各 N 句的窗口(默认 `window=2`、`top_k=3`,同一来源文档去重后只给一个窗口):
+
+```rust
+use langchainrust::retrieval::RetrieverTrait;
+use langchainrust::SentenceWindowRetriever;
+
+let retriever = SentenceWindowRetriever::from_documents(docs)
+    .with_window(2)    // 命中句两侧各取 2 句
+    .with_top_k(3);
+
+let windows = retriever.retrieve("Rust 异步运行时", 3).await?;
+```
+
+**父文档**——叶子小块只负责匹配,任意叶子命中都返回**整个父文档**(无阈值、不按比例):
+
+```rust
+use langchainrust::{InMemoryChunkedDocumentStore, ParentDocumentRetriever};
+
+let store = Arc::new(InMemoryChunkedDocumentStore::new());
+// (parent_id, chunk_ids):chunk id 形如 {parent_id}::{segment},重复写入同一父文档是幂等替换
+let (_parent_id, _chunk_ids) = store
+    .add_parent_with_chunks(parent_doc, vec!["叶子 1".into(), "叶子 2".into()])
+    .await?;
+
+let retriever = ParentDocumentRetriever::new(store);
+// 也可用 with_config(store, AutoMergingConfig) 调叶子切分;.inner() 借到底层 BM25
+let parents = retriever.retrieve("查询", 4).await?;
+```
+
+| 检索器 | 匹配单元 | 返回单元 | 合并条件 |
+|---|---|---|---|
+| `ChunkedBM25Retriever` | 叶子块 | 叶子或父文档 | 命中率过 `AutoMergingConfig` 阈值 |
+| `SentenceWindowRetriever` | 单句 | ±N 句窗口 | 无条件(按来源去重) |
+| `ParentDocumentRetriever` | 叶子块 | 整个父文档 | 无条件,任一叶子命中即返回父文档 |
+
 ---
 
 <a id="hybrid-retrieval"></a>
@@ -4371,6 +4472,51 @@ for result in results {
 }
 ```
 
+### Weighted 加权融合与 MMR 多样性 ✨ v0.23.0
+
+RRF 只看排名,两路权重不可调,而且同一个窄主题可能占满 top-k。v0.23.0 给 `UnifiedHybridIndex` 补齐两种正式旋钮:
+
+**加权线性融合**——`FusionMode::Rrf`(默认)之外可用 `FusionMode::Weighted { bm25_weight, vector_weight }`,在候选池内先做 min-max 归一化再加权:
+
+```rust
+use langchainrust::{FusionMode, HybridIndexConfig, UnifiedHybridIndex};
+
+let config = HybridIndexConfig::new()
+    .with_fusion(FusionMode::Weighted { bm25_weight: 0.3, vector_weight: 0.7 });
+let index = UnifiedHybridIndex::with_config(embeddings, vector_store, 1536, config);
+```
+
+**MMR(Maximal Marginal Relevance)**——贪心选取"相关性 − 与已选结果相似度"最高的候选,λ 越大越偏向相关性(`λ=1` 退化为纯相关,`λ=0` 最大化多样性,常用 0.5–0.7):
+
+```rust
+use langchainrust::mmr;
+
+// 索引方法:先取 20 个融合候选、对这 20 个多做一次嵌入,返回多样化后的 5 个
+let picks = index.retrieve_mmr("查询", 20, 5, 0.6).await?;
+
+// 也可对自带的 (id, 相关性, 向量) 三元组直接跑纯算法
+let ids: Vec<String> = mmr(&candidates, 0.6_f32, 5);
+```
+
+池内归一化保证 λ 的权衡在 RRF 与 Weighted 两种融合下含义一致。
+
+### Late Chunking 双腿注入 ✨ v0.24.0
+
+[Late Chunking（后分块）](#late-chunking后分块-v0210)解决了"分块嵌入丢全文上下文",但 v0.21 的 `late_chunk` 只产出 `LateChunk`,落库要自己接。v0.24.0 把它接进混合索引的**两条腿**:池化向量进向量索引,同文本同步进 BM25/父文档 store——一次调用完成双索引注册:
+
+```rust
+use langchainrust::{late_chunk, LateChunkConfig, UnifiedHybridIndex};
+
+let config = LateChunkConfig::new().with_chunk_size(1024).with_chunk_overlap(128);
+let chunks = late_chunk(&token_embedder, &document.content, &config).await?;
+
+// BM25 与向量两条腿用同一套确定性 id({parent_id}::{segment}),
+// 融合时解析回同一个父文档;重复注册同一父文档为幂等替换。
+let parent_id = index.add_late_chunked_document(document, &chunks).await?;
+```
+
+只需要纯向量单腿时,可用 v0.23.0 起的自由函数 `late_index_in(&vector_store, &embedder, parent_key, text, &config)` 一次完成"token 级嵌入 → 池化 → 入库"(后端无关,id 形如 `{parent_key}:{i}`)。
+
 ### 检索模式对比
 
 | 模式 | 内容存储 | 查找 | 使用场景 |
@@ -4384,7 +4530,7 @@ for result in results {
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.22.4", features = ["qdrant-integration"] }
+langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4491,6 +4637,98 @@ match compiled.invoke(state).await {
     Err(e) => { /* 错误 */ }
 }
 ```
+
+上面的静态中断只能停在**节点边界**(节点前/后),中断点必须在编译期声明。v0.24.0 新增**节点内动态中断**:节点函数自己决定"在什么数据条件下暂停、把什么问题抛给外部",恢复时**重新进入同一个节点**并拿到人工答复,副作用不必重放。
+
+### 节点内动态中断 / 恢复（interrupt + resume） ✨ v0.24.0
+
+```rust
+use langchainrust::langgraph::{
+    GraphError, InterruptibleNode, StateUpdate, ThreadSafeMemoryCheckpointer,
+};
+use serde_json::json;
+
+// 闭包签名:(&S, Option<&serde_json::Value>) -> boxed future
+// resume=None 表示首次进入;Some(value) 表示带着人工决策重新进入。
+let charge = InterruptibleNode::new("charge", |state, resume| {
+    let command = state.output.clone().unwrap_or_default();
+    Box::pin(async move {
+        match resume {
+            None => Err(GraphError::InterruptRequest {
+                // 抛给外部世界的暂停载荷(要问的问题、上下文……)
+                payload: json!({ "kind": "tool_approval", "command": command }),
+            }),
+            Some(decision) => {
+                // 恢复路径:副作用在这里只发生一次
+                let mut next = state.clone();
+                next.set_output(format!("decision={decision}, charged"));
+                Ok(StateUpdate::full(next))
+            }
+        }
+    })
+});
+
+let compiled = graph.compile()?
+    // 动态中断必须挂 checkpointer——暂停当下先落检查点,进程重启也能恢复
+    .with_checkpointer(ThreadSafeMemoryCheckpointer::new());
+
+// 首次执行:节点内挂起,调用方拿到 DynamicInterrupt { node, payload }
+let err = compiled.invoke(AgentState::new("charge $99")).await.unwrap_err();
+match err {
+    GraphError::DynamicInterrupt { node, payload } => {
+        assert_eq!(node, "charge");
+        // 把 payload 发给审批 UI / 另一进程 / 邮件工单……
+        // 人工决策以任意 JSON 回灌,节点带着它重新进入:
+        let invocation = compiled.resume_with_value(&node, json!({"approved": true})).await?;
+        assert!(invocation.final_state.output.unwrap().contains("charged"));
+    }
+    other => return Err(other),
+}
+```
+
+语义要点:
+
+- **一套持久化**:暂停时检查点已写入 checkpointer(内存 / 文件 / SQLite / Postgres / Redis),恢复值放在 `NodeConfig.metadata` 的 `INTERRUPT_RESUME_KEY`(常量 `"__lc_interrupt_resume"`)里注入,不再有第二套 resume 存储;
+- **副作用只发生一次**:节点重新进入,闭包自己按 `resume` 分支把副作用放在恢复路径——首次进入在挂起前不应落副作用;
+- **可级联**:恢复后另一个节点再次挂起会得到新的 `DynamicInterrupt`,可多轮中断→恢复;递归预算沿用挂起前已消耗的部分,重复中断不能绕过 `recursion_limit`;
+- **流式可见**:`StreamEvent::NodeInterrupt(node, payload)` / `Resumed(node, value)` 在流式执行中实时上报暂停与恢复。
+
+### 审批 / 恢复收敛（ApprovalGate） ✨ v0.24.0
+
+工具审批不再需要独立的审批存储:`lc_agents::graph_approval::ApprovalGate` 就是一个图节点,把"高风险工具调用"直接表达为一次节点内中断。
+
+```rust,ignore
+use langchainrust::{ApprovalDecision, ApprovalGate};
+
+let gate = ApprovalGate::new("charge_card", |command: &str| {
+    // 真正的副作用只在 Allow / Modify 的恢复路径执行
+    charge_payment(command); "receipt-123".to_string()
+});
+graph.add_node(gate);
+```
+
+首次进入中断载荷固定为 `{"kind":"tool_approval","tool":<name>,"command":<state.output>}`;恢复时回灌序列化后的 `ApprovalDecision`:`Allow`(执行一次工具并继续)、`Deny { reason }`(工具整体跳过、零副作用、图继续走到 END)、`Modify { arguments, note }`(携带改写参数与备注)。图路径上**唯一**持久化是 checkpointer(跨进程审批用 `FileCheckpointer` 等);旧执行器的 `ResumeStore` / `FileResumeStore` 只在非图的 executor 路径(`with_resume_store` / `pending_approval()` / `executor.resume(decision)`)继续服役。
+
+### 状态历史与时间旅行（fork_from） ✨ v0.24.0
+
+挂上 checkpointer 后,每个检查点都是可回访的状态快照:
+
+```rust
+use langchainrust::langgraph::CheckpointInfo;
+
+// 按时间顺序读出全部快照:id / timestamp / seq / recursion_count / state
+let history: Vec<CheckpointInfo<AgentState>> = compiled.get_state_history()?;
+
+// 从任意旧快照"开一条新时间线":以该快照状态为基底,从指定节点开始只向前跑
+let forked = compiled
+    .fork_from(&history[2].id, "analyze", Some(corrected_state))
+    .await?;
+```
+
+- fork 是**新血统**:从旧快照另存一份新检查点,原时间线不动;
+- **只向前、不回放**:从 `continue_at_node` 开始执行,fork 点之前的副作用不会重跑——"换个分支再试一遍"是安全的;
+- `override_state: None` 用快照原状态;`Some(s)` 可人工修正状态后再继续;
+- fork 与中断可组合:fork 出的执行同样可以在节点内挂起、再 `resume_with_value`。
 
 ### Reducer（状态合并规则） ✨ v0.15.0
 
@@ -5012,6 +5250,31 @@ let reranked = executor.rerank("Rust programming", results)?;
 - **保留 top_n**：`with_top_n(5)` 决定最终保留条数，重排后只返回前 5 条。示例里没设 `with_min_score`，即默认不按分数过滤。
 - **同为无模型重排**：和 KeywordReranker 一样不需要嵌入模型，直接在已检索结果上打分，成本可控。
 
+### 神经重排序：Cohere / Jina 交叉编码器 ✨ v0.24.0
+
+词法重排器零成本、可离线;召回质量优先时改用托管**交叉编码器**:查询与每个候选拼接后联合打分,精度显著高于向量点积。v0.24.0 把两家服务收敛在同一个异步 trait 后面,换厂商不改调用点。
+
+```rust
+use langchainrust::retrieval::RetrieverTrait;
+use langchainrust::{rerank_async, CohereRerank, SearchResult};
+
+// 传空字符串则回退读 COHERE_API_KEY;默认模型 rerank-multilingual-v3.0
+let cohere = CohereRerank::new("")
+    .with_model("rerank-v3.5")          // 可选
+    // .with_base_url("https://api.cohere.com")  // 测试时可指向 mock
+    .no_proxy();                        // 绕过环境代理(服务端到服务端直连场景)
+
+// 先粗召回多捞一些,再让交叉编码器精选
+let pool: Vec<SearchResult> = retriever.retrieve_with_scores("查询", 20).await?;
+let top: Vec<SearchResult> = rerank_async(&cohere, "查询", pool, 5).await?;
+```
+
+- `AsyncReranker` 只有一个方法:`score_async(&self, query: &str, documents: &[Document]) -> Result<Vec<f32>, RerankingError>`;`JinaRerank::new("")` 读 `JINA_API_KEY`,默认模型 `jina-reranker-v2-base-multilingual`,同样提供 `.with_base_url()` / `.with_model()` / `.no_proxy()`;
+- `rerank_async` 把 API 返回的 `results[].index` **重映射回输入位置**(服务端不保证按序返回),按分数降序后截断到 `top_n`;空候选直接返回空 `Vec`;
+- 响应体畸形是**显式错误**,不会静默地把未排序输入当结果返回。
+
+> 多样性重排（MMR）与 Weighted 加权融合见上文[混合检索](#hybrid-retrieval)一节的 `retrieve_mmr` / `mmr`。
+
 ---
 
 <a id="callbacks"></a>
@@ -5123,7 +5386,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["opentelemetry"] }
+langchainrust = { version = "0.24.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5141,7 +5404,7 @@ let manager = CallbackManager::new()
 **OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
 
 ```toml
-langchainrust = { version = "0.22.4", features = ["otlp"] }
+langchainrust = { version = "0.24.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5307,6 +5570,35 @@ let report = runner.run(&dataset, &predictor).await?;
 
 > 底层复用 `core::judge::structured_call` 的结构化判定路径（强制 LLM 输出 JSON 后解析，错误统一为 `StructuredJudgeError`），保证裁判结果可机读。
 
+### trace → golden → 回归门禁 ✨ v0.24.0
+
+离线手写数据集会过时。v0.24.0 把"**线上 trace → 入库 golden 集 → CI 回归门禁**"闭环补齐:生产录播经 lc-testkit 转成 golden JSONL(转换规则见[测试章"录播 → golden 数据集"](#录播--golden-数据集评分桥--v0240)),新 prompt / 新模型在同一份 JSONL 上跑分,报告与基线报告逐指标对比,退步超阈值就让 CI 红。
+
+```rust
+use langchainrust::evaluation::{compare_reports, Dataset, EvalRunner, Report};
+
+// 基线报告来自已知良好版本(Report 支持 JSON round-trip,可落盘 / 传 CI artifact)
+let baseline: Report = serde_json::from_str(&std::fs::read_to_string("eval/baseline.json")?)?;
+
+// 候选跑:加载入库 JSONL,predictor 包住新 prompt / 新模型
+let dataset = Dataset::from_jsonl("eval/golden.jsonl")?;
+let candidate: Report = EvalRunner::new(evaluators).run(&dataset, &new_predictor).await?;
+
+// tolerance = 可接受的均值波动;delta 严格小于 -tolerance 才算退步(边界 -0.02 仍通过)
+let cmp = compare_reports(&baseline, &candidate, 0.02);
+assert!(!cmp.is_regressed(), "检测到指标回归:\n{}", cmp.to_table());
+```
+
+`ReportComparison` 给出:
+
+| 字段 | 内容 |
+|---|---|
+| `deltas: Vec<MetricDelta>` | 每个共有评估器的 `baseline_mean` / `candidate_mean` / `delta` / 双方计分数 |
+| `regressions: Vec<Regression>` | 仅含 `delta < -tolerance`(严格不等式,边界值不算回归)的指标 |
+| `added: Vec<String>` / `dropped: Vec<String>` | 候选比基线**新增 / 丢失**的评估器名——候选偷偷少跑了一个评估器在同一张表里可见 |
+
+`cmp.to_table()` 输出可直接贴进 CI 日志的对比表。基线怎么来:首次在已知良好版本上跑一遍,把 `Report` 序列化入库即可。
+
 ---
 
 <a id="mongodb-storage"></a>
@@ -5336,7 +5628,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -5410,14 +5702,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["redis-storage"] }
+langchainrust = { version = "0.24.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["sqlite-storage"] }
+langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5519,7 +5811,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.22.4"
+lc-testkit = "0.24.0"
 ```
 
 ```rust
@@ -5548,6 +5840,45 @@ use lc_testkit::{ReplayProvider, ReplayStrategy};
 let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
     .with_strategy(ReplayStrategy::Exact);
 ```
+
+### 录播 → golden 数据集（评分桥） ✨ v0.24.0
+
+v0.24.0 起 lc-testkit 依赖 lc-evaluation,录播文件可以直接转成**评测数据集**:一条 `RecordedExchange` 映射成一条 `Example`,规则固定——请求历史里**最后一条 human 消息** → `input`,录到的 assistant 文本 → `reference`,非空工具结果按排名顺序 → `contexts`(让 RAGAS 类评估器也能给检索质量打分)。Agent 一轮用户提问会产生多条 exchange(包括纯工具调用、文本为空的),`is_scoring_candidate` 先过滤;`golden_dataset` 对漏网的坏行显式报错:
+
+| 错误 | 含义 |
+|---|---|
+| `GoldenError::NoUserMessage(i)` | 第 i 条交换里没有 human 消息 |
+| `GoldenError::EmptyReference(i)` | assistant 文本为空(纯工具轮次) |
+
+```rust,ignore
+use lc_testkit::{
+    golden_dataset, is_scoring_candidate, read_exchanges, write_golden_jsonl,
+};
+
+// 录播文件 → 过滤 → golden 数据集 → 入库的 eval/golden.jsonl
+let exchanges = read_exchanges("fixtures/recorded.jsonl")?;
+let scored: Vec<_> = exchanges.iter().filter(|e| is_scoring_candidate(e)).cloned().collect();
+let dataset = golden_dataset(&scored)?;
+write_golden_jsonl(&dataset, "eval/golden.jsonl")?;
+
+// 或一步到位读文件成数据集
+let dataset = lc_testkit::golden_dataset_from_file("fixtures/recorded.jsonl")?;
+```
+
+零网络、无需 API key 的**离线冒烟跑**:用同一录播文件构造 FIFO `ReplayPredictor`,每条 reference 都会原样复现:
+
+```rust,ignore
+use lc_evaluation::{EvalRunner, ExactMatch};
+use lc_testkit::{replay_golden_from_file, ReplayStrategy};
+
+let (dataset, replay) = replay_golden_from_file("fixtures/recorded.jsonl", ReplayStrategy::Fifo)?;
+let report = EvalRunner::new(vec![Box::new(ExactMatch)])
+    .run(&dataset, &replay)
+    .await?;
+assert!(replay.remaining() == 0);   // 每条样例都消费到了
+```
+
+`lc-testkit` 不是 facade 依赖,需要直接引(上面已把 dev-dependency 版本钉到 0.24.0);真模型的回归跑法见[评估章的 trace → golden → 回归门禁](#trace--golden-回归门禁--v0240)。
 
 ---
 
@@ -5640,8 +5971,8 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.22"
-lc-a2a = { version = "0.22.4", features = ["axum"] }
+langchainrust = "0.24"
+lc-a2a = { version = "0.24.0", features = ["axum"] }
 ```
 
 ```rust

@@ -19,17 +19,19 @@ A LangChain-inspired Rust framework for building LLM applications.
 |-----------|-------------|
 | **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
 | **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
-| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling |
+| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / **Supervisor dynamic sub-agent routing (v0.24.0)** / parallel tool calls (bounded concurrency) |
 | **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client |
-| **MCP** | Model Context Protocol Client + Server (Stdio + SSE), full 6 primitives, MCP tool adapter to BaseTool |
+| **MCP** | Model Context Protocol Client + Server (stdio + Streamable HTTP, stateless track, OAuth 2.1), full 6 primitives, MCP tool adapter to BaseTool |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
-| **Sessions** | Multi-turn conversation lifecycle management, pluggable storage (SessionManager + SessionStore) |
+| **Sessions** | Multi-turn event-sourced lifecycle (`EventSessionManager` + `EventStore`, fork-from-any-point), pluggable storage |
 | **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
-| **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing) |
+| **RAG** | Document splitting (including SemanticSplitter), vector store, semantic retrieval, MultiQuery, HyDE, Reranking, query_with_sources (citation tracing), late chunking (dual-leg hybrid injection, v0.24.0) |
+| **Neural rerank (v0.24.0)** | `AsyncReranker` trait with hosted Cohere / Jina cross-encoders and the `rerank_async` helper (out-of-order index mapping, proxy bypass) |
+| **Small-to-big (v0.24.0)** | `SentenceWindowRetriever` (±N-sentence windows) and `ParentDocumentRetriever` (leaf hits return the whole parent document) |
 | **Structured Output** | with_structured_output, StructuredOutputExt trait + JsonOutputParser fallback, Streaming Structured Output |
 | **BM25** | Keyword search, Chinese/English tokenization, AutoMerging, Chunked |
-| **Hybrid** | BM25 + Vector hybrid retrieval, RRF fusion, Unified index |
-| **LangGraph** | Graph workflows, Human-in-the-loop, Subgraph, Parallel, Checkpointer |
+| **Hybrid** | BM25 + Vector hybrid retrieval, RRF / weighted linear fusion, MMR diversity re-ranking, Unified index |
+| **LangGraph** | Graph workflows; static and **dynamic in-node interrupt/resume** human-in-the-loop; **state history & fork time travel**; Subgraph; Parallel; Checkpointer (memory/file/SQLite/Postgres/Redis) |
 | **Guardrails** | Input/output safety guardrails, SensitiveInfo / ForbiddenWords / MaxLength, GuardedAgent |
 | **Token Counter** | Tiktoken counting + TokenTrackingLLM usage statistics + ModelPricing cost estimation |
 | **Output Parsers** | StrOutputParser, JsonOutputParser, CommaSeparatedList, Structured, Typed |
@@ -39,9 +41,9 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Cache** | LLMCache with TTL support |
 | **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
 | **Callbacks** | StdOut / LangSmith / FileHandler / OpenTelemetry |
-| **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness |
+| **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness + RAGAS metrics; v0.24 adds trace→golden dataset bridging (lc-testkit) and `compare_reports` regression gating |
 | **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval) / GraphRAG (knowledge graph) |
-| **Model Routing** | RouterLLM with 5 strategies (Fallback / RoundRobin / LeastLatency / LowestCost / InputDirected) |
+| **Model Routing** | RouterLLM with 6 strategies (Fallback / RoundRobin / LeastLatency / LatencyWeighted / LowestCost / InputDirected) |
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
 | **Code Interpreter** | LocalSandbox (subprocess + timeout) |
 | **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
@@ -81,9 +83,11 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  ├── Handoffs (multi-agent handoff) / Streaming FC          │
 │  ├── GuardedAgent (Guardrails safety)                       │
 │  ├── DeepResearchAgent (multi-round research + citations)   │
-│  ├── AgentExecutor                                          │
+│  ├── AgentExecutor (parallel tool calls, bounded concurrency)│
+│  ├── Supervisor (LLM routes tasks to sub-agents, FINISH)    │
 │  ├── A2A Server/Client (Agent-to-Agent protocol)            │
-│  └── LangGraph (StateGraph, Subgraph, Parallel)             │
+│  └── LangGraph (StateGraph, Subgraph, Parallel, dynamic     │
+│  │              interrupt/resume, history + fork time-travel)│
 ├─────────────────────────────────────────────────────────────┤
 │  MCP Layer                                                   │
 │  ├── StatelessMcpClient (HTTP POST) -> MCPToolAdapter        │
@@ -93,8 +97,9 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  Retrieval Layer                                             │
 │  ├── RAG (TextSplitter, SemanticSplitter, VectorStore)      │
 │  ├── BM25 (Keyword Search, AutoMerging)                     │
-│  ├── Hybrid (BM25 + Vector, RRF Fusion)                     │
-│  ├── HyDE / MultiQuery / Reranking                          │
+│  ├── Hybrid (BM25 + Vector, RRF/Weighted fusion, MMR)       │
+│  ├── Neural Rerank (Cohere/Jina) / Sentence-Window / Parent │
+│  ├── HyDE / MultiQuery / Reranking / late chunking          │
 │  ├── CorrectiveRAG (grade + rewrite + hallucination detect) │
 │  ├── AdaptiveRAG (LLM-routed retrieval strategy)            │
 │  ├── GraphRAG (knowledge graph + community detection)       │
@@ -103,7 +108,7 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  Storage Layer                                               │
 │  ├── Vector DB (InMemory, Qdrant, MongoDB, ChromaDB,        │
 │  │              Redis, SQLite, PGVector, Pinecone, File)    │
-│  └── Sessions (SessionManager + SessionStore)               │
+│  └── Sessions (EventSessionManager + EventStore)            │
 ├─────────────────────────────────────────────────────────────┤
 │  Utility Layer                                               │
 │  ├── Memory (Buffer, Window, Summary, SummaryBuffer, Vector,│
@@ -116,7 +121,7 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 │  ├── Output Parsers                                         │
 │  ├── Token Counter (Tiktoken + Cost Tracking)               │
 │  ├── LLM Cache                                              │
-│  ├── Evaluation (10 evaluators, including Faithfulness)     │
+│  ├── Evaluation (10+ evaluators, RAGAS, golden/compare gate)│
 │  ├── Tracing (Tracer + SpanGuard, InMemory/Console/OTel)   │
 │  └── Callbacks (LangSmith, StdOut, FileHandler, Otel)       │
 └─────────────────────────────────────────────────────────────┘
@@ -128,17 +133,17 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.22.4"
+langchainrust = "0.24.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.22.4", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.22.4", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.22.4", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.22.4", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.22.4", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.22.4", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.22.4", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.24.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.24.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.24.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.24.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 
@@ -222,20 +227,23 @@ More examples in [Usage Guide](https://github.com/atliliw/langchainrust/blob/mai
 
 ## Examples
 
-The `examples/` directory provides 25+ runnable examples covering core functionality:
+The `examples/` directory provides 42 runnable examples covering core functionality:
 
 | Category | Examples | Requires API Key |
 |----------|----------|-----------------|
-| basic | chat / streaming / multi_provider / token_counter | Yes |
-| agent | function_calling / multi_tool / assistants / handoffs / plan_execute | Yes |
-| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter | No |
+| basic | chat / streaming / multi_provider / token_counter / quick_start / responses_api / batch_api / sandbox | Yes |
+| agent | function_calling / multi_tool / assistants / handoffs / plan_execute / deep_research / extended_thinking | Yes |
+| agent SSE | agent_sse_server (axum + SSE) | Yes (`AGENT_SSE_API_KEY`) |
+| rag | bm25_search / document_loaders / file_vectorstore / semantic_splitter / adaptive_rag / corrective_rag / graph_rag | No |
 | langgraph | basic_graph / conditional_edge | No |
 | memory | buffer_memory / context_window / sessions / vectorstore_memory | No |
 | chains | llm_chain / sequential_chain | Yes |
-| evaluation | evaluation | No |
+| lcel | lcel_pipe / lcel_compose | pipe: No / compose: Yes |
+| evaluation | evaluation / ragas_eval | evaluation: No / ragas_eval: Yes |
 | guardrails | guardrails | No |
-| mcp_server | mcp_server | No |
-| otel | otel_tracing | No |
+| mcp | mcp_http_server / mcp_stdio_server / mcp_server | No |
+| a2a | a2a_http_server | Yes |
+| otel | otel_tracing / otlp_tracing (needs `--features otlp`) | No |
 
 Examples requiring API keys read from environment variables:
 

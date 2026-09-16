@@ -57,6 +57,9 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Agent Web SSE (Browser Event Stream) ✨ v0.22.4
   - AgentBuilder ✨ v0.14.0
   - Orchestrator ✨ v0.14.0
+  - Supervisor Dynamic Sub-Agent Routing ✨ v0.24.0
+  - ApprovalGate Graph Approval Node ✨ v0.24.0
+  - Parallel Tool Calls (semaphore-bounded) ✨ v0.24.0
   - ToolPolicy ✨ v0.14.0
   - Context Compaction (CompactionConfig) ✨ v0.21.0
 - [Plan-Execute Agent](#plan-execute-agent)
@@ -102,8 +105,11 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - Contextual Retrieval ✨ v0.21.0
   - Semantic Cache ✨ v0.21.0
 - [BM25](#bm25)
+  - Small-to-Big Retrieval (Sentence Window / Parent Document) ✨ v0.24.0
 - [Hybrid Retrieval](#hybrid-retrieval)
   - Native Hybrid Search (Qdrant Query API) ✨ v0.21.0
+  - Weighted Fusion + MMR Diversity ✨ v0.23.0
+  - Late Chunking Dual-Leg Injection ✨ v0.24.0
 - [Document Loaders](#document-loaders)
   - HTMLLoader
   - DocxLoader ✨ v0.4.1
@@ -113,6 +119,7 @@ This document provides detailed usage instructions. For a quick overview, see [R
 - [HyDE Retriever](#hyde-retriever)
 - [SelfQueryRetriever](#selfqueryretriever) ✨ v0.18.0
 - [Reranking](#reranking)
+  - Neural Reranking (Cohere / Jina Cross-Encoders) ✨ v0.24.0
 - [Callbacks](#callbacks)
   - OtelHandler
 - [Evaluation](#evaluation)
@@ -120,11 +127,15 @@ This document provides detailed usage instructions. For a quick overview, see [R
   - EvalRunner
   - LLMAsJudge ✨ v0.15.0
   - PairwiseJudge ✨ v0.15.0
+  - Trace → Golden → Regression Gate ✨ v0.24.0
 - [LangGraph](#langgraph)
   - Reducers ✨ v0.15.0
   - Edge Types ✨ v0.15.0
   - Checkpointer Family ✨ v0.15.0
   - Subgraph / Dynamic Planning / Streaming ✨ v0.15.0
+  - Dynamic In-Node Interrupt / Resume ✨ v0.24.0
+  - Approval / Resume Convergence (ApprovalGate) ✨ v0.24.0
+  - State History & Time Travel (fork_from) ✨ v0.24.0
 - [A2A Agent Protocol](#a2a-agent-protocol) ✨ v0.4.1
   - v1.0.1: Multi-Transport Declaration (supportedInterfaces) ✨ v0.22.0
   - Card Signing (JWS HS256) ✨ v0.22.0
@@ -163,7 +174,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.22.4"
+langchainrust = "0.24.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -639,6 +650,8 @@ let response = llm.chat(vec![
     Message::human("Hello!"),
 ], None).await?;
 ```
+
+> **Truncated streams are no longer returned as complete answers (✨ v0.24.0)**: Ollama used to be the only chat provider without a terminal-marker check — an early EOF on the byte stream (local model process crashed / connection cut) completed *successfully* with partial content. As of v0.24.0 the parser tracks `saw_terminal` (`[DONE]` or `choice.finish_reason`) and returns `OllamaError::StreamInterrupted(String)` (a new `#[non_exhaustive]` variant carrying the partial text received) on EOF without it, matching the OpenAI / Azure / Anthropic / Gemini contract. Add a match arm for this variant when upgrading.
 
 ### Multimodal Vision
 
@@ -2376,6 +2389,44 @@ let result = pipeline.run("Rust async runtimes".to_string()).await?;
 
 `OrchestratorRunnable` wraps them as LCEL `Runnable`s so they can enter a `pipe()` pipeline (see the LCEL Adapters section).
 
+### Supervisor: LLM-Driven Dynamic Sub-Agent Routing ✨ v0.24.0
+
+**What it solves**: `SequentialPipeline` has a fixed stage list and `FanOutFanIn` broadcasts to everyone every round — neither decides *who should work next* based on the task at hand. Multi-specialist setups (researcher / coder / writer / reviewer) need a **router model that decides each round** which named worker gets the next subtask, or whether the job is finished. v0.24.0 adds `Supervisor`: each worker is a complete, independent agent behind the `Orchestrator` trait (its own executor, budget and hooks), and the worker's answer is folded back into the router's scratchpad so the next routing decision builds on what earlier workers actually produced.
+
+```rust
+use langchainrust::{AgentTask, Orchestrator, RunContext, Supervisor, TaskAdapter};
+use std::sync::Arc;
+
+// Any String -> String Orchestrator (an AgentExecutor, another pipeline, ...)
+// becomes an AgentTask -> String worker through TaskAdapter.
+let researcher: Arc<dyn Orchestrator<Input = AgentTask, Output = String>> =
+    Arc::new(TaskAdapter::new(Arc::new(research_executor)));
+let writer = Arc::new(TaskAdapter::new(Arc::new(writer_executor)));
+
+let supervisor = Supervisor::new(
+    router_llm,                                         // String -> String router model
+    vec![
+        ("researcher".to_string(), researcher),
+        ("writer".to_string(), writer),
+    ],
+    8,                                                  // max delegation rounds
+);
+
+let answer = supervisor
+    .run_with_context(
+        AgentTask::new("Write a one-page brief on reranking in RAG"),
+        &RunContext::new_random(),
+    )
+    .await?;
+```
+
+Contract and limits:
+
+- **Exactly one level** of sub-agent recursion: workers are leaf orchestrators and cannot delegate further;
+- Routing is bounded by `max_rounds` (adjustable later via `.with_max_rounds(n)`; values below 1 clamp to 1). If the model never emits `SUPERVISOR_FINISH`, the run **errors instead of looping forever**;
+- Decision protocol: JSON `{"next":"<worker>","task":"..."}` / `{"next":"FINISH","answer":"..."}` is parsed first, with a `<<<NEXT>>>` delimiter fallback for weaker models — parsing lives in `parse_supervisor_decision`, the prompt envelope in `supervisor_envelope(objective, worker_names, round, history)`, and `SUPERVISOR_FINISH` is the constant `"FINISH"`;
+- The entry point is the trait method `run_with_context(input, &RunContext)` (there is no inherent `.run`); `RunContext::new(id)` / `new_random()` carries the run id, and `AgentTask::new(objective)` can be chained with an expected-output contract and allowed-tool list.
+
 ### Agent Hooks (Five Safety Controls) ✨ v0.11.0
 
 Hooks inject safety controls into the agent execution lifecycle:
@@ -2653,6 +2704,17 @@ while let Some(event) = stream.next().await {
 
 - The event stream delivers **state changes** of the LLM text and tool calls; a `ToolCall` event describes "which stage the call has reached". The tool execution result does flow back to the LLM for its next decision, but the result body itself does not appear in the event stream.
 - This Agent's streaming surface focuses on LLM output + tool-call state; if you only need fine-grained events at the tool-execution level, look at the `Executor::stream` capability instead — the two are different vantage points.
+
+### Parallel Tool Calls (Bounded Concurrency) ✨ v0.24.0
+
+When a model returns multiple tool calls in one turn, the executor runs them **concurrently** — but concurrency is capped by a semaphore (`AgentExecutor::with_max_concurrency`, default `DEFAULT_MAX_CONCURRENCY = 8`) instead of spawning an unbounded task per call, keeping external API quotas, database connections and local resources in check:
+
+```rust
+let executor = AgentExecutor::new(agent, tools)
+    .with_max_concurrency(4);   // at most 4 tool calls in flight per turn
+```
+
+Tool observations are zipped back to the actions in the **model's call order** (not completion order), so what gets fed back in a multi-tool turn is deterministic; the same guarantee holds on both the `invoke` and streaming paths.
 
 ---
 
@@ -3010,7 +3072,7 @@ The executor reads `total_cost_usd()` **after every planning LLM call**; at or o
 
 ## Sessions
 
-> **⚠️ As of v0.22.0 the event-sourcing path is recommended**: the `SessionManager` described in the first half of this section is `#[deprecated]` (removed in 0.23.0, still functional). New code should use [`EventSessionManager`](#event-sourcing-rewrite--v0220recommended-path) directly (see "Event Sourcing Rewrite" below); existing code keeps compiling after the upgrade, it only emits deprecation warnings.
+> **⚠️ As of v0.22.0 the event-sourcing path is recommended**: the `SessionManager` described in the first half of this section is `#[deprecated]` (originally slated for removal in 0.23.0; as of 0.24.0 it still ships with the crate and keeps compiling, it only emits deprecation warnings). New code should use [`EventSessionManager`](#event-sourcing-rewrite--v0220recommended-path) directly (see "Event Sourcing Rewrite" below); existing code keeps compiling after the upgrade, it only emits deprecation warnings.
 
 Multi-turn conversation must remember context — what the user said last turn and how the assistant replied. But "where to store it, how to persist it, how to retrieve it" is boilerplate every app re-implements. `SessionManager` abstracts conversations into lifecycle management: create a session → write conversation into it → pull history anytime → archive/clean up. It also natively supports **multi-session isolation**: each session has its own id and owning user, so conversations from different users or different topics never interfere with each other.
 
@@ -3116,7 +3178,7 @@ let history = manager.history(&id).await?;   // projected Vec<Message>
 // (the log is immutable; see "Event types" below)
 ```
 
-**Old API → new API mapping** (the old `SessionManager` / `SessionManagerRunnable` are `#[deprecated]`, kept until removal in 0.23.0; `#[allow(deprecated)]` silences the warnings):
+**Old API → new API mapping** (the old `SessionManager` / `SessionManagerRunnable` have been `#[deprecated]` since 0.22.0 — removal was planned for 0.23.0 but as of 0.24.0 they are still in place; `#[allow(deprecated)]` silences the warnings):
 
 | Old (0.21.x) | New (0.22.0) | Semantic change |
 |---|---|---|
@@ -3127,7 +3189,7 @@ let history = manager.history(&id).await?;   // projected Vec<Message>
 | (none) | `fork_session(&id, branch, until)` | **new**: copies a prefix from the trunk into a new branch; the trunk is unaffected |
 | `max_context_messages(n)` (message-count window) | `with_max_context_turns(n)` (turn window) | n=1 includes the full previous turn + the current message; user/ai stay paired, no orphan tool results |
 | (none) | `with_auto_compaction(AutoCompaction)` | **new**: past N turns, appends a deterministic Snapshot event automatically (no LLM call) |
-| `clear / archive / delete_session` | append `Metadata` events to the `EventStore` directly (wrapper methods land in 0.23.0) | the event log is immutable; "cleanup" becomes appending a state event |
+| `clear / archive / delete_session` | append `Metadata` events to the `EventStore` directly (as of 0.24.0 callers still append them directly — wrapper methods never landed) | the event log is immutable; "cleanup" becomes appending a state event |
 | `SessionStore` (custom storage trait) | `EventStore` | Four methods: `append / append_batch / read / fork`; append idempotency key `(session, branch, id)` |
 
 ### Session fork
@@ -3148,7 +3210,7 @@ experiment.chat(&id, &llm, "branch message".to_string()).await?;
 
 - **Idempotent append**: `append` uses `(session_id, branch, id)` as its idempotency key; replaying the same event never writes it twice — after a crash "half-way through appending", replaying the partial batch on restart is safe.
 - **Projection**: `project(&events)` / `to_session(&events)` rebuild session state from the event stream; orphan tool results (a tool result with no matching tool call) are detected and reported at projection time, guaranteeing the history fed to the LLM is always properly paired.
-- **Checkpoint placeholder**: the `SessionCheckpoint` trait + `NoopCheckpoint` are in place; durable checkpoints (persisting projections) land in 0.23.0.
+- **Checkpoint placeholder**: the `SessionCheckpoint` trait + `NoopCheckpoint` are in place; durable checkpoints (persisting projections) were planned for 0.23.0, but as of 0.24.0 the no-op implementation is still the only one — recovery replays the full event log.
 
 ### Event types
 
@@ -3646,7 +3708,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 **`CdpBrowserTool` — drive a local Chrome over CDP (`browser-cdp` feature)**: DuckDuckGo/`URLFetchTool` only fetch static HTML and are helpless against JS-rendered pages. `connect()` takes Chrome's **HTTP debugger base URL** (`http://127.0.0.1:9222` — it must start with `http://`/`https://`; passing `ws://` fails with `InvalidInput`). The tool first does `PUT /json/new` (falling back to `GET /json` and attaching to an existing page on older Chrome builds) to obtain that tab's `webSocketDebuggerUrl`, then speaks the Chrome DevTools Protocol over the WebSocket (plaintext `ws://` in the local case) and performs four operations on a fresh tab: `navigate` / `extract_text` (post-render body text) / `extract_links` / `metadata`. Input is `BrowserInput { operation, url, wait_ms: Option (extra settle time after the load event, max 10s) }`. SSRF posture matches the network tools: **private/loopback navigation targets are blocked by default** (this checks the page URL, not the debugger endpoint), explicitly allowed via `with_allow_private_urls(true)`. It is an opt-in feature (pulls in tokio-tungstenite):
 
 ```toml
-langchainrust = { version = "0.22", features = ["browser-cdp"] }
+langchainrust = { version = "0.24", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3861,7 +3923,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.22.4", features = ["local-candle"] }
+langchainrust = { version = "0.24.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4073,7 +4135,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["chromadb"] }
+langchainrust = { version = "0.24.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4318,6 +4380,46 @@ for result in results {
 }
 ```
 
+### Small-to-Big Retrieval: Sentence Windows / Parent Documents ✨ v0.24.0
+
+`ChunkedBM25Retriever`'s parent merge is **threshold-gated** (parents only merge when the hit ratio crosses `AutoMergingConfig`). v0.24.0 adds two unconditional "small-to-big" retrievers in the LlamaIndex tradition: **match the smallest semantic unit for precision, then feed the model its full surrounding context**.
+
+**Sentence window** — single sentences are indexed; a hit returns a window of N sentences on each side (defaults `window=2`, `top_k=3`; windows from the same source document are deduplicated to one):
+
+```rust
+use langchainrust::retrieval::RetrieverTrait;
+use langchainrust::SentenceWindowRetriever;
+
+let retriever = SentenceWindowRetriever::from_documents(docs)
+    .with_window(2)    // two sentences on either side of the hit
+    .with_top_k(3);
+
+let windows = retriever.retrieve("Rust async runtime", 3).await?;
+```
+
+**Parent document** — tiny leaf chunks exist only for matching; any leaf hit returns the **entire parent document** (no threshold, no ratio):
+
+```rust
+use langchainrust::{InMemoryChunkedDocumentStore, ParentDocumentRetriever};
+
+let store = Arc::new(InMemoryChunkedDocumentStore::new());
+// (parent_id, chunk_ids): chunk ids look like {parent_id}::{segment};
+// re-adding the same parent is an idempotent replacement.
+let (_parent_id, _chunk_ids) = store
+    .add_parent_with_chunks(parent_doc, vec!["leaf 1".into(), "leaf 2".into()])
+    .await?;
+
+let retriever = ParentDocumentRetriever::new(store);
+// with_config(store, AutoMergingConfig) tunes leaf splitting; .inner() borrows the BM25 underneath
+let parents = retriever.retrieve("query", 4).await?;
+```
+
+| Retriever | Match unit | Return unit | Merge condition |
+|---|---|---|---|
+| `ChunkedBM25Retriever` | Leaf chunk | Leaf or parent | Hit ratio crosses the `AutoMergingConfig` threshold |
+| `SentenceWindowRetriever` | Single sentence | ±N-sentence window | Unconditional (deduped per source) |
+| `ParentDocumentRetriever` | Leaf chunk | Entire parent document | Unconditional — any leaf hit returns the parent |
+
 ---
 
 ## Hybrid Retrieval
@@ -4362,6 +4464,53 @@ for result in results {
 }
 ```
 
+### Weighted Fusion & MMR Diversity ✨ v0.23.0
+
+RRF only considers ranks: the two legs have no adjustable weights, and one narrow topic can fill the whole top-k. v0.23.0 added two first-class knobs to `UnifiedHybridIndex`:
+
+**Weighted linear fusion** — alongside the default `FusionMode::Rrf`, `FusionMode::Weighted { bm25_weight, vector_weight }` min-max normalizes scores inside the candidate pool before weighting:
+
+```rust
+use langchainrust::{FusionMode, HybridIndexConfig, UnifiedHybridIndex};
+
+let config = HybridIndexConfig::new()
+    .with_fusion(FusionMode::Weighted { bm25_weight: 0.3, vector_weight: 0.7 });
+let index = UnifiedHybridIndex::with_config(embeddings, vector_store, 1536, config);
+```
+
+**MMR (Maximal Marginal Relevance)** — greedily picks the candidate with the highest *relevance minus similarity to what is already selected*, with a λ dial: `λ=1` is plain relevance, `λ=0` maximizes diversity (0.5–0.7 is the usual range):
+
+```rust
+use langchainrust::mmr;
+
+// As an index method: pool 20 fused candidates, run one extra embedding pass over
+// those 20, return a diversified 5.
+let picks = index.retrieve_mmr("query", 20, 5, 0.6).await?;
+
+// Or run the pure algorithm over your own (id, relevance, embedding) triples.
+let ids: Vec<String> = mmr(&candidates, 0.6_f32, 5);
+```
+
+Pool-internal normalization means the λ trade-off has the same meaning under both RRF and weighted fusion.
+
+### Late Chunking Dual-Leg Injection ✨ v0.24.0
+
+[Late Chunking](#late-chunking--v0210) solved "per-chunk embeddings lose full-document context", but the v0.21 `late_chunk` only produced `LateChunk`s — ingesting them was on you. v0.24.0 plugs them into **both legs** of the hybrid index in one call: pooled vectors go to the vector index while the same chunk texts go into the BM25/parent-document store:
+
+```rust
+use langchainrust::{late_chunk, LateChunkConfig, UnifiedHybridIndex};
+
+let config = LateChunkConfig::new().with_chunk_size(1024).with_chunk_overlap(128);
+let chunks = late_chunk(&token_embedder, &document.content, &config).await?;
+
+// Both legs register under the same deterministic ids ({parent_id}::{segment}),
+// so fusion resolves them to one parent result; re-adding the same parent is an
+// idempotent replacement.
+let parent_id = index.add_late_chunked_document(document, &chunks).await?;
+```
+
+If you only need the vector leg, the free function (available since v0.23.0) `late_index_in(&vector_store, &embedder, parent_key, text, &config)` does "token-level embed → pool → ingest" in one backend-agnostic step (ids look like `{parent_key}:{i}`).
+
 ### Retrieval Mode Comparison
 
 | Mode | Content Storage | Lookup | Use Case |
@@ -4375,7 +4524,7 @@ for result in results {
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.22.4", features = ["qdrant-integration"] }
+langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -4482,6 +4631,100 @@ match compiled.invoke(state).await {
     Err(e) => { /* error */ }
 }
 ```
+
+Static interrupts can only pause at **node boundaries** (before/after a node), and the interrupt list must be declared before launch. v0.24.0 adds **dynamic in-node interrupts**: the node function itself decides "under what data condition to suspend and what question to publish"; on resume the **same node is re-entered** with the human's answer, so side effects don't have to be replayed.
+
+### Dynamic In-Node Interrupt / Resume ✨ v0.24.0
+
+```rust
+use langchainrust::langgraph::{
+    GraphError, InterruptibleNode, StateUpdate, ThreadSafeMemoryCheckpointer,
+};
+use serde_json::json;
+
+// Closure shape: (&S, Option<&serde_json::Value>) -> boxed future
+// resume=None on first entry; Some(value) when re-entered with the human's decision.
+let charge = InterruptibleNode::new("charge", |state, resume| {
+    let command = state.output.clone().unwrap_or_default();
+    Box::pin(async move {
+        match resume {
+            None => Err(GraphError::InterruptRequest {
+                // Payload published to the outside world (the question, context, ...)
+                payload: json!({ "kind": "tool_approval", "command": command }),
+            }),
+            Some(decision) => {
+                // Resume path: the side effect happens exactly once, here.
+                let mut next = state.clone();
+                next.set_output(format!("decision={decision}, charged"));
+                Ok(StateUpdate::full(next))
+            }
+        }
+    })
+});
+
+let compiled = graph.compile()?
+    // Dynamic interrupts require a checkpointer — the checkpoint is persisted at
+    // suspend time, so a process restart can resume instead of replaying.
+    .with_checkpointer(ThreadSafeMemoryCheckpointer::new());
+
+// First run: the node suspends and the caller gets DynamicInterrupt { node, payload }
+let err = compiled.invoke(AgentState::new("charge $99")).await.unwrap_err();
+match err {
+    GraphError::DynamicInterrupt { node, payload } => {
+        assert_eq!(node, "charge");
+        // Send payload to an approval UI / another process / ticket queue ...
+        // Feed the human's decision back as arbitrary JSON; the node re-enters with it:
+        let invocation = compiled.resume_with_value(&node, json!({"approved": true})).await?;
+        assert!(invocation.final_state.output.unwrap().contains("charged"));
+    }
+    other => return Err(other),
+}
+```
+
+Semantics:
+
+- **One persistence system**: at suspend time the checkpoint is already written to the checkpointer (memory / file / SQLite / Postgres / Redis); the resume value is injected into `NodeConfig.metadata` under `INTERRUPT_RESUME_KEY` (the constant `"__lc_interrupt_resume"`) — there is no second resume store;
+- **Side effects happen once**: the node is re-entered and the closure itself branches on `resume`, so put side effects on the resume path — the first pass must not emit them before suspending;
+- **Cascading**: if another node suspends after resume you get a fresh `DynamicInterrupt`, enabling multi-round interrupt→resume chains; the recursion budget continues from where the run suspended, so repeated interrupts can't bypass `recursion_limit`;
+- **Stream-visible**: streaming execution emits `StreamEvent::NodeInterrupt(node, payload)` / `Resumed(node, value)` when suspension and resume happen.
+
+### Approval / Resume Convergence (ApprovalGate) ✨ v0.24.0
+
+Tool approval no longer needs a separate approval store: `lc_agents::graph_approval::ApprovalGate` is a graph node that expresses "high-risk tool call" directly as an in-node interrupt.
+
+```rust,ignore
+use langchainrust::{ApprovalDecision, ApprovalGate};
+
+let gate = ApprovalGate::new("charge_card", |command: &str| {
+    // The real side effect only runs on the Allow / Modify resume pass.
+    charge_payment(command); "receipt-123".to_string()
+});
+graph.add_node(gate);
+```
+
+On first entry the interrupt payload is fixed as `{"kind":"tool_approval","tool":<name>,"command":<state.output>}`; resume feeds a serialized `ApprovalDecision`: `Allow` (the tool runs once and the graph continues), `Deny { reason }` (the tool is skipped entirely with zero side effects; the graph still proceeds to END), or `Modify { arguments, note }` (rewritten arguments plus a note). The **only** persistence on the graph path is the checkpointer (`FileCheckpointer` etc. provide cross-process approval); the legacy `ResumeStore` / `FileResumeStore` machinery survives only for the non-graph executor path (`with_resume_store` / `pending_approval()` / `executor.resume(decision)`).
+
+### State History & Time Travel (fork_from) ✨ v0.24.0
+
+With a checkpointer attached, every checkpoint is a revisit-able state snapshot:
+
+```rust
+use langchainrust::langgraph::CheckpointInfo;
+
+// All snapshots oldest-first: id / timestamp / seq / recursion_count / state
+let history: Vec<CheckpointInfo<AgentState>> = compiled.get_state_history()?;
+
+// "Open a new timeline" from any old snapshot: seed the snapshot state and run
+// forward only, starting at the given node.
+let forked = compiled
+    .fork_from(&history[2].id, "analyze", Some(corrected_state))
+    .await?;
+```
+
+- A fork is a **new lineage**: a fresh checkpoint is seeded from the old snapshot; the original timeline is never rewritten;
+- **Forward only, no replay**: execution starts at `continue_at_node` and nodes before the fork point are physically not re-entered — that is what guarantees already-emitted side effects (HTTP/DB writes, time, randomness) are not replayed, instead of relying on node idempotence;
+- `override_state: None` uses the snapshot state as-is; `Some(s)` lets you hand-correct state before continuing;
+- Forks compose with interrupts: a forked run can suspend in-node as usual and be resumed with `resume_with_value`.
 
 ### Reducers (State Merge Rules) ✨ v0.15.0
 
@@ -4999,6 +5242,31 @@ Key behaviors:
 - **Keep top_n**: `with_top_n(5)` determines the final count kept — only the top 5 are returned after reranking. The example doesn't set `with_min_score`, so nothing is filtered by score by default.
 - **Also model-free**: Like KeywordReranker, no embedding model is needed — it scores already-retrieved results directly, keeping cost controlled.
 
+### Neural Reranking: Cohere / Jina Cross-Encoders ✨ v0.24.0
+
+Lexical rerankers are free and offline; when recall quality matters, use a hosted **cross-encoder** that scores the query and each candidate jointly — substantially more accurate than a vector dot product. v0.24.0 unifies both providers behind one async trait, so swapping vendors doesn't touch call-site code.
+
+```rust
+use langchainrust::retrieval::RetrieverTrait;
+use langchainrust::{rerank_async, CohereRerank, SearchResult};
+
+// An empty key falls back to COHERE_API_KEY; default model rerank-multilingual-v3.0
+let cohere = CohereRerank::new("")
+    .with_model("rerank-v3.5")          // optional
+    // .with_base_url("https://api.cohere.com")  // tests can point this at a mock
+    .no_proxy();                        // bypass ambient proxy env (server-to-server)
+
+// Overshoot on recall, let the cross-encoder pick the final shortlist.
+let pool: Vec<SearchResult> = retriever.retrieve_with_scores("query", 20).await?;
+let top: Vec<SearchResult> = rerank_async(&cohere, "query", pool, 5).await?;
+```
+
+- `AsyncReranker` has one method: `score_async(&self, query: &str, documents: &[Document]) -> Result<Vec<f32>, RerankingError>`; `JinaRerank::new("")` reads `JINA_API_KEY` and defaults to `jina-reranker-v2-base-multilingual`, with the same `.with_base_url()` / `.with_model()` / `.no_proxy()` builders;
+- `rerank_async` maps the API's `results[].index` **back to your input positions** (provider order isn't guaranteed), sorts by score descending, then truncates to `top_n`; an empty candidate pool returns an empty `Vec`;
+- A malformed response body is an **explicit error**, not silently unsorted input masquerading as a result.
+
+> For diversity reranking (MMR) and weighted fusion, see `retrieve_mmr` / `mmr` in the [Hybrid Retrieval](#hybrid-retrieval) section above.
+
 ---
 
 ## Callbacks
@@ -5109,7 +5377,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["opentelemetry"] }
+langchainrust = { version = "0.24.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5127,7 +5395,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 **One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
 
 ```toml
-langchainrust = { version = "0.22.4", features = ["otlp"] }
+langchainrust = { version = "0.24.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5293,6 +5561,37 @@ Old JSONL datasets without a contexts column deserialize to an empty vec (`#[ser
 
 > Underneath, they reuse `core::judge::structured_call`'s structured-decision path (forcing the LLM to emit JSON before parsing, with errors unified as `StructuredJudgeError`), so judge results stay machine-readable.
 
+### Trace → Golden → Regression Gate ✨ v0.24.0
+
+Offline hand-written datasets go stale. v0.24.0 closes the loop "**production trace → checked-in golden set → CI regression gate**": production recordings are converted to golden JSONL via lc-testkit (mapping rules in the [Testing chapter](#recordings--golden-dataset-scoring-bridge--v0240)), the new prompt / model is scored on the same JSONL, and its report is compared metric-by-metric against a baseline report — a drop beyond tolerance turns CI red.
+
+```rust
+use langchainrust::evaluation::{compare_reports, Dataset, EvalRunner, Report};
+
+// Baseline report comes from the known-good build (Report round-trips JSON;
+// serialize it to disk or pass it as a CI artifact).
+let baseline: Report = serde_json::from_str(&std::fs::read_to_string("eval/baseline.json")?)?;
+
+// Candidate run: load the checked-in JSONL; the predictor wraps the new prompt/model.
+let dataset = Dataset::from_jsonl("eval/golden.jsonl")?;
+let candidate: Report = EvalRunner::new(evaluators).run(&dataset, &new_predictor).await?;
+
+// tolerance = acceptable mean-score wobble; a regression is delta STRICTLY below
+// -tolerance (a boundary move of exactly -0.02 still passes).
+let cmp = compare_reports(&baseline, &candidate, 0.02);
+assert!(!cmp.is_regressed(), "metric regression:\n{}", cmp.to_table());
+```
+
+What `ReportComparison` contains:
+
+| Field | Content |
+|---|---|
+| `deltas: Vec<MetricDelta>` | Per-evaluator `baseline_mean` / `candidate_mean` / `delta` / scored counts on both sides |
+| `regressions: Vec<Regression>` | Only metrics with `delta < -tolerance` (strict inequality; the boundary passes — it absorbs judge noise) |
+| `added: Vec<String>` / `dropped: Vec<String>` | Evaluators the candidate added / lost relative to the baseline — a candidate that silently stops running an evaluator shows up in the same table |
+
+`cmp.to_table()` renders a comparison table you can paste straight into CI logs. Bootstrap the baseline by running once on a known-good build and serializing the `Report`.
+
 ---
 
 ## MongoDB Storage
@@ -5321,7 +5620,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -5395,14 +5694,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["redis-storage"] }
+langchainrust = { version = "0.24.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.22.4", features = ["sqlite-storage"] }
+langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5503,7 +5802,7 @@ cargo test
 
 ```toml
 [dev-dependencies]
-lc-testkit = "0.22.4"
+lc-testkit = "0.24.0"
 ```
 
 ```rust
@@ -5532,6 +5831,45 @@ use lc_testkit::{ReplayProvider, ReplayStrategy};
 let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
     .with_strategy(ReplayStrategy::Exact);
 ```
+
+### Recordings → Golden Dataset (Scoring Bridge) ✨ v0.24.0
+
+As of v0.24.0 lc-testkit depends on lc-evaluation, so recording files convert straight into an **evaluation dataset**: one `RecordedExchange` maps to one `Example` under fixed rules — the **last human message** in the request history → `input`, the recorded assistant text → `reference`, and non-empty tool results in rank order → `contexts` (so RAGAS-style evaluators can score retrieval quality too). One user turn produces several agent exchanges (including pure tool-call rounds with empty text); `is_scoring_candidate` filters those first, and `golden_dataset` reports the rows that slip through with indexed errors:
+
+| Error | Meaning |
+|---|---|
+| `GoldenError::NoUserMessage(i)` | Exchange i contains no human message |
+| `GoldenError::EmptyReference(i)` | Assistant text is empty (a pure tool-call round) |
+
+```rust,ignore
+use lc_testkit::{
+    golden_dataset, is_scoring_candidate, read_exchanges, write_golden_jsonl,
+};
+
+// Recording file → filter → golden dataset → checked-in eval/golden.jsonl
+let exchanges = read_exchanges("fixtures/recorded.jsonl")?;
+let scored: Vec<_> = exchanges.iter().filter(|e| is_scoring_candidate(e)).cloned().collect();
+let dataset = golden_dataset(&scored)?;
+write_golden_jsonl(&dataset, "eval/golden.jsonl")?;
+
+// Or build the dataset from the file in one call
+let dataset = lc_testkit::golden_dataset_from_file("fixtures/recorded.jsonl")?;
+```
+
+A zero-network, zero-key **offline smoke run**: a FIFO `ReplayPredictor` over the same recording reproduces every reference exactly:
+
+```rust,ignore
+use lc_evaluation::{EvalRunner, ExactMatch};
+use lc_testkit::{replay_golden_from_file, ReplayStrategy};
+
+let (dataset, replay) = replay_golden_from_file("fixtures/recorded.jsonl", ReplayStrategy::Fifo)?;
+let report = EvalRunner::new(vec![Box::new(ExactMatch)])
+    .run(&dataset, &replay)
+    .await?;
+assert!(replay.remaining() == 0);   // every example was consumed
+```
+
+`lc-testkit` is not a facade dependency — depend on it directly (the dev-dependency pin above is already 0.24.0); for the real-model regression flow see the Evaluation chapter's [Trace → Golden → Regression Gate](#trace--golden--regression-gate--v0240).
 
 ---
 
@@ -5624,8 +5962,8 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.22"
-lc-a2a = { version = "0.22.4", features = ["axum"] }
+langchainrust = "0.24"
+lc-a2a = { version = "0.24.0", features = ["axum"] }
 ```
 
 ```rust

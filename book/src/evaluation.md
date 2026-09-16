@@ -21,7 +21,11 @@ LangChainRust provides 10 built-in evaluators and an LLM-as-judge for quantifyin
 
 ```rust
 pub struct Score { pub value: f64, pub label: Option<String> }  // 0.0-1.0
-pub struct Example { pub input: String, pub reference: String }
+pub struct Example {
+    pub input: String,
+    pub reference: String,
+    pub contexts: Vec<String>,  // retrieved RAG contexts, rank order; [] for non-RAG tasks
+}
 pub struct Dataset { pub examples: Vec<Example> }
 // Report 携带原文 + 汇总(均值/标准差)+ 失败清单,可反序列化(落盘二次分析)
 pub struct Report {
@@ -106,3 +110,52 @@ let runner = EvalRunner::new(vec![/* 单点评测器 */])
     .with_pairwise(vec![Box::new(judge)]);
 let report = runner.run(&dataset, &predictor).await?;
 ```
+
+## Trace → Golden → Regression Gate
+
+Offline datasets go stale; the companion `lc-testkit` crate closes the loop from
+**production traces** to a checked-in golden set to a CI regression gate. It is a
+direct/dev dependency (`lc-testkit = "0.24"`) rather than part of the facade.
+
+The mapping from a recorded model exchange to one `Example` is fixed:
+
+- `input` ← the **last** human message in the recorded request history (agent-loop
+  re-requests still carry the real user turn there);
+- `reference` ← the recorded assistant text;
+- `contexts` ← non-empty tool-result messages in order, so RAGAS-style context
+  precision/recall evaluators can score retrieval too.
+
+Agent loops record several exchanges per user turn, including pure tool-call responses
+with empty text — `is_scoring_candidate` filters those out (`GoldenError` names the row
+that has no human message or empty reference).
+
+```rust,ignore
+// One recording file (from RecordingProvider) -> golden JSONL checked into the repo.
+let exchanges = read_exchanges("traces/recorded.jsonl")?;
+let scored: Vec<_> = exchanges.iter().filter(|e| is_scoring_candidate(e)).cloned().collect();
+let dataset = golden_dataset(&scored)?;
+write_golden_jsonl(&dataset, "eval/golden.jsonl")?;
+
+// Fully offline smoke/baseline run: a FIFO ReplayPredictor over the same file
+// reproduces every recorded reference exactly — zero network, no API key.
+let (dataset, replay) = replay_golden_from_file("traces/recorded.jsonl", ReplayStrategy::Fifo)?;
+let report = EvalRunner::new(vec![Box::new(ExactMatch)])
+    .run(&dataset, &replay)
+    .await?;
+```
+
+For the real regression run, load the checked-in JSONL (`Dataset::from_jsonl`) with a
+predictor wrapping the **new** prompt/model, then compare the two reports:
+
+```rust
+use langchainrust::{compare_reports, Report};
+
+// baseline = serialized Report from the known-good build (Report round-trips JSON).
+let cmp = compare_reports(&baseline, &candidate, 0.02);
+assert!(!cmp.is_regressed(), "regressed:\n{}", cmp.to_table());
+```
+
+A metric regresses when its mean drops by strictly more than the tolerance —
+`delta < -tolerance`, so a boundary move of exactly `-0.02` still passes. `ReportComparison`
+also lists per-evaluator `MetricDelta`s plus `added` / `dropped` evaluator names, so a
+candidate that silently stops running an evaluator is visible in the same table.

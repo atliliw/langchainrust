@@ -2,13 +2,13 @@
 
 Sessions provide multi-turn conversation lifecycle management: create, retrieve, archive, and chat with automatic history maintenance.
 
-> **⚠️ v0.22.0**: the event-sourcing path (`EventSessionManager`) is the recommended API. The legacy `SessionManager` is `#[deprecated]` (kept until 0.23.0). See [Event Sourcing (v0.22.0)](#event-sourcing-v0220) below.
+> **⚠️ v0.22.0**: the event-sourcing path (`EventSessionManager`) is the recommended API. The legacy `SessionManager` is `#[deprecated]` — removal was planned for 0.23.0, but as of 0.24.0 it still ships and compiles; `#[allow(deprecated)]` silences the warnings. See [Event Sourcing (v0.22.0)](#event-sourcing-v0220) below.
 
 ## Core Types
 
 | Type | Description |
 |------|-------------|
-| `SessionManager` | Legacy API (deprecated in 0.22.0, removed in 0.23.0) |
+| `SessionManager` | Legacy API (deprecated in 0.22.0; removal was planned for 0.23.0 but it still ships in 0.24.0) |
 | `EventSessionManager` | **Recommended** event-sourced manager (v0.22.0) |
 | `Session` | A conversation with messages, metadata, and status |
 | `SessionStore` | Trait for pluggable storage backends (legacy) |
@@ -122,7 +122,7 @@ let history = manager.history(&id).await?;   // projected Vec<Message>
 | — | `fork_session(&id, branch, until)` | **new**: branch from any point in the log |
 | `max_context_messages(n)` | `with_max_context_turns(n)` | turn window; user/ai always paired |
 | — | `with_auto_compaction(AutoCompaction)` | **new**: deterministic snapshot past N turns (no LLM call) |
-| `clear / archive / delete_session` | append `Metadata` events to the `EventStore` directly (wrappers in 0.23.0) | the log is immutable; cleanup is a state event |
+| `clear / archive / delete_session` | append `Metadata` events to the `EventStore` directly (convenience wrappers planned for 0.23.0 had not landed as of 0.24.0) | the log is immutable; cleanup is a state event |
 | `SessionStore` | `EventStore` | `append / append_batch / read / fork`; idempotency key `(session, branch, id)` |
 
 ### Fork
@@ -139,7 +139,7 @@ experiment.chat(&id, &llm, "branch message".to_string()).await?;
 
 - `append` is idempotent per `(session_id, branch, id)` — replaying a half-written batch after a crash never duplicates events.
 - `project()` / `to_session()` rebuild state from the log; orphan tool results are detected and rejected, so the history fed to the LLM is always properly paired.
-- `SessionCheckpoint` trait + `NoopCheckpoint` are the placeholder for durable checkpoints (0.23.0).
+- `SessionCheckpoint` trait + `NoopCheckpoint` are the placeholder for durable checkpoints: durable projections were planned for 0.23.0, but as of 0.24.0 the no-op implementation is still the only one — recovery replays the full event log.
 
 ### Event Types
 
