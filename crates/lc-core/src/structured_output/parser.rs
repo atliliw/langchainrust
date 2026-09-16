@@ -3,6 +3,8 @@
 
 use serde_json::Value;
 
+use crate::text::truncate_at_char_boundary;
+
 /// Errors produced by `PartialJsonParser`.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
@@ -145,7 +147,7 @@ impl PartialJsonParser {
                 "Failed to parse final buffer ({} chars): {}. Buffer: {}",
                 self.buffer.len(),
                 e,
-                &self.buffer[..std::cmp::min(200, self.buffer.len())]
+                truncate_at_char_boundary(&self.buffer, 200)
             ))
         })
     }

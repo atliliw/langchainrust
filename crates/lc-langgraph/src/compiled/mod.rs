@@ -15,5 +15,5 @@ mod tests;
 pub use graph::CompiledGraph;
 pub use types::{
     DynamicInjection, DynamicPlanner, DynamicTask, ExecutionStep, GraphExecution, GraphInvocation,
-    ParallelBranch, ParallelInvocation, StreamEvent,
+    ParallelBranch, ParallelInvocation, PendingInterrupt, StreamEvent,
 };

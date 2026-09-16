@@ -3,7 +3,7 @@
 //! Recording is **pass-through**: a failed real call returns the failure without writing;
 //! a successful call whose write fails only `log::warn!`s and does not block the real result.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,31 @@ pub struct RecordedExchange {
     /// with zero changes; `skip_serializing_if` keeps recordings without bound tools in the old format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+}
+
+/// Reads every JSONL exchange from a recording file into memory (blank lines skipped).
+///
+/// Shared by [`ReplayProvider::from_file`](crate::ReplayProvider::from_file) and the
+/// golden-dataset builder (N2) so the file format is parsed in exactly one place.
+pub fn read_exchanges(path: impl AsRef<Path>) -> Result<Vec<RecordedExchange>, TestkitError> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut exchanges = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let exchange: RecordedExchange = serde_json::from_str(line).map_err(|e| {
+            TestkitError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid recording line: {e}"),
+            ))
+        })?;
+        exchanges.push(exchange);
+    }
+    Ok(exchanges)
 }
 
 /// Shared handle for append-mode writing to the recording file (protected by a std Mutex).

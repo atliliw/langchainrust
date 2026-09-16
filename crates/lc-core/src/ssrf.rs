@@ -107,7 +107,34 @@ fn is_private_ipv6(v6: std::net::Ipv6Addr) -> bool {
         return true;
     }
     // 2002::/16            6to4 (RFC 3056)
-    seg[0] == 0x2002
+    if seg[0] == 0x2002 {
+        return true;
+    }
+    // 64:ff9b::/96         NAT64 well-known prefix (RFC 6052): the low 32 bits
+    //                      embed an IPv4 host (::7f00:1 == 127.0.0.1). On a
+    //                      NAT64 network http://[64:ff9b::7f00:1]/ reaches the
+    //                      loopback — without this the private-IP table claimed
+    //                      to be complete while 127.x/10.x/169.254.x slipped in.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b {
+        return is_private_ipv4(embedded_v4(seg));
+    }
+    // ::/96                IPv4-compatible IPv6 (RFC 4291): same low-32 embed;
+    //                      e.g. ::7f00:1 == 127.0.0.1. The first six groups are
+    //                      zero and the v4 lives in the last two.
+    if seg[0..6].iter().all(|&s| s == 0) && (seg[6] != 0 || seg[7] != 0) {
+        return is_private_ipv4(embedded_v4(seg));
+    }
+    false
+}
+
+/// Low 32 bits of the last two 16-bit segments, interpreted as an IPv4 address
+/// (both the NAT64 and the IPv4-compatible embed schemes above put the v4 in
+/// segments 6..8; reading the high half instead silently mapped private v4 to the
+/// 0.0.0.0 route and mis-classified every public embed as private).
+fn embedded_v4(seg: [u16; 8]) -> std::net::Ipv4Addr {
+    let hi = seg[6] as u32;
+    let lo = seg[7] as u32;
+    std::net::Ipv4Addr::from((hi << 16) | lo)
 }
 
 /// Default timeout for guarded requests when the caller does not supply one.
@@ -308,6 +335,56 @@ pub async fn guarded_post_json(
         .map_err(|e| ToolError::ExecutionFailed(format!("HTTP request failed: {}", e)))
 }
 
+/// Hard ceiling on a single fetch body (M2): a caller or hostile server can never
+/// force unbounded buffering. Consumers apply their own (usually much smaller) limit
+/// on top of this.
+pub const MAX_FETCH_BYTES: usize = 50 * 1024 * 1024;
+
+/// Read a response body with a hard byte cap, **streaming** so an external URL cannot
+/// force unbounded buffering (M2). The earlier pattern (`response.text()`) buffered the
+/// whole body into memory before truncating, so a server could stream arbitrary data
+/// within the 30s wall-clock timeout and OOM the process.
+///
+/// Returns the body text (its tail trimmed to a UTF-8 char boundary, so a cut never
+/// mangles a multi-byte character) and whether it was truncated by hitting `max_bytes`.
+pub async fn read_body_bounded(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(String, bool), ToolError> {
+    use futures_util::StreamExt;
+
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    let mut truncated = false;
+    while let Some(next) = stream.next().await {
+        let chunk = next.map_err(|e| {
+            ToolError::ExecutionFailed(format!("failed to read response body: {e}"))
+        })?;
+        let remaining = max_bytes.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let text = if truncated {
+        // Trim the capped body to a UTF-8 char boundary so we never emit a mangled char.
+        let bytes = &body;
+        let valid = match std::str::from_utf8(bytes) {
+            Ok(_) => bytes.len(),
+            Err(e) => e.valid_up_to(),
+        };
+        std::str::from_utf8(&bytes[..valid])
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::from_utf8_lossy(&body).into_owned()
+    };
+    Ok((text, truncated))
+}
+
 /// Resolves the Location header (possibly relative) into an absolute URL, rejecting non-http(s) protocols.
 fn resolve_redirect(base: &str, location: &str) -> Result<String, ToolError> {
     let joined = url::Url::parse(base)
@@ -347,6 +424,27 @@ mod tests {
     fn ipv4_mapped_ipv6_public_allowed() {
         assert!(!is_private_ip(&"::ffff:8.8.8.8".parse::<IpAddr>().unwrap()));
         assert!(!is_private_ip(&"::ffff:1.1.1.1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn nat64_and_ipv4_compatible_embed_private_v4() {
+        // M1: 64:ff9b::/96 (NAT64 well-known) and ::/96 (IPv4-compatible) embed the
+        // IPv4 in the low 32 bits — a private v4 inside must be caught.
+        assert!(is_private_ip(&"64:ff9b::7f00:1".parse::<IpAddr>().unwrap())); // 127.0.0.1
+        assert!(is_private_ip(&"64:ff9b::a00:1".parse::<IpAddr>().unwrap())); // 10.0.0.1
+        assert!(is_private_ip(
+            &"64:ff9b::a9fe:a9fe".parse::<IpAddr>().unwrap()
+        )); // 169.254.169.254
+        assert!(is_private_ip(
+            &"64:ff9b::c000:201".parse::<IpAddr>().unwrap()
+        )); // 192.0.2.1 doc
+            // A public IPv4 embedded in the NAT64 prefix stays allowed.
+        assert!(!is_private_ip(
+            &"64:ff9b::808:808".parse::<IpAddr>().unwrap()
+        )); // 8.8.8.8
+            // IPv4-compatible IPv6 (::/96) embeds v4 in the low 32 bits too.
+        assert!(is_private_ip(&"::7f00:1".parse::<IpAddr>().unwrap())); // 127.0.0.1
+        assert!(is_private_ip(&"::a00:1".parse::<IpAddr>().unwrap())); // 10.0.0.1
     }
 
     #[test]

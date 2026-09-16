@@ -8,8 +8,8 @@ use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ssrf::guarded_get;
-use lc_core::tools::{BaseTool, Tool, ToolError};
+use crate::ssrf::{guarded_get, read_body_bounded, MAX_FETCH_BYTES};
+use lc_core::tools::{BaseTool, Tool, ToolError, ToolRiskProfile};
 
 static SCRIPT_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"<script[^>]*>.*?</script>").expect("static regex literal must compile")
@@ -178,18 +178,14 @@ impl URLFetchTool {
             String::new()
         };
 
-        let content = response
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to read response: {}", e)))?;
-
-        let max_len = max_length.unwrap_or(50000);
-        let content_len = content.len();
-        let truncated = content_len > max_len;
+        // M2: read the body with a hard cap, streaming — never buffer unbounded.
+        let max_len = max_length.unwrap_or(50_000).min(MAX_FETCH_BYTES);
+        let (body, truncated) = read_body_bounded(response, max_len).await?;
+        let content_len = body.len();
         let result = if truncated {
-            content.chars().take(max_len).collect::<String>() + "\n... [内容已截断]"
+            format!("{body}\n... [内容已截断]")
         } else {
-            content
+            body
         };
 
         let mut details = format!(
@@ -371,6 +367,15 @@ impl BaseTool for URLFetchTool {
 - 抓取网页: {\"operation\": \"fetch\", \"url\": \"https://example.com\"}
 - 提取文本: {\"operation\": \"extract_text\", \"url\": \"https://example.com\"}
 - 提取链接: {\"operation\": \"extract_links\", \"url\": \"https://example.com\"}"
+    }
+
+    /// S3: this tool consumes raw, untrusted web content — declare the input risk so a
+    /// policy layer (Rule of Two) can weigh prompt-injection / tool-abuse surface.
+    fn risk(&self) -> ToolRiskProfile {
+        ToolRiskProfile {
+            untrusted_input: true,
+            ..Default::default()
+        }
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {

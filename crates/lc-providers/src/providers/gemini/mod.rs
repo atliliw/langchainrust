@@ -32,6 +32,7 @@ use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
 use lc_core::runnables::{run_tree_from_config, Runnable};
+use lc_core::text::truncate_at_char_boundary;
 use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
 use lc_schema::{Message, MessageType};
@@ -687,7 +688,7 @@ impl GeminiChat {
                                     // still surfaced below).
                                     log::error!(
                                         "Failed to parse Gemini streaming SSE event (skipping this token): {e}; data: {}",
-                                        &data[..data.len().min(200)]
+                                        truncate_at_char_boundary(data, 200)
                                     );
                                 }
                             }

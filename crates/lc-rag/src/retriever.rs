@@ -26,6 +26,10 @@ pub enum RetrieverError {
     /// return data that should have been filtered out (data-plane over-exposure).
     InvalidFilter(String),
 
+    /// Operation not supported by this retriever (e.g. live ingest on an
+    /// immutable-by-construction index).
+    OperationNotSupported(String),
+
     /// No results
     NoResults,
 
@@ -41,6 +45,9 @@ impl std::fmt::Display for RetrieverError {
             RetrieverError::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
             RetrieverError::LlmError(msg) => write!(f, "LLM error: {}", msg),
             RetrieverError::InvalidFilter(msg) => write!(f, "invalid filter: {}", msg),
+            RetrieverError::OperationNotSupported(msg) => {
+                write!(f, "operation not supported: {msg}")
+            }
             RetrieverError::NoResults => write!(f, "no relevant documents found"),
             RetrieverError::InvalidDocument(msg) => write!(f, "invalid document: {msg}"),
         }

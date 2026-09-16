@@ -30,7 +30,11 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
         .map(|x| (*x as f64) * (*x as f64))
         .sum::<f64>()
         .sqrt();
-    if na < f64::EPSILON || nb < f64::EPSILON {
+    // Real near-zero threshold (f64::EPSILON was effectively "exactly zero", so the
+    // protection never fired for near-degenerate vectors). Embeddings normalize to
+    // ~1.0, so anything this small is genuinely directionless.
+    const MIN_NORM: f64 = 1e-8;
+    if na < MIN_NORM || nb < MIN_NORM {
         0.0
     } else {
         dot / (na * nb)

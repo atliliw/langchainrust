@@ -10,6 +10,7 @@ use lc_vector_stores::{Document, SearchResult, VectorStore, VectorStoreError};
 
 use crate::bm25::{AutoMergingConfig, ChunkedBM25Retriever, ChunkedSearchResult};
 use crate::hybrid::{reciprocal_rank_fusion, RetrievedDocument, RRF_K};
+use crate::late_chunking::LateChunk;
 use crate::mmr::mmr as select_mmr;
 use crate::retriever::{RetrieverError, RetrieverTrait};
 use async_trait::async_trait;
@@ -319,6 +320,56 @@ impl UnifiedHybridIndex {
             ids.push(id);
         }
         Ok(ids)
+    }
+
+    /// Late-chunking injection path (#6): ingests a document whose per-chunk
+    /// embeddings were computed by [`crate::late_chunking::late_index_in`]
+    /// (mean-pooled, L2-normalized) **outside** this index. Unlike `add_document`,
+    /// the chunks are not re-cut and not re-embedded here — the caller owns both
+    /// boundaries and vectors, so the pooled context can actually flow into the
+    /// indexing pipeline.
+    ///
+    /// Both legs stay in sync: the BM25 index and the vector store are registered
+    /// under the same deterministic `{parent_id}::{segment}` chunk ids, and the
+    /// parent is recorded in the document store so hybrid fusion (RRF / weighted)
+    /// resolves them to one parent result. Re-adding the same parent id is
+    /// idempotent (the previous chunk set is replaced).
+    ///
+    /// `chunks` must be produced by [`crate::late_chunking::late_chunk`] over this
+    /// document's content; pass the document's id so re-ingest dedups cleanly.
+    pub async fn add_late_chunked_document(
+        &self,
+        document: Document,
+        chunks: &[LateChunk],
+    ) -> Result<String, VectorStoreError> {
+        let parent_id = self
+            .document_store
+            .add_parent_with_chunks(
+                document.clone(),
+                chunks.iter().map(|c| c.text.clone()).collect(),
+            )
+            .await?
+            .0;
+
+        let mut chunk_docs = Vec::new();
+        let mut chunk_embeddings = Vec::new();
+        for (segment, chunk) in chunks.iter().enumerate() {
+            let chunk_id = format!("{parent_id}::{segment}");
+            {
+                let mut bm25 = self.bm25_retriever.lock().await;
+                bm25.add_chunk_index(chunk_id.clone(), parent_id.clone(), &chunk.text);
+            }
+            chunk_docs.push(Document::new(chunk.text.clone()).with_id(chunk_id));
+            chunk_embeddings.push(chunk.vector.clone());
+        }
+
+        if !chunk_docs.is_empty() {
+            self.vector_store
+                .add_documents(chunk_docs, chunk_embeddings)
+                .await?;
+        }
+
+        Ok(parent_id)
     }
 
     /// Hybrid retrieval: fuses BM25 and vector results, returning RRF-ranked documents
@@ -664,6 +715,7 @@ impl RetrieverTrait for UnifiedHybridIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::late_chunking::LateChunkConfig;
     use lc_embeddings::{l2_normalize, EmbeddingError};
     use lc_vector_stores::InMemoryVectorStore;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1155,5 +1207,83 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// Deterministic whitespace token embedder (2-dim vectors) — enough to run
+    /// the real `late_chunk` / `pool_tokens` math without a token-level model.
+    struct FauxTokenEmbedder;
+
+    impl lc_embeddings::token_level::TokenLevelEmbeddings for FauxTokenEmbedder {
+        async fn embed_tokens(
+            &self,
+            text: &str,
+        ) -> Result<Vec<lc_embeddings::token_level::TokenEmbedding>, lc_embeddings::EmbeddingError>
+        {
+            use lc_embeddings::token_level::{TokenEmbedding, TokenSpan};
+            let mut out = Vec::new();
+            let mut cursor = 0usize;
+            for (i, word) in text.split_whitespace().enumerate() {
+                let start = text[cursor..]
+                    .find(word)
+                    .map(|p| cursor + p)
+                    .unwrap_or(cursor);
+                let end = start + word.len();
+                cursor = end;
+                out.push(TokenEmbedding {
+                    span: TokenSpan::new(start, end),
+                    vector: vec![i as f32, 1.0],
+                });
+            }
+            Ok(out)
+        }
+    }
+
+    /// T12/#6: `add_late_chunked_document` runs the production `late_chunk` path
+    /// and wires BOTH legs — the chunks land in the BM25 index and the pooled
+    /// vectors in the vector store under the same deterministic ids, and hybrid
+    /// retrieval resolves them back to one parent result.
+    #[tokio::test]
+    async fn late_chunked_document_wires_both_legs() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = small_index(embeddings);
+
+        let text = "zebra rust is a systems programming language that runs fast safe and concurrent by design";
+        let config = LateChunkConfig::new()
+            .with_chunk_size(20)
+            .with_chunk_overlap(3);
+        let chunks = crate::late_chunking::late_chunk(&FauxTokenEmbedder, text, &config)
+            .await
+            .unwrap();
+        assert!(
+            !chunks.is_empty(),
+            "late chunking must yield at least one chunk"
+        );
+
+        let parent = index
+            .add_late_chunked_document(Document::new(text.to_string()).with_id("late-doc"), &chunks)
+            .await
+            .unwrap();
+        assert_eq!(parent, "late-doc");
+
+        // Both legs registered the same chunk set.
+        assert_eq!(
+            index.chunk_count().await,
+            chunks.len(),
+            "stored chunks must equal the late-chunked set"
+        );
+
+        // The parent resolves through hybrid fusion (BM25 leg matches lexically).
+        let results = index.retrieve("zebra", 3).await.unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.document.id.as_deref() == Some("late-doc")),
+            "late-chunked parent must be retrieved: {:?}",
+            results
+                .iter()
+                .map(|r| r.document.id.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

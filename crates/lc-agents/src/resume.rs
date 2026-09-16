@@ -24,8 +24,9 @@
 //! before each tool call enters the approval gate to wait for approval, the
 //! [`PendingApproval`] is written to the store; it is cleared once the approval
 //! decision is finalized. On a crash the checkpoint stays on disk; a new process
-//! inspects it via [`AgentExecutor::pending_approval`] and resumes via
-//! [`AgentExecutor::resume`].
+//! inspects it via [`AgentExecutor::pending_approval`](crate::AgentExecutor::pending_approval)
+//! and resumes via
+//! [`AgentExecutor::resume`](crate::AgentExecutor::resume).
 //!
 //! Recovery (process B):
 //!

@@ -48,14 +48,15 @@ pub mod metrics;
 pub mod orchestrator;
 /// Module alias preserving the historical `lc_agents::orchestration` path.
 pub use orchestrator as orchestration;
-pub mod plan_execute;
-pub mod policy;
-pub mod react;
 /// Cross-process resume (§4.2 approval/budget gate): suspend-state persistence +
 /// recovery. The framework writes/clears checkpoints ([`ResumeStore`]) around
 /// approvals; a new process inspects via [`AgentExecutor::pending_approval`] and
 /// resumes via [`AgentExecutor::resume`]. Off by default (no [`ResumeStore`] ⇒ no
 /// serialization; existing behavior unchanged).
+pub mod graph_approval;
+pub mod plan_execute;
+pub mod policy;
+pub mod react;
 pub mod resume;
 pub mod retry;
 pub mod streaming;
@@ -75,6 +76,7 @@ pub use executor::{
     CompactionConfig, CompactionStrategy, CompactionTrigger,
 };
 pub use function_calling::FunctionCallingAgent;
+pub use graph_approval::ApprovalGate;
 pub use handoffs::HandoffManager;
 pub use hooks::{
     AgentHook, ApprovalHook, CompletionAction, CompletionContext, CompletionResult,
@@ -84,8 +86,9 @@ pub use hooks::{
 pub use memory_extractor::LlmMemoryExtractor;
 pub use metrics::AgentMetrics;
 pub use orchestrator::{
-    parse_review_verdict, review_envelope, task_adapter, FanOutFanIn, Orchestrator,
-    ReviewOrchestrator, ReviewVerdict, RunContext, SequentialPipeline, TaskAdapter,
+    parse_review_verdict, parse_supervisor_decision, review_envelope, supervisor_envelope,
+    task_adapter, FanOutFanIn, Orchestrator, ReviewOrchestrator, ReviewVerdict, RunContext,
+    SequentialPipeline, Supervisor, SupervisorNext, TaskAdapter, SUPERVISOR_FINISH,
 };
 pub use plan_execute::{PlanExecuteAgent, PlanExecuteError};
 pub use policy::{ToolPolicy, ToolRisk};

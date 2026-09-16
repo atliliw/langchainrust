@@ -76,6 +76,28 @@ pub enum GraphError {
     /// An unexpected runtime error occurred.
     #[error("Runtime error: {0}")]
     RuntimeError(String),
+
+    /// A node requested a runtime (human-in-the-loop) interrupt. This is a
+    /// *control-flow signal* produced by a node so it can suspend mid-execution.
+    /// The compiled graph converts it into a [`GraphError::DynamicInterrupt`]
+    /// (after persisting a checkpoint) before it reaches the graph caller.
+    #[error("node requested a runtime interrupt")]
+    InterruptRequest {
+        /// Payload describing the interrupt (the question to ask, context, ...).
+        payload: serde_json::Value,
+    },
+
+    /// Execution was suspended by a node's runtime interrupt. The checkpointer
+    /// (when attached) has already persisted the run's state, so a process
+    /// restart can resume. Feed a human's decision back in with
+    /// [`crate::compiled::graph::CompiledGraph::resume_with_value`].
+    #[error("node '{node}' suspended execution with a runtime interrupt")]
+    DynamicInterrupt {
+        /// The node that requested the interrupt (re-entered on resume).
+        node: String,
+        /// The payload the node published when it suspended.
+        payload: serde_json::Value,
+    },
 }
 
 /// Convenience result type for graph operations.

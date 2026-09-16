@@ -10,6 +10,7 @@
 //! - `EvalRunner` and the `Report` (with original text + stddev + failure list)
 //! - built-in evaluators: `ExactMatch` / `StringDistance` / `EmbeddingSimilarity` / `LLMAsJudge`
 //! - other evaluators: `Bleu` / `Faithfulness` / `PairwiseJudge` / `ContainsKeyword` / `RegexMatch`
+//! - N2 (v0.24.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates
 //!
 //! # Example
 //! ```ignore
@@ -20,6 +21,7 @@
 //! ```
 
 mod bleu;
+mod compare;
 mod criteria;
 mod export;
 mod faithfulness;
@@ -36,6 +38,7 @@ pub use price::{OverallCost, Price, PriceBook, TokenUsage};
 mod test_support;
 
 pub use bleu::Bleu;
+pub use compare::{compare_reports, MetricDelta, Regression, ReportComparison};
 pub use criteria::{
     Dataset, EvalError, Evaluator, Example, PairwiseEvaluator, Predictor, RagEvaluator, Score,
 };

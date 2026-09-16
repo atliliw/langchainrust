@@ -5,8 +5,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::ssrf::{guarded_get, guarded_post_json};
-use lc_core::tools::ToolError;
+use crate::ssrf::{guarded_get, guarded_post_json, read_body_bounded, MAX_FETCH_BYTES};
+use lc_core::tools::{ToolError, ToolRiskProfile};
 use lc_core::BaseTool;
 
 /// HTTP request tool (GET/POST) with SSRF protection.
@@ -43,22 +43,19 @@ impl HTTPTool {
     pub async fn get(&self, url: &str) -> Result<String, ToolError> {
         // SSRF: guarded_get resolves once, validates every answer, pins the validated
         // IPs, then follows redirects manually with the same treatment per hop.
-        guarded_get(url, !self.allow_private_ips, Some(self.timeout))
-            .await?
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+        let resp = guarded_get(url, !self.allow_private_ips, Some(self.timeout)).await?;
+        let (body, _) = read_body_bounded(resp, MAX_FETCH_BYTES).await?;
+        Ok(body)
     }
 
     /// Sends a POST request with a JSON body (single hop, IP-pinned SSRF guard).
     pub async fn post(&self, url: &str, body: Value) -> Result<String, ToolError> {
         // POST never follows redirects (the 3xx response is returned as-is); resolve-once
         // plus IP pinning still closes the DNS-rebinding window on this single hop.
-        guarded_post_json(url, &body, !self.allow_private_ips, Some(self.timeout))
-            .await?
-            .text()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+        let resp =
+            guarded_post_json(url, &body, !self.allow_private_ips, Some(self.timeout)).await?;
+        let (text, _) = read_body_bounded(resp, MAX_FETCH_BYTES).await?;
+        Ok(text)
     }
 }
 
@@ -77,6 +74,15 @@ impl BaseTool for HTTPTool {
     fn description(&self) -> &str {
         "Make HTTP requests. Input JSON: {\"url\": \"...\", \"method\": \"get|post\", \"body\": {...}}. \
          SSRF protection enabled by default (blocks private IPs)."
+    }
+
+    /// S3: consumes raw, untrusted web content — declare the input risk so a policy
+    /// layer (Rule of Two) can weigh prompt-injection / tool-abuse surface.
+    fn risk(&self) -> ToolRiskProfile {
+        ToolRiskProfile {
+            untrusted_input: true,
+            ..Default::default()
+        }
     }
 
     async fn run(&self, input: String) -> Result<String, ToolError> {

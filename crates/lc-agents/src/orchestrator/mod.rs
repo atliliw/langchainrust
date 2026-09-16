@@ -32,6 +32,7 @@ mod fan_out_fan_in;
 mod impls;
 mod review;
 mod sequential;
+mod supervisor;
 mod task_adapter;
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,9 @@ mod tests;
 pub use fan_out_fan_in::FanOutFanIn;
 pub use review::{parse_review_verdict, review_envelope, ReviewOrchestrator, ReviewVerdict};
 pub use sequential::SequentialPipeline;
+pub use supervisor::{
+    parse_supervisor_decision, supervisor_envelope, Supervisor, SupervisorNext, SUPERVISOR_FINISH,
+};
 pub use task_adapter::{task_adapter, TaskAdapter};
 
 /// Common trait for high-level orchestrators.

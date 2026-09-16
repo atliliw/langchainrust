@@ -38,7 +38,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use crate::checkpointer::Checkpointer;
+use crate::checkpointer::{CheckpointInfo, Checkpointer};
 use crate::errors::{GraphError, GraphResult};
 use crate::state::StateSchema;
 
@@ -166,6 +166,32 @@ impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
             .await
             .map_err(pg_err)?;
         Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
+    }
+
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                "SELECT id, ts, seq, recursion_count, state FROM lc_checkpoints \
+                 WHERE thread_id = $1 ORDER BY ts ASC, seq ASC",
+                &[&self.thread_id],
+            )
+            .await
+            .map_err(pg_err)?;
+        let mut snaps = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let state_json: String = row.get(4);
+            let state: S = serde_json::from_str(&state_json)
+                .map_err(|e| GraphError::CheckpointError(format!("deserialize error: {e}")))?;
+            snaps.push(CheckpointInfo {
+                id: row.get(0),
+                timestamp: row.get(1),
+                seq: row.get::<_, i64>(2) as u64,
+                recursion_count: row.get::<_, i64>(3) as usize,
+                state,
+            });
+        }
+        Ok(snaps)
     }
 
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {

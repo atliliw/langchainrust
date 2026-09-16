@@ -5,8 +5,10 @@ use crate::checkpointer::ThreadSafeMemoryCheckpointer;
 use crate::compiled::types::{DynamicInjection, DynamicPlanner, DynamicTask};
 use crate::errors::GraphError;
 use crate::graph::{GraphBuilder, END, START};
+use crate::node::NodeResult;
 use crate::state::{AgentState, StateUpdate};
 use async_trait::async_trait;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -240,4 +242,301 @@ async fn test_resume_preserves_recursion_budget() {
         result.recursion_count, 4,
         "resume should fully execute n3, n4"
     );
+}
+
+/// v0.24.0 #1: a node suspends itself mid-execution with a runtime interrupt; a
+/// human's decision is fed back so the SAME node re-enters and continues (no
+/// re-execution of the interrupt path). State + recursion budget survive via
+/// the checkpointer, so `resume_with_value` restores the run from disk.
+#[tokio::test]
+async fn test_dynamic_interrupt_and_resume_with_value() {
+    use crate::node::InterruptibleNode;
+    use std::pin::Pin;
+
+    // `side_effects` counts how many times the pre-suspension work runs. On the
+    // resume pass `resume` is `Some(_)`, so the closure skips re-asking and
+    // finalizes with the decision — proving the interrupt is not re-triggered.
+    let side_effects = Arc::new(AtomicUsize::new(0));
+    let seen_effects = side_effects.clone();
+
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node(InterruptibleNode::new("ask", move |_state, resume| {
+            // Clone the effect counter into the future: a `Fn` closure may be
+            // called more than once, so it cannot own the `Arc` across the
+            // `async move` block.
+            let effects = seen_effects.clone();
+            // Own the resume value (the future must be `'static`, so it cannot
+            // borrow the closure's `&Option<&Value>` argument).
+            let resume_owned = resume.cloned();
+            Box::pin(async move {
+                if let Some(decision) = resume_owned.as_ref() {
+                    // Human answered — continue past the suspension.
+                    let mut new_state = AgentState::new("resumed");
+                    new_state.set_output(format!("approved={}", decision));
+                    Ok(StateUpdate::full(new_state))
+                } else {
+                    // First pass — suspend and ask the human.
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    Err(GraphError::InterruptRequest {
+                        payload: serde_json::json!({
+                            "question": "proceed?",
+                            "kind": "human_approval",
+                        }),
+                    })
+                }
+            }) as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+        }))
+        .add_node_fn("finish", |state| {
+            let mut new_state = state.clone();
+            new_state.set_output(format!(
+                "final:{}",
+                state.output.clone().unwrap_or_default()
+            ));
+            Ok(StateUpdate::full(new_state))
+        })
+        .add_edge(START, "ask")
+        .add_edge("ask", "finish")
+        .add_edge("finish", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+
+    // First invoke suspends at "ask".
+    let err = compiled
+        .invoke(AgentState::new("x".to_string()))
+        .await
+        .unwrap_err();
+    let (node, payload) = match err {
+        GraphError::DynamicInterrupt { node, payload } => (node, payload),
+        other => panic!("expected DynamicInterrupt, got {other:?}"),
+    };
+    assert_eq!(node, "ask");
+    assert_eq!(payload["kind"], "human_approval");
+    // The interrupt-pass side effect ran exactly once.
+    assert_eq!(side_effects.load(Ordering::SeqCst), 1);
+
+    // Resume with the human's approval; the interrupted node re-enters with it.
+    let inv = compiled
+        .resume_with_value(&node, serde_json::json!({ "approved": true }))
+        .await
+        .unwrap();
+    let out = inv.final_state.output.as_deref().unwrap();
+    assert!(out.starts_with("final:approved="), "got {out}");
+    // The interrupt path must NOT have run again on resume.
+    assert_eq!(side_effects.load(Ordering::SeqCst), 1);
+}
+
+/// v0.24.0 #1 (step 5, durable): a runtime interrupt persisted via the
+/// file-backed checkpointer survives a full process/GOTRESS restart — a brand-new
+/// graph over the same checkpoint directory (no in-memory carryover) resumes the
+/// interrupted node from disk with the human's decision.
+#[tokio::test]
+async fn test_dynamic_interrupt_survives_restart_via_file_checkpointer() {
+    use crate::checkpointer::FileCheckpointer;
+    use crate::node::InterruptibleNode;
+    use std::pin::Pin;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
+
+    let build_into_file = |path: std::path::PathBuf| {
+        GraphBuilder::<AgentState>::new()
+            .add_node(InterruptibleNode::new("ask", |_state, resume| {
+                let r = resume.cloned();
+                Box::pin(async move {
+                    if let Some(d) = r.as_ref() {
+                        let mut ns = AgentState::new("resumed");
+                        ns.set_output(format!("approved={}", d));
+                        Ok(StateUpdate::full(ns))
+                    } else {
+                        Err(GraphError::InterruptRequest {
+                            payload: serde_json::json!({ "q": "go?" }),
+                        })
+                    }
+                }) as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+            }))
+            .add_node_fn("finish", |s| {
+                let mut ns = s.clone();
+                ns.set_output(format!("final:{}", s.output.clone().unwrap_or_default()));
+                Ok(StateUpdate::full(ns))
+            })
+            .add_edge(START, "ask")
+            .add_edge("ask", "finish")
+            .add_edge("finish", END)
+            .compile()
+            .unwrap()
+            .with_recursion_limit(10)
+            .with_checkpointer(FileCheckpointer::new(path).unwrap())
+    };
+
+    // First "process": interrupt and drop the graph (simulating a crash before resume).
+    {
+        let compiled = build_into_file(dir_path.clone());
+        let err = compiled.invoke(AgentState::new("x")).await.unwrap_err();
+        match err {
+            GraphError::DynamicInterrupt { node, .. } => assert_eq!(node, "ask"),
+            other => panic!("expected DynamicInterrupt, got {other:?}"),
+        }
+    }
+
+    // Second "process": brand-new graph over the same checkpoint directory.
+    let compiled2 = build_into_file(dir_path);
+    let inv = compiled2
+        .resume_with_value("ask", serde_json::json!("ok"))
+        .await
+        .unwrap();
+    let out = inv.final_state.output.as_deref().unwrap();
+    assert!(out.starts_with("final:approved="), "got {out}");
+}
+
+// ── #3: state history / fork / time-travel ──
+
+/// Linear n1 -> n2 -> n3 graph where each node bumps its own side-effect
+/// counter and stamps its name into the output. The counters expose whether a
+/// node actually re-ran after a fork (the time-travel side-effect invariant).
+fn marking_chain(
+    c1: Arc<AtomicUsize>,
+    c2: Arc<AtomicUsize>,
+    c3: Arc<AtomicUsize>,
+) -> crate::compiled::CompiledGraph<AgentState> {
+    GraphBuilder::<AgentState>::new()
+        .add_node_fn("n1", move |state| {
+            c1.fetch_add(1, Ordering::SeqCst);
+            let mut s = state.clone();
+            s.set_output("n1");
+            Ok(StateUpdate::full(s))
+        })
+        .add_node_fn("n2", move |state| {
+            c2.fetch_add(1, Ordering::SeqCst);
+            let mut s = state.clone();
+            s.set_output("n2");
+            Ok(StateUpdate::full(s))
+        })
+        .add_node_fn("n3", move |state| {
+            c3.fetch_add(1, Ordering::SeqCst);
+            let mut s = state.clone();
+            s.set_output("n3");
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "n1")
+        .add_edge("n1", "n2")
+        .add_edge("n2", "n3")
+        .add_edge("n3", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+}
+
+#[tokio::test]
+async fn test_state_history_lists_every_step_oldest_first() {
+    let z = || Arc::new(AtomicUsize::new(0));
+    let compiled = marking_chain(z(), z(), z())
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    compiled.invoke(AgentState::new("x")).await.unwrap();
+
+    let history = compiled.get_state_history().await.unwrap();
+    // pre-run snapshot + one after each of n1/n2/n3.
+    assert_eq!(history.len(), 4);
+    // Recursion budget grows monotonically; the oldest snapshot is pre-run.
+    assert_eq!(
+        history
+            .iter()
+            .map(|s| s.recursion_count)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+    assert_eq!(history[0].recursion_count, 0);
+    assert!(history[0].state.output.is_none());
+    // The snapshot after n1 captures n1's state (the "why did it decide that" evidence).
+    assert_eq!(history[1].state.output.as_deref(), Some("n1"));
+    assert_eq!(history[3].state.output.as_deref(), Some("n3"));
+    // Ordering keys are non-decreasing (seq breaks same-second ties).
+    for w in history.windows(2) {
+        assert!(
+            (w[0].timestamp, w[0].seq) <= (w[1].timestamp, w[1].seq),
+            "history must be ordered by (timestamp, seq)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_fork_from_snapshot_runs_forward_without_replaying_side_effects() {
+    let (c1, c2, c3) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let compiled = marking_chain(c1.clone(), c2.clone(), c3.clone())
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    compiled.invoke(AgentState::new("x")).await.unwrap();
+    for c in [&c1, &c2, &c3] {
+        assert_eq!(c.load(Ordering::SeqCst), 1);
+    }
+
+    // Fork from the snapshot captured right after n1, resuming at n2.
+    let after_n1 = compiled.get_state_history().await.unwrap()[1].id.clone();
+    let fork = compiled.fork_from(&after_n1, "n2", None).await.unwrap();
+
+    // Forward run reached n3, continuing the recursion budget (started at 1).
+    assert_eq!(fork.final_state.output.as_deref(), Some("n3"));
+    assert_eq!(fork.recursion_count, 3);
+    // The pre-fork node n1 must NOT re-run; n2/n3 re-run on the fork timeline.
+    assert_eq!(
+        c1.load(Ordering::SeqCst),
+        1,
+        "n1 side effect must not replay"
+    );
+    assert_eq!(c2.load(Ordering::SeqCst), 2, "n2 runs on the fork");
+    assert_eq!(c3.load(Ordering::SeqCst), 2, "n3 runs on the fork");
+
+    // A fork seeds ONE new checkpoint; it never rewrites the original lineage.
+    assert_eq!(
+        compiled.get_state_history().await.unwrap().len(),
+        5,
+        "fork appends a lineage seed, does not rewrite history"
+    );
+}
+
+#[tokio::test]
+async fn test_fork_from_snapshot_with_overridden_input() {
+    // "回到任意旧快照、改输入、从那条线分叉重跑": the echo node surfaces the
+    // input the forked timeline actually ran with.
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node_fn("n1", |state| {
+            let mut s = state.clone();
+            s.set_output("n1");
+            Ok(StateUpdate::full(s))
+        })
+        .add_node_fn("echo", |state| {
+            let mut s = state.clone();
+            s.set_output(format!("echo:{}", state.input));
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "n1")
+        .add_edge("n1", "echo")
+        .add_edge("echo", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    compiled.invoke(AgentState::new("original")).await.unwrap();
+
+    let after_n1 = compiled.get_state_history().await.unwrap()[1].id.clone();
+    let fork = compiled
+        .fork_from(&after_n1, "echo", Some(AgentState::new("rewritten")))
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.final_state.output.as_deref(),
+        Some("echo:rewritten"),
+        "the forked timeline must run with the overridden input, not the original"
+    );
+}
+
+#[tokio::test]
+async fn test_state_history_and_fork_require_checkpointer() {
+    let compiled = chain_of(2);
+    assert!(compiled.get_state_history().await.is_err());
+    assert!(compiled.fork_from("anything", "n1", None).await.is_err());
 }

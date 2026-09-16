@@ -173,6 +173,54 @@ impl InMemoryChunkedDocumentStore {
 
         Ok(chunk_ids)
     }
+
+    /// Registers a parent document with caller-supplied chunk texts, bypassing
+    /// the auto-splitter. This is the late-chunking injection path: the caller
+    /// owns the chunk boundaries (e.g. pooled late-chunk spans), so the store
+    /// must not re-cut them. Chunk ids are deterministic `{parent_id}::{segment}`
+    /// so re-registering the same parent idempotently replaces its chunk set.
+    pub async fn add_parent_with_chunks(
+        &self,
+        document: Document,
+        chunk_texts: Vec<String>,
+    ) -> Result<(String, Vec<String>), VectorStoreError> {
+        let parent_id = document
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        {
+            let mut parents = lock_error(self.parent_docs.write())?;
+            parents.insert(parent_id.clone(), document.clone());
+        }
+
+        // C5-equivalent: replacing the same parent drops its old chunk set.
+        let mut chunks_store = lock_error(self.chunks.write())?;
+        let mut mapping = lock_error(self.parent_to_chunks.write())?;
+        if let Some(old_ids) = mapping.remove(&parent_id) {
+            for old in old_ids {
+                chunks_store.remove(&old);
+            }
+        }
+
+        let mut chunk_ids = Vec::new();
+        for (segment, chunk_content) in chunk_texts.into_iter().enumerate() {
+            let chunk_id = format!("{parent_id}::{segment}");
+            let chunk =
+                ChunkDocument::new(chunk_id.clone(), parent_id.clone(), chunk_content, segment)
+                    .with_metadata_map(document.metadata.clone());
+
+            chunks_store.insert(chunk_id.clone(), chunk);
+            mapping
+                .entry(parent_id.clone())
+                .or_default()
+                .push(chunk_id.clone());
+
+            chunk_ids.push(chunk_id);
+        }
+
+        Ok((parent_id, chunk_ids))
+    }
 }
 
 impl Default for InMemoryChunkedDocumentStore {

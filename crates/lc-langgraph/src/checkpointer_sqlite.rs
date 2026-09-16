@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::checkpointer::Checkpointer;
+use crate::checkpointer::{CheckpointInfo, Checkpointer};
 use crate::errors::{GraphError, GraphResult};
 use crate::state::StateSchema;
 
@@ -202,6 +202,41 @@ impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
         Ok(())
     }
 
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let thread_id = self.thread_id.clone();
+        let rows: Vec<(String, i64, i64, i64, String)> = self
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, ts, seq, recursion_count, state FROM lc_checkpoints \
+                     WHERE thread_id = ?1 ORDER BY ts ASC, seq ASC",
+                )?;
+                let rows = stmt.query_map(params![thread_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .await?;
+        let mut snaps = Vec::with_capacity(rows.len());
+        for (id, ts, seq, recursion_count, state_json) in rows {
+            let state: S = serde_json::from_str(&state_json)
+                .map_err(|e| GraphError::CheckpointError(format!("deserialize error: {e}")))?;
+            snaps.push(CheckpointInfo {
+                id,
+                timestamp: ts,
+                seq: seq as u64,
+                recursion_count: recursion_count as usize,
+                state,
+            });
+        }
+        Ok(snaps)
+    }
+
     async fn last(&self) -> GraphResult<Option<(S, usize)>> {
         let thread_id = self.thread_id.clone();
         let row: Option<(String, i64)> = self
@@ -333,6 +368,33 @@ mod tests {
         cp.delete(&id1).await.unwrap();
         assert_eq!(cp.list().await.unwrap(), vec![id2]);
         assert!(cp.load(&id1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshots_carry_real_ordering_keys_and_budget() {
+        // #3: the durable backend must report true timestamp/seq/recursion_count
+        // (not the trait fallback's zeros) so history ordering and fork budgets
+        // are correct on sqlite, not just in memory.
+        let cp = SqliteCheckpointer::<AgentState>::in_memory("thread-hist").unwrap();
+        let id1 = cp
+            .save(&AgentState::new("one".to_string()), 1)
+            .await
+            .unwrap();
+        let id2 = cp
+            .save(&AgentState::new("two".to_string()), 2)
+            .await
+            .unwrap();
+
+        let snaps = cp.snapshots().await.unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].id, id1);
+        assert_eq!(snaps[0].state.input, "one");
+        assert_eq!(snaps[0].recursion_count, 1);
+        assert_eq!(snaps[1].id, id2);
+        assert_eq!(snaps[1].recursion_count, 2);
+        // seq strictly increases (sqlite AUTOINCREMENT primary key).
+        assert!(snaps[0].seq < snaps[1].seq);
+        assert!(snaps[0].timestamp <= snaps[1].timestamp);
     }
 
     #[tokio::test]

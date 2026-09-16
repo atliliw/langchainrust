@@ -17,6 +17,7 @@ pub mod loaders;
 pub mod mmr;
 pub mod multi_query;
 pub mod multimodal;
+pub mod neural_rerank;
 pub mod parent_document;
 pub mod pipeline;
 pub mod reranking;
@@ -25,6 +26,7 @@ pub mod retriever_runnable;
 pub mod self_query;
 pub mod semantic_cache;
 pub mod semantic_splitter;
+pub mod sentence_window;
 pub mod splitter;
 mod structured;
 pub mod unified_hybrid;
@@ -45,6 +47,7 @@ pub use retriever::{Retriever, RetrieverError, RetrieverTrait, SimilarityRetriev
 pub use self_query::{SelfQueryArgs, SelfQueryRetriever};
 pub use semantic_cache::{CacheHitKind, CachedRetriever, SemanticCacheConfig, SemanticCacheCore};
 pub use semantic_splitter::SemanticSplitter;
+pub use sentence_window::SentenceWindowRetriever;
 pub use splitter::{RecursiveCharacterSplitter, TextSplitter};
 
 pub use bm25::{
@@ -73,6 +76,7 @@ pub use multimodal::{
 pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
 pub use late_chunking::{late_chunk, late_index_in, pool_tokens, LateChunk, LateChunkConfig};
 
+pub use neural_rerank::{rerank_async, AsyncReranker, CohereRerank, JinaRerank};
 pub use reranking::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,
 };

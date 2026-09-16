@@ -12,12 +12,18 @@
 //! implementation for testing / demos.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hooks::ToolCallContext;
 
 /// Approval decision before tool execution.
-#[derive(Debug, Clone)]
+///
+/// `Serialize + Deserialize` so the decision can travel as a graph resume value
+/// (#2 convergence): when an approval-gated tool runs as a graph node, the
+/// decision is fed back via the graph's `resume_with_value`, and the graph
+/// checkpointer is the single persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ApprovalDecision {
     /// Allow: execute as-is.
     Allow,

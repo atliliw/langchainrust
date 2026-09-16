@@ -699,6 +699,25 @@ fn test_partial_json_parser_fenced_finalize_unclosed_fence() {
     assert_eq!(value["name"], "Eve");
 }
 
+/// F1 regression: the `finalize` error path formats the buffer, truncating it to
+/// 200 bytes. When the buffer is long CJK and byte 200 lands inside a 3-byte
+/// character, the old `&buffer[..200.min(len)]` panicked (not on a char boundary);
+/// `truncate_at_char_boundary` keeps it panic-free.
+#[test]
+fn finalize_invalid_error_does_not_panic_on_non_ascii_boundary() {
+    // >200 bytes of CJK; byte 200 splits a multibyte char. Never valid JSON, so
+    // `finalize` reaches the `Invalid` error branch which slices the buffer.
+    let cjk: String = "中".repeat(300);
+    let mut parser = PartialJsonParser::new();
+    let _ = parser.push_and_parse(&cjk); // Incomplete, accumulates the whole buffer
+
+    // Must return Err (genuinely un-parseable) WITHOUT panicking on the slice.
+    let err = parser
+        .finalize()
+        .expect_err("un-parseable CJK must be Invalid");
+    assert!(matches!(err, PartialJsonError::Invalid(_)));
+}
+
 #[test]
 fn test_strip_markdown_fence() {
     use super::parser::PartialJsonParser;

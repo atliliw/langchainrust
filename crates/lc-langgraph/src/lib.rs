@@ -72,17 +72,19 @@ pub mod subgraph;
 
 // Re-export core types
 pub use checkpointer::{
-    CheckpointData, Checkpointer, FileCheckpointer, MemoryCheckpointer,
+    CheckpointData, CheckpointInfo, Checkpointer, FileCheckpointer, MemoryCheckpointer,
     ThreadSafeMemoryCheckpointer,
 };
 pub use compiled::{
     CompiledGraph, DynamicInjection, DynamicPlanner, DynamicTask, ExecutionStep, GraphExecution,
-    GraphInvocation, ParallelBranch, ParallelInvocation, StreamEvent,
+    GraphInvocation, ParallelBranch, ParallelInvocation, PendingInterrupt, StreamEvent,
 };
 pub use edge::{AsyncFunctionRouter, ConditionalEdge, EdgeTarget, FunctionRouter, GraphEdge};
 pub use errors::{GraphError, GraphResult};
 pub use graph::{GraphBuilder, StateGraph, END, START};
-pub use node::{AsyncFn, AsyncNode, GraphNode, NodeConfig, NodeResult};
+pub use node::{
+    AsyncFn, AsyncNode, GraphNode, InterruptibleNode, NodeConfig, NodeResult, INTERRUPT_RESUME_KEY,
+};
 pub use persistence::{
     EdgeDefinition, EdgeType, FilePersistence, GraphDefinition, GraphPersistence,
     MemoryPersistence, NodeDefinition, NodeType, PersistenceError, RouterDefinition,

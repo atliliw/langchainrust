@@ -23,7 +23,7 @@ use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, Client};
 use uuid::Uuid;
 
-use crate::checkpointer::Checkpointer;
+use crate::checkpointer::{CheckpointInfo, Checkpointer};
 use crate::errors::{GraphError, GraphResult};
 use crate::state::StateSchema;
 
@@ -148,6 +148,37 @@ impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
         conn.zrange(self.index_key(), 0, -1)
             .await
             .map_err(redis_err)
+    }
+
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let mut conn = self.conn.clone();
+        // The zset score is the assigned seq; zrange_withscores yields (id, seq)
+        // ordered ascending, matching list().
+        let scored: Vec<(String, f64)> = conn
+            .zrange_withscores(self.index_key(), 0, -1)
+            .await
+            .map_err(redis_err)?;
+        let mut snaps = Vec::with_capacity(scored.len());
+        for (id, seq) in scored {
+            let key = self.checkpoint_key(&id);
+            let (state_json, ts, recursion_count): (String, i64, i64) = redis::pipe()
+                .hget(&key, "state")
+                .hget(&key, "ts")
+                .hget(&key, "recursion_count")
+                .query_async(&mut conn)
+                .await
+                .map_err(redis_err)?;
+            let state: S = serde_json::from_str(&state_json)
+                .map_err(|e| GraphError::CheckpointError(format!("deserialize error: {e}")))?;
+            snaps.push(CheckpointInfo {
+                id,
+                timestamp: ts,
+                seq: seq as u64,
+                recursion_count: recursion_count as usize,
+                state,
+            });
+        }
+        Ok(snaps)
     }
 
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {

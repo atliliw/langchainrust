@@ -4,7 +4,6 @@
 //! pops recordings in order. An exhausted queue returns [`TestkitError::ReplayExhausted`].
 
 use std::collections::VecDeque;
-use std::io::BufRead;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -68,22 +67,8 @@ pub struct ReplayProvider {
 impl ReplayProvider {
     /// Reads a JSONL recording file (missing file / bad line → `Err`).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TestkitError> {
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
-        let mut queue = VecDeque::new();
-        for line in reader.lines() {
-            let line = line?.trim().to_string();
-            if line.is_empty() {
-                continue;
-            }
-            let exchange: RecordedExchange = serde_json::from_str(&line).map_err(|e| {
-                TestkitError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("invalid recording line: {e}"),
-                ))
-            })?;
-            queue.push_back(exchange);
-        }
+        // Single parse site for the recording format lives in `recording::read_exchanges`.
+        let queue: VecDeque<RecordedExchange> = crate::recording::read_exchanges(path)?.into();
         Ok(Self {
             queue: Arc::new(Mutex::new(queue)),
             model_name: "replay".to_string(),

@@ -4,12 +4,46 @@
 use super::graph::CompiledGraph;
 use super::types::{ExecutionStep, GraphExecution, GraphInvocation, ParallelBranch};
 use crate::errors::{GraphError, GraphResult};
-use crate::node::NodeConfig;
-use crate::state::StateSchema;
+use crate::node::{NodeConfig, INTERRUPT_RESUME_KEY};
+use crate::state::{StateSchema, StateUpdate};
 use crate::END;
 use std::collections::HashMap;
 
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Run a single node, translating a runtime [`GraphError::InterruptRequest`]
+    /// into a producer-facing [`GraphError::DynamicInterrupt`]. Before surfacing
+    /// the interrupt the current state is persisted (when a checkpointer is
+    /// attached) so a crash between interrupt and resume cannot lose the run.
+    async fn run_node(
+        &self,
+        state: &S,
+        current_node: &str,
+        recursion_count: usize,
+        resume: Option<&serde_json::Value>,
+    ) -> GraphResult<StateUpdate<S>> {
+        let node = self.get_node(current_node).await?;
+        let mut metadata = HashMap::new();
+        if let Some(value) = resume {
+            metadata.insert(INTERRUPT_RESUME_KEY.to_string(), value.clone());
+        }
+        let config = NodeConfig {
+            recursion_limit: self.recursion_limit,
+            debug: false,
+            metadata,
+        };
+        match node.execute(state, Some(config)).await {
+            Err(GraphError::InterruptRequest { ref payload }) => {
+                if let Some(ref cp) = self.checkpointer {
+                    cp.lock().await.save(state, recursion_count).await?;
+                }
+                Err(GraphError::DynamicInterrupt {
+                    node: current_node.to_string(),
+                    payload: payload.clone(),
+                })
+            }
+            other => other,
+        }
+    }
     /// Run the graph from its entry point with the given input state.
     pub async fn invoke(&self, input: S) -> GraphResult<GraphInvocation<S>> {
         let mut state = input;
@@ -48,15 +82,9 @@ impl<S: StateSchema> CompiledGraph<S> {
             if current_node != crate::START {
                 recursion_count += 1;
 
-                let node = self.get_node(&current_node).await?;
-
-                let config = NodeConfig {
-                    recursion_limit: self.recursion_limit,
-                    debug: false,
-                    metadata: HashMap::new(),
-                };
-
-                let update = node.execute(&state, Some(config)).await?;
+                let update = self
+                    .run_node(&state, &current_node, recursion_count, None)
+                    .await?;
 
                 if let Some(new_state) = update.update {
                     state = self.default_reducer.reduce(&state, &new_state);
@@ -151,13 +179,19 @@ impl<S: StateSchema> CompiledGraph<S> {
         execution: GraphExecution<S>,
     ) -> GraphResult<GraphInvocation<S>> {
         let mut state = execution.state;
-        let mut current_node = if execution.interrupted_at.starts_with("after_") {
-            self.find_next_node(&execution.current_node, &state).await?
-        } else {
+        // A node-requested (runtime) interrupt always re-enters the interrupted
+        // node with the human's decision. A compile-time `after_` interrupt skips
+        // the node (it already ran) and continues at its successor.
+        let rerun_interrupted = execution.pending_interrupt.is_some()
+            || !execution.interrupted_at.starts_with("after_");
+        let mut current_node = if rerun_interrupted {
             execution.current_node
+        } else {
+            self.find_next_node(&execution.current_node, &state).await?
         };
         let mut steps = execution.steps;
         let mut recursion_count = execution.recursion_count;
+        let mut resume_value = execution.pending_interrupt.map(|p| p.value);
         let first_node = current_node.clone();
 
         loop {
@@ -176,15 +210,11 @@ impl<S: StateSchema> CompiledGraph<S> {
 
             recursion_count += 1;
 
-            let node = self.get_node(&current_node).await?;
-
-            let config = NodeConfig {
-                recursion_limit: self.recursion_limit,
-                debug: false,
-                metadata: HashMap::new(),
-            };
-
-            let update = node.execute(&state, Some(config)).await?;
+            // Only the resume target node receives the injected decision.
+            let inject = resume_value.take();
+            let update = self
+                .run_node(&state, &current_node, recursion_count, inject.as_ref())
+                .await?;
 
             if let Some(new_state) = update.update {
                 state = self.default_reducer.reduce(&state, &new_state);
@@ -269,15 +299,9 @@ impl<S: StateSchema> CompiledGraph<S> {
 
             recursion_count += 1;
 
-            let node = self.get_node(&current_node).await?;
-
-            let config = NodeConfig {
-                recursion_limit: self.recursion_limit,
-                debug: false,
-                metadata: HashMap::new(),
-            };
-
-            let update = node.execute(&state, Some(config)).await?;
+            let update = self
+                .run_node(&state, &current_node, recursion_count, None)
+                .await?;
 
             if let Some(new_state) = update.update {
                 state = self.default_reducer.reduce(&state, &new_state);

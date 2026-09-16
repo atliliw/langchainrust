@@ -6,7 +6,9 @@
 
 #[cfg(feature = "browser-cdp")]
 pub(crate) use lc_core::ssrf::url_points_to_private_ip;
-pub(crate) use lc_core::ssrf::{guarded_get, guarded_post_json};
+pub(crate) use lc_core::ssrf::{
+    guarded_get, guarded_post_json, read_body_bounded, MAX_FETCH_BYTES,
+};
 
 #[cfg(test)]
 pub(crate) use lc_core::ssrf::is_private_ip;

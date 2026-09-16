@@ -95,6 +95,18 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
 
                     let update = match node.execute(&state, Some(config)).await {
                         Ok(u) => u,
+                        // Surface a node-requested interrupt as the caller-facing
+                        // error (matching the `invoke` path) instead of leaking the
+                        // internal control-flow signal.
+                        Err(crate::errors::GraphError::InterruptRequest { ref payload }) => {
+                            let _ = tx
+                                .send(Err(crate::errors::GraphError::DynamicInterrupt {
+                                    node: current_node.clone(),
+                                    payload: payload.clone(),
+                                }))
+                                .await;
+                            return;
+                        }
                         Err(e) => {
                             let _ = tx.send(Err(e)).await;
                             return;

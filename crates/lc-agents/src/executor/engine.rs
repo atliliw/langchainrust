@@ -280,7 +280,15 @@ impl AgentExecutor {
 
     /// Sets the maximum number of tools executed concurrently.
     ///
-    /// Clamped to at least 1. The default is 8.
+    /// When a single model response carries multiple native `tool_calls`, they
+    /// become one `AgentOutput::Actions` batch and every call in the batch runs
+    /// **concurrently** (both `invoke` and `stream`); this semaphore caps how
+    /// many execute at once. Observations are re-attached in the same order as
+    /// the actions the model emitted, regardless of which tool finishes first.
+    /// A tool that ran and failed (or a hallucinated, unregistered tool name)
+    /// becomes an observation so its sibling results survive; framework
+    /// guardrail rejections still abort the batch. Clamped to at least 1. The
+    /// default is 8.
     pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
         let max_concurrency = max_concurrency.max(1);
         self.max_concurrency = max_concurrency;

@@ -24,6 +24,7 @@ pub mod router_llm;
 pub mod runnables;
 pub mod ssrf;
 pub mod structured_output;
+pub mod text;
 pub mod token_counter;
 pub mod tools;
 

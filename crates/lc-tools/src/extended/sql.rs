@@ -91,6 +91,7 @@ impl SQLTool {
 
         let lower = trimmed.to_lowercase();
         let dangerous_patterns = [
+            // MySQL-flavored patterns (kept for defense-in-depth / cross-dialect hints).
             "into outfile",
             "into dumpfile",
             "load_file",
@@ -101,6 +102,19 @@ impl SQLTool {
             "execute",
             "xp_",
             "sp_",
+            // SQLite-specific file-access / code-loading (this tool is SQLite, and
+            // these were the dangerous ones the old MySQL-flavored list missed):
+            // ```load_extension``` reads arbitrary local files / loads local code (RCE),
+            // readfile()/writefile() read & write arbitrary paths, pragma can alter
+            // schema. rusqlite disables load_extension by default (so base risk is low),
+            // but the blacklist must not give false assurance. sqlite_master/sqlite_schema
+            // introspection is also blocked to avoid leaking schema.
+            "load_extension",
+            "readfile(",
+            "writefile(",
+            "pragma",
+            "sqlite_master",
+            "sqlite_schema",
         ];
         for pattern in dangerous_patterns {
             if lower.contains(pattern) {
@@ -327,6 +341,22 @@ mod tests {
         let tool = tool_with_data();
         assert!(tool.execute("SELECT sleep(1) FROM users").is_err());
         assert!(tool.execute("SELECT benchmark(1, 1) FROM users").is_err());
+    }
+
+    /// S2: SQLite-specific file-access / code-loading functions must be rejected,
+    /// not just the old MySQL-flavored list.
+    #[test]
+    fn test_sqlite_dangerous_functions_rejected() {
+        let tool = tool_with_data();
+        assert!(tool.execute("SELECT load_extension('evil.so')").is_err());
+        assert!(tool
+            .execute("SELECT load_extension('/etc/passwd')")
+            .is_err());
+        assert!(tool.execute("SELECT readfile('/etc/passwd')").is_err());
+        assert!(tool.execute("SELECT writefile('/tmp/owned', 'x')").is_err());
+        assert!(tool.execute("PRAGMA writable_schema").is_err());
+        assert!(tool.execute("SELECT * FROM sqlite_master").is_err());
+        assert!(tool.execute("SELECT * FROM sqlite_schema").is_err());
     }
 
     /// Q5: bind parameters take effect by position.

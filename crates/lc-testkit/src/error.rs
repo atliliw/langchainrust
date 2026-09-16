@@ -2,6 +2,8 @@
 
 use lc_providers::ProviderError;
 
+use crate::golden::GoldenError;
+
 /// Unified lc-testkit error.
 ///
 /// Bridges via [`From<TestkitError> for ProviderError`], so the record/replay provider
@@ -24,6 +26,9 @@ pub enum TestkitError {
     /// Inner model error, passed through losslessly from the real provider error.
     #[error("inner model error: {0}")]
     Inner(#[from] ProviderError),
+    /// A recording could not be turned into a golden evaluation example (N2).
+    #[error("golden dataset build failed: {0}")]
+    Golden(#[from] GoldenError),
 }
 
 impl From<TestkitError> for ProviderError {

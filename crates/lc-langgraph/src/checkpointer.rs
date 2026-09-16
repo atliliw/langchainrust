@@ -25,6 +25,30 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
     /// State and recursion budget of the most recently saved checkpoint.
     async fn last(&self) -> GraphResult<Option<(S, usize)>>;
 
+    /// List every checkpoint as a full snapshot (state + ordering keys +
+    /// recursion budget), oldest first.
+    ///
+    /// Used by [`CompiledGraph::get_state_history`](crate::compiled::CompiledGraph::get_state_history)
+    /// and time-travel forks. The default reconstructs a state-only history from
+    /// [`list`](Self::list) + [`load`](Self::load) and reports an unknown
+    /// `timestamp`/`seq`/`recursion_count` of `0`; backends that store the full
+    /// [`CheckpointData`] (or its columns) override this to report the real
+    /// ordering keys and budget.
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let mut snaps = Vec::new();
+        for id in self.list().await? {
+            let state = self.load(&id).await?;
+            snaps.push(CheckpointInfo {
+                id,
+                timestamp: 0,
+                seq: 0,
+                recursion_count: 0,
+                state,
+            });
+        }
+        Ok(snaps)
+    }
+
     /// Replace the state stored in an existing checkpoint (the LangGraph
     /// `updateState` analogue), using optimistic concurrency control.
     ///
@@ -82,6 +106,24 @@ pub struct CheckpointData<S: StateSchema> {
 /// Fresh checkpoints start at version 1 (0 only occurs in pre-0.22.4 files).
 fn initial_version() -> u64 {
     1
+}
+
+/// A single snapshot in a graph's execution history: the state captured at one
+/// checkpoint, together with the ordering keys and the recursion budget consumed
+/// up to that point (used to fork a fresh timeline from an old snapshot).
+#[derive(Debug, Clone)]
+pub struct CheckpointInfo<S: StateSchema> {
+    /// Unique id of the checkpoint this snapshot came from.
+    pub id: String,
+    /// Unix timestamp (seconds) when the checkpoint was created.
+    pub timestamp: i64,
+    /// Sequence assigned by the checkpointer; breaks same-second ties.
+    pub seq: u64,
+    /// Recursion budget consumed when the snapshot was captured. A fork seeded
+    /// from this snapshot continues counting against this budget.
+    pub recursion_count: usize,
+    /// The state snapshot.
+    pub state: S,
 }
 
 impl<S: StateSchema> CheckpointData<S> {
@@ -171,6 +213,13 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
             .map(|d| (d.state.clone(), d.recursion_count)))
     }
 
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let guard = self.checkpoints.lock().await;
+        let mut items: Vec<&CheckpointData<S>> = guard.values().collect();
+        items.sort_by_key(|d| (d.timestamp, d.seq));
+        Ok(items.into_iter().map(checkpoint_info_from_data).collect())
+    }
+
     async fn update_state(
         &self,
         checkpoint_id: &str,
@@ -183,6 +232,18 @@ impl<S: StateSchema> Checkpointer<S> for MemoryCheckpointer<S> {
     async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
         self.checkpoints.lock().await.remove(checkpoint_id);
         Ok(())
+    }
+}
+
+/// Build a [`CheckpointInfo`] from stored [`CheckpointData`] (used by the
+/// in-memory checkpointers' `snapshots`).
+fn checkpoint_info_from_data<S: StateSchema>(d: &CheckpointData<S>) -> CheckpointInfo<S> {
+    CheckpointInfo {
+        id: d.id.clone(),
+        timestamp: d.timestamp,
+        seq: d.seq,
+        recursion_count: d.recursion_count,
+        state: d.state.clone(),
     }
 }
 
@@ -271,6 +332,13 @@ impl<S: StateSchema> Checkpointer<S> for ThreadSafeMemoryCheckpointer<S> {
             .values()
             .max_by_key(|d| (d.timestamp, d.seq))
             .map(|d| (d.state.clone(), d.recursion_count)))
+    }
+
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let guard = self.checkpoints.lock().await;
+        let mut items: Vec<&CheckpointData<S>> = guard.values().collect();
+        items.sort_by_key(|d| (d.timestamp, d.seq));
+        Ok(items.into_iter().map(checkpoint_info_from_data).collect())
     }
 
     async fn update_state(
@@ -438,6 +506,20 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         let data: CheckpointData<S> = serde_json::from_str(&json)
             .map_err(|e| GraphError::CheckpointError(format!("Deserialize error: {}", e)))?;
         Ok(Some((data.state, data.recursion_count)))
+    }
+
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let ids = self.sorted_ids().await?;
+        let mut snaps = Vec::with_capacity(ids.len());
+        for (_, _, id) in ids {
+            let json = tokio::fs::read_to_string(&self.checkpoint_path(&id)?)
+                .await
+                .map_err(|e| GraphError::CheckpointError(format!("Read error: {}", e)))?;
+            let data: CheckpointData<S> = serde_json::from_str(&json)
+                .map_err(|e| GraphError::CheckpointError(format!("Deserialize error: {}", e)))?;
+            snaps.push(checkpoint_info_from_data(&data));
+        }
+        Ok(snaps)
     }
 
     async fn update_state(

@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::language_models::{BaseChatModel, LLMResult};
 use crate::output_parsers::BaseOutputParser;
 use crate::output_parsers::JsonOutputParser;
+use crate::text::truncate_at_char_boundary;
 use lc_schema::Message;
 
 /// Errors that can occur during structured output extraction.
@@ -162,7 +163,7 @@ pub(crate) async fn parse_structured_response<
         StructuredOutputError::ParseError(format!(
             "Failed to deserialize JSON into target type: {}. Response was: {}",
             e,
-            &content[..std::cmp::min(200, content.len())]
+            truncate_at_char_boundary(content, 200)
         ))
     })
 }

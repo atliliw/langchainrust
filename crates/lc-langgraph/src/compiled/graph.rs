@@ -1,8 +1,8 @@
 // crates/lc-langgraph/src/compiled/graph.rs
 //! CompiledGraph struct definition, constructors, getters, and runtime injection
 
-use super::types::{DynamicTask, GraphExecution};
-use crate::checkpointer::Checkpointer;
+use super::types::{DynamicTask, GraphExecution, GraphInvocation, PendingInterrupt};
+use crate::checkpointer::{CheckpointInfo, Checkpointer};
 use crate::edge::{ConditionalEdge, GraphEdge};
 use crate::errors::{GraphError, GraphResult};
 use crate::node::GraphNode;
@@ -150,6 +150,73 @@ impl<S: StateSchema> CompiledGraph<S> {
         }
     }
 
+    /// Return a locked handle to the attached checkpointer, or an error when none
+    /// is attached (state history / time-travel need one) or it is contended.
+    async fn checkpointer_locked(
+        &self,
+    ) -> GraphResult<tokio::sync::MutexGuard<'_, dyn Checkpointer<S> + Send>> {
+        let Some(cp) = &self.checkpointer else {
+            return Err(GraphError::CheckpointError(
+                "state history / time-travel require a checkpointer (attach one with with_checkpointer)"
+                    .to_string(),
+            ));
+        };
+        Ok(cp.lock().await)
+    }
+
+    /// State history: every step's checkpoint snapshot, oldest first. This is the
+    /// "agent 当时为什么这么决策" inspection primitive — each snapshot exposes the
+    /// state, ordering keys, and recursion budget at that point in the run.
+    pub async fn get_state_history(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let guard = self.checkpointer_locked().await?;
+        guard.snapshots().await
+    }
+
+    /// Time-travel: fork a fresh execution timeline from an old checkpoint.
+    ///
+    /// - `checkpoint_id`: the snapshot to branch from (see [`get_state_history`](Self::get_state_history)).
+    /// - `continue_at_node`: the node the forked run resumes at — normally the
+    ///   `next_node` recorded in the history step immediately after that snapshot.
+    /// - `override_state`: optionally replace the snapshot state with new input
+    ///   ("改输入、从那条线分叉重跑") before running forward.
+    ///
+    /// The fork is seeded as a NEW checkpoint so the original history is untouched
+    /// (its own lineage), continues counting against the snapshot's recursion
+    /// budget, and — because it starts at `continue_at_node` and only runs
+    /// FORWARD via `invoke_from_node` — never replays side effects emitted before
+    /// the fork point.
+    pub async fn fork_from(
+        &self,
+        checkpoint_id: &str,
+        continue_at_node: impl Into<String>,
+        override_state: Option<S>,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let snapshot = {
+            let guard = self.checkpointer_locked().await?;
+            guard
+                .snapshots()
+                .await?
+                .into_iter()
+                .find(|s| s.id == checkpoint_id)
+                .ok_or_else(|| {
+                    GraphError::CheckpointError(format!("Checkpoint '{checkpoint_id}' not found"))
+                })?
+        };
+        let base_state = override_state.unwrap_or(snapshot.state);
+
+        // Seed a fresh checkpoint so the fork lives in its own lineage.
+        let guard = self.checkpointer_locked().await?;
+        guard.save(&base_state, snapshot.recursion_count).await?;
+        drop(guard);
+
+        self.invoke_from_node_with_count(
+            continue_at_node.into(),
+            base_state,
+            snapshot.recursion_count,
+        )
+        .await
+    }
+
     /// Create a resume execution context (from the last checkpoint)
     /// interrupted_node may be "node_name" or "after_node_name"
     pub async fn create_resume_execution(
@@ -169,7 +236,38 @@ impl<S: StateSchema> CompiledGraph<S> {
             // interrupt→resume could bypass recursion_limit indefinitely.
             recursion_count,
             interrupted_at: interrupted_node.to_string(),
+            pending_interrupt: None,
         })
+    }
+
+    /// Resume from a runtime interrupt at `interrupted_node`, feeding the
+    /// human's `value` back into that node.
+    ///
+    /// The interrupted node is re-entered (LangGraph-style) and the value is
+    /// injected into its `NodeConfig.metadata` under
+    /// [`crate::node::INTERRUPT_RESUME_KEY`], so an [`crate::node::InterruptibleNode`]
+    /// closure can branch on `Some(decision)` to continue past the suspension
+    /// without re-running side effects. Requires a checkpointer with the
+    /// checkpoint that was persisted when the interrupt fired.
+    pub async fn resume_with_value(
+        &self,
+        interrupted_node: &str,
+        value: serde_json::Value,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let mut execution = self
+            .create_resume_execution(interrupted_node)
+            .await
+            .ok_or_else(|| {
+                GraphError::ResumeError(format!(
+                    "cannot resume '{}': no checkpoint to resume from (attach a checkpointer)",
+                    interrupted_node
+                ))
+            })?;
+        execution.pending_interrupt = Some(PendingInterrupt {
+            id: interrupted_node.to_string(),
+            value,
+        });
+        self.invoke_with_execution(execution).await
     }
 
     pub(super) async fn get_node(&self, name: &str) -> GraphResult<Arc<dyn GraphNode<S>>> {
@@ -185,14 +283,22 @@ impl<S: StateSchema> CompiledGraph<S> {
         )))
     }
 
-    /// Submit a new task for dynamic planning mid-execution
-    pub fn submit_task(&self, description: impl Into<String>) {
-        if let Ok(mut inbox) = self.task_inbox.try_lock() {
-            inbox.push(DynamicTask {
-                id: uuid::Uuid::new_v4().to_string(),
-                description: description.into(),
-            });
-        }
+    /// Submit a new task for dynamic planning mid-execution.
+    ///
+    /// Returns an error instead of silently dropping the task when the inbox
+    /// lock is contended (previously a failed `try_lock` swallowed it, so a task
+    /// could vanish without any signal).
+    pub fn submit_task(&self, description: impl Into<String>) -> Result<(), GraphError> {
+        let mut inbox = self.task_inbox.try_lock().map_err(|_| {
+            GraphError::ExecutionError(
+                "dynamic task inbox is busy; task refused (not silently dropped)".to_string(),
+            )
+        })?;
+        inbox.push(DynamicTask {
+            id: uuid::Uuid::new_v4().to_string(),
+            description: description.into(),
+        });
+        Ok(())
     }
 
     /// Inject a runtime node directly

@@ -35,6 +35,11 @@ pub trait GraphNode<S: StateSchema>: Send + Sync + 'static {
     fn name(&self) -> &str;
 }
 
+/// Metadata key the compiled graph uses to inject the human's decision into a
+/// node that is being resumed after a runtime [`crate::errors::GraphError::InterruptRequest`].
+/// A resume-aware node reads the value under this key from its `NodeConfig.metadata`.
+pub const INTERRUPT_RESUME_KEY: &str = "__lc_interrupt_resume";
+
 /// Node configuration
 #[derive(Debug, Clone, Default)]
 pub struct NodeConfig {
@@ -179,6 +184,64 @@ where
         _config: Option<NodeConfig>,
     ) -> Result<StateUpdate<S>, GraphError> {
         (self.func)(state)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Resume-aware node (LangGraph-style interrupt).
+///
+/// The wrapped closure is called twice per runtime interrupt:
+/// - first pass: `resume` is `None` — the node either completes normally or
+///   suspends itself by returning `Err(GraphError::InterruptRequest { payload })`;
+/// - resume: after a human answers, the node is re-entered with `resume` =
+///   `Some(decision)` so the closure can continue past the suspension.
+///
+/// Branch on that second argument instead of re-walking expensive side effects
+/// (an API call, a DB write) that already happened on the first pass — keep any
+/// such work memoized in the state between the two passes.
+pub struct InterruptibleNode<S: StateSchema, F> {
+    name: String,
+    func: F,
+    _marker: PhantomData<S>,
+}
+
+impl<S: StateSchema, F> InterruptibleNode<S, F>
+where
+    F: Fn(&S, Option<&serde_json::Value>) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>>
+        + Send
+        + Sync,
+{
+    /// Create a resume-aware node. The closure takes the current state and the
+    /// injected resume decision (`None` on first pass, `Some(decision)` on resume).
+    pub fn new(name: impl Into<String>, func: F) -> Self {
+        Self {
+            name: name.into(),
+            func,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema, F: 'static> GraphNode<S> for InterruptibleNode<S, F>
+where
+    F: Fn(&S, Option<&serde_json::Value>) -> Pin<Box<dyn Future<Output = NodeResult<S>> + Send>>
+        + Send
+        + Sync,
+{
+    async fn execute(
+        &self,
+        state: &S,
+        config: Option<NodeConfig>,
+    ) -> Result<StateUpdate<S>, GraphError> {
+        let resume = config
+            .as_ref()
+            .and_then(|c| c.metadata.get(INTERRUPT_RESUME_KEY))
+            .cloned();
+        (self.func)(state, resume.as_ref()).await
     }
 
     fn name(&self) -> &str {

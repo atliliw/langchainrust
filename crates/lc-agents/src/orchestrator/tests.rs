@@ -6,8 +6,9 @@ use crate::task::AgentTask;
 use crate::AgentError;
 use async_trait::async_trait;
 use lc_core::runnables::RunnableConfig;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Verifies trait usability with a minimal testable orchestrator, no real LLM needed.
@@ -511,4 +512,429 @@ fn test_parse_review_verdict_plain_text() {
 #[test]
 fn test_parse_review_verdict_invalid() {
     assert!(parse_review_verdict("whatever").is_none());
+}
+
+// === N1 (v0.24.0): Supervisor dynamic routing (one-level sub-agent recursion) ===
+
+/// Worker that records the task and the trace id it was called with, and can be
+/// told to fail — used to prove delegation, feedback, constraint propagation and
+/// error paths without any network.
+struct SupWorker {
+    tag: &'static str,
+    seen: Arc<Mutex<Vec<AgentTask>>>,
+    traces: Arc<Mutex<Vec<String>>>,
+    fail: bool,
+}
+
+#[async_trait]
+impl Orchestrator for SupWorker {
+    type Input = AgentTask;
+    type Output = String;
+
+    async fn run_with_context(
+        &self,
+        task: Self::Input,
+        ctx: &RunContext,
+    ) -> Result<Self::Output, AgentError> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(task.clone());
+        self.traces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ctx.trace_id.clone());
+        if self.fail {
+            return Err(AgentError::Other("boom".to_string()));
+        }
+        Ok(format!("{}:{}", self.tag, task.objective))
+    }
+}
+
+type SupWorkerHandle = (
+    Arc<dyn Orchestrator<Input = AgentTask, Output = String>>,
+    Arc<Mutex<Vec<AgentTask>>>,
+    Arc<Mutex<Vec<String>>>,
+);
+
+fn sup_worker(tag: &'static str, fail: bool) -> SupWorkerHandle {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let traces = Arc::new(Mutex::new(Vec::new()));
+    let worker = Arc::new(SupWorker {
+        tag,
+        seen: seen.clone(),
+        traces: traces.clone(),
+        fail,
+    }) as Arc<dyn Orchestrator<Input = AgentTask, Output = String>>;
+    (worker, seen, traces)
+}
+
+/// A hermetic supervisor "model": parses the envelope JSON and chooses the next
+/// worker purely from the accumulated results, recording call count and trace id.
+struct ScriptedRouter {
+    calls: Arc<AtomicUsize>,
+    traces: Arc<Mutex<Vec<String>>>,
+    expected_trace: Option<&'static str>,
+    route: fn(&[(String, String)], &str) -> SupervisorNext,
+}
+
+#[async_trait]
+impl Orchestrator for ScriptedRouter {
+    type Input = String;
+    type Output = String;
+
+    async fn run_with_context(
+        &self,
+        input: Self::Input,
+        ctx: &RunContext,
+    ) -> Result<Self::Output, AgentError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.traces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ctx.trace_id.clone());
+        if let Some(expected) = self.expected_trace {
+            assert_eq!(ctx.trace_id, expected);
+        }
+        let envelope: Value = serde_json::from_str(&input).expect("router envelope must be JSON");
+        let objective = envelope
+            .get("objective")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let results: Vec<(String, String)> = envelope
+            .get("results")
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|r| {
+                        (
+                            r.get("worker")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            r.get("output")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let next = (self.route)(&results, objective);
+        Ok(match next {
+            SupervisorNext::Work { worker, task } => {
+                json!({"next": worker, "task": task}).to_string()
+            }
+            SupervisorNext::Finish { answer } => {
+                json!({"next": SUPERVISOR_FINISH, "answer": answer}).to_string()
+            }
+        })
+    }
+}
+
+fn scripted_router(
+    route: fn(&[(String, String)], &str) -> SupervisorNext,
+    expected_trace: Option<&'static str>,
+) -> (
+    Arc<dyn Orchestrator<Input = String, Output = String>>,
+    Arc<AtomicUsize>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let router = Arc::new(ScriptedRouter {
+        calls: calls.clone(),
+        traces: Arc::new(Mutex::new(Vec::new())),
+        expected_trace,
+        route,
+    }) as Arc<dyn Orchestrator<Input = String, Output = String>>;
+    (router, calls)
+}
+
+/// research → write → finish, each decision driven by what earlier workers returned.
+fn route_research_then_write(results: &[(String, String)], _objective: &str) -> SupervisorNext {
+    if !results.iter().any(|(w, _)| w == "researcher") {
+        SupervisorNext::Work {
+            worker: "researcher".to_string(),
+            task: "gather facts".to_string(),
+        }
+    } else if !results.iter().any(|(w, _)| w == "writer") {
+        SupervisorNext::Work {
+            worker: "writer".to_string(),
+            task: "draft from research".to_string(),
+        }
+    } else {
+        let writer_output = results
+            .iter()
+            .rev()
+            .find(|(w, _)| w == "writer")
+            .map(|(_, o)| o.clone())
+            .unwrap_or_default();
+        SupervisorNext::Finish {
+            answer: format!("final: {writer_output}"),
+        }
+    }
+}
+
+/// N1: the supervisor dynamically picks one worker per round and feeds each
+/// worker's output back into the next routing decision.
+#[tokio::test]
+async fn test_supervisor_routes_dynamically_and_feeds_results_back() {
+    let (researcher, r_seen, r_traces) = sup_worker("researcher", false);
+    let (writer, w_seen, w_traces) = sup_worker("writer", false);
+    let (router, router_calls) = scripted_router(route_research_then_write, Some("sup-1"));
+
+    let sup = Supervisor::new(
+        router,
+        vec![
+            ("researcher".to_string(), researcher),
+            ("writer".to_string(), writer),
+        ],
+        5,
+    );
+    let ctx = RunContext::new("sup-1");
+    let out = sup
+        .run_with_context(AgentTask::new("做个调研并成稿"), &ctx)
+        .await
+        .unwrap();
+
+    // The FINISH answer embeds the writer's actual output, proving the worker
+    // result was fed back through the scratchpad.
+    assert_eq!(out, "final: writer:draft from research");
+    // Three routing rounds: delegate researcher, delegate writer, finish.
+    assert_eq!(router_calls.load(Ordering::SeqCst), 3);
+
+    // Each sub-agent ran exactly once with the task the supervisor issued.
+    let r_seen = r_seen.lock().unwrap_or_else(|e| e.into_inner());
+    let w_seen = w_seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(r_seen.len(), 1);
+    assert_eq!(w_seen.len(), 1);
+    assert_eq!(r_seen[0].objective(), "gather facts");
+    assert_eq!(w_seen[0].objective(), "draft from research");
+
+    // The run context (trace id) propagates to both the router and every worker.
+    assert_eq!(
+        &**r_traces.lock().unwrap_or_else(|e| e.into_inner()),
+        &["sup-1".to_string()]
+    );
+    assert_eq!(
+        &**w_traces.lock().unwrap_or_else(|e| e.into_inner()),
+        &["sup-1".to_string()]
+    );
+}
+
+/// N1: the worker list/order is exposed for prompts and inspection.
+#[test]
+fn test_supervisor_worker_names_and_round_clamp() {
+    let (worker, _, _) = sup_worker("a", false);
+    let (router, _) = scripted_router(route_research_then_write, None);
+    let sup = Supervisor::new(router, vec![("a".to_string(), worker)], 0);
+    assert_eq!(sup.max_rounds(), 1, "max_rounds must clamp to at least 1");
+    assert_eq!(sup.worker_names(), vec!["a"]);
+    assert_eq!(sup.with_max_rounds(7).max_rounds(), 7);
+}
+
+fn route_unknown_worker(_results: &[(String, String)], _o: &str) -> SupervisorNext {
+    SupervisorNext::Work {
+        worker: "ghost".to_string(),
+        task: "x".to_string(),
+    }
+}
+
+/// N1: a decision naming a worker that was never registered errors explicitly
+/// (and never invokes a real worker by accident).
+#[tokio::test]
+async fn test_supervisor_unknown_worker_errors() {
+    let (worker, seen, _) = sup_worker("a", false);
+    let (router, _) = scripted_router(route_unknown_worker, None);
+    let sup = Supervisor::new(router, vec![("a".to_string(), worker)], 3);
+    let err = sup
+        .run_with_context(AgentTask::new("t"), &RunContext::new("sup-2"))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("unknown worker 'ghost'"), "{msg}");
+    assert!(
+        msg.contains('['),
+        "error should list available workers: {msg}"
+    );
+    assert!(seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+}
+
+fn route_delegate_forever(results: &[(String, String)], _o: &str) -> SupervisorNext {
+    SupervisorNext::Work {
+        worker: "a".to_string(),
+        task: format!("round-{}", results.len()),
+    }
+}
+
+/// N1: delegation is bounded — never FINISHing within `max_rounds` errors instead
+/// of looping forever (the one-level recursion guard).
+#[tokio::test]
+async fn test_supervisor_exhausts_rounds_and_errors() {
+    let (worker, seen, _) = sup_worker("a", false);
+    let (router, router_calls) = scripted_router(route_delegate_forever, None);
+    let sup = Supervisor::new(router, vec![("a".to_string(), worker)], 3);
+    let err = sup
+        .run_with_context(AgentTask::new("loop"), &RunContext::new("sup-3"))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("did not reach FINISH within 3"), "{msg}");
+    assert_eq!(router_calls.load(Ordering::SeqCst), 3);
+    let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(seen.len(), 3, "worker should run once per round");
+    assert_eq!(seen[2].objective(), "round-2");
+}
+
+fn route_to_flaky(results: &[(String, String)], _o: &str) -> SupervisorNext {
+    if results.is_empty() {
+        SupervisorNext::Work {
+            worker: "flaky".to_string(),
+            task: "do it".to_string(),
+        }
+    } else {
+        SupervisorNext::Finish {
+            answer: "unreachable".to_string(),
+        }
+    }
+}
+
+/// N1: a sub-agent failure propagates with the worker name and round for diagnosis.
+#[tokio::test]
+async fn test_supervisor_worker_failure_reports_worker_name() {
+    let (worker, _, _) = sup_worker("flaky", true);
+    let (router, _) = scripted_router(route_to_flaky, None);
+    let sup = Supervisor::new(router, vec![("flaky".to_string(), worker)], 3);
+    let err = sup
+        .run_with_context(AgentTask::new("t"), &RunContext::new("sup-4"))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("worker 'flaky'"), "{msg}");
+    assert!(msg.contains("boom"), "{msg}");
+}
+
+fn route_delegate_once_then_finish(results: &[(String, String)], _o: &str) -> SupervisorNext {
+    if results.is_empty() {
+        SupervisorNext::Work {
+            worker: "w".to_string(),
+            task: "subtask".to_string(),
+        }
+    } else {
+        SupervisorNext::Finish {
+            answer: results[0].1.clone(),
+        }
+    }
+}
+
+/// N1: the parent task's contract (expected output / tool allowlist) propagates
+/// to the sub-agent's fresh task.
+#[tokio::test]
+async fn test_supervisor_propagates_task_constraints() {
+    let (worker, seen, traces) = sup_worker("w", false);
+    let (router, _) = scripted_router(route_delegate_once_then_finish, None);
+    let sup = Supervisor::new(router, vec![("w".to_string(), worker)], 3);
+    let task = AgentTask::new("父目标")
+        .with_expected_output("一页结论")
+        .with_allowed_tools(["web_search", "calculator"]);
+    let out = sup
+        .run_with_context(task, &RunContext::new("sup-5"))
+        .await
+        .unwrap();
+    assert_eq!(out, "w:subtask");
+    let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].objective(), "subtask");
+    assert_eq!(seen[0].expected_output(), Some("一页结论"));
+    assert_eq!(
+        seen[0].allowed_tools(),
+        &["web_search".to_string(), "calculator".to_string()]
+    );
+    assert_eq!(
+        &**traces.lock().unwrap_or_else(|e| e.into_inner()),
+        &["sup-5".to_string()]
+    );
+}
+
+/// N1: no workers is a run-time configuration error.
+#[tokio::test]
+async fn test_supervisor_empty_workers_errors() {
+    let (router, _) = scripted_router(route_research_then_write, None);
+    let sup = Supervisor::new(router, vec![], 3);
+    let err = sup
+        .run_with_context(AgentTask::new("t"), &RunContext::new("sup-6"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("at least one worker"));
+}
+
+#[test]
+fn test_parse_supervisor_decision_json() {
+    assert_eq!(
+        parse_supervisor_decision(r#"{"next": "researcher", "task": "查资料"}"#),
+        Some(SupervisorNext::Work {
+            worker: "researcher".to_string(),
+            task: "查资料".to_string(),
+        })
+    );
+    assert_eq!(
+        parse_supervisor_decision(r#"{"next": "FINISH", "answer": "结论"}"#),
+        Some(SupervisorNext::Finish {
+            answer: "结论".to_string(),
+        })
+    );
+    // FINISH is matched case-insensitively.
+    assert_eq!(
+        parse_supervisor_decision(r#"{"next": "finish", "answer": "done"}"#),
+        Some(SupervisorNext::Finish {
+            answer: "done".to_string(),
+        })
+    );
+}
+
+#[test]
+fn test_parse_supervisor_decision_delimited() {
+    let work =
+        parse_supervisor_decision("<<<NEXT>>>searcher<<<END_NEXT>>>\n<<<TASK>>>查 X<<<END_TASK>>>")
+            .unwrap();
+    assert_eq!(
+        work,
+        SupervisorNext::Work {
+            worker: "searcher".to_string(),
+            task: "查 X".to_string(),
+        }
+    );
+
+    let finish = parse_supervisor_decision(
+        "<<<NEXT>>>FINISH<<<END_NEXT>>>\n<<<ANSWER>>>最终稿<<<END_ANSWER>>>",
+    )
+    .unwrap();
+    assert_eq!(
+        finish,
+        SupervisorNext::Finish {
+            answer: "最终稿".to_string(),
+        }
+    );
+}
+
+#[test]
+fn test_parse_supervisor_decision_invalid() {
+    assert!(parse_supervisor_decision("whatever").is_none());
+    assert!(parse_supervisor_decision(r#"{"task": "no next field"}"#).is_none());
+}
+
+#[test]
+fn test_supervisor_envelope_carries_objective_workers_and_history() {
+    let envelope = supervisor_envelope(
+        "目标",
+        &["a".to_string(), "b".to_string()],
+        2,
+        &[("a".to_string(), "a-output".to_string())],
+    );
+    let v: Value = serde_json::from_str(&envelope).unwrap();
+    assert_eq!(v["objective"], "目标");
+    assert_eq!(v["workers"], json!(["a", "b"]));
+    assert_eq!(v["round"], 2);
+    assert_eq!(v["results"][0]["worker"], "a");
+    assert_eq!(v["results"][0]["output"], "a-output");
 }

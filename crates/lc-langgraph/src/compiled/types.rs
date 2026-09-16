@@ -133,6 +133,10 @@ pub enum StreamEvent<S: StateSchema> {
     StateUpdate(S),
     /// Execution finished with the final state.
     End(S),
+    /// A node requested a runtime interrupt (suspension) with a payload.
+    NodeInterrupt(String, JsonValue),
+    /// Execution resumed after a runtime interrupt with the given decision.
+    Resumed(String, JsonValue),
 }
 
 impl<S: StateSchema> StreamEvent<S> {
@@ -160,6 +164,28 @@ impl<S: StateSchema> StreamEvent<S> {
     pub fn end(state: S) -> Self {
         Self::End(state)
     }
+
+    /// Construct a `NodeInterrupt` stream event.
+    pub fn node_interrupt(name: impl Into<String>, payload: JsonValue) -> Self {
+        Self::NodeInterrupt(name.into(), payload)
+    }
+
+    /// Construct a `Resumed` stream event.
+    pub fn resumed(name: impl Into<String>, decision: JsonValue) -> Self {
+        Self::Resumed(name.into(), decision)
+    }
+}
+
+/// A suspended runtime interrupt: the payload a node published when it
+/// requested human-in-the-loop input, carried through [`GraphExecution`] so a
+/// resume can re-enter the interrupted node with the human's decision.
+#[derive(Debug, Clone)]
+pub struct PendingInterrupt {
+    /// Unique id of this interrupt.
+    pub id: String,
+    /// The decision/value collected from the human, injected back into the node
+    /// on resume.
+    pub value: JsonValue,
 }
 
 /// GraphExecution - State for interrupted execution that can be resumed
@@ -175,6 +201,9 @@ pub struct GraphExecution<S: StateSchema> {
     pub recursion_count: usize,
     /// Where execution was interrupted ("node" or "after_node").
     pub interrupted_at: String,
+    /// A node-requested (runtime) interrupt awaiting a human decision. When
+    /// `Some`, resuming re-runs `current_node` and injects this value into it.
+    pub pending_interrupt: Option<PendingInterrupt>,
 }
 
 impl<S: StateSchema> GraphExecution<S> {
@@ -190,6 +219,7 @@ impl<S: StateSchema> GraphExecution<S> {
             steps: Vec::new(),
             recursion_count: 0,
             interrupted_at: interrupted_at.into(),
+            pending_interrupt: None,
         }
     }
 

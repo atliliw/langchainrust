@@ -299,6 +299,10 @@ impl OllamaChat {
             // (instead of `return`) so the terminal tool-call flush below
             // still runs.
             let mut done = false;
+            // A12 parity: track whether a terminal marker was seen before the
+            // stream ended. (OpenAI/Azure/Anthropic already guard this; before
+            // this fix Ollama silently returned truncated output as if complete.)
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 // H2 fix: propagate network errors outside the mutex scope
                 let chunk_bytes = match chunk_result {
@@ -323,6 +327,7 @@ impl OllamaChat {
                 for event in events {
                     if event.is_done() {
                         done = true;
+                        saw_terminal = true;
                         break;
                     }
                     // 解析失败的 SSE chunk 不再静默丢弃:记 error 日志,
@@ -330,6 +335,12 @@ impl OllamaChat {
                     match event.parse_openai_chunk() {
                         Ok(Some(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
+                                // Some OpenAI-compatible servers (incl. Ollama's
+                                // /v1/chat/completions) may drop [DONE] and signal
+                                // completion only via a non-null finish_reason.
+                                if choice.finish_reason.is_some() {
+                                    saw_terminal = true;
+                                }
                                 if let Some(content) = &choice.delta.content {
                                     if tx.send(Ok(StreamChunk::new(content))).await.is_err() {
                                         return;
@@ -358,6 +369,18 @@ impl OllamaChat {
                     break;
                 }
             }
+            // A12 parity: the byte stream ended without any terminal marker —
+            // the connection was truncated, so surface the interruption instead
+            // of handing the partial reply back as if it were complete.
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(OllamaError::StreamInterrupted(
+                        "connection closed before [DONE] or finish_reason".to_string(),
+                    )))
+                    .await;
+                return;
+            }
+
             // C2: stream exhausted — flush accumulated tool calls as a terminal chunk
             let calls = tool_acc.build();
             if !calls.is_empty() {
@@ -373,6 +396,83 @@ impl OllamaChat {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod stream_truncation_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Body of one `data:` SSE event carrying the given content delta, terminated
+    /// with `\r\n\r\n` so `SseByteFramer` completes one event. Built with `json!`
+    /// so the chunk is always well-formed (openai/sse.rs requires
+    /// id/object/created/model/choices to deserialize).
+    fn delta_event(content: &str) -> String {
+        let chunk = json!({
+            "id": "1",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test",
+            "choices": [{ "index": 0, "delta": { "content": content } }],
+        });
+        format!("data: {chunk}\r\n\r\n")
+    }
+
+    /// F2 regression: a byte stream that ends *cleanly* (chunked terminator, no
+    /// `[DONE]`, no `finish_reason`) must surface `StreamInterrupted` instead of
+    /// silently handing the truncated partial output back as if it were complete.
+    #[tokio::test]
+    async fn truncated_stream_without_terminal_marker_is_reported() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await; // consume the POST + body
+
+            let mut body = String::new();
+            for e in [delta_event("Hel"), delta_event("lo")] {
+                body.push_str(&format!("{:x}\r\n{}\r\n", e.len(), e));
+            }
+            body.push_str("0\r\n\r\n"); // clean end-of-body — but no [DONE]
+
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{body}"
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+
+        let chat = OllamaChat::with_config(
+            OllamaConfig::new("test").with_base_url(format!("http://{}", addr)),
+        );
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut got: Vec<Result<StreamChunk, OllamaError>> = Vec::new();
+        while let Some(item) = stream.next().await {
+            got.push(item);
+        }
+
+        let last = got
+            .pop()
+            .expect("truncated stream must yield at least the terminal error");
+        assert!(
+            matches!(&last, Err(OllamaError::StreamInterrupted(_))),
+            "truncated stream must end with StreamInterrupted, got {last:?}"
+        );
+        // the partial tokens DID stream out first, then the interruption surfaced
+        assert!(
+            got.iter().any(|i| i.is_ok()),
+            "partial tokens should have streamed before the interruption"
+        );
+        server.await.unwrap();
     }
 }
 
@@ -611,6 +711,9 @@ pub enum OllamaError {
     Api(String),
     /// Response parsing error.
     Parse(String),
+    /// The SSE stream ended before a terminal marker (`[DONE]`, or a chunk
+    /// carrying a non-null `finish_reason`) — the connection was truncated.
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for OllamaError {
@@ -619,6 +722,9 @@ impl std::fmt::Display for OllamaError {
             OllamaError::Http(msg) => write!(f, "HTTP error: {}", msg),
             OllamaError::Api(msg) => write!(f, "API error: {}", msg),
             OllamaError::Parse(msg) => write!(f, "Parse error: {}", msg),
+            OllamaError::StreamInterrupted(msg) => {
+                write!(f, "Stream interrupted: {}", msg)
+            }
         }
     }
 }
