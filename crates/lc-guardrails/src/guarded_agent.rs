@@ -230,6 +230,10 @@ impl GuardedAgent {
         use futures_util::StreamExt;
 
         self.runner.validate_input(&input).await?;
+        // K2: reset stateful streaming rails once per stream so hold-back buffers from a prior
+        // stream cannot leak into (or double-consume) this one. The runner clones below share
+        // the same Arc'd rail instances, so resetting here clears them for every phase.
+        self.runner.reset_streaming();
 
         let inner = self.inner.clone();
         let raw_stream = inner

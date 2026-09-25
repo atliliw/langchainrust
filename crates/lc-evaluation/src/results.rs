@@ -8,9 +8,10 @@ use lc_core::BaseChatModel;
 use lc_embeddings::{cosine_similarity, Embeddings};
 use lc_schema::Message;
 
-use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
+use lc_core::judge::{structured_call_with_usage, truncate, StructuredJudgeError};
 
 use super::criteria::{EvalError, Evaluator, Score};
+use super::price::UsageLedger;
 
 /// Exact-match evaluator: 1.0 when the prediction equals the reference after trimming, otherwise 0.0.
 pub struct ExactMatch;
@@ -129,6 +130,8 @@ pub struct LLMAsJudge<M: BaseChatModel> {
     judge: M,
     rubric: String,
     max_score: u8,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 const DEFAULT_RUBRIC: &str = "\
@@ -143,6 +146,7 @@ impl<M: BaseChatModel> LLMAsJudge<M> {
             judge,
             rubric: DEFAULT_RUBRIC.to_string(),
             max_score: 10,
+            usage: UsageLedger::default(),
         }
     }
     /// Sets a custom rubric (builder style).
@@ -213,8 +217,8 @@ impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
         let messages = vec![Message::system(system), Message::human(user)];
 
         // P0-1: prefer structured output (tool_calls); models without tool binding fall back to text parsing.
-        let args: ScoreArgs =
-            structured_call(&self.judge, score_tool(self.max_score), messages, |raw| {
+        let (args, usage) =
+            structured_call_with_usage(&self.judge, score_tool(self.max_score), messages, |raw| {
                 let norm = parse_score(raw, self.max_score).ok_or_else(|| {
                     StructuredJudgeError::Parse(format!(
                         "failed to parse score from judge reply: {}",
@@ -227,12 +231,17 @@ impl<M: BaseChatModel> Evaluator for LLMAsJudge<M> {
                 })
             })
             .await?;
+        self.usage.record(usage, self.judge.model_name());
 
         let value = (args.score / self.max_score as f64).clamp(0.0, 1.0);
         Ok(Score::new(value).with_label("llm_judge"))
     }
     fn name(&self) -> &str {
         "llm_as_judge"
+    }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
     }
 }
 

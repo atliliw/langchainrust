@@ -73,7 +73,7 @@ pub mod subgraph;
 // Re-export core types
 pub use checkpointer::{
     CheckpointData, CheckpointInfo, Checkpointer, FileCheckpointer, MemoryCheckpointer,
-    ThreadSafeMemoryCheckpointer,
+    ThreadSafeMemoryCheckpointer, DEFAULT_THREAD,
 };
 pub use compiled::{
     CompiledGraph, DynamicInjection, DynamicPlanner, DynamicTask, ExecutionStep, GraphExecution,

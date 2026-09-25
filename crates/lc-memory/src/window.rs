@@ -94,19 +94,36 @@ impl ConversationBufferWindowMemory {
 
     /// Get messages within the window
     ///
-    /// Only keeps the last k rounds (2*k messages)
+    /// Keeps at most the last `k * 2` messages, but never opens mid-turn. A
+    /// turn is the run of messages owned by one Human entry: Human →
+    /// `AI` → (`Tool` → `AI`)*. Slicing on a raw `k * 2` boundary used to land
+    /// on a trailing `Tool`/`AI` segment, exposing a dangling assistant call
+    /// without its Human — so the window start is advanced (or, when the tail
+    /// holds no Human, extended back) to a Human boundary. Starting on a Human
+    /// guarantees every following `Tool`/`AI` still has its owner.
     fn get_window_messages(&self) -> Vec<Message> {
         let messages = self.chat_memory.messages();
         let total = messages.len();
-
-        // Each round includes 2 messages (user + AI)
-        let max_messages = self.k * 2;
-
-        if total <= max_messages {
-            messages.to_vec()
-        } else {
-            messages[total - max_messages..].to_vec()
+        if total == 0 {
+            return Vec::new();
         }
+
+        let max_messages = self.k * 2;
+        if total <= max_messages {
+            return messages.to_vec();
+        }
+
+        let is_human = |i: usize| {
+            matches!(messages[i].message_type, lc_schema::MessageType::Human)
+        };
+
+        let ideal = total - max_messages;
+        let cut = (ideal..total)
+            .find(|&i| is_human(i))
+            .or_else(|| (0..ideal).rev().find(|&i| is_human(i)))
+            .unwrap_or(ideal);
+
+        messages[cut..].to_vec()
     }
 
     /// Convert to string
@@ -157,11 +174,19 @@ impl BaseMemory for ConversationBufferWindowMemory {
         let mut result = HashMap::new();
 
         if self.return_messages {
+            // 0.25.0 D6 (M-me5): propagate folding failures instead of
+            // silently injecting Null.
             let messages: Vec<Value> = self
                 .get_window_messages()
                 .into_iter()
-                .map(|msg| serde_json::to_value(&msg).unwrap_or(Value::Null))
-                .collect();
+                .map(|msg| {
+                    serde_json::to_value(&msg).map_err(|e| {
+                        MemoryError::LoadError(format!(
+                            "failed to serialize memory message: {e}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, MemoryError>>()?;
             result.insert(self.memory_key.clone(), Value::Array(messages));
         } else {
             result.insert(

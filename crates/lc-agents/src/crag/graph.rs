@@ -163,11 +163,21 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
 
         // If no documents pass the filter, use empty results rather than
         // keeping irrelevant documents that could mislead generation.
-        let source_docs = if filtered.is_empty() {
+        let mut source_docs = if filtered.is_empty() {
             Vec::new()
         } else {
             filtered
         };
+
+        // B6 web-only rescue: when the document side is empty but the web fallback supplied a
+        // result, wrap it as a `Document` (source=web) so generation and the hallucination check
+        // still have grounding context. `take()` clears `web_results`, so `build_context` does not
+        // double-count the same text as a separate "[Web Search Results]" section.
+        if source_docs.is_empty() {
+            if let Some(web) = state.web_results.take() {
+                source_docs.push(Document::new(web).with_metadata("source", "web"));
+            }
+        }
 
         // Step 5: Generate answer
         let reasoning_section = format_reasoning(&state.grade_reasoning);
@@ -197,7 +207,17 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
             .map_err(CRAGError::RetrievalError)?;
 
         if docs.is_empty() {
-            return Err(CRAGError::NoDocumentsRetrieved);
+            // B6: an empty retrieval is not a hard error when a web fallback can rescue the run.
+            // Leave the state underfilled (avg 0.0) so `correct()` runs and pulls web results;
+            // without a web fallback, preserve the original NoDocumentsRetrieved error.
+            if self.web_fallback.is_none() {
+                return Err(CRAGError::NoDocumentsRetrieved);
+            }
+            state.documents = Vec::new();
+            state.grade_scores = Vec::new();
+            state.grade_reasoning = Vec::new();
+            state.avg_score = 0.0;
+            return Ok(());
         }
 
         state.documents = docs;
@@ -261,21 +281,25 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
 
         state.query_rewritten = true;
 
-        // Retrieve documents for each alternative query in parallel
+        // B6: retrieve for all alternative queries truly in parallel (previously a sequential
+        // `for` loop, so latency stacked).
+        let retrievals = futures_util::future::join_all(
+            alternatives
+                .iter()
+                .map(|alt_query| self.retriever.retrieve(alt_query, self.retrieve_k)),
+        )
+        .await;
+
         let mut all_docs: Vec<Document> = Vec::new();
         let mut seen_content: HashSet<String> = HashSet::new();
 
-        for alt_query in &alternatives {
-            match self.retriever.retrieve(alt_query, self.retrieve_k).await {
-                Ok(docs) => {
-                    for doc in docs {
-                        // Deduplicate by content
-                        if seen_content.insert(doc.content.clone()) {
-                            all_docs.push(doc);
-                        }
-                    }
-                }
-                Err(_) => continue, // Skip failed retrievals, try other queries
+        // The first `flatten` collapses each `Ok(Vec<Document>)` payload (silently skipping
+        // `Err` retrievals, so the other alternative queries still contribute); the second
+        // `flatten` collapses each inner `Vec<Document>` into individual docs.
+        for doc in retrievals.into_iter().flatten().flatten() {
+            // Deduplicate by content
+            if seen_content.insert(doc.content.clone()) {
+                all_docs.push(doc);
             }
         }
 
@@ -298,8 +322,9 @@ impl<'a, M: BaseChatModel, R: RetrieverTrait> CRAGGraph<'a, M, R> {
 
             // Re-grade the new documents
             self.grade_documents(state, config).await?;
-        } else {
-            // All retrievals failed — keep original state
+        } else if state.web_results.is_none() {
+            // B6: only error when the document side is empty AND there is no web result. A
+            // successful web fallback lets the web-only rescue continue (see `run_with_config`).
             return Err(CRAGError::NoDocumentsRetrieved);
         }
 

@@ -194,7 +194,14 @@ impl Default for ChatMessageHistory {
 /// LLM context.
 pub fn memory_variables_to_messages(vars: &HashMap<String, serde_json::Value>) -> Vec<Message> {
     let mut messages = Vec::new();
-    for value in vars.values() {
+    // D9/L-me4: iterate variables in deterministic key order. `HashMap` iteration
+    // is unordered, so assembling multiple memory variables by `vars.values()`
+    // produced a non-deterministic message order; sorting the keys makes the
+    // joined context reproducible across runs.
+    let mut keys: Vec<&String> = vars.keys().collect();
+    keys.sort();
+    for key in keys {
+        let value = &vars[key];
         match value {
             serde_json::Value::Array(items) => {
                 for item in items {

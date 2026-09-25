@@ -103,7 +103,11 @@ pub struct SemanticCacheCore {
 #[derive(Debug, Default)]
 struct CacheInner {
     map: Vec<CacheEntry>,
-    order: VecDeque<String>,
+    /// FIFO recency queue. Keyed by `(query, k)` — the map stores one entry per
+    /// `(query, k)`, so recency must be tracked per pair. Tracking the bare
+    /// query string (as before) collapsed same-name-different-k entries into
+    /// one slot, so eviction and replace could remove the wrong entry.
+    order: VecDeque<(String, usize)>,
 }
 
 impl SemanticCacheCore {
@@ -178,21 +182,28 @@ impl SemanticCacheCore {
         // Replace existing entry for the same (query, k).
         if let Some(pos) = inner.map.iter().position(|e| e.query == query && e.k == k) {
             inner.map.remove(pos);
-            if let Some(p) = inner.order.iter().position(|q| q == query) {
+            if let Some(p) = inner.order.iter().position(|q| q.0 == query && q.1 == k) {
                 inner.order.remove(p);
             }
         }
-        // FIFO eviction.
+        // FIFO eviction. Each map entry is one (query, k) pair; the recency
+        // queue mirrors it one-to-one, so popping the front order slot and
+        // removing its matching map entry stays in lockstep.
         while inner.map.len() >= self.config.max_entries {
-            if let Some(oldest) = inner.order.pop_front() {
-                if let Some(pos) = inner.map.iter().position(|e| e.query == oldest) {
-                    inner.map.remove(pos);
+            match inner.order.pop_front() {
+                Some((oldest_q, oldest_k)) => {
+                    if let Some(pos) = inner
+                        .map
+                        .iter()
+                        .position(|e| e.query == oldest_q && e.k == oldest_k)
+                    {
+                        inner.map.remove(pos);
+                    }
                 }
-            } else {
-                break;
+                None => break,
             }
         }
-        inner.order.push_back(query.to_string());
+        inner.order.push_back((query.to_string(), k));
         inner.map.push(CacheEntry {
             query: query.to_string(),
             query_vector,

@@ -1,6 +1,6 @@
 [package]
 name = "lc-mcp"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "MCP (Model Context Protocol) client for langchainrust"
@@ -13,7 +13,7 @@ default = []
 opentelemetry = ["dep:opentelemetry"]
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.24.0" }
+lc-core = { path = "../lc-core", version = "0.25.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -37,3 +37,8 @@ optional = true
 [dev-dependencies.opentelemetry_sdk]
 version = "0.27"
 features = ["trace", "testing", "rt-tokio"]
+
+# Tests build a dual-stack loopback listener so the cross-host-redirect test's
+# `localhost` hop is reachable whether reqwest resolves it to ::1 or 127.0.0.1.
+[dev-dependencies.socket2]
+version = "0.5"

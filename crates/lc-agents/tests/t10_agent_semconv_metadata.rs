@@ -36,6 +36,7 @@ impl BaseAgent for SearchThenFinish {
                     value: serde_json::json!({"q": "rust"}),
                 },
                 log: "search".to_string(),
+                tool_call_id: None,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -123,9 +124,14 @@ async fn invoke_root_and_tool_runs_carry_semconv_metadata() {
         Some("searches the web"),
         "tool child run must carry the tool description"
     );
+    // B5: even locally-planned actions (which carry no provider id) get a
+    // framework-generated uuid stamped into the RunTree, so observability /
+    // resume never persist an empty tool-call id.
+    let call_id = recorder.tool_call_id.lock().await.clone();
     assert!(
-        recorder.tool_call_id.lock().await.is_none(),
-        "locally-planned actions have no provider tool-call id"
+        matches!(call_id.as_deref(), Some(id) if !id.is_empty()),
+        "the gate must stamp a non-empty tool-call id, got {:?}",
+        call_id
     );
 }
 
@@ -151,6 +157,6 @@ async fn stream_root_run_carries_invoke_agent_metadata() {
         Some("invoke_agent"),
         "streaming path must stamp the same root operation as invoke"
     );
-    // The streaming path runs tools without a RunTree (documented gap), so the
-    // tool metadata is only asserted on the invoke path above.
+    // B5: the streaming path now runs tools through the shared gate too (tool-level
+    // RunTree + metadata); tool metadata is asserted in detail on invoke above.
 }

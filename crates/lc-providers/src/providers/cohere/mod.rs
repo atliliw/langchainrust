@@ -35,12 +35,15 @@ use serde_json::json;
 use std::pin::Pin;
 
 use self::types::*;
+use crate::provider_http::{provider_api_client, provider_request_options, provider_sse_client};
 use crate::ProviderError;
 use lc_callbacks::RunType;
+use lc_core::http::HttpClient;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
 use lc_core::runnables::{run_tree_from_config, Runnable};
+use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
 
@@ -50,7 +53,10 @@ use lc_schema::Message;
 #[derive(Clone)]
 pub struct CohereChat {
     config: CohereConfig,
-    client: reqwest::Client,
+    /// Buffered client for non-streaming calls (0.25.0: unified HTTP layer).
+    http_api: HttpClient,
+    /// SSE-profile client for streaming calls (establishment retries only).
+    http_sse: HttpClient,
 }
 
 impl std::fmt::Debug for CohereChat {
@@ -64,8 +70,26 @@ impl CohereChat {
     pub fn new(config: CohereConfig) -> Self {
         Self {
             config,
-            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
-            client: crate::retry::default_client(),
+            // 0.25.0: unified HTTP layer — bounded body, closed retriable
+            // status set, Retry-After support, method-aware POST retries.
+            http_api: provider_api_client(),
+            http_sse: provider_sse_client(),
+        }
+    }
+
+    /// Per-request auth/headers assembled from the provider config.
+    fn request_options(&self) -> lc_core::http::RequestOptions {
+        provider_request_options(true, &self.config.api_key, &[])
+    }
+
+    /// Maps a unified-layer error onto the Cohere error enum while keeping the
+    /// `HTTP {status}: {body}` message shape.
+    fn map_http_error(err: lc_core::http::HttpError) -> CohereError {
+        match err {
+            lc_core::http::HttpError::Status { status, body } => {
+                CohereError::Api(format!("HTTP {status}: {body}"))
+            }
+            other => CohereError::Http(other.to_string()),
         }
     }
 
@@ -147,7 +171,36 @@ impl CohereChat {
             body["preamble"] = json!(preamble);
         }
 
+        // 0.25.0: v2 function calling. ToolDefinition serializes to Cohere's
+        // OpenAI-compatible tool shape {"type":"function","function":{...}},
+        // which v2 accepts natively and returns in the same call shape.
+        if let Some(tools) = &self.config.tools {
+            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
+        }
+
+        if let Some(tool_choice) = &self.config.tool_choice {
+            body["tool_choice"] = json!(tool_choice);
+        }
+
         body
+    }
+
+    /// Binds tool definitions for function calling (0.25.0: Cohere previously
+    /// had no tool support at all).
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
+        let mut config = self.config.clone();
+        config.tools = Some(tools);
+        Self {
+            config,
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
+        }
+    }
+
+    /// Sets the tool choice strategy (`NONE`/`AUTO`/`ANY` on Cohere v2).
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.config.tool_choice = Some(choice.into());
+        self
     }
 
     /// Internal chat implementation.
@@ -155,43 +208,29 @@ impl CohereChat {
         let url = format!("{}/chat", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
-        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
-        // A14: non-idempotent POST — see retry::TransportRetryMode; use
-        // retry::SAFE_RETRY to forbid replaying a possibly-dispatched request.
-        let response = crate::retry::send_with_retry(
-            || {
-                self.client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", self.config.api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-            },
-            &crate::retry::DEFAULT_RETRY,
-        )
-        .await
-        .map_err(|e| CohereError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(CohereError::Api(format!("HTTP {}: {}", status, error_text)));
-        }
-
-        let chat_response: CohereChatResponse = response
-            .json()
+        // 0.25.0: unified HTTP layer — retriable status set, Retry-After and
+        // POST pre-dispatch-only retry semantics live in lc_core::http.
+        let response = self
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
-            .map_err(|e| CohereError::Parse(e.to_string()))?;
+            .map_err(Self::map_http_error)?;
+
+        let chat_response: CohereChatResponse =
+            serde_json::from_str(&response.body).map_err(|e| CohereError::Parse(e.to_string()))?;
 
         let message = chat_response
             .message
             .ok_or_else(|| CohereError::Api("No message in response".to_string()))?;
 
-        // Extract content from content array
+        // Concatenate the text parts; non-text parts (e.g. tool results in
+        // history) have no `text` and are skipped (0.25.0: text is Optional).
         let content = message
             .content
-            .first()
-            .map(|c| c.text.clone())
-            .unwrap_or_default();
+            .iter()
+            .filter_map(|part| part.text.clone())
+            .collect::<Vec<_>>()
+            .join("");
 
         let tool_calls = if message.tool_calls.is_empty() {
             None
@@ -205,7 +244,7 @@ impl CohereChat {
                         tool_type: "function".to_string(),
                         function: lc_core::tools::FunctionCall {
                             name: tc.function.name,
-                            arguments: tc.function.arguments,
+                            arguments: normalize_arguments(tc.function.arguments),
                         },
                     })
                     .collect(),
@@ -237,23 +276,13 @@ impl CohereChat {
         let url = format!("{}/chat", self.config.base_url);
         let body = self.build_request_body(messages, true);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+        // 0.25.0: unified HTTP layer. Retries cover establishment only; once
+        // the response head arrives the stream runs without reconnecting.
+        let byte_stream = self
+            .http_sse
+            .open_sse(&url, Some(&body), self.request_options())
             .await
-            .map_err(|e| CohereError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(CohereError::Api(format!("HTTP {}: {}", status, error_text)));
-        }
-
-        let byte_stream = response.bytes_stream();
+            .map_err(Self::map_http_error)?;
         let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         let parser_clone = parser.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, CohereError>>(64);
@@ -261,6 +290,11 @@ impl CohereChat {
         tokio::spawn(async move {
             use futures_util::StreamExt;
             let mut byte_stream = byte_stream;
+            // 0.25.0: accumulate fragmented tool-call deltas by index; the
+            // complete calls are flushed on `message-end`.
+            let mut tool_acc = CohereToolCallAccumulator::default();
+            let mut tool_calls_emitted = false;
+            let mut done = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
@@ -282,6 +316,7 @@ impl CohereChat {
 
                 for event in events {
                     if event.is_done() {
+                        done = true;
                         break;
                     }
                     // 0.20.0 P4: Cohere v2 SSE 是**自己的**事件格式,不是 OpenAI
@@ -294,7 +329,10 @@ impl CohereChat {
                     // 因单条坏数据被截断却毫无提示。
                     match parse_cohere_event(&event.data) {
                         Ok(Some(ev)) => {
-                            if let Some(chunk) = cohere_event_to_chunk(&ev) {
+                            if let Some(chunk) = cohere_event_to_chunk(&mut tool_acc, &ev) {
+                                if chunk.tool_calls.is_some() {
+                                    tool_calls_emitted = true;
+                                }
                                 if tx.send(Ok(chunk)).await.is_err() {
                                     return;
                                 }
@@ -308,6 +346,23 @@ impl CohereChat {
                             );
                         }
                     }
+                }
+                if done {
+                    break;
+                }
+            }
+            // Defensive flush for streams that close without `message-end`:
+            // tool calls must not vanish just because the terminal event did.
+            if !tool_calls_emitted {
+                if let Some(calls) = tool_acc.build() {
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            text: String::new(),
+                            thinking_content: None,
+                            token_usage: None,
+                            tool_calls: Some(calls),
+                        }))
+                        .await;
                 }
             }
         });
@@ -334,12 +389,86 @@ fn parse_cohere_event(data: &str) -> Result<Option<CohereStreamEvent>, serde_jso
     Ok(Some(parsed))
 }
 
-/// Maps one parsed Cohere streaming event to an optional `StreamChunk`.
+/// Normalizes a Cohere v2 `function.arguments` payload to the string shape the
+/// rest of the workspace expects: non-streaming responses carry a JSON object
+/// (returned compactly serialized), while streaming histories may carry a
+/// pre-serialized JSON string (returned verbatim).
+fn normalize_arguments(value: serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }
+}
+
+/// One in-flight tool call assembled from Cohere streaming deltas.
+#[derive(Default)]
+struct CohereToolCallState {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Accumulates fragmented Cohere v2 streaming tool calls. `tool-call-start`
+/// seeds `id`/`name`, subsequent `tool-call-delta` events append JSON
+/// arguments fragments, all correlated by the wire `index`.
+#[derive(Default)]
+struct CohereToolCallAccumulator {
+    // BTreeMap so the finished calls come back in deterministic index order.
+    calls: std::collections::BTreeMap<usize, CohereToolCallState>,
+}
+
+impl CohereToolCallAccumulator {
+    fn push(&mut self, delta: &CohereStreamToolCallDelta) {
+        let entry = self.calls.entry(delta.index).or_default();
+        if let Some(id) = &delta.id {
+            if !id.is_empty() {
+                entry.id.clone_from(id);
+            }
+        }
+        if let Some(function) = &delta.function {
+            if let Some(name) = &function.name {
+                if !name.is_empty() {
+                    entry.name.clone_from(name);
+                }
+            }
+            if let Some(arguments) = &function.arguments {
+                entry.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    /// Builds the completed calls. Entries missing `id` or `name` (a truncated
+    /// stream) are dropped rather than emitting an un-routable tool call.
+    fn build(&self) -> Option<Vec<lc_core::tools::ToolCall>> {
+        let calls: Vec<_> = self
+            .calls
+            .values()
+            .filter(|state| !state.id.is_empty() && !state.name.is_empty())
+            .map(|state| lc_core::tools::ToolCall {
+                id: state.id.clone(),
+                tool_type: "function".to_string(),
+                function: lc_core::tools::FunctionCall {
+                    name: state.name.clone(),
+                    arguments: state.arguments.clone(),
+                },
+            })
+            .collect();
+        (!calls.is_empty()).then_some(calls)
+    }
+}
+
+/// Maps one parsed Cohere streaming event to an optional `StreamChunk`,
+/// feeding tool-call fragments into `acc`.
 ///
 /// - `content-delta` → a text chunk (empty deltas are dropped)
-/// - `message-end` → a terminal usage chunk when the event carries usage
-/// - any other event → `None` (no output)
-fn cohere_event_to_chunk(ev: &CohereStreamEvent) -> Option<StreamChunk> {
+/// - `tool-plan-delta` → a `thinking_content` chunk (the model's plan text)
+/// - `tool-call-start` / `tool-call-delta` → accumulate by index, no chunk
+/// - `message-end` → terminal chunk carrying usage and/or completed tool calls
+/// - any other event → `None` (framing events produce no output)
+fn cohere_event_to_chunk(
+    acc: &mut CohereToolCallAccumulator,
+    ev: &CohereStreamEvent,
+) -> Option<StreamChunk> {
     match ev.event_type.as_str() {
         "content-delta" => ev
             .delta
@@ -349,22 +478,46 @@ fn cohere_event_to_chunk(ev: &CohereStreamEvent) -> Option<StreamChunk> {
             .and_then(|c| c.text.clone())
             .filter(|t| !t.is_empty())
             .map(StreamChunk::new),
-        "message-end" => ev
+        "tool-plan-delta" => ev
             .delta
             .as_ref()
-            .and_then(|d| d.usage.as_ref())
-            .map(|usage| {
-                let token_usage = TokenUsage {
+            .and_then(|d| d.message.as_ref())
+            .and_then(|m| m.tool_plan.clone())
+            .filter(|t| !t.is_empty())
+            .map(|plan| StreamChunk {
+                text: String::new(),
+                thinking_content: Some(plan),
+                token_usage: None,
+                tool_calls: None,
+            }),
+        "tool-call-start" | "tool-call-delta" => {
+            if let Some(delta) = &ev.delta {
+                if let Some(message) = &delta.message {
+                    for call in &message.tool_calls {
+                        acc.push(call);
+                    }
+                }
+            }
+            None
+        }
+        "message-end" => {
+            let tool_calls = acc.build();
+            let token_usage = ev
+                .delta
+                .as_ref()
+                .and_then(|d| d.usage.as_ref())
+                .map(|usage| TokenUsage {
                     prompt_tokens: usage.tokens.input_tokens,
                     completion_tokens: usage.tokens.output_tokens,
                     total_tokens: usage.tokens.input_tokens + usage.tokens.output_tokens,
-                };
-                StreamChunk {
-                    text: String::new(),
-                    token_usage: Some(token_usage),
-                    tool_calls: None,
-                }
-            }),
+                });
+            (token_usage.is_some() || tool_calls.is_some()).then(|| StreamChunk {
+                text: String::new(),
+                thinking_content: None,
+                token_usage,
+                tool_calls,
+            })
+        }
         _ => None,
     }
 }
@@ -438,8 +591,8 @@ impl Runnable<Vec<Message>, LLMResult> for CohereChat {
                 content: chunk.text,
                 model: model.clone(),
                 token_usage: chunk.token_usage,
-                tool_calls: None,
-                thinking_content: None,
+                tool_calls: chunk.tool_calls,
+                thinking_content: chunk.thinking_content,
             }),
             Err(e) => Err(e),
         });

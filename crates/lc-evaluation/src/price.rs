@@ -13,20 +13,26 @@
 //!   report simply carries a zero/None cost ledger (zero behavior change).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 /// USD price of a model, per 1M tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Values are **dollars** (USD) per 1M tokens, e.g. `input_per_1m = 3.0` means $3.00 per 1M
+/// input tokens. `f64` (not `u64` cents) so fractional prices like gpt-4o-mini's $0.15 are
+/// lossless and no `/100` re-scaling is needed at estimation time. `PartialEq` only (no `Eq`,
+/// because `f64` does not implement `Eq`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Price {
     /// USD per 1M input (prompt) tokens.
-    pub input_per_1m: u64,
+    pub input_per_1m: f64,
     /// USD per 1M output (completion) tokens.
-    pub output_per_1m: u64,
+    pub output_per_1m: f64,
 }
 
 /// A token-usage report from one predictor step (an eval input).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     /// Prompt tokens consumed.
     pub prompt_tokens: usize,
@@ -51,49 +57,49 @@ pub struct PriceBook {
 }
 
 impl PriceBook {
-    /// A price book with a few common models preloaded (approximate list prices).
+    /// A price book with a few common models preloaded (approximate list prices, USD per 1M).
     pub fn default_set() -> Self {
         let mut book = Self::default();
         book.set(
             "claude-3-5-sonnet",
             Price {
-                input_per_1m: 3,
-                output_per_1m: 15,
+                input_per_1m: 3.0,
+                output_per_1m: 15.0,
             },
         );
         book.set(
             "claude-3-5-haiku",
             Price {
-                input_per_1m: 80,
-                output_per_1m: 400,
+                input_per_1m: 0.8,
+                output_per_1m: 4.0,
             },
         );
         book.set(
             "gpt-4o-mini",
             Price {
-                input_per_1m: 15,
-                output_per_1m: 60,
+                input_per_1m: 0.15,
+                output_per_1m: 0.6,
             },
         );
         book.set(
             "gpt-4o",
             Price {
-                input_per_1m: 250,
-                output_per_1m: 1000,
+                input_per_1m: 2.5,
+                output_per_1m: 10.0,
             },
         );
         book.set(
             "deepseek-chat",
             Price {
-                input_per_1m: 27,
-                output_per_1m: 110,
+                input_per_1m: 0.27,
+                output_per_1m: 1.1,
             },
         );
         book
     }
 
-    /// Sets (or overrides) the price for a model. Prices are in "units per 1M": a price of `3`
-    /// means $3.00 per 1M input tokens.
+    /// Sets (or overrides) the price for a model. Prices are in **USD per 1M tokens**: a price of
+    /// `3.0` means $3.00 per 1M input tokens; `0.8` means $0.80 per 1M.
     pub fn set(&mut self, model: impl Into<String>, price: Price) {
         self.rates.insert(model.into(), price);
     }
@@ -113,7 +119,8 @@ impl PriceBook {
 
     /// Estimates the USD cost of token counts for a named model.
     ///
-    /// Integer cents-per-1M math: `prompt / 1e6 * input_price/100`. Returns `None` when the
+    /// Direct USD per-1M math — rates are already dollars, so no cents `/100` re-scaling:
+    /// `prompt / 1e6 * input_price + completion / 1e6 * output_price`. Returns `None` when the
     /// model is not in the book.
     pub fn estimate_cost(
         &self,
@@ -122,8 +129,8 @@ impl PriceBook {
         model: &str,
     ) -> Option<f64> {
         let p = self.rates.get(model)?;
-        let usd = prompt_tokens as f64 / 1e6 * (p.input_per_1m as f64 / 100.0)
-            + completion_tokens as f64 / 1e6 * (p.output_per_1m as f64 / 100.0);
+        let usd = prompt_tokens as f64 / 1e6 * p.input_per_1m
+            + completion_tokens as f64 / 1e6 * p.output_per_1m;
         Some(usd)
     }
 }
@@ -159,6 +166,50 @@ impl OverallCost {
     }
 }
 
+/// I3: per-evaluator accumulator for judge/tool LLM token usage that does not round-trip through
+/// the `Evaluator` trait's `eval` return type.
+///
+/// A judge evaluator records each LLM call's usage on its shared ledger while scoring; the runner
+/// then drains the ledger once per `eval` into `Report.cost` via
+/// [`Evaluator::report_token_usage`](crate::Evaluator::report_token_usage). Interior-mutable so
+/// concurrent judge calls (e.g. `buffered` contexts/claims) can add to it from `&self`.
+///
+/// Draining is destructive: each recorded usage is attributed exactly once (the runner drains
+/// after every eval), so a failed judge call between drains is not double-counted across examples.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UsageLedger {
+    total: Arc<Mutex<TokenUsage>>,
+}
+
+impl UsageLedger {
+    /// Adds one judge/tool call's usage. `model` names the judge model so the price book can
+    /// price it; a `None` usage (model did not report) records nothing.
+    pub(crate) fn record(&self, usage: Option<lc_core::TokenUsage>, model: &str) {
+        let Some(u) = usage else { return };
+        if let Ok(mut t) = self.total.lock() {
+            t.prompt_tokens = t.prompt_tokens.saturating_add(u.prompt_tokens);
+            t.completion_tokens = t.completion_tokens.saturating_add(u.completion_tokens);
+            // the last recorded non-empty model wins (all calls share the same judge here)
+            if t.model.is_none() {
+                t.model = Some(model.to_string());
+            }
+        }
+    }
+
+    /// Takes the accumulated usage, resetting the ledger to zero for the next eval.
+    pub(crate) fn drain(&self) -> Option<TokenUsage> {
+        let Ok(mut t) = self.total.lock() else {
+            return None;
+        };
+        let drained = std::mem::take(&mut *t);
+        if drained.prompt_tokens == 0 && drained.completion_tokens == 0 {
+            None
+        } else {
+            Some(drained)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,10 +219,10 @@ mod tests {
         b.set(
             "test-model",
             Price {
-                input_per_1m: 300,
-                output_per_1m: 1500,
+                input_per_1m: 3.0,
+                output_per_1m: 15.0,
             },
-        ); // $3.00 / $15.00
+        ); // $3.00 / $15.00 per 1M = USD dollars now
         b
     }
 
@@ -199,8 +250,8 @@ mod tests {
         b.set(
             "gpt-4o",
             Price {
-                input_per_1m: 250,
-                output_per_1m: 1000,
+                input_per_1m: 2.5,
+                output_per_1m: 10.0,
             },
         );
         // "gpt-4o" and "gpt-4o-mini" are distinct entries; no substring matching
@@ -265,5 +316,34 @@ mod tests {
             .estimate_cost(1_000_000, 1_000_000, "gpt-4o-mini")
             .unwrap();
         assert!((usd - 0.75).abs() < 1e-9, "got {usd}");
+    }
+
+    /// B6: default_set sonnet cost is real USD dollars (not cents): $3 in + $15 out per 1M,
+    /// and no `/100` re-scaling at estimate time.
+    #[test]
+    fn default_set_sonnet_is_usd_dollars_not_cents() {
+        let b = PriceBook::default_set();
+        let p = b.get("claude-3-5-sonnet").expect("sonnet in default set");
+        // USD dollars per 1M: $3 input, $15 output (previously mispriced as cents there).
+        assert!(
+            (p.input_per_1m - 3.0).abs() < 1e-9,
+            "got {:?}",
+            p.input_per_1m
+        );
+        assert!(
+            (p.output_per_1m - 15.0).abs() < 1e-9,
+            "got {:?}",
+            p.output_per_1m
+        );
+
+        // 1M in + 1M out = $3 + $15 = $18 (no /100 → previously $0.18).
+        let usd = b
+            .estimate_cost(1_000_000, 1_000_000, "claude-3-5-sonnet")
+            .unwrap();
+        assert!((usd - 18.0).abs() < 1e-9, "got {usd}");
+
+        // 1k each on sonnet = $0.003 + $0.015 = $0.018 (dollars, not cents).
+        let small = b.estimate_cost(1000, 1000, "claude-3-5-sonnet").unwrap();
+        assert!((small - 0.018).abs() < 1e-9, "got {small}");
     }
 }

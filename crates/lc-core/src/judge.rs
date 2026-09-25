@@ -9,7 +9,7 @@
 use lc_schema::Message;
 use serde::de::DeserializeOwned;
 
-use crate::language_models::BaseChatModel;
+use crate::language_models::{BaseChatModel, TokenUsage};
 use crate::tools::ToolDefinition;
 
 /// Structured judge-call errors: distinguishes "LLM call failure" from "structured parse failure",
@@ -47,11 +47,35 @@ where
     T: DeserializeOwned,
     F: FnOnce(&str) -> Result<T, StructuredJudgeError>,
 {
+    structured_call_with_usage(judge, tool, messages, text_fallback)
+        .await
+        .map(|(t, _usage)| t)
+}
+
+/// Like [`structured_call`], but also reports the LLM token usage of the single
+/// judge round trip (I3: so eval runners can credit judge/tool LLM cost).
+///
+/// Same guarantees as [`structured_call`]: at most one LLM call per verdict, tool
+/// bound → structured arguments; plain-text fallback when the model cannot bind or
+/// returns text. The usage is returned alongside the parsed verdict; `None` when
+/// the model does not report usage.
+pub async fn structured_call_with_usage<M, T, F>(
+    judge: &M,
+    tool: ToolDefinition,
+    messages: Vec<Message>,
+    text_fallback: F,
+) -> Result<(T, Option<TokenUsage>), StructuredJudgeError>
+where
+    M: BaseChatModel,
+    T: DeserializeOwned,
+    F: FnOnce(&str) -> Result<T, StructuredJudgeError>,
+{
     if let Some(bound) = judge.bind_tools(vec![tool]) {
         let result = bound
             .chat(messages, None)
             .await
             .map_err(|e| StructuredJudgeError::Call(e.to_string()))?;
+        let usage = result.token_usage.clone();
         match result.tool_calls {
             Some(calls) => {
                 let call = calls.first().ok_or_else(|| {
@@ -63,13 +87,13 @@ where
                         e
                     ))
                 })?;
-                Ok(parsed)
+                Ok((parsed, usage))
             }
             None => {
                 log::warn!(
                     "judge model bound tools but returned plain text; falling back to text parsing"
                 );
-                text_fallback(&result.content)
+                text_fallback(&result.content).map(|t| (t, usage))
             }
         }
     } else {
@@ -78,7 +102,8 @@ where
             .chat(messages, None)
             .await
             .map_err(|e| StructuredJudgeError::Call(e.to_string()))?;
-        text_fallback(&result.content)
+        let usage = result.token_usage.clone();
+        text_fallback(&result.content).map(|t| (t, usage))
     }
 }
 

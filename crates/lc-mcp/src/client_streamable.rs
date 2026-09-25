@@ -38,7 +38,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::protocol::{
-    negotiate_protocol_version, MCPError, MCPRequest, ProtocolInfo, VersionPolicy,
+    negotiate_protocol_version, JsonRpcId, MCPError, MCPRequest, ProtocolInfo, VersionPolicy,
     MCP_ERROR_REQUEST_TIMEOUT, MCP_VERSION,
 };
 use crate::transport::streamable_http::StreamableHttpTransport;
@@ -216,6 +216,16 @@ impl StreamableMcpClient {
     /// Sends a JSON-RPC notification (202 accepted; no result).
     pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), MCPError> {
         self.transport.notify(method, params).await
+    }
+
+    /// B8: requests the server cancel an in-flight request by id
+    /// (`notifications/cancelled`). Best-effort — a server that already
+    /// returned may answer 202 with the notification merely dropped.
+    pub async fn cancel(&self, request_id: impl Into<JsonRpcId>) -> Result<(), MCPError> {
+        let rid = serde_json::to_value(request_id.into())
+            .map_err(|e| MCPError::new(-32603, format!("failed to encode request id: {e}")))?;
+        self.notify("notifications/cancelled", Some(json!({ "requestId": rid })))
+            .await
     }
 
     /// `ping` liveness probe.

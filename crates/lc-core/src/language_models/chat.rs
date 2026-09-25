@@ -59,10 +59,16 @@ pub struct TokenUsage {
 /// dedicated tool-calls chunk when the stream ends without usage; providers
 /// without streaming tool-call support always yield `None`. Consumers that only
 /// stream text can ignore the field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StreamChunk {
     /// The text delta for this chunk.
     pub text: String,
+    /// Model's chain-of-thought / reasoning delta for this chunk, when the
+    /// provider exposes one on a separate channel (DeepSeek `reasoning_content`,
+    /// Anthropic `thinking`, Cohere `thinking`...). 0.25.0: previously the
+    /// field existed on some raw provider types but was dropped on the way to
+    /// [`BaseChatModel::stream_chat`].
+    pub thinking_content: Option<String>,
     /// Token usage for the whole streaming call, typically only on the last
     /// chunk (when the provider reports it).
     pub token_usage: Option<TokenUsage>,
@@ -78,6 +84,7 @@ impl StreamChunk {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            thinking_content: None,
             token_usage: None,
             tool_calls: None,
         }

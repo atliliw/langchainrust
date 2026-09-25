@@ -1,4 +1,4 @@
-//! N2 (v0.24.0): recorded traces → golden eval dataset → offline scoring.
+//! N2 (v0.25.0): recorded traces → golden eval dataset → offline scoring.
 //!
 //! Closes the regression loop between this crate's record/replay harness and
 //! `lc-evaluation`:
@@ -19,8 +19,10 @@
 //!      pinned model answers exactly its recorded reference;
 //!    - real regression run: load the checked-in JSONL with `Dataset::from_jsonl` and run
 //!      it through `EvalRunner` with a predictor wrapping the **new** prompt/model.
-//! 4. **Gate** with `lc_evaluation::compare_reports(&baseline, &candidate, tolerance)`:
-//!    any evaluator mean dropping beyond the tolerance fails the gate.
+//! 4. **Gate** with `lc_evaluation::compare_reports(&baseline, &candidate, tolerance)` and its
+//!    [`ReportComparison::is_gate_failing`](lc_evaluation::ReportComparison::is_gate_failing):
+//!    the gate fails on any evaluator mean dropping beyond tolerance, on a sample-count mismatch,
+//!    or when zero shared evaluators remain for comparison.
 //!
 //! Agent-loop traces record several exchanges per user turn (one per model call); the
 //! intermediate ones are often pure tool-call responses with empty text. Filter with
@@ -111,9 +113,27 @@ pub fn golden_dataset(exchanges: &[RecordedExchange]) -> Result<Dataset, GoldenE
         .map(Dataset::new)
 }
 
-/// Reads a recording file and builds the golden dataset from it.
+/// Filters an exchange list down to the scoring candidates (has a human prompt
+/// and non-empty response text), dropping pure tool-call exchanges.
+///
+/// I4: the `*_from_file` helpers use this so agent-loop traces (whose intermediate
+/// model calls are pure tool requests with empty text) do not fail as
+/// [`GoldenError::EmptyReference`]; they are instead excluded. The SAME filtered
+/// set feeds both the dataset and the replay predictor, keeping FIFO alignment
+/// between example N and recording N.
+fn scoring_exchanges(exchanges: &[RecordedExchange]) -> Vec<RecordedExchange> {
+    exchanges
+        .iter()
+        .filter(|e| is_scoring_candidate(e))
+        .cloned()
+        .collect()
+}
+
+/// Reads a recording file and builds the golden dataset from it, skipping pure
+/// tool-call exchanges (see [`scoring_exchanges`]).
 pub fn golden_dataset_from_file(path: impl AsRef<Path>) -> Result<Dataset, TestkitError> {
     let exchanges = read_exchanges(path)?;
+    let exchanges = scoring_exchanges(&exchanges);
     Ok(golden_dataset(&exchanges)?)
 }
 
@@ -179,6 +199,10 @@ pub fn replay_golden_from_file(
     strategy: ReplayStrategy,
 ) -> Result<(Dataset, ReplayPredictor), TestkitError> {
     let exchanges = read_exchanges(path)?;
+    // I4: drop pure tool-call exchanges here instead of failing as EmptyReference,
+    // and feed the SAME filtered set to both the dataset and the predictor so FIFO
+    // alignment (example N ↔ recording N) is preserved.
+    let exchanges = scoring_exchanges(&exchanges);
     let dataset = golden_dataset(&exchanges)?;
     let provider = ReplayProvider::from_exchanges(exchanges).with_strategy(strategy);
     Ok((dataset, ReplayPredictor::new(provider)))

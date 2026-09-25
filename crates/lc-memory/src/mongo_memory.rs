@@ -8,7 +8,7 @@ use mongodb::{
     Client, Collection, Database,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::RwLock as StdRwLock;
 use tokio::sync::RwLock;
 
@@ -71,18 +71,39 @@ impl From<MongoMemoryDoc> for MemoryData {
 /// - messages: append local-snapshot messages the remote lacks (deduped by role + content),
 ///   preserving relative order, losing nothing;
 /// - summary: take the longer of the two, preventing summary regression.
+/// M-me4/D5: occurrence-aware merge of two concurrent writers' message streams.
+///
+/// Dedup is keyed by `(role, content, occurrence#)` rather than by `(role, content)`
+/// alone. Two **real** messages that are byte-identical (e.g. the user literally
+/// asked the same thing twice) therefore stay separate — the bare role+content
+/// key would collapse them. A local occurrence is still dropped when the remote
+/// document already carries that exact occurrence of the message, so genuine
+/// overlap from a shared snapshot is not duplicated.
 fn merge_memory_data(
     remote: &MemoryData,
     local_messages: &[Message],
     local_summary: &str,
 ) -> (Vec<Message>, String) {
-    let mut seen: HashSet<(String, String)> = remote.messages.iter().map(message_key).collect();
+    // How many occurrences of each (role, content) the remote already holds.
+    let mut remote_occurrences: HashMap<(String, String), u32> = HashMap::new();
+    for m in &remote.messages {
+        *remote_occurrences.entry(message_key(m)).or_insert(0) += 1;
+    }
 
     let mut messages = remote.messages.clone();
+    let mut local_occurrences: HashMap<(String, String), u32> = HashMap::new();
     for msg in local_messages {
-        if seen.insert(message_key(msg)) {
-            messages.push(msg.clone());
+        let base = message_key(msg);
+        let occ = local_occurrences.entry(base.clone()).or_insert(0);
+        let this_occ = *occ;
+        *occ += 1;
+        // The remote already has >= this_occ+1 copies of this key: this occurrence
+        // is part of the shared snapshot, skip it. Otherwise it is a genuinely new
+        // (possibly identical) message — append.
+        if remote_occurrences.get(&base).copied().unwrap_or(0) > this_occ {
+            continue;
         }
+        messages.push(msg.clone());
     }
 
     let summary = match remote.summary.as_deref() {
@@ -98,7 +119,18 @@ fn merge_memory_data(
     (messages, summary)
 }
 
-/// Message dedup key: role + content. `MessageType` does not implement `Hash`/`Eq`, so a stable string representation is used.
+/// D5/M-me4: whether a MongoDB error is the duplicate-key (E11000) rejection of
+/// the `session_id` unique index — the signature of two concurrent first writes
+/// to the same brand-new session.
+fn is_duplicate_key_error(err: &mongodb::error::Error) -> bool {
+    matches!(
+        err.kind.as_ref(),
+        mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(we))
+            if we.code == 11000
+    )
+}
+
+/// Message dedup base key: role + content. `MessageType` does not implement `Hash`/`Eq`, so a stable string representation is used.
 fn message_key(msg: &Message) -> (String, String) {
     let role = match msg.message_type {
         MessageType::System => "system",
@@ -107,6 +139,86 @@ fn message_key(msg: &Message) -> (String, String) {
         MessageType::Tool { .. } => "tool",
     };
     (role.to_string(), msg.content.clone())
+}
+
+/// B6: whether the assistant message at `idx` has at least one `Tool` result message later in the
+/// stream. An `AI` message with `tool_calls` but no following tool result is a dangling pair that
+/// OpenAI/Anthropic reject with a 400.
+fn has_tool_result(messages: &[Message], idx: usize) -> bool {
+    messages[idx + 1..]
+        .iter()
+        .any(|m| matches!(m.message_type, MessageType::Tool { .. }))
+}
+
+/// B6: faithfully reconstructs a persisted message stream, restoring **all** message kinds —
+/// including `Tool` results and `AI` messages carrying `tool_calls` — in original order. The only
+/// drop point is an *orphaned* `AI.tool_calls` whose matching `Tool` result (followed as the next
+/// consecutive `Tool` turn) is absent from the persisted stream; dropping it prevents a 400. Tool
+/// results and normal tool_calls-dense turns are preserved verbatim. Previously the restore
+/// discarded every Tool message and every AI.tool_calls, losing the "tools used" half of a turn.
+fn restore_messages(messages: &[Message]) -> Vec<Message> {
+    let mut restored: Vec<Message> = Vec::with_capacity(messages.len());
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+        let is_ai_with_tool_calls =
+            matches!(msg.message_type, MessageType::AI) && msg.tool_calls.is_some();
+        if is_ai_with_tool_calls {
+            if has_tool_result(messages, i) {
+                // Paired turn: keep the assistant tool_calls and every following Tool result.
+                restored.push(msg.clone());
+                i += 1;
+                while i < messages.len()
+                    && matches!(messages[i].message_type, MessageType::Tool { .. })
+                {
+                    restored.push(messages[i].clone());
+                    i += 1;
+                }
+            } else {
+                // Orphaned tool_calls (no tool result anywhere after) -> drop to avoid a 400.
+                i += 1;
+            }
+        } else if matches!(msg.message_type, MessageType::Tool { .. }) {
+            // D8: a Tool landing here is orphaned — the preceding assistant
+            // tool_calls pairing was already consumed by the paired branch, or
+            // never existed (e.g. a leading Tool whose AI was cut outside the
+            // persisted window). A standalone tool message is malformed for
+            // OpenAI/Anthropic → 400, so drop it, mirroring the truncate /
+            // summarize cleanup.
+            i += 1;
+        } else {
+            restored.push(msg.clone());
+            i += 1;
+        }
+    }
+    restored
+}
+
+/// B6: reconciles the inner memory's local chat state against a loaded (or absent) document.
+///
+/// Local state is always cleared first. `Some(data)` restores its messages (via
+/// [`restore_messages`]) and summary; `None` (a session with no persisted document) leaves the
+/// inner memory empty so switching to that session never inherits a stale snapshot. Pure and
+/// sync, so the cross-session-leak and tool-restore behaviors are unit-testable without a DB.
+fn reconcile_inner<M: BaseChatModel>(
+    inner: &mut ConversationSummaryBufferMemory<M>,
+    data: Option<&MemoryData>,
+) {
+    // Always start from a fresh local state: both message history and the summary buffer are
+    // cleared, so a `None` document (absent session) — or a present one with no summary — can
+    // never inherit the previous session's snapshot.
+    inner.chat_memory_mut().clear();
+    inner.set_summary(String::new());
+    if let Some(data) = data {
+        for msg in restore_messages(&data.messages) {
+            inner.chat_memory_mut().add_message(msg);
+        }
+        if let Some(summary) = &data.summary {
+            if !summary.trim().is_empty() {
+                inner.set_summary(summary.clone());
+            }
+        }
+    }
 }
 
 /// MongoDB Persistent Memory
@@ -214,36 +326,14 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
             .await
             .map_err(|e| MemoryError::LoadError(format!("MongoDB find failed: {}", e)))?;
 
-        if let Some(doc) = result {
-            let data: MemoryData = doc.into();
+        let data: Option<MemoryData> = result.map(Into::into);
 
-            let mut inner = self.inner.write().await;
-            let chat_memory = inner.chat_memory_mut();
-            chat_memory.clear();
-
-            for msg in &data.messages {
-                if matches!(msg.message_type, lc_schema::MessageType::Human) {
-                    chat_memory.add_user_message(&msg.content);
-                } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                    // 0.22.0 H-M2: this restore drops Tool messages, so also
-                    // drop assistant messages that carry tool_calls — keeping
-                    // assistant.tool_calls without its tool results is a
-                    // dangling pair → OpenAI/Anthropic 400.
-                    if msg.tool_calls.is_none() {
-                        chat_memory.add_ai_message(&msg.content);
-                    }
-                } else if matches!(msg.message_type, lc_schema::MessageType::System) {
-                    chat_memory.add_system_message(&msg.content);
-                }
-            }
-
-            // P1-3: restore the summary state so a continued session picks up from the last summary (rather than starting from an empty one).
-            if let Some(summary) = &data.summary {
-                if !summary.trim().is_empty() {
-                    inner.set_summary(summary.clone());
-                }
-            }
-        }
+        // B6: local state is always reconciled against the loaded document — including the
+        // `None` (absent session) branch, which clears the previous session's snapshot. Without
+        // this clear, switching `session_id` below would let a subsequent upsert write the old
+        // session's snapshot into the brand-new session (cross-session leak).
+        let mut inner = self.inner.write().await;
+        reconcile_inner(&mut inner, data.as_ref());
 
         *self.session_id.write().unwrap_or_else(|e| e.into_inner()) = Some(session_id.to_string());
 
@@ -302,14 +392,29 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
             let opts = mongodb::options::ReplaceOptions::builder()
                 .upsert(expected_version == 0)
                 .build();
-            let res = collection
+            let res = match collection
                 .replace_one(
                     doc! { "session_id": session_id, "version": expected_version as i64 },
                     new_doc,
                     opts,
                 )
                 .await
-                .map_err(|e| MemoryError::SaveError(format!("MongoDB save failed: {}", e)))?;
+            {
+                Ok(res) => res,
+                // M-me4/D5: a brand-new session (`version == 0`) races a concurrent
+                // first write. One upsert wins; the other is rejected by the
+                // `session_id` unique index (error 11000). Retry the loop to
+                // re-read the winner and merge — not a durable failure.
+                Err(e) if is_duplicate_key_error(&e) && expected_version == 0 => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(MemoryError::SaveError(format!(
+                        "MongoDB save failed: {}",
+                        e
+                    )))
+                }
+            };
 
             // a match means the save landed; a miss means the version advanced (concurrent write) — retry the merge loop.
             if res.matched_count > 0 || res.upserted_id.is_some() {
@@ -462,6 +567,7 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MockLlm;
 
     #[test]
     fn test_mongo_memory_doc_from_memory_data() {
@@ -540,5 +646,76 @@ mod tests {
         let remote = MemoryData::new("s".to_string());
         let (_, summary) = merge_memory_data(&remote, &[], "local-only");
         assert_eq!(summary, "local-only");
+    }
+
+    /// B6: the restore keeps Tool results and paired AI.tool_calls verbatim, and drops only an
+    /// orphaned AI.tool_calls whose Tool result is absent (preventing a 400).
+    #[test]
+    fn test_restore_messages_keeps_tool_results_drops_orphan_tool_calls() {
+        let msgs = vec![
+            Message::human("q1"),
+            // paired: AI carrying tool_calls followed by its Tool result -> both kept
+            Message::ai_with_tool_calls("planning", vec![]),
+            Message::tool("c1", "tool result 1"),
+            Message::ai("done with tool"),
+            // orphaned: AI.tool_calls with no Tool result after -> dropped
+            Message::ai_with_tool_calls("orphan", vec![]),
+            Message::human("q2"),
+        ];
+        let restored = restore_messages(&msgs);
+        let contents: Vec<&str> = restored.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            restored.len(),
+            5,
+            "should drop only the orphaned tool_calls, got {contents:?}"
+        );
+        // tool result and its paired assistant.tool_calls are preserved verbatim.
+        assert!(restored.iter().any(|m| m.content == "tool result 1"));
+        assert!(restored.iter().any(|m| m.content == "planning"));
+        // orphaned assistant.tool_calls is gone.
+        assert!(!restored.iter().any(|m| m.content == "orphan"));
+        // order preserved for the surviving messages.
+        assert_eq!(restored[0].content, "q1");
+        assert_eq!(restored[4].content, "q2");
+    }
+
+    /// B6: an absent session must not inherit a stale snapshot (cross-session leak), and a
+    /// present document restores messages + summary faithfully.
+    #[tokio::test]
+    async fn test_reconcile_inner_clears_stale_snapshot_on_absent_session() {
+        let llm = MockLlm::new(vec![]);
+        let mut inner = ConversationSummaryBufferMemory::new(llm, 1000);
+
+        // stale state from a previously-loaded session.
+        inner
+            .chat_memory_mut()
+            .add_user_message("old session message");
+        inner.set_summary("old summary".to_string());
+
+        // switching to a brand-new (absent) session must clear the inner snapshot —
+        // otherwise a later upsert would write it into the new session.
+        reconcile_inner(&mut inner, None);
+        assert_eq!(
+            inner.chat_memory().len(),
+            0,
+            "absent session must not inherit a stale snapshot"
+        );
+        assert!(
+            inner.buffer().await.is_empty(),
+            "absent session must not inherit a stale summary"
+        );
+
+        // a present document restores messages (incl. tool turns) + the summary.
+        let data = MemoryData::new("s".to_string())
+            .with_messages(vec![
+                Message::human("h1"),
+                Message::ai_with_tool_calls("tc", vec![]),
+                Message::tool("t1", "tr"),
+            ])
+            .with_summary("restored summary".to_string());
+        reconcile_inner(&mut inner, Some(&data));
+        assert_eq!(inner.chat_memory().len(), 3);
+        assert_eq!(inner.chat_memory().messages()[0].content, "h1");
+        assert_eq!(inner.buffer().await, "restored summary");
     }
 }

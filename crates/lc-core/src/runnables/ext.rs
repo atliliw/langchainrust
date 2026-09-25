@@ -116,7 +116,7 @@ where
     ///         ..Default::default()
     ///     });
     /// ```
-    fn with_retry(self, retry_config: RetryConfig) -> RunnableRetry<Input, Output>
+    fn with_retry(self, retry_config: RetryConfig) -> Result<RunnableRetry<Input, Output>, String>
     where
         Input: Clone,
     {

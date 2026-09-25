@@ -63,6 +63,7 @@ impl BaseAgent for ActOnceAgent {
                     value: serde_json::json!({"x": 1}),
                 },
                 log: "call_1".to_string(),
+                tool_call_id: None,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -89,6 +90,7 @@ impl BaseAgent for LoopAgent {
                 value: serde_json::json!({"x": 1}),
             },
             log: "loop".to_string(),
+            tool_call_id: None,
         }))
     }
 }
@@ -110,6 +112,7 @@ impl BaseAgent for TokenLoopAgent {
                 value: serde_json::json!({"x": 1}),
             },
             log: "loop".to_string(),
+            tool_call_id: None,
         }))
     }
     fn last_token_usage(&self) -> Option<TokenUsage> {
@@ -145,6 +148,7 @@ impl BaseAgent for CostLoopAgent {
                 value: serde_json::json!({"x": 1}),
             },
             log: "loop".to_string(),
+            tool_call_id: None,
         }))
     }
 }
@@ -173,6 +177,7 @@ impl BaseAgent for ResumeAgent {
                     value: serde_json::json!({"x": 1}),
                 },
                 log: "call_1".to_string(),
+                tool_call_id: None,
             }));
         }
         if intermediate_steps
@@ -185,6 +190,7 @@ impl BaseAgent for ResumeAgent {
                     value: serde_json::json!({"x": 1}),
                 },
                 log: "call_2".to_string(),
+                tool_call_id: None,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(

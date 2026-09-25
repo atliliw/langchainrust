@@ -15,7 +15,11 @@ impl A2AServer {
     /// (continuation, P2-2/P2-3), the message is appended to that task's
     /// history and it is re-run. A `message_id` makes the call idempotent
     /// (P1-6). A `skillId` param routes to a different chain (P2-4).
-    pub(crate) async fn handle_tasks_send(&self, req: A2ARequest) -> A2AResponse {
+    pub(crate) async fn handle_tasks_send(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
         let params = match req.params.clone() {
             Some(p) => p,
             None => {
@@ -40,7 +44,7 @@ impl A2AServer {
                 Ok(Some(existing_id)) => {
                     match self.store.get(&existing_id).await {
                         Ok(Some(stored)) => {
-                            if !self.caller_owns(&req, &stored.task) {
+                            if !self.caller_owns(owner, &stored.task) {
                                 return forbidden(req.id, "caller does not own the existing task");
                             }
                             return A2AResponse::ok(req.id, json!({ "task": stored.task }));
@@ -63,14 +67,19 @@ impl A2AServer {
         // P2-2/P2-3: continuation — append to an existing task and re-run.
         if let Some(task_id) = req.task_id().map(|s| s.to_string()) {
             return self
-                .handle_tasks_send_continue(req, task_id, message, message_id)
+                .handle_tasks_send_continue(req, task_id, message, message_id, owner)
                 .await;
         }
 
         // Fresh task.
         let task_id = uuid::Uuid::new_v4().to_string();
         let mut task = A2ATask::new(task_id.clone(), message);
-        if let Some(owner) = req.owner() {
+        // C-A2A-1: the resolved caller identity is authoritative. The boundary
+        // (`handle_a2a_request` / `handle_a2a_request_authenticated`) resolved it
+        // from the authenticated principal (always) or from a self-reported
+        // metadata `owner` (only after `with_trust_metadata_owner` opted in), so
+        // no raw `req.owner()` read happens here.
+        if let Some(owner) = owner {
             task = task.with_owner(owner);
         }
         let mut stored = StoredTask::new(task.clone());
@@ -105,8 +114,17 @@ impl A2AServer {
         let bus = self.event_bus.clone();
         let history = task.message_history().into_owned();
         let spawned_id = task_id.clone();
+        // B7 point 6: register the task's cancellation handle so `tasks/cancel`
+        // can terminate this in-flight execution, not just mark status.
+        let cancellations = self.cancellations.clone();
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        cancellations
+            .write()
+            .await
+            .insert(spawned_id.clone(), cancel.clone());
         tokio::spawn(async move {
-            run_task(&store, chain, &spawned_id, history, bus).await;
+            run_task(&store, chain, &spawned_id, history, bus, cancel).await;
+            cancellations.write().await.remove(&spawned_id);
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))
@@ -126,6 +144,7 @@ impl A2AServer {
         task_id: String,
         message: A2AMessage,
         message_id: Option<String>,
+        owner: Option<&str>,
     ) -> A2AResponse {
         // H3: serialize resumes per task so two concurrent resumes of the same
         // `input-required` task cannot both pass the state check and spawn
@@ -150,7 +169,7 @@ impl A2AServer {
         };
 
         // P1-4: ownership.
-        if !self.caller_owns(&req, &stored.task) {
+        if !self.caller_owns(owner, &stored.task) {
             self.release_resume_id(&message_id).await;
             return forbidden(req.id, "caller does not own this task");
         }
@@ -192,8 +211,17 @@ impl A2AServer {
         let bus = self.event_bus.clone();
         let history = task.message_history().into_owned();
         let spawned_id = task_id.clone();
+        // B7 point 6: cancellation handle for the resumed run (see comment in
+        // `handle_tasks_send`).
+        let cancellations = self.cancellations.clone();
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        cancellations
+            .write()
+            .await
+            .insert(spawned_id.clone(), cancel.clone());
         tokio::spawn(async move {
-            run_task(&store, chain, &spawned_id, history, bus).await;
+            run_task(&store, chain, &spawned_id, history, bus, cancel).await;
+            cancellations.write().await.remove(&spawned_id);
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))
@@ -203,7 +231,11 @@ impl A2AServer {
     ///
     /// Ownership (P1-4): tasks carrying an `owner` are only readable by the
     /// matching caller.
-    pub(crate) async fn handle_tasks_get(&self, req: A2ARequest) -> A2AResponse {
+    pub(crate) async fn handle_tasks_get(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
         let task_id = req
             .params
             .as_ref()
@@ -222,7 +254,7 @@ impl A2AServer {
 
         match self.store.get(task_id).await {
             Ok(Some(stored)) => {
-                if !self.caller_owns(&req, &stored.task) {
+                if !self.caller_owns(owner, &stored.task) {
                     return forbidden(req.id, "caller does not own this task");
                 }
                 task_details_response(req.id, &stored)
@@ -240,7 +272,11 @@ impl A2AServer {
     /// Cancellation is only legal from a non-terminal state; cancelling an
     /// already-terminal task is an idempotent no-op that returns it unchanged.
     /// Ownership (P1-4) is enforced like `tasks/get`.
-    pub(crate) async fn handle_tasks_cancel(&self, req: A2ARequest) -> A2AResponse {
+    pub(crate) async fn handle_tasks_cancel(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
         let task_id = req
             .params
             .as_ref()
@@ -260,7 +296,7 @@ impl A2AServer {
             Ok(None) | Err(_) => return task_not_found(req.id, task_id),
         };
 
-        if !self.caller_owns(&req, &stored.task) {
+        if !self.caller_owns(owner, &stored.task) {
             return forbidden(req.id, "caller does not own this task");
         }
 
@@ -279,6 +315,11 @@ impl A2AServer {
         match self.store.compare_and_update(task_id, cancelled).await {
             Ok(true) => {
                 publish_status(&self.event_bus, task_id, TaskStatus::Cancelled, None);
+                // B7 point 6: propagate the cancellation to the in-flight chain
+                // so execution actually stops (select! drops the invoke future).
+                if let Some(cancel) = self.cancellations.read().await.get(task_id) {
+                    cancel.notify_one();
+                }
                 A2AResponse::ok(req.id, json!({ "task": cancelled_task }))
             }
             Ok(false) => {
@@ -312,7 +353,11 @@ impl A2AServer {
     /// are open to any caller. A caller that carries an `owner` identity and
     /// does not pass an explicit `owner` param additionally narrows the query
     /// to its own tasks.
-    pub(crate) async fn handle_tasks_list(&self, req: A2ARequest) -> A2AResponse {
+    pub(crate) async fn handle_tasks_list(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
         self.cleanup_expired_tasks().await;
 
         let mut filter = TaskFilter::new();
@@ -329,8 +374,11 @@ impl A2AServer {
             }
         }
         if filter.owner.is_none() {
-            if let Some(owner) = req.owner() {
-                filter = filter.with_owner(owner);
+            // C-A2A-1: narrow to the resolved caller identity (authenticated
+            // principal, or the opt-in metadata owner) rather than the raw
+            // `req.owner()`.
+            if let Some(o) = owner {
+                filter = filter.with_owner(o);
             }
         }
 
@@ -342,7 +390,7 @@ impl A2AServer {
                 // tasks are only visible to a matching owner identity.
                 let tasks: Vec<&A2ATask> = stored
                     .iter()
-                    .filter(|s| self.caller_owns(&req, &s.task))
+                    .filter(|s| self.caller_owns(owner, &s.task))
                     .map(|s| &s.task)
                     .collect();
                 A2AResponse::ok(req.id, json!({ "tasks": tasks }))
@@ -363,7 +411,11 @@ impl A2AServer {
     /// marks the workflow task `failed` and stops execution — the results
     /// aggregated up to that point are still returned. Ownership (P1-4) and
     /// trace propagation (P1-5) apply to the backing task like `tasks/send`.
-    pub(crate) async fn handle_workflow_run(&self, req: A2ARequest) -> A2AResponse {
+    pub(crate) async fn handle_workflow_run(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
         let params = match req.params.clone() {
             Some(p) => p,
             None => {
@@ -414,15 +466,6 @@ impl A2AServer {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        // H2: a client-controlled `workflow_id` must not overwrite a task the
-        // caller does not own (P1-4). An existing task with this id is only
-        // re-runnable by its owner; anonymous callers may not clobber owned
-        // tasks, and may only create fresh ids.
-        if let Ok(Some(existing)) = self.store.get(&task_id).await {
-            if !self.caller_owns(&req, &existing.task) {
-                return forbidden(req.id, "caller does not own the existing task");
-            }
-        }
         let mut task = A2ATask::new(
             task_id.clone(),
             A2AMessage::user(format!(
@@ -431,18 +474,33 @@ impl A2AServer {
             )),
         )
         .with_status(TaskStatus::Working);
-        if let Some(owner) = req.owner() {
+        // C-A2A-1: see `handle_tasks_send` — the resolved caller identity is
+        // authoritative; no raw `req.owner()` read happens here.
+        if let Some(owner) = owner {
             task = task.with_owner(owner);
         }
         let mut stored = StoredTask::new(task.clone());
         if let Some(trace_id) = req.trace_id() {
             stored = stored.with_trace_id(trace_id);
         }
-        if self.store.upsert(stored).await.is_err() {
-            return A2AResponse::from_error_data(
-                req.id,
-                A2AErrorData::internal_error("task store write failed"),
-            );
+
+        // H2/F4: a client-controlled `workflow_id` must not overwrite a task
+        // the caller does not own (P1-4). The CAS below atomically inserts the
+        // backing task, or replaces it only when the existing task is
+        // claimable by this caller — no owner → open to any caller; same owner
+        // → re-run allowed; another caller's owner → rejected. This closes the
+        // cross-tenant overwrite TOCTOU where a concurrent writer could slip
+        // its task between a separate ownership check and the upsert
+        // (0.22.0 audit fix).
+        match self.store.upsert_claimed(&task_id, stored).await {
+            Ok(true) => {}
+            Ok(false) => return forbidden(req.id, "caller does not own the existing task"),
+            Err(_) => {
+                return A2AResponse::from_error_data(
+                    req.id,
+                    A2AErrorData::internal_error("task store write failed"),
+                );
+            }
         }
         publish_status(&self.event_bus, &task_id, TaskStatus::Working, None);
 

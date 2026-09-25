@@ -753,3 +753,159 @@ async fn send_task_streaming_sends_then_streams() {
         "artifact events carry no status"
     );
 }
+
+// ---- 0.25.0 C3: trust registry + sandbox wired into client paths ----
+
+#[tokio::test]
+async fn get_agent_card_accepted_when_registered_and_signature_verifies() {
+    use crate::security::{TrustConfig, TrustRegistry, TrustRole, TrustedAgent};
+
+    let card_url = "http://registry-agent.example.com";
+    let mut card = AgentCard::new("agent", "desc", card_url);
+    sign_agent_card(&mut card, b"reg-secret").unwrap();
+    let card_json = serde_json::to_string(&card).unwrap();
+    let base = spawn_http_server(move |_head, _body| card_json.clone()).await;
+
+    let registry = std::sync::Arc::new(TrustRegistry::new(TrustConfig::default()).with_agent(
+        TrustedAgent::new(card_url, "agent", TrustRole::Leaf).with_key(b"reg-secret".to_vec()),
+    ));
+    let client = A2AClient::builder(base)
+        .trust_registry(registry)
+        .build()
+        .unwrap();
+    let got = client.get_agent_card().await.unwrap();
+    assert_eq!(got.url, card_url);
+}
+
+#[tokio::test]
+async fn get_agent_card_rejected_when_registry_does_not_know_agent() {
+    use crate::security::{TrustConfig, TrustRegistry};
+
+    let card_url = "http://stranger.example.com";
+    let mut card = AgentCard::new("agent", "desc", card_url);
+    sign_agent_card(&mut card, b"reg-secret").unwrap();
+    let card_json = serde_json::to_string(&card).unwrap();
+    let base = spawn_http_server(move |_head, _body| card_json.clone()).await;
+
+    // Empty registry: the card is signed but no identity is attested.
+    let registry = std::sync::Arc::new(TrustRegistry::new(TrustConfig::default()));
+    let client = A2AClient::builder(base)
+        .trust_registry(registry)
+        .build()
+        .unwrap();
+    assert!(matches!(
+        client.get_agent_card().await,
+        Err(A2AError::Signature(_))
+    ));
+}
+
+#[tokio::test]
+async fn get_agent_card_rejected_when_signature_tampered() {
+    use crate::security::{TrustConfig, TrustRegistry, TrustRole, TrustedAgent};
+
+    let card_url = "http://registry-agent.example.com";
+    let mut card = AgentCard::new("agent", "desc", card_url);
+    sign_agent_card(&mut card, b"reg-secret").unwrap();
+    // Tamper after signing; serialize the tampered card directly.
+    card.name = "impostor".to_string();
+    let card_json = serde_json::to_string(&card).unwrap();
+    let base = spawn_http_server(move |_head, _body| card_json.clone()).await;
+
+    let registry = std::sync::Arc::new(TrustRegistry::new(TrustConfig::default()).with_agent(
+        TrustedAgent::new(card_url, "agent", TrustRole::Leaf).with_key(b"reg-secret".to_vec()),
+    ));
+    let client = A2AClient::builder(base)
+        .trust_registry(registry)
+        .build()
+        .unwrap();
+    assert!(matches!(
+        client.get_agent_card().await,
+        Err(A2AError::Signature(_))
+    ));
+}
+
+#[test]
+fn builder_sandbox_allows_listed_egress_host() {
+    use crate::security::SandboxConfig;
+    let sandbox = std::sync::Arc::new(SandboxConfig::new().allow_domain("localhost"));
+    assert!(A2AClient::builder("http://localhost:8080")
+        .sandbox(sandbox)
+        .build()
+        .is_ok());
+}
+
+#[test]
+fn builder_sandbox_denies_unlisted_egress_host() {
+    use crate::security::SandboxConfig;
+    let sandbox = std::sync::Arc::new(SandboxConfig::new().allow_domain("example.com"));
+    let result = A2AClient::builder("http://localhost:8080")
+        .sandbox(sandbox)
+        .build();
+    assert!(
+        matches!(result, Err(e) if e.to_string().contains("sandbox denied egress")),
+        "egress to an unlisted host must be denied at build time"
+    );
+}
+
+#[tokio::test]
+async fn get_agent_card_falls_back_to_agent_json() {
+    // B7 wire-compat: when the standard agent-card.json path is absent, the
+    // client must retry the `/.well-known/agent.json` discovery alias.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let card_json =
+        serde_json::to_string(&AgentCard::new("fallback", "desc", "http://localhost")).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let next_card_json = card_json.clone();
+            tokio::spawn(async move {
+                let card_json = next_card_json;
+                let mut buf = [0u8; 4096];
+                let mut req = Vec::new();
+                let mut head_end = None;
+                while head_end.is_none() {
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    head_end = req.windows(4).position(|w| w == b"\r\n\r\n");
+                }
+                let Some(head_end) = head_end else { return };
+                let path = String::from_utf8_lossy(&req[..head_end])
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                let (status, body) = if path.contains("agent-card.json") {
+                    (404, r#"{"error":"not found"}"#.to_string())
+                } else {
+                    (200, card_json)
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    if status == 404 { "Not Found" } else { "OK" },
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            });
+        }
+    });
+
+    let client = A2AClient::new(format!("http://{addr}")).unwrap();
+    let card = client.get_agent_card().await.unwrap();
+    assert_eq!(
+        card.name, "fallback",
+        "must recover the card from agent.json"
+    );
+}

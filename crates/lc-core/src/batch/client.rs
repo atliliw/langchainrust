@@ -5,6 +5,13 @@ use super::types::*;
 use crate::language_models::LLMResult;
 use lc_schema::Message;
 use serde_json::json;
+use std::time::Duration;
+
+/// Per-request deadline for batch HTTP calls (B2). A hung request must not leave
+/// `submit`/`poll`/`results` awaiting forever; the overall batch wait is separately
+/// bounded by `submit_and_wait`'s `max_wait_ms`. 180s matches the unified
+/// `HttpClient::api()` deadline used across lc-providers.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Client for submitting, polling, and retrieving batch results.
 pub struct BatchClient {
@@ -24,7 +31,17 @@ impl BatchClient {
             BatchProvider::Anthropic => "https://api.anthropic.com/v1".to_string(),
         };
         Self {
-            http: reqwest::Client::new(),
+            // B2: carry the per-request deadline on the shared client so every batch
+            // HTTP call (`submit`/`poll`/`results`) is bounded, not just the total wait.
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|e| {
+                    log::warn!(
+                        "failed to build batch HTTP client with timeout, falling back to default: {e}"
+                    );
+                    reqwest::Client::new()
+                }),
             api_key: api_key.into(),
             provider,
             base_url,
@@ -81,8 +98,17 @@ impl BatchClient {
                     "role": "assistant",
                     "content": msg.content,
                 });
+                // B4: a tool_calls serialize failure must not be silently dropped.
+                // `Vec<ToolCall>` is infallible to serialize in practice, but if it
+                // ever fails we log it loudly rather than injecting a silent Null
+                // that destroys the user↔tool turn pairing downstream.
                 if let Some(tc) = &msg.tool_calls {
-                    m["tool_calls"] = serde_json::to_value(tc).unwrap_or(serde_json::Value::Null);
+                    match serde_json::to_value(tc) {
+                        Ok(value) => m["tool_calls"] = value,
+                        Err(e) => log::error!(
+                            "failed to serialize AI tool_calls for batch request, tool_calls dropped: {e}"
+                        ),
+                    }
                 }
                 m
             }

@@ -1,9 +1,11 @@
 // lc-tools/src/sandbox/local.rs
 //! Local process sandbox backend.
 
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use regex::Regex;
 use tokio::process::Command;
 
 use super::{CodeSandbox, Language, RunResult, SandboxError};
@@ -14,6 +16,9 @@ use super::{CodeSandbox, Language, RunResult, SandboxError};
 /// trivially bypassed (`__import__("o" + "s")`, `import os;` variants, exec, ...).
 /// Untrusted code must not be run through [`LocalSandbox`] at all unless the process
 /// itself sits inside a real sandbox (container / VM / WASM).
+///
+/// The JS branch carries an equivalent noise filter ([`BLOCKED_JS_MODULES`] +
+/// [`BLOCKED_JS_CALL_REGEX`], H1) so it is not left completely open where Python has a guard.
 const BLOCKED_PYTHON_IMPORTS: &[&str] = &[
     "os",
     "subprocess",
@@ -55,6 +60,65 @@ fn contains_dangerous_python_import(code: &str) -> Option<String> {
                     return Some(blocked.to_string());
                 }
             }
+        }
+    }
+    None
+}
+
+/// Dangerous Node.js modules for the JS branch, mirroring [`BLOCKED_PYTHON_IMPORTS`].
+///
+/// H1 (0.25.0): the JS branch previously executed `node -e <code>` with *no* guard while Python
+/// had at least the noise-filter blacklist — strictly worse, and it made the "sandbox" name even
+/// more misleading for a local raw process. This is the same **noise filter, not a security
+/// boundary**: a substring scan is trivially bypassed (`require('child'+'process')`,
+/// `globalThis['fs']`, unicode obfuscation...). Untrusted code must not run through
+/// [`LocalSandbox`] unless the process itself sits inside a real sandbox (container / VM / WASM).
+const BLOCKED_JS_MODULES: &[&str] = &[
+    "fs",
+    "child_process",
+    "net",
+    "dgram",
+    "tls",
+    "http",
+    "https",
+    "http2",
+    "worker_threads",
+    "vm",
+    "cluster",
+    "repl",
+    "readline",
+    "os",
+];
+
+/// Common dangerous Node.js **calls** not gated by an import: `process.env`/`process.exit`, the
+/// `eval`/`Function` constructors, `globalThis` dynamic reach, and `spawn`/`exec` (which a
+/// `node -e` one-liner can also reach via `child_process`, already blocked above). These are the
+/// JS analogues of [`BLOCKED_PYTHON_IMPORTS`]/builtin calls — word-boundary guarded so ordinary
+/// identifiers like `evaluate(`/`spawner(` do not false-positive.
+static BLOCKED_JS_CALL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:process\.|eval\s*\(|Function\s*\(|globalThis|spawn\s*\(|exec\s*\()")
+        .expect("static JS regex literal must compile")
+});
+
+/// Check if JavaScript code reaches dangerous Node.js APIs (noise-filter, see above).
+fn contains_dangerous_javascript(code: &str) -> Option<String> {
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let code_part = trimmed.split("//").next().unwrap_or(trimmed);
+        // require('<module>') / require("<module>") for the blocked modules.
+        for m in BLOCKED_JS_MODULES {
+            if code_part.contains(&format!("require('{}')", m))
+                || code_part.contains(&format!("require(\"{}\")", m))
+            {
+                return Some(format!("require('{}')", m));
+            }
+        }
+        // statement-level dangerous access: process.* / eval( / Function( / globalThis / spawn / exec.
+        if let Some(m) = BLOCKED_JS_CALL_REGEX.find(code_part) {
+            return Some(m.as_str().to_string());
         }
     }
     None
@@ -118,6 +182,14 @@ impl LocalSandbox {
                 Ok(cmd)
             }
             Language::JavaScript => {
+                if let Some(dangerous) = contains_dangerous_javascript(code) {
+                    return Err(SandboxError::Runtime(format!(
+                        "Code contains dangerous Node.js API: '{}'. \
+                         Blocked by the noise-filter blacklist (note: this is not a \
+                         security boundary; untrusted code must run in a real sandbox).",
+                        dangerous
+                    )));
+                }
                 let mut cmd = Command::new(&self.node_path);
                 cmd.arg("-e").arg(code);
                 Ok(cmd)
@@ -212,6 +284,43 @@ mod tests {
         assert!(contains_dangerous_python_import("import json").is_none());
         assert!(contains_dangerous_python_import("from datetime import datetime").is_none());
         assert!(contains_dangerous_python_import("# import os").is_none());
+    }
+
+    #[test]
+    fn test_dangerous_javascript_detection() {
+        // module requires (H1)
+        assert!(contains_dangerous_javascript("require('fs').readFileSync('/etc/passwd')").is_some());
+        assert!(contains_dangerous_javascript("require(\"child_process\")").is_some());
+        assert!(contains_dangerous_javascript("const net = require('net')").is_some());
+        // statement-level dangerous calls
+        assert!(contains_dangerous_javascript("process.env").is_some());
+        assert!(contains_dangerous_javascript("eval('console.log(1)')").is_some());
+        assert!(contains_dangerous_javascript("new Function('x', 'return x')").is_some());
+        assert!(contains_dangerous_javascript("globalThis.foo = 1").is_some());
+        // benign code and comment lines pass
+        assert!(contains_dangerous_javascript("console.log(1 + 2)").is_none());
+        assert!(contains_dangerous_javascript("JSON.parse(x).map(v => v * 2)").is_none());
+        assert!(contains_dangerous_javascript("// require('fs')").is_none());
+        assert!(contains_dangerous_javascript("evaluate(fn).execute()").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_javascript_dangerous_api_blocked() {
+        let sandbox = LocalSandbox::new();
+        let result = sandbox
+            .run(
+                "require('fs').readFileSync('/etc/passwd')",
+                Language::JavaScript,
+                10_000,
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("dangerous Node.js API"),
+            "Expected dangerous Node.js API error, got: {}",
+            err
+        );
     }
 
     #[tokio::test]

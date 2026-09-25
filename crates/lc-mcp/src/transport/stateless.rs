@@ -39,6 +39,12 @@ impl StatelessTransport {
             url: url.into(),
             http: Client::builder()
                 .timeout(STATELESS_TIMEOUT)
+                // F2: never follow redirects. A hostile server 302ing into an
+                // intranet host would otherwise be fetched silently; disabling
+                // automatic redirects guarantees the request (and any bearer
+                // token from `with_auth`) is only ever sent to the configured
+                // host. A 3xx is surfaced to the caller to inspect instead.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             auth: None,
@@ -51,6 +57,9 @@ impl StatelessTransport {
             url: url.into(),
             http: Client::builder()
                 .timeout(STATELESS_TIMEOUT)
+                // F2: see [`Self::new`] — redirects are not followed, so the
+                // bearer token is never forwarded to a redirect target.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             auth: Some(auth),
@@ -66,6 +75,10 @@ impl StatelessTransport {
     ///
     /// Public so gateway adapters can reuse the exact wire behavior.
     pub async fn post_jsonrpc(&self, req: &MCPRequest) -> Result<MCPResponse, MCPError> {
+        // F2: validate the target before building the request, so neither the
+        // JSON-RPC payload nor a `with_auth` bearer token is ever handed to a
+        // non-https / hostless / intranet target (SSRF + credential leak).
+        validate_target_url(&self.url)?;
         let mut builder = self
             .http
             .post(&self.url)
@@ -107,10 +120,106 @@ pub fn default_meta() -> RequestMeta {
     RequestMeta::default_for(MCP_VERSION_STATELESS)
 }
 
+/// F2 target-URL validation: the stateless endpoint must be `https`, except
+/// cleartext `http` on a loopback host (local dev servers only). This rejects
+/// sending request payloads or bearer tokens to cleartext-on-the-internet and
+/// to URLs without a resolvable host string, before any network I/O.
+fn validate_target_url(url: &str) -> Result<(), MCPError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| MCPError::new(-32000, format!("invalid target URL: {e}")))?;
+    let is_loopback = match parsed.host_str() {
+        Some(h) => {
+            let lower = h.trim_matches(['[', ']']).to_ascii_lowercase();
+            lower == "localhost"
+                || lower == "localhost."
+                || lower == "127.0.0.1"
+                || lower == "::1"
+        }
+        None => false,
+    };
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
+        return Err(MCPError::new(
+            -32000,
+            format!("stateless target must use HTTPS (got scheme '{}')", parsed.scheme()),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::{MCP_METHOD_HEADER, MCP_NAME_HEADER, MCP_VERSION_STATELESS};
+
+    /// F2: cleartext `http` on a non-loopback host is rejected (the target
+    /// would be reachable by a path that leaks payload/token); https and
+    /// loopback http are accepted.
+    #[test]
+    fn f2_validate_target_url_scheme_and_host() {
+        assert!(validate_target_url("https://example.com/mcp").is_ok());
+        assert!(validate_target_url("https://10.0.0.5/mcp").is_ok());
+        assert!(validate_target_url("http://localhost:8080/mcp").is_ok());
+        assert!(validate_target_url("http://127.0.0.1:8080/mcp").is_ok());
+        assert!(validate_target_url("http://[::1]:8080/mcp").is_ok());
+
+        assert!(validate_target_url("http://example.com/mcp").is_err());
+        assert!(validate_target_url("http://192.168.1.10/mcp").is_err());
+        assert!(validate_target_url("ftp://example.com/mcp").is_err());
+        assert!(validate_target_url("not a url").is_err());
+    }
+
+    /// F2: a redirect is NOT followed, so a bearer token is never forwarded to
+    /// a redirect target. A server answering 302 must yield the 3xx as-is, not
+    /// march on to the Location.
+    #[tokio::test]
+    async fn f2_redirect_is_not_followed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // A server that 302s to a second listener (a different host string).
+        let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sink_addr = sink.local_addr().unwrap();
+        let sink_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = sink.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await;
+            }
+        });
+
+        let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        let target = format!("http://127.0.0.1:{origin_port}/mcp");
+        let origin_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = origin.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 302 Found\r\nContent-Length: 0\r\nLocation: http://{}/evil\r\n\r\n",
+                    sink_addr
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        // If redirects were followed, the client would reach the sink (200) and
+        // parse `{}`; hitting the 302 proves the policy is `none`.
+        let transport = StatelessTransport::with_auth(target, AuthScheme::Bearer("secret-token".into()));
+        let err = transport
+            .post_jsonrpc(&MCPRequest::new(1, "ping", None))
+            .await
+            .expect_err("a 302 must not be followed");
+        assert!(
+            err.message.contains("302"),
+            "error: {:?}",
+            err.message
+        );
+
+        origin_task.abort();
+        sink_task.abort();
+    }
 
     /// Meta defaults carry the stateless version and client identity.
     #[test]

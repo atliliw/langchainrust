@@ -2,12 +2,10 @@
 //! Tool execution helpers shared by the streaming and non-streaming paths.
 
 use super::AgentError;
-use crate::types::{AgentAction, ToolInput};
 use lc_core::tools::{BaseTool, ToolError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
 
 /// A11: build an O(1) name → tool index from a tool list.
 ///
@@ -46,12 +44,30 @@ pub(crate) fn wrap_tool_output(output: &str) -> String {
 /// path previously hard-failed upward and no longer does.
 ///
 /// Only `AgentError::ToolExecutionError` (the tool ran and failed) is routed here.
-/// Framework guardrails that reject a call *before* execution — `ToolNotFound`, tool
+/// A hallucinated / unregistered `ToolNotFound` is also **soft** (a recoverable
+/// observation reflecting a tool that never executed — stage-G G1), matching the
+/// nailed 0.20.0 A-H3 parallel semantics so the sequential and parallel paths cannot
+/// diverge. Framework guardrails that reject a call *before* execution — tool
 /// permission policy, hook `Reject`, and `ToolError::ControlAbort` (e.g. the handoff
 /// cycle / depth guard) — are **not** soft-failed: the agent cannot recover from them
 /// by re-planning, so they propagate hard.
 pub(crate) fn tool_error_observation(err: &AgentError) -> String {
     format!("[Tool execution error: {err}]")
+}
+
+/// stage-G G6: shared formatting for an approval-denial observation. All four
+/// execution paths (invoke/stream × single/parallel) produce byte-identical
+/// text so the non-execution predicate below stays reliable.
+pub(crate) fn denied_observation(reason: &str) -> String {
+    format!("[DENIED by approval: {reason}]")
+}
+
+/// stage-G G6: a soft observation reflecting a tool that **never executed** —
+/// an approval `Deny` or a hallucinated / unregistered name. Such calls must
+/// not consume the `max_tool_calls` budget (only executed tools count); the
+/// loops decrement `metrics.tool_calls` for these before continuing.
+pub(crate) fn is_non_execution_observation(obs: &str) -> bool {
+    obs.starts_with("[DENIED by approval:") || obs.starts_with("[Tool not found: ")
 }
 
 /// Executes a tool with an optional timeout.
@@ -71,100 +87,6 @@ pub(crate) async fn run_tool_with_timeout(
         },
         None => fut.await,
     }
-}
-
-/// Helper: execute a single tool for streaming (no RunTree dependency).
-///
-/// A11: takes the prebuilt name → tool index (an O(1) lookup) instead of a raw slice.
-/// `spotlight`/`rule_of_two` mirror the executor's A1/A2 toggles so the streaming path
-/// (which cannot read `AgentExecutor` fields) applies the same guards as invoke.
-pub(crate) async fn execute_tool_for_stream(
-    tools: &HashMap<String, Arc<dyn BaseTool>>,
-    action: &AgentAction,
-    timeout: Option<Duration>,
-    spotlight: bool,
-    rule_of_two: bool,
-) -> Result<String, AgentError> {
-    let tool = tools
-        .get(&action.tool)
-        .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
-
-    // A2: block a tool that arms all three risk properties (v0.22.1 §S8).
-    if rule_of_two && tool.risk().count_armed() >= 3 {
-        return Ok(
-            "[BLOCKED by Rule of Two: tool declares untrusted-input + sensitive-access + state-changing]"
-                .to_string(),
-        );
-    }
-
-    let input_str = match &action.tool_input {
-        ToolInput::String { value: s } => s.clone(),
-        ToolInput::Object { value: v } => serde_json::to_string(v)
-            .map_err(|e| AgentError::Other(format!("Failed to serialize tool input: {}", e)))?,
-    };
-
-    let output = run_tool_with_timeout(tool, input_str, timeout)
-        .await
-        .map_err(|e| match e {
-            // 0.20.0 A-H1: keep `ControlAbort` (handoff cycle / depth guard) distinct
-            // from a plain execution failure, mirroring `execute_tool_inner`. The
-            // streaming caller must be able to tell "the agent cannot recover, stop"
-            // apart from "the tool ran and failed, re-plan".
-            ToolError::ControlAbort(msg) => AgentError::Other(format!("Tool call aborted: {msg}")),
-            other => AgentError::ToolExecutionError(other.to_string()),
-        })?;
-
-    // A1: wrap untrusted tool output when spotlighting is on (v0.22.1 §S8).
-    Ok(if spotlight {
-        wrap_tool_output(&output)
-    } else {
-        output
-    })
-}
-
-/// Helper: execute multiple tools in parallel for streaming.
-///
-/// Concurrency is capped at `max_concurrency` via a local semaphore.
-///
-/// 0.20.0 A-H1: mirrors the non-streaming parallel path — only a tool-**execution**
-/// error becomes an observation; a framework guardrail (`ToolNotFound` /
-/// `ControlAbort` / input serialization) in any one tool propagates hard as `Err` so
-/// the caller ends the stream instead of feeding a re-plan loop that cannot recover.
-pub(crate) async fn execute_tools_parallel_for_stream(
-    tools: &HashMap<String, Arc<dyn BaseTool>>,
-    actions: &[AgentAction],
-    timeout: Option<Duration>,
-    max_concurrency: usize,
-    spotlight: bool,
-    rule_of_two: bool,
-) -> Result<Vec<String>, AgentError> {
-    use futures_util::future::join_all;
-
-    let sem = Arc::new(Semaphore::new(max_concurrency));
-    let futures = actions.iter().map(|action| {
-        let sem = sem.clone();
-        async move {
-            let _permit = sem
-                .acquire_owned()
-                .await
-                .map_err(|e| AgentError::Other(format!("concurrency semaphore closed: {e}")))?;
-            execute_tool_for_stream(tools, action, timeout, spotlight, rule_of_two).await
-        }
-    });
-
-    let results = join_all(futures).await;
-
-    let mut observations = Vec::with_capacity(results.len());
-    for result in results {
-        match result {
-            Ok(output) => observations.push(output),
-            Err(e @ AgentError::ToolExecutionError(_)) => {
-                observations.push(tool_error_observation(&e))
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(observations)
 }
 
 #[cfg(test)]

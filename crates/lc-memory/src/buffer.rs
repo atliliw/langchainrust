@@ -143,11 +143,20 @@ impl BaseMemory for ConversationBufferMemory {
 
         if self.return_messages {
             // Return message list
+            // 0.25.0 D6 (M-me5): a message that fails JSON serialization is a
+            // real defect — propagate instead of silently injecting Null and
+            // dropping context on the floor.
             let messages: Vec<Value> = self
                 .buffer_as_messages()
                 .into_iter()
-                .map(|msg| serde_json::to_value(&msg).unwrap_or(Value::Null))
-                .collect();
+                .map(|msg| {
+                    serde_json::to_value(&msg).map_err(|e| {
+                        MemoryError::LoadError(format!(
+                            "failed to serialize memory message: {e}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, MemoryError>>()?;
             result.insert(self.memory_key.clone(), Value::Array(messages));
         } else {
             // Return string

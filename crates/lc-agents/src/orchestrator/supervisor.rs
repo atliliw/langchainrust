@@ -1,4 +1,4 @@
-//! N1 (v0.24.0): Supervisor dynamic-routing orchestrator — "agent as tool",
+//! N1 (v0.25.0): Supervisor dynamic-routing orchestrator — "agent as tool",
 //! one-level sub-agent recursion.
 //!
 //! [`SequentialPipeline`](super::SequentialPipeline) runs a *fixed* stage list and

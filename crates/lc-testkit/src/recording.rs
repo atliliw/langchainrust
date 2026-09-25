@@ -14,6 +14,7 @@ use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
 use lc_core::runnables::{Runnable, RunnableConfig};
+use lc_core::tools::ToolCall;
 use lc_core::tools::ToolDefinition;
 use lc_providers::ProviderError;
 use lc_schema::Message;
@@ -229,36 +230,78 @@ where
         config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
     {
-        let mut stream = self
+        let inner = self
             .inner
             .stream_chat(messages.clone(), config)
             .await
             .map_err(to_testkit)?;
-        let mut full = String::new();
-        let mut usage: Option<TokenUsage> = None;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(to_testkit)?;
-            full.push_str(&chunk.text);
-            if chunk.token_usage.is_some() {
-                usage = chunk.token_usage;
-            }
-        }
-        let response = LLMResult {
-            content: full.clone(),
-            model: self.model_name.clone(),
-            token_usage: usage.clone(),
-            ..Default::default()
-        };
-        self.recorder.record(&RecordedExchange {
-            messages,
-            response,
-            tools: self.tools.clone(),
-        });
-        let stream = futures_util::stream::iter(vec![Ok(StreamChunk {
-            text: full,
-            token_usage: usage,
-            tool_calls: None,
-        })]);
+        let recorder = self.recorder.clone();
+        let model_name = self.model_name.clone();
+        let tools = self.tools.clone();
+        let record_request = messages;
+
+        // I1: true streaming + recording. Forward every chunk as it arrives (so
+        // consumer-side `on_new_token` / backpressure apply), accumulating the
+        // full text / usage / tool calls / thinking along the way. The assembled
+        // response is written to the recording only once the stream completes —
+        // and `tool_calls` are captured so replay can route tool exchanges. A
+        // mid-stream error is forwarded and nothing is recorded (matching the
+        // failure contract of the non-streaming `chat`).
+        let seed = (
+            inner,
+            String::new(),
+            None::<TokenUsage>,
+            None::<Vec<ToolCall>>,
+            String::new(),
+        );
+        let stream = futures_util::stream::unfold(
+            seed,
+            move |(mut inner, mut full, mut usage, mut tcs, mut thinking)| {
+                let recorder = recorder.clone();
+                let model_name = model_name.clone();
+                let tools = tools.clone();
+                let record_request = record_request.clone();
+                async move {
+                    match inner.next().await {
+                        Some(Ok(chunk)) => {
+                            full.push_str(&chunk.text);
+                            if chunk.token_usage.is_some() {
+                                usage = chunk.token_usage.clone();
+                            }
+                            if chunk.tool_calls.is_some() {
+                                tcs = chunk.tool_calls.clone();
+                            }
+                            if let Some(t) = &chunk.thinking_content {
+                                thinking.push_str(t);
+                            }
+                            Some((Ok(chunk), (inner, full, usage, tcs, thinking)))
+                        }
+                        Some(Err(e)) => {
+                            Some((Err(to_testkit(e)), (inner, full, usage, tcs, thinking)))
+                        }
+                        None => {
+                            let response = LLMResult {
+                                content: full,
+                                model: model_name,
+                                token_usage: usage,
+                                tool_calls: tcs,
+                                thinking_content: if thinking.is_empty() {
+                                    None
+                                } else {
+                                    Some(thinking)
+                                },
+                            };
+                            recorder.record(&RecordedExchange {
+                                messages: record_request,
+                                response,
+                                tools,
+                            });
+                            None
+                        }
+                    }
+                }
+            },
+        );
         Ok(Box::pin(stream))
     }
 

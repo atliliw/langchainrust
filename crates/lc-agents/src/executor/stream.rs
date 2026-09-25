@@ -13,11 +13,10 @@ use super::budget::{budget_cost_gate, budget_iteration_gate, budget_token_gate, 
 use super::engine::{build_plan_config, AgentExecutor, MaxIterationsPolicy};
 use super::hooks::{run_after_completion_hooks, run_before_completion_hooks};
 use super::semantic_memory::SEMANTIC_MEMORY_INPUT_KEY;
-use super::tools::{
-    execute_tool_for_stream, execute_tools_parallel_for_stream, tool_error_observation,
-};
+use super::tool_gate::{ToolGate, ToolOutcome};
+use super::tools::{denied_observation, is_non_execution_observation, tool_error_observation};
 use super::AgentError;
-use crate::hooks::HookError;
+use crate::hooks::{HookError, StreamAction};
 use crate::metrics::AgentMetrics;
 use crate::streaming::state::AgentStreamEvent;
 use crate::types::{AgentOutput, AgentStep, ToolInput};
@@ -30,6 +29,28 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// B5: applies each stream hook's `on_stream_chunk` to a token in order.
+///
+/// Hooks run left-to-right; each sees the token as it stands after the previous
+/// hook's `Forward`/`Replace`, or the empty string once a hook has `Filter`ed.
+/// Returns `Some(text)` to forward (Forward/Replace content) or `None` when the
+/// token was filtered to nothing and must be dropped from the stream.
+fn apply_stream_hooks(hooks: &[Arc<dyn crate::hooks::AgentHook>], token: &str) -> Option<String> {
+    let mut current = token.to_string();
+    for hook in hooks {
+        match hook.on_stream_chunk(&current) {
+            StreamAction::Forward(text) => current = text,
+            StreamAction::Filter => current = String::new(),
+            StreamAction::Replace(text) => current = text,
+        }
+    }
+    if current.is_empty() {
+        None
+    } else {
+        Some(current)
+    }
+}
 
 impl AgentExecutor {
     /// Stream agent execution as a true async stream of events.
@@ -111,6 +132,9 @@ impl AgentExecutor {
         let tool_timeout = self.tool_timeout;
         let max_concurrency = self.max_concurrency;
         let hooks = self.hooks.clone();
+        // B5: the stream path now runs the shared tool gate (hooks + approval +
+        // callbacks + tool-level RunTree), so it needs the pieces the gate holds.
+        let approval = self.approval.clone();
         let tool_policy = self.tool_policy.clone();
         let budget = self.budget.clone();
         let compaction = self.compaction.clone();
@@ -133,6 +157,21 @@ impl AgentExecutor {
         let rule_of_two = self.rule_of_two;
         let spotlight_tool_output = self.spotlight_tool_output;
 
+        // B5: converge the stream path onto the shared gate — the same
+        // hooks → approval → final-name resolution → execution → callback chain the
+        // invoke path uses. Per-stream semaphore caps parallel tools at max_concurrency.
+        let gate = ToolGate::from_parts(
+            tools_by_name,
+            hooks.clone(),
+            approval,
+            tool_policy.clone(),
+            callbacks.clone(),
+            rule_of_two,
+            spotlight_tool_output,
+            tool_timeout,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrency)),
+        );
+
         tokio::spawn(async move {
             let mut intermediate_steps: Vec<AgentStep> = Vec::new();
             let mut inputs = HashMap::new();
@@ -147,11 +186,11 @@ impl AgentExecutor {
             // (`__lc_parent_run_id` / `__lc_trace_id`) the invoke path stamps, so
             // the provider-built LLM runs are children of this chain root.
             //
-            // Remaining known gaps (honest): tool-level `on_tool_*` callbacks and
-            // RunTree trace_id stamping from RunnableConfig metadata (stream()
-            // takes no config) are still not dispatched on this path — invoke's
-            // tool child-run tracing has no equivalent here because tool execution
-            // goes through `execute_tool_for_stream` without a RunTree.
+            // B5: tool execution on this path goes through the shared `ToolGate`,
+            // which creates tool-level RunTree children and dispatches `on_tool_*`
+            // callbacks exactly like invoke — the two paths no longer diverge.
+            // (RunnableConfig-based trace_id stamping from metadata still does not
+            // apply; stream() takes no config.)
             let mut root_run = RunTree::new(
                 "AgentExecutor",
                 RunType::Chain,
@@ -212,6 +251,13 @@ impl AgentExecutor {
             let loop_start = Instant::now();
             let mut metrics = AgentMetrics::default();
 
+            // stage-G G7: capture the shared tracker's spend as this run's baseline, so
+            // `max_cost_usd` caps THIS run's incremental spend (matches invoke).
+            let cost_baseline = match &cost_tracker {
+                Some(tracker) => tracker.total_cost_usd().await,
+                None => 0.0,
+            };
+
             for iteration in 0..max_iterations {
                 if verbose {
                     log::info!("=== Stream Iteration {} ===", iteration + 1);
@@ -271,13 +317,22 @@ impl AgentExecutor {
                     // away, and the ToolStart/FinalAnswer below would no longer be able
                     // to use the outer tx.
                     let send_tx = tx.clone();
+                    // B5: stream hooks inspect every token via `on_stream_chunk` and
+                    // can Forward / Filter / Replace it (the token loop previously
+                    // skipped these hooks entirely). The closure captures the hooks by
+                    // Arc clone so it stays 'static.
+                    let stream_hooks = hooks.clone();
                     // The callback receives its own String (F3): the async block owns
                     // the token directly instead of borrowing the argument, so the future
                     // is 'static and can be cast to a trait object with `as`.
                     let mut on_token = move |token: String| {
                         let tx = send_tx.clone();
+                        let hooks = stream_hooks.clone();
                         Box::pin(async move {
-                            let _ = tx.send(Ok(AgentStreamEvent::Text { content: token })).await;
+                            // Filtered tokens are dropped; Forward / Replace are emitted.
+                            if let Some(content) = apply_stream_hooks(&hooks, &token) {
+                                let _ = tx.send(Ok(AgentStreamEvent::Text { content })).await;
+                            }
                         }) as Pin<Box<dyn Future<Output = ()> + Send>>
                     };
                     match agent
@@ -320,9 +375,11 @@ impl AgentExecutor {
                     return;
                 }
                 // B3 (0.22.4): cumulative USD spend gate, same semantics as invoke.
+                // stage-G G7: gated on this run's incremental spend (total minus
+                // baseline), so a shared tracker never trips this run via another run.
                 if let Some(tracker) = &cost_tracker {
-                    let spent = tracker.total_cost_usd().await;
-                    if let Some(err) = budget_cost_gate(budget.as_ref(), spent) {
+                    let incremental = (tracker.total_cost_usd().await - cost_baseline).max(0.0);
+                    if let Some(err) = budget_cost_gate(budget.as_ref(), incremental) {
                         stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                         publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                         let _ = tx.send(Err(err)).await;
@@ -439,40 +496,50 @@ impl AgentExecutor {
                             return;
                         }
 
-                        // Execute the tool. A tool **execution** failure becomes an
-                        // observation fed back to the loop (S3.1) so the agent can
-                        // recover. Framework guardrails (A-H1, 0.20.0) —
-                        // `ControlAbort` handoff/depth guard, `ToolNotFound`, input
-                        // serialization — reject the call *before* execution; the agent
-                        // cannot recover from them by re-planning, so they end the
-                        // stream hard, matching the non-streaming invoke path.
-                        let observation = match execute_tool_for_stream(
-                            &tools_by_name,
-                            &action,
-                            tool_timeout,
-                            spotlight_tool_output,
-                            rule_of_two,
-                        )
-                        .await
-                        {
-                            Ok(obs) => obs,
-                            Err(e @ AgentError::ToolExecutionError(_)) => {
-                                tool_error_observation(&e)
-                            }
-                            Err(e) => {
-                                let msg = e.to_string();
-                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
-                                publish_metrics(
-                                    &metrics,
-                                    &metrics_store,
-                                    &metrics_sink,
-                                    loop_start,
-                                )
-                                .await;
-                                let _ = tx.send(Err(AgentError::Other(msg))).await;
-                                return;
-                            }
-                        };
+                        // Execute the tool. A tool **execution** failure becomes a soft observation fed
+                        // back to the loop (S3.1) so the agent can recover; so, since
+                        // stage-G G1, does a hallucinated / unregistered name
+                        // (`ToolNotFound`) — a `[Tool not found: …]` observation,
+                        // matching the parallel path (0.20.0 A-H3) so the two cannot
+                        // diverge. Framework guardrails that reject the call *before*
+                        // execution (`ControlAbort` handoff/depth guard, permission
+                        // policy, hook `Reject`, input serialization) end the stream
+                        // hard, matching the non-streaming invoke path.
+                        // B5: single tool goes through the shared gate (hooks → approval ·
+                        // final-name resolution → execution → callbacks). On the single
+                        // path an approval **Deny** is a soft observation the model can
+                        // re-plan around (same as invoke); only a framework guardrail
+                        // error ends the stream hard.
+                        let observation =
+                            match gate.execute_one(&action, &root_run, None, None).await {
+                                Ok(ToolOutcome::Done(text)) => text,
+                                Ok(ToolOutcome::Denied { reason }) => denied_observation(&reason),
+                                Err(e @ AgentError::ToolExecutionError(_)) => {
+                                    tool_error_observation(&e)
+                                }
+                                Err(AgentError::ToolNotFound(name)) => {
+                                    format!("[Tool not found: {name}]")
+                                }
+                                Err(e) => {
+                                    let msg = e.to_string();
+                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                    publish_metrics(
+                                        &metrics,
+                                        &metrics_store,
+                                        &metrics_sink,
+                                        loop_start,
+                                    )
+                                    .await;
+                                    let _ = tx.send(Err(AgentError::Other(msg))).await;
+                                    return;
+                                }
+                            };
+
+                        // stage-G G6: a denied / unregistered call never executed — undo
+                        // the pre-increment so it doesn't consume `max_tool_calls`.
+                        if is_non_execution_observation(&observation) {
+                            metrics.tool_calls = metrics.tool_calls.saturating_sub(1);
+                        }
 
                         let _ = tx
                             .send(Ok(AgentStreamEvent::ToolEnd {
@@ -536,23 +603,27 @@ impl AgentExecutor {
                             return;
                         }
 
-                        let observations = match execute_tools_parallel_for_stream(
-                            &tools_by_name,
-                            &actions,
-                            tool_timeout,
-                            max_concurrency,
-                            spotlight_tool_output,
-                            rule_of_two,
-                        )
-                        .await
-                        {
+                        let observations = match gate.execute_many(&actions, &root_run).await {
                             Ok(obs) => obs,
-                            // A-H1 (0.20.0): a framework guardrail in any one tool
-                            // of the batch ends the stream hard, matching the
-                            // invoke-parallel path. Execution errors were already
-                            // converted to observations inside the helper.
+                            // A-H1 (0.20.0) / B5: a framework guardrail in any one tool
+                            // of the batch ends the stream hard (batch aborted, matching
+                            // invoke-parallel). Tool-execution failures / unknown names
+                            // were already converted to ordered observations inside the
+                            // helper.
+                            // stage-G G4: the batch has already emitted a `ToolStart` for
+                            // every action — close each with a `ToolEnd` (marked aborted)
+                            // so consumers never see an orphaned Start before the hard
+                            // error.
                             Err(e) => {
                                 let msg = e.to_string();
+                                for action in &actions {
+                                    let _ = tx
+                                        .send(Ok(AgentStreamEvent::ToolEnd {
+                                            name: action.tool.clone(),
+                                            output: format!("[batch aborted: {msg}]"),
+                                        }))
+                                        .await;
+                                }
                                 stream_chain_error(&callbacks, &mut root_run, &msg).await;
                                 publish_metrics(
                                     &metrics,
@@ -565,6 +636,15 @@ impl AgentExecutor {
                                 return;
                             }
                         };
+
+                        // stage-G G6: denied / not-found batch calls never executed — undo
+                        // their share of the pre-increment so they don't consume
+                        // `max_tool_calls` (only executed tools count).
+                        let never_executed = observations
+                            .iter()
+                            .filter(|o| is_non_execution_observation(o))
+                            .count();
+                        metrics.tool_calls = metrics.tool_calls.saturating_sub(never_executed);
 
                         // zip 第二参数收 IntoIterator,去掉多余 .into_iter()
                         // (stable clippy::useless_conversion)。

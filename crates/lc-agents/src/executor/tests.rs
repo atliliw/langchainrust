@@ -384,6 +384,7 @@ impl BaseAgent for TestToolAgent {
                     value: serde_json::json!({"expression": "2 + 2"}),
                 },
                 log: "call_1".to_string(),
+                tool_call_id: Some("call_1".to_string()),
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -795,6 +796,7 @@ impl BaseAgent for InjectionProbeAgent {
                     value: "page".to_string(),
                 },
                 log: "call_echo".to_string(),
+                tool_call_id: Some("call_echo".to_string()),
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -930,6 +932,7 @@ impl BaseAgent for RelentlessActionAgent {
                 value: serde_json::json!({}),
             },
             log: String::new(),
+            tool_call_id: None,
         }))
     }
 }
@@ -1443,4 +1446,270 @@ async fn semantic_extraction_skipped_on_failed_run() {
         "extractor must not run on error"
     );
     assert_eq!(store.len_namespace("alice").await.unwrap(), 0);
+}
+
+// --- B5 tests ---
+
+/// Hook that renames a tool named "old" to "new" and rewrites its arguments.
+/// Only the FINAL name "new" is registered on the executor — a pre-B5 resolution
+/// by the pre-hook name would hard-fail with `ToolNotFound`.
+struct FinalNameRenameHook;
+
+impl crate::hooks::AgentHook for FinalNameRenameHook {
+    fn on_before_tool_call(
+        &self,
+        ctx: &mut crate::hooks::ToolCallContext,
+    ) -> crate::hooks::ToolCallAction {
+        if ctx.name == "old" {
+            crate::hooks::ToolCallAction::Modify {
+                name: "new".to_string(),
+                arguments: serde_json::json!({"changed": true}),
+            }
+        } else {
+            crate::hooks::ToolCallAction::Continue
+        }
+    }
+}
+
+/// Records the exact input string it received, proving the *modified* arguments
+/// reach the resolved tool rather than the caller's original ones.
+struct RecordingTool {
+    name: &'static str,
+    seen: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+#[async_trait]
+impl BaseTool for RecordingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "B5 recording tool"
+    }
+    async fn run(&self, input: String) -> Result<String, ToolError> {
+        *self.seen.lock().unwrap() = input.clone();
+        Ok(format!("ran-{}", self.name))
+    }
+}
+
+/// One round emits `old` (which the hook renames to `new`); the next finishes
+/// with the observation so the test can assert which tool actually ran.
+struct FinalNameAgent;
+
+#[async_trait]
+impl BaseAgent for FinalNameAgent {
+    async fn plan(
+        &self,
+        intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        if intermediate_steps.is_empty() {
+            return Ok(AgentOutput::Action(AgentAction {
+                tool: "old".to_string(),
+                tool_input: ToolInput::Object {
+                    value: serde_json::json!({"orig": 1}),
+                },
+                log: String::new(),
+                tool_call_id: None,
+            }));
+        }
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            intermediate_steps[0].observation.clone(),
+            String::new(),
+        )))
+    }
+}
+
+/// B5 design point 3: the tool is resolved by its FINAL (post-hook, post-approval)
+/// name, and the FINAL (possibly modified) arguments reach that resolution. The
+/// pre-B5 bug executed the pre-hook tool object with the post-hook arguments.
+#[tokio::test]
+async fn tool_resolved_by_final_name_after_hook_modify() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let new_tool: std::sync::Arc<dyn BaseTool> = std::sync::Arc::new(RecordingTool {
+        name: "new",
+        seen: seen.clone(),
+    });
+    // Only "new" is registered — "old" would otherwise be a hard ToolNotFound.
+    let executor = AgentExecutor::new(std::sync::Arc::new(FinalNameAgent), vec![new_tool])
+        .hook(FinalNameRenameHook);
+
+    let out = executor
+        .invoke("use the tool".to_string())
+        .await
+        .expect("final-name resolution must not hard-fail on the pre-hook name");
+    assert_eq!(out, "ran-new", "the renamed FINAL tool must execute");
+    let input = seen.lock().unwrap().clone();
+    assert!(
+        input.contains("changed") && input.contains("true"),
+        "the hook-modified arguments must reach the resolved tool, got: {input}"
+    );
+}
+
+/// Approval handler that denies a specific tool by name, allows the rest.
+struct DenyApproval {
+    denied_name: &'static str,
+}
+
+#[async_trait]
+impl crate::approval::ApprovalHandler for DenyApproval {
+    async fn approve(
+        &self,
+        ctx: &crate::hooks::ToolCallContext,
+    ) -> crate::approval::ApprovalDecision {
+        if ctx.name == self.denied_name {
+            crate::approval::ApprovalDecision::Deny {
+                reason: "nope".to_string(),
+            }
+        } else {
+            crate::approval::ApprovalDecision::Allow
+        }
+    }
+}
+
+/// Emits a two-tool parallel batch once ("calculator" runs normally, "denied" is
+/// denied by the approval gate), then finishes — collapsing the observations so
+/// the test can assert what reached the model.
+struct OnceBatchAgent;
+
+#[async_trait]
+impl BaseAgent for OnceBatchAgent {
+    async fn plan(
+        &self,
+        intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        if intermediate_steps.is_empty() {
+            return Ok(AgentOutput::Actions(vec![
+                AgentAction {
+                    tool: "calculator".to_string(),
+                    tool_input: ToolInput::String {
+                        value: "1+1".to_string(),
+                    },
+                    log: "call-a".to_string(),
+                    tool_call_id: None,
+                },
+                AgentAction {
+                    tool: "denied".to_string(),
+                    tool_input: ToolInput::String {
+                        value: "b".to_string(),
+                    },
+                    log: "call-b".to_string(),
+                    tool_call_id: None,
+                },
+            ]));
+        }
+        let obs = intermediate_steps
+            .iter()
+            .map(|s| s.observation.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            format!("steps={} obs={}", intermediate_steps.len(), obs),
+            String::new(),
+        )))
+    }
+}
+
+/// B5 / R3: an approval **Deny** in a parallel batch is a soft observation, not
+/// an abort. The denied slot yields `[DENIED by approval: …]` and, because the
+/// batch is NOT cancelled, the concurrently-running sibling tool still completes
+/// and its observation also reaches the model — which can then re-plan around
+/// the denial (unified with the single-invoke and stream paths).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parallel_batch_deny_is_soft_observation() {
+    let executor = AgentExecutor::new(
+        std::sync::Arc::new(OnceBatchAgent),
+        vec![std::sync::Arc::new(Calculator::new())],
+    )
+    .with_approval(std::sync::Arc::new(DenyApproval {
+        denied_name: "denied",
+    }))
+    .with_max_concurrency(4);
+
+    let result = tokio::time::timeout(Duration::from_secs(10), executor.invoke("go".to_string()))
+        .await
+        .expect("batch must complete — a Deny must not hang or abort it");
+
+    let out = result.expect("a Deny in a parallel batch must NOT fail the run");
+    assert!(
+        out.contains("[DENIED by approval: nope]"),
+        "the denied slot must surface as a soft observation, got: {out}"
+    );
+    assert!(
+        out.contains("steps=2"),
+        "both tools (denied + sibling) must have completed, got: {out}"
+    );
+}
+
+/// Streaming agent: emits fixed tokens via `plan_stream`, then finishes.
+struct FilterStreamingAgent;
+
+#[async_trait]
+impl BaseAgent for FilterStreamingAgent {
+    async fn plan(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            String::new(),
+            String::new(),
+        )))
+    }
+
+    async fn plan_stream(
+        &self,
+        _intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        on_token: &mut (dyn FnMut(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send),
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        for tok in ["hello", "secret", "blocked", "world"] {
+            on_token(tok.to_string()).await;
+        }
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            "hello secret blocked world".to_string(),
+            String::new(),
+        )))
+    }
+}
+
+/// B5 design point 5: the stream token loop truly invokes `on_stream_chunk` and
+/// honors all three `StreamAction`s — `Forward` (clean tokens pass), `Replace`
+/// ("secret" → "[X]"), and `Filter` ("blocked" dropped via drop_token).
+#[tokio::test]
+async fn stream_applies_content_filter_hooks() {
+    let replace =
+        crate::hooks::ContentFilterHook::new(vec!["secret".to_string()]).with_placeholder("[X]");
+    let filter =
+        crate::hooks::ContentFilterHook::new(vec!["blocked".to_string()]).with_drop_token(true);
+    let executor = AgentExecutor::new(std::sync::Arc::new(FilterStreamingAgent), vec![])
+        .hook(replace)
+        .hook(filter);
+
+    use futures_util::StreamExt;
+    let mut texts = Vec::new();
+    let mut stream = executor.stream("filter me".to_string());
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Ok(crate::AgentStreamEvent::Text { content }) => texts.push(content),
+            Ok(crate::AgentStreamEvent::FinalAnswer { .. }) => break,
+            Ok(_) => {}
+            Err(e) => panic!("stream errored: {e}"),
+        }
+    }
+
+    assert_eq!(
+        texts,
+        vec![
+            "hello".to_string(),
+            "[X]".to_string(),   // "secret" replaced
+            "world".to_string(), // "blocked" filtered out entirely
+        ],
+        "Replace and Filter must take effect on the emitted tokens, got: {texts:?}"
+    );
 }

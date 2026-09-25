@@ -6,11 +6,12 @@ use async_trait::async_trait;
 use futures_util::future;
 use serde::Deserialize;
 
-use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
+use lc_core::judge::{structured_call_with_usage, truncate, StructuredJudgeError};
 use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
 use lc_schema::Message;
 
+use super::price::UsageLedger;
 use super::{EvalError, PairwiseEvaluator, Score};
 
 /// Pairwise comparison result
@@ -39,6 +40,8 @@ enum Pick {
 pub struct PairwiseJudge<M: BaseChatModel> {
     judge: M,
     rubric: String,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 const DEFAULT_PAIRWISE_RUBRIC: &str = "\
@@ -52,6 +55,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
         Self {
             judge,
             rubric: DEFAULT_PAIRWISE_RUBRIC.to_string(),
+            usage: UsageLedger::default(),
         }
     }
 
@@ -91,7 +95,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
         let messages = vec![Message::system(system), Message::human(user)];
 
         // P0-1: prefer structured output (verdict: a/b/tie); models without tool binding fall back to text parsing.
-        let args: PickArgs = structured_call(&self.judge, pick_tool(), messages, |raw| {
+        let (args, usage) = structured_call_with_usage(&self.judge, pick_tool(), messages, |raw| {
             let pick = parse_pick(raw).ok_or_else(|| {
                 StructuredJudgeError::Parse(format!(
                     "failed to parse winner from judge reply: {}",
@@ -104,6 +108,7 @@ impl<M: BaseChatModel> PairwiseJudge<M> {
             })
         })
         .await?;
+        self.usage.record(usage, self.judge.model_name());
         str_to_pick(&args.verdict)
     }
 }
@@ -124,6 +129,10 @@ impl<M: BaseChatModel> PairwiseEvaluator for PairwiseJudge<M> {
 
     fn name(&self) -> &str {
         "pairwise"
+    }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
     }
 }
 

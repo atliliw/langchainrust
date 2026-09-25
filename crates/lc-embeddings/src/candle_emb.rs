@@ -32,6 +32,10 @@ pub struct CandleEmbeddings {
     tokenizer: tokenizers::Tokenizer,
     dim: usize,
     model_name: String,
+    /// Model's positional embedding limit (`config.json::max_position_embeddings`).
+    /// Overlong documents are truncated to this length instead of overflowing
+    /// the position table in `forward()`.
+    max_len: usize,
 }
 
 impl std::fmt::Debug for CandleEmbeddings {
@@ -111,6 +115,7 @@ impl CandleEmbeddings {
             model: Arc::new(model),
             tokenizer,
             model_name,
+            max_len: config.max_position_embeddings,
         })
     }
 }
@@ -197,6 +202,7 @@ impl Embeddings for CandleEmbeddings {
                 model,
                 tokenizer,
                 dim,
+                max_len: self.max_len,
             };
             let rows = tokio::task::spawn_blocking(move || {
                 let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
@@ -223,6 +229,8 @@ struct BlockingEmbedder {
     model: Arc<BertModel>,
     tokenizer: tokenizers::Tokenizer,
     dim: usize,
+    /// Model positional embedding limit; docs over this are truncated.
+    max_len: usize,
 }
 
 impl BlockingEmbedder {
@@ -243,7 +251,13 @@ impl BlockingEmbedder {
             .iter()
             .map(|e| e.get_ids().len())
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            // Truncate overlong documents to the model's positional embedding
+            // limit rather than letting `max_seq_len > max_position_embeddings`
+            // overflow in `forward()`. (Units: tokens; models like bge-small
+            // cap at 512.) The row is padded to the capped width below, so
+            // bounded inputs are unaffected.
+            .min(self.max_len.max(1));
         let pad_id = self.tokenizer.token_to_id("[PAD]").unwrap_or(0) as i64;
 
         let mut input_ids = vec![pad_id; batch * max_len];
@@ -251,10 +265,10 @@ impl BlockingEmbedder {
         let token_types = vec![0i64; batch * max_len];
         for (b, enc) in encodings.iter().enumerate() {
             let row = b * max_len;
-            for (i, id) in enc.get_ids().iter().enumerate() {
+            for (i, id) in enc.get_ids().iter().take(max_len).enumerate() {
                 input_ids[row + i] = *id as i64;
             }
-            for (i, m) in enc.get_attention_mask().iter().enumerate() {
+            for (i, m) in enc.get_attention_mask().iter().take(max_len).enumerate() {
                 attention[row + i] = *m as i64;
             }
         }

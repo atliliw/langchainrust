@@ -1,4 +1,4 @@
-//! N2 (v0.24.0): baseline-vs-candidate report comparison — the verdict half of the
+//! N2 (v0.25.0): baseline-vs-candidate report comparison — the verdict half of the
 //! eval regression loop.
 //!
 //! A prompt/model change is scored by running the same golden [`Dataset`](crate::Dataset)
@@ -62,6 +62,11 @@ pub struct ReportComparison {
     pub added: Vec<String>,
     /// Evaluator names present only in the baseline report (name-sorted); not scored.
     pub dropped: Vec<String>,
+    /// Shared evaluators whose sample count differs between the two runs (name-sorted).
+    /// A count mismatch usually means the run diverged (examples failed to score / were added),
+    /// so CI gates on it via [`is_gate_failing`](Self::is_gate_failing).
+    #[serde(default)]
+    pub count_mismatches: Vec<String>,
     /// Allowed negative movement: a drop strictly larger than this is a regression.
     pub tolerance: f64,
 }
@@ -70,6 +75,15 @@ impl ReportComparison {
     /// Whether at least one evaluator regressed beyond the tolerance.
     pub fn is_regressed(&self) -> bool {
         !self.regressions.is_empty()
+    }
+
+    /// B6: whether the CI gate should fail. Fails when any of:
+    /// - at least one evaluator regressed beyond the tolerance ([`is_regressed`](Self::is_regressed)),
+    /// - any shared evaluator's sample count differs between baseline and candidate,
+    /// - there are **zero** shared evaluators to compare at all (an empty/diverged run is not
+    ///   a valid pass).
+    pub fn is_gate_failing(&self) -> bool {
+        self.is_regressed() || !self.count_mismatches.is_empty() || self.metrics.is_empty()
     }
 
     /// Renders a dependency-free, name-sorted plain-text view for CI logs.
@@ -105,6 +119,12 @@ impl ReportComparison {
         }
         if !self.dropped.is_empty() {
             out.push_str(&format!("dropped:   {}\n", self.dropped.join(", ")));
+        }
+        if !self.count_mismatches.is_empty() {
+            out.push_str(&format!(
+                "count mismatches: {}\n",
+                self.count_mismatches.join(", ")
+            ));
         }
         out.push_str(&format!(
             "regressions: {}\n",
@@ -177,6 +197,14 @@ pub fn compare_reports(baseline: &Report, candidate: &Report, tolerance: f64) ->
     added.sort_unstable();
     dropped.sort_unstable();
 
+    // B6: shared evaluators whose sample count drifted between the two runs (name-sorted).
+    let mut count_mismatches: Vec<String> = metrics
+        .iter()
+        .filter(|(_, m)| m.baseline_count != m.candidate_count)
+        .map(|(name, _)| name.clone())
+        .collect();
+    count_mismatches.sort_unstable();
+
     ReportComparison {
         baseline_run_id: baseline.run_id.clone(),
         candidate_run_id: candidate.run_id.clone(),
@@ -184,6 +212,7 @@ pub fn compare_reports(baseline: &Report, candidate: &Report, tolerance: f64) ->
         regressions,
         added,
         dropped,
+        count_mismatches,
         tolerance,
     }
 }
@@ -297,5 +326,43 @@ mod tests {
         assert!(table.contains("eval regression: baseline b -> candidate c"));
         assert!(table.contains("REGRESSION"));
         assert!(table.contains("regressions: 2"));
+    }
+
+    /// B6: the gate fails on regression, sample-count mismatch, or zero shared evaluators.
+    #[test]
+    fn is_gate_failing_covers_regression_mismatch_and_zero_shared() {
+        // Regression -> failing.
+        let base = report("b", vec![("m", 1.0, 4)]);
+        let cand = report("c", vec![("m", 0.5, 4)]);
+        assert!(compare_reports(&base, &cand, 0.0).is_gate_failing());
+
+        // Sample-count mismatch with no regression -> still failing.
+        let cand_mismatch = report("c", vec![("m", 1.0, 2)]);
+        let cmp = compare_reports(&base, &cand_mismatch, 0.0);
+        assert_eq!(cmp.count_mismatches, vec!["m".to_string()]);
+        assert!(!cmp.is_regressed());
+        assert!(cmp.is_gate_failing(), "count mismatch must trip the gate");
+
+        // Identical reports -> passing.
+        let same = report("c", vec![("m", 1.0, 4)]);
+        let ok = compare_reports(&base, &same, 0.0);
+        assert!(ok.count_mismatches.is_empty());
+        assert!(!ok.is_gate_failing());
+
+        // Zero shared evaluators (both runs effectively empty) -> failing.
+        let empty = report("e", vec![]);
+        let z = compare_reports(&empty, &empty, 0.0);
+        assert!(z.metrics.is_empty());
+        assert!(z.is_gate_failing(), "zero samples must trip the gate");
+    }
+
+    /// B6: count mismatches are surfaced in the human-readable table too.
+    #[test]
+    fn to_table_lists_count_mismatches() {
+        let base = report("b", vec![("m", 1.0, 4)]);
+        let cand = report("c", vec![("m", 1.0, 2)]);
+        let cmp = compare_reports(&base, &cand, 0.0);
+        let table = cmp.to_table();
+        assert!(table.contains("count mismatches: m"));
     }
 }

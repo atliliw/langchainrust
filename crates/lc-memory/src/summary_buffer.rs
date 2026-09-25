@@ -275,10 +275,18 @@ where
 
             all_messages.extend(pruned);
 
+            // 0.25.0 D6 (M-me5): propagate folding failures instead of
+            // silently injecting Null.
             let messages_value: Vec<Value> = all_messages
                 .iter()
-                .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
-                .collect();
+                .map(|m| {
+                    serde_json::to_value(m).map_err(|e| {
+                        MemoryError::LoadError(format!(
+                            "failed to serialize memory message: {e}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, MemoryError>>()?;
 
             result.insert(self.memory_key.clone(), Value::Array(messages_value));
         } else {
@@ -366,7 +374,15 @@ where
                                 if matches!(msg.message_type, lc_schema::MessageType::Human) {
                                     self.chat_memory.add_user_message(&msg.content);
                                 } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                                    self.chat_memory.add_ai_message(&msg.content);
+                                    // 0.25.0 D1 (H6): the rebuild loop keeps only
+                                    // Human/AI/System — Tool messages are dropped.
+                                    // Mirror the summary.rs H-M2 fix: an assistant
+                                    // message that *carries* tool_calls must be dropped
+                                    // too (its Tool results are gone), or the retained
+                                    // pair is dangling → OpenAI/Anthropic 400.
+                                    if msg.tool_calls.is_none() {
+                                        self.chat_memory.add_ai_message(&msg.content);
+                                    }
                                 } else if matches!(msg.message_type, lc_schema::MessageType::System)
                                 {
                                     // H28: Preserve System messages during pruning

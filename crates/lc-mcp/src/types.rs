@@ -21,8 +21,10 @@ pub struct MCPToolDefinition {
 pub struct MCPToolResult {
     /// The content list returned by the tool
     pub content: Vec<MCPContent>,
-    /// Whether this is an error result
-    #[serde(default)]
+    /// Whether this is an error result (wire key `isError`, B8 line-format fix:
+    /// inbound error results parse as errors instead of being fed to the LLM as
+    /// a successful text payload).
+    #[serde(default, rename = "isError")]
     pub is_error: bool,
 }
 
@@ -41,7 +43,9 @@ pub enum MCPContent {
     Image {
         /// Image data (base64-encoded)
         data: String,
-        /// Image MIME type
+        /// Image MIME type (wire key `mimeType`; without the rename an inbound
+        /// image content carried `mimeType` and failed the whole content parse).
+        #[serde(rename = "mimeType")]
         mime_type: String,
     },
     /// Resource-reference content
@@ -118,9 +122,45 @@ mod tests {
 
     #[test]
     fn test_content_image_tagged_enum() {
-        let json = r#"{"type":"image","data":"base64...","mime_type":"image/png"}"#;
+        let json = r#"{"type":"image","data":"base64...","mimeType":"image/png"}"#;
         let content: MCPContent = serde_json::from_str(json).unwrap();
         assert!(content.as_text().is_none());
+    }
+
+    #[test]
+    fn test_content_image_serializes_roundtrip_with_mimetype_key() {
+        // B8: the wire key is `mimeType`, not `mime_type`; a serde round-trip
+        // must keep that key so the server and client agree.
+        let content = MCPContent::Image {
+            data: "AAAA".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        let json = serde_json::to_value(&content).unwrap();
+        assert_eq!(json["mimeType"], "image/png");
+        assert!(json.get("mime_type").is_none());
+        let back: MCPContent = serde_json::from_value(json).unwrap();
+        match back {
+            MCPContent::Image { mime_type, .. } => assert_eq!(mime_type, "image/png"),
+            other => panic!("not an image: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_is_error_uses_iserror_key() {
+        // B8: an inbound error result (`isError`) must deserialize into
+        // `is_error = true` (so the upper layer treats it as an error, not a
+        // success) — the legacy `is_error` key is the bug being fixed.
+        let json = r#"{"content":[],"isError":true}"#;
+        let result: MCPToolResult = serde_json::from_str(json).unwrap();
+        assert!(result.is_error);
+
+        // And serialization emits `isError`.
+        let result = MCPToolResult {
+            content: vec![],
+            is_error: true,
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["isError"], true);
     }
 
     #[test]

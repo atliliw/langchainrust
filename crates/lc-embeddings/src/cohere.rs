@@ -4,6 +4,7 @@
 //! Uses Cohere's v2/embed endpoint for generating text embeddings.
 
 use async_trait::async_trait;
+use lc_core::http::{HttpClient, RequestOptions};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -14,6 +15,13 @@ pub const COHERE_EMBED_MODEL: &str = "embed-english-v3.0";
 
 /// Cohere API base URL.
 pub const COHERE_EMBED_BASE_URL: &str = "https://api.cohere.com/v2";
+
+/// Maximum number of texts per v2/embed request.
+///
+/// Cohere documents the limit as "Maximum 96" for the `texts` array
+/// (<https://docs.cohere.com/reference/embed>); larger batches are split into
+/// 96-item chunks by the client.
+pub const COHERE_MAX_BATCH: usize = 96;
 
 /// Cohere embedding input type.
 #[derive(Debug, Clone, Copy)]
@@ -103,21 +111,55 @@ impl CohereEmbeddingsConfig {
     }
 }
 
-/// Cohere embedding response.
+/// Cohere v2 embedding response.
+///
+/// This client always sends `embedding_types: ["float"]`, so the v2 response
+/// shape is `{"embeddings": {"float": [[...], ...]}}`. The legacy flat
+/// `{"embeddings": [[...]]}` shape is accepted as a fallback.
 #[derive(Debug, Deserialize)]
 struct CohereEmbedResponse {
-    data: Vec<CohereEmbedData>,
+    embeddings: CohereEmbeddingsBody,
 }
 
+/// The two shapes Cohere uses for the `embeddings` field.
 #[derive(Debug, Deserialize)]
-struct CohereEmbedData {
-    embedding: Vec<f32>,
+#[serde(untagged)]
+enum CohereEmbeddingsBody {
+    /// v2 typed response: `{"float": [[...]], ...}`.
+    Typed(CohereTypedEmbeddings),
+    /// Legacy flat response: `[[...], ...]`.
+    Flat(Vec<Vec<f32>>),
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CohereTypedEmbeddings {
+    #[serde(default)]
+    float: Vec<Vec<f32>>,
+}
+
+impl CohereEmbeddingsBody {
+    /// Extract the float vectors, erroring on an empty/unsupported payload
+    /// (e.g. only quantized types were returned) instead of silently handing
+    /// downstream an empty batch.
+    fn into_float_vectors(self) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let vectors = match self {
+            CohereEmbeddingsBody::Typed(typed) => typed.float,
+            CohereEmbeddingsBody::Flat(vectors) => vectors,
+        };
+        if vectors.is_empty() {
+            return Err(EmbeddingError::ParseError(
+                "Cohere response contains no float embeddings (expected embeddings.float)"
+                    .to_string(),
+            ));
+        }
+        Ok(vectors)
+    }
 }
 
 /// Cohere embedding provider.
 pub struct CohereEmbeddings {
     config: CohereEmbeddingsConfig,
-    client: reqwest::Client,
+    http: HttpClient,
     dimension: usize,
 }
 
@@ -142,9 +184,12 @@ impl CohereEmbeddings {
             ));
         }
         let dimension = Self::dimension_for(&config.model)?;
+        let http = HttpClient::api()
+            .build()
+            .map_err(|e| EmbeddingError::Config(format!("failed to build HTTP client: {e}")))?;
         Ok(Self {
             config,
-            client: reqwest::Client::new(),
+            http,
             dimension,
         })
     }
@@ -165,6 +210,65 @@ impl CohereEmbeddings {
         let config = CohereEmbeddingsConfig::from_env_result()?;
         Self::new(config)
     }
+
+    /// Per-request options: bearer auth (the unified client defaults to
+    /// `no_proxy()`, matching this client's historical behavior).
+    fn request_options(&self) -> RequestOptions {
+        RequestOptions::new().bearer(self.config.api_key.clone())
+    }
+
+    /// Maps unified-layer errors onto [`EmbeddingError`]: an error status keeps
+    /// its status code and body text; transport/timeout/build errors collapse
+    /// to [`EmbeddingError::HttpError`].
+    fn map_http_error(err: lc_core::http::HttpError) -> EmbeddingError {
+        match err {
+            lc_core::http::HttpError::Status { status, body } => {
+                EmbeddingError::ApiError(format!("HTTP {status}: {body}"))
+            }
+            other => EmbeddingError::HttpError(other.to_string()),
+        }
+    }
+
+    /// Posts one `/embed` request for a chunk of at most [`COHERE_MAX_BATCH`]
+    /// texts and returns one float vector per text, order preserved.
+    async fn embed_chunk(
+        &self,
+        texts: &[&str],
+        input_type: CohereEmbedInputType,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let url = format!("{}/embed", self.config.base_url);
+        let body = json!({
+            "model": self.config.model,
+            "input_type": input_type.as_str(),
+            "texts": texts,
+            "embedding_types": ["float"],
+        });
+
+        // The unified layer retries the closed retryable-status set (429/5xx);
+        // POST bodies are only re-sent per the pre-dispatch safety default.
+        let response = self
+            .http
+            .post_json_with(&url, &body, self.request_options())
+            .await
+            .map_err(Self::map_http_error)?;
+
+        let embed_response: CohereEmbedResponse =
+            serde_json::from_str(&response.body).map_err(|e| {
+                let preview: String = response.body.chars().take(200).collect();
+                EmbeddingError::ParseError(format!("{e} - body: {preview}"))
+            })?;
+
+        let vectors = embed_response.embeddings.into_float_vectors()?;
+        // Every requested text must come back; a short/long batch would
+        // silently misalign downstream consumers (P0-1 BatchMismatch).
+        if vectors.len() != texts.len() {
+            return Err(EmbeddingError::BatchMismatch {
+                expected: texts.len(),
+                actual: vectors.len(),
+            });
+        }
+        Ok(vectors)
+    }
 }
 
 #[async_trait]
@@ -175,47 +279,8 @@ impl Embeddings for CohereEmbeddings {
             return Err(EmbeddingError::EmptyInput);
         }
 
-        let url = format!("{}/embed", self.config.base_url);
-        let body = json!({
-            "model": self.config.model,
-            "input_type": self.config.input_type.as_str(),
-            "texts": [text],
-            "embedding_types": ["float"],
-        });
-
-        // P2-5: exponential backoff retry on 429/5xx.
-        let response = crate::retry::post_json_with_retry(
-            &self.client,
-            &url,
-            &self.config.api_key,
-            &body,
-            &crate::retry::DEFAULT_RETRY,
-        )
-        .await
-        .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
-            let error_text = response.text().await.map_err(|e| {
-                EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
-            })?;
-            return Err(EmbeddingError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let embed_response: CohereEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-
-        let mut embedding = embed_response
-            .data
-            .first()
-            .map(|d| d.embedding.clone())
-            .ok_or_else(|| EmbeddingError::ApiError("No embedding in response".to_string()))?;
+        let mut vectors = self.embed_chunk(&[text], self.config.input_type).await?;
+        let mut embedding = vectors.swap_remove(0);
         // P2-8: uniform L2 normalization, guaranteeing unit length.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
@@ -230,60 +295,18 @@ impl Embeddings for CohereEmbeddings {
             return Err(EmbeddingError::EmptyInput);
         }
 
-        let url = format!("{}/embed", self.config.base_url);
-        let body = json!({
-            "model": self.config.model,
-            "input_type": CohereEmbedInputType::SearchDocument.as_str(),
-            "texts": texts,
-            "embedding_types": ["float"],
-        });
-
-        // P2-5: exponential backoff retry on 429/5xx.
-        let response = crate::retry::post_json_with_retry(
-            &self.client,
-            &url,
-            &self.config.api_key,
-            &body,
-            &crate::retry::DEFAULT_RETRY,
-        )
-        .await
-        .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
-            let error_text = response.text().await.map_err(|e| {
-                EmbeddingError::HttpError(format!("failed to read error response body: {e}"))
-            })?;
-            return Err(EmbeddingError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let embed_response: CohereEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-
-        let mut embeddings: Vec<Vec<f32>> = embed_response
-            .data
-            .into_iter()
-            .map(|d| d.embedding)
-            .collect();
-
-        // P0-1: Cohere sends all texts in one request, so the returned count must match the
-        // requested count, otherwise missing vectors would silently misalign downstream.
-        if embeddings.len() != texts.len() {
-            return Err(EmbeddingError::BatchMismatch {
-                expected: texts.len(),
-                actual: embeddings.len(),
-            });
-        }
-
-        // P2-8: per-item uniform L2 normalization, guaranteeing unit length.
-        for v in embeddings.iter_mut() {
-            crate::l2_normalize(v);
+        // 0.25.0: the v2/embed `texts` array is capped at COHERE_MAX_BATCH (96).
+        // Split larger inputs into chunks and concatenate in request order;
+        // each chunk keeps its own BatchMismatch check. The configured
+        // `input_type` is honored verbatim (it used to be hardcoded to
+        // search_document here, silently overriding explicit configuration).
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(COHERE_MAX_BATCH) {
+            let mut chunk_vectors = self.embed_chunk(chunk, self.config.input_type).await?;
+            for v in chunk_vectors.iter_mut() {
+                crate::l2_normalize(v);
+            }
+            embeddings.append(&mut chunk_vectors);
         }
 
         Ok(embeddings)
@@ -301,14 +324,16 @@ impl Embeddings for CohereEmbeddings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{spawn_embeddings_stub, spawn_status_stub};
+    use crate::test_support::{
+        spawn_json_handler_stub, spawn_json_recording_stub, spawn_status_stub,
+    };
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     /// P2-5: Cohere also wires in 429 retry.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
-        let success_body = r#"{"data":[{"embedding":[0.6,0.8]}]}"#;
+        let success_body = r#"{"embeddings":{"float":[[0.6,0.8]]}}"#;
         let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
         let config = CohereEmbeddingsConfig {
             api_key: "test-key".into(),
@@ -333,7 +358,20 @@ mod tests {
     /// `BatchMismatch` rather than silently giving downstream fewer vectors.
     #[tokio::test]
     async fn test_embed_documents_truncated_errors() {
-        let base_url = spawn_embeddings_stub(Arc::new(|n| n.saturating_sub(1))).await;
+        // Real Cohere v2 shape: embeddings.float, one vector per requested text.
+        let base_url = spawn_json_handler_stub(Arc::new(move |body: serde_json::Value| {
+            let wanted = body
+                .get("texts")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let n = wanted.saturating_sub(1);
+            let vectors: Vec<serde_json::Value> =
+                (0..n).map(|_| serde_json::json!([0.1, 0.2])).collect();
+            serde_json::json!({ "embeddings": { "float": vectors } })
+        }))
+        .await
+        .0;
         let config = CohereEmbeddingsConfig {
             api_key: "test-key".into(),
             base_url,
@@ -353,6 +391,117 @@ mod tests {
             ),
             "truncated response should report BatchMismatch, got: {:?}",
             result
+        );
+    }
+
+    /// 0.25.0 B3: 200 texts must be split 96/96/8 across three requests, and
+    /// the concatenated vectors must stay aligned with the input order.
+    #[tokio::test]
+    async fn test_embed_documents_chunks_at_96_and_preserves_order() {
+        use std::sync::atomic::AtomicUsize;
+        let next_global_index = Arc::new(AtomicUsize::new(0));
+        let handler_index = next_global_index.clone();
+        let (base_url, bodies) =
+            spawn_json_handler_stub(Arc::new(move |body: serde_json::Value| {
+                let wanted = body
+                    .get("texts")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                // Encode each vector's global index so order alignment survives
+                // chunking and L2 normalization (ratio of the two components).
+                let vectors: Vec<serde_json::Value> = (0..wanted)
+                    .map(|_| {
+                        let global = handler_index.fetch_add(1, Ordering::SeqCst) as f32;
+                        serde_json::json!([global, 1.0])
+                    })
+                    .collect();
+                serde_json::json!({ "embeddings": { "float": vectors } })
+            }))
+            .await;
+        let config = CohereEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: COHERE_EMBED_MODEL.into(),
+            input_type: CohereEmbedInputType::SearchDocument,
+        };
+        let embeddings = CohereEmbeddings::new(config).unwrap();
+
+        let texts: Vec<String> = (0..200).map(|i| format!("text-{i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let result = embeddings.embed_documents(&refs).await.unwrap();
+        assert_eq!(result.len(), 200);
+
+        let chunk_sizes: Vec<usize> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                b.get("texts")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0)
+            })
+            .collect();
+        assert_eq!(chunk_sizes, vec![96, 96, 8]);
+
+        // Normalized [i, 1.0] keeps component ratio i: check chunk boundaries.
+        for i in [0usize, 95, 96, 199] {
+            let ratio = result[i][0] / result[i][1];
+            assert!(
+                (ratio - i as f32).abs() < 0.05,
+                "vector {i} misaligned: ratio {ratio}"
+            );
+        }
+    }
+
+    /// 0.25.0 B3: `embed_documents` must send the configured `input_type`
+    /// instead of hardcoding `search_document`.
+    #[tokio::test]
+    async fn test_embed_documents_honors_configured_input_type() {
+        let (base_url, bodies) = spawn_json_recording_stub(serde_json::json!({
+            "embeddings": { "float": [[0.6, 0.8]] }
+        }))
+        .await;
+        let config = CohereEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: COHERE_EMBED_MODEL.into(),
+            input_type: CohereEmbedInputType::Classification,
+        };
+        let embeddings = CohereEmbeddings::new(config).unwrap();
+
+        embeddings.embed_documents(&["a"]).await.unwrap();
+        assert_eq!(bodies.lock().unwrap()[0]["input_type"], "classification");
+    }
+
+    /// 0.25.0 B3: a non-2xx response surfaces as an API error carrying the
+    /// status code and the server body text.
+    #[tokio::test]
+    async fn test_embed_documents_non_2xx_surfaces_status_and_body() {
+        // First request gets 400 "transient"; 400 is not in the retryable set.
+        let (base_url, requests) =
+            spawn_status_stub(400, 1, 200, r#"{"embeddings":{"float":[]}}"#).await;
+        let config = CohereEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: COHERE_EMBED_MODEL.into(),
+            input_type: CohereEmbedInputType::SearchDocument,
+        };
+        let embeddings = CohereEmbeddings::new(config).unwrap();
+
+        let err = embeddings.embed_documents(&["a"]).await.unwrap_err();
+        match err {
+            EmbeddingError::ApiError(msg) => {
+                assert!(msg.contains("HTTP 400"), "message: {msg}");
+                assert!(msg.contains("transient"), "message: {msg}");
+            }
+            other => panic!("expected ApiError, got {other:?}"),
+        }
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "400 must not be retried"
         );
     }
 

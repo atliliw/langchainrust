@@ -221,6 +221,7 @@ mod tests {
                     value: "input".to_string(),
                 },
                 log: String::new(),
+                tool_call_id: None,
             },
             "x".repeat(observation_len),
         )

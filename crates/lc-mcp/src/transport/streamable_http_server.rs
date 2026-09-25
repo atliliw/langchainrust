@@ -30,7 +30,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
-use crate::protocol::{MCPRequest, MCPResponse, MCP_VERSION};
+use crate::protocol::{MCPRequest, MCPResponse};
 use crate::server::{
     read_http_request, HttpRequest, MCPServer, HTTP_MAX_CONCURRENT_CONNECTIONS,
     HTTP_READ_TIMEOUT_SECS,
@@ -211,7 +211,7 @@ async fn handle_connection(
         }
         state
             .server
-            .handle_notification(&method, message.get("params").cloned())
+            .handle_notification_scoped(Some(&session_id), &method, message.get("params").cloned())
             .await;
         return write_plain(
             sock,
@@ -244,6 +244,13 @@ async fn handle_connection(
             return write_envelope(sock, 400, sse_only, None, &envelope).await;
         }
         let session_id = insert_session(state);
+        // Echo the version the server actually negotiated so the header tracks
+        // the wire track (B8): stateful → MCP_VERSION, stateless → STATELESS.
+        let negotiated = response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(Value::as_str);
         let envelope = envelope_with_id(&id_value, &response);
         return write_envelope(
             sock,
@@ -251,7 +258,7 @@ async fn handle_connection(
             sse_only,
             Some(SessionHeaders {
                 session_id: &session_id,
-                protocol_version: true,
+                protocol_version: negotiated,
             }),
             &envelope,
         )
@@ -279,7 +286,13 @@ async fn handle_connection(
         Ok(pair) => pair,
         Err(()) => return write_plain(sock, 400, "Bad Request", &[], b"invalid request").await,
     };
-    let response = state.server.handle_request(typed_request).await;
+    // F1/H3: thread the session scope so cancellation (and any future
+    // per-session state) is keyed by (session, id), preventing cross-session
+    // id collisions from cancelling the wrong in-flight tool call.
+    let response = state
+        .server
+        .handle_request_scoped(Some(&session_id), typed_request)
+        .await;
     let envelope = envelope_with_id(&id_value, &response);
     write_envelope(
         sock,
@@ -287,7 +300,7 @@ async fn handle_connection(
         sse_only,
         Some(SessionHeaders {
             session_id: &session_id,
-            protocol_version: false,
+            protocol_version: None,
         }),
         &envelope,
     )
@@ -390,11 +403,22 @@ fn new_session_id() -> String {
     id
 }
 
-/// Forces the typed request's numeric id to 0, returning the original (possibly
-/// string / null) JSON id so the response echoes it verbatim.
+/// Forces a canonical numeric id for the typed request (so a no-id edge case
+/// still deserializes), returning the original (possibly string / null) JSON id
+/// so the response echoes it verbatim.
+///
+/// B8 fix: a **real** request id is preserved, not overwritten with `0` —
+/// otherwise `handle_tools_call` registers its `requestId → Notify` cancellation
+/// slot under the bogus `Number(0)` and the client's `notifications/cancelled`
+/// (which carries the true id) misses it, so every cancel on the Streamable
+/// HTTP track is a silent no-op and concurrent requests collide on one slot.
+/// Only a genuinely id-less message (a notification that slipped past the
+/// no-id routing up-stack) falls back to the canonical `0`.
 fn coerce_request(mut message: Value) -> Result<(Value, MCPRequest), ()> {
     let id_value = message.get("id").cloned().unwrap_or(Value::Null);
-    message["id"] = json!(0u64);
+    if message.get("id").is_none() {
+        message["id"] = json!(0u64);
+    }
     let typed = serde_json::from_value::<MCPRequest>(message).map_err(|_| ())?;
     Ok((id_value, typed))
 }
@@ -416,8 +440,12 @@ fn envelope_with_id(id_value: &Value, response: &MCPResponse) -> Value {
 /// Extra headers identifying a session response.
 struct SessionHeaders<'a> {
     session_id: &'a str,
-    /// `initialize` additionally carries the negotiated protocol version.
-    protocol_version: bool,
+    /// `initialize` additionally carries the negotiated protocol version, echoed
+    /// in the `MCP-Protocol-Version` header (B8). This makes the header track
+    /// accurate instead of hardcoded: a `2024-11-05` stateful handshake echoes
+    /// [`MCP_VERSION`], while a sessionless stateless handshake (`2026-07-28`)
+    /// echoes [`MCP_VERSION_STATELESS`].
+    protocol_version: Option<&'a str>,
 }
 
 /// Writes a JSON or SSE-framed JSON-RPC response.
@@ -443,8 +471,8 @@ async fn write_envelope(
         if let Some(session) = &session {
             sock.write_all(format!("Mcp-Session-Id: {}\r\n", session.session_id).as_bytes())
                 .await?;
-            if session.protocol_version {
-                sock.write_all(format!("MCP-Protocol-Version: {MCP_VERSION}\r\n").as_bytes())
+            if let Some(pv) = session.protocol_version {
+                sock.write_all(format!("MCP-Protocol-Version: {pv}\r\n").as_bytes())
                     .await?;
             }
         }
@@ -460,8 +488,8 @@ async fn write_envelope(
         if let Some(session) = &session {
             sock.write_all(format!("Mcp-Session-Id: {}\r\n", session.session_id).as_bytes())
                 .await?;
-            if session.protocol_version {
-                sock.write_all(format!("MCP-Protocol-Version: {MCP_VERSION}\r\n").as_bytes())
+            if let Some(pv) = session.protocol_version {
+                sock.write_all(format!("MCP-Protocol-Version: {pv}\r\n").as_bytes())
                     .await?;
             }
         }
@@ -553,10 +581,17 @@ mod tests {
         let message = json!({"jsonrpc": "2.0", "id": "req-42", "method": "ping"});
         let (id_value, typed) = coerce_request(message).unwrap();
         assert_eq!(id_value, json!("req-42"));
-        assert_eq!(typed.id, 0);
+        // B8/F1: a present string id is preserved on the typed request (not
+        // zeroed) — the cancellation table keys by it, and zeroing would let
+        // two concurrent string-id requests collide on a single cancellation
+        // slot. Only a *missing* id is synthesized as `0`.
+        assert_eq!(
+            typed.id,
+            crate::JsonRpcId::String("req-42".to_string())
+        );
         let response = MCPResponse {
             jsonrpc: "2.0".to_string(),
-            id: Some(0),
+            id: Some(crate::JsonRpcId::String("req-42".to_string())),
             result: Some(json!({})),
             error: None,
         };
@@ -571,5 +606,70 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    /// Loopback TCP pair so a unit test can capture the bytes `write_envelope`
+    /// produces (rather than needing a live framework server). Returns
+    /// `(server_side, client_side)`.
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::net::TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (
+            TcpStream::from_std(server).expect("wrap std server socket"),
+            TcpStream::from_std(client).expect("wrap std client socket"),
+        )
+    }
+
+    /// Writes one envelope into a fresh socket pair and returns the captured
+    /// response text. `protocol_version` is the negotiated version echoed in
+    /// the `MCP-Protocol-Version` header.
+    async fn buffer_response(protocol_version: Option<&'static str>) -> String {
+        use tokio::io::AsyncReadExt;
+        let (mut server, mut client) = socket_pair();
+        let envelope = json!({"jsonrpc": "2.0", "id": 1, "result": {}});
+        let session = protocol_version.map(|pv| SessionHeaders {
+            session_id: "s",
+            protocol_version: Some(pv),
+        });
+        write_envelope(&mut server, 200, false, session, &envelope)
+            .await
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let n = client.read(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    /// B8: the `MCP-Protocol-Version` header echoes the negotiated protocol
+    /// version, so it tracks the wire track (stateful vs stateless) instead of
+    /// always being one hardcoded value.
+    #[tokio::test]
+    async fn protocol_version_header_echoes_negotiated_track() {
+        // Stateful handshake (2024-11-05 negotiated).
+        let stateful = buffer_response(Some(crate::MCP_VERSION)).await;
+        assert!(
+            stateful.contains(&format!("MCP-Protocol-Version: {}", crate::MCP_VERSION)),
+            "{stateful}"
+        );
+
+        // Stateless handshake (2026-07-28 negotiated) — a different header value.
+        let stateless = buffer_response(Some(crate::MCP_VERSION_STATELESS)).await;
+        assert!(
+            stateless.contains(&format!(
+                "MCP-Protocol-Version: {}",
+                crate::MCP_VERSION_STATELESS
+            )),
+            "{stateless}"
+        );
+        assert!(
+            !stateless.contains(&format!("MCP-Protocol-Version: {}", crate::MCP_VERSION)),
+            "{stateless}"
+        );
+
+        // Ordinary (non-initialize) response: no negotiated version → header absent.
+        let ordinary = buffer_response(None).await;
+        assert!(!ordinary.contains("MCP-Protocol-Version"), "{ordinary}");
     }
 }

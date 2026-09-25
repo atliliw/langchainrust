@@ -2,7 +2,7 @@
 //! CompiledGraph struct definition, constructors, getters, and runtime injection
 
 use super::types::{DynamicTask, GraphExecution, GraphInvocation, PendingInterrupt};
-use crate::checkpointer::{CheckpointInfo, Checkpointer};
+use crate::checkpointer::{CheckpointInfo, Checkpointer, DEFAULT_THREAD};
 use crate::edge::{ConditionalEdge, GraphEdge};
 use crate::errors::{GraphError, GraphResult};
 use crate::node::GraphNode;
@@ -204,9 +204,26 @@ impl<S: StateSchema> CompiledGraph<S> {
         };
         let base_state = override_state.unwrap_or(snapshot.state);
 
-        // Seed a fresh checkpoint so the fork lives in its own lineage.
+        // Seed a fresh checkpoint so the fork lives in its own lineage, stamped
+        // with the snapshot it was forked from (B4: parent_id lineage). Resolve
+        // the snapshot's own thread and fork into it: hardcoding DEFAULT_THREAD
+        // broke time-travel on thread-bound durable backends (sqlite/postgres/
+        // redis), whose `*_threaded` methods assert the bound thread id and
+        // would reject a `"default"` fork outright.
         let guard = self.checkpointer_locked().await?;
-        guard.save(&base_state, snapshot.recursion_count).await?;
+        let fork_thread = guard
+            .checkpoint_lineage(&snapshot.id)
+            .await?
+            .map(|(thread, _)| thread)
+            .unwrap_or_else(|| DEFAULT_THREAD.to_string());
+        guard
+            .save_fork_threaded(
+                Some(&snapshot.id),
+                &fork_thread,
+                &base_state,
+                snapshot.recursion_count,
+            )
+            .await?;
         drop(guard);
 
         self.invoke_from_node_with_count(
@@ -217,13 +234,28 @@ impl<S: StateSchema> CompiledGraph<S> {
         .await
     }
 
-    /// Create a resume execution context (from the last checkpoint)
-    /// interrupted_node may be "node_name" or "after_node_name"
+    /// Create a resume execution context, resolving the state from either a
+    /// specific checkpoint (preferred, see H7) or the last checkpoint when no id
+    /// is supplied. interrupted_node may be "node_name" or "after_node_name".
+    ///
+    /// H7: resume prefers the exact checkpoint that was stamped in the interrupt
+    /// payload (`__checkpoint_id`) over `last()`, so a newer save written on some
+    /// other path since the interrupt cannot silently drive the resume.
     pub async fn create_resume_execution(
         &self,
         interrupted_node: &str,
+        checkpoint_id: Option<&str>,
     ) -> Option<GraphExecution<S>> {
-        let (state, recursion_count) = self.last_checkpoint_state().await?;
+        let (state, recursion_count) = match checkpoint_id {
+            Some(id) => match self.resolve_checkpoint_by_id(id).await {
+                Some(res) => res,
+                // H7: the stamped checkpoint may already have been pruned /
+                // garbage-collected; degrade gracefully to the latest snapshot
+                // rather than failing the resume outright.
+                None => self.last_checkpoint_state().await?,
+            },
+            None => self.last_checkpoint_state().await?,
+        };
         let current = interrupted_node
             .strip_prefix("after_")
             .unwrap_or(interrupted_node);
@@ -240,6 +272,19 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
+    /// Resolve the `(state, recursion_count)` of a checkpoint `checkpoint_id`
+    /// inside the default thread. Returns `None` when the id is unknown/pruned.
+    async fn resolve_checkpoint_by_id(&self, checkpoint_id: &str) -> Option<(S, usize)> {
+        let guard = self.checkpointer_locked().await.ok()?;
+        guard
+            .snapshots_threaded(crate::checkpointer::DEFAULT_THREAD)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|s| s.id == checkpoint_id)
+            .map(|s| (s.state, s.recursion_count))
+    }
+
     /// Resume from a runtime interrupt at `interrupted_node`, feeding the
     /// human's `value` back into that node.
     ///
@@ -249,13 +294,18 @@ impl<S: StateSchema> CompiledGraph<S> {
     /// closure can branch on `Some(decision)` to continue past the suspension
     /// without re-running side effects. Requires a checkpointer with the
     /// checkpoint that was persisted when the interrupt fired.
+    ///
+    /// NOTE (H7): this legacy form resumes from the *last* checkpoint, because it
+    /// receives no interrupt payload. Prefer [`resume_from_interrupt`](Self::resume_from_interrupt),
+    /// which takes the payload and resumes the exact checkpoint stamped in it
+    /// (`__checkpoint_id`) instead of `last()`.
     pub async fn resume_with_value(
         &self,
         interrupted_node: &str,
         value: serde_json::Value,
     ) -> GraphResult<GraphInvocation<S>> {
         let mut execution = self
-            .create_resume_execution(interrupted_node)
+            .create_resume_execution(interrupted_node, None)
             .await
             .ok_or_else(|| {
                 GraphError::ResumeError(format!(
@@ -267,6 +317,84 @@ impl<S: StateSchema> CompiledGraph<S> {
             id: interrupted_node.to_string(),
             value,
         });
+        self.invoke_with_execution(execution).await
+    }
+
+    /// Resume from a runtime interrupt, resolving the checkpoint by the id that
+    /// was stamped in `payload` as `__checkpoint_id` when the interrupt fired.
+    ///
+    /// H7: unlike [`resume_with_value`](Self::resume_with_value) — which always
+    /// falls back to the *last* checkpoint — this prefers the exact save the
+    /// interrupt targeted (`__checkpoint_id`), so a newer checkpoint written by
+    /// some other path since the interrupt cannot drive the wrong resume. Resumes
+    /// gracefully to the latest snapshot only if the stamped checkpoint was
+    /// pruned. `payload` is the payload of the [`GraphError::DynamicInterrupt`]
+    /// the caller caught; `value` is the human's decision fed back into the node.
+    pub async fn resume_from_interrupt(
+        &self,
+        interrupted_node: &str,
+        payload: &serde_json::Value,
+        value: serde_json::Value,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let checkpoint_id = payload.get("__checkpoint_id").and_then(|v| v.as_str());
+        let mut execution = self
+            .create_resume_execution(interrupted_node, checkpoint_id)
+            .await
+            .ok_or_else(|| {
+                GraphError::ResumeError(format!(
+                    "cannot resume '{}': no checkpoint to resume from (attach a checkpointer)",
+                    interrupted_node
+                ))
+            })?;
+        execution.pending_interrupt = Some(PendingInterrupt {
+            id: interrupted_node.to_string(),
+            value,
+        });
+        self.invoke_with_execution(execution).await
+    }
+
+    /// Resume a run from a specific checkpoint in a thread, re-entering
+    /// `interrupted_node` with the human's `value`.
+    ///
+    /// This is the thread-aware analogue of [`resume_with_value`](Self::resume_with_value):
+    /// instead of always resuming from the *last* checkpoint of the default
+    /// thread, it looks up an arbitrary checkpoint by `checkpoint_id` inside
+    /// `thread` (via [`Checkpointer::snapshots_threaded`]) and forks a resume
+    /// from there. The node is re-entered with `value` injected under
+    /// [`crate::node::INTERRUPT_RESUME_KEY`], exactly like
+    /// [`resume_with_value`](Self::resume_with_value).
+    pub async fn resume_from_checkpoint(
+        &self,
+        thread: &str,
+        checkpoint_id: &str,
+        interrupted_node: &str,
+        value: serde_json::Value,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let snapshot = {
+            let guard = self.checkpointer_locked().await?;
+            guard
+                .snapshots_threaded(thread)
+                .await?
+                .into_iter()
+                .find(|s| s.id == checkpoint_id)
+                .ok_or_else(|| {
+                    GraphError::CheckpointError(format!("Checkpoint '{checkpoint_id}' not found"))
+                })?
+        };
+        let current = interrupted_node
+            .strip_prefix("after_")
+            .unwrap_or(interrupted_node);
+        let execution = GraphExecution {
+            state: snapshot.state,
+            current_node: current.to_string(),
+            steps: Vec::new(),
+            recursion_count: snapshot.recursion_count,
+            interrupted_at: interrupted_node.to_string(),
+            pending_interrupt: Some(PendingInterrupt {
+                id: interrupted_node.to_string(),
+                value,
+            }),
+        };
         self.invoke_with_execution(execution).await
     }
 

@@ -94,9 +94,16 @@ pub trait Tool: Send + Sync {
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError>;
 
     /// Returns the input JSON Schema.
+    ///
+    /// J9:序列化失败不再 `.ok()` 占位空 `None`——`Self::Input` 必须 derive
+    /// `JsonSchema`(否则 `schema_for!` 本身是编译错误),schema 自描述必可序列化,
+    /// 真失败是内部错误,直接 panic 报出。
     fn args_schema(&self) -> Option<Value> {
         use schemars::schema_for;
-        serde_json::to_value(schema_for!(Self::Input)).ok()
+        Some(
+            serde_json::to_value(schema_for!(Self::Input))
+                .expect("[lc-core] BaseTool::args_schema: Input schema failed to serialize"),
+        )
     }
 }
 

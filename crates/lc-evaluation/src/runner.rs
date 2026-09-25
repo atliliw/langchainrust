@@ -175,6 +175,17 @@ impl EvalRunner {
             }
 
             let mut scores = HashMap::new();
+            // I3: an LLM judge evaluator spends tokens too; drain its usage into the cost ledger
+            // after scoring. Uses a local helper to accumulate each evaluator's report.
+            async fn drain_evaluator_cost(
+                ev_report: Option<crate::TokenUsage>,
+                cost: &mut crate::OverallCost,
+                book: &crate::PriceBook,
+            ) {
+                if let Some(usage) = ev_report {
+                    cost.accumulate(&usage, book);
+                }
+            }
             for ev in &self.evaluators {
                 match ev.eval(&ex.input, &prediction, &ex.reference).await {
                     Ok(s) => {
@@ -190,6 +201,8 @@ impl EvalRunner {
                         error: e.to_string(),
                     }),
                 }
+                drain_evaluator_cost(ev.report_token_usage().await, &mut cost, &self.price_book)
+                    .await;
             }
             for ev in &self.pairwise {
                 match ev.eval_pair(&ex.input, &prediction, &ex.reference).await {
@@ -206,6 +219,8 @@ impl EvalRunner {
                         error: e.to_string(),
                     }),
                 }
+                drain_evaluator_cost(ev.report_token_usage().await, &mut cost, &self.price_book)
+                    .await;
             }
             for ev in &self.rag {
                 match ev
@@ -225,6 +240,8 @@ impl EvalRunner {
                         error: e.to_string(),
                     }),
                 }
+                drain_evaluator_cost(ev.report_token_usage().await, &mut cost, &self.price_book)
+                    .await;
             }
 
             per_example.push(ExampleReport {
@@ -481,5 +498,48 @@ mod tests {
         // zero behavior change when no metering is wired up
         assert_eq!(report.cost.total_tokens, 0);
         assert!(report.cost.cost_usd.is_none());
+    }
+
+    /// I3: an LLM-judge evaluator that drains its usage ledger credits its tokens into `Report.cost`.
+    struct JudgingEvaluator;
+    #[async_trait]
+    impl Evaluator for JudgingEvaluator {
+        async fn eval(
+            &self,
+            _input: &str,
+            _prediction: &str,
+            _reference: &str,
+        ) -> Result<Score, EvalError> {
+            Ok(Score::new(1.0))
+        }
+        fn name(&self) -> &str {
+            "judging"
+        }
+        async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+            Some(crate::TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 40,
+                model: Some("gpt-4o-mini".into()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_accumulates_judge_evaluator_usage_into_cost() {
+        let runner = EvalRunner::new(vec![Box::new(JudgingEvaluator)])
+            .with_price_book(crate::PriceBook::default_set());
+        let report = runner
+            .run(&dataset2().await, &UnmeteredPredictor)
+            .await
+            .unwrap();
+        // 2 examples x (100 prompt + 40 completion) judge tokens, credited on top of zero predictor cost
+        assert_eq!(report.cost.prompt_tokens, 200);
+        assert_eq!(report.cost.completion_tokens, 80);
+        let expected = 200.0 / 1e6 * 0.15 + 80.0 / 1e6 * 0.60;
+        let usd = report.cost.cost_usd.unwrap();
+        assert!(
+            (usd - expected).abs() < 1e-12,
+            "got {usd}, expected {expected}"
+        );
     }
 }

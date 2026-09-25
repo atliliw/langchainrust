@@ -223,6 +223,7 @@ mod tests {
                         value: "x".to_string(),
                     },
                     log: String::new(),
+                    tool_call_id: None,
                 },
                 "obs".to_string(),
             )],

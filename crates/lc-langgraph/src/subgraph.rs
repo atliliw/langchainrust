@@ -93,9 +93,21 @@ impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for Sub
         let sub_input = (self.input_mapper)(state);
 
         // Execute subgraph
-        let sub_result = self.subgraph.invoke(sub_input).await.map_err(|e| {
-            GraphError::ExecutionError(format!("Subgraph '{}' execution failed: {}", self.name, e))
-        })?;
+        let sub_result = match self.subgraph.invoke(sub_input).await {
+            Ok(r) => r,
+            // H3: a runtime interrupt inside the subgraph is a *control-flow signal*,
+            // not a failure — pass it through unchanged so the parent graph (and its
+            // caller) can resume the subgraph node with the human's decision. Wrapping
+            // it in `ExecutionError` would mask the suspension as an ordinary error and
+            // make `resume_with_value` across the subgraph boundary impossible.
+            Err(e @ GraphError::DynamicInterrupt { .. }) => return Err(e),
+            Err(e) => {
+                return Err(GraphError::ExecutionError(format!(
+                    "Subgraph '{}' execution failed: {}",
+                    self.name, e
+                )))
+            }
+        };
 
         // Map subgraph output back to parent state
         let mut parent_output = state.clone();

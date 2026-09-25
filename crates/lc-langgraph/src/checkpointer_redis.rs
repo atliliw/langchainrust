@@ -40,7 +40,9 @@ local current = tonumber(redis.call('HGET', key, 'version'))
 if current ~= tonumber(ARGV[1]) then
     return {0, current}
 end
-redis.call('HSET', key, 'state', ARGV[2], 'ts', ARGV[3])
+-- B4: do NOT refresh `ts` — `last()` (highest zset score by save seq) must keep
+-- reflecting save order, not edit order.
+redis.call('HSET', key, 'state', ARGV[2])
 local new_version = redis.call('HINCRBY', key, 'version', 1)
 return {1, new_version}
 "#;
@@ -103,15 +105,37 @@ impl<S: StateSchema> RedisCheckpointer<S> {
     fn checkpoint_key(&self, id: &str) -> String {
         format!("lc:cp:{{{}}}:cp:{}", self.thread_id, id)
     }
-}
 
-#[async_trait]
-impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
-    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+    /// A thread-bound backend only serves its own thread; the threaded trait
+    /// methods assert the requested thread matches before delegating.
+    fn assert_thread(&self, thread: &str) -> GraphResult<()> {
+        if thread != self.thread_id {
+            return Err(GraphError::CheckpointError(format!(
+                "this checkpointer is scoped to thread '{}', not '{thread}'",
+                self.thread_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Shared insert path bound to the checkpointer's own thread; `parent_id`
+    /// records the checkpoint this one was forked from (fork lineage).
+    ///
+    /// An inherent (not trait) helper so the trait impl can call it: it is a
+    /// private detail of this backend, not a [`Checkpointer`] member.
+    async fn insert_internal(
+        &self,
+        parent_id: Option<&str>,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
         let id = Uuid::new_v4().to_string();
         let ts = chrono::Utc::now().timestamp();
         let state_json = serde_json::to_string(state)
             .map_err(|e| GraphError::CheckpointError(format!("serialize error: {e}")))?;
+
+        let thread_id = self.thread_id.clone();
+        let parent = parent_id.unwrap_or("");
 
         let mut conn = self.conn.clone();
         let seq: i64 = conn.incr(self.seq_key(), 1_i64).await.map_err(redis_err)?;
@@ -123,11 +147,69 @@ impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
             .hset(&key, "version", 1_i64)
             .hset(&key, "ts", ts)
             .hset(&key, "recursion_count", recursion_count as i64)
-            .zadd(self.index_key(), seq, id.clone())
+            .hset(&key, "thread_id", thread_id)
+            .hset(&key, "parent_id", parent)
+            // B4: ZADD key member score — redis 0.25.x is `zadd(key, member, score)`.
+            // (Previously member=seq and score=id were swapped, which hard-failed.)
+            .zadd(self.index_key(), id.clone(), seq)
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(redis_err)?;
         Ok(id)
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
+    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+        self.insert_internal(None, state, recursion_count).await
+    }
+
+    async fn save_threaded(
+        &self,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(None, state, recursion_count).await
+    }
+
+    async fn save_fork_threaded(
+        &self,
+        parent_id: Option<&str>,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(parent_id, state, recursion_count)
+            .await
+    }
+
+    async fn load_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<S> {
+        self.assert_thread(thread)?;
+        self.load(checkpoint_id).await
+    }
+
+    async fn list_threaded(&self, thread: &str) -> GraphResult<Vec<String>> {
+        self.assert_thread(thread)?;
+        self.list().await
+    }
+
+    async fn delete_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<()> {
+        self.assert_thread(thread)?;
+        self.delete(checkpoint_id).await
+    }
+
+    async fn last_threaded(&self, thread: &str) -> GraphResult<Option<(S, usize)>> {
+        self.assert_thread(thread)?;
+        self.last().await
+    }
+
+    async fn snapshots_threaded(&self, thread: &str) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.assert_thread(thread)?;
+        self.snapshots().await
     }
 
     async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
@@ -161,13 +243,15 @@ impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
         let mut snaps = Vec::with_capacity(scored.len());
         for (id, seq) in scored {
             let key = self.checkpoint_key(&id);
-            let (state_json, ts, recursion_count): (String, i64, i64) = redis::pipe()
-                .hget(&key, "state")
-                .hget(&key, "ts")
-                .hget(&key, "recursion_count")
-                .query_async(&mut conn)
-                .await
-                .map_err(redis_err)?;
+            let (state_json, ts, recursion_count, parent_id): (String, i64, i64, String) =
+                redis::pipe()
+                    .hget(&key, "state")
+                    .hget(&key, "ts")
+                    .hget(&key, "recursion_count")
+                    .hget(&key, "parent_id")
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(redis_err)?;
             let state: S = serde_json::from_str(&state_json)
                 .map_err(|e| GraphError::CheckpointError(format!("deserialize error: {e}")))?;
             snaps.push(CheckpointInfo {
@@ -176,6 +260,11 @@ impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
                 seq: seq as u64,
                 recursion_count: recursion_count as usize,
                 state,
+                parent: if parent_id.is_empty() {
+                    None
+                } else {
+                    Some(parent_id)
+                },
             });
         }
         Ok(snaps)
@@ -222,14 +311,12 @@ impl<S: StateSchema> Checkpointer<S> for RedisCheckpointer<S> {
     ) -> GraphResult<u64> {
         let state_json = serde_json::to_string(state)
             .map_err(|e| GraphError::CheckpointError(format!("serialize error: {e}")))?;
-        let ts = chrono::Utc::now().timestamp().to_string();
         let mut conn = self.conn.clone();
         let (status, value): (i64, i64) = self
             .update_script
             .key(self.checkpoint_key(checkpoint_id))
             .arg(expected_version as i64)
             .arg(state_json)
-            .arg(ts)
             .invoke_async(&mut conn)
             .await
             .map_err(redis_err)?;

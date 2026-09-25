@@ -447,6 +447,11 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
         let chunks = self.get_chunks_for_parent(parent_id).await?;
         for chunk in &chunks {
             self.del(&self.chunk_key(&chunk.chunk_id)).await?;
+            // C1: `add_parent_document` adds each chunk id to the global `all_chunks`
+            // set (line 352); deleting the parent must remove them too, or the ids
+            // linger as ghost chunks in `chunk_count`/`get_all_chunks` pointing at
+            // already-deleted keys.
+            self.srem(&self.all_chunks_key(), &chunk.chunk_id).await?;
         }
         self.del(&self.doc_key(parent_id)).await?;
         self.del(&self.parent_chunks_key(parent_id)).await?;

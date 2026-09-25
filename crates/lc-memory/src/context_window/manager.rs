@@ -259,12 +259,23 @@ impl<M: BaseChatModel> ContextWindow<M> {
         }
 
         let to_summarize = &other_messages[..keep_from_idx];
-        let to_keep = &other_messages[keep_from_idx..];
+        let mut to_keep: Vec<Message> = other_messages[keep_from_idx..].to_vec();
+
+        // D8: align with `truncate`'s H-M2 cleanup — the kept suffix must not
+        // open on an orphaned Tool message (a tool result whose matching
+        // assistant tool_calls was summarized away). A standalone tool message
+        // is malformed for OpenAI/Anthropic → 400.
+        while to_keep
+            .first()
+            .is_some_and(|m| matches!(m.message_type, lc_schema::MessageType::Tool { .. }))
+        {
+            to_keep.remove(0);
+        }
 
         if to_summarize.is_empty() {
             // All messages fit with the summary placeholder; no need to summarize.
             let mut result = system_messages;
-            result.extend(to_keep.to_vec());
+            result.extend(to_keep.clone());
             return Ok(result);
         }
 
@@ -297,7 +308,7 @@ impl<M: BaseChatModel> ContextWindow<M> {
         // Build final message list: system + summary + recent.
         let mut final_messages = system_messages;
         final_messages.push(summary_message);
-        final_messages.extend(to_keep.to_vec());
+        final_messages.extend(to_keep.clone());
 
         // Verify the final result fits; if not, truncate the recent portion.
         let final_tokens = self.counter.count_messages(&final_messages) as usize;

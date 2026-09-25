@@ -11,7 +11,12 @@ use super::guardrail::{
 };
 
 static OPENAI_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[sS][kK]-[a-zA-Z0-9]{20,}").expect("static regex literal must compile")
+    // Match both legacy bare keys (`sk-` + 20+ alphanumerics) and the modern prefixed
+    // forms (`sk-proj-…` OpenAI, `sk-ant-api..-…` Anthropic, `sk-svcacct-…` service
+    // accounts) whose char class contains `-`. The prefixed branch requires the `-` so a
+    // bare `sk-` followed by letters does not rely on a missing separator.
+    Regex::new(r"(?i)\bsk-(?:[a-z0-9]{20,}|(?:proj|svcacct|ant)-[a-z0-9_-]{20,})")
+        .expect("static regex literal must compile")
 });
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -133,6 +138,11 @@ pub struct SensitiveInfoGuardrail {
     keywords: Vec<String>,
     /// Optional LLM judge (P2-3): makes the second determination after a high-false-positive mention keyword hits context-sensitively.
     judge: Option<Arc<dyn SensitiveJudge>>,
+    /// Judge-failure escape hatch (B6). Default `false` = fail-closed: if the LLM judge errors,
+    /// the guardrail **Blocks** rather than silently passing. Set `true` to fall back to the
+    /// judge-less warn-only behavior (pass with a log) when a judge outage is preferable to a
+    /// false block.
+    judge_fail_open: bool,
 }
 
 impl SensitiveInfoGuardrail {
@@ -142,6 +152,8 @@ impl SensitiveInfoGuardrail {
             // password/token/secret moved to the high-false-positive mention words (warn only), no longer blocking by default.
             keywords: vec!["api_key".to_string(), "credential".to_string()],
             judge: None,
+            // B6: fail-closed by default — a judge outage blocks rather than silently passing.
+            judge_fail_open: false,
         }
     }
 
@@ -154,6 +166,14 @@ impl SensitiveInfoGuardrail {
     /// Attaches an LLM judge (P2-3): after a high-false-positive mention keyword hits context-sensitively, a second determination blocks only on a real leak.
     pub fn with_judge(mut self, judge: Arc<dyn SensitiveJudge>) -> Self {
         self.judge = Some(judge);
+        self
+    }
+
+    /// Escape hatch for judge failures (B6). When `fail_open` is `true`, a judge error falls
+    /// back to the judge-less warn-only behavior (pass + log) instead of the default fail-closed
+    /// Block. Default is `false` (fail-closed).
+    pub fn with_judge_fail_open(mut self, fail_open: bool) -> Self {
+        self.judge_fail_open = fail_open;
         self
     }
 
@@ -249,12 +269,28 @@ impl OutputGuardrail for SensitiveInfoGuardrail {
                         );
                     }
                     Err(e) => {
-                        // a judge failure must not cause a false block: fall back to the judge-less warn-only behavior (prefer passing and leaving a log).
-                        log::warn!(
-                            "SensitiveInfo: LLM judge call failed ({}), keywords {:?} handled as warn-only",
-                            e,
-                            kw
-                        );
+                        // B6: default is fail-closed — a judge outage must not silently pass.
+                        // Only an explicit `judge_fail_open` escape hatch restores the old
+                        // warn-only (pass + log) behavior.
+                        if self.judge_fail_open {
+                            log::warn!(
+                                "SensitiveInfo: LLM judge call failed ({}), keywords {:?} handled as warn-only (fail-open)",
+                                e,
+                                kw
+                            );
+                        } else {
+                            log::warn!(
+                                "SensitiveInfo: LLM judge call failed ({}), keywords {:?} blocked fail-closed",
+                                e,
+                                kw
+                            );
+                            return OutputGuardrailResult::Block {
+                                reason: format!(
+                                    "LLM judge unavailable; blocked fail-closed (keyword: {})",
+                                    kw
+                                ),
+                            };
+                        }
                     }
                 },
                 None => {
@@ -290,6 +326,18 @@ mod tests {
         }
         async fn judge(&self, _text: &str) -> Result<bool, GuardrailError> {
             Ok(self.leak)
+        }
+    }
+
+    /// Mock judge that always fails, exercising the B6 fail-closed / fail-open paths.
+    struct MockJudgeError;
+    #[async_trait]
+    impl SensitiveJudge for MockJudgeError {
+        fn name(&self) -> &str {
+            "mock-error"
+        }
+        async fn judge(&self, _text: &str) -> Result<bool, GuardrailError> {
+            Err(GuardrailError::Judge("judge unavailable".to_string()))
         }
     }
 
@@ -403,6 +451,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sensitive_info_modern_prefixed_keys_blocked() {
+        // H5: modern OpenAI/Anthropic keys contain `-` and the old `[a-zA-Z0-9]{20,}` class
+        // could never match them — a silent fail-open on the exact secret class this rail
+        // claims to block.
+        let g = SensitiveInfoGuardrail::new();
+        let modern_keys = [
+            "sk-proj-abcdef0123456789abcdef0123456789abcdef0123456789",
+            "sk-ant-api03-abcdef0123456789abcdef0123456789abcdef0123456789",
+            "sk-svcacct-abcdef0123456789abcdef0123456789abcdef0123456789",
+            // legacy bare key still detected
+            "sk-9876543210abcdefghijklmnopqrstuvwxyz123456",
+        ];
+        for k in modern_keys {
+            assert!(
+                g.validate(&format!("here is my key: {k}")).await.is_block(),
+                "modern key should be blocked: {k}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_sensitive_info_email() {
         let g = SensitiveInfoGuardrail::new();
         assert!(g.validate("contact: user@example.com").await.is_block());
@@ -412,5 +481,27 @@ mod tests {
     async fn test_sensitive_info_custom_keywords() {
         let g = SensitiveInfoGuardrail::new().with_keywords(vec!["机密".to_string()]);
         assert!(g.validate("这是机密信息").await.is_block());
+    }
+
+    /// B6: a judge failure blocks by default (fail-closed) — an outage must not silently pass.
+    #[tokio::test]
+    async fn test_sensitive_info_judge_failure_blocks_by_default() {
+        let g = SensitiveInfoGuardrail::new().with_judge(Arc::new(MockJudgeError));
+        assert!(
+            g.validate("密码是abc123").await.is_block(),
+            "judge failure must block fail-closed by default"
+        );
+    }
+
+    /// B6: only the explicit `with_judge_fail_open(true)` escape hatch restores warn-only passing.
+    #[tokio::test]
+    async fn test_sensitive_info_judge_failure_passes_only_when_fail_open() {
+        let g = SensitiveInfoGuardrail::new()
+            .with_judge(Arc::new(MockJudgeError))
+            .with_judge_fail_open(true);
+        assert!(
+            g.validate("密码是abc123").await.is_pass(),
+            "judge failure with fail_open should pass (warn-only)"
+        );
     }
 }

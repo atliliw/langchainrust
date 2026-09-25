@@ -235,6 +235,14 @@ fn pinned_client(
 ) -> Result<reqwest::Client, ToolError> {
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     builder = builder.timeout(timeout.unwrap_or(DEFAULT_GUARDED_TIMEOUT));
+    // B8 security fix: never route a guarded fetch through a proxy. The whole
+    // point of this client is resolve-once / validate-ALL-IPs / IP-pin — the
+    // per-hop SSRF and intranet rejection above only bound a DIRECT connection.
+    // If a system proxy sat in front, the proxy would resolve and connect on
+    // its own (its own DNS / egress), silently defeating both the IP pinning
+    // and the private-IP rejection. `no_proxy()` keeps the guarded path direct
+    // so the validated addresses are the ones actually used.
+    builder = builder.no_proxy();
     // Typed host enum: a bracketed IPv6 literal from host_str() would fail
     // IpAddr parsing and be mis-pinned as a DNS name (see resolve_url_addrs).
     let is_ip_literal = matches!(
@@ -330,6 +338,33 @@ pub async fn guarded_post_json(
     client
         .post(url)
         .json(body)
+        .send()
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("HTTP request failed: {}", e)))
+}
+
+/// POST request with a URL-encoded form body, behind the same resolve-once /
+/// validate-all / pin-IP protection as [`guarded_post_json`]. Used by the OAuth
+/// token exchange (F3) where the request body carries a client secret: the
+/// endpoint is resolved and pinned *before* the secret is sent, closing the
+/// check-then-re-resolve DNS-rebinding window and preventing a `token_endpoint`
+/// that points into an intranet host from receiving credentials.
+pub async fn guarded_post_form(
+    url: &str,
+    form: &[(String, String)],
+    check_ssrf: bool,
+    timeout: Option<Duration>,
+) -> Result<reqwest::Response, ToolError> {
+    let parsed = parse_http_url(url)?;
+    let addrs = resolve_url_addrs(&parsed).await?;
+    if check_ssrf {
+        ensure_all_public(&addrs)?;
+    }
+    let client = pinned_client(&parsed, &addrs, timeout)?;
+
+    client
+        .post(url)
+        .form(form)
         .send()
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("HTTP request failed: {}", e)))

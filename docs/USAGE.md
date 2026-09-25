@@ -5963,7 +5963,7 @@ let server = A2AServer::new(chain)
 
 **任务持久化**：任务通过 `TaskStore` trait 存取（`upsert` / `get` / `list` / `delete` / `compare_and_update`），默认实现是带 LRU 淘汰的 `InMemoryTaskStore`，进程重启即丢失。trait 自带基于状态机的 `compare_and_update`（CAS），有条件地替换任务状态——自行实现数据库后端时应覆盖为真正的原子条件写，避免"取消"与"链完成"竞争时互相覆盖终态。
 
-**幂等与归属**：请求 metadata 里带 `message_id` 的 `tasks/send` 是幂等的——重试同一个 id 只会取回已创建的任务，不会把链跑两遍（在途 id 有原子预占，服务端 0.20.0 还修了竞争失败者不释放预占、把 id 永久"毒化"的 bug）；任务可带 `owner`，非属主调用 `tasks/get`、`tasks/cancel` 会被拒（`-32003`）。
+**幂等与归属**：请求 metadata 里带 `message_id` 的 `tasks/send` 是幂等的——重试同一个 id 只会取回已创建的任务，不会把链跑两遍（在途 id 有原子预占，服务端 0.20.0 还修了竞争失败者不释放预占、把 id 永久"毒化"的 bug）；任务可带 `owner`，非属主调用 `tasks/get`、`tasks/cancel` 会被拒（`-32003`）。**0.25.0 起归属只信服务端签发的身份**：默认 `trust_metadata_owner=false`，客户端请求 metadata 里自报的 `owner` 一律忽略，属主由认证身份（`with_auth_identity` / `with_authenticator` → `Principal`）在 HTTP 边界一次性解析，并贯穿全部路由与 `/events` 订阅过滤；本地迁移如果确实要信任自报 owner，显式 `.with_trust_metadata_owner(true)`。
 
 ### 开箱即用的 axum 服务（`axum` feature）
 
@@ -5971,17 +5971,17 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.24"
-lc-a2a = { version = "0.24.0", features = ["axum"] }
+langchainrust = "0.25"
+lc-a2a = { version = "0.25.0", features = ["axum"] }
 ```
 
 ```rust
 // 路由:GET /.well-known/agent-card.json、POST /、GET /events(SSE)
-server.serve(8080).await?;           // 绑 0.0.0.0:8080
+server.serve(8080).await?;           // B7(0.25)安全默认:绑 127.0.0.1:8080(回环,不透公网)
 // 或 server.serve_on(listener).await —— 自定义地址 / TLS / 临时端口
 ```
 
-CORS 默认只放行 `http://localhost` / `http://127.0.0.1` 来源（0.22.0 审计前曾是任意来源）；面向公网部署时应自行收紧来源白名单，并在前置网关补 TLS 与速率限制。完整可运行示例见 `crates/lc/examples/a2a_http_server.rs`。
+**公网绑定注意（B7, 0.25 起）**：`serve` 只绑回环。要暴露到非回环地址,必须走 `server.serve_with(ServeConfig)`——非回环 bind 若未配置 bearer token(`ServeConfig.auth_token`,或 server 上 `with_auth_token`)且未显式 `insecure_public=true`,启动即拒绝(`refusing to serve A2A on non-loopback bind ... without a bearer token`);`insecure_public` 只留给有鉴权反代在前的部署。CORS 默认只放行 `http://localhost` / `http://127.0.0.1` 来源(0.22.0 审计前曾是任意来源;B7 起 `ServeConfig.cors_origins` 可配精确来源白名单)；面向公网部署请在 `ServeConfig` 收紧来源白名单,并在前置网关补 TLS 与速率限制。完整可运行示例见 `crates/lc/examples/a2a_http_server.rs`。
 
 ### A2AClient（调用远程智能体）
 

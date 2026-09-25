@@ -153,6 +153,9 @@ pub mod metadata_keys {
     pub const OWNER: &str = "owner";
     /// Idempotency key for `tasks/send` (P1-6).
     pub const MESSAGE_ID: &str = "message_id";
+    /// A2A wire-protocol version the caller is speaking (0.25.0 contract
+    /// enforcement: servers reject versions they do not support).
+    pub const PROTOCOL_VERSION: &str = "protocolVersion";
 }
 
 impl A2ARequest {
@@ -299,6 +302,17 @@ impl A2ARequest {
         self.params
             .as_ref()
             .and_then(|p| p.get("messageId"))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// A2A protocol version carried in metadata, if the caller supplied one.
+    ///
+    /// Servers use this to reject callers speaking an incompatible wire
+    /// version instead of silently misinterpreting the envelope (0.25.0).
+    pub fn protocol_version(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.get(metadata_keys::PROTOCOL_VERSION))
             .and_then(serde_json::Value::as_str)
     }
 

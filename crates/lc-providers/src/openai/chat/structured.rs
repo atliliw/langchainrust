@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 
 use crate::openai::OpenAIConfig;
+use lc_core::http::HttpClient;
 use lc_core::tools::StructuredOutput;
 use lc_schema::Message;
 
@@ -14,7 +15,8 @@ use super::{OpenAIChat, OpenAIError};
 /// Method for structured output calls
 pub struct StructuredOutputMethod<T: DeserializeOwned + JsonSchema> {
     pub(crate) config: OpenAIConfig,
-    pub(crate) client: reqwest::Client,
+    pub(crate) http_api: HttpClient,
+    pub(crate) http_sse: HttpClient,
     pub(crate) _phantom: PhantomData<T>,
 }
 
@@ -23,7 +25,8 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutputMethod<T> {
     pub async fn invoke(&self, messages: Vec<Message>) -> Result<T, OpenAIError> {
         let chat = OpenAIChat {
             config: self.config.clone(),
-            client: self.client.clone(),
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
         };
 
         let result = chat.chat_internal(messages).await?;

@@ -30,7 +30,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::protocol::{
-    negotiate_protocol_version, MCPError, ProtocolInfo, VersionPolicy, MCP_VERSION,
+    negotiate_protocol_version, JsonRpcId, MCPError, ProtocolInfo, VersionPolicy, MCP_VERSION,
 };
 use crate::transport::stdio::{StdioCommand, StdioTransport};
 use crate::types::{MCPToolDefinition, MCPToolResult};
@@ -170,6 +170,18 @@ impl StdioMcpClient {
             .request("ping", None, self.request_timeout)
             .await
             .map(|_| ())
+    }
+
+    /// B8: best-effort `notifications/cancelled` for an in-flight request id.
+    /// The `requestId` is serialized as-is (numeric ids stay numeric) so the
+    /// server can match it against its `requestId → Notify` table. Delivery is
+    /// best-effort — a server that already responded may drop it.
+    pub async fn cancel(&self, request_id: impl Into<JsonRpcId>) -> Result<(), MCPError> {
+        let rid = serde_json::to_value(request_id.into())
+            .map_err(|e| MCPError::new(-32603, format!("failed to encode request id: {e}")))?;
+        self.transport
+            .notify("notifications/cancelled", Some(json!({ "requestId": rid })))
+            .await
     }
 
     /// `tools/list` (uncached), mirroring the stateless client.

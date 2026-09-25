@@ -113,10 +113,12 @@ fn email_re() -> &'static Regex {
 
 fn ipv4_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    // neighbor-digit/dot rejection (5-part versions etc.) is done in the replacement closure,
-    // since the `regex` crate does not support look-around.
+    // 左边缘刻意不加 `\b`(K5):紧贴的前置数字不得阻止发现真四段——`5`192.168.0.1` 里
+    // 的 `192.168.0.1` 必须命中。右边缘保留 `\b`:一个四段不会继续接数字/点而不破坏八位组
+    // 语法。左侧边界延续(前置 `.`)与右侧延伸(后置数字/点)都在替换闭包内拒绝——
+    // `regex` crate 不支持 look-around。
     RE.get_or_init(|| {
-        Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("static regex literal must compile")
+        Regex::new(r"(?:\d{1,3}\.){3}\d{1,3}\b").expect("static regex literal must compile")
     })
 }
 
@@ -175,6 +177,22 @@ impl PiiRedactionGuardrail {
         self
     }
 
+    /// Resets streaming state so the rail can be reused across independent streams (K2).
+    ///
+    /// The hold-back buffer (plus the release cursor) belongs to exactly one stream; reusing a
+    /// rail instance without resetting would let the previous stream's bytes leak into the next
+    /// redaction window. The framework calls this once per `invoke_stream` via
+    /// [`StreamingOutputGuardrail::reset`]; a caller driving the rail manually should call it
+    /// before each stream.
+    pub fn reset(&self) {
+        if let Ok(mut raw) = self.stream_raw.lock() {
+            raw.clear();
+        }
+        if let Ok(mut released) = self.stream_released.lock() {
+            *released = 0;
+        }
+    }
+
     /// Redacts every enabled category in `text`, returning the rewritten string.
     pub fn redact(&self, text: &str) -> String {
         let mut out = text.to_string();
@@ -227,12 +245,19 @@ impl PiiRedactionGuardrail {
                             .get(0)
                             .expect("capture group 0 always present on a Regex match");
                         let bytes = out.as_bytes();
-                        let neighbor_dot_or_digit = |i: Option<usize>| {
-                            i.map(|idx| matches!(bytes[idx], b'.' | b'0'..=b'9'))
-                                .unwrap_or(false)
-                        };
-                        let bounded = !neighbor_dot_or_digit(m.start().checked_sub(1))
-                            && !neighbor_dot_or_digit(Some(m.end()).filter(|&e| e < bytes.len()));
+                        // 左边界只在前置 `.` 时拒绝(处在更长的点分序列中间);前置**数字**不拒绝
+                        // (K5:`5`192.168.0.1` 仍要 redact 真四段 `192.168.0.1`)。右边界在后置
+                        // `.`/数字时拒绝——四段不会继续接数字/点而不破坏八位组语法。
+                        let left_is_dot = m
+                            .start()
+                            .checked_sub(1)
+                            .map(|i| bytes[i] == b'.')
+                            .unwrap_or(false);
+                        let right_extends = Some(m.end())
+                            .filter(|&e| e < bytes.len())
+                            .map(|e| matches!(bytes[e], b'.' | b'0'..=b'9'))
+                            .unwrap_or(false);
+                        let bounded = !left_is_dot && !right_extends;
                         if bounded && valid_ipv4(m.as_str()) {
                             Cow::Borrowed(PiiKind::IpV4.label())
                         } else {
@@ -281,7 +306,14 @@ impl StreamingOutputGuardrail for PiiRedactionGuardrail {
         };
 
         let total = redacted.chars().count();
-        let release = total.saturating_sub(self.hold_back);
+        // K1: pattern-aware hold-back — on top of the configured window, additionally withhold
+        // the trailing run of chars that could still be an in-progress identifier (digits and
+        // their separators for cards/ids/phones/ipv4; an unfinished email word run). Without
+        // this, a fixed window smaller than the identifier lets its raw prefix slip out before
+        // enough following text proves it whole. Computed on the already-redacted text: a
+        // completed identifier is already shrunk to a `[REDACTED_*]` label and no longer holds.
+        let pending = pending_hold(&redacted);
+        let release = total.saturating_sub(self.hold_back.max(pending));
         let mut released = self
             .stream_released
             .lock()
@@ -321,6 +353,61 @@ impl StreamingOutputGuardrail for PiiRedactionGuardrail {
             FlushOutput::Release(tail)
         }
     }
+
+    fn reset(&self) {
+        PiiRedactionGuardrail::reset(self);
+    }
+}
+
+/// K1: returns how many chars at `text`'s tail could still be part of an unfinished PII
+/// identifier. Two backward scans cover every enabled category:
+///
+/// - **Numeric** (card / national id / phone / ipv4): swallows `[0-9 .\-+]` (digits plus the
+///   identifier-internal separators — space, hyphen, dot, plus), and counts only when the run
+///   contains at least one digit (a pure separator/space tail should not hold back output).
+/// - **Email**: swallows the email charset (`A-Za-z0-9._%+\-@`) and counts only when an `@`
+///   was seen (a digit/letter run without `@` cannot be an in-progress email).
+///
+/// Take the max of both. It runs on the **already-redacted** text: a finished identifier is
+/// already a `[REDACTED_*]` label, so it never over-holds for a still-whole identifier.
+fn pending_hold(text: &str) -> usize {
+    let mut hold = 0usize;
+
+    // numeric tail: digits and their separators, but only if at least one digit is present.
+    let mut digit_run = 0;
+    let mut has_digit = false;
+    for c in text.chars().rev() {
+        match c {
+            '0'..='9' => {
+                has_digit = true;
+                digit_run += 1;
+            }
+            ' ' | '-' | '.' | '+' => digit_run += 1,
+            _ => break,
+        }
+    }
+    if has_digit {
+        hold = hold.max(digit_run);
+    }
+
+    // email tail: email charset, but only if an '@' was seen (and at least one char left of it).
+    let mut email_run = 0;
+    let mut seen_at = false;
+    for c in text.chars().rev() {
+        if c == '@' {
+            seen_at = true;
+            email_run += 1;
+        } else if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '%' | '+' | '-') {
+            email_run += 1;
+        } else {
+            break;
+        }
+    }
+    if seen_at && email_run >= 2 {
+        hold = hold.max(email_run);
+    }
+
+    hold
 }
 
 /// GB 11643 checksum for 18-digit resident identity numbers (last char may be X).
@@ -403,6 +490,10 @@ mod tests {
     fn redacts_ipv4() {
         assert_eq!(redact("host 192.168.0.1!"), "host [REDACTED_IP]!");
         assert_eq!(redact("bad 999.1.1.1"), "bad 999.1.1.1");
+        // K5: a glued preceding digit must not hide the true quad inside a longer digit run.
+        assert_eq!(redact("n 5192.168.0.1 x"), "n 5[REDACTED_IP] x");
+        // a quad that is a slice of a longer dotted run still stays untouched
+        assert_eq!(redact("1.2.3.4.5"), "1.2.3.4.5");
     }
 
     #[test]
@@ -480,5 +571,79 @@ mod tests {
             emitted.push_str(&tail);
         }
         assert_eq!(emitted, "abcdef");
+    }
+
+    #[tokio::test]
+    async fn streaming_pattern_aware_hold_never_leaks_raw_prefix() {
+        // hold-back (4) smaller than the split gap: with only the fixed window, chunk 3
+        // ("call 1381234") would release 4 chars from offset 4 and leak the raw digits "1381"
+        // before the number is whole. The pattern-aware hold withholds the trailing digit run,
+        // so no raw digit of the phone can ever be emitted — only the redaction label.
+        let rail = PiiRedactionGuardrail::new().with_hold_back(4);
+        let mut emitted = String::new();
+        for token in ["call ", "138", "1234", "5678", " thanks"] {
+            let ctx = ChunkContext {
+                token,
+                window: token,
+                full: token,
+            };
+            match rail.validate_chunk(&ctx).await {
+                ChunkAction::Pass => emitted.push_str(token),
+                ChunkAction::Replace(delta) => emitted.push_str(&delta),
+                ChunkAction::Block => panic!("unexpected block"),
+            }
+            assert!(
+                !emitted.contains("138"),
+                "raw phone prefix leaked on chunk {token:?}: {emitted:?}"
+            );
+        }
+        let flushed = rail.flush().await;
+        assert!(matches!(flushed, FlushOutput::Rewritten(_)));
+        if let Some(tail) = flushed.into_text() {
+            emitted.push_str(&tail);
+        }
+        assert_eq!(emitted, "call [REDACTED_PHONE] thanks");
+    }
+
+    #[tokio::test]
+    async fn streaming_reset_isolates_streams() {
+        // K2: a reused rail instance must not leak one stream's hold-back buffer into the next.
+        let rail = PiiRedactionGuardrail::new().with_hold_back(4);
+        // stream 1: a phone number arrives split across chunks, stream left unflushed so the
+        // raw "13812345678" still sits in the buffer when we move on.
+        let mut out1 = String::new();
+        for token in ["138", "12345", "678"] {
+            let ctx = ChunkContext {
+                token,
+                window: token,
+                full: token,
+            };
+            match rail.validate_chunk(&ctx).await {
+                ChunkAction::Pass => out1.push_str(token),
+                ChunkAction::Replace(d) => out1.push_str(&d),
+                ChunkAction::Block => panic!("unexpected block"),
+            }
+        }
+        // without reset, stream 2 would inherit stream 1's raw bytes and release cursor.
+        rail.reset();
+        let mut out2 = String::new();
+        for token in ["ab", "cd", "ef"] {
+            let ctx = ChunkContext {
+                token,
+                window: token,
+                full: token,
+            };
+            match rail.validate_chunk(&ctx).await {
+                ChunkAction::Pass => out2.push_str(token),
+                ChunkAction::Replace(d) => out2.push_str(&d),
+                ChunkAction::Block => panic!("unexpected block"),
+            }
+        }
+        let flushed = rail.flush().await;
+        assert!(matches!(flushed, FlushOutput::Release(_)));
+        if let Some(tail) = flushed.into_text() {
+            out2.push_str(&tail);
+        }
+        assert_eq!(out2, "abcdef");
     }
 }

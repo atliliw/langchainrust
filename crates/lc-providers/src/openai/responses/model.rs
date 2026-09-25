@@ -23,6 +23,8 @@ use super::types::{
     BuiltinTool, ResponsesApiResponse, ResponsesConfig, ResponsesContentPart, ResponsesError,
     ResponsesOutputItem, ResponsesStreamEvent,
 };
+use crate::provider_http::{provider_api_client, provider_request_options, provider_sse_client};
+use lc_core::http::HttpClient;
 
 // ---------------------------------------------------------------------------
 // ResponsesModel
@@ -36,7 +38,10 @@ use super::types::{
 #[derive(Clone)]
 pub struct ResponsesModel {
     pub(crate) config: ResponsesConfig,
-    client: reqwest::Client,
+    /// Buffered client for non-streaming calls (0.25.0: unified HTTP layer).
+    http_api: HttpClient,
+    /// SSE-profile client for streaming calls (establishment retries only).
+    http_sse: HttpClient,
 }
 
 impl ResponsesModel {
@@ -44,8 +49,26 @@ impl ResponsesModel {
     pub fn new(config: ResponsesConfig) -> Self {
         Self {
             config,
-            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
-            client: crate::retry::default_client(),
+            // 0.25.0: unified HTTP layer — bounded body, closed retriable
+            // status set, Retry-After support, method-aware POST retries.
+            http_api: provider_api_client(),
+            http_sse: provider_sse_client(),
+        }
+    }
+
+    /// Per-request auth/headers assembled from the provider config.
+    fn request_options(&self) -> lc_core::http::RequestOptions {
+        provider_request_options(true, &self.config.api_key, &[])
+    }
+
+    /// Maps a unified-layer error onto the Responses error enum while keeping
+    /// the `HTTP {status}: {body}` message shape.
+    fn map_http_error(err: lc_core::http::HttpError) -> ResponsesError {
+        match err {
+            lc_core::http::HttpError::Status { status, body } => {
+                ResponsesError::Api(format!("HTTP {status}: {body}"))
+            }
+            other => ResponsesError::Http(other.to_string()),
         }
     }
 
@@ -156,59 +179,36 @@ impl ResponsesModel {
         let url = format!("{}/responses", self.config.base_url);
         let body = self.build_request_body(messages, false);
 
+        // 0.25.0: unified HTTP layer — retriable status set, Retry-After and
+        // POST pre-dispatch-only retry semantics live in lc_core::http.
         let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
-            .map_err(|e| ResponsesError::Http(e.to_string()))?;
+            .map_err(Self::map_http_error)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(ResponsesError::Api(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let api_response: ResponsesApiResponse = response
-            .json()
-            .await
-            .map_err(|e| ResponsesError::Parse(e.to_string()))?;
+        let api_response: ResponsesApiResponse =
+            serde_json::from_str(&response.body).map_err(|e| {
+                let preview: String = response.body.chars().take(200).collect();
+                ResponsesError::Parse(format!("{e} - body: {preview}"))
+            })?;
 
         Self::parse_response(api_response)
     }
 
-    /// Parse a completed Responses API response into an `LLMResult`.
-    pub(crate) fn parse_response(
-        api_response: ResponsesApiResponse,
-    ) -> Result<LLMResult, ResponsesError> {
-        let mut content = String::new();
+    /// Extracts every callable item from a completed response: custom
+    /// function calls plus the built-in hosted-tool calls.
+    fn extract_tool_calls(output: &[ResponsesOutputItem]) -> Option<Vec<ToolCall>> {
         let mut tool_calls: Vec<ToolCall> = Vec::new();
-
-        for item in &api_response.output {
+        for item in output {
             match item {
-                ResponsesOutputItem::Message(msg) => {
-                    for part in &msg.content {
-                        match part {
-                            ResponsesContentPart::OutputText(text_part) => {
-                                if !content.is_empty() {
-                                    content.push('\n');
-                                }
-                                content.push_str(&text_part.text);
-                            }
-                            ResponsesContentPart::Refusal(refusal) => {
-                                if !content.is_empty() {
-                                    content.push('\n');
-                                }
-                                content.push_str(&format!("[Refusal: {}]", refusal.refusal));
-                            }
-                        }
-                    }
+                ResponsesOutputItem::FunctionCall(call) => {
+                    tool_calls.push(
+                        ToolCall::builder(&call.call_id)
+                            .name(&call.name)
+                            .arguments(&call.arguments)
+                            .build(),
+                    );
                 }
                 ResponsesOutputItem::WebSearchCall(call) => {
                     tool_calls.push(
@@ -267,6 +267,37 @@ impl ResponsesModel {
                             .build(),
                     );
                 }
+                // Text and reasoning items are not tool calls.
+                ResponsesOutputItem::Message(_) | ResponsesOutputItem::Reasoning(_) => {}
+            }
+        }
+        (!tool_calls.is_empty()).then_some(tool_calls)
+    }
+
+    /// Parse a completed Responses API response into an `LLMResult`.
+    pub(crate) fn parse_response(
+        api_response: ResponsesApiResponse,
+    ) -> Result<LLMResult, ResponsesError> {
+        let mut content = String::new();
+
+        for item in &api_response.output {
+            if let ResponsesOutputItem::Message(msg) = item {
+                for part in &msg.content {
+                    match part {
+                        ResponsesContentPart::OutputText(text_part) => {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(&text_part.text);
+                        }
+                        ResponsesContentPart::Refusal(refusal) => {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(&format!("[Refusal: {}]", refusal.refusal));
+                        }
+                    }
+                }
             }
         }
 
@@ -282,11 +313,7 @@ impl ResponsesModel {
             content,
             model,
             token_usage,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
+            tool_calls: Self::extract_tool_calls(&api_response.output),
             thinking_content: None,
         })
     }
@@ -306,26 +333,14 @@ impl ResponsesModel {
         let url = format!("{}/responses", self.config.base_url);
         let body = self.build_request_body(messages, true);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+        // 0.25.0: unified HTTP layer. Retries cover establishment only; once
+        // the response head arrives the stream runs without reconnecting.
+        let byte_stream = self
+            .http_sse
+            .open_sse(&url, Some(&body), self.request_options())
             .await
-            .map_err(|e| ResponsesError::Http(e.to_string()))?;
+            .map_err(Self::map_http_error)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(ResponsesError::Api(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let byte_stream = response.bytes_stream();
         let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         // M18: Use bounded channel to prevent OOM with slow consumers
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, ResponsesError>>(64);
@@ -335,84 +350,175 @@ impl ResponsesModel {
             use futures_util::StreamExt;
 
             let mut byte_stream = byte_stream;
+            // 0.22.0 audit fix (Medium): `[DONE]` must exit the outer loop.
+            let mut done = false;
+            // 0.25.0: require a terminal marker — response.completed,
+            // response.failed, response.incomplete, error, or `[DONE]`. A
+            // connection that closes first delivered a truncated answer;
+            // reporting it as complete silently dropped model output.
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
-                // H41: Use unwrap_or_else to recover from poisoned mutex
-                // 0.22.0 C1: byte-layer framing; only complete events are decoded
-                let (events, transport_err) = {
-                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    match chunk_result {
-                        Ok(bytes) => {
-                            let mut out = Vec::new();
-                            for text in guard.1.push(&bytes) {
-                                out.extend(guard.0.parse(&text));
-                            }
-                            (out, None)
-                        }
-                        Err(e) => (Vec::new(), Some(e.to_string())),
+                let chunk_bytes = match chunk_result {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = tx.send(Err(ResponsesError::Http(e.to_string()))).await;
+                        return;
                     }
                 };
-                // parser_guard is dropped here, before any await
 
-                if let Some(e) = transport_err {
-                    let _ = tx.send(Err(ResponsesError::Http(e))).await;
-                    return;
-                }
+                // H41: unwrap_or_else recovers from a poisoned mutex.
+                // 0.22.0 C1: byte-layer framing; only complete events decode.
+                let events = {
+                    let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut out = Vec::new();
+                    for text in guard.1.push(&chunk_bytes) {
+                        out.extend(guard.0.parse(&text));
+                    }
+                    out
+                };
+                // guard is dropped here, before any await
 
                 for event in events {
                     if event.is_done() {
-                        let _ = tx.send(Ok(StreamChunk::new(""))).await;
-                        return;
+                        done = true;
+                        saw_terminal = true;
+                        break;
                     }
-                    // Try to parse as a Responses API stream event
-                    if let Ok(stream_event) =
-                        serde_json::from_str::<ResponsesStreamEvent>(&event.data)
-                    {
-                        match stream_event {
+                    match serde_json::from_str::<ResponsesStreamEvent>(&event.data) {
+                        Ok(stream_event) => match stream_event {
                             ResponsesStreamEvent::OutputTextDelta(delta) => {
                                 if tx.send(Ok(StreamChunk::new(delta.delta))).await.is_err() {
                                     return;
                                 }
                             }
+                            ResponsesStreamEvent::OutputItemDone(item_done) => {
+                                // Completed output items include custom
+                                // function calls (previously rejected by the
+                                // enum) and hosted-tool calls; emit them as
+                                // their own chunk so streaming tool use is
+                                // not lost the way the old fold did.
+                                if let Some(tool_calls) =
+                                    Self::extract_tool_calls(std::slice::from_ref(&item_done.item))
+                                {
+                                    if tx
+                                        .send(Ok(StreamChunk {
+                                            thinking_content: None,
+                                            text: String::new(),
+                                            token_usage: None,
+                                            tool_calls: Some(tool_calls),
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                            }
                             ResponsesStreamEvent::Completed(completed) => {
-                                // Final event: emit token usage if the response
-                                // carried it, then finish the stream.
+                                // Terminal event; emit token usage when carried.
+                                // (returns below, so the terminal guard is moot.)
                                 if let Some(usage) = completed.response.usage {
                                     let token_usage = TokenUsage {
                                         prompt_tokens: usage.input_tokens,
                                         completion_tokens: usage.output_tokens,
                                         total_tokens: usage.total_tokens,
                                     };
-                                    let _ = tx
+                                    if tx
                                         .send(Ok(StreamChunk {
+                                            thinking_content: None,
                                             text: String::new(),
                                             token_usage: Some(token_usage),
                                             tool_calls: None,
                                         }))
-                                        .await;
-                                } else {
-                                    let _ = tx.send(Ok(StreamChunk::new(""))).await;
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
                                 }
                                 return;
                             }
-                            ResponsesStreamEvent::Failed(_) => {
+                            ResponsesStreamEvent::Failed(payload) => {
                                 let _ = tx
-                                    .send(Err(ResponsesError::Api("Response failed".to_string())))
+                                    .send(Err(ResponsesError::Api(format!(
+                                        "Response failed: {}",
+                                        failed_event_message(&payload)
+                                    ))))
                                     .await;
                                 return;
                             }
-                            // Other events are informational; skip them
+                            ResponsesStreamEvent::Incomplete(payload) => {
+                                let _ = tx
+                                    .send(Err(ResponsesError::Api(format!(
+                                        "Response incomplete: {}",
+                                        incomplete_event_reason(&payload)
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                            ResponsesStreamEvent::Error(err) => {
+                                // Top-level error events must never be
+                                // swallowed; the model output is unusable.
+                                let _ = tx
+                                    .send(Err(ResponsesError::Api(format!(
+                                        "Stream error: {}",
+                                        err.message()
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                            // Other events are informational.
                             _ => {}
+                        },
+                        // Forward-compat: a future event type fails the tagged
+                        // enum parse. Skip it rather than killing the stream;
+                        // the terminal guard still detects truncation.
+                        Err(e) => {
+                            log::debug!("skipping unparsable Responses SSE event: {e}");
                         }
                     }
-                    // If the event data is not a recognized stream event
-                    // (e.g. an error payload), we silently skip it.
                 }
+                if done {
+                    break;
+                }
+            }
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(ResponsesError::StreamInterrupted(
+                        "connection closed before a terminal response event".to_string(),
+                    )))
+                    .await;
             }
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
     }
+}
+
+/// Best-effort message extraction from a `response.failed` event payload.
+///
+/// Real shape is `{"response":{"error":{"code","message"}}}`; tolerate a flat
+/// `{"error":{"message"}}` from gateways.
+fn failed_event_message(payload: &serde_json::Value) -> String {
+    payload
+        .get("response")
+        .and_then(|r| r.get("error"))
+        .or_else(|| payload.get("error"))
+        .and_then(|e| e.get("message").and_then(|m| m.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown failure".to_string())
+}
+
+/// Best-effort reason extraction from a `response.incomplete` event payload:
+/// `{"response":{"status":"incomplete","incomplete_details":{"reason":...}}}`.
+fn incomplete_event_reason(payload: &serde_json::Value) -> String {
+    payload
+        .get("response")
+        .and_then(|r| r.get("incomplete_details"))
+        .and_then(|d| d.get("reason").and_then(|r| r.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown reason".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -442,21 +548,16 @@ impl Runnable<Vec<Message>, LLMResult> for ResponsesModel {
         let model = self.config.model.clone();
         let token_stream = self.stream_chat_internal(input).await?;
 
-        let stream = futures_util::stream::once(async move {
-            let content = token_stream
-                .fold(String::new(), |mut acc, token_result| async move {
-                    if let Ok(token) = token_result {
-                        acc.push_str(&token.text);
-                    }
-                    acc
-                })
-                .await;
-            Ok(LLMResult {
-                content,
-                model,
-                token_usage: None,
-                tool_calls: None,
-                thinking_content: None,
+        // 0.25.0: pass chunks through as they arrive instead of folding the
+        // whole stream into one buffered LLMResult (the old fold also dropped
+        // usage and tool calls from every chunk).
+        let stream = token_stream.map(move |result| {
+            result.map(|chunk| LLMResult {
+                content: chunk.text,
+                model: model.clone(),
+                token_usage: chunk.token_usage,
+                tool_calls: chunk.tool_calls,
+                thinking_content: chunk.thinking_content,
             })
         });
 

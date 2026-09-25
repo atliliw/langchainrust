@@ -201,6 +201,7 @@ impl BaseChatModel for ScriptedModel {
             tokio::time::sleep(delay).await;
             yield Ok(StreamChunk::new("hello "));
             yield Ok(StreamChunk {
+                thinking_content: None,
                 text: "world".to_string(),
                 token_usage: usage,
                 tool_calls: None,

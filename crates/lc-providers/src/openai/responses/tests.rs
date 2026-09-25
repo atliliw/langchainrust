@@ -378,3 +378,329 @@ fn test_with_temperature_and_max_tokens() {
     let model3 = model2.with_max_tokens(1024);
     assert_eq!(model3.max_tokens(), Some(1024));
 }
+
+// 0.25.0 B2: a `function_call` output item previously failed enum
+// deserialization (unknown tag rejected the whole `output` array); it now
+// maps to a ToolCall whose id is `call_id` (the value a later
+// `function_call_output` history item pairs with).
+#[test]
+fn test_parse_response_function_call_and_reasoning_items() {
+    let api_response = ResponsesApiResponse {
+        id: "resp_006".to_string(),
+        object: Some("response".to_string()),
+        model: Some("gpt-4o".to_string()),
+        output: vec![
+            ResponsesOutputItem::Reasoning(json!({"summary": [{"text": "hmm"}]})),
+            ResponsesOutputItem::FunctionCall(ResponsesFunctionCall {
+                id: Some("fc_001".to_string()),
+                call_id: "call_001".to_string(),
+                name: "get_weather".to_string(),
+                arguments: "{\"city\":\"SF\"}".to_string(),
+                status: Some("completed".to_string()),
+            }),
+        ],
+        usage: None,
+    };
+
+    let result = ResponsesModel::parse_response(api_response).unwrap();
+    let tc = result.tool_calls.expect("function call extracted");
+    assert_eq!(tc.len(), 1);
+    assert_eq!(tc[0].id, "call_001");
+    assert_eq!(tc[0].function.name, "get_weather");
+    assert_eq!(tc[0].function.arguments, "{\"city\":\"SF\"}");
+    assert!(result.content.is_empty());
+}
+
+#[test]
+fn test_stream_event_output_item_done_function_call() {
+    let data = r#"{"type":"response.output_item.done","output_index":0,
+        "item":{"type":"function_call","id":"fc_1","call_id":"call_1",
+        "name":"get_weather","arguments":"{\"city\":\"SF\"}","status":"completed"}}"#;
+    let event: ResponsesStreamEvent = serde_json::from_str(data).unwrap();
+    match event {
+        ResponsesStreamEvent::OutputItemDone(done) => {
+            assert_eq!(done.output_index, 0);
+            match done.item {
+                ResponsesOutputItem::FunctionCall(call) => {
+                    assert_eq!(call.call_id, "call_1");
+                    assert_eq!(call.name, "get_weather");
+                }
+                other => panic!("expected function call item, got {other:?}"),
+            }
+        }
+        other => panic!("expected OutputItemDone, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_stream_error_event_message_shapes() {
+    let flat: ResponsesStreamEvent =
+        serde_json::from_str(r#"{"type":"error","code":"server_error","message":"flat boom"}"#)
+            .unwrap();
+    match flat {
+        ResponsesStreamEvent::Error(e) => assert_eq!(e.message(), "flat boom"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    let nested: ResponsesStreamEvent =
+        serde_json::from_str(r#"{"type":"error","error":{"code":"x","message":"nested boom"}}"#)
+            .unwrap();
+    match nested {
+        ResponsesStreamEvent::Error(e) => assert_eq!(e.message(), "nested boom"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+
+    let code_only: ResponsesStreamEvent =
+        serde_json::from_str(r#"{"type":"error","code":"mystery"}"#).unwrap();
+    match code_only {
+        ResponsesStreamEvent::Error(e) => assert_eq!(e.message(), "mystery"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// 0.25.0 B2: real wire contracts against a loopback server — custom
+/// function-call output items on both paths, Bearer auth, stream errors that
+/// must surface instead of being silently skipped, and the terminal-marker
+/// guard against truncated connections.
+mod tests_b2_contracts {
+    use super::*;
+    use futures_util::StreamExt;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// One-shot loopback server: capture the full raw request, reply with the
+    /// fixed body and close. The reply carries no Content-Length — the unified
+    /// HTTP layer reads until close.
+    async fn spawn_server(
+        response_body: &'static str,
+        content_type: &'static str,
+    ) -> (String, Arc<Mutex<Vec<u8>>>) {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head_lower = String::from_utf8_lossy(&header).to_lowercase();
+                let content_length: usize = head_lower
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                {
+                    // Drop the guard before any await: std MutexGuard is !Send.
+                    let mut raw = captured_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    raw.extend_from_slice(&header);
+                    raw.extend_from_slice(&body);
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n{response_body}"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    fn head_and_body(raw: &[u8]) -> (String, serde_json::Value) {
+        let split = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("request head terminated");
+        let head = String::from_utf8_lossy(&raw[..split]).to_lowercase();
+        let body: serde_json::Value =
+            serde_json::from_slice(&raw[split + 4..]).expect("request body is json");
+        (head, body)
+    }
+
+    fn model_at(base_url: String) -> ResponsesModel {
+        ResponsesModel::new(
+            ResponsesConfig::new("responses-secret")
+                .with_model("gpt-4o")
+                .with_base_url(base_url),
+        )
+    }
+
+    #[tokio::test]
+    async fn non_stream_sends_bearer_and_parses_function_call_item() {
+        let response = "{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"gpt-4o\",\
+\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\
+\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}],\
+\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}";
+        let (base_url, captured) = spawn_server(response, "application/json").await;
+
+        let result = model_at(base_url)
+            .chat_internal(vec![Message::human("weather?")])
+            .await
+            .unwrap();
+
+        let calls = result.tool_calls.expect("function call parsed");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "get_weather");
+        assert_eq!(calls[0].function.arguments, "{\"city\":\"SF\"}");
+        assert_eq!(result.token_usage.unwrap().total_tokens, 18);
+
+        let (head, body) = head_and_body(&captured.lock().unwrap());
+        assert_eq!(
+            head.lines().next().unwrap_or(""),
+            "post /responses http/1.1",
+            "unexpected request line:\n{head}"
+        );
+        assert!(
+            head.lines()
+                .any(|l| l == "authorization: bearer responses-secret"),
+            "Responses auth uses Bearer, got:\n{head}"
+        );
+        assert_eq!(body["stream"], serde_json::json!(false));
+        assert_eq!(body["model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn stream_forwards_text_function_call_and_completed_usage() {
+        let sse = "\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o\",\"output\":[],\"usage\":null}}\n\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n\
+data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\",\"status\":\"completed\"}}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"gpt-4o\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}\n\n";
+        let (base_url, captured) = spawn_server(sse, "text/event-stream").await;
+
+        let mut stream = model_at(base_url)
+            .stream_chat_internal(vec![Message::human("weather?")])
+            .await
+            .unwrap();
+
+        let mut text = String::new();
+        let mut calls = None;
+        let mut usage = None;
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("stream ok");
+            text.push_str(&chunk.text);
+            if chunk.tool_calls.is_some() {
+                calls = chunk.tool_calls;
+            }
+            if chunk.token_usage.is_some() {
+                usage = chunk.token_usage;
+            }
+        }
+        assert_eq!(text, "Hello world");
+        let calls = calls.expect("function call forwarded from output_item.done");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "get_weather");
+        assert_eq!(calls[0].function.arguments, "{\"city\":\"SF\"}");
+        assert_eq!(usage.expect("completed usage forwarded").total_tokens, 18);
+
+        let (_head, body) = head_and_body(&captured.lock().unwrap());
+        assert_eq!(body["stream"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn stream_failed_event_surfaces_real_message() {
+        let sse = "\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n\
+data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream down\"}}}\n\n";
+        let (base_url, _captured) = spawn_server(sse, "text/event-stream").await;
+
+        let mut stream = model_at(base_url)
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut err = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                err = Some(e.to_string());
+                break;
+            }
+        }
+        let msg = err.expect("response.failed must surface as an error, not silence");
+        assert!(msg.contains("upstream down"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn stream_error_event_surfaces_message() {
+        let sse = "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"boom\"}\n\n";
+        let (base_url, _captured) = spawn_server(sse, "text/event-stream").await;
+
+        let mut stream = model_at(base_url)
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut err = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                err = Some(e.to_string());
+                break;
+            }
+        }
+        let msg = err.expect("error event must surface");
+        assert!(msg.contains("boom"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn stream_incomplete_event_surfaces_reason() {
+        let sse = "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n";
+        let (base_url, _captured) = spawn_server(sse, "text/event-stream").await;
+
+        let mut stream = model_at(base_url)
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut err = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                err = Some(e.to_string());
+                break;
+            }
+        }
+        let msg = err.expect("response.incomplete must surface as an error");
+        assert!(msg.contains("max_output_tokens"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn stream_closed_before_terminal_is_stream_interrupted() {
+        // Text deltas but no response.completed/failed/incomplete/error and no
+        // [DONE]: the connection simply vanishes — a truncated answer.
+        let sse = "\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o\",\"output\":[],\"usage\":null}}\n\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+        let (base_url, _captured) = spawn_server(sse, "text/event-stream").await;
+
+        let mut stream = model_at(base_url)
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut err = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                err = Some(e.to_string());
+                break;
+            }
+        }
+        let msg = err.expect("truncated stream must error, not look complete");
+        assert!(msg.contains("Stream interrupted"), "got: {msg}");
+    }
+}

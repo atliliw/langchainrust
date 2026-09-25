@@ -209,7 +209,7 @@ async fn test_resume_preserves_recursion_budget() {
     assert!(matches!(err, GraphError::ExecutionInterrupted(ref node) if node == "n3"));
 
     // 2 steps were consumed at interruption → the latest checkpoint records budget 2.
-    let execution = compiled.create_resume_execution("n3").await.expect(
+    let execution = compiled.create_resume_execution("n3", None).await.expect(
         "should be able to build a resume execution from the latest checkpoint after interruption",
     );
     assert_eq!(
@@ -233,7 +233,7 @@ async fn test_resume_preserves_recursion_budget() {
         .await
         .unwrap_err();
     let execution = compiled_ok
-        .create_resume_execution("n3")
+        .create_resume_execution("n3", None)
         .await
         .expect("build resume execution context");
     assert_eq!(execution.recursion_count, 2);
@@ -244,7 +244,7 @@ async fn test_resume_preserves_recursion_budget() {
     );
 }
 
-/// v0.24.0 #1: a node suspends itself mid-execution with a runtime interrupt; a
+/// v0.25.0 #1: a node suspends itself mid-execution with a runtime interrupt; a
 /// human's decision is fed back so the SAME node re-enters and continues (no
 /// re-execution of the interrupt path). State + recursion budget survive via
 /// the checkpointer, so `resume_with_value` restores the run from disk.
@@ -327,7 +327,145 @@ async fn test_dynamic_interrupt_and_resume_with_value() {
     assert_eq!(side_effects.load(Ordering::SeqCst), 1);
 }
 
-/// v0.24.0 #1 (step 5, durable): a runtime interrupt persisted via the
+/// H7: `resume_from_interrupt` fixes the resume to the checkpoint stamped in the
+/// payload (`__checkpoint_id`), NOT `last()`. A second invoke writes NEWER
+/// checkpoints whose state drifts from the interrupted run; resuming with the
+/// FIRST payload must re-enter from the first run's state ("in=x"), proving the
+/// stamped checkpoint (not `last()`, which now points at the second run's "in=y")
+/// drives the resume.
+#[tokio::test]
+async fn test_resume_from_interrupt_prefers_stamped_checkpoint_over_last() {
+    use crate::node::InterruptibleNode;
+    use std::pin::Pin;
+
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node(InterruptibleNode::new(
+            "ask",
+            |state: &AgentState, resume| {
+                let r = resume.cloned();
+                let input = state.input.clone();
+                Box::pin(async move {
+                    if let Some(d) = r.as_ref() {
+                        let mut ns = AgentState::new(format!("resumed:{input}"));
+                        ns.set_output(format!("approved={d};in={input}"));
+                        Ok(StateUpdate::full(ns))
+                    } else {
+                        Err(GraphError::InterruptRequest {
+                            payload: serde_json::json!({ "kind": "human" }),
+                        })
+                    }
+                }) as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+            },
+        ))
+        .add_node_fn("finish", |s| {
+            let mut ns = s.clone();
+            ns.set_output(format!("final:{}", s.output.clone().unwrap_or_default()));
+            Ok(StateUpdate::full(ns))
+        })
+        .add_edge(START, "ask")
+        .add_edge("ask", "finish")
+        .add_edge("finish", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+
+    // First run suspends at "ask" with input "x".
+    let err = compiled.invoke(AgentState::new("x")).await.unwrap_err();
+    let (node, payload1) = match err {
+        GraphError::DynamicInterrupt { node, payload } => (node, payload),
+        other => panic!("expected DynamicInterrupt, got {other:?}"),
+    };
+    assert_eq!(node, "ask");
+    let id1 = payload1["__checkpoint_id"]
+        .as_str()
+        .expect("payload must stamp __checkpoint_id")
+        .to_string();
+
+    // A second run writes NEWER checkpoints (input "y"), so `last()` no longer
+    // points at the first run's interrupt save.
+    let err2 = compiled.invoke(AgentState::new("y")).await.unwrap_err();
+    let (_, payload2) = match err2 {
+        GraphError::DynamicInterrupt { node: _, payload } => ((), payload),
+        other => panic!("expected DynamicInterrupt, got {other:?}"),
+    };
+    let id2 = payload2["__checkpoint_id"]
+        .as_str()
+        .expect("second payload must stamp __checkpoint_id")
+        .to_string();
+    assert_ne!(
+        id1, id2,
+        "second invoke must write a distinct (newer) checkpoint than the first"
+    );
+
+    // Resuming with the FIRST payload must resolve the FIRST checkpoint
+    // (state.input == "x"), not `last()` (which now holds the "y" run's state).
+    let inv = compiled
+        .resume_from_interrupt(&node, &payload1, serde_json::json!("yes"))
+        .await
+        .unwrap();
+    let out = inv.final_state.output.as_deref().unwrap();
+    assert!(out.contains("in=x"), "expected first-run state, got {out}");
+    assert!(
+        !out.contains("resumed:y"),
+        "must not use last() state, got {out}"
+    );
+}
+
+/// H8: the successor of an `after_` interrupt gets its `interrupt_before`
+/// re-checked (matching `invoke`), even though it is the *first* node of the
+/// resume run. Previously the `first_node` exemption suppressed the before-check
+/// on the successor, so the two execution entries behaved differently.
+#[tokio::test]
+async fn test_after_interrupt_resume_rechecks_interrupt_before_on_successor() {
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node_fn("a", |s| {
+            let mut ns = s.clone();
+            ns.set_output("ran_a".to_string());
+            Ok(StateUpdate::full(ns))
+        })
+        .add_node_fn("b", |s| {
+            let mut ns = s.clone();
+            ns.set_output("ran_b".to_string());
+            Ok(StateUpdate::full(ns))
+        })
+        .add_node_fn("c", |s| {
+            let mut ns = s.clone();
+            ns.set_output("ran_c".to_string());
+            Ok(StateUpdate::full(ns))
+        })
+        .add_edge(START, "a")
+        .add_edge("a", "b")
+        .add_edge("b", "c")
+        .add_edge("c", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_interrupt_after(vec!["a".to_string()])
+        .with_interrupt_before(vec!["b".to_string()])
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+
+    // First invoke runs `a`, then suspends `after_a`.
+    let err = compiled.invoke(AgentState::new("x")).await.unwrap_err();
+    assert!(
+        matches!(&err, GraphError::ExecutionInterrupted(n) if n.as_str() == "after_a"),
+        "expected after_a interrupt, got {err:?}"
+    );
+
+    // Resuming the after_ interrupt advances to the successor `b` — a node that
+    // has never run, so its `interrupt_before` must fire.
+    let execution = compiled
+        .create_resume_execution("after_a", None)
+        .await
+        .expect("resume context");
+    let err = compiled.invoke_with_execution(execution).await.unwrap_err();
+    assert!(
+        matches!(&err, GraphError::ExecutionInterrupted(n) if n.as_str() == "b"),
+        "successor b must be before-interrupted on resume, got {err:?}"
+    );
+}
+
+/// v0.25.0 #1 (step 5, durable): a runtime interrupt persisted via the
 /// file-backed checkpointer survives a full process/GOTRESS restart — a brand-new
 /// graph over the same checkpoint directory (no in-memory carryover) resumes the
 /// interrupted node from disk with the human's decision.
@@ -539,4 +677,171 @@ async fn test_state_history_and_fork_require_checkpointer() {
     let compiled = chain_of(2);
     assert!(compiled.get_state_history().await.is_err());
     assert!(compiled.fork_from("anything", "n1", None).await.is_err());
+}
+
+/// B4: a time-travel fork seeds its timeline from a snapshot, and that seed —
+/// the newest checkpoint in history — is stamped with the `parent_id` of the
+/// snapshot it branched from, while the original lineage's checkpoints remain
+/// parent-free.
+#[tokio::test]
+async fn test_fork_seed_records_parent_lineage() {
+    let compiled = marking_chain(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    compiled.invoke(AgentState::new("x")).await.unwrap();
+
+    let history = compiled.get_state_history().await.unwrap();
+    let after_n1 = history[1].id.clone();
+
+    compiled.fork_from(&after_n1, "n2", None).await.unwrap();
+
+    let history = compiled.get_state_history().await.unwrap();
+    assert_eq!(history.len(), 5, "fork appends one lineage seed");
+    let seed = history.last().unwrap();
+    assert_ne!(seed.id, after_n1);
+    assert_eq!(
+        seed.parent.as_deref(),
+        Some(after_n1.as_str()),
+        "fork seed must record the snapshot it branched from"
+    );
+    // The original lineage's snapshots (and the seed's own save) are roots.
+    for s in history.iter().take(history.len() - 1) {
+        assert_eq!(s.parent, None, "original lineage must be parent-free");
+    }
+}
+
+/// B4: a runtime interrupt stamps the exact checkpoint to resume from in the
+/// payload (`__checkpoint_id`), and `resume_from_checkpoint` resumes that
+/// specific checkpoint by id inside its thread (instead of "last checkpoint").
+#[tokio::test]
+async fn test_resume_from_checkpoint_by_id_and_thread() {
+    use crate::checkpointer::DEFAULT_THREAD;
+    use crate::node::InterruptibleNode;
+    use std::pin::Pin;
+
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node(InterruptibleNode::new("ask", |_state, resume| {
+            let resume_owned = resume.cloned();
+            Box::pin(async move {
+                if let Some(decision) = resume_owned.as_ref() {
+                    let mut s = AgentState::new("resume");
+                    s.set_output(format!("decision={}", decision));
+                    Ok(StateUpdate::full(s))
+                } else {
+                    Err(GraphError::InterruptRequest {
+                        payload: serde_json::json!({ "kind": "human_approval" }),
+                    })
+                }
+            }) as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+        }))
+        .add_node_fn("finish", |state| {
+            let mut s = state.clone();
+            s.set_output(format!(
+                "final:{}",
+                state.output.clone().unwrap_or_default()
+            ));
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "ask")
+        .add_edge("ask", "finish")
+        .add_edge("finish", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+
+    let err = compiled.invoke(AgentState::new("x")).await.unwrap_err();
+    let (node, payload) = match err {
+        GraphError::DynamicInterrupt { node, payload } => (node, payload),
+        other => panic!("expected DynamicInterrupt, got {other:?}"),
+    };
+    assert_eq!(node, "ask");
+    assert_eq!(payload["kind"], "human_approval");
+    let checkpoint_id = payload["__checkpoint_id"]
+        .as_str()
+        .expect("interrupt payload must stamp the checkpoint id")
+        .to_string();
+
+    let inv = compiled
+        .resume_from_checkpoint(
+            DEFAULT_THREAD,
+            &checkpoint_id,
+            &node,
+            serde_json::json!("yes"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        inv.final_state.output.as_deref(),
+        Some("final:decision=\"yes\"")
+    );
+}
+
+/// B4: two field reducers registered via `set_reducer` compose deterministically
+/// — each patches only its own field, so over a multi-node run BOTH accumulating
+/// fields survive (neither is clobbered by the other reducer running "last"),
+/// independent of registration order.
+#[tokio::test]
+async fn test_two_field_reducers_patch_independently() {
+    use crate::state::{AppendMessagesReducer, AppendStepsReducer, MessageEntry, StepEntry};
+
+    let mut graph = crate::graph::StateGraph::<AgentState>::new();
+    // Register "steps" first to prove registration order is not load-bearing.
+    graph.set_reducer("steps", Arc::new(AppendStepsReducer));
+    graph.set_reducer("messages", Arc::new(AppendMessagesReducer));
+
+    // Each node returns ONLY its own new message + step (not the full history),
+    // the shape the append reducers expect.
+    graph.add_node_fn("n1", |_state| {
+        let mut s = AgentState::new("n1");
+        s.messages = vec![MessageEntry::ai("m1".to_string())];
+        s.steps = vec![StepEntry::new("act1", "obs1")];
+        Ok(StateUpdate::full(s))
+    });
+    graph.add_node_fn("n2", |_state| {
+        let mut s = AgentState::new("n2");
+        s.messages = vec![MessageEntry::ai("m2".to_string())];
+        s.steps = vec![StepEntry::new("act2", "obs2")];
+        Ok(StateUpdate::full(s))
+    });
+    graph.add_edge(START, "n1");
+    graph.add_edge("n1", "n2");
+    graph.add_edge("n2", END);
+
+    let compiled = graph.compile().unwrap().with_recursion_limit(10);
+    let final_state = compiled
+        .invoke(AgentState::new("in"))
+        .await
+        .unwrap()
+        .final_state;
+
+    // 1 initial human message + m1 + m2, and step1 + step2 — proving the two
+    // field reducers composed without one dropping the other's contribution.
+    assert_eq!(
+        final_state.messages.len(),
+        3,
+        "got {:?}",
+        final_state.messages
+    );
+    assert_eq!(final_state.steps.len(), 2, "got {:?}", final_state.steps);
+    assert_eq!(
+        final_state
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::state::MessageRole::AI)
+            .count(),
+        2,
+        "both AI messages must be accumulated"
+    );
+    assert_eq!(
+        final_state
+            .steps
+            .iter()
+            .map(|s| s.action.as_str())
+            .collect::<Vec<_>>(),
+        vec!["act1", "act2"]
+    );
 }

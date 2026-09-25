@@ -87,7 +87,8 @@ impl<M: BaseChatModel> SensitiveJudge for LlmSensitiveJudge<M> {
 /// Structured judgment arguments (returned via tool_calls).
 #[derive(Debug, serde::Deserialize)]
 struct LeakArgs {
-    #[serde(default)]
+    /// Fail-closed: `is_leak` has no serde default, so a judge reply missing the field is a
+    /// deserialization error (surfaced to the caller) rather than a silent "no leak" (pass).
     is_leak: bool,
     /// Asks the LLM to attach a brief reason (improves judgment quality); currently unused.
     #[serde(default)]
@@ -114,25 +115,76 @@ fn leak_tool() -> ToolDefinition {
 /// Parses a yes/no leak verdict. Returns `None` (parse failure, reported by the caller) when no
 /// yes/no marker is present, rather than silently defaulting — so an off-topic LLM reply is not
 /// treated as "no leak".
+/// English markers are matched as **exact whole tokens**, never as substrings: "no" must not fire
+/// on "notable" or "knowledge", and "not" must not fire on "nothing". Chinese has no whitespace
+/// word-splitting, so CJK markers keep their substring semantics (=== is a single token), with
+/// negatives still taking precedence over positives.
 fn parse_leak_text(raw: &str) -> Option<bool> {
     let lower = raw.to_lowercase();
-    // check negatives first (negatives take precedence over positives, so "not"/"cannot" are not misjudged by "yes"/"can").
-    if lower.contains("否")
-        || lower.contains("no")
-        || lower.contains("不能")
-        || lower.contains("不是")
-        || lower.contains("false")
+    // Uncertainty markers CHECKED FIRST: a reply expressing inability to decide ("我不能判断这是否泄露",
+    // "无法确定", "not sure") must NOT be read as a negative. Returning `None` makes the caller
+    // surface a Judge error, fail-closed — matching the module doc: an undecidable reply is not
+    // treated as "no leak". (A genuine negative like "这不能算泄露" contains no uncertainty marker,
+    // so it still falls through to the `不能` guard below and passes.)
+    const UNCERTAIN_SUBSTRINGS: &[&str] = &[
+        "无法判断",
+        "无法确定",
+        "不能判断",
+        "不能确定",
+        "不确定",
+        "无法分辨",
+        "不好判断",
+        "很难判断",
+    ];
+    const UNCERTAIN_PHRASES: &[&str] = &[
+        "not sure",
+        "not certain",
+        "cannot tell",
+        "can't tell",
+        "cannot determine",
+        "can't determine",
+        "unable to determine",
+        "not certain",
+    ];
+    const UNCERTAIN_TOKENS: &[&str] = &["uncertain", "unclear", "undetermined"];
+    if UNCERTAIN_SUBSTRINGS.iter().any(|m| lower.contains(m))
+        || UNCERTAIN_PHRASES.iter().any(|p| lower.contains(p))
+        || split_tokens(&lower)
+            .iter()
+            .any(|t| UNCERTAIN_TOKENS.contains(t))
+    {
+        return None;
+    }
+    // Chinese negatives: `不能` / `不是` / `否` are full substring markers.
+    if lower.contains("不能") || lower.contains("不是") || lower.contains("否") {
+        return Some(false);
+    }
+    // English negatives: whole-word tokens only.
+    let tokens: Vec<&str> = split_tokens(&lower);
+    if tokens
+        .iter()
+        .any(|t| *t == "no" || *t == "not" || *t == "false")
     {
         return Some(false);
     }
-    if lower.contains("是")
-        || lower.contains("yes")
-        || lower.contains("能")
-        || lower.contains("true")
-    {
+    // Chinese positives.
+    if lower.contains("能") || lower.contains("是") {
+        return Some(true);
+    }
+    // English positives: whole-word tokens only.
+    if tokens.iter().any(|t| *t == "yes" || *t == "true") {
         return Some(true);
     }
     None
+}
+
+/// Splits text into whole alphabetic/numeric tokens, treating any non-alphanumeric character as a
+/// word boundary. "notable" -> ["notable"], never a lone "no".
+fn split_tokens(lower: &str) -> Vec<&str> {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -288,5 +340,65 @@ mod tests {
         assert_eq!(parse_leak_text("不是"), Some(false));
         // no yes/no marker = parse failure, must not silently default
         assert_eq!(parse_leak_text("我看不出"), None);
+    }
+
+    /// M-g2: uncertainty / inability-to-decide must be a parse failure (fail-closed), never a
+    /// "no leak" — otherwise "我不能判断这是否泄露" (containing 不能/否) passes unblocked.
+    #[test]
+    fn test_parse_leak_text_uncertainty_is_fail_closed() {
+        // Chinese uncertainty (contains 不能 / 否 substrings that would otherwise read as negative).
+        assert_eq!(parse_leak_text("我不能判断这是否泄露"), None);
+        assert_eq!(parse_leak_text("无法确定是否泄露"), None);
+        assert_eq!(parse_leak_text("不太清楚 不能确定"), None);
+        // English multi-word uncertainty (would otherwise read as the negation token "not").
+        assert_eq!(parse_leak_text("I am not sure"), None);
+        assert_eq!(parse_leak_text("cannot tell if this leaks"), None);
+        assert_eq!(parse_leak_text("unclear"), None);
+        // Genuine negatives without an uncertainty marker still pass (fail-… as "no leak").
+        assert_eq!(parse_leak_text("这不能算泄露"), Some(false));
+        assert_eq!(parse_leak_text("不是泄露"), Some(false));
+        assert_eq!(parse_leak_text("no leak"), Some(false));
+    }
+
+    /// B6: missing `is_leak` is a deserialization error (fail-closed), never a silent allow.
+    #[test]
+    fn test_leak_args_missing_is_leak_is_deserialization_error() {
+        // no `is_leak` field -> hard error, not a default false (pass).
+        let missing = serde_json::from_str::<LeakArgs>(r#"{"reason":"r"}"#);
+        assert!(
+            missing.is_err(),
+            "missing is_leak must fail, not default to pass"
+        );
+
+        // present field (and reason, which the tool schema marks required) -> ok.
+        let ok = serde_json::from_str::<LeakArgs>(r#"{"is_leak":true,"reason":"r"}"#);
+        assert!(ok.is_ok());
+
+        // explicit false still deserializes fine.
+        let no = serde_json::from_str::<LeakArgs>(r#"{"is_leak":false,"reason":"r"}"#);
+        assert!(no.is_ok());
+        assert!(!no.unwrap().is_leak);
+    }
+
+    /// B6: English verdicts use whole-token match — "no" no longer misfires on notable/knowledge.
+    #[test]
+    fn test_parse_leak_text_english_token_exact() {
+        assert_eq!(parse_leak_text("no"), Some(false));
+        assert_eq!(parse_leak_text("No leak."), Some(false));
+        assert_eq!(parse_leak_text("not a leak"), Some(false));
+        assert_eq!(parse_leak_text("this is not a leak"), Some(false));
+        assert_eq!(parse_leak_text("false"), Some(false));
+
+        // "no"/"not" as substrings must NOT trigger.
+        assert_eq!(parse_leak_text("notable mention only"), None);
+        assert_eq!(parse_leak_text("knowledge is fine to share"), None);
+        assert_eq!(parse_leak_text("nothing sensitive here"), None);
+        assert_eq!(parse_leak_text("notice the caveat"), None);
+
+        // positives still exact.
+        assert_eq!(parse_leak_text("yes"), Some(true));
+        assert_eq!(parse_leak_text("true"), Some(true));
+        // "yes"/"no" embedded in a larger word must not fire.
+        assert_eq!(parse_leak_text("yesterday"), None);
     }
 }

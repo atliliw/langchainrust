@@ -354,6 +354,10 @@ struct BreakerInner {
     state: BreakerState,
     consecutive_failures: usize,
     opened_at: Option<Instant>,
+    /// Whether a `HalfOpen` trial call is currently in flight. While set,
+    /// every other request is refused so only ONE probe probes the recovering
+    /// backend at a time (B7 guard — previously concurrent callers all passed).
+    probe_in_flight: bool,
 }
 
 impl CircuitBreaker {
@@ -365,6 +369,7 @@ impl CircuitBreaker {
                 state: BreakerState::Closed,
                 consecutive_failures: 0,
                 opened_at: None,
+                probe_in_flight: false,
             }),
         }
     }
@@ -372,21 +377,30 @@ impl CircuitBreaker {
     /// Whether a call may currently proceed.
     ///
     /// A closed breaker admits everything. An open breaker rejects until
-    /// `open_duration` has elapsed, then admits exactly one trial call and
-    /// transitions to `HalfOpen`.
+    /// `open_duration` has elapsed, then admits exactly one trial call (the
+    /// probe) and transitions to `HalfOpen`. While that probe is in flight,
+    /// every other request is refused; it is released by
+    /// [`Self::record_success`] / [`Self::record_failure`].
     pub fn allow_request(&self) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.state == BreakerState::Open {
-            let reopened = inner
-                .opened_at
-                .is_some_and(|at| at.elapsed() >= self.config.open_duration);
-            if reopened {
-                inner.state = BreakerState::HalfOpen;
-                return true;
+        match inner.state {
+            BreakerState::Closed => true,
+            BreakerState::HalfOpen => {
+                // A probe is already probing; drain the rest until it reports.
+                !inner.probe_in_flight
             }
-            return false;
+            BreakerState::Open => {
+                let reopened = inner
+                    .opened_at
+                    .is_some_and(|at| at.elapsed() >= self.config.open_duration);
+                if reopened {
+                    inner.state = BreakerState::HalfOpen;
+                    inner.probe_in_flight = true;
+                    return true;
+                }
+                false
+            }
         }
-        true
     }
 
     /// Record a successful call: resets the breaker to `Closed`.
@@ -395,11 +409,22 @@ impl CircuitBreaker {
         inner.state = BreakerState::Closed;
         inner.consecutive_failures = 0;
         inner.opened_at = None;
+        inner.probe_in_flight = false;
     }
 
     /// Record a failed call; trips `Open` once the threshold is reached.
+    ///
+    /// A failing `HalfOpen` probe re-trips the breaker `Open` immediately
+    /// (re-arming `open_duration` before the next probe), rather than waiting
+    /// for the full failure threshold again.
     pub fn record_failure(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.probe_in_flight = false;
+        if inner.state == BreakerState::HalfOpen {
+            inner.state = BreakerState::Open;
+            inner.opened_at = Some(Instant::now());
+            return;
+        }
         inner.consecutive_failures += 1;
         if inner.consecutive_failures >= self.config.failure_threshold {
             inner.state = BreakerState::Open;
@@ -643,6 +668,67 @@ mod tests {
         breaker.record_success();
         assert_eq!(breaker.state(), BreakerState::Closed);
         assert!(breaker.allow_request());
+    }
+
+    #[test]
+    fn half_open_probe_in_flight_drains_concurrent_requests() {
+        // B7 point 8: while the single HalfOpen probe is in flight, every other
+        // request must be refused — otherwise a concurrent storm re-pummels a
+        // recovering backend.
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            open_duration: Duration::from_millis(5),
+        });
+        breaker.record_failure();
+        breaker.record_failure();
+        assert_eq!(breaker.state(), BreakerState::Open);
+
+        std::thread::sleep(Duration::from_millis(15));
+        // The probe is admitted and the breaker goes HalfOpen.
+        assert!(breaker.allow_request());
+        assert_eq!(breaker.state(), BreakerState::HalfOpen);
+
+        // While the probe is still in flight the breaker drains everyone else.
+        assert!(
+            !breaker.allow_request(),
+            "half-open with a live probe must refuse concurrent calls"
+        );
+
+        // Probe reports; the breaker releases the drain.
+        breaker.record_success();
+        assert_eq!(breaker.state(), BreakerState::Closed);
+        assert!(breaker.allow_request());
+    }
+
+    #[test]
+    fn half_open_probe_failure_retrips_open() {
+        // B7 point 8: a failing HalfOpen probe re-trips the breaker Open
+        // immediately and re-arms open_duration, instead of waiting for the
+        // full failure threshold to accumulate again.
+        // Threshold is deliberately high (10): after the initial trip we record
+        // only ONE fresh failure, well below it — the half-open retrip must fire
+        // immediately regardless of the accumulated count.
+        let breaker = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 10,
+            open_duration: Duration::from_millis(5),
+        });
+        // Cross the full threshold once to trip Open.
+        for _ in 0..10 {
+            breaker.record_failure();
+        }
+        assert_eq!(breaker.state(), BreakerState::Open);
+
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(breaker.allow_request()); // probe fires
+        assert_eq!(breaker.state(), BreakerState::HalfOpen);
+
+        breaker.record_failure(); // ONE failure, far below the threshold of 10
+        assert_eq!(
+            breaker.state(),
+            BreakerState::Open,
+            "a failing half-open probe must immediately re-trip open"
+        );
+        assert!(!breaker.allow_request());
     }
 
     #[test]

@@ -10,8 +10,9 @@
 //!
 //! The built-in "dangerous import blacklist" is only **noise filtering, not a security boundary** —
 //! it cannot stop encoding obfuscation such as `__import__`/`eval`/`exec`/string concatenation,
-//! and it also has false positives on string literals.
-//! Real isolation must go through the sandbox ([`crate::sandbox`]); the blacklist only reduces noise reaching it.
+//! and it also has false positives on string literals. `open(` is filtered but is *not* a real
+//! guarantee against file access (obfuscation can still reach it); real isolation must go through
+//! the sandbox ([`crate::sandbox`]). The blacklist only reduces noise reaching it.
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -69,6 +70,13 @@ const BLOCKED_IMPORTS: &[&str] = &[
 ];
 
 /// Common dangerous builtin calls that bypass the import blacklist (word boundary + function-call form).
+///
+/// `open` / `breakpoint` / `input` are added because they are file/interactive escape
+/// vectors that no import statement is required for: `open('/etc/shadow').read()` reads
+/// any file a data-processing run in practice relies on `open` for, so enabling this
+/// check trades a few legitimate `open(...)` file reads (work around them with
+/// `with_skip_dangerous_imports_check(true)` or a sandbox) for closing the file-access
+/// hole entirely.
 const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
     "__import__",
     "import_module",
@@ -76,9 +84,13 @@ const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
     "exec",
     "execfile",
     "compile",
+    "open",
+    "breakpoint",
+    "input",
 ];
 
-/// Matches dangerous calls like `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(`.
+/// Matches dangerous calls like `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(` /
+/// `open(` / `breakpoint(` / `input(`.
 ///
 /// `\b` prevents false positives on ordinary words that contain these as substrings, such as
 /// `evaluate(` / `execute(` / `length(`; however it still matches the literal text `"eval(...)"`
@@ -122,7 +134,8 @@ fn contains_dangerous_code(code: &str) -> Option<String> {
             }
         }
 
-        // 2) Dangerous builtin-call check (common bypasses like __import__ / import_module / eval / exec / compile)
+        // 2) Dangerous builtin-call check (common bypasses like __import__ / import_module / eval /
+        //    exec / compile / open / breakpoint / input)
         if let Some(call) = DANGEROUS_CALL_REGEX.find(code_part) {
             return Some(call.as_str().to_string());
         }
@@ -401,6 +414,18 @@ mod tests {
         assert!(contains_dangerous_code("exec('import os')").is_some());
         assert!(contains_dangerous_code("compile('import os', '<x>', 'exec')").is_some());
         assert!(contains_dangerous_code("execfile('/tmp/x.py')").is_some());
+    }
+
+    #[test]
+    fn test_dangerous_builtin_file_and_interactive_vectors_blocked() {
+        // File access / interactive escape builtins require no import and were previously able
+        // to reach /etc/passwd or a REPL even with the check enabled.
+        assert!(contains_dangerous_code("open('/etc/shadow').read()").is_some());
+        assert!(contains_dangerous_code("breakpoint()").is_some());
+        assert!(contains_dangerous_code("input()").is_some());
+        // Word boundary: no false positive on identifiers containing these as substrings.
+        assert!(contains_dangerous_code("opened = []").is_none());
+        assert!(contains_dangerous_code("check_input(arg)").is_none());
     }
 
     #[test]

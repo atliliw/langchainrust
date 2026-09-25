@@ -97,9 +97,33 @@ fn parse_tool_attr(attr: TokenStream) -> Result<String> {
 fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
     // 1. Extract all information from the function BEFORE mutating it
     let func_name_str = func.sig.ident.to_string();
-    let tool_struct_name = format_ident!("{}Tool", to_pascal_case(&func_name_str));
-    let input_struct_name = format_ident!("{}Input", to_pascal_case(&func_name_str));
+    // J3:先校验 PascalCase 种子能作为合法标识符前缀,再交给 `format_ident!`。
+    // 输入本是合法的 Rust fn 名(首字符必为字母/下划线),理论不会触发,但按防御性
+    // 修正,让它成为可诊断的 `compile_error!` 而不是过程宏内部的 panic。
+    let pascal = to_pascal_case(&func_name_str);
+    if !is_valid_ident_seed(&pascal) {
+        return Err(syn::Error::new_spanned(
+            &func.sig.ident,
+            format!(
+                "cannot derive `{pascal}Tool`/`{pascal}Input` from function name `{func_name_str}`: \
+                 generated identifiers must start with an alphabetic or underscore character"
+            ),
+        ));
+    }
+    let tool_struct_name = format_ident!("{}Tool", pascal);
+    let input_struct_name = format_ident!("{}Input", pascal);
     let func_name = func.sig.ident.clone();
+
+    // J7:self(`const`/`async`/`unsafe` etc.)为 async 时不支持——`invoke`/`run` 内
+    // 以同步求值调用 `fn(...)`,直接展开会把 future 当同步值用而生成坏代码。给明确
+    // 的「不支持」错误,而非静默展开成类型错误。
+    if func.sig.asyncness.is_some() {
+        return Err(syn::Error::new_spanned(
+            &func.sig.ident,
+            "async tool functions are not supported by #[tool]: make the function synchronous \
+             (the derived Tool::invoke / BaseTool::run are already async)",
+        ));
+    }
 
     // 2. Extract parameters from function signature
     let params = extract_params(&func.sig)?;
@@ -109,8 +133,8 @@ fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
     let output_type = match &func.sig.output {
         syn::ReturnType::Default => quote! { () },
         syn::ReturnType::Type(_, ty) => {
-            // If it's Result<T, E>, extract T
-            if let Some(inner) = extract_result_ok(ty) {
+            // If it's Result<T, E>, extract T; otherwise the type as-is.
+            if let Some(inner) = extract_result_ok(&func.sig.output) {
                 quote! { #inner }
             } else {
                 quote! { #ty }
@@ -203,7 +227,14 @@ fn tool_impl(description: String, mut func: ItemFn) -> Result<TokenStream2> {
 
             fn args_schema(&self) -> ::std::option::Option<::serde_json::Value> {
                 use ::schemars::schema_for;
-                ::serde_json::to_value(schema_for!(#input_struct_name)).ok()
+                // J9:schema 序列化失败不再 `.ok()` 占位空 `None`——Input 必 derive
+                // JsonSchema,schema 自描述必可序列化,真失败是内部错误,直接 panic 报出。
+                Some(
+                    ::serde_json::to_value(schema_for!(#input_struct_name)).expect(
+                        "[lc-tools-derive] internal error: generated Input schema failed to serialize \
+                         (Input must derive schemars::JsonSchema)",
+                    ),
+                )
             }
         }
     };
@@ -231,11 +262,20 @@ fn extract_params(sig: &Signature) -> Result<Vec<ParamInfo>> {
         if let FnArg::Typed(PatType { pat, ty, attrs, .. }) = arg {
             let name = match pat.as_ref() {
                 Pat::Ident(ident) => ident.ident.clone(),
-                _ => continue,
+                // J8:非 ident 参数不再静默丢弃——丢弃会让生成代码静默少一个字段,用户
+                // 无从得知宏为何没展开该参数,改为明确的宏错误(类型标注/tuple/wildcard
+                // 等绑定模式均不支持)。
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "tool parameters must be plain identifiers \
+                         (ascription / tuple / wildcard patterns are not supported)",
+                    ));
+                }
             };
 
             // Extract #[param(desc = "...")] attribute
-            let desc = extract_param_desc(attrs);
+            let desc = extract_param_desc(attrs)?;
 
             params.push(ParamInfo {
                 name,
@@ -248,82 +288,101 @@ fn extract_params(sig: &Signature) -> Result<Vec<ParamInfo>> {
     Ok(params)
 }
 
-/// Extract `T` from `Result<T, E>`. Returns None if not a Result type.
-fn extract_result_ok(ty: &Type) -> Option<Type> {
-    if let Type::Path(type_path) = ty {
-        if type_path.path.segments.len() == 1 {
-            let segment = &type_path.path.segments[0];
-            if segment.ident == "Result" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return Some(inner.clone());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// 判断函数返回类型是否为 `Result<_, ToolError>`(错误类型最后一个路径段为
-/// `ToolError`)。F5:宏据此决定 `invoke` 是否直接透传原错误。
+/// 从 `Result<ok, err>` 提取两个泛型参数。
 ///
-/// 只能是语法级判断:任何以 `ToolError` 结尾的错误类型都被视为库的 `ToolError`。
-/// 常见写法均命中——裸 `ToolError`、`lc_core::tools::ToolError`、`tools::ToolError`
-/// 或用户 `use` 进来的别名;返回 `anyhow::Error` / `String` 等其他错误类型时不命中。
-fn return_type_is_tool_error(ret: &syn::ReturnType) -> bool {
+/// 唯一识别 Result 的入口:按路径 **最后一个** 段匹配 `Result`(J4),因此裸 `Result`
+/// 与 `std::result::Result` 一致命中——消除旧 `extract_result_ok` 只认单段、而
+/// `return_type_is_tool_error` 认末段,导致两者对 `std::result::Result` 判决不一致
+/// 而产生双包装的问题。
+fn result_generics(ret: &syn::ReturnType) -> Option<(Type, Type)> {
     let syn::ReturnType::Type(_, ty) = ret else {
-        return false;
+        return None;
     };
     let Type::Path(type_path) = &**ty else {
-        return false;
+        return None;
     };
-    let Some(seg) = type_path.path.segments.last() else {
-        return false;
-    };
+    let seg = type_path.path.segments.last()?;
     if seg.ident != "Result" {
-        return false;
+        return None;
     }
-    // 取出 `Result<_, E>` 的第二个泛型参数作为错误类型
     let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return false;
+        return None;
     };
     let mut generic = args.args.iter().filter_map(|a| match a {
         syn::GenericArgument::Type(t) => Some(t),
         _ => None,
     });
-    let _ok = generic.next();
-    let Some(err) = generic.next() else {
+    Some((generic.next()?.clone(), generic.next()?.clone()))
+}
+
+/// Extract `T` from `Result<T, E>`. Returns None if not a Result type.
+fn extract_result_ok(ret: &syn::ReturnType) -> Option<Type> {
+    result_generics(ret).map(|(ok, _)| ok)
+}
+
+/// 判断函数返回类型是否为 `Result<_, ToolError>`。F5:宏据此决定 `invoke` 是否直接
+/// 透传原错误。
+///
+/// J4+J6:与 `extract_result_ok` 统一走 [`result_generics`] 识别 Result;错误类型不再
+/// 宽泛匹配任意 `ToolError` 结尾,限定为裸 `ToolError`(len==1)或
+/// `…::…::tools::ToolError` 路径(`lc_core::tools::ToolError` / `tools::ToolError`)。
+/// 这样既命中真实用例(裸 `ToolError` 经 `use` 引入的常见写法),又不把 `MyToolError`、
+/// `other::ToolError` 误判为库错误而透传。
+fn return_type_is_tool_error(ret: &syn::ReturnType) -> bool {
+    let Some((_, err)) = result_generics(ret) else {
         return false;
     };
     let Type::Path(err_path) = err else {
         return false;
     };
-    err_path
-        .path
-        .segments
-        .last()
-        .is_some_and(|s| s.ident == "ToolError")
+    let segs = err_path.path.segments;
+    let Some(last) = segs.last() else {
+        return false;
+    };
+    if last.ident != "ToolError" {
+        return false;
+    }
+    // 裸 `ToolError`(len==1)直接放行;多段要求倒数第二段为 `tools`。
+    segs.len() == 1
+        || segs
+            .get(segs.len().saturating_sub(2))
+            .is_some_and(|s| s.ident == "tools")
+}
+
+/// J3:校验种子字符串能否作为合法标识符前缀(非空,首字符为字母或 `_`)。
+fn is_valid_ident_seed(s: &str) -> bool {
+    match s.chars().next() {
+        Some(c) => c == '_' || c.is_ascii_alphabetic(),
+        None => false,
+    }
 }
 
 /// Extract `desc` from `#[param(desc = "...")]`.
-fn extract_param_desc(attrs: &[Attribute]) -> Option<String> {
+///
+/// J5:返回 `Result`,`#[param]` 解析/求值失败不再静默吞(原 `.ok()?`),改为向上抛
+/// `syn::Error` 变成干净的 `compile_error!`,避免描述静默丢失。
+fn extract_param_desc(attrs: &[Attribute]) -> Result<Option<String>> {
     for attr in attrs {
         if attr.path().is_ident(PARAM_ATTR) {
-            let meta: Meta = attr.parse_args().ok()?;
+            let meta: Meta = attr.parse_args().map_err(|e| {
+                syn::Error::new_spanned(
+                    attr,
+                    format!("failed to parse `#[{PARAM_ATTR}(...)]`: {e}"),
+                )
+            })?;
             if let Meta::NameValue(MetaNameValue { path, value, .. }) = &meta {
                 if path.is_ident("desc") {
                     if let Expr::Lit(ExprLit {
                         lit: Lit::Str(lit), ..
                     }) = value
                     {
-                        return Some(lit.value());
+                        return Ok(Some(lit.value()));
                     }
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Generate Input struct fields.
@@ -384,5 +443,54 @@ fn strip_param_attrs(func: &mut ItemFn) {
                 .attrs
                 .retain(|attr| !attr.path().is_ident(PARAM_ATTR));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+    use syn::ReturnType;
+
+    fn rt(src: &str) -> ReturnType {
+        syn::parse_str(src).unwrap()
+    }
+
+    fn ty_str(ret: &ReturnType) -> Option<String> {
+        extract_result_ok(ret).map(|t| quote! { #t }.to_string())
+    }
+
+    /// J4:裸 `Result` 与 `std::result::Result` 一致识别为同一 ok 类型,消双包装。
+    #[test]
+    fn result_generics_bare_and_qualified_agree() {
+        assert_eq!(ty_str(&rt("-> Result<f64, String>")), Some("f64".into()));
+        assert_eq!(
+            ty_str(&rt("-> std::result::Result<f64, String>")),
+            Some("f64".into())
+        );
+        assert_eq!(ty_str(&rt("-> f64")), None);
+        assert_eq!(ty_str(&rt("-> Result<f64>")), None); // 单泛型参数不是 Result<T,E>
+    }
+
+    /// J6:裸 `ToolError` 与 `…::tools::ToolError` 命中;`MyToolError`/`other::ToolError`/
+    /// 非工具错误不命中,不再按名字宽泛过度匹配。
+    #[test]
+    fn return_type_is_tool_error_qualified_forms_only() {
+        assert!(return_type_is_tool_error(&rt("-> Result<String, ToolError>")));
+        assert!(return_type_is_tool_error(&rt("-> Result<String, lc_core::tools::ToolError>")));
+        assert!(return_type_is_tool_error(&rt("-> Result<String, tools::ToolError>")));
+        assert!(!return_type_is_tool_error(&rt("-> Result<String, MyToolError>")));
+        assert!(!return_type_is_tool_error(&rt("-> Result<String, other::ToolError>")));
+        assert!(!return_type_is_tool_error(&rt("-> Result<String, anyhow::Error>")));
+        assert!(!return_type_is_tool_error(&rt("-> String")));
+    }
+
+    /// J3:标识符种子校验拒绝数字开头/空串。
+    #[test]
+    fn ident_seed_validation() {
+        assert!(is_valid_ident_seed("Calculator"));
+        assert!(is_valid_ident_seed("_private"));
+        assert!(!is_valid_ident_seed("9lives"));
+        assert!(!is_valid_ident_seed(""));
     }
 }

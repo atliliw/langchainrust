@@ -104,6 +104,13 @@ pub use core::language_models::{
 };
 pub use core::model_registry::{ModelCapabilities, ModelInfo, ModelRegistry};
 pub use core::observability::{AgentMetrics, MetricsSink, ObsError, ObsEvent};
+// J1 (0.25.0): the `observability` feature now surfaces the *concrete* sinks, not just the
+// `MetricsSink` interface — a facade user can construct/export to `JsonLinesSink` (default
+// `jsonl`) and `MongoSink` (`observability-mongodb`) directly.
+#[cfg(feature = "observability")]
+pub use lc_observability::JsonLinesSink;
+#[cfg(feature = "observability-mongodb")]
+pub use lc_observability::MongoSink;
 // B13 (0.22.4): `BudgetExceeded` is renamed at the umbrella boundary because
 // the agent executor already exports its own `agents::BudgetExceeded` enum.
 pub use core::router_llm::BudgetExceeded as RouterBudgetExceeded;
@@ -146,10 +153,11 @@ pub use core::{
     ToolRegistry,
 };
 pub use evaluation::{
-    compare_reports, Bleu, ContainsKeyword, Dataset, EmbeddingSimilarity, EvalError, EvalRunner,
-    Evaluator, ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck, MetricDelta,
-    PairwiseEvaluator, PairwiseJudge, Predictor, RegexMatch, Regression, Report, ReportComparison,
-    Score, StringDistance, Verdict,
+    compare_reports, AnswerRelevancy, Bleu, ContextPrecision, ContextRecall, ContainsKeyword,
+    Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator, ExactMatch, Example,
+    Faithfulness, LLMAsJudge, LengthCheck, MetricDelta, OverallCost, PairwiseEvaluator,
+    PairwiseJudge, Predictor, Price, PriceBook, RagEvaluator, RegexMatch, Regression, Report,
+    ReportComparison, Score, StringDistance, Verdict,
 };
 pub use guardrails::{
     ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
@@ -314,6 +322,10 @@ pub use a2a::{
     A2AClient, A2AError, A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2AServer, A2ATask,
     A2ATaskResult, AgentCard, TaskStatus,
 };
+// B7 (0.25.0): security/identity surface lifted to the umbrella. ServeConfig is
+// not lifted because it is gated behind lc-a2a's `axum` feature (not enabled in
+// this crate's prod dependency); reach it as `a2a::ServeConfig`.
+pub use a2a::{Authenticator, Principal, StaticBearer};
 
 // LangGraph
 pub use langgraph::{

@@ -195,9 +195,14 @@ impl Embeddings for FastEmbedEmbeddings {
                 EmbeddingError::ApiError(format!("FastEmbed inference failed: {}", e))
             })?;
 
+            // A12: uniform L2 normalization, matching every other backend (P2-8).
             result
                 .first()
-                .map(|v| v.to_vec())
+                .cloned()
+                .map(|mut v| {
+                    crate::l2_normalize(&mut v);
+                    v
+                })
                 .ok_or_else(|| EmbeddingError::ApiError("No embedding returned".to_string()))
         })
         .await
@@ -235,7 +240,16 @@ impl Embeddings for FastEmbedEmbeddings {
             // 注意 `aligned_batch` 本身已返回 Result（spawn_blocking 闭包直接
             // 透传），不要再包 `Ok`——否则三层嵌套导致 fastembed feature 编译失败
             // （docs.rs all-features E0308，0.22.5 修复）。
-            Self::aligned_batch(result.into_iter().map(|v| v.to_vec()).collect(), expected)
+            let vectors: Vec<Vec<f32>> = result.into_iter().map(|v| v.to_vec()).collect();
+            // A12: uniform L2 normalization, matching every other backend (P2-8).
+            let normalized: Vec<Vec<f32>> = {
+                let mut out = vectors;
+                for v in out.iter_mut() {
+                    crate::l2_normalize(v);
+                }
+                out
+            };
+            Self::aligned_batch(normalized, expected)
         })
         .await
         .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?

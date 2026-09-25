@@ -194,13 +194,84 @@ pub struct ProtocolInfo {
     pub supported: bool,
 }
 
+/// JSON-RPC request id (B8): a request/response id may be a number or a
+/// string per JSON-RPC 2.0 §4.2 (untagged, bidirectional — `Number(u64)` and
+/// `String(String)` serde as themselves in both directions). Notifications
+/// carry no id and do not use this type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum JsonRpcId {
+    /// Numeric id.
+    Number(u64),
+    /// String id.
+    String(String),
+}
+
+impl JsonRpcId {
+    /// Returns the numeric id, if this is a [`JsonRpcId::Number`].
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            JsonRpcId::Number(n) => Some(*n),
+            JsonRpcId::String(_) => None,
+        }
+    }
+
+    /// Returns the string id, if this is a [`JsonRpcId::String`].
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonRpcId::String(s) => Some(s),
+            JsonRpcId::Number(_) => None,
+        }
+    }
+}
+
+impl From<u64> for JsonRpcId {
+    fn from(n: u64) -> Self {
+        JsonRpcId::Number(n)
+    }
+}
+
+impl From<i32> for JsonRpcId {
+    /// Enables `MCPRequest::new(1, …)` integer literals.
+    fn from(n: i32) -> Self {
+        JsonRpcId::Number(n as u64)
+    }
+}
+
+impl From<usize> for JsonRpcId {
+    fn from(n: usize) -> Self {
+        JsonRpcId::Number(n as u64)
+    }
+}
+
+impl From<String> for JsonRpcId {
+    fn from(s: String) -> Self {
+        JsonRpcId::String(s)
+    }
+}
+
+impl From<&str> for JsonRpcId {
+    fn from(s: &str) -> Self {
+        JsonRpcId::String(s.to_string())
+    }
+}
+
+impl std::fmt::Display for JsonRpcId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JsonRpcId::Number(n) => write!(f, "{n}"),
+            JsonRpcId::String(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// JSON-RPC request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPRequest {
     /// JSON-RPC version identifier (fixed `"2.0"`)
     pub jsonrpc: String,
     /// Request ID (used to match responses)
-    pub id: u64,
+    pub id: JsonRpcId,
     /// Method name
     pub method: String,
     /// Optional request parameters
@@ -214,11 +285,12 @@ pub struct MCPRequest {
 }
 
 impl MCPRequest {
-    /// Builds a new JSON-RPC request.
-    pub fn new(id: u64, method: impl Into<String>, params: Option<Value>) -> Self {
+    /// Builds a new JSON-RPC request. The id may be a number or a string
+    /// (anything convertible to [`JsonRpcId`]).
+    pub fn new(id: impl Into<JsonRpcId>, method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
-            id,
+            id: id.into(),
             method: method.into(),
             params,
             meta: None,
@@ -227,14 +299,14 @@ impl MCPRequest {
 
     /// Builds a stateless-track request with self-contained `_meta`.
     pub fn new_stateless(
-        id: u64,
+        id: impl Into<JsonRpcId>,
         method: impl Into<String>,
         params: Option<Value>,
         meta: RequestMeta,
     ) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
-            id,
+            id: id.into(),
             method: method.into(),
             params,
             meta: Some(meta),
@@ -248,7 +320,7 @@ pub struct MCPResponse {
     /// JSON-RPC version identifier (fixed `"2.0"`)
     pub jsonrpc: String,
     /// Per JSON-RPC 2.0 spec, `id` is `null` when the request could not be parsed.
-    pub id: Option<u64>,
+    pub id: Option<JsonRpcId>,
     /// The result on success (`None` on error responses)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
@@ -365,7 +437,7 @@ mod tests {
     fn test_response_deserialization_success() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
         let resp: MCPResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.id, Some(1));
+        assert_eq!(resp.id, Some(JsonRpcId::Number(1)));
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
         assert!(!resp.is_error());
@@ -394,7 +466,7 @@ mod tests {
     fn test_into_result_ok() {
         let resp = MCPResponse {
             jsonrpc: "2.0".to_string(),
-            id: Some(1),
+            id: Some(JsonRpcId::Number(1)),
             result: Some(Value::Bool(true)),
             error: None,
         };
@@ -405,11 +477,35 @@ mod tests {
     fn test_into_result_err() {
         let resp = MCPResponse {
             jsonrpc: "2.0".to_string(),
-            id: Some(1),
+            id: Some(JsonRpcId::Number(1)),
             result: None,
             error: Some(MCPError::method_not_found()),
         };
         assert!(resp.into_result().is_err());
+    }
+
+    /// B8: request/response ids round-trip as numbers, strings, and implement
+    /// Display for diagnostics (JSON-RPC 2.0 §4.2 allows either).
+    #[test]
+    fn json_rpc_id_number_and_string_roundtrip() {
+        assert_eq!(
+            serde_json::to_value(JsonRpcId::Number(7)).unwrap(),
+            json!(7)
+        );
+        assert_eq!(
+            serde_json::to_value(JsonRpcId::String("req-42".into())).unwrap(),
+            json!("req-42")
+        );
+        let n: JsonRpcId = serde_json::from_value(json!(7)).unwrap();
+        assert_eq!(n, JsonRpcId::Number(7));
+        let s: JsonRpcId = serde_json::from_value(json!("req-42")).unwrap();
+        assert_eq!(s, JsonRpcId::String("req-42".into()));
+        assert_eq!(JsonRpcId::Number(7).to_string(), "7");
+        assert_eq!(JsonRpcId::String("x".into()).to_string(), "x");
+        assert_eq!(JsonRpcId::Number(7).as_u64(), Some(7));
+        assert_eq!(JsonRpcId::String("x".into()).as_str(), Some("x"));
+        // A mixed/non-string, non-number id must not silently deserialize.
+        assert!(serde_json::from_value::<JsonRpcId>(json!([1])).is_err());
     }
 
     #[test]

@@ -16,6 +16,7 @@
 
 mod error;
 mod media;
+mod provider_http;
 mod retry;
 mod sampling;
 mod wrapper;

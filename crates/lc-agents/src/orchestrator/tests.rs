@@ -514,7 +514,7 @@ fn test_parse_review_verdict_invalid() {
     assert!(parse_review_verdict("whatever").is_none());
 }
 
-// === N1 (v0.24.0): Supervisor dynamic routing (one-level sub-agent recursion) ===
+// === N1 (v0.25.0): Supervisor dynamic routing (one-level sub-agent recursion) ===
 
 /// Worker that records the task and the trace id it was called with, and can be
 /// told to fail — used to prove delegation, feedback, constraint propagation and

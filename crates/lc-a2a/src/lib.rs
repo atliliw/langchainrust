@@ -55,6 +55,9 @@ pub mod server;
 pub mod server_impl;
 pub mod store;
 
+#[cfg(feature = "axum")]
+pub use server_impl::ServeConfig;
+
 pub use agent_adapter::AgentExecutorChain;
 pub use client::{A2AClient, A2AClientBuilder, A2AError};
 pub use discovery::{AgentRegistry, RegistryClient, RegistryError};
@@ -75,5 +78,5 @@ pub use security::{
     AccessRequest, SandboxConfig, SecurityError, TrustConfig, TrustRegistry, TrustRole,
     TrustVerification, TrustedAgent,
 };
-pub use server::A2AServer;
+pub use server::{A2AServer, AuthError, Authenticator, Principal, StaticBearer};
 pub use store::{in_memory_store, InMemoryTaskStore, StoreError, StoredTask, TaskStore};

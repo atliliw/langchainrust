@@ -175,8 +175,18 @@ impl AnthropicChat {
                         content_parts.push(AnthropicContentBlock::ToolUse {
                             id: tc.id.clone(),
                             name: tc.function.name.clone(),
-                            input: serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(json!({})),
+                            input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
+                                // L: malformed tool_use `arguments` is replayed as
+                                // `{}` instead of failing the request, but the drop
+                                // is now visible rather than silent. Anthropic
+                                // requires exact tool_use replay, so warn on drift.
+                                log::warn!(
+                                    "Anthropic: malformed tool_use arguments for {:?} \
+                                     replaying as empty object: {e}",
+                                    tc.function.name
+                                );
+                                json!({})
+                            }),
                         });
                     }
                 }

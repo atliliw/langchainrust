@@ -111,9 +111,10 @@ mod tests_q3_q4 {
                 Ok(StreamChunk::new("world")),
             ]));
 
-        let (content, token_usage, tool_calls) =
+        let (content, thinking, token_usage, tool_calls) =
             OpenAIChat::aggregate_stream(stream).await.unwrap();
         assert_eq!(content, "Hello, world");
+        assert!(thinking.is_none());
         // 0.22.0 audit fix (Medium): a text-only stream carries no terminal
         // usage / tool calls.
         assert!(token_usage.is_none());
@@ -125,6 +126,7 @@ mod tests_q3_q4 {
         // 0.22.0 audit fix (Medium): the `config.streaming=true` aggregate path
         // must not drop the terminal usage chunk / accumulated tool calls.
         let usage_chunk = StreamChunk {
+            thinking_content: None,
             text: String::new(),
             token_usage: Some(TokenUsage {
                 prompt_tokens: 3,
@@ -138,14 +140,27 @@ mod tests_q3_q4 {
         };
         let stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>> =
             Box::pin(futures_util::stream::iter(vec![
+                Ok(StreamChunk {
+                    text: String::new(),
+                    thinking_content: Some("think ".to_string()),
+                    token_usage: None,
+                    tool_calls: None,
+                }),
                 Ok(StreamChunk::new("Hello")),
+                Ok(StreamChunk {
+                    text: String::new(),
+                    thinking_content: Some("twice".to_string()),
+                    token_usage: None,
+                    tool_calls: None,
+                }),
                 Ok(StreamChunk::new(" world")),
                 Ok(usage_chunk),
             ]));
 
-        let (content, token_usage, tool_calls) =
+        let (content, thinking, token_usage, tool_calls) =
             OpenAIChat::aggregate_stream(stream).await.unwrap();
         assert_eq!(content, "Hello world");
+        assert_eq!(thinking.as_deref(), Some("think twice"));
         let usage = token_usage.expect("usage carried through");
         assert_eq!(usage.total_tokens, 8);
         let calls = tool_calls.expect("tool_calls carried through");
@@ -173,15 +188,19 @@ mod tests_q3_q4 {
 mod tests_streaming_tool_calls {
     use super::*;
     use futures_util::StreamExt;
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Spawns a one-shot HTTP server that replies to POST /v1/chat/completions
-    /// with the given OpenAI-style SSE body, returning the base URL.
-    async fn spawn_sse_server(sse_body: &'static str) -> String {
+    /// with the given OpenAI-style SSE body, returning the base URL and a
+    /// handle to the captured request body.
+    async fn spawn_sse_server(sse_body: &'static str) -> (String, Arc<Mutex<Vec<u8>>>) {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let captured: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_task = captured.clone();
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
                 // Read the request header + body so reqwest's POST completes.
@@ -206,13 +225,14 @@ mod tests_streaming_tool_calls {
                 if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
                     return;
                 }
+                *captured_task.lock().unwrap() = body;
                 let response =
                     format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{sse_body}");
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.shutdown().await;
             }
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), captured)
     }
 
     #[tokio::test]
@@ -223,7 +243,7 @@ data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ing\\\"}\"}}]},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8,\"total_tokens\":18}}\n\n\
 data: [DONE]\n\n";
-        let base_url = spawn_sse_server(sse_body).await;
+        let (base_url, _captured) = spawn_sse_server(sse_body).await;
 
         let chat =
             OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
@@ -263,7 +283,7 @@ data: [DONE]\n\n";
         let sse_body = "\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":null}]}\n\n\
 data: [DONE]\n\n";
-        let base_url = spawn_sse_server(sse_body).await;
+        let (base_url, _captured) = spawn_sse_server(sse_body).await;
 
         let chat =
             OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
@@ -296,7 +316,7 @@ data: [DONE]\n\n";
         let sse_body = "\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n";
-        let base_url = spawn_sse_server(sse_body).await;
+        let (base_url, _captured) = spawn_sse_server(sse_body).await;
 
         let chat =
             OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
@@ -335,7 +355,7 @@ data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,
         let sse_body = "\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n\
 data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-        let base_url = spawn_sse_server(sse_body).await;
+        let (base_url, _captured) = spawn_sse_server(sse_body).await;
 
         let chat =
             OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
@@ -350,6 +370,47 @@ data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,
             chunks += 1;
         }
         assert!(chunks >= 1, "content delivered and stream closed cleanly");
+    }
+
+    /// 0.25.0: `delta.reasoning_content` must reach the consumer as
+    /// `StreamChunk::thinking_content`, and the streaming request must ask for
+    /// the terminal usage chunk via `stream_options.include_usage`.
+    #[tokio::test]
+    async fn stream_chat_forwards_reasoning_and_requests_usage() {
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"think first\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"deepseek\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n";
+        let (base_url, captured) = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut thinking = Vec::new();
+        let mut text = String::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("chunk ok");
+            if let Some(t) = chunk.thinking_content {
+                thinking.push(t);
+            }
+            text.push_str(&chunk.text);
+        }
+        assert_eq!(thinking, vec!["think first".to_string()]);
+        assert_eq!(text, "Hi");
+
+        let request_body: serde_json::Value =
+            serde_json::from_slice(&captured.lock().unwrap()).expect("request body json");
+        assert_eq!(
+            request_body["stream_options"]["include_usage"],
+            serde_json::json!(true),
+            "streaming requests must ask OpenAI to include usage"
+        );
+        assert_eq!(request_body["stream"], serde_json::json!(true));
     }
 }
 
@@ -399,10 +460,7 @@ mod tests_response_format {
     fn with_json_schema_output_sets_strict_schema_format() {
         let chat = OpenAIChat::new(OpenAIConfig::new("k"));
         let method = chat.with_json_schema_output::<Person>();
-        let body_chat = OpenAIChat {
-            config: method.config.clone(),
-            client: chat.client.clone(),
-        };
+        let body_chat = OpenAIChat::new(method.config.clone());
         let body = body_chat.build_request_body(sample_messages(), false);
 
         let format = &body["response_format"];
@@ -433,10 +491,7 @@ mod tests_response_format {
     fn with_structured_output_keeps_tool_based_path() {
         let chat = OpenAIChat::new(OpenAIConfig::new("k"));
         let method = chat.with_structured_output::<Person>();
-        let body_chat = OpenAIChat {
-            config: method.config.clone(),
-            client: chat.client.clone(),
-        };
+        let body_chat = OpenAIChat::new(method.config.clone());
         let body = body_chat.build_request_body(sample_messages(), false);
         assert!(
             body.get("response_format").is_none(),
@@ -448,33 +503,96 @@ mod tests_response_format {
 }
 
 // B5: optional auth + extra headers for generic OpenAI-compatible endpoints.
+// 0.25.0: after the move to the unified HTTP layer these are behavioral
+// loopback tests (the actual wire headers) instead of reqwest-builder probes.
 mod tests_b5_headers {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[test]
-    fn keyless_config_omits_authorization_and_keeps_extras() {
+    /// One-shot stub that captures the request head (lowercased) and replies
+    /// with a minimal valid chat completion.
+    async fn spawn_json_server() -> (String, Arc<Mutex<Option<String>>>) {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_task = captured.clone();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&header).to_string().to_lowercase();
+                let content_length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && socket.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                *captured_task.lock().unwrap() = Some(head);
+                // No Content-Length: reqwest reads until close (Connection: close).
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"id\":\"1\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":null}";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    #[tokio::test]
+    async fn keyless_config_omits_authorization_and_keeps_extras() {
+        let (base_url, captured) = spawn_json_server().await;
         let config = OpenAIConfig {
             send_auth: false,
+            base_url: format!("{base_url}/v1"),
             extra_headers: vec![("X-Tenant".to_string(), "acme".to_string())],
             ..Default::default()
         };
-        let request = OpenAIChat::apply_headers(reqwest::Client::new().post("http://x"), &config)
-            .build()
+        let chat = OpenAIChat::new(config);
+        chat.chat_internal(vec![Message::human("hi")])
+            .await
             .unwrap();
-        assert!(request.headers().get("Authorization").is_none());
-        assert_eq!(request.headers()["X-Tenant"], "acme");
-        assert_eq!(request.headers()["Content-Type"], "application/json");
+
+        let head = captured.lock().unwrap().clone().expect("request captured");
+        assert!(!head.contains("authorization:"), "head was: {head}");
+        assert!(head.contains("x-tenant: acme"), "head was: {head}");
+        // .json() bodies still carry the JSON content type.
+        assert!(
+            head.contains("content-type: application/json"),
+            "head was: {head}"
+        );
     }
 
-    #[test]
-    fn default_config_still_sends_bearer() {
-        let config = OpenAIConfig::new("sk-secret");
-        let request = OpenAIChat::apply_headers(reqwest::Client::new().post("http://x"), &config)
-            .build()
+    #[tokio::test]
+    async fn default_config_still_sends_bearer() {
+        let (base_url, captured) = spawn_json_server().await;
+        let config = OpenAIConfig {
+            api_key: "sk-secret".to_string(),
+            base_url: format!("{base_url}/v1"),
+            ..Default::default()
+        };
+        let chat = OpenAIChat::new(config);
+        chat.chat_internal(vec![Message::human("hi")])
+            .await
             .unwrap();
-        assert_eq!(
-            request.headers()["Authorization"].to_str().unwrap(),
-            "Bearer sk-secret"
+
+        let head = captured.lock().unwrap().clone().expect("request captured");
+        assert!(
+            head.contains("authorization: bearer sk-secret"),
+            "head was: {head}"
         );
     }
 }

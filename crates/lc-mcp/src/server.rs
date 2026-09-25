@@ -9,16 +9,17 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 use super::auth::TokenValidator;
 use super::completion::{CompletionProvider, CompletionRequest};
 use super::elicitation::{ElicitationHandler, ElicitationRequest, ElicitationResponse};
 use super::prompts::{ListPromptsResult, PromptProvider};
 use super::protocol::{
-    MCPError, MCPRequest, MCPResponse, MCP_VERSION, MCP_VERSION_STATELESS,
+    JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_VERSION, MCP_VERSION_STATELESS,
     SUPPORTED_PROTOCOL_VERSIONS,
 };
 use super::resources::{ListResourcesResult, ReadResourceResult, ResourceProvider};
@@ -59,6 +60,18 @@ pub struct MCPServer {
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     /// Optional elicitation callback (S10, server→host direction): once injected, `create_elicitation` can fire.
     elicitation_handler: Option<Arc<dyn ElicitationHandler>>,
+    /// B8 cancellation: `(session scope, requestId) → Notify` table. A request
+    /// being processed registers a `Notify` keyed by its JSON-RPC id (and, when
+    /// run over Streamable HTTP, its session scope) before awaiting the tool;
+    /// the client's `notifications/cancelled` for that same scope+id fires it
+    /// and the in-flight `tools/call` aborts (the tool future is dropped).
+    ///
+    /// F1/H3: scoping by `(session, id)` prevents two concurrent sessions that
+    /// happen to reuse the same JSON-RPC id from cancelling each other's
+    /// in-flight tool call. The HTTP transport passes the `Mcp-Session-Id`;
+    /// connection-local transports (stdio) and unscoped callers use `None`,
+    /// where ids are unique by construction within the single connection.
+    cancellations: Arc<Mutex<HashMap<(Option<String>, JsonRpcId), Arc<Notify>>>>,
 }
 
 impl MCPServer {
@@ -74,6 +87,7 @@ impl MCPServer {
             completion: None,
             sampling_handler: None,
             elicitation_handler: None,
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -163,6 +177,18 @@ impl MCPServer {
     ///
     /// For direct calls from unit tests; `serve_stdio` also uses it to process each request line.
     pub async fn handle_request(&self, req: MCPRequest) -> MCPResponse {
+        // F1/H3: unscoped by default — the single-connection stdio transport
+        // and direct callers, whose JSON-RPC ids are unique by construction.
+        // The Streamable HTTP transport routes through handle_request_scoped
+        // instead so cancellation is keyed by (session, request id).
+        self.handle_request_scoped(None, req).await
+    }
+
+    /// Session-scoped dispatch (F1/H3). The Streamable HTTP transport threads
+    /// the `Mcp-Session-Id` here so the B8 cancellation table is keyed by
+    /// `(session, request id)`: two concurrent sessions that reuse the same
+    /// JSON-RPC id cannot cancel each other's in-flight tool call.
+    pub async fn handle_request_scoped(&self, session: Option<&str>, req: MCPRequest) -> MCPResponse {
         match req.method.as_str() {
             // P2-10 version negotiation: echo the requested version when it is in the support list, otherwise
             // degrade to this implementation's version (a Server only ever replies with a version it supports).
@@ -223,7 +249,9 @@ impl MCPServer {
                     error: None,
                 }
             }
-            "tools/call" => self.handle_tools_call(req).await,
+            "tools/call" => self
+                .handle_tools_call(session.map(str::to_string), req)
+                .await,
             // 2026-07-28 stateless track: on-demand capability discovery —
             // self-contained requests ask what the server can do without a
             // prior initialize handshake.
@@ -401,7 +429,7 @@ impl MCPServer {
     }
 
     /// Builds a success response.
-    fn ok_response(id: u64, result: Value) -> MCPResponse {
+    fn ok_response(id: JsonRpcId, result: Value) -> MCPResponse {
         MCPResponse {
             jsonrpc: "2.0".to_string(),
             id: Some(id),
@@ -411,7 +439,7 @@ impl MCPServer {
     }
 
     /// Builds a response carrying a JSON-RPC error.
-    fn error_response(id: u64, error: MCPError) -> MCPResponse {
+    fn error_response(id: JsonRpcId, error: MCPError) -> MCPResponse {
         MCPResponse {
             jsonrpc: "2.0".to_string(),
             id: Some(id),
@@ -421,16 +449,16 @@ impl MCPServer {
     }
 
     /// Builds a `method_not_found` (-32601) response: shared by unregistered capabilities / unknown methods.
-    fn method_not_found_response(id: u64) -> MCPResponse {
+    fn method_not_found_response(id: JsonRpcId) -> MCPResponse {
         Self::error_response(id, MCPError::method_not_found())
     }
 
     /// Builds an `invalid_params` (-32602) response.
-    fn invalid_params_response(id: u64, msg: impl Into<String>) -> MCPResponse {
+    fn invalid_params_response(id: JsonRpcId, msg: impl Into<String>) -> MCPResponse {
         Self::error_response(id, MCPError::invalid_params(msg))
     }
 
-    async fn handle_tools_call(&self, req: MCPRequest) -> MCPResponse {
+    async fn handle_tools_call(&self, session: Option<String>, req: MCPRequest) -> MCPResponse {
         let params = req.params.clone().unwrap_or(Value::Null);
         let name = params.get("name").and_then(|v| v.as_str());
         let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
@@ -451,19 +479,34 @@ impl MCPServer {
         match tool {
             Some(t) => {
                 let input_str = serde_json::to_string(&arguments).unwrap_or_else(|_| "null".into());
-                let result = t.run(input_str).await;
-                let mcp_result = match result {
-                    Ok(text) => MCPToolResult {
-                        content: vec![MCPContent::Text { text }],
-                        is_error: false,
+                // B8: register a cancellation signal for this request id; the
+                // client's `notifications/cancelled` fires it and the select!
+                // below aborts the in-flight tool (dropping the run future).
+                let notify = {
+                    let mut map = self.cancellations.lock().await;
+                    map.entry((session.clone(), req.id.clone()))
+                        .or_insert_with(|| Arc::new(Notify::new()))
+                        .clone()
+                };
+                let mut run = Box::pin(t.run(input_str));
+                let mut cancelled = Box::pin(notify.notified());
+                let mcp_result = tokio::select! {
+                    result = &mut run => match result {
+                        Ok(text) => MCPToolResult {
+                            content: vec![MCPContent::Text { text }],
+                            is_error: false,
+                        },
+                        Err(e) => MCPToolResult {
+                            content: vec![MCPContent::Text { text: e.to_string() }],
+                            is_error: true,
+                        },
                     },
-                    Err(e) => MCPToolResult {
-                        content: vec![MCPContent::Text {
-                            text: e.to_string(),
-                        }],
+                    _ = &mut cancelled => MCPToolResult {
+                        content: vec![MCPContent::Text { text: "cancelled by client".into() }],
                         is_error: true,
                     },
                 };
+                self.cancellations.lock().await.remove(&(session, req.id.clone()));
                 let result_val = serde_json::to_value(&mcp_result).unwrap_or(Value::Null);
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
@@ -719,10 +762,51 @@ impl MCPServer {
     /// The current implementation logs and leaves extension points; derived types can override it later to hook
     /// in cancel/progress callbacks.
     pub async fn handle_notification(&self, method: &str, params: Option<Value>) {
+        // F1/H3: unscoped default — single-connection transports only. The
+        // Streamable HTTP transport routes through handle_notification_scoped
+        // so the cancellation lookup is keyed by (session, request id).
+        self.handle_notification_scoped(None, method, params).await
+    }
+
+    /// Session-scoped notification dispatch (F1/H3): matches
+    /// [`Self::handle_request_scoped`] so a `notifications/cancelled` for a
+    /// given session only fires that session's own request with the same id.
+    pub async fn handle_notification_scoped(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Option<Value>,
+    ) {
         match method {
             "notifications/cancelled" => {
-                // Carries requestId, pointing at the request to cancel
-                log::info!("MCP received cancelled notification: {:?}", params);
+                // B8: carries requestId; fire the request's Notify so an
+                // in-flight tools/call aborts instead of running to completion.
+                let request_id = params
+                    .as_ref()
+                    .and_then(|p| p.get("requestId"))
+                    .and_then(|v| {
+                        v.as_u64()
+                            .map(JsonRpcId::Number)
+                            .or_else(|| v.as_str().map(|s| JsonRpcId::String(s.to_string())))
+                    });
+                match request_id {
+                    Some(rid) => {
+                        let key = (session.map(str::to_string), rid.clone());
+                        let notify = self.cancellations.lock().await.get(&key).cloned();
+                        if let Some(notify) = notify {
+                            notify.notify_one();
+                            log::debug!("MCP cancelled request {rid}");
+                        } else {
+                            log::debug!(
+                                "MCP cancelled notification for unknown/unregistered request id {rid}"
+                            );
+                        }
+                    }
+                    None => log::info!(
+                        "MCP received cancelled notification without a requestId: {:?}",
+                        params
+                    ),
+                }
             }
             "notifications/progress" => {
                 // Carries token + progress/estimatedTotal
@@ -751,7 +835,7 @@ impl Default for MCPServer {
 #[derive(Deserialize)]
 struct ServerMessage {
     #[serde(default)]
-    id: Option<u64>,
+    id: Option<JsonRpcId>,
     method: String,
     #[serde(default)]
     params: Option<Value>,
@@ -1376,7 +1460,142 @@ mod tests {
     fn test_server_message_request_has_id() {
         let json = r#"{"jsonrpc":"2.0","id":42,"method":"tools/list"}"#;
         let msg: ServerMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.id, Some(42));
+        assert_eq!(msg.id, Some(JsonRpcId::Number(42)));
+    }
+
+    #[test]
+    fn test_server_message_string_id_parses() {
+        // B8: string ids are valid JSON-RPC ids and must not be rejected.
+        let json = r#"{"jsonrpc":"2.0","id":"req-7","method":"ping"}"#;
+        let msg: ServerMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.id, Some(JsonRpcId::String("req-7".into())));
+    }
+
+    /// A tool that never completes until its gate `Notify` fires (manual
+    /// release). Used to prove a `notifications/cancelled` propagates into an
+    /// in-flight tool run and aborts it.
+    struct HangingTool {
+        gate: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait::async_trait]
+    impl BaseTool for HangingTool {
+        fn name(&self) -> &str {
+            "hang"
+        }
+        fn description(&self) -> &str {
+            "hangs until cancelled or released"
+        }
+        fn args_schema(&self) -> Option<Value> {
+            Some(json!({"type":"object"}))
+        }
+        async fn run(&self, _input: String) -> Result<String, ToolError> {
+            // Block until the test releases the gate manually; cancellation
+            // (which fires the server's own Notify, not this gate) must abort
+            // this run before the gate is ever released.
+            self.gate.notified().await;
+            Ok("done".into())
+        }
+    }
+
+    /// B8 cancellation propagation: send `tools/call` for a hanging tool, then
+    /// `notifications/cancelled` for its id — the in-flight run is aborted and
+    /// the response carries the "cancelled by client" outcome.
+    #[tokio::test]
+    async fn test_cancel_propagates_into_in_flight_tool() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server =
+            Arc::new(MCPServer::new().with_tool(Arc::new(HangingTool { gate: gate.clone() })));
+        let req = MCPRequest::new(
+            42,
+            "tools/call",
+            Some(json!({"name": "hang", "arguments": {}})),
+        );
+        let server_in_task = server.clone();
+        let in_flight = tokio::spawn(async move { server_in_task.handle_request(req).await });
+
+        // Give the request a moment to register its Notify in the table.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        server
+            .handle_notification("notifications/cancelled", Some(json!({"requestId": 42})))
+            .await;
+
+        let resp = in_flight.await.expect("in-flight task completes");
+        let result = resp
+            .result
+            .expect("cancellation yields a result, not a raw error");
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert_eq!(text, "cancelled by client", "result: {result}");
+
+        // The abandoned id must be removed from the cancellation table.
+        let map = server.cancellations.lock().await;
+        assert!(
+            !map.contains_key(&(None, JsonRpcId::Number(42))),
+            "{map:?}"
+        );
+    }
+
+    /// F1/H3: cancellation is scoped by session. Two concurrent sessions that
+    /// reuse the same JSON-RPC id must not cancel each other's in-flight tool
+    /// call — a `notifications/cancelled` for session B fires only B's request.
+    #[tokio::test]
+    async fn test_cancel_is_isolated_by_session() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let server =
+            Arc::new(MCPServer::new().with_tool(Arc::new(HangingTool { gate: gate.clone() })));
+
+        // Two sessions, same request id 7, both awaiting the hanging tool.
+        let req_a = MCPRequest::new(
+            7,
+            "tools/call",
+            Some(json!({"name": "hang", "arguments": {}})),
+        );
+        let req_b = MCPRequest::new(
+            7,
+            "tools/call",
+            Some(json!({"name": "hang", "arguments": {}})),
+        );
+        let (sa, sb) = (server.clone(), server.clone());
+        let (task_a, task_b) = (
+            tokio::spawn(async move { sa.handle_request_scoped(Some("sess-a"), req_a).await }),
+            tokio::spawn(async move { sb.handle_request_scoped(Some("sess-b"), req_b).await }),
+        );
+
+        // Let both register their Notify under their (session, id) keys.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(server.cancellations.lock().await.len(), 2, "both registered");
+
+        // Cancelling session B's id 7 must not fire session A's request.
+        server
+            .handle_notification_scoped(
+                Some("sess-b"),
+                "notifications/cancelled",
+                Some(json!({"requestId": 7})),
+            )
+            .await;
+
+        let resp_b = task_b.await.expect("B task completes");
+        let result_b = resp_b.result.unwrap();
+        let text_b = result_b["content"][0]["text"].as_str().unwrap_or_default();
+        assert_eq!(text_b, "cancelled by client", "B should be cancelled");
+
+        // A is untouched: its key is still registered and its tool still hangs.
+        let map = server.cancellations.lock().await;
+        assert!(
+            map.contains_key(&(Some("sess-a".to_string()), JsonRpcId::Number(7))),
+            "session A's registration must survive B's cancellation: {map:?}"
+        );
+        assert!(
+            !map.contains_key(&(Some("sess-b".to_string()), JsonRpcId::Number(7))),
+            "session B's registration must be reaped: {map:?}"
+        );
+        drop(map);
+
+        // Release A's gate so its tool can finish and the task resolves.
+        gate.notify_waiters();
+        let resp_a = task_a.await.expect("A task completes");
+        let result_a = resp_a.result.unwrap();
+        let text_a = result_a["content"][0]["text"].as_str().unwrap_or_default();
+        assert_eq!(text_a, "done", "A must run to completion, uncancelled");
     }
 
     #[tokio::test]

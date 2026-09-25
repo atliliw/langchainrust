@@ -225,6 +225,43 @@ impl<M: BaseChatModel> ConversationSummaryMemory<M> {
 
         Ok(result.content)
     }
+
+    /// H29/D2: Trim `chat_memory` to prevent unbounded growth. Since the
+    /// summary continuously captures all conversation content, only the most
+    /// recent turns are kept for context continuity. Runs on both the success
+    /// and the summary-failure path (a failed summarization still appends to
+    /// `pending_lines`, so the trimmed content is not lost).
+    fn trim_chat_memory(&mut self) {
+        let max_messages = self.max_recent_turns * 2;
+        let current_len = self.chat_memory.len();
+        if current_len > max_messages {
+            let messages = self.chat_memory.messages().to_vec();
+            self.chat_memory.clear();
+            // Preserve System messages and the most recent turns
+            let start = current_len.saturating_sub(max_messages);
+            for msg in messages.iter().take(start) {
+                if matches!(msg.message_type, lc_schema::MessageType::System) {
+                    self.chat_memory.add_system_message(&msg.content);
+                }
+            }
+            for msg in messages.iter().skip(start) {
+                if matches!(msg.message_type, lc_schema::MessageType::Human) {
+                    self.chat_memory.add_user_message(&msg.content);
+                } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
+                    // 0.22.0 H-M2: this trim drops Tool messages, so keep it
+                    // consistent by also dropping any assistant message that
+                    // *carries* tool_calls. Keeping an assistant.tool_calls
+                    // without its tool results is a dangling pair → OpenAI/
+                    // Anthropic 400. (The summary already captured the content.)
+                    if msg.tool_calls.is_none() {
+                        self.chat_memory.add_ai_message(&msg.content);
+                    }
+                } else if matches!(msg.message_type, lc_schema::MessageType::System) {
+                    self.chat_memory.add_system_message(&msg.content);
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -290,6 +327,9 @@ where
                     "ConversationSummaryMemory summarization failed, keeping old summary for next retry: {}",
                     e
                 );
+                // D2 (M-me1): the failure path must trim too — otherwise a
+                // persistently failing summary lets chat_memory grow unbounded.
+                self.trim_chat_memory();
                 return Ok(());
             }
         };
@@ -298,38 +338,8 @@ where
         self.pending_lines.clear();
         self.last_summary_error = None;
 
-        // H29: Trim chat_memory to prevent unbounded growth.
-        // Since the summary already captures all conversation content,
-        // only keep the most recent turns for context continuity.
-        let max_messages = self.max_recent_turns * 2;
-        let current_len = self.chat_memory.len();
-        if current_len > max_messages {
-            let messages = self.chat_memory.messages().to_vec();
-            self.chat_memory.clear();
-            // Preserve System messages and the most recent turns
-            let start = current_len.saturating_sub(max_messages);
-            for msg in messages.iter().take(start) {
-                if matches!(msg.message_type, lc_schema::MessageType::System) {
-                    self.chat_memory.add_system_message(&msg.content);
-                }
-            }
-            for msg in messages.iter().skip(start) {
-                if matches!(msg.message_type, lc_schema::MessageType::Human) {
-                    self.chat_memory.add_user_message(&msg.content);
-                } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                    // 0.22.0 H-M2: this trim drops Tool messages, so keep it
-                    // consistent by also dropping any assistant message that
-                    // *carries* tool_calls. Keeping an assistant.tool_calls
-                    // without its tool results is a dangling pair → OpenAI/
-                    // Anthropic 400. (The summary already captured the content.)
-                    if msg.tool_calls.is_none() {
-                        self.chat_memory.add_ai_message(&msg.content);
-                    }
-                } else if matches!(msg.message_type, lc_schema::MessageType::System) {
-                    self.chat_memory.add_system_message(&msg.content);
-                }
-            }
-        }
+        // H29/D2: Trim chat_memory to prevent unbounded growth.
+        self.trim_chat_memory();
 
         Ok(())
     }

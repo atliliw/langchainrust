@@ -97,6 +97,7 @@ impl BaseChatModel for MockProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
     {
         let chunk = StreamChunk {
+            thinking_content: None,
             text: self.content.clone(),
             token_usage: Some(self.usage.clone()),
             tool_calls: None,

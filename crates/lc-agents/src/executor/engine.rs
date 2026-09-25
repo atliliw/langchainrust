@@ -596,12 +596,16 @@ impl AgentExecutor {
             .await
             .map_err(|e| AgentError::Resume(e.to_string()))?;
 
+        // B5: a resumed tool keeps the id it was approved with (uuid or provider id),
+        // so the observability / pairing stays consistent across the crash. When the
+        // checkpoint carries no id, the executor stamps a fresh one on execution.
         let action = AgentAction {
             tool: pending.tool_name.clone(),
             tool_input: ToolInput::Object {
                 value: pending.arguments.clone(),
             },
             log: String::new(),
+            tool_call_id: Some(pending.tool_id.clone()),
         };
 
         let mut root_run = RunTree::new(
@@ -861,16 +865,20 @@ impl AgentExecutor {
         // original agent error.
         if let Some(memory) = &self.memory {
             match &result {
+                // B5: answer-save is best-effort (like the errored-round branch and the
+                // stream path) — a memory persistence failure must never mask an already
+                // produced final answer.
                 Ok(output) => {
                     let mut outputs = HashMap::new();
                     outputs.insert("output".to_string(), output.clone());
 
-                    memory
-                        .lock()
-                        .await
-                        .save_context(&inputs, &outputs)
-                        .await
-                        .map_err(|e| AgentError::Other(format!("Failed to save memory: {}", e)))?;
+                    if let Err(save_err) = memory.lock().await.save_context(&inputs, &outputs).await
+                    {
+                        log::warn!(
+                            "failed to save final answer to memory: {}, original answer preserved",
+                            save_err
+                        );
+                    }
                 }
                 Err(e) => {
                     let mut outputs = HashMap::new();

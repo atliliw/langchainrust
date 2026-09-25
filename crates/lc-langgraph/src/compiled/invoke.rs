@@ -34,7 +34,33 @@ impl<S: StateSchema> CompiledGraph<S> {
         match node.execute(state, Some(config)).await {
             Err(GraphError::InterruptRequest { ref payload }) => {
                 if let Some(ref cp) = self.checkpointer {
-                    cp.lock().await.save(state, recursion_count).await?;
+                    // H1: a runtime interrupt suspends the CURRENT node before it
+                    // completes, so the checkpoint's recursion budget must record the
+                    // count of nodes FULLY completed before this suspend — not include
+                    // the suspending node (the caller already incremented it). During
+                    // `invoke_with_execution` the resume loop increments once more when
+                    // re-entering this node, so billing it here too would double-count
+                    // (M6: an interrupt→resume cycle must consume the node's budget
+                    // exactly once, never twice).
+                    let checkpoint_id = cp
+                        .lock()
+                        .await
+                        .save(state, recursion_count.saturating_sub(1))
+                        .await?;
+                    // B4: stamp the checkpoint the human's decision must resume
+                    // from, so a late resume can target this exact save even if
+                    // other checkpoints have been written in between.
+                    let mut enriched = payload.clone();
+                    if let Some(map) = enriched.as_object_mut() {
+                        map.insert(
+                            "__checkpoint_id".to_string(),
+                            serde_json::Value::String(checkpoint_id),
+                        );
+                    }
+                    return Err(GraphError::DynamicInterrupt {
+                        node: current_node.to_string(),
+                        payload: enriched,
+                    });
                 }
                 Err(GraphError::DynamicInterrupt {
                     node: current_node.to_string(),
@@ -184,14 +210,41 @@ impl<S: StateSchema> CompiledGraph<S> {
         // the node (it already ran) and continues at its successor.
         let rerun_interrupted = execution.pending_interrupt.is_some()
             || !execution.interrupted_at.starts_with("after_");
-        let mut current_node = if rerun_interrupted {
-            execution.current_node
-        } else {
-            self.find_next_node(&execution.current_node, &state).await?
-        };
         let mut steps = execution.steps;
         let mut recursion_count = execution.recursion_count;
         let mut resume_value = execution.pending_interrupt.map(|p| p.value);
+
+        let mut current_node = if rerun_interrupted {
+            execution.current_node
+        } else if let Some(targets) = self.find_fan_out_targets(&execution.current_node).await {
+            // after_-interrupt of a fan-out source (B4): the source has already
+            // run, so honor the fan-out now — run the branches in parallel,
+            // merge, and continue at the fan-in (or END), instead of silently
+            // collapsing to the first branch via `find_next_node`.
+            recursion_count += 1;
+            let branch_results = self
+                .execute_parallel_branches(&targets, &state, recursion_count)
+                .await?;
+            let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+            for (name, inv) in branch_results {
+                parallel_branches.push(ParallelBranch {
+                    name: name.clone(),
+                    final_state: inv.final_state.clone(),
+                    steps: inv.steps.clone(),
+                });
+                steps.push(ExecutionStep::ParallelNode {
+                    branch: name,
+                    metadata: HashMap::new(),
+                });
+            }
+            let base = state.clone();
+            state = self.merge_parallel_states(&parallel_branches, &base)?;
+            self.find_fan_in_target(&targets)
+                .await
+                .unwrap_or_else(|| END.to_string())
+        } else {
+            self.find_next_node(&execution.current_node, &state).await?
+        };
         let first_node = current_node.clone();
 
         loop {
@@ -204,7 +257,16 @@ impl<S: StateSchema> CompiledGraph<S> {
                 return Err(GraphError::RecursionLimitReached(self.recursion_limit));
             }
 
-            if current_node != first_node && self.interrupt_before.contains(&current_node) {
+            // H8: `interrupt_before` is re-checked on the SUCCESSOR of an `after_`
+            // interrupt — that node has never run, so it must honor a configured
+            // before-interrupt exactly like `invoke` does at its loop top. The
+            // `first_node` exemption applies ONLY when re-entering a runtime
+            // (pending_interrupt) interrupted node, which already passed its
+            // before-check once — never for an `after_` continuation into a fresh
+            // successor (rerun_interrupted == false).
+            if (current_node != first_node || !rerun_interrupted)
+                && self.interrupt_before.contains(&current_node)
+            {
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
 
@@ -230,6 +292,46 @@ impl<S: StateSchema> CompiledGraph<S> {
                     "after_{}",
                     current_node
                 )));
+            }
+
+            // B4: honor FanOut during a resumed run. The source node has run;
+            // execute all branches in parallel, merge, and continue at the
+            // fan-in (or END) — same handling as `invoke`.
+            let fan_out_targets = self.find_fan_out_targets(&current_node).await;
+            if let Some(targets) = fan_out_targets {
+                recursion_count += 1;
+                let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
+                for (name, inv) in branch_results {
+                    parallel_branches.push(ParallelBranch {
+                        name: name.clone(),
+                        final_state: inv.final_state.clone(),
+                        steps: inv.steps.clone(),
+                    });
+                    steps.push(ExecutionStep::ParallelNode {
+                        branch: name,
+                        metadata: HashMap::new(),
+                    });
+                }
+                let base = state.clone();
+                state = self.merge_parallel_states(&parallel_branches, &base)?;
+                let merge_node = self.find_fan_in_target(&targets).await;
+                current_node = merge_node.unwrap_or_else(|| END.to_string());
+
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        current_node.clone(),
+                    ));
+                }
+                continue;
             }
 
             let next_node = self.find_next_node(&current_node, &state).await?;
@@ -317,6 +419,34 @@ impl<S: StateSchema> CompiledGraph<S> {
                     "after_{}",
                     current_node
                 )));
+            }
+
+            // B4: honor FanOut on the from-node path (used by forks and parallel
+            // branches), instead of collapsing to the first branch. Same handling
+            // as `invoke`.
+            let fan_out_targets = self.find_fan_out_targets(&current_node).await;
+            if let Some(targets) = fan_out_targets {
+                recursion_count += 1;
+                let mut parallel_branches: Vec<ParallelBranch<S>> = Vec::new();
+                let branch_results = self
+                    .execute_parallel_branches(&targets, &state, recursion_count)
+                    .await?;
+                for (name, inv) in branch_results {
+                    parallel_branches.push(ParallelBranch {
+                        name: name.clone(),
+                        final_state: inv.final_state.clone(),
+                        steps: inv.steps.clone(),
+                    });
+                    steps.push(ExecutionStep::ParallelNode {
+                        branch: name,
+                        metadata: HashMap::new(),
+                    });
+                }
+                let base = state.clone();
+                state = self.merge_parallel_states(&parallel_branches, &base)?;
+                let merge_node = self.find_fan_in_target(&targets).await;
+                current_node = merge_node.unwrap_or_else(|| END.to_string());
+                continue;
             }
 
             current_node = self.find_next_node(&current_node, &state).await?;

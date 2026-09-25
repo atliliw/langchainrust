@@ -97,6 +97,44 @@ pub trait TaskStore: Send + Sync {
     /// Insert a new task or replace an existing one.
     async fn upsert(&self, stored: StoredTask) -> Result<(), StoreError>;
 
+    /// F4 (runWorkflow CAS): atomically create `update` for `task_id`, or
+    /// replace the existing task, **only when the caller may claim it** — a
+    /// task with no owner is open to any caller, a task with an owner may be
+    /// re-run only by that same owner (`update.task.owner` is the resolved
+    /// caller identity). Returns `true` when the write was applied, `false`
+    /// when the existing task belongs to a different caller.
+    ///
+    /// The default implementation is a racy `get` + `upsert` fallback; backends
+    /// that can must override it with a truly atomic compare-and-set so the
+    /// cross-tenant overwrite window is closed (a caller whose ownership was
+    /// checked can no longer clobber a competing writer's task in between).
+    async fn upsert_claimed(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        match self.get(task_id).await? {
+            Some(current) => {
+                let claimable = match &current.task.owner {
+                    // Owned: the re-run caller must be the same owner.
+                    Some(actual) => update.task.owner.as_deref() == Some(actual.as_str()),
+                    // Open task: any caller may re-run.
+                    None => true,
+                };
+                if claimable {
+                    self.upsert(update).await?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            None => {
+                self.upsert(update).await?;
+                Ok(true)
+            }
+        }
+    }
+
     /// Fetch a task snapshot by id, or `None` if absent.
     async fn get(&self, task_id: &str) -> Result<Option<StoredTask>, StoreError>;
 
@@ -159,6 +197,28 @@ impl InMemoryTaskStore {
             max_tasks,
         }
     }
+
+    /// Core insert under a held write lock, shared by `upsert` and
+    /// `upsert_claimed`: capacity check, LRU eviction for a *new* id, then
+    /// insert. Re-inserting an existing id never evicts.
+    fn insert_locked(
+        &self,
+        guard: &mut tokio::sync::RwLockWriteGuard<'_, HashMap<String, StoredTask>>,
+        stored: StoredTask,
+    ) {
+        let inserting_new = !guard.contains_key(&stored.task.id);
+        if inserting_new && self.max_tasks > 0 && guard.len() >= self.max_tasks {
+            // Oldest-by-updated wins the LRU slot.
+            let oldest_key = guard
+                .iter()
+                .min_by_key(|(_, t)| t.updated_at)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest_key {
+                guard.remove(&key);
+            }
+        }
+        guard.insert(stored.task.id.clone(), stored);
+    }
 }
 
 impl Default for InMemoryTaskStore {
@@ -174,19 +234,34 @@ impl TaskStore for InMemoryTaskStore {
         // write lock, so concurrent upserts cannot exceed `max_tasks` (the
         // previous check-then-act released the lock between the steps).
         let mut guard = self.inner.write().await;
-        let inserting_new = !guard.contains_key(&stored.task.id);
-        if inserting_new && self.max_tasks > 0 && guard.len() >= self.max_tasks {
-            // Oldest-by-updated wins the LRU slot.
-            let oldest_key = guard
-                .iter()
-                .min_by_key(|(_, t)| t.updated_at)
-                .map(|(k, _)| k.clone());
-            if let Some(key) = oldest_key {
-                guard.remove(&key);
-            }
-        }
-        guard.insert(stored.task.id.clone(), stored);
+        self.insert_locked(&mut guard, stored);
         Ok(())
+    }
+
+    async fn upsert_claimed(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        // Single write lock over the ownership check and the insert: a
+        // concurrent cross-tenant writer can no longer slip a task in between
+        // our `get` and our `upsert` (F4 TOCTOU close — mirrors `caller_owns`).
+        let mut guard = self.inner.write().await;
+        let claimable = match guard.get(task_id) {
+            // Owned task: the re-run caller must be the same owner.
+            Some(current) => match &current.task.owner {
+                Some(actual) => update.task.owner.as_deref() == Some(actual.as_str()),
+                // Open task: any caller may re-run.
+                None => true,
+            },
+            // Absent: freely create.
+            None => true,
+        };
+        if !claimable {
+            return Ok(false);
+        }
+        self.insert_locked(&mut guard, update);
+        Ok(true)
     }
 
     async fn get(&self, task_id: &str) -> Result<Option<StoredTask>, StoreError> {
@@ -429,5 +504,53 @@ mod tests {
         let update = StoredTask::new(sample_task("ghost", TaskStatus::Completed));
         assert!(!store.compare_and_update("ghost", update).await.unwrap());
         assert!(store.get("ghost").await.unwrap().is_none());
+    }
+
+    // ---- F4: upsert_claimed CAS (cross-tenant overwrite gate) ----
+
+    #[tokio::test]
+    async fn upsert_claimed_creates_when_absent() {
+        let store = InMemoryTaskStore::new();
+        let update = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a"));
+        assert!(store.upsert_claimed("t1", update).await.unwrap());
+        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn upsert_claimed_allows_same_owner_rerun() {
+        let store = InMemoryTaskStore::new();
+        store
+            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a")))
+            .await
+            .unwrap();
+        let rerun = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a"));
+        assert!(store.upsert_claimed("t1", rerun).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn upsert_claimed_rejects_different_owner() {
+        // F4 TOCTOU: a competing tenant must not clobber the existing task.
+        let store = InMemoryTaskStore::new();
+        store
+            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a")))
+            .await
+            .unwrap();
+        let b = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("b"));
+        assert!(!store.upsert_claimed("t1", b).await.unwrap());
+        // The existing owner's task is untouched.
+        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn upsert_claimed_open_task_claimable_by_anyone() {
+        // A task with no owner is open to any caller (mirrors `caller_owns`).
+        let store = InMemoryTaskStore::new();
+        store
+            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working)))
+            .await
+            .unwrap();
+        let c = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("c"));
+        assert!(store.upsert_claimed("t1", c).await.unwrap());
+        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("c"));
     }
 }

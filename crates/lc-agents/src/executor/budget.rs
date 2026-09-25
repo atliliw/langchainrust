@@ -106,6 +106,12 @@ pub(crate) fn budget_iteration_gate(
 
 /// Budget gate (§4.2): cumulative-token check after an LLM call. No effect when the
 /// agent does not report tokens.
+///
+/// Uses `> limit` — the exact-`limit`-then-stop semantics of `budget_tool_gate`
+/// (stage-G G5): `max_tokens` allows up to and including `limit`, and trips only
+/// once the cumulative spend *exceeds* it. Previously this gate used `>=` (stopping
+/// *at* `limit`, silently allowing only `limit - 1` tokens), contradicting both the
+/// field name and the tool-call gate.
 pub(crate) fn budget_token_gate(
     budget: Option<&BudgetConfig>,
     metrics: &AgentMetrics,
@@ -113,7 +119,7 @@ pub(crate) fn budget_token_gate(
     let budget = budget?;
     let limit = budget.max_tokens?;
     let actual = metrics.total_tokens.unwrap_or(0);
-    if actual >= limit {
+    if actual > limit {
         return Some(AgentError::BudgetExceeded(BudgetExceeded::Tokens {
             limit,
             actual,
@@ -207,5 +213,40 @@ mod tests {
             other => panic!("expected Cost stop at the limit, got {other:?}"),
         }
         assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 1.5).is_some());
+    }
+
+    fn token_cfg(limit: usize) -> BudgetConfig {
+        BudgetConfig {
+            max_tokens: Some(limit),
+            ..Default::default()
+        }
+    }
+
+    fn metrics_with_tokens(tokens: usize) -> AgentMetrics {
+        AgentMetrics {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        }
+    }
+
+    /// stage-G G5: token gate uses the same exact-limit-then-stop semantics as the
+    /// tool-call gate — `max_tokens` allows up to and including the limit, and
+    /// trips only once the cumulative spend exceeds it.
+    #[test]
+    fn token_gate_matches_tool_gate_equality_semantics() {
+        // At exactly the limit: allowed (matches `budget_tool_gate`'s `>`).
+        assert!(budget_token_gate(Some(&token_cfg(100)), &metrics_with_tokens(100)).is_none());
+        assert!(budget_token_gate(Some(&token_cfg(100)), &metrics_with_tokens(99)).is_none());
+        // One past the limit: hard stop.
+        match budget_token_gate(Some(&token_cfg(100)), &metrics_with_tokens(101)) {
+            Some(AgentError::BudgetExceeded(BudgetExceeded::Tokens { limit, actual })) => {
+                assert_eq!(limit, 100);
+                assert_eq!(actual, 101);
+            }
+            other => panic!("expected Tokens stop past the limit, got {other:?}"),
+        }
+        // Inert without a budget or a limit.
+        assert!(budget_token_gate(None, &metrics_with_tokens(101)).is_none());
+        assert!(budget_token_gate(Some(&BudgetConfig::default()), &metrics_with_tokens(101)).is_none());
     }
 }

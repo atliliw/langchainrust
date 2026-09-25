@@ -342,14 +342,41 @@ impl UnifiedHybridIndex {
         document: Document,
         chunks: &[LateChunk],
     ) -> Result<String, VectorStoreError> {
+        // P0-1: allocate the parent id upfront and attach it (mirrors
+        // `add_document`); otherwise `add_parent_with_chunks` generates a new
+        // uuid internally, and the stale-chunk lookup below keys off a
+        // different id and sees nothing.
+        let parent_id = document
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // C2: mirror `add_document`'s idempotency — capture the stale segment
+        // chunk ids BEFORE `add_parent_with_chunks` replaces the chunk set, so a
+        // duplicate late-chunk ingest removes the previous segment vectors instead
+        // of leaving parallel copies that crowd out top-k.
+        let stale_chunk_ids = self
+            .document_store
+            .get_chunks_for_parent(&parent_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.chunk_id)
+            .collect::<Vec<_>>();
+
         let parent_id = self
             .document_store
             .add_parent_with_chunks(
-                document.clone(),
+                document.clone().with_id(parent_id.clone()),
                 chunks.iter().map(|c| c.text.clone()).collect(),
             )
             .await?
             .0;
+
+        // C2: best-effort delete the stale segment vectors before writing the fresh ones.
+        for chunk_id in &stale_chunk_ids {
+            let _ = self.vector_store.delete_document(chunk_id).await;
+        }
 
         let mut chunk_docs = Vec::new();
         let mut chunk_embeddings = Vec::new();

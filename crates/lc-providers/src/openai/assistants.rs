@@ -12,6 +12,12 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Default per-request deadline (A7). `default_client()` sets no total `.timeout()` —
+/// it would kill long-running SSE streams — so polling requests must bound themselves.
+/// Fixed 180s per request plus a nominal 120s poll budget keep a single stuck request from
+/// hanging the loop forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// Assistants error
 #[derive(Debug)]
 #[non_exhaustive]
@@ -103,7 +109,7 @@ impl OpenAIAssistant {
             "model": model,
             "instructions": instructions,
         });
-        let resp = Self::post(&client, &config, &url, body).await?;
+        let resp = Self::post(&client, &config, &url, body, REQUEST_TIMEOUT).await?;
         let id = resp
             .get("id")
             .and_then(|v| v.as_str())
@@ -152,7 +158,7 @@ impl OpenAIAssistant {
             "instructions": instructions,
             "tools": tools_json,
         });
-        let resp = Self::post(&client, &config, &url, body).await?;
+        let resp = Self::post(&client, &config, &url, body, REQUEST_TIMEOUT).await?;
         let id = resp
             .get("id")
             .and_then(|v| v.as_str())
@@ -227,6 +233,7 @@ impl OpenAIAssistant {
             &self.config,
             &format!("{}/threads", base),
             serde_json::json!({}),
+            REQUEST_TIMEOUT,
         )
         .await?;
         let thread_id = thread
@@ -240,6 +247,7 @@ impl OpenAIAssistant {
             &self.config,
             &format!("{}/threads/{}/messages", base, thread_id),
             serde_json::json!({ "role": "user", "content": user_msg }),
+            REQUEST_TIMEOUT,
         )
         .await?;
 
@@ -249,6 +257,7 @@ impl OpenAIAssistant {
             &self.config,
             &format!("{}/threads/{}/runs", base, thread_id),
             serde_json::json!({ "assistant_id": self.assistant_id }),
+            REQUEST_TIMEOUT,
         )
         .await?;
         let run_id = run
@@ -269,10 +278,16 @@ impl OpenAIAssistant {
             }
             attempts += 1;
 
+            // Bound each poll request by the remaining poll budget so a single stuck
+            // `get` cannot run past `poll_config.timeout` (A7). Defaults to
+            // `REQUEST_TIMEOUT` when no remaining budget is attributable (start bound).
+            let remaining = self.poll_config.timeout.saturating_sub(start.elapsed());
+            let request_timeout = remaining.min(REQUEST_TIMEOUT).max(Duration::from_secs(1));
             let run_state = Self::get(
                 &self.client,
                 &self.config,
                 &format!("{}/threads/{}/runs/{}", base, thread_id, run_id),
+                request_timeout,
             )
             .await?;
             let status = run_state
@@ -283,7 +298,7 @@ impl OpenAIAssistant {
             match status {
                 "completed" => break,
                 "requires_action" => {
-                    self.handle_requires_action(base, thread_id, run_id, &run_state)
+                    self.handle_requires_action(base, thread_id, run_id, &run_state, request_timeout)
                         .await?;
                 }
                 s if is_terminal_status(s) => return Err(AssistantError::RunFailed(s.to_string())),
@@ -296,6 +311,7 @@ impl OpenAIAssistant {
             &self.client,
             &self.config,
             &format!("{}/threads/{}/messages", base, thread_id),
+            REQUEST_TIMEOUT,
         )
         .await?;
         let data = messages
@@ -323,6 +339,7 @@ impl OpenAIAssistant {
         thread_id: &str,
         run_id: &str,
         run_state: &Value,
+        request_timeout: Duration,
     ) -> Result<(), AssistantError> {
         // Parse the tool_calls
         let tool_calls = run_state
@@ -385,6 +402,7 @@ impl OpenAIAssistant {
                 base, thread_id, run_id
             ),
             serde_json::json!({ "tool_outputs": tool_outputs }),
+            request_timeout,
         )
         .await?;
 
@@ -396,9 +414,11 @@ impl OpenAIAssistant {
         config: &OpenAIConfig,
         url: &str,
         body: Value,
+        request_timeout: Duration,
     ) -> Result<Value, AssistantError> {
         let resp = client
             .post(url)
+            .timeout(request_timeout)
             .header("Authorization", format!("Bearer {}", config.api_key))
             .header("OpenAI-Beta", "assistants=v2")
             .json(&body)
@@ -412,9 +432,11 @@ impl OpenAIAssistant {
         client: &reqwest::Client,
         config: &OpenAIConfig,
         url: &str,
+        request_timeout: Duration,
     ) -> Result<Value, AssistantError> {
         let resp = client
             .get(url)
+            .timeout(request_timeout)
             .header("Authorization", format!("Bearer {}", config.api_key))
             .header("OpenAI-Beta", "assistants=v2")
             .send()

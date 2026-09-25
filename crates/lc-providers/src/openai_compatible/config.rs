@@ -291,12 +291,16 @@ fn require_env(key: &str) -> Result<String, ProviderError> {
     env::var(key).map_err(|_| ProviderError::Config(format!("{key} environment variable not set")))
 }
 
-/// Drops a trailing `/` so the appended `/chat/completions` never doubles it.
-fn normalize_base_url(mut url: String) -> String {
-    while url.ends_with('/') {
-        url.pop();
-    }
-    url
+/// Drops trailing `/` separators so the appended `/chat/completions` never
+/// doubles them.
+///
+/// Delegates to the canonical [`lc_core::http::normalize_base_url`], which
+/// also validates scheme and host. The infallible constructors keep their
+/// old trim-only behavior for invalid input (it fails at request time
+/// anyway); valid URLs get the canonical normalization.
+fn normalize_base_url(url: String) -> String {
+    let trimmed = url.trim_end_matches('/').to_string();
+    lc_core::http::normalize_base_url(&trimmed).unwrap_or(trimmed)
 }
 
 #[cfg(test)]

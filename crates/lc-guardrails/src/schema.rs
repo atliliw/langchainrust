@@ -69,8 +69,21 @@ impl SchemaOutputGuardrail {
     }
 
     /// Builds a rail from the schema that `schemars` derives for `T`.
+    ///
+    /// Panics if `schemars` produces a schema this version of `serde_json` cannot serialize.
+    /// A failing serialization must not silently degrade into a `Null` schema — a null schema
+    /// validates *every* value, silently turning the output rail into a no-op (fail-open).
+    /// The schema is derived locally and deterministically, so serialization failure is a
+    /// framework-invariant violation, not a runtime condition worth degrading on.
     pub fn for_type<T: JsonSchema>() -> Self {
-        let schema = serde_json::to_value(schemars::schema_for!(T)).unwrap_or(Value::Null);
+        let schema = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|e| {
+            panic!(
+                "SchemaOutputGuardrail::for_type: schemars schema for `{}` could not be \
+                 serialized ({}); refusing to degrade into a permissive Null schema",
+                std::any::type_name::<T>(),
+                e
+            )
+        });
         Self::new(schema)
     }
 
@@ -230,12 +243,11 @@ fn validate(
                 subs.len()
             ));
         }
-        if !mode.terminal && matches == 0 {
-            return Err(format!(
-                "{path}: partial value matches none of oneOf({} subschemas)",
-                subs.len()
-            ));
-        }
+        // Partial mode is deliberately lenient here: a still-forming document that has not yet
+        // satisfied any oneOf branch may later converge (a floating point literal, a partial
+        // string, an omitted-but-imminent optional wrapper). This matches how `enum`/`const`/
+        // `required` are left for the terminal check — blocking on `matches == 0` mid-stream
+        // would drop a valid in-progress document. Terminal validation remains the strict gate.
     }
 
     if let Some(ty) = schema.get("type") {

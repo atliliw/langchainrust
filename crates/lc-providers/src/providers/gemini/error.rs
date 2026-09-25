@@ -15,6 +15,9 @@ pub enum GeminiError {
     NoResponse,
     /// Blocked by safety filter
     SafetyBlock(String),
+    /// Stream ended before a terminal marker (usageMetadata / finishReason) arrived —
+    /// the text sent so far is a truncated prefix, not a complete answer (A10).
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for GeminiError {
@@ -25,6 +28,7 @@ impl std::fmt::Display for GeminiError {
             GeminiError::ParseError(msg) => write!(f, "Gemini parse error: {}", msg),
             GeminiError::NoResponse => write!(f, "Gemini returned no response"),
             GeminiError::SafetyBlock(msg) => write!(f, "Gemini blocked by safety filter: {}", msg),
+            GeminiError::StreamInterrupted(msg) => write!(f, "Gemini stream interrupted: {}", msg),
         }
     }
 }

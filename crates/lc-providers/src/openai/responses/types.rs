@@ -169,6 +169,10 @@ pub enum ResponsesError {
     Api(String),
     /// Response parsing error.
     Parse(String),
+    /// The SSE stream ended before a terminal event (`response.completed`,
+    /// `response.failed`, `error`, or `[DONE]`) — the connection was truncated
+    /// and the partial output must not be reported as a complete answer.
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for ResponsesError {
@@ -177,6 +181,7 @@ impl std::fmt::Display for ResponsesError {
             ResponsesError::Http(msg) => write!(f, "HTTP error: {}", msg),
             ResponsesError::Api(msg) => write!(f, "API error: {}", msg),
             ResponsesError::Parse(msg) => write!(f, "Parse error: {}", msg),
+            ResponsesError::StreamInterrupted(msg) => write!(f, "Stream interrupted: {}", msg),
         }
     }
 }
@@ -217,6 +222,34 @@ pub(crate) enum ResponsesOutputItem {
     /// A computer use call.
     #[serde(rename = "computer_call")]
     ComputerCall(ResponsesComputerCall),
+    /// A custom-tool function call requested by the model.
+    ///
+    /// 0.25.0: without this variant every function-calling response failed to
+    /// deserialize (an unknown enum tag rejects the whole `output` array).
+    #[serde(rename = "function_call")]
+    FunctionCall(ResponsesFunctionCall),
+    /// Reasoning trace emitted by reasoning models. Carried as raw JSON — it
+    /// is not model output and must not break deserialization; the payload is
+    /// not surfaced on `LLMResult` in 0.25.0.
+    #[serde(rename = "reasoning")]
+    #[allow(dead_code)]
+    Reasoning(serde_json::Value),
+}
+
+/// A `function_call` output item.
+///
+/// `call_id` is the identifier a later `function_call_output` history item
+/// pairs with; `arguments` is a JSON-encoded **string** on the wire.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct ResponsesFunctionCall {
+    /// Server-side item id (`fc_...`).
+    pub id: Option<String>,
+    /// Call id echoed back by `function_call_output`.
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub status: Option<String>,
 }
 
 /// Message output item.
@@ -324,7 +357,7 @@ pub(crate) enum ResponsesStreamEvent {
     ContentPartDone(serde_json::Value),
     /// Output item completed.
     #[serde(rename = "response.output_item.done")]
-    OutputItemDone(serde_json::Value),
+    OutputItemDone(ResponsesOutputItemDone),
     /// Web search call in progress.
     #[serde(rename = "response.web_search_call.in_progress")]
     WebSearchInProgress(serde_json::Value),
@@ -352,9 +385,58 @@ pub(crate) enum ResponsesStreamEvent {
     /// Response completed.
     #[serde(rename = "response.completed")]
     Completed(ResponsesCompletedEvent),
-    /// Response failed.
+    /// Response failed server-side.
     #[serde(rename = "response.failed")]
     Failed(serde_json::Value),
+    /// Response finished incomplete (e.g. safety or token limits).
+    #[serde(rename = "response.incomplete")]
+    Incomplete(serde_json::Value),
+    /// Top-level stream error event.
+    #[serde(rename = "error")]
+    Error(ResponsesStreamError),
+}
+
+/// `response.output_item.done` event payload.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct ResponsesOutputItemDone {
+    #[serde(default)]
+    pub output_index: usize,
+    pub item: ResponsesOutputItem,
+}
+
+/// Top-level stream error event. The API nests the message under `error`,
+/// but tolerate a flat `message` shape too.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct ResponsesStreamError {
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub error: Option<ResponsesStreamErrorBody>,
+}
+
+impl ResponsesStreamError {
+    pub(crate) fn message(&self) -> String {
+        if let Some(body) = &self.error {
+            return body.message.clone();
+        }
+        if let Some(message) = &self.message {
+            return message.clone();
+        }
+        self.code
+            .clone()
+            .unwrap_or_else(|| "unknown streaming error".to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct ResponsesStreamErrorBody {
+    #[serde(default)]
+    pub code: Option<String>,
+    pub message: String,
 }
 
 /// Text delta payload.

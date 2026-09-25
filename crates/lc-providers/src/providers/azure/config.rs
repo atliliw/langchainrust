@@ -4,6 +4,7 @@
 use std::env;
 
 use crate::ProviderError;
+use lc_core::tools::ToolDefinition;
 
 /// Azure OpenAI API version.
 pub const AZURE_DEFAULT_API_VERSION: &str = "2024-02-15-preview";
@@ -27,6 +28,11 @@ pub struct AzureOpenAIConfig {
     pub max_tokens: Option<usize>,
     /// Top-p for nucleus sampling.
     pub top_p: Option<f32>,
+    /// Bound tool definitions for function calling (0.25.0: previously the
+    /// Azure implementation never sent `tools`, so bind_tools was missing).
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// Tool choice strategy (`auto`, `required`, `none`, or a specific tool).
+    pub tool_choice: Option<String>,
 }
 
 impl std::fmt::Debug for AzureOpenAIConfig {
@@ -41,6 +47,8 @@ impl std::fmt::Debug for AzureOpenAIConfig {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("top_p", &self.top_p)
+            .field("tools", &self.tools)
+            .field("tool_choice", &self.tool_choice)
             .finish()
     }
 }
@@ -61,6 +69,8 @@ impl AzureOpenAIConfig {
             temperature: None,
             max_tokens: None,
             top_p: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 
@@ -101,6 +111,8 @@ impl AzureOpenAIConfig {
             temperature: None,
             max_tokens: None,
             top_p: None,
+            tools: None,
+            tool_choice: None,
         })
     }
 
@@ -131,6 +143,12 @@ impl AzureOpenAIConfig {
     /// Sets the top-p.
     pub fn with_top_p(mut self, p: f32) -> Self {
         self.top_p = Some(p);
+        self
+    }
+
+    /// Sets the tool choice strategy (`auto`, `required`, `none`, ...).
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.tool_choice = Some(choice.into());
         self
     }
 

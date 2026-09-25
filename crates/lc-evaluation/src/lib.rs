@@ -10,7 +10,7 @@
 //! - `EvalRunner` and the `Report` (with original text + stddev + failure list)
 //! - built-in evaluators: `ExactMatch` / `StringDistance` / `EmbeddingSimilarity` / `LLMAsJudge`
 //! - other evaluators: `Bleu` / `Faithfulness` / `PairwiseJudge` / `ContainsKeyword` / `RegexMatch`
-//! - N2 (v0.24.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates
+//! - N2 (v0.25.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates
 //!
 //! # Example
 //! ```ignore

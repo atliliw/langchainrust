@@ -122,9 +122,15 @@ impl ResilientA2AClient {
     /// For exactly-once delivery across fallback hops use
     /// [`ResilientA2AClient::send_task_with_message_id`].
     pub async fn send_task(&self, message: A2AMessage) -> Result<A2ATask, A2AError> {
+        // Idempotent by default: one stable message_id is reused by every L1
+        // retry and L4 fallback hop, so a response lost after the server
+        // already created the task never runs the chain twice. Callers that
+        // need a specific id use `send_task_with_message_id`.
+        let message_id = uuid::Uuid::new_v4().to_string();
         self.with_fallbacks(&|c| {
             let msg = message.clone();
-            Box::pin(async move { c.send_task(msg).await })
+            let mid = message_id.clone();
+            Box::pin(async move { c.send_task_with_message_id(msg, &mid).await })
         })
         .await
     }
@@ -151,10 +157,14 @@ impl ResilientA2AClient {
         task_id: &str,
         message: A2AMessage,
     ) -> Result<A2ATask, A2AError> {
+        // Idempotent by default (same rationale as `send_task`): a retried
+        // resume must not append the continuation twice.
+        let message_id = uuid::Uuid::new_v4().to_string();
         self.with_fallbacks(&|c| {
             let tid = task_id.to_string();
             let msg = message.clone();
-            Box::pin(async move { c.resume_task(&tid, msg).await })
+            let mid = message_id.clone();
+            Box::pin(async move { c.resume_task_with_message_id(&tid, msg, &mid).await })
         })
         .await
     }
@@ -330,7 +340,10 @@ impl ResilientA2AClient {
         message: A2AMessage,
     ) -> Result<A2ASseStream, A2AError> {
         let stream = self.connect_sse(sse_url).await?;
-        self.send_task(message).await?;
+        // The send is idempotent so an L1 retry after SSE connected does not
+        // create a second task.
+        let message_id = uuid::Uuid::new_v4().to_string();
+        self.send_task_with_message_id(message, &message_id).await?;
         Ok(stream)
     }
 
@@ -599,6 +612,129 @@ mod tests {
         let err = client.send_task(A2AMessage::user("hi")).await.unwrap_err();
         assert!(matches!(err, A2AError::Parse(_)));
         assert_eq!(fallback_hits.load(Ordering::SeqCst), 0);
+    }
+
+    /// Extract the idempotency key (`metadata.message_id`) from a JSON-RPC
+    /// request body, if present.
+    fn extract_message_id(body: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()?
+            .get("metadata")?
+            .get("message_id")?
+            .as_str()
+            .map(ToOwned::to_owned)
+    }
+
+    #[tokio::test]
+    async fn transport_retries_reuse_one_stable_message_id() {
+        // Invariant (C-A2A-4): every L1 retry of one logical send must carry
+        // the *same* idempotency key — otherwise a response lost after the
+        // server already created the task makes the retry run the chain twice.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_in_handler = seen.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+        let handler: Handler = Arc::new(move |_path, body| {
+            if let Some(mid) = extract_message_id(body) {
+                seen_in_handler.lock().unwrap().push(mid);
+            }
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                (500, "boom".to_string())
+            } else {
+                (200, completed_task_response("task-retry", "ok"))
+            }
+        });
+        let base = spawn_server(handler).await;
+
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
+        let task = client.send_task(A2AMessage::user("hi")).await.unwrap();
+        assert_eq!(task.id, "task-retry");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "all three attempts carry a message_id");
+        assert!(seen[0].len() > 16, "message_id looks like a fresh uuid");
+        assert!(
+            seen.iter().all(|mid| mid == &seen[0]),
+            "every retry reuses the same id: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_hops_reuse_one_stable_message_id() {
+        // Invariant (C-A2A-4): the L4 fallback hop must reuse the primary
+        // attempt's idempotency key, so the chain cannot execute once per
+        // agent when the primary failed after accepting the task.
+        let primary_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let primary_seen_h = primary_seen.clone();
+        let primary: Handler = Arc::new(move |_path, body| {
+            if let Some(mid) = extract_message_id(body) {
+                primary_seen_h.lock().unwrap().push(mid);
+            }
+            (500, "down".to_string())
+        });
+        let primary_base = spawn_server(primary).await;
+
+        let fallback_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fallback_seen_h = fallback_seen.clone();
+        let fallback: Handler = Arc::new(move |_path, body| {
+            if let Some(mid) = extract_message_id(body) {
+                fallback_seen_h.lock().unwrap().push(mid);
+            }
+            (200, completed_task_response("from-fallback", "ok"))
+        });
+        let fallback_base = spawn_server(fallback).await;
+
+        let config = ResilienceConfig {
+            max_transport_retries: 1,
+            retry_base_delay: Duration::from_millis(5),
+            ..fast_config()
+        };
+        let client = ResilientA2AClient::new(A2AClient::new(primary_base).unwrap(), config)
+            .with_fallback(A2AClient::new(fallback_base).unwrap());
+
+        let task = client.send_task(A2AMessage::user("hi")).await.unwrap();
+        assert_eq!(task.id, "from-fallback");
+
+        assert_eq!(primary_seen.lock().unwrap().len(), 2);
+        let fallback_ids = fallback_seen.lock().unwrap();
+        assert_eq!(fallback_ids.len(), 1);
+        let expected = &primary_seen.lock().unwrap()[0];
+        assert_eq!(
+            &fallback_ids[0], expected,
+            "fallback hop reuses the primary id"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_message_id_is_preserved_on_the_wire() {
+        // The caller-supplied idempotency key must reach the wire verbatim
+        // across retries (no per-attempt regeneration).
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_h = seen.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+        let handler: Handler = Arc::new(move |_path, body| {
+            if let Some(mid) = extract_message_id(body) {
+                seen_h.lock().unwrap().push(mid);
+            }
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                (500, "boom".to_string())
+            } else {
+                (200, completed_task_response("task-explicit", "ok"))
+            }
+        });
+        let base = spawn_server(handler).await;
+
+        let client = ResilientA2AClient::new(A2AClient::new(base).unwrap(), fast_config());
+        client
+            .send_task_with_message_id(A2AMessage::user("hi"), "idem-abc-123")
+            .await
+            .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.as_slice(), ["idem-abc-123", "idem-abc-123"]);
     }
 
     #[tokio::test]

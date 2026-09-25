@@ -66,6 +66,7 @@ impl BaseAgent for SingleCallAgent {
                 value: serde_json::json!({}),
             },
             log: "call_gate".to_string(),
+            tool_call_id: None,
         }))
     }
 }

@@ -526,6 +526,152 @@ async fn handle_a2a_request_unauthenticated_passes() {
     assert!(!resp.is_error());
 }
 
+// ---- 0.25.0 authz: identity-bound tokens ----
+
+#[tokio::test]
+async fn identity_token_overrides_client_supplied_owner() {
+    let server = echo_server()
+        .with_auth_identity("tok-alice", "alice")
+        .with_auth_identity("tok-bob", "bob");
+
+    let msg = A2AMessage::user("hi");
+    // alice's token while attempting to impersonate bob: the server stamps
+    // the task with the token's principal, not the self-reported owner.
+    let send = server
+        .handle_a2a_request_authenticated(
+            A2ARequest::send_task(1, &msg).with_owner("bob"),
+            Some("tok-alice"),
+        )
+        .await;
+    assert!(!send.is_error(), "authenticated send must succeed");
+    let result = send.result.unwrap();
+    let task_id = result["task"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        result["task"]["owner"].as_str(),
+        Some("alice"),
+        "client-supplied owner must not override the token principal"
+    );
+
+    // bob cannot read alice's task even though alice tried to label it bob.
+    let denied = server
+        .handle_a2a_request_authenticated(A2ARequest::get_task(2, &task_id), Some("tok-bob"))
+        .await;
+    assert!(denied.is_error());
+    assert_eq!(denied.error.unwrap().code, -32003);
+
+    // alice can.
+    let ok = server
+        .handle_a2a_request_authenticated(A2ARequest::get_task(3, &task_id), Some("tok-alice"))
+        .await;
+    assert!(!ok.is_error());
+
+    // Missing or unknown bearer is 401 on an identity-authenticated server.
+    let anon = server
+        .handle_a2a_request_authenticated(A2ARequest::get_task(4, &task_id), None)
+        .await;
+    assert_eq!(anon.error.unwrap().code, 401);
+    let stranger = server
+        .handle_a2a_request_authenticated(A2ARequest::get_task(5, &task_id), Some("tok-nobody"))
+        .await;
+    assert_eq!(stranger.error.unwrap().code, 401);
+}
+
+#[tokio::test]
+async fn sse_notification_visibility_follows_token_principal() {
+    let server = std::sync::Arc::new(
+        echo_server()
+            .with_streaming(16)
+            .with_auth_identity("tok-alice", "alice")
+            .with_auth_identity("tok-bob", "bob"),
+    );
+
+    let send = server
+        .handle_a2a_request_authenticated(
+            A2ARequest::send_task(1, &A2AMessage::user("hi")),
+            Some("tok-alice"),
+        )
+        .await;
+    assert!(!send.is_error());
+    let task_id = send.result.unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The owner sees its task; the other tenant and unknown tasks are hidden.
+    // A shared-token (None) connection on an auth-configured server must NOT
+    // receive another tenant's notification either (B7 cross-tenant fix): it
+    // only sees owner-less tasks, matching the pull side (`tasks/get`/`list`).
+    assert!(server.notification_visible(Some("alice"), &task_id).await);
+    assert!(!server.notification_visible(Some("bob"), &task_id).await);
+    assert!(
+        !server
+            .notification_visible(Some("alice"), "does-not-exist")
+            .await
+    );
+    assert!(!server.notification_visible(None, &task_id).await);
+}
+
+// ---- 0.25.0 C3: protocol-version contract + sandbox payload limit ----
+
+#[tokio::test]
+async fn rejects_non_2_0_jsonrpc_envelope() {
+    let server = echo_server();
+    let mut req = A2ARequest::get_task(1, "anything");
+    req.jsonrpc = "1.0".to_string();
+    let resp = server.handle_a2a_request(req).await;
+    let err = resp
+        .error
+        .expect("a JSON-RPC 1.0 envelope must be rejected");
+    assert_eq!(err.code, -32600);
+    assert!(err.message.contains("JSON-RPC"));
+}
+
+#[tokio::test]
+async fn rejects_unsupported_protocol_version_metadata() {
+    let server = echo_server();
+    let req =
+        A2ARequest::get_task(1, "x").with_metadata(serde_json::json!({"protocolVersion": "9.9.9"}));
+    let resp = server.handle_a2a_request(req).await;
+    assert_eq!(resp.error.unwrap().code, -32600);
+
+    // The default-supported 0.3.0 passes the contract gate; the subsequent
+    // unknown-task error must not be the contract-rejection code.
+    let resp = echo_server()
+        .handle_a2a_request(
+            A2ARequest::get_task(2, "x")
+                .with_metadata(serde_json::json!({"protocolVersion": "0.3.0"})),
+        )
+        .await;
+    assert_ne!(resp.error.unwrap().code, -32600);
+
+    // An explicitly registered version is accepted.
+    let server = echo_server().with_supported_protocol_version("1.0.1");
+    let resp = server
+        .handle_a2a_request(
+            A2ARequest::get_task(3, "x")
+                .with_metadata(serde_json::json!({"protocolVersion": "1.0.1"})),
+        )
+        .await;
+    assert_ne!(resp.error.unwrap().code, -32600);
+}
+
+#[tokio::test]
+async fn sandbox_payload_limit_rejects_oversized_request() {
+    let server = echo_server().with_sandbox(Arc::new(
+        crate::security::SandboxConfig::new().with_max_payload(4096),
+    ));
+
+    let big = A2ARequest::send_task(1, &A2AMessage::user("x".repeat(10_000)));
+    let resp = server.handle_a2a_request(big).await;
+    assert_eq!(resp.error.unwrap().code, 413);
+
+    // Small requests are still served.
+    let ok = server
+        .handle_a2a_request(A2ARequest::send_task(2, &A2AMessage::user("hi")))
+        .await;
+    assert!(!ok.is_error());
+}
+
 #[tokio::test]
 async fn handle_a2a_request_rate_limited() {
     let server = echo_server().with_rate_limiter(Arc::new(RateLimiter::new(0, 1)));
@@ -571,7 +717,10 @@ async fn handle_tasks_send_idempotent_message_id() {
 
 #[tokio::test]
 async fn handle_tasks_get_owner_enforced() {
-    let server = echo_server();
+    // Legacy-trust escape hatch: owner comes from request metadata. The
+    // secure default (flag off) ignores a self-reported owner; this test
+    // exercises the opt-in path.
+    let server = echo_server().with_trust_metadata_owner(true);
     let send_resp = server
         .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")).with_owner("alice"))
         .await;
@@ -603,7 +752,8 @@ async fn handle_tasks_get_owner_enforced() {
 
 #[tokio::test]
 async fn handle_tasks_cancel_owner_enforced() {
-    let server = echo_server();
+    // Legacy-trust escape hatch (see handle_tasks_get_owner_enforced).
+    let server = echo_server().with_trust_metadata_owner(true);
     let send_resp = server
         .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")).with_owner("alice"))
         .await;
@@ -627,7 +777,8 @@ async fn handle_tasks_cancel_owner_enforced() {
 
 #[tokio::test]
 async fn handle_tasks_list_filters_by_owner() {
-    let server = echo_server();
+    // Legacy-trust escape hatch (see handle_tasks_get_owner_enforced).
+    let server = echo_server().with_trust_metadata_owner(true);
     let _a = server
         .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")).with_owner("alice"))
         .await;
@@ -1065,7 +1216,10 @@ async fn run_workflow_executes_steps_in_order_and_aggregates() {
 #[tokio::test]
 async fn run_workflow_respects_supplied_workflow_id_and_owner() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::with_max_tasks(10));
-    let server = A2AServer::new(Arc::new(EchoChain)).with_store(store.clone());
+    // Legacy-trust escape hatch: owner comes from request metadata here.
+    let server = A2AServer::new(Arc::new(EchoChain))
+        .with_store(store.clone())
+        .with_trust_metadata_owner(true);
 
     let workflow = A2AWorkflow::new(vec![WorkflowStep::new("s1", "hi")])
         .with_workflow_id("wf-42")
@@ -1311,4 +1465,204 @@ async fn rate_limit_permit_is_held_across_dispatch() {
     );
     release.notify_one();
     handle.await.unwrap();
+}
+
+// ---- B7 security-default hardening ----
+
+/// A blocking chain that counts how many invocations actually *finish*, so a
+/// test can prove `tasks/cancel` terminates the in-flight execution rather
+/// than only flipping a status.
+struct TrackedBlockingChain {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    finishes: Arc<std::sync::atomic::AtomicUsize>,
+    dropped: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// An RAII guard held inside the in-flight invoke future. When `tokio::select!`
+/// cancels (drops) that future, the guard drops — so a test can count how many
+/// invocations were genuinely aborted versus allowed to run to completion.
+struct DropGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl BaseChain for TrackedBlockingChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec!["input"]
+    }
+
+    fn output_keys(&self) -> Vec<&str> {
+        vec!["output"]
+    }
+
+    async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        use std::sync::atomic::Ordering;
+        self.started.notify_one();
+        // Holding the guard across the await: if the future is dropped by the
+        // `select!` in `run_task`, the guard drops and aborts reach 1.
+        let _guard = DropGuard(self.dropped.clone());
+        self.release.notified().await;
+        self.finishes.fetch_add(1, Ordering::SeqCst);
+        let mut result = HashMap::new();
+        result.insert("output".to_string(), Value::String("done".to_string()));
+        Ok(result)
+    }
+
+    fn name(&self) -> &str {
+        "tracked-blocking"
+    }
+}
+
+#[tokio::test]
+async fn cancel_terminates_in_flight_execution() {
+    // B7 point 6: cancelling a `working` task must *terminate* the running
+    // chain by dropping its in-flight invoke future — not merely re-label the
+    // status and let the chain keep burning. The drop guard proves the future
+    // was aborted; `finishes` proves it never ran to completion.
+    use std::sync::atomic::Ordering;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let finishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let chain = Arc::new(TrackedBlockingChain {
+        started: started.clone(),
+        release: release.clone(),
+        finishes: finishes.clone(),
+        dropped: dropped.clone(),
+    });
+    let server = A2AServer::new(chain);
+
+    let send = server
+        .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")))
+        .await;
+    let task_id = send.result.unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    started.notified().await; // run_task is invoking the chain (blocked, guard held).
+    let cancel = server
+        .handle_a2a_request(A2ARequest::cancel_task(2, &task_id))
+        .await;
+    assert_eq!(cancel.result.unwrap()["task"]["status"], "cancelled");
+
+    // The cancel Notify is now the only ready branch of the `select!` in
+    // `run_task` (invoke is still blocked on `release`, which is NOT yet fired),
+    // so the next poll must deterministically take the cancel arm and drop the
+    // invoke future. Wait long enough for that to happen.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+    // Deterministic: the in-flight future was aborted (dropped) exactly once.
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        1,
+        "cancellation must drop the in-flight chain invocation future"
+    );
+    assert_eq!(
+        finishes.load(Ordering::SeqCst),
+        0,
+        "the dropped invoke must not run to completion"
+    );
+
+    // Even if the chain is *released* now, the already-dropped future never
+    // resumes — proving termination was real, not status-only.
+    release.notify_one();
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    assert_eq!(
+        finishes.load(Ordering::SeqCst),
+        0,
+        "a cancelled invocation must never complete after being dropped"
+    );
+}
+
+#[tokio::test]
+async fn custom_authenticator_issues_principal_and_owner_is_server_side() {
+    // B7 point 3: a pluggable Authenticator resolves the bearer to a principal
+    // that becomes the task owner; a client self-reported owner is ignored.
+    struct AlwaysAlice;
+    impl Authenticator for AlwaysAlice {
+        fn authenticate(&self, bearer: Option<&str>) -> Result<Option<Principal>, AuthError> {
+            match bearer {
+                Some("tok-alice") => Ok(Some(Principal("alice".to_string()))),
+                _ => Err(AuthError::Required),
+            }
+        }
+    }
+
+    let server = echo_server().with_authenticator(Arc::new(AlwaysAlice));
+    let send = server
+        .handle_a2a_request_authenticated(
+            A2ARequest::send_task(1, &A2AMessage::user("hi")).with_owner("bob"),
+            Some("tok-alice"),
+        )
+        .await;
+    assert!(!send.is_error());
+    let result = send.result.clone().unwrap();
+    let task_id = result["task"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        result["task"]["owner"].as_str(),
+        Some("alice"),
+        "the authenticator's principal must be the owner, not the self-reported bob"
+    );
+
+    // A missing/mismatched token is 401, so the custom authenticator is enforced.
+    let anon = server
+        .handle_a2a_request_authenticated(A2ARequest::get_task(2, &task_id), None)
+        .await;
+    assert_eq!(anon.error.unwrap().code, 401);
+}
+
+#[tokio::test]
+async fn trust_metadata_owner_off_ignores_client_owner_on_open_server() {
+    // B7 escape hatch: a hardened server with `with_trust_metadata_owner(false)`
+    // does not let a client self-report an owner on the unauthenticated path.
+    let server = echo_server().with_trust_metadata_owner(false);
+    let send = server
+        .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")).with_owner("alice"))
+        .await;
+    assert!(!send.is_error());
+    let task = send.result.unwrap();
+    assert!(
+        task["task"]["owner"].is_null(),
+        "client-supplied owner must be ignored when trust_metadata_owner is off: {task:?}"
+    );
+}
+
+#[tokio::test]
+async fn accepts_a2a_1_0_protocol_version() {
+    // B7 point 9: A2A 1.0 is a released, real wire line; a client advertising
+    // "1.0" / "1.0.1" in metadata must not be rejected as speaking an unknown
+    // version.
+    let server = echo_server();
+    for v in ["1.0", "1.0.1"] {
+        let resp = server
+            .handle_a2a_request(
+                A2ARequest::get_task(1, "x").with_metadata(json!({"protocolVersion": v})),
+            )
+            .await;
+        assert_ne!(
+            resp.error.unwrap().code,
+            -32600,
+            "protocolVersion {v} must be accepted"
+        );
+    }
+}
+
+#[test]
+fn canceled_single_l_spelling_accepted_on_receive() {
+    // B7 point 7: receive the American "canceled" spelling; round-trip back out
+    // as the spec's "cancelled".
+    let task: A2ATask = serde_json::from_str(
+        r#"{"id":"t","message":{"role":"user","content":"x"},"status":"canceled"}"#,
+    )
+    .unwrap();
+    assert_eq!(task.status, TaskStatus::Cancelled);
+    let json = serde_json::to_value(&task).unwrap();
+    assert_eq!(json["status"], "cancelled");
 }

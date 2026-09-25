@@ -24,7 +24,11 @@ pub enum TaskStatus {
     #[serde(rename = "failed")]
     Failed,
     /// Task was cancelled.
-    #[serde(rename = "cancelled")]
+    ///
+    /// Serializes as `cancelled` (A2A spec). The single-`l` American spelling
+    /// `canceled` is accepted on receive so we stay interoperable with clients
+    /// that spell it that way (B7 wire-compat fix).
+    #[serde(rename = "cancelled", alias = "canceled")]
     Cancelled,
     /// Task was rejected by the agent (e.g. refused work).
     #[serde(rename = "rejected")]

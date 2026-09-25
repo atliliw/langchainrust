@@ -287,7 +287,13 @@ impl SessionManager {
             .await?
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
         session.delete();
-        self.store.update(&session).await
+        self.store.update(&session).await?;
+        // E1/H-s1: a deleted session must not keep its lazy-created per-session
+        // memory and stripe lock alive — otherwise those grow unbounded and a
+        // re-created session could observe stale state. Reap them now.
+        self.session_memories.lock().await.remove(id);
+        self.locks.lock().await.remove(id);
+        Ok(())
     }
 
     /// Gets all sessions of a user

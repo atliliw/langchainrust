@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 
-use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
+use lc_core::judge::{structured_call_with_usage, truncate, StructuredJudgeError};
 use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
 use lc_embeddings::{cosine_similarity, Embeddings};
@@ -27,6 +27,7 @@ use lc_schema::Message;
 
 use super::criteria::{EvalError, Evaluator, RagEvaluator, Score};
 use super::faithfulness::{parse_yes_no, split_claims};
+use super::price::UsageLedger;
 
 /// Maximum concurrent judge calls in a single metric evaluation (same rationale as faithfulness:
 /// avoid N contexts/claims all dying to a judge rate limit).
@@ -90,6 +91,8 @@ pub struct ContextPrecision<M: BaseChatModel> {
     max_context_chars: usize,
     /// Score when no contexts were provided (default 0.0).
     empty_score: f64,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 impl<M: BaseChatModel> ContextPrecision<M> {
@@ -99,6 +102,7 @@ impl<M: BaseChatModel> ContextPrecision<M> {
             judge,
             max_context_chars: DEFAULT_MAX_CONTEXT_CHARS,
             empty_score: 0.0,
+            usage: UsageLedger::default(),
         }
     }
 
@@ -121,13 +125,15 @@ impl<M: BaseChatModel> ContextPrecision<M> {
         let user =
             format!("用户问题:\n{input}\n\n检索文本块:\n{chunk}\n\n该文本块与回答该问题相关吗?");
         let messages = vec![Message::system(system), Message::human(user)];
-        let args: RagVerdictArgs = structured_call(
+        let (args, usage) = structured_call_with_usage(
             &self.judge,
             relevance_tool(),
             messages,
             parse_verdict_or_error,
         )
         .await?;
+        // I3: credit this judge call's tokens into the ledger (model name for price lookup).
+        self.usage.record(usage, self.judge.model_name());
         Ok(args.verdict)
     }
 }
@@ -178,6 +184,10 @@ impl<M: BaseChatModel> RagEvaluator for ContextPrecision<M> {
     fn name(&self) -> &str {
         "context_precision"
     }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
+    }
 }
 
 fn relevance_tool() -> ToolDefinition {
@@ -209,6 +219,8 @@ pub struct ContextRecall<M: BaseChatModel> {
     max_context_chars: usize,
     /// Score when the reference carries no claims or no contexts were given (default 0.0).
     empty_score: f64,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 impl<M: BaseChatModel> ContextRecall<M> {
@@ -218,6 +230,7 @@ impl<M: BaseChatModel> ContextRecall<M> {
             judge,
             max_context_chars: DEFAULT_MAX_CONTEXT_CHARS,
             empty_score: 0.0,
+            usage: UsageLedger::default(),
         }
     }
 
@@ -241,8 +254,14 @@ impl<M: BaseChatModel> ContextRecall<M> {
             "检索上下文:\n{context}\n\n参考答案陈述:\n{claim}\n\n这条陈述能从检索上下文推导出来吗?"
         );
         let messages = vec![Message::system(system), Message::human(user)];
-        let args: RagVerdictArgs =
-            structured_call(&self.judge, recall_tool(), messages, parse_verdict_or_error).await?;
+        let (args, usage) = structured_call_with_usage(
+            &self.judge,
+            recall_tool(),
+            messages,
+            parse_verdict_or_error,
+        )
+        .await?;
+        self.usage.record(usage, self.judge.model_name());
         Ok(args.verdict)
     }
 }
@@ -284,6 +303,10 @@ impl<M: BaseChatModel> RagEvaluator for ContextRecall<M> {
     fn name(&self) -> &str {
         "context_recall"
     }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
+    }
 }
 
 fn recall_tool() -> ToolDefinition {
@@ -320,6 +343,8 @@ pub struct AnswerRelevancy<M: BaseChatModel, E: Embeddings> {
     n_questions: usize,
     /// Score when the prediction is empty (default 0.0).
     empty_score: f64,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 impl<M: BaseChatModel, E: Embeddings> AnswerRelevancy<M, E> {
@@ -330,6 +355,7 @@ impl<M: BaseChatModel, E: Embeddings> AnswerRelevancy<M, E> {
             embeddings,
             n_questions: DEFAULT_N_QUESTIONS,
             empty_score: 0.0,
+            usage: UsageLedger::default(),
         }
     }
 
@@ -404,6 +430,9 @@ impl<M: BaseChatModel, E: Embeddings> AnswerRelevancy<M, E> {
             .chat_with_system(system, vec![Message::human(user)])
             .await
             .map_err(|e| EvalError::PredictorError(e.to_string()))?;
+        // I3: credit the generator call's tokens (question generation burns LLM budget).
+        self.usage
+            .record(result.token_usage.clone(), self.generator.model_name());
         Ok(result
             .content
             .lines()
@@ -446,6 +475,10 @@ impl<M: BaseChatModel, E: Embeddings> RagEvaluator for AnswerRelevancy<M, E> {
     fn name(&self) -> &str {
         "answer_relevancy"
     }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
+    }
 }
 
 #[async_trait]
@@ -461,6 +494,10 @@ impl<M: BaseChatModel, E: Embeddings> Evaluator for AnswerRelevancy<M, E> {
 
     fn name(&self) -> &str {
         "answer_relevancy"
+    }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
     }
 }
 

@@ -102,14 +102,22 @@ impl<S: StateSchema> Reducer<S> for ReplaceReducer {
 /// the update's values. Previously the registered reducers were dropped at
 /// `compile()` and every merge point used plain replace, so accumulating
 /// fields (messages / steps) were silently overwritten after each node.
+///
+/// B4 redesign: `fields` is now an ordered list of `(field, reducer)` registrations
+/// (in `set_reducer` call order), and `reduce` applies each reducer as a
+/// **per-field patch** — the reducer runs on `(current, update)`, then only the
+/// keys named by its `field` are copied from its output into the running merged
+/// state. This removes the two defects of the previous whole-state chaining:
+/// a later reducer could no longer clobber an earlier field, and the result no
+/// longer drifts with serde map key order.
 pub struct MergeReducer<S: StateSchema> {
     fallback: Arc<dyn Reducer<S>>,
-    fields: Vec<Arc<dyn Reducer<S>>>,
+    fields: Vec<(String, Arc<dyn Reducer<S>>)>,
 }
 
 impl<S: StateSchema> MergeReducer<S> {
     /// Composes `fields` (in registration order) over `fallback`.
-    pub fn new(fallback: Arc<dyn Reducer<S>>, fields: Vec<Arc<dyn Reducer<S>>>) -> Self {
+    pub fn new(fallback: Arc<dyn Reducer<S>>, fields: Vec<(String, Arc<dyn Reducer<S>>)>) -> Self {
         Self { fallback, fields }
     }
 }
@@ -117,9 +125,58 @@ impl<S: StateSchema> MergeReducer<S> {
 impl<S: StateSchema> Reducer<S> for MergeReducer<S> {
     fn reduce(&self, current: &S, update: &S) -> S {
         let mut merged = self.fallback.reduce(current, update);
-        for reducer in &self.fields {
-            let next = reducer.reduce(current, &merged);
-            merged = next;
+        if self.fields.is_empty() {
+            return merged;
+        }
+
+        // Hold the running result as a JSON object so each field reducer only
+        // touches the keys it owns. `merged_value` is the source of truth for
+        // patches; `merged` is re-synced from it whenever a non-patch reducer
+        // needs the whole state.
+        let mut merged_value = match serde_json::to_value(&merged) {
+            Ok(value @ serde_json::Value::Object(_)) => value,
+            // Non-object states can't be patched per-field; fall through to the
+            // plain whole-state chain.
+            _ => return self.legacy_chain(current, merged),
+        };
+
+        for (field, reducer) in &self.fields {
+            let out = reducer.reduce(current, update);
+            let out_value = serde_json::to_value(&out).unwrap_or(serde_json::Value::Null);
+            let patch = out_value
+                .as_object()
+                .and_then(|map| map.get(field).cloned());
+
+            let Some(merged_map) = merged_value.as_object_mut() else {
+                break;
+            };
+            match patch {
+                // Recognizable: copy just this reducer's field into the result.
+                Some(patch) => {
+                    merged_map.insert(field.clone(), patch);
+                }
+                // No single-field patch (the reducer changed many keys, or the
+                // field name doesn't line up with a serde key). Re-sync `merged`
+                // from the current patched JSON and let the reducer merge over
+                // the whole state, then re-serialize.
+                None => {
+                    merged = serde_json::from_value(merged_value.clone()).unwrap_or(merged);
+                    let next = reducer.reduce(current, &merged);
+                    merged_value = serde_json::to_value(&next).unwrap_or(merged_value);
+                }
+            }
+        }
+
+        serde_json::from_value(merged_value).unwrap_or(merged)
+    }
+}
+
+impl<S: StateSchema> MergeReducer<S> {
+    /// Whole-state chain used when no per-field patch is possible (non-object
+    /// state, or a field reducer that failed to produce a patch).
+    fn legacy_chain(&self, current: &S, mut merged: S) -> S {
+        for (_, reducer) in &self.fields {
+            merged = reducer.reduce(current, &merged);
         }
         merged
     }

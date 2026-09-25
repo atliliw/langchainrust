@@ -122,6 +122,28 @@ fn is_transient(status: &reqwest::StatusCode) -> bool {
     status.as_u16() == 429 || status.as_u16() >= 500
 }
 
+/// Request-level deadline for embedding HTTP calls (A4/A5/A6, and `openai.rs`).
+///
+/// Without this, a hanging / non-responsive provider keeps the awaiting task (and the whole
+/// pipeline behind it) pending forever. `180s` aligns with the unified `HttpClient::api()`
+/// deadline used by lc-providers, so one standard applies across embedding calls.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Builds a shared embedding [`reqwest::Client`] carrying the request-level deadline.
+///
+/// Uses [`reqwest::Client::builder`] so every request through `post_json_with_retry` and the
+/// direct-send providers inherits the timeout. Falls back to the bare default only when the
+/// static builder config cannot build (in practice unreachable).
+pub(crate) fn embedding_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .unwrap_or_else(|e| {
+            log::warn!("failed to build embedding HTTP client with timeout, falling back to default: {e}");
+            reqwest::Client::new()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

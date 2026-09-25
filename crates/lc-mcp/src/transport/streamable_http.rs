@@ -33,6 +33,7 @@ use crate::oauth2::{BearerTokenProvider, OAuthChallenge, StaticBearerToken};
 use crate::protocol::{
     notification_message, MCPError, MCPRequest, MCPResponse, MCP_ERROR_UNAUTHORIZED,
 };
+use crate::sandbox::EgressPolicy;
 
 /// Request header the server assigns on `initialize`.
 const SESSION_HEADER: &str = "Mcp-Session-Id";
@@ -46,6 +47,10 @@ pub struct StreamableHttpTransport {
     http: Client,
     token_provider: Option<Arc<dyn BearerTokenProvider>>,
     session: Mutex<Option<String>>,
+    /// B8: optional client-side egress allowlist enforced on every outbound
+    /// POST. `None` = no check (current behavior); `Some(empty)` rejects all
+    /// egress; `Some(configured)` allows only the listed hosts.
+    egress: Option<Arc<EgressPolicy>>,
 }
 
 impl std::fmt::Debug for StreamableHttpTransport {
@@ -67,6 +72,7 @@ impl StreamableHttpTransport {
             http: Client::new(),
             token_provider: None,
             session: Mutex::new(None),
+            egress: None,
         }
     }
 
@@ -81,6 +87,38 @@ impl StreamableHttpTransport {
             http: Client::new(),
             token_provider: Some(provider),
             session: Mutex::new(None),
+            egress: None,
+        }
+    }
+
+    /// B8: enforces a client-side [`EgressPolicy`] before every outbound POST
+    /// (request and notification). An empty policy rejects all egress; a
+    /// configured policy allows only its listed hosts. `None` (the default)
+    /// skips the check.
+    pub fn with_egress(mut self, policy: EgressPolicy) -> Self {
+        self.egress = Some(Arc::new(policy));
+        self
+    }
+
+    /// B8: fails the call when a configured egress policy does not allow the
+    /// endpoint host (mirrors [`crate::sandbox::ServerSandbox::check_egress`]).
+    fn check_egress(&self) -> Result<(), MCPError> {
+        let Some(policy) = self.egress.as_ref() else {
+            return Ok(());
+        };
+        let host = reqwest::Url::parse(&self.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_default();
+        if policy.allows(&host) {
+            Ok(())
+        } else {
+            Err(MCPError::new(
+                -32000,
+                format!(
+                    "client egress blocked: host '{host}' is not in the EgressPolicy allowlist"
+                ),
+            ))
         }
     }
 
@@ -111,9 +149,10 @@ impl StreamableHttpTransport {
     /// POSTs one JSON-RPC request and returns the matching response, reading
     /// either a direct JSON body or an SSE stream.
     pub async fn request(&self, req: &MCPRequest) -> Result<MCPResponse, MCPError> {
+        self.check_egress()?;
         let body = serde_json::to_value(req)
             .map_err(|e| MCPError::new(-32603, format!("failed to encode request: {e}")))?;
-        let expected_id = req.id;
+        let expected_id = req.id.clone();
 
         let mut attempt = 0u8;
         loop {
@@ -148,6 +187,7 @@ impl StreamableHttpTransport {
     /// POSTs a JSON-RPC notification: HTTP 202 (or an accepted 200 stream the
     /// server closes without a response) is success.
     pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), MCPError> {
+        self.check_egress()?;
         let body = notification_message(method, params);
         let mut attempt = 0u8;
         loop {
@@ -275,7 +315,7 @@ impl StreamableHttpTransport {
     async fn read_payload(
         &self,
         resp: reqwest::Response,
-        expected_id: Option<u64>,
+        expected_id: Option<crate::protocol::JsonRpcId>,
     ) -> Result<MCPResponse, MCPError> {
         let content_type = resp
             .headers()
@@ -293,19 +333,22 @@ impl StreamableHttpTransport {
                 let response = resp.json::<MCPResponse>().await.map_err(|e| {
                     MCPError::new(-32700, format!("invalid JSON-RPC response: {e}"))
                 })?;
-                if let Some(want) = expected_id {
-                    if response.id != Some(want) {
-                        return Err(MCPError::new(
-                            -32000,
-                            format!(
-                                "JSON-RPC response id {} does not match request id {want}",
-                                response
-                                    .id
-                                    .map(|i| i.to_string())
-                                    .unwrap_or_else(|| "null".into())
-                            ),
-                        ));
-                    }
+                if expected_id.is_some() && response.id != expected_id {
+                    return Err(MCPError::new(
+                        -32000,
+                        format!(
+                            "JSON-RPC response id {} does not match request id {}",
+                            response
+                                .id
+                                .as_ref()
+                                .map(|i| i.to_string())
+                                .unwrap_or_else(|| "null".into()),
+                            expected_id
+                                .as_ref()
+                                .map(|i| i.to_string())
+                                .unwrap_or_else(|| "null".into())
+                        ),
+                    ));
                 }
                 Ok(response)
             }
@@ -323,7 +366,7 @@ impl StreamableHttpTransport {
     async fn read_sse(
         &self,
         resp: reqwest::Response,
-        expected_id: Option<u64>,
+        expected_id: Option<crate::protocol::JsonRpcId>,
     ) -> Result<MCPResponse, MCPError> {
         let mut stream = resp.bytes_stream();
         let mut buf: Vec<u8> = Vec::new();
@@ -367,8 +410,8 @@ impl StreamableHttpTransport {
                     MCPError::new(-32700, format!("invalid SSE JSON-RPC frame: {e}"))
                 })?;
                 match expected_id {
-                    Some(want) if response.id == Some(want) => return Ok(response),
-                    Some(want) => log::trace!(
+                    Some(ref want) if response.id.as_ref() == Some(want) => return Ok(response),
+                    Some(ref want) => log::trace!(
                         target: "lc_mcp::transport::streamable_http",
                         "SSE response id {:?} != {want}; continuing",
                         response.id
@@ -570,5 +613,53 @@ mod tests {
         let err = unauthorized_error(None);
         assert_eq!(err.code, MCP_ERROR_UNAUTHORIZED);
         assert!(OAuthChallenge::from_error(&err).is_none());
+    }
+
+    /// B8: no egress policy configured = no check (unchanged behavior).
+    #[test]
+    fn egress_unset_skips_check() {
+        let t = StreamableHttpTransport::new("https://example.com/mcp");
+        assert!(t.check_egress().is_ok());
+    }
+
+    /// B8: an empty (default) egress policy rejects ALL outbound egress.
+    #[test]
+    fn egress_empty_policy_rejects_all() {
+        let t = StreamableHttpTransport::new("https://example.com/mcp")
+            .with_egress(EgressPolicy::new());
+        let err = t.check_egress().unwrap_err();
+        assert!(err.to_string().contains("egress blocked"), "{err}");
+    }
+
+    /// B8: a configured policy allows its listed host and blocks others.
+    #[test]
+    fn egress_allowlist_allows_listed_host_only() {
+        let t = StreamableHttpTransport::new("https://example.com/mcp")
+            .with_egress(EgressPolicy::new().allow("example.com"));
+        assert!(t.check_egress().is_ok());
+        let blocked = StreamableHttpTransport::new("https://evil.com/mcp")
+            .with_egress(EgressPolicy::new().allow("example.com"));
+        assert!(blocked.check_egress().is_err());
+        // Subdomains of an allowed host are permitted.
+        let sub = StreamableHttpTransport::new("https://api.example.com/mcp")
+            .with_egress(EgressPolicy::new().allow("example.com"));
+        assert!(sub.check_egress().is_ok());
+    }
+
+    /// B8: an empty policy fails the whole client request (no network reached).
+    #[tokio::test]
+    async fn egress_empty_policy_blocks_request_before_network() {
+        let t = StreamableHttpTransport::new("https://example.com/mcp")
+            .with_egress(EgressPolicy::new());
+        let err = t
+            .request(&MCPRequest::new(1, "ping", None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("egress blocked"), "{err}");
+        let err = t
+            .notify("notifications/initialized", None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("egress blocked"), "{err}");
     }
 }

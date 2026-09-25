@@ -1,4 +1,4 @@
-//! N3 (v0.24.0) lock-in: multiple tool calls in ONE model response ("一步多调")
+//! N3 (v0.25.0) lock-in: multiple tool calls in ONE model response ("一步多调")
 //! execute concurrently on both the `invoke` and `stream` paths, and the
 //! observations attach in the order the model emitted the actions — not the
 //! order the tools happen to finish.
@@ -69,6 +69,7 @@ impl BaseAgent for ParallelOnceAgent {
                         value: "1".to_string(),
                     },
                     log: "call-a".to_string(),
+                    tool_call_id: None,
                 },
                 AgentAction {
                     tool: "b".to_string(),
@@ -76,6 +77,7 @@ impl BaseAgent for ParallelOnceAgent {
                         value: "2".to_string(),
                     },
                     log: "call-b".to_string(),
+                    tool_call_id: None,
                 },
             ]));
         }

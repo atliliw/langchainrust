@@ -106,7 +106,7 @@ impl<C: CompatConfigAccess + CompatSpec> OpenAICompatEmbeddings<C> {
         };
         Ok(Self {
             config,
-            client: reqwest::Client::new(),
+            client: crate::retry::embedding_client(),
             dimension,
         })
     }

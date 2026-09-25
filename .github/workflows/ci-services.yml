@@ -1,0 +1,163 @@
+# T2 services CI: run the `#[ignore]`d live-server tests against real backing
+# stores, using GitHub Actions `services:` containers (本机无 Docker，此工作流只落
+# ubuntu runner，本地不跑)。
+#
+# Design:
+#   - 单 job、五服务(redis / pgvector / mongo / qdrant / chroma)，逐一跑相应 crate
+#     的 `#[ignore]` 测试。每步用 `--lib <模块>::` + `-- --ignored` 把命中有真后端的
+#     那组探针，互不干扰。
+#   - 不跑全量、不重复 fmt/clippy(那是 ci.yml / cd.yml 的责任)。services 只补
+#     「连真服务」这条空隙。
+#   - 携带各后端所需 feature 门控:
+#       redis   → lc-langgraph --features checkpoint-redis
+#       pgvector→ lc-vector-stores --features pgvector-storage
+#       mongo   → lc-observability       --features mongodb
+#       qdrant  → lc-vector-stores --features qdrant-integration
+#       chroma  → 无 feature(always compiled)
+#   - mongo-memory 跨会话修复(B6)本版不做 live 用例:由离线
+#     `test_reconcile_inner_clears_stale_snapshot_on_absent_session` 覆盖;本工作流
+#     的 lc-observability mongo 探针只验证「真 MongoDB 连通 + 写入往返」。
+#
+# pgvector 注:镜像里带 vector 扩展库,但新库不会自动 enable;用
+# `.github/scripts/pgvector-init.sql` 挂进 /docker-entrypoint-initdb.d/,首启动时
+# 以 superuser 对 `vectors` 库 `CREATE EXTENSION vector`(对应测试默认 URL 的
+# `postgres://postgres:postgres@localhost:5432/vectors`)。
+
+name: CI - Services (live backends)
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  # 也可手动在仓库 Actions 页触发,方便用户带真后端复跑某一路。
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  services:
+    name: Live services tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      pgvector:
+        # 注意端口映射到宿主 5433,避免与本机 Postgres 竞争。URL 在步骤里改成
+        # localhost:5433。
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vectors
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+          --volume "${{ github.workspace }}/.github/scripts/pgvector-init.sql:/docker-entrypoint-initdb.d/99-vector.sql:ro"
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval \"quit(db.runCommand({ ping: 1 }).ok ? 0 : 2)\""
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      qdrant:
+        # 无可靠容器内 curl/wget;就绪由步骤里的 runner 侧轮询 `/readyz` 负责。
+        image: qdrant/qdrant
+        ports:
+          - 6333:6333
+          - 6334:6334
+      chroma:
+        # ChromaDBVectorStore 讲 Chroma v1 REST(`/api/v1/collections`);最新
+        # chromadb/chroma 是 v2。钉到 1.x 用原生 v1 API——不要用兼容垫片(v1 在 v2
+        # 里已废弃,行为不稳)。若 `1.0` 浮动 tag 不解析,改钉具体 1.0.x(如 1.0.2)。
+        image: chromadb/chroma:1.0
+        ports:
+          - 8000:8000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-services-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-services-cargo-
+
+      # qdrant / chroma 没有走容器 health check,这里显式等就绪(其余三服务已由
+      # services 容器 health 挡住,无需再轮询)。qdrant 用 readyz,chroma(v1)用
+      # /api/v1/heartbeat(两者装载完成即返回 200)。
+      - name: Wait for qdrant + chroma readiness
+        run: |
+          for url in http://localhost:6333/readyz http://localhost:8000/api/v1/heartbeat; do
+            for i in $(seq 1 60); do
+              if curl -fsS "$url" >/dev/null 2>&1; then
+                echo "ready: $url"
+                break
+              fi
+              if [ "$i" -eq 60 ]; then echo "timeout waiting for $url"; exit 1; fi
+              sleep 2
+            done
+          done
+
+      # ---- redis: B4 checkpointer_redis(live ZADD + thread 隔离)----
+      - name: Redis checkpointer
+        run: cargo test -p lc-langgraph --features checkpoint-redis --lib checkpointer_redis -- --ignored
+        env:
+          LANGCHAINRUST_TEST_REDIS_URL: redis://localhost:6379/
+
+      # ---- pgvector: B4 checkpointer_postgres + B3 pgvector store,共用同一直播 PG ----
+      # checkpointer 只需「可连的 Postgres」(用 uuid 线程名),不碰 vector 扩展;
+      # 直接复用 `vectors` 库即可。pgvector store 探针才需要该库里的 extension。
+      - name: PostgreSQL checkpointer (LangGraph)
+        run: cargo test -p lc-langgraph --features checkpoint-postgres --lib checkpointer_postgres -- --ignored
+        env:
+          LANGCHAINRUST_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5433/vectors
+
+      - name: PostgreSQL (pgvector) store
+        run: cargo test -p lc-vector-stores --features pgvector-storage --lib pgvector -- --ignored
+        env:
+          PGVECTOR_TEST_URL: postgres://postgres:postgres@localhost:5433/vectors
+
+      # ---- mongo: 连通 + 写读往返(observability)----
+      - name: MongoDB connectivity
+        run: cargo test -p lc-observability --features mongodb --lib mongo -- --ignored
+        env:
+          MONGODB_URI: mongodb://localhost:27017
+
+      # ---- qdrant: 混合检索端到端----
+      - name: Qdrant store
+        run: cargo test -p lc-vector-stores --features qdrant-integration --lib qdrant -- --ignored
+        env:
+          QDRANT_URL: http://localhost:6334
+          QDRANT_COLLECTION: langchainrust
+
+      # ---- chroma: clear 跨页清空(真分页,B3)----
+      - name: Chroma clear paging
+        run: cargo test -p lc-vector-stores --lib chromadb -- --ignored
+        env:
+          CHROMA_URL: http://localhost:8000

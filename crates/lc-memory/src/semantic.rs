@@ -400,6 +400,33 @@ impl ShortTermMemory {
             }
         }
     }
+
+    /// D7/L-me1: keys of one namespace (without cloning entry values).
+    fn keys(&self, namespace: &str) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .get(namespace)
+            .map(|ns| ns.entries.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// D7/L-me1: atomically remove-and-return one entry. Differs from `forget`
+    /// in that `consolidate` uses it to promote the *current* entry rather than
+    /// a stale snapshot clone — eliminating the read-then-forget race where a
+    /// concurrent re-put of a promoted key would be silently deleted.
+    async fn take(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<StoredMemory>, MemoryError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| MemoryError::Other(format!("short-term lock poisoned: {e}")))?;
+        Ok(inner
+            .get_mut(namespace)
+            .and_then(|ns| ns.entries.remove(key)))
+    }
 }
 
 #[async_trait]
@@ -572,12 +599,19 @@ impl DecayWeights {
     }
 }
 
-/// Unbounded long-term memory with weighted-decay ranking.
+/// Default per-namespace entry ceiling for long-term memory (0.25.0 D4/M-me3).
+const DEFAULT_LONG_TERM_CAPACITY: usize = 256;
+
+/// Long-term memory with weighted-decay ranking, bounded by capacity + optional TTL.
 pub struct LongTermMemory {
     inner: Mutex<HashMap<String, HashMap<String, StoredMemory>>>,
     weights: DecayWeights,
     scorer: Arc<dyn SemanticScorer>,
     clock: Clock,
+    /// Max entries per namespace; `None` = unbounded (avoids only-rising growth).
+    capacity: Option<usize>,
+    /// Optional age-out: entries idle past this TTL are evicted.
+    ttl: Option<Duration>,
 }
 
 impl std::fmt::Debug for LongTermMemory {
@@ -601,7 +635,22 @@ impl LongTermMemory {
             weights,
             scorer,
             clock: real_clock(),
+            capacity: Some(DEFAULT_LONG_TERM_CAPACITY),
+            ttl: None,
         }
+    }
+
+    /// Sets the per-namespace entry ceiling (FIFO-by-value eviction of the
+    /// lowest-ranked entries above the cap). `None` disables the bound.
+    pub fn with_capacity(mut self, capacity: Option<usize>) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Sets an idle TTL: entries not accessed within `ttl` are evicted.
+    pub fn with_ttl(mut self, ttl: Option<Duration>) -> Self {
+        self.ttl = ttl;
+        self
     }
 
     /// Overrides the wall clock (tests).
@@ -640,7 +689,55 @@ impl LongTermMemory {
                 existing.item.text = incoming.item.text;
             }
         }
+        // D4/M-me3: promotion via upsert must trim the long tier too, otherwise
+        // consolidate would only ever grow it ("只升不降").
+        let now = (self.clock)();
+        self.enforce_bounds(map, now);
         Ok(())
+    }
+
+    /// D4/M-me3: enforce the capacity ceiling and optional TTL on a namespace map.
+    ///
+    /// TTL removes entries idle past the deadline. Capacity evicts the
+    /// lowest-value entries first — value is the same weighted decay score used
+    /// by ranking (with a zero similarity term), so the bound preserves the
+    /// highest-importance/most-recently-accessed memories.
+    fn enforce_bounds(&self, map: &mut HashMap<String, StoredMemory>, now: SystemTime) {
+        if let Some(ttl) = self.ttl {
+            map.retain(|_k, st| {
+                now.duration_since(st.last_access_at)
+                    .map(|d| d <= ttl)
+                    .unwrap_or(true)
+            });
+        }
+        if let Some(cap) = self.capacity {
+            while map.len() > cap {
+                match map
+                    .iter()
+                    .min_by(|(_, a), (_, b)| {
+                        let va = self.eviction_value(a, now);
+                        let vb = self.eviction_value(b, now);
+                        va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(k, _)| k.clone())
+                {
+                    Some(k) => {
+                        map.remove(&k);
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    /// Lower-bound value of one entry for capacity eviction.
+    fn eviction_value(&self, stored: &StoredMemory, now: SystemTime) -> f64 {
+        let age = now
+            .duration_since(stored.last_access_at)
+            .unwrap_or(Duration::ZERO);
+        // Zero similarity term: rank purely on importance × recency × access
+        // via the configured weights.
+        self.weights.score(0.0, stored.item.importance, age)
     }
 
     fn snapshot(&self, namespace: &str) -> Vec<StoredMemory> {
@@ -896,13 +993,24 @@ impl TwoTierMemory {
             .policy
             .lock()
             .map_err(|e| MemoryError::Other(format!("promotion policy lock poisoned: {e}")))?;
-        let candidates = self.short.snapshot(namespace);
+        // D7/L-me1: key-driven promotion via atomic take-then-decide. We advance
+        // by key (never a whole-namespace snapshot clone), taking the *current*
+        // entry atomically so a concurrent re-put cannot be deleted by a stale
+        // forget. Non-qualifying entries are restored.
+        let keys = self.short.keys(namespace);
         let mut promoted = Vec::new();
-        for stored in candidates {
+        for key in keys {
+            let Some(stored) = self.short.take(namespace, &key).await? else {
+                // Already taken/removed concurrently — nothing to promote.
+                continue;
+            };
             if policy.qualifies(&stored) {
-                self.long.upsert(namespace, stored.clone())?;
-                self.short.forget(namespace, &stored.item.key).await?;
-                promoted.push(stored.item.key);
+                self.long.upsert(namespace, stored)?;
+                promoted.push(key);
+            } else {
+                // Not qualified: put it back (it was only removed to make the
+                // promotion decision atomic against concurrent re-puts).
+                self.short.put(namespace, stored.item).await?;
             }
         }
         Ok(promoted)

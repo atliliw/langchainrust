@@ -101,6 +101,7 @@ mod tests {
                     value: "2 + 2".to_string(),
                 },
                 log: "我需要计算".to_string(),
+                tool_call_id: None,
             },
             "结果: 4".to_string(),
         )];

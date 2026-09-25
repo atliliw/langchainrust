@@ -179,6 +179,7 @@ impl BaseChatModel for ScriptedChat {
         let s = stream::unfold(state, |mut st| async move {
             if st.0 < st.1.len() {
                 let chunk = Ok(StreamChunk {
+                    thinking_content: None,
                     text: st.1[st.0].clone(),
                     token_usage: None,
                     tool_calls: None,

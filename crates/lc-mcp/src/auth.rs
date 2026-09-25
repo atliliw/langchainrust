@@ -32,16 +32,43 @@ impl AuthScheme {
     }
 }
 
-/// Validated token claims relevant to MCP authorization.
+/// Validated token claims relevant to MCP authorization (B8: JWT scope only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Claims {
     /// Subject (client identity).
     pub sub: String,
     /// Issuer (RFC 9207: must match the resource server's expectation).
     pub iss: String,
-    /// Expiry (Unix seconds). `None` = no expiry claim (not recommended).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exp: Option<i64>,
+    /// Expiry (Unix seconds). **Required** (B8): a JWT without an `exp` claim
+    /// no longer decode-checks as valid — it is rejected (there is no
+    /// indefinitely-valid token).
+    pub exp: i64,
+    /// Audience (JWT `aud`). `None` = no `aud` claim; when an `expected_aud`
+    /// is configured the claim must equal it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
+    /// Not-before (Unix seconds, JWT `nbf`). `None` = no `nbf` claim; when
+    /// present and in the future the token is not yet valid and is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<i64>,
+}
+
+impl Claims {
+    /// Represents opaque-bearer authorization — **no JWT claims are asserted**.
+    ///
+    /// B8: an opaque bearer [`AuthScheme::Bearer`] match is not a JWT; it must
+    /// not fabricate JWT-looking identity claims (`sub`/`iss`). The validator
+    /// only asserts the constant-time token match; the returned [`Claims`]
+    /// carries no identity meaning (empty fields, no audience/not-before).
+    pub fn opaque() -> Self {
+        Self {
+            sub: String::new(),
+            iss: String::new(),
+            exp: 0,
+            aud: None,
+            nbf: None,
+        }
+    }
 }
 
 /// Server-side token validation. Implement against your IdP (JWKS signature
@@ -77,11 +104,10 @@ impl TokenValidator for StaticBearerValidator {
         // Token length is not secret (same trade-off as the `subtle` crate),
         // so the length mismatch may return early.
         if constant_time_eq(token, &self.expected) {
-            Ok(Claims {
-                sub: "static-bearer".into(),
-                iss: "static".into(),
-                exp: None,
-            })
+            // B8: an opaque bearer is not a JWT — do not fabricate identity
+            // claims. The only assertion is the constant-time token match; the
+            // returned Claims carries no JWT meaning.
+            Ok(Claims::opaque())
         } else {
             Err("bearer token mismatch".into())
         }
@@ -124,6 +150,7 @@ pub type JwtSignatureVerifier = std::sync::Arc<dyn Fn(&str) -> Result<(), String
 /// [`JwtIssAssertionValidator`].
 pub struct JwtIssValidator {
     expected_iss: String,
+    expected_aud: Option<String>,
     verify_signature: JwtSignatureVerifier,
 }
 
@@ -140,8 +167,16 @@ impl JwtIssValidator {
     ) -> Self {
         Self {
             expected_iss: expected_iss.into(),
+            expected_aud: None,
             verify_signature: std::sync::Arc::new(verifier),
         }
+    }
+
+    /// Requires the JWT `aud` claim to equal `aud` (B8, RFC 9207 companion
+    /// check). Without an expected audience the `aud` claim is not asserted.
+    pub fn with_expected_aud(mut self, expected_aud: impl Into<String>) -> Self {
+        self.expected_aud = Some(expected_aud.into());
+        self
     }
 
     /// Same as [`JwtIssValidator::new`] but takes a pre-built shared verifier
@@ -152,6 +187,7 @@ impl JwtIssValidator {
     ) -> Self {
         Self {
             expected_iss: expected_iss.into(),
+            expected_aud: None,
             verify_signature: verifier,
         }
     }
@@ -171,6 +207,7 @@ impl JwtIssValidator {
 #[doc(hidden)]
 pub struct JwtIssAssertionValidator {
     expected_iss: String,
+    expected_aud: Option<String>,
 }
 
 impl JwtIssAssertionValidator {
@@ -180,26 +217,63 @@ impl JwtIssAssertionValidator {
     pub fn new(expected_iss: impl Into<String>) -> Self {
         Self {
             expected_iss: expected_iss.into(),
+            expected_aud: None,
         }
+    }
+
+    /// Requires the JWT `aud` claim to equal `aud` when present.
+    pub fn with_expected_aud(mut self, expected_aud: impl Into<String>) -> Self {
+        self.expected_aud = Some(expected_aud.into());
+        self
     }
 }
 
-/// Shared claim-level checks (`iss` and `exp`) on an already-decoded payload.
-/// Signature verification, if any, is the caller's responsibility.
-fn validate_claims(claims: &Claims, expected_iss: &str) -> Result<(), String> {
+/// Current wall-clock time in Unix seconds (0 on clock read error, which then
+/// fails every time-based check — safe-by-default).
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Shared claim-level checks on an already-decoded payload (B8). Signature
+/// verification, if any, is the caller's responsibility.
+///
+/// Unlike a plain bearer token that exists only to gate access, a JWT carries
+/// identity/authorization claims, so they are all asserted when applicable:
+/// `iss` (always), `exp` (always — required for a JWT to be valid at all),
+/// `sub` (must be non-empty), `nbf` (must not be in the future), and `aud`
+/// (must equal `expected_aud` when one is configured).
+fn validate_claims(
+    claims: &Claims,
+    expected_iss: &str,
+    expected_aud: Option<&str>,
+) -> Result<(), String> {
     if claims.iss != expected_iss {
         return Err(format!(
             "issuer mismatch: expected {expected_iss}, got {}",
             claims.iss
         ));
     }
-    if let Some(exp) = claims.exp {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        if exp < now {
-            return Err("token expired".into());
+    if claims.sub.is_empty() {
+        return Err("missing subject claim: a JWT must carry a non-empty sub".into());
+    }
+    let now = now_secs();
+    if claims.exp < now {
+        return Err("token expired".into());
+    }
+    if let Some(nbf) = claims.nbf {
+        if nbf > now {
+            return Err("token not yet valid (nbf is in the future)".into());
+        }
+    }
+    if let Some(expected_aud) = expected_aud {
+        if claims.aud.as_deref() != Some(expected_aud) {
+            return Err(format!(
+                "audience mismatch: expected {expected_aud}, got {}",
+                claims.aud.as_deref().unwrap_or("<none>")
+            ));
         }
     }
     Ok(())
@@ -246,7 +320,7 @@ impl TokenValidator for JwtIssValidator {
 
         let claims =
             decode_jwt_payload(token).ok_or_else(|| "token is not a decodable JWT".to_string())?;
-        validate_claims(&claims, &self.expected_iss)?;
+        validate_claims(&claims, &self.expected_iss, self.expected_aud.as_deref())?;
         Ok(claims)
     }
 }
@@ -257,7 +331,7 @@ impl TokenValidator for JwtIssAssertionValidator {
         // A15: NO signature check here — see the type-level security warning.
         let claims =
             decode_jwt_payload(token).ok_or_else(|| "token is not a decodable JWT".to_string())?;
-        validate_claims(&claims, &self.expected_iss)?;
+        validate_claims(&claims, &self.expected_iss, self.expected_aud.as_deref())?;
         Ok(claims)
     }
 }
@@ -426,5 +500,86 @@ mod tests {
             AuthScheme::Bearer("t".into()).header_value().as_deref(),
             Some("Bearer t")
         );
+    }
+
+    /// Test-side base64url encoder (no padding) — builds JWT payload segments
+    /// for the claim-validation tests.
+    fn base64url_encode(input: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in input.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
+            out.push(TABLE[(n >> 18) as usize & 0x3F] as char);
+            out.push(TABLE[(n >> 12) as usize & 0x3F] as char);
+            if chunk.len() > 1 {
+                out.push(TABLE[(n >> 6) as usize & 0x3F] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(TABLE[n as usize & 0x3F] as char);
+            }
+        }
+        out
+    }
+
+    /// B8: a token whose payload omits `exp` is not a valid JWT (exp is a
+    /// required field) — it fails to decode and is rejected. There is no
+    /// indefinitely-valid token.
+    #[tokio::test]
+    async fn missing_exp_is_rejected() {
+        let payload = br#"{"sub":"agent","iss":"https://idp.example"}"#;
+        let token = format!("eyJhbGciOiJub25lIn0.{}.good-sig", base64url_encode(payload));
+        let v = JwtIssValidator::new("https://idp.example", require_good_sig);
+        let err = v.validate(&token).await.unwrap_err();
+        assert!(err.contains("JWT"), "{err}");
+    }
+
+    /// B8: when an expected audience is configured, a correctly-signed token
+    /// with the wrong `aud` is rejected; the matching audience is accepted.
+    #[tokio::test]
+    async fn aud_mismatch_rejected_when_expected() {
+        let wrong =
+            br#"{"sub":"agent","iss":"https://idp.example","aud":"wrong-client","exp":9999999999}"#;
+        let right =
+            br#"{"sub":"agent","iss":"https://idp.example","aud":"right-client","exp":9999999999}"#;
+        let v = JwtIssValidator::new("https://idp.example", require_good_sig)
+            .with_expected_aud("right-client");
+
+        let bad = format!("eyJhbGciOiJub25lIn0.{}.good-sig", base64url_encode(wrong));
+        let err = v.validate(&bad).await.unwrap_err();
+        assert!(err.contains("audience mismatch"), "{err}");
+
+        let ok = format!("eyJhbGciOiJub25lIn0.{}.good-sig", base64url_encode(right));
+        assert!(v.validate(&ok).await.is_ok());
+    }
+
+    /// B8: a token whose `nbf` (not-before) is in the future is rejected.
+    #[tokio::test]
+    async fn future_nbf_is_rejected() {
+        let future = now_secs() + 10_000;
+        let payload = format!(
+            r#"{{"sub":"agent","iss":"https://idp.example","nbf":{future},"exp":9999999999}}"#
+        );
+        let token = format!(
+            "eyJhbGciOiJub25lIn0.{}.good-sig",
+            base64url_encode(payload.as_bytes())
+        );
+        let v = JwtIssValidator::new("https://idp.example", require_good_sig);
+        let err = v.validate(&token).await.unwrap_err();
+        assert!(err.contains("not yet valid"), "{err}");
+    }
+
+    /// B8: an opaque static bearer does not fabricate JWT-shaped identity
+    /// claims — the returned Claims carries no subject/issuer/audience.
+    #[tokio::test]
+    async fn static_bearer_returns_no_fabricated_identity() {
+        let v = StaticBearerValidator::new("secret-1");
+        let claims = v.validate("secret-1").await.unwrap();
+        assert_eq!(claims.sub, "");
+        assert_eq!(claims.iss, "");
+        assert_eq!(claims.aud, None);
+        assert_eq!(claims.nbf, None);
     }
 }

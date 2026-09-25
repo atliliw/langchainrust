@@ -86,6 +86,12 @@ pub struct EventSessionManager {
     locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
+/// Default auto-compaction threshold for [`EventSessionManager`] (0.25.0
+/// E1/H-s1). Kept bounded so an unintentionally long session cannot grow the
+/// event log without limit; subscribers can raise/lower it or disable it via
+/// `with_auto_compaction`.
+const DEFAULT_AUTO_COMPACTION_TURNS: usize = 1024;
+
 impl EventSessionManager {
     /// Creates a manager over the given event store (branch `"main"`).
     pub fn new(store: Arc<dyn EventStore>) -> Self {
@@ -98,7 +104,12 @@ impl EventSessionManager {
             memory_input_key: "input".to_string(),
             memory_output_key: "output".to_string(),
             max_context_turns: None,
-            auto_compaction: None,
+            // E1/H-s1: a non-`None` default so an unconfigured manager still
+            // bounds its event log (crash-safe-by-default). Compaction is a
+            // deterministic snapshot — no LLM — so it is safe as a default.
+            auto_compaction: Some(AutoCompaction {
+                max_turns: DEFAULT_AUTO_COMPACTION_TURNS,
+            }),
             locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -230,6 +241,29 @@ impl EventSessionManager {
         Ok(id)
     }
 
+    /// E1/H-s1: deletes a session's history and reaps its lazy bookkeeping.
+    ///
+    /// Removes every stored event for the session (all branches) and drops the
+    /// per-session memory + striped lock entries so the manager does not
+    /// accumulate them for a session that no longer exists. This closes the
+    /// lifecycle loop that `create_session` opens — deleted sessions don't
+    /// leave a stale log or orphaned per-session state behind.
+    pub async fn delete_session(&self, session_id: &str) -> Result<(), SessionError> {
+        let history_exists = !self.store.read(session_id, &self.branch, None).await?.is_empty();
+        self.store.clear_session(session_id).await?;
+        // Reap lazily-created per-session state (best-effort; the entries may
+        // never have been created if the session was only created, not chatted).
+        self.session_memories.lock().await.remove(session_id);
+        self.locks.lock().await.remove(session_id);
+        if history_exists {
+            Ok(())
+        } else {
+            // Nothing was stored for this session — treat as not-found so a
+            // caller can distinguish "deleted an existing session" from "no such session".
+            Err(SessionError::NotFound(session_id.to_string()))
+        }
+    }
+
     /// Full history of a session (compat view: projected messages).
     pub async fn history(&self, session_id: &str) -> Result<Vec<Message>, SessionError> {
         let events = self.store.read(session_id, &self.branch, None).await?;
@@ -303,17 +337,15 @@ impl EventSessionManager {
         }
         let turn_index = turn_count;
 
-        // 1. Record the user message (opens the turn).
-        self.append(
-            session_id,
-            turn_index,
-            EventPayload::UserMessage {
-                content: user_message.clone(),
-            },
-        )
-        .await?;
+        // E2/M-s1: the user message is NOT persisted up front. If the LLM call
+        // below fails, persisting it first would leave an orphan user message
+        // in the log (a message with no reply), which the next `chat()` would
+        // project as dangling context. Instead the current user message is
+        // folded into the LLM context explicitly, and both the UserMessage and
+        // AssistantMessage are appended only after the LLM responds. (Legacy
+        // manager parity: write-after-success.)
 
-        // 2. Build the LLM context. H-M1: resolve this session's own memory
+        // 1. Build the LLM context. H-M1: resolve this session's own memory
         // (per-session factory instance, or the legacy shared one).
         let session_memory = self.session_memory(session_id).await;
         let response = if let Some(memory) = &session_memory {
@@ -337,13 +369,24 @@ impl EventSessionManager {
             if let Some(n) = self.max_context_turns {
                 messages = last_n_turns_messages(&events, n)?;
             }
+            // fold the current user message in (not yet persisted)
+            messages.push(Message::human(&user_message));
             llm.chat(messages, None)
                 .await
                 .map_err(|e| SessionError::Llm(e.to_string()))?
         };
 
-        // 3. Record the reply.
+        // 2. Persist the turn only now that the LLM succeeded: user message
+        // first (opens the turn), then the reply.
         let content = response.content.clone();
+        self.append(
+            session_id,
+            turn_index,
+            EventPayload::UserMessage {
+                content: user_message.clone(),
+            },
+        )
+        .await?;
         self.append(
             session_id,
             turn_index,
@@ -353,7 +396,7 @@ impl EventSessionManager {
         )
         .await?;
 
-        // 4. Memory save_context (same discipline as the deprecated manager).
+        // 3. Memory save_context (same discipline as the deprecated manager).
         if let Some(memory) = &session_memory {
             let mut mem = memory.lock().await;
             let inputs = HashMap::from([(self.memory_input_key.clone(), user_message)]);
@@ -363,7 +406,7 @@ impl EventSessionManager {
                 .map_err(|e| SessionError::Memory(format!("failed to save memory: {e}")))?;
         }
 
-        // 5. Auto-compaction (deterministic snapshot, no LLM).
+        // 4. Auto-compaction (deterministic snapshot, no LLM).
         if let Some(policy) = self.auto_compaction {
             let events = self.store.read(session_id, &self.branch, None).await?;
             let next_id = events.last().map(|e| e.id + 1).unwrap_or(1);
@@ -419,18 +462,19 @@ impl EventSessionManager {
 
 /// Messages of the most recent turns (projected from the log).
 ///
-/// Window semantics: `n` = number of *completed* turns kept before the
-/// Window semantics: `n` = number of *completed* turns kept before the
-/// in-flight turn, plus the in-flight turn's own messages. So after appending
-/// the current user message, window 1 = previous turn's messages + the current
-/// user message (mirrors the deprecated manager's message-count window).
+/// E2/M-s1 window semantics: `n` = number of *completed* turns kept. Since the
+/// current in-flight user message is persisted only after the LLM succeeds, it
+/// is not in `events`; `chat()` appends it to the returned slice. So window 1 =
+/// the previous completed turn's messages, and combined with the caller's human
+/// message that mirrors the deprecated manager's message-count window (parity:
+/// `2n` completed messages + 1 current, same as the legacy pre-write behavior).
 ///
 /// 0.22.0 audit fix: projection errors are **propagated** instead of silently
 /// returning an empty list (an empty context sent to the LLM is an API 400).
 fn last_n_turns_messages(events: &[SessionEvent], n: usize) -> Result<Vec<Message>, SessionError> {
     let p = project(events)?;
     let total = p.turns.len();
-    let skip_turns = total.saturating_sub(n + 1);
+    let skip_turns = total.saturating_sub(n);
     let boundary_turn = p.turns.get(skip_turns);
     match boundary_turn {
         Some(first_kept) => {
@@ -558,6 +602,64 @@ mod tests {
         }
     }
 
+    /// LLM that always fails — used to prove E2/M-s1: a failed `chat()` must
+    /// not leave an orphan user message polluting the event log.
+    struct FailingLlm;
+    impl FailingLlm {
+        fn new() -> Self {
+            Self
+        }
+    }
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for FailingLlm {
+        fn model_name(&self) -> &str {
+            "failing-mock"
+        }
+        fn get_num_tokens(&self, text: &str) -> usize {
+            text.len()
+        }
+        fn with_temperature(self, _t: f32) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+        fn with_max_tokens(self, _m: usize) -> Self
+        where
+            Self: Sized,
+        {
+            self
+        }
+    }
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for FailingLlm {
+        type Error = MockError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            _c: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            Err(MockError("boom".into()))
+        }
+    }
+    #[async_trait]
+    impl BaseChatModel for FailingLlm {
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(messages, config).await
+        }
+        async fn stream_chat(
+            &self,
+            _m: Vec<Message>,
+            _c: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+        {
+            unimplemented!("stream not exercised here")
+        }
+    }
+
     #[derive(Clone)]
     struct RecordingMemory {
         history: String,
@@ -664,6 +766,41 @@ mod tests {
         assert_eq!(received[1][0].content, "第一句");
         assert_eq!(received[1][1].content, "回复");
         assert_eq!(received[1][2].content, "第二句");
+    }
+
+    /// E2/M-s1 regression: a failed LLM call must NOT leave an orphan
+    /// user message in the log; otherwise the next `chat()` projects the
+    /// unconsumed message as dangling context.
+    #[tokio::test]
+    async fn failed_chat_leaves_no_orphan_user_message() {
+        let store = Arc::new(MemoryEventStore::new());
+        let mgr = EventSessionManager::new(store.clone());
+        let id = mgr.create_session().await.unwrap();
+
+        let failing = FailingLlm::new();
+        let err = mgr.chat(&id, &failing, "忘记这句".to_string()).await;
+        assert!(matches!(err, Err(SessionError::Llm(_))), "expected LLM failure");
+
+        // The user message must not have been persisted: the log holds only
+        // the session metadata event, no UserMessage payload.
+        let events = store.read(&id, "main", None).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e.payload, EventPayload::UserMessage { .. }))
+                .count(),
+            0,
+            "failed chat() must not persist the user message"
+        );
+
+        // And a subsequent successful chat() must not surface the dropped text:
+        // its context contains only the current user message, nothing lingering.
+        let llm = MockLlm::new("回复");
+        mgr.chat(&id, &llm, "这次成功".to_string()).await.unwrap();
+        let received = llm.received().await;
+        assert_eq!(received.len(), 1, "the failing chat never reached a MockLlm");
+        assert_eq!(received[0].len(), 1, "only the successful user message is in context");
+        assert_eq!(received[0][0].content, "这次成功");
     }
 
     /// Auto-compaction: over the limit, a Snapshot is appended, the windowed

@@ -243,7 +243,7 @@ impl OllamaChat {
         let message = &choice.message;
 
         Ok(LLMResult {
-            content: message.content.clone(),
+            content: message.content.clone().unwrap_or_default(),
             model: chat_response.model,
             token_usage: chat_response.usage.map(|u| TokenUsage {
                 prompt_tokens: u.prompt_tokens,
@@ -386,6 +386,7 @@ impl OllamaChat {
             if !calls.is_empty() {
                 let _ = tx
                     .send(Ok(StreamChunk {
+                        thinking_content: None,
                         text: String::new(),
                         token_usage: None,
                         tool_calls: Some(calls),
@@ -761,7 +762,10 @@ struct OllamaChoice {
 #[derive(Debug, Deserialize)]
 struct OllamaMessage {
     role: String,
-    content: String,
+    // 0.25.0: Ollama emits `content: null` (or omits it) on a tool-call turn;
+    // a required String made every such response fail to deserialize.
+    #[serde(default)]
+    content: Option<String>,
     tool_calls: Option<Vec<ToolCall>>,
 }
 
@@ -840,5 +844,58 @@ mod tests_env {
         assert_eq!(chat.model_name(), "");
         restore("OLLAMA_BASE_URL", old_url);
         restore("OLLAMA_MODEL", old_model);
+    }
+}
+
+// 0.25.0 B2: a tool-call turn carries `content: null`; it must deserialize and
+// surface as an empty string with the tool call intact.
+#[cfg(test)]
+mod null_content_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn non_stream_null_content_with_tool_call_parses() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await; // consume the POST + body
+            let response = "{\"id\":\"x\",\"object\":\"chat.completion\",\"created\":1,\
+\"model\":\"llama3.2\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\
+\"message\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\
+\"id\":\"call_1\",\"type\":\"function\",\"function\":{\
+\"name\":\"get_weather\",\"arguments\":\"{}\"}}]}}],\
+\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6}}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{response}"
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+
+        let chat = OllamaChat::with_config(
+            OllamaConfig::new("test").with_base_url(format!("http://{addr}")),
+        );
+        let result = chat
+            .chat_internal(vec![Message::human("weather?")])
+            .await
+            .expect("null content must not fail");
+
+        assert_eq!(result.content, "");
+        let calls = result.tool_calls.expect("tool call preserved");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "get_weather");
+        assert_eq!(result.token_usage.unwrap().total_tokens, 6);
+    }
+
+    #[test]
+    fn missing_content_field_defaults_to_none() {
+        let msg: OllamaMessage =
+            serde_json::from_str(r#"{"role":"assistant","tool_calls":[]}"#).unwrap();
+        assert!(msg.content.is_none());
     }
 }

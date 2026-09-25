@@ -1,4 +1,4 @@
-//! N2 (v0.24.0): the full record → golden → score → regression-gate loop, fully offline.
+//! N2 (v0.25.0): the full record → golden → score → regression-gate loop, fully offline.
 //!
 //! Hand-written `RecordedExchange`s stand in for real recorded traces. Nothing here
 //! touches the network: scoring is driven by `ReplayPredictor` (FIFO replay) and the
@@ -197,6 +197,12 @@ async fn regression_gate_goes_red_when_the_candidate_model_scores_below_baseline
 
     let cmp = compare_reports(&baseline, &candidate, 0.0);
     assert!(cmp.is_regressed());
+    // B6: the CI gate (count mismatch / zero sample included) trips along with the regression.
+    assert!(
+        cmp.is_gate_failing(),
+        "gate must fail when the candidate regresses: {}",
+        cmp.to_table()
+    );
     let regression = &cmp.regressions[0];
     assert_eq!(regression.evaluator, "exact_match");
     assert!((regression.baseline_mean - 1.0).abs() < 1e-9);

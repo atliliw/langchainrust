@@ -44,14 +44,18 @@ use std::pin::Pin;
 
 use self::types::*;
 use crate::openai::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
+use crate::provider_http::{provider_api_client, provider_sse_client};
 use crate::ProviderError;
 use lc_callbacks::RunType;
+use lc_core::http::{HttpClient, RequestOptions};
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
 use lc_core::runnables::{run_tree_from_config, Runnable};
+use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
+use reqwest::header::{HeaderName, HeaderValue};
 
 /// Azure OpenAI chat client.
 ///
@@ -63,7 +67,10 @@ use lc_schema::Message;
 #[derive(Clone)]
 pub struct AzureOpenAIChat {
     config: AzureOpenAIConfig,
-    client: reqwest::Client,
+    /// Buffered client for non-streaming calls (0.25.0: unified HTTP layer).
+    http_api: HttpClient,
+    /// SSE-profile client for streaming calls (establishment retries only).
+    http_sse: HttpClient,
 }
 
 impl std::fmt::Debug for AzureOpenAIChat {
@@ -79,8 +86,34 @@ impl AzureOpenAIChat {
     pub fn new(config: AzureOpenAIConfig) -> Self {
         Self {
             config,
-            // 0.22.0 audit fix (H-P1): shared client with a connect timeout.
-            client: crate::retry::default_client(),
+            // 0.25.0: unified HTTP layer — bounded body, closed retriable
+            // status set, Retry-After support, method-aware POST retries.
+            http_api: provider_api_client(),
+            http_sse: provider_sse_client(),
+        }
+    }
+
+    /// Per-request options for Azure: the Azure OpenAI dialect authenticates
+    /// with the `api-key` header (not `Authorization: Bearer`). An empty key
+    /// omits the header rather than sending an invalid empty value.
+    fn request_options(&self) -> RequestOptions {
+        let mut opts = RequestOptions::new();
+        if !self.config.api_key.is_empty() {
+            if let Ok(value) = HeaderValue::from_str(&self.config.api_key) {
+                opts = opts.header(HeaderName::from_static("api-key"), value);
+            }
+        }
+        opts
+    }
+
+    /// Maps a unified-layer error onto the Azure error enum while keeping the
+    /// `HTTP {status}: {body}` message shape.
+    fn map_http_error(err: lc_core::http::HttpError) -> AzureOpenAIError {
+        match err {
+            lc_core::http::HttpError::Status { status, body } => {
+                AzureOpenAIError::Api(format!("HTTP {status}: {body}"))
+            }
+            other => AzureOpenAIError::Http(other.to_string()),
         }
     }
 
@@ -111,8 +144,10 @@ impl AzureOpenAIChat {
                     "content": message.content,
                 });
                 if let Some(tool_calls) = &message.tool_calls {
-                    msg["tool_calls"] =
-                        serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null);
+                    msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or_else(|e| {
+                        log::warn!("Azure OpenAI: failed to serialize tool_calls, omitting them: {e}");
+                        serde_json::Value::Null
+                    });
                 }
                 msg
             }
@@ -138,6 +173,14 @@ impl AzureOpenAIChat {
             "stream": stream,
         });
 
+        // 0.25.0: request the terminal usage chunk explicitly. Without
+        // `stream_options.include_usage` the streaming response omits usage,
+        // so token accounting was silently missing (same dialect as OpenAI).
+        // Non-streaming bodies stay byte-identical.
+        if stream {
+            body["stream_options"] = json!({"include_usage": true});
+        }
+
         if let Some(temp) = self.config.temperature {
             body["temperature"] = json!(temp);
         }
@@ -150,7 +193,34 @@ impl AzureOpenAIChat {
             body["top_p"] = json!(top_p);
         }
 
+        // 0.25.0: function calling — previously the body never carried tools.
+        if let Some(tools) = &self.config.tools {
+            body["tools"] = serde_json::to_value(tools).unwrap_or(serde_json::Value::Null);
+        }
+
+        if let Some(tool_choice) = &self.config.tool_choice {
+            body["tool_choice"] = json!(tool_choice);
+        }
+
         body
+    }
+
+    /// Binds tool definitions for function calling (0.25.0: the Azure
+    /// implementation previously had no tool support at all).
+    pub fn bind_tools(&self, tools: Vec<ToolDefinition>) -> Self {
+        let mut config = self.config.clone();
+        config.tools = Some(tools);
+        Self {
+            config,
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
+        }
+    }
+
+    /// Sets the tool choice strategy (`auto`, `required`, `none`, ...).
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.config.tool_choice = Some(choice.into());
+        self
     }
 
     /// Internal chat implementation (no callback overhead).
@@ -162,34 +232,15 @@ impl AzureOpenAIChat {
             .map_err(|e| AzureOpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
-        // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
-        // A14: non-idempotent POST — see retry::TransportRetryMode; use
-        // retry::SAFE_RETRY to forbid replaying a possibly-dispatched request.
-        let response = crate::retry::send_with_retry(
-            || {
-                self.client
-                    .post(&url)
-                    .header("api-key", &self.config.api_key)
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-            },
-            &crate::retry::DEFAULT_RETRY,
-        )
-        .await
-        .map_err(|e| AzureOpenAIError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(AzureOpenAIError::Api(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let chat_response: AzureChatResponse = response
-            .json()
+        // 0.25.0: unified HTTP layer — retriable status set, Retry-After and
+        // POST pre-dispatch-only retry semantics live in lc_core::http.
+        let response = self
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
+            .map_err(Self::map_http_error)?;
+
+        let chat_response: AzureChatResponse = serde_json::from_str(&response.body)
             .map_err(|e| AzureOpenAIError::Parse(e.to_string()))?;
 
         let choice = chat_response
@@ -234,26 +285,13 @@ impl AzureOpenAIChat {
             .map_err(|e| AzureOpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("api-key", &self.config.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+        // 0.25.0: unified HTTP layer. Retries cover establishment only; once
+        // the response head arrives the stream runs without reconnecting.
+        let byte_stream = self
+            .http_sse
+            .open_sse(&url, Some(&body), self.request_options())
             .await
-            .map_err(|e| AzureOpenAIError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(AzureOpenAIError::Api(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let byte_stream = response.bytes_stream();
+            .map_err(Self::map_http_error)?;
         let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
         let parser_clone = parser.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamChunk, AzureOpenAIError>>(64);
@@ -306,6 +344,28 @@ impl AzureOpenAIChat {
                                         return;
                                     }
                                 }
+                                // 0.25.0: reasoning-model deployments stream
+                                // `delta.reasoning_content`; surface it as
+                                // thinking_content instead of dropping it.
+                                if let Some(reasoning) = choice
+                                    .delta
+                                    .reasoning_content
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    if tx
+                                        .send(Ok(StreamChunk {
+                                            text: String::new(),
+                                            thinking_content: Some(reasoning.to_string()),
+                                            token_usage: None,
+                                            tool_calls: None,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                                 if let Some(deltas) = &choice.delta.tool_calls {
                                     for delta in deltas {
                                         tool_acc.push(delta);
@@ -329,6 +389,7 @@ impl AzureOpenAIChat {
                                     tool_calls_emitted = true;
                                 }
                                 let final_chunk = StreamChunk {
+                                    thinking_content: None,
                                     text: String::new(),
                                     token_usage: Some(token_usage),
                                     tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
@@ -367,6 +428,7 @@ impl AzureOpenAIChat {
                 if !tool_calls.is_empty() {
                     let _ = tx
                         .send(Ok(StreamChunk {
+                            thinking_content: None,
                             text: String::new(),
                             token_usage: None,
                             tool_calls: Some(tool_calls),
@@ -445,13 +507,15 @@ impl Runnable<Vec<Message>, LLMResult> for AzureOpenAIChat {
         }
         let token_stream = effective.stream_chat_internal(input).await?;
 
+        // 0.25.0: pass the accumulated terminal tool_calls, usage and
+        // reasoning deltas through instead of collapsing them to None.
         let stream = token_stream.map(move |token_result| match token_result {
             Ok(chunk) => Ok(LLMResult {
                 content: chunk.text,
                 model: model.clone(),
                 token_usage: chunk.token_usage,
-                tool_calls: None,
-                thinking_content: None,
+                tool_calls: chunk.tool_calls,
+                thinking_content: chunk.thinking_content,
             }),
             Err(e) => Err(e),
         });

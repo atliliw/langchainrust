@@ -34,6 +34,19 @@ pub enum AgentError {
     #[error("Tool execution error: {0}")]
     ToolExecutionError(String),
 
+    /// A parallel tool batch was aborted by a framework **hard** error (hook
+    /// `Reject` / policy rejection / `ControlAbort`) — the run stops hard — but the
+    /// observations from sibling tools that had **already completed** before the
+    /// abort are preserved in `partial` rather than silently discarded (stage-G
+    /// G3), so the caller can surface them for diagnostics or recovery.
+    #[error("batch aborted: {cause}")]
+    BatchAborted {
+        /// The framework error that aborted the batch.
+        cause: Box<AgentError>,
+        /// Observations from sibling tools that completed before the abort.
+        partial: Vec<String>,
+    },
+
     /// Max iterations reached.
     #[error("Max iterations reached")]
     MaxIterationsReached,
@@ -165,6 +178,7 @@ mod semantic_memory;
 mod stream;
 #[cfg(test)]
 mod tests;
+mod tool_gate;
 mod tools;
 
 pub use budget::{BudgetConfig, BudgetExceeded};

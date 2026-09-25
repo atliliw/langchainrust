@@ -94,9 +94,12 @@ pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, Serve
 #[cfg(feature = "opentelemetry")]
 pub use instrument::McpInstrumentation;
 pub use oauth2::{
-    discover_authorization_server, discover_protected_resource, AuthorizationServerMetadata,
-    BearerTokenProvider, OAuthChallenge, OAuthTokenClient, OAuthTokenResponse,
-    ProtectedResourceMetadata, StaticBearerToken,
+    discover_authorization_server, discover_authorization_server_config,
+    discover_authorization_server_with, discover_protected_resource,
+    discover_protected_resource_config, discover_protected_resource_with,
+    AuthorizationServerMetadata, BearerTokenProvider, DiscoveryConfig, DiscoveryMode,
+    OAuthChallenge, OAuthTokenClient, OAuthTokenResponse, ProtectedResourceMetadata,
+    StaticBearerToken,
 };
 pub use orchestrate::{OrchestrateError, ToolCaller, ToolOrchestrator, ToolStep};
 pub use prompts::{
@@ -104,9 +107,9 @@ pub use prompts::{
     PromptMessage, PromptProvider,
 };
 pub use protocol::{
-    negotiate_protocol_version, notification_message, ClientIdentity, InputRequired, MCPError,
-    MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion, ProtocolInfo, RequestMeta, VersionPolicy,
-    MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST, MCP_ERROR_UNAUTHORIZED,
+    negotiate_protocol_version, notification_message, ClientIdentity, InputRequired, JsonRpcId,
+    MCPError, MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion, ProtocolInfo, RequestMeta,
+    VersionPolicy, MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST, MCP_ERROR_UNAUTHORIZED,
     MCP_ERROR_VERSION_UNSUPPORTED, MCP_METHOD_HEADER, MCP_NAME_HEADER, MCP_VERSION,
     MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
 };

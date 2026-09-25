@@ -379,6 +379,7 @@ mod tests {
                         value: input.clone(),
                     },
                     log: String::new(),
+                    tool_call_id: None,
                 }));
             }
             Ok(AgentOutput::Finish(AgentFinish::new(

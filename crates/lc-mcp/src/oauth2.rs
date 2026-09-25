@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{MCPError, MCP_ERROR_UNAUTHORIZED};
+use crate::sandbox::EgressPolicy;
 
 /// Timeout for metadata discovery and token-endpoint calls.
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -285,68 +286,251 @@ pub struct AuthorizationServerMetadata {
     pub code_challenge_methods_supported: Vec<String>,
 }
 
-fn discovery_client() -> Result<reqwest::Client, MCPError> {
-    reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| MCPError::new(-32000, format!("failed to build HTTP client: {e}")))
+/// How strictly OAuth discovery validates metadata/token endpoint URLs (B8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryMode {
+    /// Production default: endpoints must be `https`; `http` (including on
+    /// loopback) is rejected. A `401 → metadata_url` downgrade would otherwise
+    /// hand credentials to a plaintext channel.
+    Public,
+    /// Explicit developer opt-in: allows `http` on loopback hosts only
+    /// (`127.0.0.1`, `[::1]`, `localhost`) for local fixture servers. Any
+    /// non-loopback URL is still required to be `https`.
+    Dev,
 }
 
-/// Fetches and parses an RFC 9728 protected-resource metadata document.
+/// `true` when `host` is a loopback host (`localhost`, `127.0.0.1`, `[::1]`,
+/// `[::ffff:127.0.0.1]`), case-insensitive.
+fn is_loopback_host(host: Option<&str>) -> bool {
+    match host {
+        Some(h) => {
+            let lower = h.trim_matches(['[', ']']).to_ascii_lowercase();
+            lower == "localhost"
+                || lower == "localhost."
+                || lower == "127.0.0.1"
+                || lower == "::1"
+                || lower == "::ffff:127.0.0.1"
+        }
+        None => false,
+    }
+}
+
+/// Validates a metadata/token endpoint URL before any request is sent (B8).
+/// HTTPS is mandatory (the OAuth credential channel); loopback HTTP requires
+/// an explicit [`DiscoveryMode::Dev`]. SSRF and redirect handling are enforced
+/// separately at fetch time.
+fn validate_discovery_url(url: &str, mode: DiscoveryMode) -> Result<reqwest::Url, MCPError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| MCPError::new(-32000, format!("invalid metadata URL: {e}")))?;
+    let scheme = parsed.scheme();
+    let loopback = is_loopback_host(parsed.host_str());
+    let dev_http = scheme == "http" && loopback && mode == DiscoveryMode::Dev;
+    if scheme != "https" && !dev_http {
+        return Err(MCPError::new(
+            -32000,
+            format!(
+                "metadata endpoint must use HTTPS (got scheme '{scheme}'{}); \
+                 loopback HTTP requires explicit DiscoveryMode::Dev",
+                if loopback { " on a loopback host" } else { "" }
+            ),
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Rejects a redirect that leaves the originally-validated origin (B8): a
+/// metadata server may `302` to a sibling path, but never to a different
+/// scheme, host, or port — that is the classic SSRF/user-revocation pivot
+/// (https→http downgrade on the same host included). SSRF per hop is already
+/// handled by `lc_core::ssrf::guarded_get`.
+fn ensure_same_host(original: &reqwest::Url, actual: &reqwest::Url) -> Result<(), MCPError> {
+    let a_host = original.host_str().unwrap_or_default().to_ascii_lowercase();
+    let a_scheme = original.scheme();
+    let a_port = original.port_or_known_default();
+    let b_host = actual.host_str().unwrap_or_default().to_ascii_lowercase();
+    let b_scheme = actual.scheme();
+    let b_port = actual.port_or_known_default();
+    if a_host != b_host || a_scheme != b_scheme || a_port != b_port {
+        return Err(MCPError::new(
+            -32000,
+            format!(
+                "metadata discovery rejected cross-host redirect: \
+                 {a_scheme}://{a_host}{} -> {b_scheme}://{b_host}{}",
+                a_port.map(|p| format!(":{p}")).unwrap_or_default(),
+                b_port.map(|p| format!(":{p}")).unwrap_or_default(),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Full discovery settings: URL strictness plus an optional egress allowlist
+/// (B8).
+#[derive(Debug, Clone)]
+pub struct DiscoveryConfig {
+    /// URL strictness ([`DiscoveryMode::Public`] by default).
+    pub mode: DiscoveryMode,
+    /// Optional egress allowlist applied to the fetched metadata host. An empty
+    /// policy blocks all egress; `None` skips the egress check.
+    pub egress: Option<Arc<EgressPolicy>>,
+}
+
+impl DiscoveryConfig {
+    /// Builds a config with a mode and no egress restriction.
+    pub fn new(mode: DiscoveryMode) -> Self {
+        Self { mode, egress: None }
+    }
+
+    /// Adds an egress allowlist (empty policy rejects all outbound).
+    pub fn with_egress(mut self, policy: Arc<EgressPolicy>) -> Self {
+        self.egress = Some(policy);
+        self
+    }
+}
+
+/// Fetches and parses an RFC 9728 protected-resource metadata document under
+/// production rules ([`DiscoveryMode::Public`]: https only).
 ///
 /// `metadata_url` is typically the `resource_metadata` value from the
 /// [`OAuthChallenge`] (already a complete URL).
 pub async fn discover_protected_resource(
     metadata_url: &str,
 ) -> Result<ProtectedResourceMetadata, MCPError> {
-    let http = discovery_client()?;
-    let resp = http
-        .get(metadata_url)
-        .send()
-        .await
-        .map_err(|e| MCPError::new(-32000, format!("resource metadata request failed: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(MCPError::new(
-            -32000,
-            format!("resource metadata request failed: HTTP {}", resp.status()),
-        ));
-    }
+    discover_protected_resource_with(metadata_url, DiscoveryMode::Public).await
+}
+
+/// [`discover_protected_resource`] with an explicit [`DiscoveryMode`].
+///
+/// Fetched through [`lc_core::ssrf::guarded_get`] (per-hop SSRF + IP pinning),
+/// then a same-host check rejects any cross-host redirect (B8).
+pub async fn discover_protected_resource_with(
+    metadata_url: &str,
+    mode: DiscoveryMode,
+) -> Result<ProtectedResourceMetadata, MCPError> {
+    discover_protected_resource_config(metadata_url, DiscoveryConfig::new(mode)).await
+}
+
+/// [`discover_protected_resource_with`] with full [`DiscoveryConfig`] (mode +
+/// optional egress allowlist).
+pub async fn discover_protected_resource_config(
+    metadata_url: &str,
+    config: DiscoveryConfig,
+) -> Result<ProtectedResourceMetadata, MCPError> {
+    let validated = validate_discovery_url(metadata_url, config.mode)?;
+    let resp = fetch_metadata(
+        metadata_url,
+        &validated,
+        config.mode,
+        config.egress.as_deref(),
+        "resource metadata",
+    )
+    .await?;
     resp.json::<ProtectedResourceMetadata>()
         .await
         .map_err(|e| MCPError::new(-32700, format!("invalid protected-resource metadata: {e}")))
 }
 
 /// Fetches and parses an RFC 8414 authorization-server metadata document for
-/// `issuer` (path `/.well-known/oauth-authorization-server` under the issuer).
+/// `issuer` (path `/.well-known/oauth-authorization-server` under the issuer)
+/// under production rules ([`DiscoveryMode::Public`]).
 pub async fn discover_authorization_server(
     issuer: &str,
 ) -> Result<AuthorizationServerMetadata, MCPError> {
+    discover_authorization_server_with(issuer, DiscoveryMode::Public).await
+}
+
+/// [`discover_authorization_server`] with an explicit [`DiscoveryMode`].
+///
+/// In addition to https + same-host checks, the returned document's `issuer`
+/// must equal the requested issuer (RFC 8414 §4.1) — mismatch is rejected
+/// (B8), so a hijacked/wrong authorization server cannot impersonate the
+/// intended one.
+pub async fn discover_authorization_server_with(
+    issuer: &str,
+    mode: DiscoveryMode,
+) -> Result<AuthorizationServerMetadata, MCPError> {
+    discover_authorization_server_config(issuer, DiscoveryConfig::new(mode)).await
+}
+
+/// [`discover_authorization_server_with`] with full [`DiscoveryConfig`].
+pub async fn discover_authorization_server_config(
+    issuer: &str,
+    config: DiscoveryConfig,
+) -> Result<AuthorizationServerMetadata, MCPError> {
     let base = issuer.trim_end_matches('/');
     let url = format!("{base}/.well-known/oauth-authorization-server");
-    let http = discovery_client()?;
-    let resp = http.get(&url).send().await.map_err(|e| {
+    let validated = validate_discovery_url(&url, config.mode)?;
+    let resp = fetch_metadata(
+        &url,
+        &validated,
+        config.mode,
+        config.egress.as_deref(),
+        "authorization-server metadata",
+    )
+    .await?;
+    let meta: AuthorizationServerMetadata = resp.json().await.map_err(|e| {
         MCPError::new(
-            -32000,
-            format!("authorization-server metadata request failed: {e}"),
+            -32700,
+            format!("invalid authorization-server metadata: {e}"),
         )
     })?;
-    if !resp.status().is_success() {
+    if meta.issuer.trim_end_matches('/') != issuer.trim_end_matches('/') {
         return Err(MCPError::new(
             -32000,
             format!(
-                "authorization-server metadata request failed: HTTP {}",
-                resp.status()
+                "authorization-server issuer mismatch: requested {issuer:?}, \
+                 metadata advertises {:?}",
+                meta.issuer
             ),
         ));
     }
-    resp.json::<AuthorizationServerMetadata>()
+    Ok(meta)
+}
+
+/// Fetch a metadata document through `lc_core::ssrf` so every redirect hop is
+/// re-validated (SSRF + IP pinning), then enforce the same-host rule and any
+/// configured egress allowlist.
+///
+/// `egress`: an empty policy rejects **all** egress (fail-closed); a configured
+/// policy allows only allowlisted hosts. `None` skips the egress check.
+async fn fetch_metadata(
+    url: &str,
+    validated: &reqwest::Url,
+    mode: DiscoveryMode,
+    egress: Option<&EgressPolicy>,
+    what: &str,
+) -> Result<reqwest::Response, MCPError> {
+    let host = validated
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if let Some(policy) = egress {
+        if !policy.allows(&host) {
+            return Err(MCPError::new(
+                -32000,
+                format!(
+                    "{what} egress blocked: host '{host}' is not in the EgressPolicy allowlist"
+                ),
+            ));
+        }
+    }
+    // check_ssrf=true under `Public` (rejects intranet). Under `Dev` the URL is
+    // already a validated loopback host; per-hop SSRF is off but the same-host
+    // check below still bounds the fetch to that one host.
+    let check_ssrf = mode != DiscoveryMode::Dev;
+    let resp = lc_core::ssrf::guarded_get(url, check_ssrf, Some(OAUTH_HTTP_TIMEOUT))
         .await
-        .map_err(|e| {
-            MCPError::new(
-                -32700,
-                format!("invalid authorization-server metadata: {e}"),
-            )
-        })
+        .map_err(|e| MCPError::new(-32000, format!("{what} request failed: {e}")))?;
+    // `guarded_get` stops following once non-redirect; reject any redirect that
+    // escaped to a different host.
+    ensure_same_host(validated, resp.url())?;
+    if !resp.status().is_success() {
+        return Err(MCPError::new(
+            -32000,
+            format!("{what} request failed: HTTP {}", resp.status()),
+        ));
+    }
+    Ok(resp)
 }
 
 /// Successful token-endpoint response (RFC 6749 §5.1, subset).
@@ -374,21 +558,45 @@ pub struct OAuthTokenClient {
     endpoint: String,
     client_id: String,
     client_secret: Option<String>,
+    mode: DiscoveryMode,
+    egress: Option<Arc<EgressPolicy>>,
 }
 
 impl OAuthTokenClient {
-    /// Creates a client for a token endpoint and client id.
+    /// Creates a client for a token endpoint and client id, under production
+    /// URL rules ([`DiscoveryMode::Public`]). The token endpoint is where the
+    /// client presents its `client_secret`, so the channel must be https unless
+    /// an explicit [`DiscoveryMode::Dev`] opts into loopback http.
     pub fn new(endpoint: impl Into<String>, client_id: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
             client_id: client_id.into(),
             client_secret: None,
+            mode: DiscoveryMode::Public,
+            egress: None,
         }
     }
 
     /// Sets the client secret (confidential clients).
     pub fn with_client_secret(mut self, secret: impl Into<String>) -> Self {
         self.client_secret = Some(secret.into());
+        self
+    }
+
+    /// Sets the discovery URL strictness for the token endpoint (B8).
+    /// Use [`DiscoveryMode::Dev`] for local fixture servers; production stays
+    /// https-only by default.
+    pub fn with_discovery_mode(mut self, mode: DiscoveryMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Requires the token-endpoint host to be in `policy` (an empty policy
+    /// blocks all egress). B8: the token endpoint is attacker-adjacent (it is
+    /// drawn from server metadata), so an allowlist keeps credentials on
+    /// approved hosts.
+    pub fn with_egress(mut self, policy: Arc<EgressPolicy>) -> Self {
+        self.egress = Some(policy);
         self
     }
 
@@ -453,13 +661,35 @@ impl OAuthTokenClient {
         if let Some(secret) = &self.client_secret {
             form.push(("client_secret".into(), secret.clone()));
         }
-        let http = discovery_client()?;
-        let resp = http
-            .post(&self.endpoint)
-            .form(&form)
-            .send()
-            .await
-            .map_err(|e| MCPError::new(-32000, format!("token request failed: {e}")))?;
+        let endpoint_url = validate_discovery_url(&self.endpoint, self.mode)?;
+        if let Some(policy) = &self.egress {
+            let host = endpoint_url
+                .host_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !policy.allows(&host) {
+                return Err(MCPError::new(
+                    -32000,
+                    format!(
+                        "token endpoint egress blocked: host '{host}' is not in the EgressPolicy allowlist"
+                    ),
+                ));
+            }
+        }
+        // F3: send the client secret through the guarded, resolve-once /
+        // IP-pinned POST so a `token_endpoint` that resolves into an intranet
+        // host is rejected *before* the secret leaves the process. Under
+        // DiscoveryMode::Dev the loopback fixture endpoint is permitted; under
+        // Public any private/internal address is blocked (SSRF).
+        let check_ssrf = self.mode != DiscoveryMode::Dev;
+        let resp = lc_core::ssrf::guarded_post_form(
+            &self.endpoint,
+            &form,
+            check_ssrf,
+            Some(OAUTH_HTTP_TIMEOUT),
+        )
+        .await
+        .map_err(|e| MCPError::new(-32000, format!("token request failed: {e}")))?;
         let status = resp.status();
         let body = resp
             .text()
@@ -579,5 +809,204 @@ mod tests {
         let provider = StaticBearerToken("abc".into());
         assert_eq!(provider.token().await.unwrap(), "abc");
         provider.invalidate("abc").await; // default no-op must not panic
+    }
+
+    // -- B8 discovery hardening ----------------------------------------------
+
+    #[test]
+    fn discovery_url_requires_https_or_explicit_dev_loopback() {
+        // https is always acceptable.
+        assert!(validate_discovery_url(
+            "https://example.com/.well-known/mcp",
+            DiscoveryMode::Public
+        )
+        .is_ok());
+
+        // Plain http on a non-loopback host is rejected in both modes.
+        assert!(validate_discovery_url("http://example.com/x", DiscoveryMode::Public).is_err());
+        assert!(validate_discovery_url("http://example.com/x", DiscoveryMode::Dev).is_err());
+
+        // Loopback http is rejected in production, allowed only under Dev.
+        assert!(validate_discovery_url("http://127.0.0.1:8254/x", DiscoveryMode::Public).is_err());
+        assert!(validate_discovery_url("http://127.0.0.1:8254/x", DiscoveryMode::Dev).is_ok());
+        assert!(validate_discovery_url("http://[::1]:8254/x", DiscoveryMode::Dev).is_ok());
+        assert!(validate_discovery_url("http://localhost:9/x", DiscoveryMode::Dev).is_ok());
+
+        // Garbage is not a URL.
+        assert!(validate_discovery_url("not a url", DiscoveryMode::Public).is_err());
+    }
+
+    #[test]
+    fn same_host_rejects_cross_host_redirect() {
+        let a = reqwest::Url::parse("https://issuer.example/as/meta").unwrap();
+
+        // Same host (case-insensitive), any path → allowed.
+        let same = reqwest::Url::parse("https://issuer.example/as/.well-known").unwrap();
+        assert!(ensure_same_host(&a, &same).is_ok());
+        let same_case = reqwest::Url::parse("https://ISSUER.example/x").unwrap();
+        assert!(ensure_same_host(&a, &same_case).is_ok());
+
+        // Different host → rejected (the SSRF / wrong-issuer pivot).
+        let cross = reqwest::Url::parse("https://evil.example/meta").unwrap();
+        assert!(ensure_same_host(&a, &cross).is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_non_https_before_network() {
+        let err =
+            discover_protected_resource("http://example.com/.well-known/oauth-protected-resource")
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("HTTPS"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discovery_egress_empty_policy_blocks_before_network() {
+        let config =
+            DiscoveryConfig::new(DiscoveryMode::Public).with_egress(Arc::new(EgressPolicy::new()));
+        let err = discover_protected_resource_config(
+            "https://example.com/.well-known/oauth-protected-resource",
+            config,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("egress"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn token_client_egress_empty_policy_blocks_before_network() {
+        let client = OAuthTokenClient::new("https://token.example/token", "client-1")
+            .with_egress(Arc::new(EgressPolicy::new()));
+        let err = client.client_credentials(None).await.unwrap_err();
+        assert!(err.to_string().contains("egress"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_cross_host_redirect() {
+        // The server 302s from `http://127.0.0.1:PORT/origin` to
+        // `http://127.0.0.2:PORT/final`. `127.0.0.2` is the standard loopback
+        // alias: a *different host string* than `127.0.0.1` (so the same-host
+        // guard fires), yet plain IPv4 loopback on every platform — unlike a
+        // `localhost` target whose `::1`/`127.0.0.1` resolution order can fail
+        // to connect in some environments *before* any response is returned,
+        // which would skip the same-host guard entirely.
+        let (origin_url, handle) = {
+            use socket2::{Domain, Protocol, Socket as Sock, Type};
+            // Bind a dual-stack (`::` / v6only=false) listener so the redirect
+            // hop (127.0.0.2, v4-mapped) reaches this server.
+            let sock = Sock::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)).unwrap();
+            sock.set_only_v6(false).unwrap();
+            sock.set_reuse_address(true).unwrap();
+            let addr: std::net::SocketAddr = "[::]:0".parse().unwrap();
+            sock.bind(&addr.into()).unwrap();
+            sock.listen(128).unwrap();
+            let std_listener: std::net::TcpListener = sock.into();
+            std_listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let local_final = format!("http://127.0.0.2:{port}/final");
+            let task = tokio::spawn(async move {
+                loop {
+                    let (mut sock, _) = match listener.accept().await {
+                        Ok(x) => x,
+                        Err(_) => break,
+                    };
+                    let final_url = local_final.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let mut buf = [0u8; 2048];
+                        let n = match sock.read(&mut buf).await {
+                            Ok(n) => n,
+                            Err(_) => return,
+                        };
+                        let head_str = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let path = head_str
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("/")
+                            .to_string();
+                        eprintln!("XHOST-REQ path={path:?} head={head_str:?}");
+                        let (status, body) = if path == "/origin" {
+                            (302, String::new())
+                        } else {
+                            (
+                                200,
+                                r#"{"resource":"https://issuer.example/mcp"}"#.to_string(),
+                            )
+                        };
+                        // Note the trailing blank line (`\r\n\r\n`) — without it hyper
+                        // reports `IncompleteMessage` (the terminating empty line that
+                        // separates headers from body never arrived).
+                        let head = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\n{extra}\r\n\r\n",
+                            status = status,
+                            reason = if status == 200 { "OK" } else { "Found" },
+                            len = body.len(),
+                            extra = if path == "/origin" {
+                                format!("Location: {final_url}")
+                            } else {
+                                "Content-Type: application/json".to_string()
+                            }
+                        );
+                        let _ = sock.write_all(head.as_bytes()).await;
+                        let _ = sock.write_all(body.as_bytes()).await;
+                        let _ = sock.flush().await;
+                    });
+                }
+            });
+            (format!("http://127.0.0.1:{port}/origin"), task)
+        };
+
+        let err = discover_protected_resource_with(&origin_url, DiscoveryMode::Dev)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cross-host"), "{err}");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn authorization_server_rejects_issuer_mismatch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (addr, handle) = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let local_addr = addr.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    let (mut sock, _) = match listener.accept().await {
+                        Ok(x) => x,
+                        Err(_) => break,
+                    };
+                    let addr = local_addr.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 2048];
+                        if sock.read(&mut buf).await.is_err() {
+                            return;
+                        }
+                        // Advertise a mismatched issuer.
+                        let body = serde_json::json!({
+                            "issuer": format!("http://{addr}/as-wrong"),
+                        })
+                        .to_string();
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes()).await;
+                        let _ = sock.write_all(body.as_bytes()).await;
+                        let _ = sock.flush().await;
+                    });
+                }
+            });
+            (addr, task)
+        };
+
+        let issuer = format!("http://{addr}/as");
+        let err = discover_authorization_server_with(&issuer, DiscoveryMode::Dev)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("issuer mismatch"), "{err}");
+        handle.abort();
     }
 }

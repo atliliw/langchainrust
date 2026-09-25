@@ -1,6 +1,6 @@
 [package]
 name = "lc-core"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Core abstractions for langchainrust — Runnable, BaseTool, BaseChatModel, etc."
@@ -8,9 +8,9 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version.workspace = true
 
 [dependencies]
-lc-shared = { path = "../lc-shared", version = "0.24.0" }
-lc-schema = { path = "../lc-schema", version = "0.24.0" }
-lc-callbacks = { path = "../lc-callbacks", version = "0.24.0" }
+lc-shared = { path = "../lc-shared", version = "0.25.0" }
+lc-schema = { path = "../lc-schema", version = "0.25.0" }
+lc-callbacks = { path = "../lc-callbacks", version = "0.25.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -27,7 +27,12 @@ regex = "1"
 tokio = { version = "1.0", features = ["full"] }
 tiktoken-rs = { version = "0.5" }
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+# SSE byte streams surface reqwest's `bytes::Bytes`; declare directly rather
+# than relying on a transitive re-export.
+bytes = "1"
 url = "2"
+# Minimal crate for parsing Retry-After IMF-fixdate values in the unified HTTP client.
+httpdate = "1"
 
 [dev-dependencies]
 # start_paused = true needs test-util; dev-only so lib builds stay feature-free.

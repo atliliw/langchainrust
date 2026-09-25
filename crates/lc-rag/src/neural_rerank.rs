@@ -10,6 +10,7 @@
 
 use crate::reranking::RerankingError;
 use async_trait::async_trait;
+use lc_core::http::{HttpClient, RequestOptions};
 use lc_vector_stores::{Document, SearchResult};
 use serde::Deserialize;
 
@@ -47,7 +48,7 @@ pub struct CohereRerank {
     api_key: String,
     base_url: String,
     model: String,
-    client: reqwest::Client,
+    http: HttpClient,
 }
 
 impl CohereRerank {
@@ -63,10 +64,9 @@ impl CohereRerank {
             api_key: key,
             base_url: "https://api.cohere.com".to_string(),
             model: "rerank-multilingual-v3.0".to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("build rerank http client"),
+            // The unified client defaults to `no_proxy()` (build is infallible
+            // for these settings and mirrors the historical `no_proxy()` client).
+            http: HttpClient::api().build().expect("build rerank http client"),
         }
     }
 
@@ -90,23 +90,29 @@ impl AsyncReranker for CohereRerank {
         query: &str,
         documents: &[Document],
     ) -> Result<Vec<f32>, RerankingError> {
+        // 0.25.0 B3: request an explicit top_n = documents.len() (mirroring the
+        // Jina path) so the parser can hold the response strictly to contract —
+        // a short/unordered result set now surfaces as an error, not a silent
+        // 0.0 "dissimilar" padding.
         let body = serde_json::json!({
             "model": self.model,
             "query": query,
             "documents": documents.iter().map(|d| d.content.as_str()).collect::<Vec<_>>(),
+            "top_n": documents.len(),
             "return_documents": false,
         });
         let resp = self
-            .client
-            .post(format!("{}/v1/rerank", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
+            .http
+            .post_json_with(
+                &format!("{}/v1/rerank", self.base_url),
+                &body,
+                RequestOptions::new().bearer(self.api_key.clone()),
+            )
             .await
             .map_err(|e| {
                 RerankingError::ScoringError(format!("cohere rerank request failed: {e}"))
             })?;
-        parse_relevance(resp, documents.len()).await
+        parse_relevance_str(&resp.body, documents.len())
     }
 }
 
@@ -118,7 +124,7 @@ pub struct JinaRerank {
     api_key: String,
     base_url: String,
     model: String,
-    client: reqwest::Client,
+    http: HttpClient,
 }
 
 impl JinaRerank {
@@ -134,10 +140,9 @@ impl JinaRerank {
             api_key: key,
             base_url: "https://api.jina.ai".to_string(),
             model: "jina-reranker-v2-base-multilingual".to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("build rerank http client"),
+            // The unified client defaults to `no_proxy()` and ignores system
+            // proxy env vars — an explicit `with_base_url` keeps tests hermetic.
+            http: HttpClient::api().build().expect("build rerank http client"),
         }
     }
 
@@ -168,50 +173,61 @@ impl AsyncReranker for JinaRerank {
             "top_n": documents.len(),
         });
         let resp = self
-            .client
-            .post(format!("{}/v1/rerank", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
+            .http
+            .post_json_with(
+                &format!("{}/v1/rerank", self.base_url),
+                &body,
+                RequestOptions::new().bearer(self.api_key.clone()),
+            )
             .await
             .map_err(|e| {
                 RerankingError::ScoringError(format!("jina rerank request failed: {e}"))
             })?;
-        parse_relevance(resp, documents.len()).await
+        parse_relevance_str(&resp.body, documents.len())
     }
-}
-
-/// Parse a provider rerank response, mapping each result back to its
-/// original index (responses are not guaranteed to be index-ordered).
-async fn parse_relevance(resp: reqwest::Response, n: usize) -> Result<Vec<f32>, RerankingError> {
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| RerankingError::ScoringError(format!("read rerank response failed: {e}")))?;
-    if !status.is_success() {
-        return Err(RerankingError::ScoringError(format!(
-            "rerank endpoint returned {status}: {text}"
-        )));
-    }
-    parse_relevance_str(&text, n)
 }
 
 /// Map a provider rerank response body back to per-index relevance scores.
 ///
-/// Provider responses are not guaranteed to be index-ordered, so each result
-/// is placed at its own original `index`; any out-of-range index is ignored.
+/// Both providers are asked for `top_n == documents.len()` (one score per
+/// candidate), so the response must cover every index exactly once. Since
+/// results are not guaranteed to be index-ordered, each is placed at its own
+/// `index`; a result whose index is out of range, or a repeated index (the
+/// provider broke its top_n contract) is a hard [`RerankingError`] rather than
+/// a silent 0.0 "dissimilar" row that would bury a genuinely relevant document.
 fn parse_relevance_str(text: &str, n: usize) -> Result<Vec<f32>, RerankingError> {
     let parsed: RerankResponse = serde_json::from_str(text).map_err(|e| {
         RerankingError::ScoringError(format!("invalid rerank response: {e}: {text}"))
     })?;
-    let mut scores = vec![0.0_f32; n];
+    let mut scores: Vec<Option<f32>> = vec![None; n];
     for r in parsed.results {
-        if r.index < n {
-            scores[r.index] = r.relevance_score;
+        match r.index {
+            // Must appear exactly once; a duplicate index means the provider
+            // returned two rows for one document.
+            i if i < n && scores[i].is_some() => {
+                return Err(RerankingError::ScoringError(format!(
+                    "rerank response repeats index {i}"
+                )));
+            }
+            // Out of range — the response does not cover the requested set.
+            i if i >= n => {
+                return Err(RerankingError::ScoringError(format!(
+                    "rerank response index {i} out of range for {n} documents"
+                )));
+            }
+            i => scores[i] = Some(r.relevance_score),
         }
     }
-    Ok(scores)
+    // A missing index silently buries that document at the bottom with a 0.0.
+    if let Some((missing, _)) = scores.iter().enumerate().find(|(_, s)| s.is_none()) {
+        return Err(RerankingError::ScoringError(format!(
+            "rerank response missing index {missing}"
+        )));
+    }
+    Ok(scores
+        .into_iter()
+        .map(|s| s.expect("all indices filled above"))
+        .collect())
 }
 
 /// Re-rank `results` in place of the document order using an [`AsyncReranker`],
@@ -249,6 +265,79 @@ pub async fn rerank_async(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// A minimal loopback HTTP/1.1 server: each accepted connection invokes
+    /// `handler(path, body)` which returns `(status, response_body)`.
+    async fn spawn_loopback(
+        handler: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static,
+    ) -> String {
+        use std::sync::Arc;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handler = Arc::new(handler);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    // Keep reading until the header terminator plus the declared
+                    // Content-Length bytes have fully arrived (reqwest may split
+                    // the request across writes).
+                    let (head_end, content_length) = loop {
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let text = String::from_utf8_lossy(&raw).to_string();
+                            let len = text
+                                .lines()
+                                .find_map(|l| {
+                                    let lower = l.to_ascii_lowercase();
+                                    lower
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().to_string())
+                                })
+                                .and_then(|v| v.parse::<usize>().ok())
+                                .unwrap_or(0);
+                            break (
+                                raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4,
+                                len,
+                            );
+                        }
+                        let n = socket.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break (raw.len(), 0);
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                    };
+                    while raw.len() < head_end + content_length {
+                        let n = socket.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                    }
+                    // Report the full HTTP text (headers + JSON body) to the
+                    // handler; forwarding only the body here risks truncation.
+                    let request = String::from_utf8_lossy(&raw).to_string();
+                    let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let (status, resp_body) = handler(&path, &request);
+                    let reason = if status == 200 { "OK" } else { "Error" };
+                    let head = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        resp_body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(resp_body.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    }
 
     /// A deterministic fake reranker so `rerank_async`'s ordering can be tested
     /// without any network I/O (loopback connects are blocked in this sandbox).
@@ -285,18 +374,107 @@ mod tests {
     }
 
     #[test]
-    fn ignores_out_of_range_index_and_malformed_body() {
+    fn out_of_range_index_is_a_hard_error() {
+        // 0.25.0 B3: an out-of-range index is a provider contract break
+        // (top_n = len() should cover every index), not a value to discard.
         let body = json!({
             "results": [
-                { "index": 99, "relevance_score": 0.9 },
                 { "index": 0, "relevance_score": 0.2 },
+                { "index": 99, "relevance_score": 0.9 },
             ]
         })
         .to_string();
-        // Index 99 is discarded; index 0 is kept.
-        assert_eq!(parse_relevance_str(&body, 1).unwrap(), vec![0.2]);
-        // Malformed JSON → scoring error, not a panic.
+        let err = parse_relevance_str(&body, 1).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn missing_index_is_a_hard_error() {
+        let body = json!({
+            "results": [
+                { "index": 1, "relevance_score": 0.5 },
+            ]
+        })
+        .to_string();
+        let err = parse_relevance_str(&body, 3).unwrap_err();
+        assert!(err.to_string().contains("missing index"));
+    }
+
+    #[test]
+    fn duplicate_index_is_a_hard_error() {
+        let body = json!({
+            "results": [
+                { "index": 0, "relevance_score": 0.2 },
+                { "index": 0, "relevance_score": 0.9 },
+                { "index": 1, "relevance_score": 0.7 },
+            ]
+        })
+        .to_string();
+        let err = parse_relevance_str(&body, 2).unwrap_err();
+        assert!(err.to_string().contains("repeats index 0"));
+    }
+
+    #[test]
+    fn malformed_body_is_a_scoring_error() {
         assert!(parse_relevance_str("not json", 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn cohere_rerank_sends_top_n_and_auth() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new((String::new(), String::new())));
+        let seen_h = seen.clone();
+        let base = spawn_loopback(move |_path, request| {
+            // `request` is the full HTTP text (headers + JSON body).
+            let json_part = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let body_value = serde_json::from_str::<serde_json::Value>(json_part).ok();
+            let top_n = body_value
+                .as_ref()
+                .and_then(|v| v.get("top_n"))
+                .and_then(|x| x.as_u64());
+            let auth_header: String = request
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                .unwrap_or("")
+                .to_string();
+            if top_n == Some(2) {
+                let request_line = request.lines().next().unwrap_or("").to_string();
+                let mut guard = seen_h.lock().unwrap();
+                guard.0 = request_line;
+                guard.1 = auth_header;
+            }
+            (
+                200,
+                r#"{"results":[{"index":0,"relevance_score":0.9},{"index":1,"relevance_score":0.1}]}"#
+                    .to_string(),
+            )
+        })
+        .await;
+
+        let reranker = CohereRerank::new("cohere-key").with_base_url(base);
+        let docs = vec![Document::new("a"), Document::new("b")];
+        let scores = reranker.score_async("q", &docs).await.unwrap();
+        assert_eq!(scores, vec![0.9, 0.1]);
+
+        let (request_line, auth) = &*seen.lock().unwrap();
+        assert!(
+            request_line
+                .to_ascii_lowercase()
+                .starts_with("post /v1/rerank"),
+            "{request_line}"
+        );
+        assert!(!auth.is_empty(), "should carry Bearer auth");
+        assert!(auth.to_ascii_lowercase().contains("bearer cohere-key"));
+    }
+
+    #[tokio::test]
+    async fn rerank_non_2xx_surfaces_error() {
+        let base =
+            spawn_loopback(|_path, _body| (401, r#"{"message":"bad key"}"#.to_string())).await;
+        let reranker = JinaRerank::new("jina-key").with_base_url(base);
+        let docs = vec![Document::new("a")];
+        let err = reranker.score_async("q", &docs).await.unwrap_err();
+        assert!(err.to_string().contains("401"));
+        assert!(err.to_string().contains("bad key"));
     }
 
     #[tokio::test]

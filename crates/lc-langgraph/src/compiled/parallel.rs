@@ -107,8 +107,34 @@ impl<S: StateSchema> CompiledGraph<S> {
                     state = self.merge_parallel_states(&parallel_branches, &base)?;
                     current_node = END.to_string();
                 }
+                // H4: persist the post-merge state like `invoke` does, so resume from
+                // this point covers the merged branches.
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        current_node.clone(),
+                    ));
+                }
             } else {
-                current_node = self.find_next_node(&current_node, &state).await?;
+                let next_node = self.find_next_node(&current_node, &state).await?;
+                // H4: per-step checkpoint on the sequential path, mirroring `invoke`
+                // (parallel.rs previously advanced without saving, so an interrupt /
+                // crash mid-execution of a mixed parallel+sequential graph could not
+                // resume past the last FanOut merge).
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(checkpoint_id, next_node.clone()));
+                }
+                current_node = next_node;
             }
         }
 

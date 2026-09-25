@@ -176,6 +176,11 @@ pub trait StreamingOutputGuardrail: Send + Sync {
     async fn flush(&self) -> FlushOutput {
         FlushOutput::Empty
     }
+
+    /// Resets any per-stream state (hold-back buffers, cursors) so a stateful rail can be
+    /// reused across independent streams (K2). Defaults to a no-op; stateful rails like
+    /// [`crate::pii::PiiRedactionGuardrail`] override it to clear their buffer.
+    fn reset(&self) {}
 }
 
 /// Guardrails configuration

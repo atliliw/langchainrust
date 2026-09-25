@@ -181,6 +181,7 @@ impl ReActAgent {
                         ),
                     },
                     log: "0.22.0 audit fix: parse repair".to_string(),
+                    tool_call_id: None,
                 }))
             }
         }
@@ -471,6 +472,7 @@ mod tests {
             let chunks = [
                 Ok(StreamChunk::new("Final ")),
                 Ok(StreamChunk {
+                    thinking_content: None,
                     text: "Answer: 42".to_string(),
                     token_usage: Some(TokenUsage {
                         prompt_tokens: 10,

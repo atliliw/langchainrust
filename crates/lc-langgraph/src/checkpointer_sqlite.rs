@@ -49,11 +49,32 @@ CREATE TABLE IF NOT EXISTS lc_checkpoints (
     ts              INTEGER NOT NULL,
     recursion_count INTEGER NOT NULL,
     state           TEXT NOT NULL,
+    parent_id       TEXT,
     UNIQUE(thread_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_lc_checkpoints_thread
     ON lc_checkpoints(thread_id, ts, seq);
 "#;
+
+/// Idempotently add the `parent_id` (fork-lineage) column to a table written by
+/// an older version. `CREATE TABLE IF NOT EXISTS` keeps new databases correct,
+/// but existing files are not altered by it, so existing checkpoints must be
+/// migrated in place. Runs on every open.
+fn migrate_parent_column(conn: &Connection) -> GraphResult<()> {
+    let has_parent: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('lc_checkpoints') \
+             WHERE name = 'parent_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_err)?;
+    if has_parent == 0 {
+        conn.execute_batch("ALTER TABLE lc_checkpoints ADD COLUMN parent_id TEXT")
+            .map_err(sql_err)?;
+    }
+    Ok(())
+}
 
 /// Checkpointer persisting checkpoints to a SQLite database file.
 pub struct SqliteCheckpointer<S: StateSchema> {
@@ -107,6 +128,7 @@ impl<S: StateSchema> SqliteCheckpointer<S> {
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(sql_err)?;
         conn.execute_batch(SCHEMA).map_err(sql_err)?;
+        migrate_parent_column(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             thread_id,
@@ -117,6 +139,18 @@ impl<S: StateSchema> SqliteCheckpointer<S> {
     /// Thread (workflow/conversation) this checkpointer is scoped to.
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    /// A thread-bound backend only serves its own thread; the threaded trait
+    /// methods assert the requested thread matches before delegating.
+    fn assert_thread(&self, thread: &str) -> GraphResult<()> {
+        if thread != self.thread_id {
+            return Err(GraphError::CheckpointError(format!(
+                "this checkpointer is scoped to thread '{}', not '{thread}'",
+                self.thread_id
+            )));
+        }
+        Ok(())
     }
 
     /// Runs one blocking rusqlite closure on the shared connection.
@@ -136,28 +170,103 @@ impl<S: StateSchema> SqliteCheckpointer<S> {
         .map_err(|e| GraphError::CheckpointError(format!("sqlite task join error: {e}")))?
         .map_err(sql_err)
     }
-}
 
-#[async_trait]
-impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
-    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+    /// Shared insert path; `parent_id` records the checkpoint this one was
+    /// forked from (fork lineage).
+    ///
+    /// An inherent (not trait) helper so the trait impl can call it: it is a
+    /// private detail of this backend, not a [`Checkpointer`] member.
+    async fn insert_internal(
+        &self,
+        thread_id: String,
+        parent_id: Option<String>,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
         let id = Uuid::new_v4().to_string();
         let ts = chrono::Utc::now().timestamp();
         let state_json = serde_json::to_string(state)
             .map_err(|e| GraphError::CheckpointError(format!("serialize error: {e}")))?;
-        let thread_id = self.thread_id.clone();
         let id_clone = id.clone();
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO lc_checkpoints \
-                 (thread_id, id, version, ts, recursion_count, state) \
-                 VALUES (?1, ?2, 1, ?3, ?4, ?5)",
-                params![thread_id, id_clone, ts, recursion_count as i64, state_json],
+                 (thread_id, id, version, ts, recursion_count, state, parent_id) \
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)",
+                params![
+                    thread_id,
+                    id_clone,
+                    ts,
+                    recursion_count as i64,
+                    state_json,
+                    parent_id,
+                ],
             )?;
             Ok(())
         })
         .await?;
         Ok(id)
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
+    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+        self.insert_internal(self.thread_id.clone(), None, state, recursion_count)
+            .await
+    }
+
+    async fn save_threaded(
+        &self,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(self.thread_id.clone(), None, state, recursion_count)
+            .await
+    }
+
+    async fn save_fork_threaded(
+        &self,
+        parent_id: Option<&str>,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(
+            self.thread_id.clone(),
+            parent_id.map(ToOwned::to_owned),
+            state,
+            recursion_count,
+        )
+        .await
+    }
+
+    async fn load_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<S> {
+        self.assert_thread(thread)?;
+        self.load(checkpoint_id).await
+    }
+
+    async fn list_threaded(&self, thread: &str) -> GraphResult<Vec<String>> {
+        self.assert_thread(thread)?;
+        self.list().await
+    }
+
+    async fn delete_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<()> {
+        self.assert_thread(thread)?;
+        self.delete(checkpoint_id).await
+    }
+
+    async fn last_threaded(&self, thread: &str) -> GraphResult<Option<(S, usize)>> {
+        self.assert_thread(thread)?;
+        self.last().await
+    }
+
+    async fn snapshots_threaded(&self, thread: &str) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.assert_thread(thread)?;
+        self.snapshots().await
     }
 
     async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
@@ -204,10 +313,10 @@ impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
 
     async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
         let thread_id = self.thread_id.clone();
-        let rows: Vec<(String, i64, i64, i64, String)> = self
+        let rows: Vec<(String, i64, i64, i64, String, Option<String>)> = self
             .with_conn(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id, ts, seq, recursion_count, state FROM lc_checkpoints \
+                    "SELECT id, ts, seq, recursion_count, state, parent_id FROM lc_checkpoints \
                      WHERE thread_id = ?1 ORDER BY ts ASC, seq ASC",
                 )?;
                 let rows = stmt.query_map(params![thread_id], |row| {
@@ -217,13 +326,14 @@ impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()
             })
             .await?;
         let mut snaps = Vec::with_capacity(rows.len());
-        for (id, ts, seq, recursion_count, state_json) in rows {
+        for (id, ts, seq, recursion_count, state_json, parent) in rows {
             let state: S = serde_json::from_str(&state_json)
                 .map_err(|e| GraphError::CheckpointError(format!("deserialize error: {e}")))?;
             snaps.push(CheckpointInfo {
@@ -232,6 +342,7 @@ impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
                 seq: seq as u64,
                 recursion_count: recursion_count as usize,
                 state,
+                parent,
             });
         }
         Ok(snaps)
@@ -270,14 +381,16 @@ impl<S: StateSchema> Checkpointer<S> for SqliteCheckpointer<S> {
             .map_err(|e| GraphError::CheckpointError(format!("serialize error: {e}")))?;
         let thread_id = self.thread_id.clone();
         let id = checkpoint_id.to_string();
-        let ts = chrono::Utc::now().timestamp();
         let outcome = self
             .with_conn(move |conn| {
                 let tx = conn.unchecked_transaction()?;
+                // B4: do NOT refresh `ts` — `last()` (`ORDER BY ts DESC`) must keep
+                // reflecting save order, not edit order, so a state edit cannot
+                // move a checkpoint ahead of later saves.
                 let changed = tx.execute(
-                    "UPDATE lc_checkpoints SET state = ?1, version = version + 1, ts = ?2 \
-                     WHERE thread_id = ?3 AND id = ?4 AND version = ?5",
-                    params![state_json, ts, thread_id, id, expected_version as i64],
+                    "UPDATE lc_checkpoints SET state = ?1, version = version + 1 \
+                     WHERE thread_id = ?2 AND id = ?3 AND version = ?4",
+                    params![state_json, thread_id, id, expected_version as i64],
                 )?;
                 if changed == 0 {
                     // Distinguish a stale version from a missing checkpoint.
@@ -438,6 +551,38 @@ mod tests {
             "expected version conflict, got {conflict:?}"
         );
         assert_eq!(cp.load(&id).await.unwrap().input, "v2");
+    }
+
+    #[tokio::test]
+    async fn save_fork_records_parent_lineage() {
+        let cp = SqliteCheckpointer::<AgentState>::in_memory("fork-lin").unwrap();
+        let root = cp
+            .save(&AgentState::new("root".to_string()), 1)
+            .await
+            .unwrap();
+        let fork = cp
+            .save_fork_threaded(
+                Some(&root),
+                "fork-lin",
+                &AgentState::new("forked".to_string()),
+                3,
+            )
+            .await
+            .unwrap();
+
+        let snaps = cp.snapshots().await.unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].id, root);
+        assert_eq!(snaps[0].parent, None);
+        assert_eq!(snaps[1].id, fork);
+        assert_eq!(snaps[1].parent.as_deref(), Some(root.as_str()));
+
+        // Threaded asserts: a mismatched thread is rejected.
+        assert!(cp
+            .save_threaded("other", &AgentState::new("x".to_string()), 0)
+            .await
+            .is_err());
+        assert!(cp.load_threaded("other", &fork).await.is_err());
     }
 
     /// B2 gate: a checkpointer reopened against the same database file (the

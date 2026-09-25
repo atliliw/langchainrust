@@ -160,9 +160,11 @@ impl GuardrailRunner {
 
     /// Phase one of the two-phase streaming check: validates each incremental token.
     ///
-    /// Returns a [`ChunkAction`]: pass / pass after rewrite / block and drop. A previous rail's
-    /// `Replace` becomes the `token` seen by later rails; `window`/`full` stay the raw candidate
-    /// views so detection context is not lost.
+    /// Returns a [`ChunkAction`]: pass / pass after rewrite / block and drop. Every rail sees the
+    /// **raw** `token`/`window`/`full` (K3): the `ChunkContext` contract is that all three views
+    /// derive from the raw model output, so a stateful rail (hold-back accumulation) always
+    /// accumulates the true output regardless of whether an earlier rail rewrote the chunk. The
+    /// rewritten form is this chain's *return value*, not another view the next rail should see.
     /// The second re-check of the full output is handled by [`GuardrailRunner::validate_output`] (P1-4).
     pub async fn validate_stream_chunk(&mut self, ctx: &ChunkContext<'_>) -> ChunkAction {
         let mut rewritten: Option<String> = None;
@@ -170,7 +172,7 @@ impl GuardrailRunner {
         let guardrails = self.config.streaming_guardrails.clone();
         for g in &guardrails {
             let probe = ChunkContext {
-                token: rewritten.as_deref().unwrap_or(ctx.token),
+                token: ctx.token,
                 window: ctx.window,
                 full: ctx.full,
             };
@@ -235,6 +237,17 @@ impl GuardrailRunner {
             }
         }
         released
+    }
+
+    /// Resets every stateful streaming rail (K2) so a runner — and the `Arc`d rail instances it
+    /// holds, which phase-one/phase-two clones share — can be reused across independent
+    /// streams. Stateful rails (hold-back redaction) must not carry one stream's buffer into the
+    /// next; call this once per `GuardedAgent::invoke_stream`.
+    pub fn reset_streaming(&self) {
+        let guardrails = self.config.streaming_guardrails.clone();
+        for g in &guardrails {
+            g.reset();
+        }
     }
 
     /// Returns a snapshot of violation records (a clone of the shared log).

@@ -17,6 +17,15 @@ pub struct AgentAction {
 
     /// Log information (contains the full LLM output)
     pub log: String,
+
+    /// B5: the provider tool-call id (function-calling, e.g. OpenAI's `call_xxx`).
+    ///
+    /// `None` for agents that do not carry native tool-call ids (ReAct text parse,
+    /// handoffs, synthetic/test actions). When `None`, the executor stamps a
+    /// framework-generated id (uuid) for observability, and [`AgentStep`] rebuilders
+    /// derive a stable pairing id so a `ToolCall` and its `tool` result stay linked.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 /// Tool input type
@@ -201,6 +210,7 @@ mod tests {
                 value: input.to_string(),
             },
             log: "test".to_string(),
+            tool_call_id: None,
         }
     }
 

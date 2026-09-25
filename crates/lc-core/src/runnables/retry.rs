@@ -116,6 +116,29 @@ impl RetryConfig {
         self
     }
 
+    /// Validate the configuration at construction time.
+    ///
+    /// A non-finite or non-positive `backoff_multiplier` used to propagate
+    /// all the way into `Duration::from_secs_f64` (a panic) or silently
+    /// collapse retries to zero delay via the runtime clamp. Likewise an
+    /// `initial_delay` above `max_delay` makes the cap meaningless. Both are
+    /// rejected here so misconfiguration fails fast before the first call.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.backoff_multiplier.is_finite() || self.backoff_multiplier <= 0.0 {
+            return Err(format!(
+                "backoff_multiplier must be a finite, positive number, got {}",
+                self.backoff_multiplier
+            ));
+        }
+        if self.max_delay < self.initial_delay {
+            return Err(format!(
+                "max_delay ({:?}) must be at least initial_delay ({:?})",
+                self.max_delay, self.initial_delay
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks if an error should trigger a retry.
     fn should_retry(&self, error: &str) -> bool {
         match &self.retry_on {
@@ -128,8 +151,10 @@ impl RetryConfig {
     /// Calculates the delay for a given attempt number (0-based).
     fn delay_for_attempt(&self, attempt: usize) -> Duration {
         let multiplier = self.backoff_multiplier.powi(attempt as i32);
-        let delay = self.initial_delay.as_secs_f64() * multiplier;
-        let delay = delay.min(self.max_delay.as_secs_f64());
+        // Clamp to non-negative: a negative multiplier would produce a negative
+        // duration and `Duration::from_secs_f64` panics.
+        let delay = (self.initial_delay.as_secs_f64() * multiplier).max(0.0);
+        let delay = delay.min(self.max_delay.as_secs_f64()).max(0.0);
         Duration::from_secs_f64(delay)
     }
 }
@@ -138,9 +163,15 @@ impl RetryConfig {
 fn is_transient_error(error: &str) -> bool {
     let error_lower = error.to_lowercase();
 
-    // HTTP status codes that are retriable
+    // HTTP status codes that are retriable. Matched as **whole tokens** (B3):
+    // a bare `contains("500")` misclassifies "5000 tokens" or "1.500ms" as a 500
+    // error. `split` on non-alphanumerics keeps "500" recognisable whether it
+    // appears bare, bracketed ("[500]"), or percent-encoded status-adjacent text.
     for code in &["429", "500", "502", "503", "504"] {
-        if error_lower.contains(code) {
+        if error_lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|t| t == *code)
+        {
             return true;
         }
     }
@@ -180,12 +211,16 @@ pub struct RunnableRetry<I: Send + Sync + 'static, O: Send + Sync + 'static> {
 
 impl<I: Send + Sync + 'static, O: Send + Sync + 'static> RunnableRetry<I, O> {
     /// Creates a new RunnableRetry from a boxed RunnableAny.
-    pub fn new(runnable: Box<dyn RunnableAny>, retry_config: RetryConfig) -> Self {
-        Self {
+    ///
+    /// Fails at construction when `retry_config` is invalid (see
+    /// [`RetryConfig::validate`]) instead of panicking on the first retry.
+    pub fn new(runnable: Box<dyn RunnableAny>, retry_config: RetryConfig) -> Result<Self, String> {
+        retry_config.validate()?;
+        Ok(Self {
             runnable: Arc::from(runnable),
             retry_config,
             _marker: std::marker::PhantomData,
-        }
+        })
     }
 }
 
@@ -357,7 +392,7 @@ mod tests {
             }
         });
 
-        let retry = runnable.with_retry(RetryConfig::new(2));
+        let retry = runnable.with_retry(RetryConfig::new(2)).unwrap();
         let result: Result<i32, _> = retry.invoke(1, None).await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
@@ -378,7 +413,7 @@ mod tests {
             }
         });
 
-        let retry = runnable.with_retry(RetryConfig::new(2));
+        let retry = runnable.with_retry(RetryConfig::new(2)).unwrap();
         let result: Result<i32, _> = retry.invoke(1, None).await;
         assert!(result.is_err());
         assert_eq!(call_count.load(Ordering::SeqCst), 3); // 1 initial + 2 retries
@@ -397,7 +432,7 @@ mod tests {
             }
         });
 
-        let retry = runnable.with_retry(RetryConfig::new(3));
+        let retry = runnable.with_retry(RetryConfig::new(3)).unwrap();
         let result: Result<i32, _> = retry.invoke(1, None).await;
         assert!(result.is_err());
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // No retry for 401
@@ -406,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_succeeds_on_first_attempt() {
         let runnable = RunnableLambda::new_sync(|x: i32| x * 2);
-        let retry = runnable.with_retry(RetryConfig::new(3));
+        let retry = runnable.with_retry(RetryConfig::new(3)).unwrap();
         let result: Result<i32, _> = retry.invoke(5, None).await;
         assert_eq!(result.unwrap(), 10);
     }
@@ -417,11 +452,46 @@ mod tests {
         token.cancel();
 
         let runnable = RunnableLambda::new_sync(|x: i32| x * 2);
-        let retry = runnable.with_retry(RetryConfig::new(3));
+        let retry = runnable.with_retry(RetryConfig::new(3)).unwrap();
 
         let config = RunnableConfig::new().with_cancellation_token(token);
         let result: Result<i32, _> = retry.invoke(5, Some(config)).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
+
+    // ---- 0.25.0: constructor-time validation ----
+
+    #[test]
+    fn validate_accepts_default_config() {
+        assert!(RetryConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_non_positive_or_non_finite_multiplier() {
+        for bad in [0.0, -1.0, -2.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cfg = RetryConfig::default().with_backoff_multiplier(bad);
+            assert!(
+                cfg.validate().is_err(),
+                "multiplier {bad} must be rejected at construction"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_delay_bounds_inverted() {
+        let cfg = RetryConfig::default()
+            .with_initial_delay(Duration::from_secs(30))
+            .with_max_delay(Duration::from_millis(100));
+        assert!(cfg.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn with_retry_rejects_invalid_config_before_running() {
+        let runnable = RunnableLambda::new_sync(|x: i32| x * 2);
+        // The negative multiplier that used to panic inside
+        // `Duration::from_secs_f64` is now a construction error.
+        let result = runnable.with_retry(RetryConfig::default().with_backoff_multiplier(-1.0));
+        assert!(result.is_err());
     }
 }

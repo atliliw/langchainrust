@@ -4,6 +4,7 @@
 use std::env;
 
 use crate::ProviderError;
+use lc_core::tools::ToolDefinition;
 
 /// Cohere API endpoint.
 pub const COHERE_BASE_URL: &str = "https://api.cohere.com/v2";
@@ -26,6 +27,13 @@ pub struct CohereConfig {
     pub max_tokens: Option<usize>,
     /// Optional system preamble for the model.
     pub preamble: Option<String>,
+    /// Bound tool definitions for function calling (0.25.0: the Cohere
+    /// implementation previously never sent `tools`).
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// Tool choice strategy. Cohere v2 accepts `NONE`/`AUTO`/`ANY` (an
+    /// OpenAI-style `{"type":"function",...}` object also works on the wire,
+    /// but this configuration passes the string through verbatim).
+    pub tool_choice: Option<String>,
 }
 
 impl std::fmt::Debug for CohereConfig {
@@ -38,6 +46,8 @@ impl std::fmt::Debug for CohereConfig {
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
             .field("preamble", &self.preamble)
+            .field("tools", &self.tools)
+            .field("tool_choice", &self.tool_choice)
             .finish()
     }
 }
@@ -51,6 +61,8 @@ impl Default for CohereConfig {
             temperature: None,
             max_tokens: None,
             preamble: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }
@@ -114,6 +126,12 @@ impl CohereConfig {
     /// Sets the preamble (system prompt).
     pub fn with_preamble(mut self, preamble: impl Into<String>) -> Self {
         self.preamble = Some(preamble.into());
+        self
+    }
+
+    /// Sets the tool choice strategy (`NONE`/`AUTO`/`ANY` on Cohere v2).
+    pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
+        self.tool_choice = Some(choice.into());
         self
     }
 }

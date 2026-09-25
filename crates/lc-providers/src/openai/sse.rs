@@ -277,6 +277,11 @@ pub struct Delta {
     /// Content
     #[serde(default)]
     pub content: Option<String>,
+    /// Reasoning/thinking delta from reasoning models (DeepSeek-R1, GLM and
+    /// other OpenAI-compatible vendors expose it as `delta.reasoning_content`).
+    /// 0.25.0: previously parsed nowhere, so the reasoning stream was lost.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
     /// Tool-call fragments (OpenAI streaming format). Each tool call is split
     /// across fragments: `id`/`name` arrive once (usually on the first
     /// fragment), `arguments` is a string concatenated across fragments.
@@ -468,6 +473,24 @@ mod tests {
 
         let chunk = event.parse_openai_chunk().unwrap().unwrap();
         assert_eq!(chunk.choices[0].delta.content, Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_openai_chunk_parsing_reasoning_content_delta() {
+        // 0.25.0: reasoning models stream CoT on `delta.reasoning_content`;
+        // the Delta struct must capture it so the provider can forward it as
+        // StreamChunk::thinking_content.
+        let event = SSEEvent {
+            event: None,
+            data: r#"{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"step one"},"finish_reason":null}]}"#.to_string(),
+        };
+
+        let chunk = event.parse_openai_chunk().unwrap().unwrap();
+        assert_eq!(
+            chunk.choices[0].delta.reasoning_content.as_deref(),
+            Some("step one")
+        );
+        assert!(chunk.choices[0].delta.content.is_none());
     }
 
     #[test]

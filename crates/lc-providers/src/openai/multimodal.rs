@@ -136,27 +136,16 @@ impl OpenAIChat {
             .part("file", part)
             .text("model", "whisper-1");
 
+        // 0.25.0: goes through the unified HTTP client (auth/headers from
+        // config, bounded read, total deadline). Multipart forms cannot be
+        // replayed, so the unified layer sends them exactly once.
         let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .multipart(form)
-            .send()
+            .http_api
+            .post_multipart_with(&url, form, self.request_options())
             .await
-            .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
+            .map_err(map_multimodal_http)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(MultimodalError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let whisper_response: WhisperResponse = response
-            .json()
-            .await
+        let whisper_response: WhisperResponse = serde_json::from_str(&response.body)
             .map_err(|e| MultimodalError::ParseError(e.to_string()))?;
 
         Ok(whisper_response.text)
@@ -179,30 +168,12 @@ impl OpenAIChat {
         });
 
         let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
-            .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
+            .map_err(map_multimodal_http)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(MultimodalError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
-
-        Ok(bytes.to_vec())
+        Ok(response.body.into_bytes())
     }
 
     /// Generates an image using DALL-E.
@@ -223,27 +194,12 @@ impl OpenAIChat {
         });
 
         let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
-            .map_err(|e| MultimodalError::HttpError(e.to_string()))?;
+            .map_err(map_multimodal_http)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(MultimodalError::ApiError(format!(
-                "HTTP {}: {}",
-                status, error_text
-            )));
-        }
-
-        let dalle_response: DallEResponse = response
-            .json()
-            .await
+        let dalle_response: DallEResponse = serde_json::from_str(&response.body)
             .map_err(|e| MultimodalError::ParseError(e.to_string()))?;
 
         let image = dalle_response
@@ -276,6 +232,17 @@ impl MultimodalModel for OpenAIChat {
 
     async fn generate_image(&self, prompt: &str) -> Result<ImageContent, MultimodalError> {
         self.dalle_generate(prompt, DallEImageSize::S1024).await
+    }
+}
+
+/// Maps unified-layer HTTP errors onto the multimodal error enum, preserving
+/// the `HTTP {status}: {body}` message shape callers saw before 0.25.0.
+fn map_multimodal_http(err: lc_core::http::HttpError) -> MultimodalError {
+    match err {
+        lc_core::http::HttpError::Status { status, body } => {
+            MultimodalError::ApiError(format!("HTTP {status}: {body}"))
+        }
+        other => MultimodalError::HttpError(other.to_string()),
     }
 }
 

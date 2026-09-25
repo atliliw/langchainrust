@@ -3,22 +3,28 @@
 
 use serde::{Deserialize, Serialize};
 
+// 0.25.0 B2: the Generative Language API wire JSON is camelCase. The Rust
+// field names stay snake_case (internal ergonomics) but every multi-word field
+// carries its explicit wire name; previously the snake_case keys were unknown
+// to the API and silently dropped, so system prompts, sampling parameters,
+// tools and multimodal parts never reached a real endpoint.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GeminiRequest {
     pub(crate) contents: Vec<GeminiContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     pub(crate) system_instruction: Option<GeminiSystemInstruction>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     pub(crate) generation_config: Option<GeminiGenerationConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tools: Option<Vec<GeminiToolDeclaration>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "toolConfig", skip_serializing_if = "Option::is_none")]
     pub(crate) tool_config: Option<GeminiToolConfig>,
 }
 
 /// Gemini tool declaration wrapper (contains functionDeclarations array).
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GeminiToolDeclaration {
+    #[serde(rename = "functionDeclarations")]
     pub(crate) function_declarations: Vec<GeminiFunctionDeclaration>,
 }
 
@@ -35,6 +41,7 @@ pub(crate) struct GeminiFunctionDeclaration {
 /// Gemini tool configuration (controls tool choice behavior).
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GeminiToolConfig {
+    #[serde(rename = "functionCallingConfig")]
     pub(crate) function_calling_config: GeminiFunctionCallingConfig,
 }
 
@@ -53,17 +60,29 @@ pub(crate) struct GeminiContent {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GeminiPart {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "functionCall",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub(crate) function_call: Option<GeminiFunctionCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "functionResponse",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub(crate) function_response: Option<GeminiFunctionResponse>,
     /// B7: inline base64 media (`inlineData`: image/audio/video/PDF bytes).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "inlineData",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub(crate) inline_data: Option<GeminiInlineData>,
     /// B7: hosted media reference (`fileData`: `gs://` File API URIs).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "fileData", skip_serializing_if = "Option::is_none", default)]
     pub(crate) file_data: Option<GeminiFileData>,
 }
 
@@ -72,6 +91,7 @@ pub(crate) struct GeminiPart {
 pub(crate) struct GeminiInlineData {
     /// MIME type of the media (e.g. `image/png`, `audio/wav`, `video/mp4`,
     /// `application/pdf`).
+    #[serde(rename = "mimeType")]
     pub(crate) mime_type: String,
     /// Raw base64-encoded media bytes (data-URI payload without its header).
     pub(crate) data: String,
@@ -81,8 +101,10 @@ pub(crate) struct GeminiInlineData {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GeminiFileData {
     /// File API URI (e.g. `gs://bucket/file.png`).
+    #[serde(rename = "fileUri")]
     pub(crate) file_uri: String,
     /// MIME type of the referenced media.
+    #[serde(rename = "mimeType")]
     pub(crate) mime_type: String,
 }
 
@@ -105,6 +127,7 @@ pub(crate) struct GeminiSystemInstruction {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
@@ -116,7 +139,12 @@ pub(crate) struct GeminiGenerationConfig {
     pub(crate) top_k: Option<i32>,
 }
 
+// 0.25.0 B2: response-only structs. The Generative Language API answers in
+// camelCase (`usageMetadata`/`promptTokenCount`/`finishReason`); without the
+// rename every field below deserialized to None, so non-stream token counting
+// (mod.rs parse_response) and the streaming usage chunk silently got nothing.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GeminiResponse {
     pub(crate) candidates: Option<Vec<GeminiCandidate>>,
     pub(crate) usage_metadata: Option<GeminiUsageMetadata>,
@@ -125,6 +153,7 @@ pub(crate) struct GeminiResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(crate) struct GeminiCandidate {
     pub(crate) content: Option<GeminiContent>,
@@ -132,6 +161,7 @@ pub(crate) struct GeminiCandidate {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GeminiUsageMetadata {
     pub(crate) prompt_token_count: Option<i32>,
     pub(crate) candidates_token_count: Option<i32>,

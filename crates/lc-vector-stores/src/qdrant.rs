@@ -424,7 +424,7 @@ impl VectorStore for QdrantVectorStore {
             // UUID per insert, so re-adding the same document created parallel
             // duplicate vectors that crowded out top-k (the payload `doc_id`
             // alone cannot dedupe because point ids never match).
-            let internal_uuid = deterministic_point_uuid(&user_id, &self.config.collection_name);
+            let internal_uuid = deterministic_point_uuid(&self.config.collection_name, &user_id);
             let point_id = PointId::from(internal_uuid.to_string());
 
             let mut payload = Payload::new();

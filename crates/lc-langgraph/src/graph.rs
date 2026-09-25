@@ -23,7 +23,10 @@ pub struct StateGraph<S: StateSchema> {
     nodes: HashMap<String, Arc<dyn GraphNode<S>>>,
     edges: Vec<GraphEdge>,
     entry_point: Option<String>,
-    reducers: HashMap<String, Arc<dyn Reducer<S>>>,
+    // B4: reducers are kept in registration order (a `Vec` of (field, reducer)
+    // pairs) so the composed merge applies them deterministically instead of
+    // relying on HashMap iteration order.
+    reducers: Vec<(String, Arc<dyn Reducer<S>>)>,
     default_reducer: Arc<dyn Reducer<S>>,
     conditional_routers: HashMap<String, Arc<dyn ConditionalEdge<S>>>,
 }
@@ -35,7 +38,7 @@ impl<S: StateSchema + 'static> StateGraph<S> {
             nodes: HashMap::new(),
             edges: Vec::new(),
             entry_point: None,
-            reducers: HashMap::new(),
+            reducers: Vec::new(),
             default_reducer: Arc::new(ReplaceReducer),
             conditional_routers: HashMap::new(),
         }
@@ -153,7 +156,14 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         field: impl Into<String>,
         reducer: Arc<dyn Reducer<S>>,
     ) -> &mut Self {
-        self.reducers.insert(field.into(), reducer);
+        let field = field.into();
+        // B4: replace in place when a reducer for the same field already exists,
+        // else push in registration order. Ordering matters because the composed
+        // merge applies fields in this order.
+        match self.reducers.iter_mut().find(|(f, _)| *f == field) {
+            Some(slot) => slot.1 = reducer,
+            None => self.reducers.push((field, reducer)),
+        }
         self
     }
 
@@ -181,12 +191,13 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         // 0.22.0 C3 fix: honor the per-field reducers registered via
         // `set_reducer`. Previously they were dropped here and every merge
         // point used plain replace, silently overwriting accumulating fields.
+        // 0.25.0 B4: `reducers` is an ordered Vec, so registration order is preserved.
         let merge_reducer: Arc<dyn Reducer<S>> = if self.reducers.is_empty() {
             self.default_reducer.clone()
         } else {
             Arc::new(MergeReducer::new(
                 self.default_reducer.clone(),
-                self.reducers.values().cloned().collect(),
+                self.reducers.clone(),
             ))
         };
 

@@ -32,33 +32,41 @@ use serde::de::DeserializeOwned;
 #[derive(Clone)]
 pub struct OpenAIChat {
     pub(crate) config: OpenAIConfig,
-    pub(crate) client: reqwest::Client,
+    /// Buffered client for non-streaming calls (0.25.0: unified HTTP layer).
+    pub(crate) http_api: lc_core::http::HttpClient,
+    /// SSE-profile client for streaming calls (establishment retries only).
+    pub(crate) http_sse: lc_core::http::HttpClient,
 }
 
 impl OpenAIChat {
-    /// B5: attaches the standard JSON content type, the optional bearer token
-    /// (`send_auth`), and any caller-supplied extra headers to a request.
-    pub(crate) fn apply_headers(
-        mut builder: reqwest::RequestBuilder,
-        config: &OpenAIConfig,
-    ) -> reqwest::RequestBuilder {
-        builder = builder.header("Content-Type", "application/json");
-        if config.send_auth {
-            builder = builder.header("Authorization", format!("Bearer {}", config.api_key));
+    /// Per-request auth/headers assembled from the provider config.
+    pub(crate) fn request_options(&self) -> lc_core::http::RequestOptions {
+        crate::provider_http::provider_request_options(
+            self.config.send_auth,
+            &self.config.api_key,
+            &self.config.extra_headers,
+        )
+    }
+
+    /// Maps a unified-layer error to the provider error type, preserving the
+    /// status code and (bounded) error body in the API variant.
+    pub(crate) fn map_http_error(err: lc_core::http::HttpError) -> OpenAIError {
+        match err {
+            lc_core::http::HttpError::Status { status, body } => {
+                OpenAIError::Api(format!("HTTP {status}: {body}"))
+            }
+            other => OpenAIError::Http(other.to_string()),
         }
-        for (name, value) in &config.extra_headers {
-            builder = builder.header(name, value);
-        }
-        builder
     }
 
     /// Creates a new OpenAIChat with the given configuration.
     pub fn new(config: OpenAIConfig) -> Self {
         Self {
             config,
-            // 0.22.0 audit fix (H-P1): shared client with a connect timeout
-            // (no total timeout — streams must not be cut off).
-            client: crate::retry::default_client(),
+            // 0.25.0: unified HTTP layer — bounded body, closed retriable
+            // status set, Retry-After support, method-aware POST retries.
+            http_api: crate::provider_http::provider_api_client(),
+            http_sse: crate::provider_http::provider_sse_client(),
         }
     }
 
@@ -92,7 +100,10 @@ impl OpenAIChat {
                 });
                 if let Some(tool_calls) = &message.tool_calls {
                     msg["tool_calls"] =
-                        serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null);
+                        serde_json::to_value(tool_calls).unwrap_or_else(|e| {
+                            log::warn!("OpenAI: failed to serialize tool_calls, omitting them: {e}");
+                            serde_json::Value::Null
+                        });
                 }
                 msg
             }
@@ -116,6 +127,14 @@ impl OpenAIChat {
             "messages": openai_messages,
             "stream": stream,
         });
+
+        // 0.25.0: request the terminal usage chunk explicitly. Without
+        // `stream_options.include_usage` OpenAI omits usage from streaming
+        // responses, so token accounting was silently missing on the stream
+        // path. Carries `stream` so non-streaming bodies stay byte-identical.
+        if stream {
+            body["stream_options"] = json!({"include_usage": true});
+        }
 
         if let Some(temp) = self.config.temperature {
             body["temperature"] = json!(temp);
@@ -157,7 +176,8 @@ impl OpenAIChat {
         };
         Self {
             config,
-            client: self.client.clone(),
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
         }
     }
 
@@ -189,7 +209,8 @@ impl OpenAIChat {
 
         StructuredOutputMethod {
             config,
-            client: self.client.clone(),
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
             _phantom: PhantomData,
         }
     }
@@ -226,7 +247,8 @@ impl OpenAIChat {
 
         StructuredOutputMethod {
             config,
-            client: self.client.clone(),
+            http_api: self.http_api.clone(),
+            http_sse: self.http_sse.clone(),
             _phantom: PhantomData,
         }
     }
@@ -265,13 +287,15 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
 
         // H4: True streaming — emit one LLMResult per token instead of
         // collecting all tokens first and emitting a single result.
+        // 0.25.0: the terminal aggregated state (tool_calls / token usage) and
+        // reasoning deltas pass through instead of being replaced with None.
         let stream = token_stream.map(move |token_result| match token_result {
             Ok(chunk) => Ok(LLMResult {
                 content: chunk.text,
                 model: model.clone(),
                 token_usage: chunk.token_usage,
-                tool_calls: None,
-                thinking_content: None,
+                tool_calls: chunk.tool_calls,
+                thinking_content: chunk.thinking_content,
             }),
             Err(e) => Err(e),
         });
@@ -358,15 +382,16 @@ impl BaseChatModel for OpenAIChat {
             let stream = effective.stream_chat_internal(messages.clone()).await?;
             // 0.22.0 audit fix (Medium): the aggregate path must carry
             // tool_calls and token_usage through from the stream's terminal
-            // chunks, not just the text (thinking content is not represented
-            // in StreamChunk, so it cannot be carried here).
-            let (content, token_usage, tool_calls) = Self::aggregate_stream(stream).await?;
+            // chunks, not just the text. 0.25.0: reasoning deltas
+            // (StreamChunk::thinking_content) are concatenated too.
+            let (content, thinking_content, token_usage, tool_calls) =
+                Self::aggregate_stream(stream).await?;
             Ok(LLMResult {
                 content,
                 model: effective.config.model.clone(),
                 token_usage,
                 tool_calls,
-                thinking_content: None,
+                thinking_content,
             })
         } else {
             effective.chat_internal(messages.clone()).await
@@ -488,29 +513,18 @@ impl OpenAIChat {
             .map_err(|e| OpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, false);
 
-        // 0.22.0 audit fix (H-P2): non-streaming requests are retried on
-        // 429/5xx/transport errors with exponential backoff.
-        // A14: this is a non-idempotent POST — under DEFAULT_RETRY a
-        // post-dispatch timeout (and a 5xx that reached the upstream) can be
-        // replayed and double-billed. Swap in retry::SAFE_RETRY here to limit
-        // transport retries to provably pre-dispatch failures.
-        let response = crate::retry::send_with_retry(
-            || Self::apply_headers(self.client.post(&url), &self.config).json(&body),
-            &crate::retry::DEFAULT_RETRY,
-        )
-        .await
-        .map_err(|e| OpenAIError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
-        }
-
-        let chat_response: OpenAIChatResponse = response
-            .json()
+        // 0.25.0: unified HTTP layer. Retries follow the closed retriable
+        // status set (408/429/500/502/503/504 — not 501/505), honor
+        // Retry-After, and a non-idempotent POST retries only on provably
+        // pre-dispatch (connect) failures unless explicitly opted in.
+        let response = self
+            .http_api
+            .post_json_with(&url, &body, self.request_options())
             .await
-            .map_err(|e| OpenAIError::Parse(e.to_string()))?;
+            .map_err(Self::map_http_error)?;
+
+        let chat_response: OpenAIChatResponse =
+            serde_json::from_str(&response.body).map_err(|e| OpenAIError::Parse(e.to_string()))?;
 
         let choice = chat_response
             .choices
@@ -585,19 +599,14 @@ impl OpenAIChat {
             .map_err(|e| OpenAIError::Api(e.to_string()))?;
         let body = self.build_request_body(messages, true);
 
-        let response = Self::apply_headers(self.client.post(&url), &self.config)
-            .json(&body)
-            .send()
+        // 0.25.0: unified SSE client. Retries cover stream establishment only
+        // (and POST retries stay pre-dispatch-safe); once headers arrive the
+        // stream runs without mid-flight reconnect.
+        let byte_stream = self
+            .http_sse
+            .open_sse(&url, Some(&body), self.request_options())
             .await
-            .map_err(|e| OpenAIError::Http(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(OpenAIError::Api(format!("HTTP {}: {}", status, error_text)));
-        }
-
-        let byte_stream = response.bytes_stream();
+            .map_err(Self::map_http_error)?;
 
         let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
 
@@ -664,6 +673,28 @@ impl OpenAIChat {
                                         return;
                                     }
                                 }
+                                // 0.25.0: forward reasoning/thinking deltas on
+                                // their own channel instead of dropping them
+                                // (DeepSeek-R1, GLM and compatible vendors).
+                                if let Some(reasoning) = choice
+                                    .delta
+                                    .reasoning_content
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    if tx
+                                        .send(Ok(StreamChunk {
+                                            text: String::new(),
+                                            thinking_content: Some(reasoning.to_string()),
+                                            token_usage: None,
+                                            tool_calls: None,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                                 if let Some(deltas) = &choice.delta.tool_calls {
                                     for delta in deltas {
                                         tool_acc.push(delta);
@@ -702,6 +733,7 @@ impl OpenAIChat {
                                     tool_calls_emitted = true;
                                 }
                                 let final_chunk = StreamChunk {
+                                    thinking_content: None,
                                     text: String::new(),
                                     token_usage: Some(token_usage),
                                     tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
@@ -744,6 +776,7 @@ impl OpenAIChat {
                 if !tool_calls.is_empty() {
                     let _ = tx
                         .send(Ok(StreamChunk {
+                            thinking_content: None,
                             text: String::new(),
                             token_usage: None,
                             tool_calls: Some(tool_calls),
@@ -759,16 +792,17 @@ impl OpenAIChat {
 
     /// Aggregates a token stream into a single result payload (Q4).
     ///
-    /// Returns `(content, token_usage, tool_calls)`. This is the piece that
-    /// makes `config.streaming` observable: the non-streaming `chat()` path
-    /// consumes the token stream through here. Terminal chunks (usage /
-    /// accumulated tool calls) are merged in so the aggregate path loses
-    /// nothing versus a direct non-streaming request.
+    /// Returns `(content, thinking_content, token_usage, tool_calls)`. This is
+    /// the piece that makes `config.streaming` observable: the non-streaming
+    /// `chat()` path consumes the token stream through here. Terminal chunks
+    /// (usage / accumulated tool calls) are merged in so the aggregate path
+    /// loses nothing versus a direct non-streaming request.
     async fn aggregate_stream(
         mut stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, OpenAIError>> + Send>>,
     ) -> Result<
         (
             String,
+            Option<String>,
             Option<TokenUsage>,
             Option<Vec<lc_core::tools::ToolCall>>,
         ),
@@ -776,11 +810,15 @@ impl OpenAIChat {
     > {
         use futures_util::StreamExt;
         let mut content = String::new();
+        let mut thinking = String::new();
         let mut token_usage = None;
         let mut tool_calls = None;
         while let Some(item) = stream.next().await {
             let chunk = item?;
             content.push_str(&chunk.text);
+            if let Some(reasoning) = chunk.thinking_content {
+                thinking.push_str(&reasoning);
+            }
             // Later terminal chunks win: usage arrives last, and the final
             // tool-call chunk is the fully accumulated one.
             if chunk.token_usage.is_some() {
@@ -790,7 +828,12 @@ impl OpenAIChat {
                 tool_calls = chunk.tool_calls;
             }
         }
-        Ok((content, token_usage, tool_calls))
+        Ok((
+            content,
+            (!thinking.is_empty()).then_some(thinking),
+            token_usage,
+            tool_calls,
+        ))
     }
 }
 

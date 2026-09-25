@@ -503,6 +503,7 @@ mod tests {
             let chunks = vec![
                 Ok(StreamChunk::new("hello")),
                 Ok(StreamChunk {
+                    thinking_content: None,
                     text: " world".to_string(),
                     token_usage: self.stream_usage.clone(),
                     tool_calls: None,

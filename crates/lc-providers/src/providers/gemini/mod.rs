@@ -301,15 +301,38 @@ impl GeminiChat {
                     });
                 }
                 MessageType::AI => {
-                    contents.push(GeminiContent {
-                        role: Some("model".to_string()),
-                        parts: vec![GeminiPart {
+                    // A11: replay an assistant turn's tool calls as `functionCall` parts,
+                    // aligned with OpenAI/Anthropic/Ollama — otherwise multi-round tool
+                    // dialogs break from the second round because the model never sees
+                    // its own prior function calls. `call_{name}` ids match what
+                    // `parse_response` produces (and what the Tool-arm strips below).
+                    let mut parts: Vec<GeminiPart> = Vec::new();
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            parts.push(GeminiPart {
+                                text: None,
+                                function_call: Some(GeminiFunctionCall {
+                                    name: tc.function.name.clone(),
+                                    args: serde_json::from_str(&tc.function.arguments).ok(),
+                                }),
+                                function_response: None,
+                                inline_data: None,
+                                file_data: None,
+                            });
+                        }
+                    }
+                    if !msg.content.is_empty() || parts.is_empty() {
+                        parts.push(GeminiPart {
                             text: Some(msg.content),
                             function_call: None,
                             function_response: None,
                             inline_data: None,
                             file_data: None,
-                        }],
+                        });
+                    }
+                    contents.push(GeminiContent {
+                        role: Some("model".to_string()),
+                        parts,
                     });
                 }
                 MessageType::Tool { ref tool_call_id } => {
@@ -574,8 +597,12 @@ impl GeminiChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, GeminiError>> + Send>>, GeminiError>
     {
+        // 0.25.0: the documented SSE media selector is `alt=sse`. The older
+        // `alt=event-stream` value is not the public contract and some Gemini
+        // endpoints answer it with the non-SSE JSON array framing, which the
+        // SSE byte framer cannot parse.
         let url = format!(
-            "{}/models/{}:streamGenerateContent?alt=event-stream",
+            "{}/models/{}:streamGenerateContent?alt=sse",
             self.config.base_url, self.config.model
         );
 
@@ -617,6 +644,12 @@ impl GeminiChat {
             use futures_util::StreamExt;
 
             let mut byte_stream = byte_stream;
+            // A10: mirror the OpenAI A12 terminal guard. Gemini terminates a
+            // stream with a `usageMetadata` chunk (and a candidate `finishReason`).
+            // If the connection closes first (proxy reset, server crash, timeout),
+            // the streamed text is a truncated prefix — report it as an error
+            // rather than silently returning a partial answer as complete.
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
                     // Extract complete events from the byte-level framer
@@ -644,6 +677,11 @@ impl GeminiChat {
                                 Ok(resp) => {
                                     if let Some(candidates) = resp.candidates {
                                         for candidate in candidates {
+                                            // A10: a `finishReason` marks the terminal chunk —
+                                            // the model signalled the end of generation.
+                                            if candidate.finish_reason.is_some() {
+                                                saw_terminal = true;
+                                            }
                                             if let Some(content) = candidate.content {
                                                 for part in content.parts {
                                                     if let Some(text) = part.text {
@@ -660,8 +698,10 @@ impl GeminiChat {
                                         }
                                     }
                                     // Gemini carries usageMetadata on the last chunk; if present,
-                                    // emit a usage chunk so the streaming path gets the whole call's usage.
+                                    // emit a usage chunk so the streaming path gets the whole call's usage
+                                    // and treat it as a terminal marker (A10).
                                     if let Some(usage) = resp.usage_metadata {
+                                        saw_terminal = true;
                                         let token_usage = TokenUsage {
                                             prompt_tokens: usage.prompt_token_count.unwrap_or(0)
                                                 as usize,
@@ -673,6 +713,7 @@ impl GeminiChat {
                                                 as usize,
                                         };
                                         let usage_chunk = StreamChunk {
+                                            thinking_content: None,
                                             text: String::new(),
                                             token_usage: Some(token_usage),
                                             tool_calls: None,
@@ -700,6 +741,16 @@ impl GeminiChat {
                     let _ = tx.send(Err(GeminiError::HttpError(e.to_string()))).await;
                     return;
                 }
+            }
+            // A10: the byte stream ended without any terminal marker (usageMetadata or
+            // finishReason). What was sent so far is a truncated prefix, not a complete
+            // answer — surface the interruption instead of completing normally.
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(GeminiError::StreamInterrupted(
+                        "connection closed before usageMetadata or finishReason".to_string(),
+                    )))
+                    .await;
             }
         });
 

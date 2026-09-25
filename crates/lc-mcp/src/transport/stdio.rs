@@ -32,7 +32,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::protocol::{
-    notification_message, MCPError, MCPRequest, MCPResponse, MCP_ERROR_REQUEST_TIMEOUT,
+    notification_message, JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_ERROR_REQUEST_TIMEOUT,
 };
 
 /// Grace period for the child to exit after its stdin gets EOF, before kill.
@@ -100,8 +100,8 @@ impl StdioCommand {
 struct Inner {
     /// Outgoing-frame channel sender; `None` after shutdown (channel closed).
     out_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
-    /// Pending requests keyed by JSON-RPC id.
-    pending: Mutex<HashMap<u64, oneshot::Sender<MCPResponse>>>,
+    /// Pending requests keyed by JSON-RPC id (a number or string id — B8).
+    pending: Mutex<HashMap<JsonRpcId, oneshot::Sender<MCPResponse>>>,
     next_id: AtomicU64,
     child: Mutex<Option<Child>>,
     closed: AtomicBool,
@@ -182,6 +182,7 @@ impl StdioTransport {
         timeout: Duration,
     ) -> Result<Value, MCPError> {
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
+        let json_id: JsonRpcId = id.into();
         let (tx, rx) = oneshot::channel();
         // Register before sending, and re-check `closed` while holding the
         // pending lock: `fail_all_pending` stores `closed` and THEN takes this
@@ -193,13 +194,13 @@ impl StdioTransport {
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(MCPError::connection_lost());
             }
-            pending.insert(id, tx);
+            pending.insert(json_id.clone(), tx);
         }
 
-        let frame = serde_json::to_string(&MCPRequest::new(id, method, params))
+        let frame = serde_json::to_string(&MCPRequest::new(json_id.clone(), method, params))
             .map_err(|e| MCPError::new(-32603, format!("failed to encode request: {e}")))?;
         if self.send_frame(frame).await.is_err() {
-            self.inner.pending.lock().await.remove(&id);
+            self.inner.pending.lock().await.remove(&json_id);
             return Err(MCPError::connection_lost());
         }
 
@@ -207,17 +208,37 @@ impl StdioTransport {
             Ok(Ok(response)) => response.into_result(),
             Ok(Err(_)) => {
                 // The reader task dropped the sender after EOF / parse shutdown.
-                self.inner.pending.lock().await.remove(&id);
+                self.inner.pending.lock().await.remove(&json_id);
                 Err(MCPError::connection_lost())
             }
             Err(_) => {
-                self.inner.pending.lock().await.remove(&id);
+                self.inner.pending.lock().await.remove(&json_id);
+                // B8: the client abandoned this request — best-effort tell the
+                // server to stop working on it (stdio cancellation delivery).
+                self.cancel_remote(json_id.clone()).await;
                 Err(MCPError::new(
                     MCP_ERROR_REQUEST_TIMEOUT,
                     format!("MCP stdio request '{method}' timed out after {timeout:?}"),
                 ))
             }
         }
+    }
+
+    /// Best-effort sends a `notifications/cancelled` for `request_id` (B8).
+    /// Used when a request times out / is abandoned; delivery is not
+    /// guaranteed (the server may already be gone). The id serializes as-is so
+    /// a numeric id stays numeric on the wire.
+    async fn cancel_remote(&self, request_id: JsonRpcId) {
+        let Ok(rid_value) = serde_json::to_value(request_id) else {
+            return;
+        };
+        let params = json!({ "requestId": rid_value });
+        let message = notification_message("notifications/cancelled", Some(params));
+        let frame = match serde_json::to_string(&message) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let _ = self.send_frame(frame).await;
     }
 
     /// Sends a JSON-RPC notification (no id, no response expected).
@@ -315,7 +336,8 @@ async fn handle_line(inner: &Arc<Inner>, line: &str) {
 
     if is_response {
         if let Ok(response) = serde_json::from_value::<MCPResponse>(message) {
-            if let Some(id) = response.id {
+            let id = response.id.clone();
+            if let Some(id) = id {
                 if let Some(tx) = inner.pending.lock().await.remove(&id) {
                     let _ = tx.send(response);
                 }

@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 
-use lc_core::judge::{structured_call, truncate, StructuredJudgeError};
+use lc_core::judge::{structured_call_with_usage, truncate, StructuredJudgeError};
 use lc_core::tools::ToolDefinition;
 use lc_core::BaseChatModel;
 use lc_schema::Message;
 
+use super::price::UsageLedger;
 use super::{EvalError, Evaluator, Score};
 
 /// P1-5: maximum concurrent claim-verification calls to the judge in a single eval (prevents N paths all dying to rate limits).
@@ -34,6 +35,8 @@ pub struct Faithfulness<M: BaseChatModel> {
     empty_score: f64,
     /// Per-claim reference-context transmission cap (chars, default [`DEFAULT_MAX_CONTEXT_CHARS`]).
     max_context_chars: usize,
+    /// I3: accumulates judge/tool LLM usage for `Report.cost`.
+    usage: UsageLedger,
 }
 
 /// Splits an answer into atomic claims (split on period, question mark, exclamation mark, semicolon, newline).
@@ -56,6 +59,7 @@ impl<M: BaseChatModel> Faithfulness<M> {
             llm_split: false,
             empty_score: 0.0, // P0-2: empty prediction defaults to 0 (no answer = not faithful)
             max_context_chars: DEFAULT_MAX_CONTEXT_CHARS,
+            usage: UsageLedger::default(),
         }
     }
 
@@ -87,19 +91,21 @@ impl<M: BaseChatModel> Faithfulness<M> {
         let messages = vec![Message::system(system), Message::human(user)];
 
         // P0-1: prefer structured output (boolean verdict); models without tool binding fall back to text parsing.
-        let args: VerdictArgs = structured_call(&self.judge, verdict_tool(), messages, |raw| {
-            let verdict = parse_yes_no(raw).ok_or_else(|| {
-                StructuredJudgeError::Parse(format!(
-                    "failed to parse yes/no from judge reply: {}",
-                    truncate(raw, 200)
-                ))
-            })?;
-            Ok(VerdictArgs {
-                verdict,
-                reason: String::new(),
+        let (args, usage) =
+            structured_call_with_usage(&self.judge, verdict_tool(), messages, |raw| {
+                let verdict = parse_yes_no(raw).ok_or_else(|| {
+                    StructuredJudgeError::Parse(format!(
+                        "failed to parse yes/no from judge reply: {}",
+                        truncate(raw, 200)
+                    ))
+                })?;
+                Ok(VerdictArgs {
+                    verdict,
+                    reason: String::new(),
+                })
             })
-        })
-        .await?;
+            .await?;
+        self.usage.record(usage, self.judge.model_name());
         Ok(args.verdict)
     }
 
@@ -114,6 +120,8 @@ impl<M: BaseChatModel> Faithfulness<M> {
             .chat_with_system(system, vec![Message::human(user)])
             .await
             .map_err(|e| EvalError::PredictorError(e.to_string()))?;
+        self.usage
+            .record(result.token_usage.clone(), self.judge.model_name());
         Ok(result
             .content
             .lines()
@@ -164,6 +172,10 @@ impl<M: BaseChatModel> Evaluator for Faithfulness<M> {
 
     fn name(&self) -> &str {
         "faithfulness"
+    }
+
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        self.usage.drain()
     }
 }
 

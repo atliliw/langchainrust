@@ -76,6 +76,7 @@ pub(crate) async fn run_task(
     task_id: &str,
     history: Vec<A2AMessage>,
     event_bus: Option<Arc<broadcast::Sender<TaskPushNotification>>>,
+    cancel: Arc<tokio::sync::Notify>,
 ) {
     // submitted / input-required -> working
     if let Ok(Some(mut stored)) = store.get(task_id).await {
@@ -95,7 +96,19 @@ pub(crate) async fn run_task(
     }
 
     let input = build_chain_input_from_history(&history, chain.as_ref());
-    match chain.invoke(input).await {
+    // B7 point 6: run the chain inside a select so a `tasks/cancel` that flips
+    // the task to `cancelled` (and fires the per-task Notify) *terminates* the
+    // in-flight execution by dropping the invoke future — it no longer just
+    // marks a status and lets the chain keep burning cycles.
+    let outcome = tokio::select! {
+        result = chain.invoke(input) => result,
+        _ = cancel.notified() => {
+            // Already flipped to `cancelled` by tasks/cancel's CAS before this
+            // notification fired; do not transition to a live state.
+            return;
+        }
+    };
+    match outcome {
         Ok(result) => {
             let output = extract_output(&result);
             if let Ok(Some(mut stored)) = store.get(task_id).await {

@@ -246,10 +246,15 @@ impl BaseChatModel for ReplayProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
     {
         let response = self.chat(messages, config).await?;
+        // I2: forward the recorded `tool_calls` instead of hardcoding `None`, so a
+        // streamed agent sees the replayed tool request the same way the real
+        // provider produced it. Extract before the partial field moves below.
+        let tool_calls = response.tool_calls;
         let stream = futures_util::stream::iter(vec![Ok(StreamChunk {
+            thinking_content: None,
             text: response.content,
             token_usage: response.token_usage,
-            tool_calls: None,
+            tool_calls,
         })]);
         Ok(Box::pin(stream))
     }

@@ -42,6 +42,11 @@ pub trait EventStore: Send + Sync {
     /// Highest event id on a branch (0 when the branch is empty) — callers
     /// derive the next id from it, which is what makes `append` idempotent.
     async fn latest_id(&self, session_id: &str, branch: &str) -> Result<u64, SessionError>;
+
+    /// E1/H-s1: deletes every event belonging to `session_id` (all branches).
+    /// Used by session teardown; after this, a re-created session starts with
+    /// an empty log rather than inheriting stale history.
+    async fn clear_session(&self, session_id: &str) -> Result<(), SessionError>;
 }
 
 /// In-memory [`EventStore`] — tests and single-process scenarios.
@@ -173,6 +178,21 @@ impl EventStore for MemoryEventStore {
             .map(|((_, _, id), _)| *id)
             .next_back()
             .unwrap_or(0))
+    }
+
+    async fn clear_session(&self, session_id: &str) -> Result<(), SessionError> {
+        let mut events = self.events.lock().await;
+        // Collect affected keys first: BTreeMap keys are borrowed during
+        // iteration, but removal needs an owned key.
+        let keys: Vec<(String, String, u64)> = events
+            .keys()
+            .filter(|(s, _, _)| s == session_id)
+            .cloned()
+            .collect();
+        for k in keys {
+            events.remove(&k);
+        }
+        Ok(())
     }
 }
 

@@ -247,6 +247,49 @@ async fn test_crag_agent_with_web_fallback() {
     assert!(!result.answer.is_empty());
 }
 
+/// B6: empty retrieval + a successful web fallback must run the web-only rescue to completion —
+/// the run no longer dies with `NoDocumentsRetrieved`, and the web result is surfaced as a source
+/// document whose metadata marks it `source: "web"`.
+#[tokio::test]
+async fn test_crag_agent_web_only_rescue_on_empty_retrieval() {
+    // LLM responses in call order: generate_alternatives, generate (answer), hallucination check.
+    let llm = MockChatModel::new(vec![
+        "1. What is CRAG in AI?\n2. Corrective RAG technique\n3. CRAG methodology overview",
+        "CRAG stands for Corrective RAG (web-only answer).",
+        "grounded",
+    ]);
+
+    // The retrievers return nothing — vector side is empty.
+    let retriever = MockRetriever::new(vec![]);
+
+    let agent = CorrectiveRAGAgent::new(llm, retriever)
+        .with_grade_threshold(0.5)
+        .with_web_fallback(Box::new(MockWebTool))
+        .with_hallucination_check(true);
+
+    let result = agent.invoke("What is CRAG?").await.unwrap();
+    assert!(
+        !result.answer.is_empty(),
+        "web-only run must still produce an answer"
+    );
+    // The web result is the only source and is marked source=web.
+    assert_eq!(
+        result.sources.len(),
+        1,
+        "web-only source should be surfaced"
+    );
+    assert_eq!(
+        result.sources[0]
+            .metadata
+            .get("source")
+            .and_then(|v| v.as_str()),
+        Some("web"),
+        "web fallback document must carry source=web metadata"
+    );
+    assert!(result.grounded, "grounded answer from web context");
+}
+
+/// B6: without a web fallback, an empty retrieval still fails with `NoDocumentsRetrieved`.
 #[tokio::test]
 async fn test_crag_agent_no_documents_retrieved() {
     let llm = MockChatModel::new(vec![]);

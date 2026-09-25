@@ -46,6 +46,8 @@ pub use signing::{
 };
 pub use sse::A2ASseStream;
 
+use crate::security::{AccessRequest, SandboxConfig, TrustRegistry};
+
 /// Errors that can occur during A2A client operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -129,6 +131,9 @@ pub struct A2AClient {
     card_secret: Option<Vec<u8>>,
     /// Reject signed cards that cannot be verified (P1-3).
     require_card_signature: bool,
+    /// Trust registry a fetched card must belong to and verify against
+    /// (0.25.0: `TrustRegistry` used to have no production call site).
+    trust_registry: Option<std::sync::Arc<TrustRegistry>>,
 }
 
 impl A2AClient {
@@ -180,6 +185,7 @@ impl A2AClient {
             trace_context: None,
             card_secret: None,
             require_card_signature: false,
+            trust_registry: None,
         }
     }
 
@@ -213,20 +219,41 @@ impl A2AClient {
     ///   hard error. With `require_card_signature`, a signed card with no
     ///   secret configured is also rejected. Unsigned cards pass through.
     pub async fn get_agent_card(&self) -> Result<AgentCard, A2AError> {
-        let url = format!("{}/.well-known/agent-card.json", self.base_url);
+        // B7 wire-compat fix: fetch the standard location first, then fall back
+        // to the `/.well-known/agent.json` alias some discovery tooling walks.
+        let card_path = "/.well-known/agent-card.json";
+        let mut last_err: Option<A2AError> = None;
+        for path in [card_path, "/.well-known/agent.json"] {
+            match self.fetch_agent_card_at(path).await {
+                Ok(card) => {
+                    self.verify_fetched_card(&card)?;
+                    return Ok(card);
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| A2AError::Http("agent card request failed".to_string())))
+    }
+
+    /// GET the agent card from a specific discovery path.
+    async fn fetch_agent_card_at(&self, path: &str) -> Result<AgentCard, A2AError> {
+        let url = format!("{}{path}", self.base_url);
         let resp = self.with_traceparent(self.http.get(&url)).send().await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(A2AError::Http(format!(
-                "Agent card request failed with status {}",
+                "Agent card request to {path} failed with status {}",
                 status
             )));
         }
-        let card: AgentCard = resp
-            .json()
+        resp.json()
             .await
-            .map_err(|e| A2AError::Parse(format!("Failed to parse agent card: {}", e)))?;
+            .map_err(|e| A2AError::Parse(format!("Failed to parse agent card: {e}")))
+    }
 
+    /// Apply the URL-consistency, signature, and trust-registry checks to a
+    /// freshly fetched card.
+    fn verify_fetched_card(&self, card: &AgentCard) -> Result<(), A2AError> {
         // URL consistency check (warn-only; see doc comment).
         if !card.url.trim_end_matches('/').is_empty()
             && card.url.trim_end_matches('/') != self.base_url.trim_end_matches('/')
@@ -242,7 +269,7 @@ impl A2AClient {
         if card.signature.is_some() {
             match &self.card_secret {
                 Some(secret) => {
-                    verify_card_signature(&card, secret)?;
+                    verify_card_signature(card, secret)?;
                 }
                 None if self.require_card_signature => {
                     return Err(A2AError::Signature(
@@ -258,7 +285,16 @@ impl A2AClient {
             }
         }
 
-        Ok(card)
+        // 0.25.0 trust-registry wiring: when a registry is configured the
+        // fetched card MUST belong to a known, non-revoked agent and verify
+        // against the key the directory attests for the card's own URL.
+        if let Some(registry) = &self.trust_registry {
+            registry
+                .verify_card(card)
+                .map_err(|e| A2AError::Signature(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     /// Send a task to the remote agent (`tasks/send`).
@@ -295,6 +331,22 @@ impl A2AClient {
     ) -> Result<A2ATask, A2AError> {
         let id = self.alloc_id();
         let req = self.with_context(A2ARequest::continue_task(id, task_id, &message));
+        self.send_task_req(req).await
+    }
+
+    /// Continue a task with an explicit `message_id`, so a retried/failed-over
+    /// resume is deduplicated by the server instead of being applied twice
+    /// (P1-6 idempotency covers `tasks/send` carrying a `taskId` too).
+    pub async fn resume_task_with_message_id(
+        &self,
+        task_id: &str,
+        message: A2AMessage,
+        message_id: &str,
+    ) -> Result<A2ATask, A2AError> {
+        let id = self.alloc_id();
+        let req = self.with_context(
+            A2ARequest::continue_task(id, task_id, &message).with_message_id(message_id),
+        );
         self.send_task_req(req).await
     }
 
@@ -590,6 +642,8 @@ pub struct A2AClientBuilder {
     trace_context: Option<TraceContext>,
     card_secret: Option<Vec<u8>>,
     require_card_signature: bool,
+    trust_registry: Option<std::sync::Arc<TrustRegistry>>,
+    sandbox: Option<std::sync::Arc<SandboxConfig>>,
 }
 
 impl A2AClientBuilder {
@@ -606,6 +660,8 @@ impl A2AClientBuilder {
             trace_context: None,
             card_secret: None,
             require_card_signature: false,
+            trust_registry: None,
+            sandbox: None,
         }
     }
 
@@ -673,6 +729,23 @@ impl A2AClientBuilder {
         self
     }
 
+    /// Require fetched agent cards to verify against a trust registry
+    /// (0.25.0): the card's URL must name a known, non-revoked agent and its
+    /// signature must verify against the registered key. Failures surface as
+    /// [`A2AError::Signature`] from `get_agent_card`.
+    pub fn trust_registry(mut self, registry: std::sync::Arc<TrustRegistry>) -> Self {
+        self.trust_registry = Some(registry);
+        self
+    }
+
+    /// Gate network egress through a sandbox (0.25.0): the agent host in the
+    /// base URL must be allowed by [`SandboxConfig`]'s domain rules or
+    /// [`Self::build`] fails.
+    pub fn sandbox(mut self, sandbox: std::sync::Arc<SandboxConfig>) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
     /// Build the client, enforcing HTTPS when configured.
     pub fn build(self) -> Result<A2AClient, A2AError> {
         if !self.base_url.starts_with("https://") {
@@ -686,6 +759,16 @@ impl A2AClientBuilder {
                 "A2A client connecting over non-HTTPS URL: {} (use TLS in production)",
                 self.base_url
             );
+        }
+        if let Some(sandbox) = &self.sandbox {
+            let host = reqwest::Url::parse(&self.base_url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string));
+            if let Some(host) = host {
+                sandbox
+                    .check(&AccessRequest::Network(host))
+                    .map_err(|e| A2AError::Http(format!("sandbox denied egress: {e}")))?;
+            }
         }
         let (http, stream_http) = match self.http_client {
             Some(client) => (client.clone(), client),
@@ -714,6 +797,7 @@ impl A2AClientBuilder {
             trace_context: self.trace_context,
             card_secret: self.card_secret,
             require_card_signature: self.require_card_signature,
+            trust_registry: self.trust_registry,
         })
     }
 }

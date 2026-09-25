@@ -179,6 +179,13 @@ pub trait Evaluator: Send + Sync {
 
     /// Evaluator name (used in report summaries)
     fn name(&self) -> &str;
+
+    /// Reports the token usage of the most recent [`eval`](Self::eval) call, if the
+    /// evaluator meters judge/tool LLM tokens (I3). Defaults to `None` — evaluators
+    /// without LLM-judge metering leave the run's cost ledger unaffected.
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        None
+    }
 }
 
 /// Pairwise-comparison evaluator trait (arena mode): judges which of two answers (A/B) for the same input is better.
@@ -193,6 +200,12 @@ pub trait PairwiseEvaluator: Send + Sync {
 
     /// Evaluator name (used in report summaries)
     fn name(&self) -> &str;
+
+    /// Reports the token usage of the most recent [`eval_pair`](Self::eval_pair) call, if
+    /// the evaluator meters judge LLM tokens (I3). Defaults to `None`.
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        None
+    }
 }
 
 /// RAG evaluator trait (RAGAS-style): scores a prediction together with the retrieved
@@ -215,6 +228,12 @@ pub trait RagEvaluator: Send + Sync {
 
     /// Evaluator name (used in report summaries)
     fn name(&self) -> &str;
+
+    /// Reports the token usage of the most recent [`eval_rag`](Self::eval_rag) call, if the
+    /// evaluator meters judge/tool LLM tokens (I3). Defaults to `None`.
+    async fn report_token_usage(&self) -> Option<crate::TokenUsage> {
+        None
+    }
 }
 
 /// Predictor trait (the object under evaluation: LLMChain / Agent, etc.)

@@ -267,19 +267,28 @@ impl BaseChatModel for AnthropicChat {
             }
         });
 
-        // Flatten: emit Text tokens as Ok(StreamChunk), drop Thinking tokens
-        // from the stream, forward Usage as a usage-carrying chunk.
+        // Flatten: emit Text tokens as Ok(StreamChunk), forward extended-reasoning
+        // Thinking tokens on `thinking_content` (aligned with OpenAI/Azure, A9 —
+        // they were previously dropped, losing the extended-reasoning stream),
+        // and forward Usage as a usage-carrying chunk.
         let stream = stream.flat_map(|token_result| {
             futures_util::stream::iter(match token_result {
                 Ok(AnthropicStreamToken::Text(token)) => vec![Ok(StreamChunk::new(token))],
-                Ok(AnthropicStreamToken::Thinking(_)) => vec![],
+                Ok(AnthropicStreamToken::Thinking(thinking)) => vec![Ok(StreamChunk {
+                    thinking_content: Some(thinking),
+                    text: String::new(),
+                    token_usage: None,
+                    tool_calls: None,
+                })],
                 Ok(AnthropicStreamToken::ToolCall(tc)) => vec![Ok(StreamChunk {
+                    thinking_content: None,
                     text: String::new(),
                     token_usage: None,
                     // 0.22.0 C2: complete tool calls surface on the streaming path
                     tool_calls: Some(vec![tc]),
                 })],
                 Ok(AnthropicStreamToken::Usage(usage)) => vec![Ok(StreamChunk {
+                    thinking_content: None,
                     text: String::new(),
                     token_usage: Some(TokenUsage {
                         prompt_tokens: usage.input_tokens,

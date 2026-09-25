@@ -13,6 +13,7 @@
 pub mod batch;
 pub mod cache;
 pub mod cost;
+pub mod http;
 pub mod json_parse;
 pub mod judge;
 pub mod language_models;
@@ -36,6 +37,11 @@ pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseErro
 pub use model_registry::{ModelCapabilities, ModelInfo, ModelRegistry};
 
 pub use judge::{structured_call, truncate, StructuredJudgeError};
+
+pub use http::{
+    normalize_base_url, BoundedResponse, HttpClient, HttpClientBuilder, HttpError, Profile,
+    RequestOptions, RetryPolicy, SseStream, TransportRetryMode,
+};
 
 pub use language_models::{
     predict_tools, BaseChatModel, BaseLanguageModel, MultimodalError, MultimodalModel,

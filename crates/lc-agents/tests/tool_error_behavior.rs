@@ -70,6 +70,7 @@ impl BaseAgent for FailThenFinishAgent {
                     value: serde_json::json!({"x": 1}),
                 },
                 log: "call_fail".to_string(),
+                tool_call_id: None,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -99,6 +100,7 @@ impl BaseAgent for ParallelFailThenFinishAgent {
                         value: serde_json::json!({"x": 1}),
                     },
                     log: "call_fail".to_string(),
+                    tool_call_id: None,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -106,6 +108,7 @@ impl BaseAgent for ParallelFailThenFinishAgent {
                         value: serde_json::json!({"y": 2}),
                     },
                     log: "call_ok".to_string(),
+                    tool_call_id: None,
                 },
             ]));
         }
@@ -327,6 +330,7 @@ impl BaseAgent for CallAbortAgent {
                     value: serde_json::json!({"x": 1}),
                 },
                 log: "call_abort".to_string(),
+                tool_call_id: None,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -355,6 +359,7 @@ impl BaseAgent for ParallelAbortAgent {
                         value: serde_json::json!({"x": 1}),
                     },
                     log: "call_abort".to_string(),
+                    tool_call_id: None,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -362,6 +367,7 @@ impl BaseAgent for ParallelAbortAgent {
                         value: serde_json::json!({"y": 2}),
                     },
                     log: "call_ok".to_string(),
+                    tool_call_id: None,
                 },
             ]));
         }
@@ -496,6 +502,7 @@ impl BaseAgent for ParallelGhostThenFinishAgent {
                         value: serde_json::json!({"x": 1}),
                     },
                     log: "call_ghost".to_string(),
+                    tool_call_id: None,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -503,6 +510,7 @@ impl BaseAgent for ParallelGhostThenFinishAgent {
                         value: serde_json::json!({"y": 2}),
                     },
                     log: "call_ok".to_string(),
+                    tool_call_id: None,
                 },
             ]));
         }

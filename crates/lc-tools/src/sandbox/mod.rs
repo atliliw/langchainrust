@@ -191,7 +191,12 @@ impl<S: CodeSandbox + 'static> BaseTool for SandboxTool<S> {
 
     fn args_schema(&self) -> Option<serde_json::Value> {
         use schemars::schema_for;
-        serde_json::to_value(schema_for!(SandboxInput)).ok()
+        // J9:schema 序列化失败不再 `.ok()` 占位空 `None`,改 panic(SandboxInput derive
+        // JsonSchema,schema 自描述必可序列化,真失败是内部错误)。
+        Some(
+            serde_json::to_value(schema_for!(SandboxInput))
+                .expect("[lc-tools] internal error: SandboxInput schema failed to serialize"),
+        )
     }
 }
 

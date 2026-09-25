@@ -109,9 +109,13 @@ impl GraphNode<AgentState> for ApprovalGate {
                 )))
             }
 
-            Some(ApprovalDecision::Modify { note, .. }) => {
-                // This bridge keeps the staged command (argument rewrites belong
-                // to the caller's `actions` wiring); the note is recorded.
+            Some(ApprovalDecision::Modify { arguments, note }) => {
+                // B5: a Modify decision now delivers its rewritten `arguments` to the
+                // `actions` bridge instead of discarding them — the staged command is
+                // replaced by the operator/approval-approved arguments, so the rewritten
+                // parameters actually reach the side effect.
+                let command =
+                    serde_json::to_string(&arguments).unwrap_or_else(|_| arguments.to_string());
                 let obs = (self.actions)(&command);
                 Ok(StateUpdate::full(carry_output(
                     state,
@@ -183,7 +187,18 @@ mod tests {
             .await
             .unwrap();
         let out = inv.final_state.output.as_deref().unwrap();
+        // B5: the Modify bridge passes the rewritten arguments to the tool, so the
+        // staged "credit_card 99" command is replaced by the operator-approved
+        // `{"amount":99}` payload.
         assert!(out.starts_with("modified(approved by ops):charged"));
+        assert!(
+            out.contains(r#"{"amount":99}"#),
+            "rewritten arguments must reach the tool bridge, got: {out}"
+        );
+        assert!(
+            !out.contains("credit_card 99"),
+            "staged command must be replaced by the rewritten arguments, got: {out}"
+        );
         assert_eq!(
             counter.load(Ordering::SeqCst),
             1,

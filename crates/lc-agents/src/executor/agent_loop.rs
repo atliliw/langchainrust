@@ -7,72 +7,21 @@
 
 use super::budget::{budget_cost_gate, budget_iteration_gate, budget_token_gate, budget_tool_gate};
 use super::engine::{AgentExecutor, MaxIterationsPolicy};
-use super::tools::{run_tool_with_timeout, tool_error_observation};
+use super::tool_gate::{ResumeCtx, ToolGate, ToolOutcome};
+use super::tools::{denied_observation, is_non_execution_observation, tool_error_observation};
 use super::AgentError;
 use crate::approval::ApprovalDecision;
-use crate::hooks::{ToolCallAction, ToolCallContext, ToolResultContext};
 use crate::metrics::AgentMetrics;
-use crate::resume::{PendingApproval, ResumeStore};
+use crate::resume::PendingApproval;
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
-use lc_callbacks::{
-    semconv::{GEN_AI_TOOL_CALL_ID, GEN_AI_TOOL_DESCRIPTION},
-    RunTree, RunType,
-};
+use lc_callbacks::RunTree;
 use lc_core::runnables::RunnableConfig;
-use lc_core::tools::ToolError;
-use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
-/// Cross-process resume (§4.2): the checkpoint context needed for a single tool call.
-///
-/// Constructed by the agent loop in the Action branch: `tool_name` / `arguments` /
-/// `tool_id` start as placeholders, then `execute_tool_inner` fills in the **final values**
-/// the approval saw once the synchronous hooks finish, and persists them; the checkpoint
-/// is cleared once the approval decision lands. The parallel tool path
-/// (`execute_tools_parallel`) does not build one — concurrent multi-tool approvals never
-/// persist, so checkpoints cannot overwrite each other.
-pub(crate) struct ResumeContext<'a> {
-    /// Checkpoint template pre-filled with loop context (inputs / steps / iteration /
-    /// budget accumulation / trace).
-    pending: &'a PendingApproval,
-    /// Checkpoint storage (persist before / clear after approval).
-    store: &'a Arc<dyn ResumeStore>,
-}
-
-/// Applies an approval decision to `tool_ctx`.
-///
-/// Returns `Some(reason)` for **Deny** (aborts execution; the rejection observation is fed
-/// back to the loop); `None` for Allow / Modify (execution continues). Modify overwrites
-/// `tool_ctx.arguments`.
-fn apply_approval_decision(
-    decision: ApprovalDecision,
-    tool_ctx: &mut ToolCallContext,
-) -> Option<String> {
-    match decision {
-        ApprovalDecision::Allow => None,
-        ApprovalDecision::Deny { reason } => {
-            log::info!(
-                target: "lc_agents::approval",
-                "tool_call denied by approval handler name={} reason={}",
-                tool_ctx.name,
-                reason
-            );
-            Some(reason)
-        }
-        ApprovalDecision::Modify { arguments, note } => {
-            log::info!(
-                target: "lc_agents::approval",
-                "tool_call arguments modified by approval handler name={} note={}",
-                tool_ctx.name,
-                note
-            );
-            tool_ctx.arguments = arguments;
-            None
-        }
-    }
-}
+//
+// The checkpoint context + approval-decision application live in `super::tool_gate`
+// (`ResumeCtx` / `apply_approval_decision`) so the stream path shares them.
 
 impl AgentExecutor {
     /// Runs the agent loop from scratch.
@@ -108,6 +57,15 @@ impl AgentExecutor {
         // Budget gate (§4.2): start the loop timer, used by the max_duration /
         // max_iterations checks.
         let loop_start = Instant::now();
+
+        // stage-G G7: capture the shared `CostTracker`'s spend as this run's
+        // baseline. `max_cost_usd` then caps THIS run's incremental spend, not the
+        // tracker's lifetime cumulative total — a prior / concurrent run sharing the
+        // same `Arc` can no longer trip another run's budget.
+        let cost_baseline = match &self.cost_tracker {
+            Some(tracker) => tracker.total_cost_usd().await,
+            None => 0.0,
+        };
 
         for iteration in start_iteration..self.max_iterations {
             // Budget gate: iteration-level (iteration count + wall-clock). Off by default
@@ -158,10 +116,12 @@ impl AgentExecutor {
             // B3 (0.22.4): cumulative USD spend gate after the LLM call. Reads the
             // shared CostTracker — the same Arc the tracking LLM records into, so the
             // spend reflects the call that just returned. No tracker → no measurement
-            // → the limit cannot trip.
+            // → the limit cannot trip. stage-G G7: gated on this run's *incremental*
+            // spend (current total minus the run-start baseline), so a shared tracker
+            // never lets one run's cumulative spend trip another run's budget.
             if let Some(tracker) = &self.cost_tracker {
-                let spent = tracker.total_cost_usd().await;
-                if let Some(err) = budget_cost_gate(self.budget.as_ref(), spent) {
+                let incremental = (tracker.total_cost_usd().await - cost_baseline).max(0.0);
+                if let Some(err) = budget_cost_gate(self.budget.as_ref(), incremental) {
                     return Err(err);
                 }
             }
@@ -220,7 +180,7 @@ impl AgentExecutor {
                         tokens_consumed: metrics.total_tokens,
                         trace_id: root_run.trace_id.map(|id| id.to_string()),
                     };
-                    let resume_ctx = self.resume_store.as_ref().map(|store| ResumeContext {
+                    let resume_ctx = self.resume_store.as_ref().map(|store| ResumeCtx {
                         pending: &pending,
                         store,
                     });
@@ -228,17 +188,30 @@ impl AgentExecutor {
                     // 0.20.0 S3.1:工具**执行**错误(工具真的跑了、失败返回 ToolError)
                     // 转 observation 喂回循环,agent 可自救——四条执行路径(顺序/并行 ×
                     // invoke/stream)一致。框架级守卫拒绝(权限策略 / hook 拒绝 /
-                    // ControlAbort 交接环与深度中止 / ToolNotFound)不是执行失败,仍
+                    // ControlAbort 交接环与深度中止)不是执行失败,仍
                     // 硬失败上抛:agent 无法靠重规划绕过它们,软化成 observation 会让
                     // 策略拒绝、预算配额与交接环检测形同虚设。
+                    // stage-G G1:造化出的 / 未注册工具名 (`ToolNotFound`) 是**软**
+                    // observation(工具从未执行,model 可重规划),与 0.20.0 A-H3 并行
+                    // 路径钉死的语义一致——同一输入在顺序/并行两条路径不再一硬一软。
                     let observation = match self
                         .execute_tool_inner(&action, root_run, resume_ctx.as_ref(), None)
                         .await
                     {
                         Ok(obs) => obs,
                         Err(e @ AgentError::ToolExecutionError(_)) => tool_error_observation(&e),
+                        Err(AgentError::ToolNotFound(name)) => {
+                            format!("[Tool not found: {name}]")
+                        }
                         Err(e) => return Err(e),
                     };
+
+                    // stage-G G6: a denied / unregistered call never executed, so it
+                    // must not consume the `max_tool_calls` budget — undo the
+                    // pre-increment above (only executed tools count).
+                    if is_non_execution_observation(&observation) {
+                        metrics.tool_calls = metrics.tool_calls.saturating_sub(1);
+                    }
 
                     if self.verbose {
                         log::info!("Observation: {}", observation);
@@ -263,6 +236,16 @@ impl AgentExecutor {
                     }
 
                     let observations = self.execute_tools_parallel(&actions, root_run).await?;
+
+                    // stage-G G6: denied / not-found calls in a batch never executed —
+                    // undo their share of the pre-increment so they don't consume the
+                    // `max_tool_calls` budget (only executed tools count).
+                    let never_executed = observations
+                        .iter()
+                        .filter(|o| is_non_execution_observation(o))
+                        .count();
+                    metrics.tool_calls =
+                        metrics.tool_calls.saturating_sub(never_executed);
 
                     if self.verbose {
                         for (i, obs) in observations.iter().enumerate() {
@@ -304,301 +287,47 @@ impl AgentExecutor {
     /// ran and failed (`ToolExecutionError`) or that was never registered
     /// (`ToolNotFound` — e.g. an LLM hallucinated name, 0.20.0 A-H3) becomes an
     /// observation, so the batch's other results survive and the loop can
-    /// recover. Non-recoverable framework guardrails (`ControlAbort`, permission
-    /// policy, hook `Reject`) still abort the whole batch hard.
-    /// Concurrency is capped by the executor's global `concurrency_sem`.
+    /// recover. Non-recoverable framework guardrails — approval `Deny`, hook
+    /// `Reject`, permission policy, `ControlAbort` — abort the whole batch hard
+    /// (B5): siblings are cancelled via `JoinSet::abort_all`, matching S3.1
+    /// semantics. Concurrency is capped by the executor's global
+    /// `concurrency_sem`.
     async fn execute_tools_parallel(
         &self,
         actions: &[AgentAction],
         root_run: &RunTree,
     ) -> Result<Vec<String>, AgentError> {
-        use futures_util::future::join_all;
-
-        let sem = self.concurrency_sem.clone();
-        let futures = actions.iter().map(|action| {
-            let sem = sem.clone();
-            async move {
-                let _permit = sem
-                    .acquire_owned()
-                    .await
-                    .map_err(|e| AgentError::Other(format!("concurrency semaphore closed: {e}")))?;
-                self.execute_tool(action, root_run).await
-            }
-        });
-
-        let results = join_all(futures).await;
-
-        let mut observations = Vec::with_capacity(results.len());
-        for result in results {
-            match result {
-                Ok(output) => observations.push(output),
-                // 0.20.0 S3.1:工具**执行**错误(工具真的跑了、失败返回 ToolError)
-                // 转 observation。
-                Err(e @ AgentError::ToolExecutionError(_)) => {
-                    observations.push(tool_error_observation(&e))
-                }
-                // 0.20.0 A-H3:并行 batch 中单个未注册工具名(LLM 幻觉)也转
-                // observation——同批其余工具的真实结果得以保留,agent 可自救。
-                // 这是并行路径独有的宽松:顺序路径引用一个不存在的工具没有任何
-                // 部分结果可保留,仍硬失败(P2-2 锁存)。
-                Err(AgentError::ToolNotFound(name)) => {
-                    observations.push(format!("[Tool not found: {name}]"))
-                }
-                // 框架级守卫拒绝(ControlAbort 交接环与深度中止 / 权限策略 /
-                // hook 拒绝)仍硬失败上抛:agent 无法靠重规划绕过它们。
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(observations)
-    }
-
-    /// Executes a single tool (no resume context, no pre-decided approval).
-    async fn execute_tool(
-        &self,
-        action: &AgentAction,
-        root_run: &RunTree,
-    ) -> Result<String, AgentError> {
-        self.execute_tool_inner(action, root_run, None, None).await
+        let gate = ToolGate::from_executor(self);
+        gate.execute_many(actions, root_run).await
     }
 
     /// Executes a single tool with optional cross-process resume integration.
     ///
+    /// Delegates to the shared [`ToolGate`] (the same chain the stream path uses),
+    /// translating an approval **Deny** into the `[DENIED by approval: …]`
+    /// observation the loop feeds back so the model can re-plan.
+    ///
     /// - `resume_ctx`: when non-None, the checkpoint (including the final
-    ///   `tool_name` / `arguments` after synchronous-hook mutation) is persisted
-    ///   **before** entering the approval gate to await approval, and cleared once the
-    ///   decision **lands**. The parallel tool path (`execute_tools_parallel`) passes
-    ///   `None` so concurrent multi-tool approvals never persist and cannot overwrite
-    ///   each other's checkpoints.
+    ///   `tool_name` / `arguments` / `tool_id` after synchronous-hook mutation) is
+    ///   persisted **before** the approval gate and cleared once the decision lands.
+    ///   The parallel path (`execute_tools_parallel` → `execute_many`) passes `None` so
+    ///   concurrent multi-tool approvals never persist and cannot overwrite each other.
     /// - `pre_decided`: when non-None, the approval handler is skipped and the given
-    ///   decision is used directly (cross-process resume injects the decision without
-    ///   re-running approval; `resume_ctx` should then be `None` — the checkpoint was
-    ///   already claimed in [`AgentExecutor::resume`](crate::executor::AgentExecutor::resume)).
+    ///   decision is used directly (cross-process resume).
     pub(crate) async fn execute_tool_inner(
         &self,
         action: &AgentAction,
         root_run: &RunTree,
-        resume_ctx: Option<&ResumeContext<'_>>,
+        resume_ctx: Option<&ResumeCtx<'_>>,
         pre_decided: Option<ApprovalDecision>,
     ) -> Result<String, AgentError> {
-        // A11: O(1) name lookup via the prebuilt index instead of a linear scan.
-        let tool = self
-            .tools_by_name
-            .get(&action.tool)
-            .ok_or_else(|| AgentError::ToolNotFound(action.tool.clone()))?;
-
-        let _input_str = match &action.tool_input {
-            ToolInput::String { value: s } => s.clone(),
-            ToolInput::Object { value: v } => serde_json::to_string(v)
-                .map_err(|e| AgentError::Other(format!("Failed to serialize tool input: {}", e)))?,
-        };
-
-        // Run hooks: on_before_tool_call
-        let mut tool_ctx = ToolCallContext {
-            name: action.tool.clone(),
-            arguments: match &action.tool_input {
-                ToolInput::String { value: s } => {
-                    // If the string is valid JSON, parse it as a Value to avoid
-                    // double-encoding when serde_json::to_string() is called later.
-                    // Otherwise wrap it as Value::String.
-                    serde_json::from_str::<serde_json::Value>(s)
-                        .unwrap_or(serde_json::Value::String(s.clone()))
-                }
-                ToolInput::Object { value: v } => v.clone(),
-            },
-            tool_id: String::new(),
-        };
-
-        for hook in &self.hooks {
-            match hook.on_before_tool_call(&mut tool_ctx) {
-                ToolCallAction::Continue => {}
-                ToolCallAction::Modify { name, arguments } => {
-                    tool_ctx.name = name;
-                    tool_ctx.arguments = arguments;
-                }
-                ToolCallAction::Reject { reason } => {
-                    return Err(AgentError::Other(format!(
-                        "Tool call rejected by hook: {}",
-                        reason
-                    )));
-                }
-                ToolCallAction::Skip => {
-                    return Ok("[Skipped by hook]".to_string());
-                }
-            }
-        }
-
-        // Approval gate (§4.2) + cross-process resume (§4.2): after the sync hooks,
-        // before the actual execution.
-        // - Normal invoke: no pre_decided, goes through the handler; persists the
-        //   checkpoint before approval, clears it once the decision lands.
-        // - Resume: injects pre_decided, no persist/clear (the checkpoint was already
-        //   claimed in resume()).
-        // Deny is isomorphic with ToolCallAction::Skip — the rejection is fed back as an
-        // observation; the tool does not run and the loop is not interrupted; the next
-        // plan round sees the rejection observation and adjusts on its own.
-        let deny_reason: Option<String> = if let Some(pre) = pre_decided {
-            apply_approval_decision(pre, &mut tool_ctx)
-        } else if let Some(handler) = &self.approval {
-            // Cross-process resume: persist before approval. The sync hooks have already
-            // run, so this is the final value the approval sees.
-            if let Some(ctx) = resume_ctx {
-                let mut pending = ctx.pending.clone();
-                pending.tool_name = tool_ctx.name.clone();
-                pending.arguments = tool_ctx.arguments.clone();
-                pending.tool_id = tool_ctx.tool_id.clone();
-                if let Err(e) = ctx.store.save_pending(&pending).await {
-                    log::warn!(
-                        target: "lc_agents::resume",
-                        "failed to persist pending approval: {}",
-                        e
-                    );
-                }
-            }
-            apply_approval_decision(handler.approve(&tool_ctx).await, &mut tool_ctx)
-        } else {
-            None
-        };
-
-        // The approval decision has landed: clear the checkpoint (Allow / Modify continue
-        // execution; Deny returns the rejection observation).
-        if let Some(ctx) = resume_ctx {
-            if let Err(e) = ctx.store.clear_pending().await {
-                log::warn!(
-                    target: "lc_agents::resume",
-                    "failed to clear pending approval: {}",
-                    e
-                );
-            }
-        }
-
-        if let Some(reason) = deny_reason {
-            return Ok(format!("[DENIED by approval: {reason}]"));
-        }
-
-        let tool_name = tool_ctx.name.clone();
-
-        // P2-9: tool permission policy (permission tiering + sandbox gate). Allows when
-        // unconfigured.
-        if let Some(policy) = &self.tool_policy {
-            policy.check(&tool_name)?;
-        }
-
-        // A2 Rule of Two (v0.22.1 §S8): a tool that arms all three risk properties
-        // (untrusted-input + sensitive-access + state-changing) is blocked before
-        // execution; the loop gets a rejection observation it can re-plan around.
-        // Default off — an undeclared tool has an all-false profile (count 0) and is
-        // never intercepted.
-        if self.rule_of_two && tool.risk().count_armed() >= 3 {
-            log::warn!(
-                target: "lc_agents::rule_of_two",
-                "blocked high-risk tool '{}' (risk={}/3)",
-                tool_name,
-                tool.risk().count_armed()
-            );
-            return Ok(
-                "[BLOCKED by Rule of Two: tool declares untrusted-input + sensitive-access + state-changing]"
-                    .to_string(),
-            );
-        }
-
-        let input_for_tool = serde_json::to_string(&tool_ctx.arguments)
-            .unwrap_or_else(|_| tool_ctx.arguments.to_string());
-
-        let mut tool_run = root_run.create_child(
-            &tool_name,
-            RunType::Tool,
-            json!({"input": input_for_tool.clone()}),
-        );
-        // T10: 2026 GenAI tool-span attributes. The description is Recommended;
-        // the provider tool-call id (empty for locally-originated calls) is
-        // stamped when present. OtelHandler reads both from run metadata.
-        tool_run = tool_run.with_metadata(GEN_AI_TOOL_DESCRIPTION, json!(tool.description()));
-        if !tool_ctx.tool_id.is_empty() {
-            tool_run = tool_run.with_metadata(GEN_AI_TOOL_CALL_ID, json!(tool_ctx.tool_id.clone()));
-        }
-
-        if let Some(ref callbacks) = self.callbacks {
-            for handler in callbacks.handlers() {
-                handler
-                    .on_tool_start(&tool_run, &tool_name, &input_for_tool)
-                    .await;
-            }
-        }
-
-        let tool_started = std::time::Instant::now();
-        let result = run_tool_with_timeout(tool, input_for_tool.clone(), self.tool_timeout).await;
-        let tool_duration_ms = tool_started.elapsed().as_millis();
-        let trace = root_run
-            .trace_id
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-
-        match result {
-            Ok(output) => {
-                // P1-6: tool call audit log with trace/input/duration/outcome.
-                log::info!(
-                    target: "lc_agents::audit",
-                    "tool_call trace_id={} name={} input={} duration_ms={} outcome=ok",
-                    trace,
-                    tool_name,
-                    input_for_tool,
-                    tool_duration_ms
-                );
-                tool_run.end(json!({"output": output.clone()}));
-                if let Some(ref callbacks) = self.callbacks {
-                    for handler in callbacks.handlers() {
-                        handler.on_tool_end(&tool_run, &output).await;
-                    }
-                }
-
-                // Run hooks: on_after_tool_call
-                let mut result_ctx = ToolResultContext {
-                    name: tool_name,
-                    result: output.clone(),
-                    tool_id: String::new(),
-                };
-                for hook in &self.hooks {
-                    if let Err(e) = hook.on_after_tool_call(&mut result_ctx) {
-                        log::warn!("Hook on_after_tool_call error: {}", e);
-                    }
-                }
-
-                // A1 (v0.22.1 §S8): when spotlighting is on, wrap the observation so the
-                // model reads untrusted tool output as delimited data.
-                let observed = if self.spotlight_tool_output {
-                    super::tools::wrap_tool_output(&result_ctx.result)
-                } else {
-                    result_ctx.result
-                };
-                Ok(observed)
-            }
-            Err(e) => {
-                log::info!(
-                    target: "lc_agents::audit",
-                    "tool_call trace_id={} name={} input={} duration_ms={} outcome=error:{}",
-                    trace,
-                    tool_name,
-                    input_for_tool,
-                    tool_duration_ms,
-                    e
-                );
-                tool_run.end_with_error(e.to_string());
-                if let Some(ref callbacks) = self.callbacks {
-                    for handler in callbacks.handlers() {
-                        handler.on_tool_error(&tool_run, &e.to_string()).await;
-                    }
-                }
-                // 0.20.0 S3.1:框架级控制中止(如交接环/深度守卫,见 ToolError::ControlAbort)
-                // 是「拒绝执行」而非「执行失败」,走 Other 硬失败上抛;其余 ToolError
-                // (ExecutionFailed/Timeout/McpError/InvalidInput/ToolNotFound)才包装成
-                // ToolExecutionError,由循环软化成 observation。两者在调用方必须可区分。
-                match e {
-                    ToolError::ControlAbort(msg) => {
-                        Err(AgentError::Other(format!("Tool call aborted: {msg}")))
-                    }
-                    other => Err(AgentError::ToolExecutionError(other.to_string())),
-                }
-            }
+        let gate = ToolGate::from_executor(self);
+        match gate
+            .execute_one(action, root_run, resume_ctx, pre_decided)
+            .await?
+        {
+            ToolOutcome::Done(result) => Ok(result),
+            ToolOutcome::Denied { reason } => Ok(denied_observation(&reason)),
         }
     }
 }

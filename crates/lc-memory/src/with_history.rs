@@ -173,6 +173,11 @@ impl<L> RunnableWithMessageHistory<L> {
                     return Ok(memory.clone());
                 }
                 // M2a: the cache has a cap — evict the oldest session first, then build the new slot.
+                // D9/L-me4 (design choice, behavior unchanged): eviction is FIFO by the
+                // `order` insertion queue (`pop_front` = least-recently-created slot),
+                // not LRU on last access. A session is re-created on eviction and its
+                // history is lost — callers wanting persistence should use a session-backed
+                // memory rather than rely on the in-memory slot cache.
                 if cache.slots.len() >= *max_sessions {
                     if let Some(oldest) = cache.order.pop_front() {
                         cache.slots.remove(&oldest);

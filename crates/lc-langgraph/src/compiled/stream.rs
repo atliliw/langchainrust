@@ -136,12 +136,20 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                     }
 
                     if graph.interrupt_after.contains(&current_node) {
+                        // H2: persist the checkpoint before interrupting (matching the
+                        // invoke path) and PROPAGATE the error if the write fails — a
+                        // run that cannot checkpoint must not proceed to interrupt as if
+                        // it could be resumed.
                         if let Some(ref checkpointer) = graph.checkpointer {
-                            let _ = checkpointer
+                            if let Err(e) = checkpointer
                                 .lock()
                                 .await
                                 .save(&state, recursion_count)
-                                .await;
+                                .await
+                            {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
                         }
                         let _ = tx
                             .send(Err(GraphError::ExecutionInterrupted(format!(
@@ -206,11 +214,15 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                         None => END.to_string(),
                     };
                     if let Some(ref checkpointer) = graph.checkpointer {
-                        let _ = checkpointer
+                        if let Err(e) = checkpointer
                             .lock()
                             .await
                             .save(&state, recursion_count)
-                            .await;
+                            .await
+                        {
+                            let _ = tx.send(Err(e)).await;
+                            return;
+                        }
                     }
                     continue;
                 }
@@ -224,11 +236,15 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                 };
 
                 if let Some(ref checkpointer) = graph.checkpointer {
-                    let _ = checkpointer
+                    if let Err(e) = checkpointer
                         .lock()
                         .await
                         .save(&state, recursion_count)
-                        .await;
+                        .await
+                    {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
                 }
 
                 current_node = next_node;
@@ -317,7 +333,15 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                             "FanOut has no targets (runtime)".to_string(),
                         ));
                     }
-                    return Ok(targets[0].clone());
+                    // B4: never silently collapse a FanOut to its first branch.
+                    // Every execution loop (invoke / invoke_with_execution /
+                    // invoke_from_node_with_count / stream / parallel)
+                    // intercepts FanOut via `find_fan_out_targets` and runs the
+                    // branches through `execute_parallel_branches` before this
+                    // method is reached, so landing here is a bug — fail loudly.
+                    return Err(GraphError::RoutingError(format!(
+                        "FanOut edge from '{current}' reached find_next_node; fan-out must be handled by the caller"
+                    )));
                 }
                 GraphEdge::FanIn { .. } => {}
             }
@@ -373,7 +397,11 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                                 "FanOut has no targets".to_string(),
                             ));
                         }
-                        return Ok(targets[0].clone());
+                        // B4: never silently collapse a FanOut (see the identical
+                        // guard in the runtime-edges branch above).
+                        return Err(GraphError::RoutingError(format!(
+                            "FanOut edge from '{current}' reached find_next_node; fan-out must be handled by the caller"
+                        )));
                     }
                     GraphEdge::FanIn { .. } => {
                         continue;

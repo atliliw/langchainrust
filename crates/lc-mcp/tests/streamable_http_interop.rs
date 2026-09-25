@@ -22,10 +22,11 @@ use async_trait::async_trait;
 use lc_core::tools::ToolError;
 use lc_core::BaseTool;
 use lc_mcp::{
-    discover_authorization_server, discover_protected_resource, negotiate_protocol_version,
-    BearerTokenProvider, MCPError, MCPToolAdapter, OAuthChallenge, OAuthTokenClient,
-    StreamableHttpTransport, StreamableMcpClient, VersionPolicy, MCP_ERROR_REQUEST_TIMEOUT,
-    MCP_ERROR_SESSION_LOST, MCP_ERROR_UNAUTHORIZED, MCP_ERROR_VERSION_UNSUPPORTED, MCP_VERSION,
+    discover_authorization_server_with, discover_protected_resource_with,
+    negotiate_protocol_version, BearerTokenProvider, DiscoveryMode, MCPError, MCPToolAdapter,
+    OAuthChallenge, OAuthTokenClient, StreamableHttpTransport, StreamableMcpClient, VersionPolicy,
+    MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST, MCP_ERROR_UNAUTHORIZED,
+    MCP_ERROR_VERSION_UNSUPPORTED, MCP_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -295,16 +296,16 @@ async fn unauthorized_challenge_and_metadata_discovery() {
         Some(server.metadata_url.as_str())
     );
 
-    // RFC 9728 discovery.
-    let resource = discover_protected_resource(&server.metadata_url)
+    // RFC 9728 discovery (loopback fixture server → explicit Dev mode).
+    let resource = discover_protected_resource_with(&server.metadata_url, DiscoveryMode::Dev)
         .await
         .expect("protected-resource metadata");
     assert_eq!(resource.resource, server.url);
     assert!(resource.authorization_servers.contains(&server.as_issuer));
     assert!(resource.scopes_supported.contains(&"mcp.read".to_string()));
 
-    // RFC 8414 discovery.
-    let auth_server = discover_authorization_server(&server.as_issuer)
+    // RFC 8414 discovery (loopback fixture server → explicit Dev mode).
+    let auth_server = discover_authorization_server_with(&server.as_issuer, DiscoveryMode::Dev)
         .await
         .expect("authorization-server metadata");
     assert_eq!(auth_server.issuer, server.as_issuer);
@@ -313,8 +314,10 @@ async fn unauthorized_challenge_and_metadata_discovery() {
         .code_challenge_methods_supported
         .contains(&"S256".to_string()));
 
-    // Token exchange against the fixture endpoint (refresh grant).
-    let token_client = OAuthTokenClient::new(token_endpoint, "test-client");
+    // Token exchange against the fixture endpoint (refresh grant); the token
+    // endpoint is loopback too, so Dev mode is required.
+    let token_client = OAuthTokenClient::new(token_endpoint, "test-client")
+        .with_discovery_mode(DiscoveryMode::Dev);
     let tokens = token_client
         .refresh("rt-1", Some("mcp.read"))
         .await

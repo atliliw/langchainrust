@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::client::A2AClient;
 use crate::protocol::{metadata_keys, A2ARequest, A2AResponse, AgentCard};
-use crate::A2AError;
+use crate::{A2AError, Principal};
 
 /// Errors raised by the federation gateway.
 #[derive(Debug, thiserror::Error)]
@@ -42,9 +42,6 @@ pub enum GatewayError {
         /// Maximum allowed payload size in bytes.
         max: usize,
     },
-    /// The request carried no caller identity, so it cannot be authorized.
-    #[error("request does not carry a caller identity")]
-    MissingCaller,
     /// The downstream agent's card does not satisfy the data contract.
     #[error("downstream route '{0}' does not satisfy the data contract")]
     ContractUnsatisfied(String),
@@ -62,8 +59,9 @@ pub enum GatewayError {
 /// denies everything. The payload limit always applies.
 #[derive(Debug, Clone)]
 pub struct CallPolicy {
-    /// Orgs permitted to call this gateway. Caller identity comes from request
-    /// metadata `owner`, using the `org:user` convention.
+    /// Orgs permitted to call this gateway. Caller identity comes from the
+    /// server-granted caller [`Principal`] (never a client-supplied `owner` in
+    /// request metadata), using the `org:user` convention.
     pub allowed_caller_orgs: Option<Vec<String>>,
     /// Skills permitted to be invoked (matched against `skillId`).
     pub allowed_skills: Option<Vec<String>>,
@@ -243,20 +241,26 @@ impl FederationGateway {
 
     /// Validate an inbound request against the policy (P2-7).
     ///
-    /// `raw_len` is the size of the request body as received on the wire; it is
-    /// checked against [`CallPolicy::max_payload_size`]. Caller org is taken
-    /// from request metadata `owner` (the `org:user` convention), the skill
-    /// from the `skillId` param, and both must be allowed when a policy lists
-    /// them.
-    pub fn enforce(&self, req: &A2ARequest, raw_len: usize) -> Result<(), GatewayError> {
+    /// `caller` is the identity the server already granted at the HTTP/auth
+    /// boundary — the gateway **never** trusts a client-supplied `owner` in
+    /// request metadata, so a hostile caller cannot whitewash its org (C-A2A-1).
+    /// The caller's org (the `org:` prefix) is checked against the policy
+    /// allow-list; `raw_len` is the size of the request body as received on the
+    /// wire, checked against [`CallPolicy::max_payload_size`]; the skill comes
+    /// from the `skillId` param. All three must pass when a policy lists them.
+    pub fn enforce(
+        &self,
+        caller: &Principal,
+        req: &A2ARequest,
+        raw_len: usize,
+    ) -> Result<(), GatewayError> {
         if !self.policy.payload_allowed(raw_len) {
             return Err(GatewayError::PayloadTooLarge {
                 actual: raw_len,
                 max: self.policy.max_payload_size,
             });
         }
-        let owner = req.owner().ok_or(GatewayError::MissingCaller)?;
-        let org = org_from_owner(owner);
+        let org = org_from_owner(caller.as_str());
         if !self.policy.caller_org_allowed(org) {
             return Err(GatewayError::CallerOrgNotAllowed(org.to_string()));
         }
@@ -323,19 +327,25 @@ impl FederationGateway {
         Ok(card)
     }
 
-    /// Enforce the policy, minimize the request, and forward it to the
-    /// downstream route `key` (P2-7).
+    /// Enforce the policy, verify the downstream data contract, minimize the
+    /// request, and forward it to the downstream route `key` (P2-7).
     ///
+    /// `caller` is the server-granted identity (see [`Self::enforce`]);
     /// `raw_len` is the size of the request body as received on the wire. The
-    /// outbound request is minimized before it is sent, and the downstream
-    /// A2A response is returned verbatim.
+    /// outbound request is minimized before it is sent, and the downstream A2A
+    /// response is returned verbatim.
     pub async fn forward(
         &self,
+        caller: &Principal,
         key: &str,
         req: &A2ARequest,
         raw_len: usize,
     ) -> Result<A2AResponse, GatewayError> {
-        self.enforce(req, raw_len)?;
+        self.enforce(caller, req, raw_len)?;
+        // C-A2A-2: never forward classified data to an agent that has not
+        // signed up to handle it — fetch the downstream card and verify it
+        // against the data contract before the request goes out.
+        self.verify_downstream(key).await?;
         let client = self
             .clients
             .get(key)
@@ -376,8 +386,8 @@ mod tests {
     fn policy_denies_unknown_caller_org() {
         let policy = CallPolicy::new().allow_caller_org("acme");
         let gw = FederationGateway::new("gw", policy);
-        let req = request().with_owner("evil:user");
-        let err = gw.enforce(&req, 100).unwrap_err();
+        let caller = Principal::from("evil:user");
+        let err = gw.enforce(&caller, &request(), 100).unwrap_err();
         assert!(matches!(err, GatewayError::CallerOrgNotAllowed(o) if o == "evil"));
     }
 
@@ -387,7 +397,8 @@ mod tests {
             .allow_caller_org("acme")
             .allow_skill("research");
         let gw = FederationGateway::new("gw", policy);
-        let req = request().with_owner("acme:alice");
+        let caller = Principal::from("acme:alice");
+        let req = request();
         // Allowed org, allowed skill -> passes.
         let with_skill = {
             let mut params = req.params.clone().unwrap();
@@ -400,7 +411,7 @@ mod tests {
                 metadata: req.metadata.clone(),
             }
         };
-        gw.enforce(&with_skill, 100).unwrap();
+        gw.enforce(&caller, &with_skill, 100).unwrap();
 
         // Same org, unknown skill -> rejected.
         let unknown_skill = {
@@ -414,7 +425,7 @@ mod tests {
                 metadata: req.metadata.clone(),
             }
         };
-        let err = gw.enforce(&unknown_skill, 100).unwrap_err();
+        let err = gw.enforce(&caller, &unknown_skill, 100).unwrap_err();
         assert!(matches!(err, GatewayError::SkillNotAllowed(s) if s == "summarize"));
     }
 
@@ -422,8 +433,8 @@ mod tests {
     fn policy_denies_oversized_payload() {
         let policy = CallPolicy::new().with_max_payload_size(16);
         let gw = FederationGateway::new("gw", policy);
-        let req = request().with_owner("acme:alice");
-        let err = gw.enforce(&req, 100).unwrap_err();
+        let caller = Principal::from("acme:alice");
+        let err = gw.enforce(&caller, &request(), 100).unwrap_err();
         assert!(matches!(
             err,
             GatewayError::PayloadTooLarge {
@@ -434,10 +445,22 @@ mod tests {
     }
 
     #[test]
-    fn policy_requires_caller_identity() {
-        let gw = FederationGateway::new("gw", CallPolicy::new());
-        let err = gw.enforce(&request(), 100).unwrap_err();
-        assert!(matches!(err, GatewayError::MissingCaller));
+    fn enforce_ignores_metadata_owner_and_uses_server_granted_principal() {
+        // The request carries a forged `owner`, but authorization uses the
+        // server-granted Principal — the forged org must NOT be trusted (C-A2A-1).
+        let policy = CallPolicy::new().allow_caller_org("acme");
+        let gw = FederationGateway::new("gw", policy);
+        let caller = Principal::from("acme:alice");
+        // Forged owner in the message is irrelevant: the caller is acme -> allowed.
+        gw.enforce(&caller, &request().with_owner("microsoft:bill"), 100)
+            .unwrap();
+
+        // A Principal naming a blocked org is rejected regardless of message owner.
+        let evil = Principal::from("evil:user");
+        let err = gw
+            .enforce(&evil, &request().with_owner("acme:alice"), 100)
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::CallerOrgNotAllowed(o) if o == "evil"));
     }
 
     #[test]
@@ -522,6 +545,12 @@ mod tests {
             }
             let head_end = head_end.expect("head terminator");
             let head = String::from_utf8_lossy(&request[..head_end]).to_string();
+            let path = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_string();
             let body_len = head
                 .lines()
                 .find_map(|l| l.strip_prefix("Content-Length:"))
@@ -535,7 +564,7 @@ mod tests {
                 }
                 body.extend_from_slice(&buf[..n]);
             }
-            (String::new(), String::from_utf8_lossy(&body).to_string())
+            (path, String::from_utf8_lossy(&body).to_string())
         }
 
         async fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
@@ -559,8 +588,8 @@ mod tests {
                 let handler = handler.clone();
                 tokio::spawn(async move {
                     let mut stream = stream;
-                    let (_, body) = read_request(&mut stream).await;
-                    let (status, response) = handler("", &body);
+                    let (path, body) = read_request(&mut stream).await;
+                    let (status, response) = handler(&path, &body);
                     write_response(&mut stream, status, &response).await;
                 });
             }
@@ -572,13 +601,20 @@ mod tests {
         r#"{"jsonrpc":"2.0","id":1,"result":{"task":{"id":"fwd-1","message":{"role":"user","content":"hi"},"status":"completed","result":{"output":"ok"}}}}"#.to_string()
     }
 
+    fn card_response() -> String {
+        r#"{"name":"partner","description":"p","url":"http://p"}"#.to_string()
+    }
+
     #[tokio::test]
     async fn forward_enforces_policy_and_forwards_minimized_request() {
         let captured = Arc::new(Mutex::new(String::new()));
         let cap = captured.clone();
         let hits = Arc::new(AtomicUsize::new(0));
         let h = hits.clone();
-        let handler: Handler = Arc::new(move |_path, body| {
+        let handler: Handler = Arc::new(move |path, body| {
+            if path.contains(".well-known") {
+                return (200, card_response());
+            }
             h.fetch_add(1, Ordering::SeqCst);
             *cap.lock().unwrap_or_else(|e| e.into_inner()) = body.to_string();
             (200, downstream_ok_response())
@@ -588,12 +624,10 @@ mod tests {
         let gw = FederationGateway::new("gw", CallPolicy::new().allow_caller_org("acme"))
             .with_route("partner", A2AClient::new(base).unwrap());
 
-        let req = request()
-            .with_owner("acme:alice")
-            .with_trace_id("trace-9")
-            .with_message_id("msg-9");
+        let caller = Principal::from("acme:alice");
+        let req = request().with_trace_id("trace-9").with_message_id("msg-9");
 
-        let resp = gw.forward("partner", &req, 200).await.unwrap();
+        let resp = gw.forward(&caller, "partner", &req, 200).await.unwrap();
         assert!(resp.result.is_some());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
@@ -628,8 +662,11 @@ mod tests {
             .with_route("partner", A2AClient::new(base).unwrap());
 
         // Caller from an unlisted org.
-        let req = request().with_owner("evil:user");
-        let err = gw.forward("partner", &req, 200).await.unwrap_err();
+        let caller = Principal::from("evil:user");
+        let err = gw
+            .forward(&caller, "partner", &request(), 200)
+            .await
+            .unwrap_err();
         assert!(matches!(err, GatewayError::CallerOrgNotAllowed(o) if o == "evil"));
         assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
@@ -637,8 +674,92 @@ mod tests {
     #[tokio::test]
     async fn forward_missing_route_is_a_no_route_error() {
         let gw = FederationGateway::new("gw", CallPolicy::new());
-        let req = request().with_owner("acme:alice");
-        let err = gw.forward("nope", &req, 200).await.unwrap_err();
+        let caller = Principal::from("acme:alice");
+        let err = gw
+            .forward(&caller, "nope", &request(), 200)
+            .await
+            .unwrap_err();
         assert!(matches!(err, GatewayError::NoRoute(r) if r == "nope"));
+    }
+
+    #[tokio::test]
+    async fn forward_contract_satisfied_card_lets_data_through() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let handler: Handler = Arc::new(move |path, _body| {
+            if path.contains(".well-known") {
+                // Downstream advertises data_class "internal" — contract met.
+                return (
+                    200,
+                    r#"{"name":"partner","description":"p","url":"http://p","dataClass":"internal"}"#
+                        .to_string(),
+                );
+            }
+            h.fetch_add(1, Ordering::SeqCst);
+            (200, downstream_ok_response())
+        });
+        let base = spawn_server(handler).await;
+
+        let gw = FederationGateway::new("gw", CallPolicy::new().allow_caller_org("acme"))
+            .with_contract(DataContract::new(
+                "internal",
+                "task-execution",
+                "session",
+                false,
+            ))
+            .with_route("partner", A2AClient::new(base).unwrap());
+
+        let caller = Principal::from("acme:alice");
+        let resp = gw
+            .forward(&caller, "partner", &request(), 200)
+            .await
+            .unwrap();
+        assert!(resp.result.is_some());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn forward_contract_violation_never_touches_downstream() {
+        // Downstream advertises data_class "public", but the contract demands
+        // "internal": the classified request must be rejected, and the task
+        // must never reach the downstream agent (C-A2A-2).
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let handler: Handler = Arc::new(move |path, _body| {
+            if path.contains(".well-known") {
+                return (
+                    200,
+                    r#"{"name":"partner","description":"p","url":"http://p","dataClass":"public"}"#
+                        .to_string(),
+                );
+            }
+            h.fetch_add(1, Ordering::SeqCst);
+            (200, downstream_ok_response())
+        });
+        let base = spawn_server(handler).await;
+
+        let gw = FederationGateway::new("gw", CallPolicy::new().allow_caller_org("acme"))
+            .with_contract(DataContract::new(
+                "internal",
+                "task-execution",
+                "session",
+                false,
+            ))
+            .with_route("partner", A2AClient::new(base).unwrap());
+
+        let caller = Principal::from("acme:alice");
+        let err = gw
+            .forward(&caller, "partner", &request(), 200)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            GatewayError::ContractUnsatisfied(url) if url == "http://p"
+        ));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "classified data must never be forwarded to a non-compliant agent"
+        );
     }
 }

@@ -135,7 +135,7 @@ impl CohereVisionEmbeddings {
         let dimension = Self::dimension_for(&config.model)?;
         Ok(Self {
             config,
-            client: reqwest::Client::new(),
+            client: crate::retry::embedding_client(),
             dimension,
         })
     }

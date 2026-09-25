@@ -25,6 +25,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::Notify;
+
 /// A token that can be used to signal cancellation of a long-running operation.
 ///
 /// Clones share the same underlying cancellation state — cancelling one clone
@@ -32,6 +34,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
     inner: Arc<AtomicBool>,
+    notify: Arc<Notify>,
 }
 
 impl CancellationToken {
@@ -39,6 +42,7 @@ impl CancellationToken {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
         }
     }
 
@@ -46,7 +50,15 @@ impl CancellationToken {
     ///
     /// All clones of this token will become cancelled.
     pub fn cancel(&self) {
-        self.inner.store(true, Ordering::SeqCst);
+        // Only the transition false→true wakes waiters, so repeated cancels
+        // (possibly from several tasks) never produce spurious notifications.
+        if self
+            .inner
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.notify.notify_waiters();
+        }
     }
 
     /// Returns `true` if cancellation has been signaled.
@@ -56,13 +68,21 @@ impl CancellationToken {
 
     /// Returns a future that resolves when cancellation is signaled.
     ///
-    /// Uses `tokio::sync::Notify`-style polling. This is a lightweight
-    /// check — it does not block a thread.
+    /// Backed by [`tokio::sync::Notify`] — the future parks without busy-looping
+    /// and wakes immediately on [`cancel()`](Self::cancel). The flag is
+    /// re-checked after registering interest to close the race where
+    /// cancellation happens between the flag read and the `notified()`
+    /// registration.
     pub async fn cancelled(&self) {
-        // Simple spin-based wait with yield.
-        // For production use, consider a Notify-based approach.
-        while !self.inner.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
+        loop {
+            if self.inner.load(Ordering::SeqCst) {
+                return;
+            }
+            let notified = self.notify.notified();
+            if self.inner.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
         }
     }
 }

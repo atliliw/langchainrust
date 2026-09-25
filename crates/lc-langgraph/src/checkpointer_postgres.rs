@@ -51,10 +51,14 @@ CREATE TABLE IF NOT EXISTS lc_checkpoints (
     ts              BIGINT NOT NULL,
     recursion_count BIGINT NOT NULL,
     state           TEXT NOT NULL,
+    parent_id       TEXT,
     PRIMARY KEY (thread_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_lc_checkpoints_thread
     ON lc_checkpoints(thread_id, ts, seq);
+-- Idempotently add the fork-lineage column to databases created by older
+-- versions (`CREATE TABLE IF NOT EXISTS` does not alter existing tables).
+ALTER TABLE lc_checkpoints ADD COLUMN IF NOT EXISTS parent_id TEXT;
 "#;
 
 /// Checkpointer persisting checkpoints to a Postgres database.
@@ -110,11 +114,30 @@ impl<S: StateSchema> PostgresCheckpointer<S> {
     pub fn thread_id(&self) -> &str {
         &self.thread_id
     }
-}
 
-#[async_trait]
-impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
-    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+    /// A thread-bound backend only serves its own thread; the threaded trait
+    /// methods assert the requested thread matches before delegating.
+    fn assert_thread(&self, thread: &str) -> GraphResult<()> {
+        if thread != self.thread_id {
+            return Err(GraphError::CheckpointError(format!(
+                "this checkpointer is scoped to thread '{}', not '{thread}'",
+                self.thread_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Shared insert path; `parent_id` records the checkpoint this one was
+    /// forked from (fork lineage). Bound to the checkpointer's own thread.
+    ///
+    /// An inherent (not trait) helper so the trait impl can call it: it is a
+    /// private detail of this backend, not a [`Checkpointer`] member.
+    async fn insert_internal(
+        &self,
+        parent_id: Option<&str>,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
         let id = Uuid::new_v4().to_string();
         let ts = chrono::Utc::now().timestamp();
         let state_json = serde_json::to_string(state)
@@ -123,19 +146,74 @@ impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
         client
             .execute(
                 "INSERT INTO lc_checkpoints \
-                 (thread_id, id, version, ts, recursion_count, state) \
-                 VALUES ($1, $2, 1, $3, $4, $5)",
+                 (thread_id, id, version, ts, recursion_count, state, parent_id) \
+                 VALUES ($1, $2, 1, $3, $4, $5, $6)",
                 &[
                     &self.thread_id,
                     &id,
                     &ts,
                     &(recursion_count as i64),
                     &state_json,
+                    &parent_id,
                 ],
             )
             .await
             .map_err(pg_err)?;
         Ok(id)
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
+    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+        self.insert_internal(None, state, recursion_count).await
+    }
+
+    async fn save_threaded(
+        &self,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(None, state, recursion_count).await
+    }
+
+    async fn save_fork_threaded(
+        &self,
+        parent_id: Option<&str>,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        self.assert_thread(thread)?;
+        self.insert_internal(parent_id, state, recursion_count)
+            .await
+    }
+
+    async fn load_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<S> {
+        self.assert_thread(thread)?;
+        self.load(checkpoint_id).await
+    }
+
+    async fn list_threaded(&self, thread: &str) -> GraphResult<Vec<String>> {
+        self.assert_thread(thread)?;
+        self.list().await
+    }
+
+    async fn delete_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<()> {
+        self.assert_thread(thread)?;
+        self.delete(checkpoint_id).await
+    }
+
+    async fn last_threaded(&self, thread: &str) -> GraphResult<Option<(S, usize)>> {
+        self.assert_thread(thread)?;
+        self.last().await
+    }
+
+    async fn snapshots_threaded(&self, thread: &str) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.assert_thread(thread)?;
+        self.snapshots().await
     }
 
     async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
@@ -172,7 +250,7 @@ impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
         let client = self.client.lock().await;
         let rows = client
             .query(
-                "SELECT id, ts, seq, recursion_count, state FROM lc_checkpoints \
+                "SELECT id, ts, seq, recursion_count, state, parent_id FROM lc_checkpoints \
                  WHERE thread_id = $1 ORDER BY ts ASC, seq ASC",
                 &[&self.thread_id],
             )
@@ -189,6 +267,7 @@ impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
                 seq: row.get::<_, i64>(2) as u64,
                 recursion_count: row.get::<_, i64>(3) as usize,
                 state,
+                parent: row.get(5),
             });
         }
         Ok(snaps)
@@ -236,17 +315,17 @@ impl<S: StateSchema> Checkpointer<S> for PostgresCheckpointer<S> {
     ) -> GraphResult<u64> {
         let state_json = serde_json::to_string(state)
             .map_err(|e| GraphError::CheckpointError(format!("serialize error: {e}")))?;
-        let ts = chrono::Utc::now().timestamp();
 
         let mut client = self.client.lock().await;
         let tx = client.transaction().await.map_err(pg_err)?;
+        // B4: do NOT refresh `ts` — `last()` (`ORDER BY ts DESC`) must keep
+        // reflecting save order, not edit order.
         let updated = tx
             .execute(
-                "UPDATE lc_checkpoints SET state = $1, version = version + 1, ts = $2 \
-                 WHERE thread_id = $3 AND id = $4 AND version = $5",
+                "UPDATE lc_checkpoints SET state = $1, version = version + 1 \
+                 WHERE thread_id = $2 AND id = $3 AND version = $4",
                 &[
                     &state_json,
-                    &ts,
                     &self.thread_id,
                     &checkpoint_id,
                     &(expected_version as i64),

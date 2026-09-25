@@ -134,7 +134,11 @@ impl FunctionCallingAgent {
         messages.push(Message::human(input));
 
         for step in intermediate_steps {
-            let tool_call = ToolCall::builder(&step.action.log)
+            // B5: pair the ai-side ToolCall id with the tool-result call_id. Uses the
+            // action's explicit `tool_call_id` when present; otherwise derives a stable
+            // per-action id so the pair stays linked across rebuilds.
+            let id = resolve_tool_call_id(&step.action);
+            let tool_call = ToolCall::builder(&id)
                 .name(&step.action.tool)
                 .arguments(match &step.action.tool_input {
                     ToolInput::String { value: s } => s.clone(),
@@ -144,7 +148,7 @@ impl FunctionCallingAgent {
                 })
                 .build();
             messages.push(Message::ai_with_tool_calls("", vec![tool_call]));
-            messages.push(Message::tool(&step.action.log, &step.observation));
+            messages.push(Message::tool(&id, &step.observation));
         }
 
         messages
@@ -172,7 +176,12 @@ impl FunctionCallingAgent {
                 AgentAction {
                     tool: call.function.name.clone(),
                     tool_input,
-                    log: call.id.clone(),
+                    log: String::new(),
+                    // B5: carry the provider tool-call id on the action instead of
+                    // stuffing it into `log`, so rebuilders can pair the ToolCall with
+                    // its tool result by real id and the executor can stamp it into
+                    // observability without guessing.
+                    tool_call_id: Some(call.id.clone()),
                 }
             })
             .collect();
@@ -183,6 +192,28 @@ impl FunctionCallingAgent {
             AgentOutput::Actions(actions)
         }
     }
+}
+
+/// B5: resolves the id used to pair a `ToolCall` (ai message) with its `tool` result.
+///
+/// Returns the action's explicit `tool_call_id` when present and non-empty; otherwise
+/// derives a deterministic id from `(tool, input)` so the pair stays linked across
+/// message rebuilds even for agents that carry no native id.
+fn resolve_tool_call_id(action: &AgentAction) -> String {
+    if let Some(id) = &action.tool_call_id {
+        if !id.is_empty() {
+            return id.clone();
+        }
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    action.tool.hash(&mut hasher);
+    let input_repr = match &action.tool_input {
+        ToolInput::String { value: s } => serde_json::to_string(s).unwrap_or_default(),
+        ToolInput::Object { value: v } => serde_json::to_string(v).unwrap_or_default(),
+    };
+    input_repr.hash(&mut hasher);
+    format!("call_{:016x}", hasher.finish())
 }
 
 #[async_trait]
@@ -424,6 +455,7 @@ mod tests {
                     value: "2 + 3".to_string(),
                 },
                 log: "call_123".to_string(),
+                tool_call_id: Some("call_123".to_string()),
             },
             "5".to_string(),
         )];
@@ -432,6 +464,81 @@ mod tests {
 
         assert_eq!(messages.len(), 4);
         assert!(messages[2].has_tool_calls());
+    }
+
+    /// B5 (design point 1): the ai-side `ToolCall.id` must pair with the tool-result
+    /// `Message::tool` call_id. An explicit `tool_call_id` on the action is reused
+    /// verbatim; when the action carries `None`, the same deterministic id is put on
+    /// both sides so the pair stays linked across message rebuilds.
+    #[test]
+    fn tool_call_id_pairs_explicit_and_synthesized() {
+        let config = create_test_config();
+        let llm = OpenAIChat::new(config);
+        let agent = FunctionCallingAgent::new(llm, vec![], None);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("input".to_string(), "go".to_string());
+
+        // 1. Explicit id: both the ToolCall id and the tool-result call_id equal it.
+        let steps = vec![AgentStep::new(
+            AgentAction {
+                tool: "calculator".to_string(),
+                tool_input: ToolInput::String {
+                    value: "1+1".to_string(),
+                },
+                log: String::new(),
+                tool_call_id: Some("call_explicit".to_string()),
+            },
+            "2".to_string(),
+        )];
+        let messages = agent.build_messages(&inputs, &steps);
+        // [system, human, ai-with-tool-call, tool-result]
+        let ai_id = messages[2].get_tool_calls().unwrap()[0].id.clone();
+        assert_eq!(
+            ai_id, "call_explicit",
+            "explicit id must flow to the ToolCall"
+        );
+        match &messages[3].message_type {
+            lc_schema::MessageType::Tool { tool_call_id } => {
+                assert_eq!(
+                    tool_call_id, &ai_id,
+                    "tool-result call_id must equal the ToolCall id"
+                );
+            }
+            other => panic!("expected a Tool message, got {other:?}"),
+        }
+
+        // 2. None → non-empty synthesized id, identical on both sides, and
+        //    deterministic for the same (tool, input).
+        let steps2 = vec![AgentStep::new(
+            AgentAction {
+                tool: "calculator".to_string(),
+                tool_input: ToolInput::String {
+                    value: "1+1".to_string(),
+                },
+                log: String::new(),
+                tool_call_id: None,
+            },
+            "2".to_string(),
+        )];
+        let m2 = agent.build_messages(&inputs, &steps2);
+        let tc2_id = m2[2].get_tool_calls().unwrap()[0].id.clone();
+        assert!(
+            !tc2_id.is_empty() && tc2_id.starts_with("call_"),
+            "synth id must be non-empty and namespaced, got {tc2_id}"
+        );
+        match &m2[3].message_type {
+            lc_schema::MessageType::Tool { tool_call_id } => {
+                assert_eq!(tool_call_id, &tc2_id, "synthesized ids must pair");
+            }
+            other => panic!("expected a Tool message, got {other:?}"),
+        }
+        let m3 = agent.build_messages(&inputs, &steps2);
+        let tc3_id = m3[2].get_tool_calls().unwrap()[0].id.clone();
+        assert_eq!(
+            tc2_id, tc3_id,
+            "same (tool, input) must yield the same synthesized id"
+        );
     }
 
     #[test]
@@ -585,6 +692,7 @@ mod tests {
             Some(vec![
                 StreamChunk::new("Final "),
                 StreamChunk {
+                    thinking_content: None,
                     text: "Answer: 42".to_string(),
                     token_usage: Some(TokenUsage {
                         prompt_tokens: 10,
@@ -632,6 +740,7 @@ mod tests {
         // Simulate a tool-call step: the stream only returns empty text + usage chunks.
         let llm = MockFuncLLM::new(
             Some(vec![StreamChunk {
+                thinking_content: None,
                 text: String::new(),
                 token_usage: Some(TokenUsage {
                     prompt_tokens: 5,
@@ -703,6 +812,7 @@ mod tests {
     #[tokio::test]
     async fn test_function_calling_plan_stream_streams_tool_call_natively() {
         let tool_chunk = StreamChunk {
+            thinking_content: None,
             text: String::new(),
             token_usage: Some(TokenUsage {
                 prompt_tokens: 5,
@@ -749,6 +859,7 @@ mod tests {
             Some(vec![
                 StreamChunk::new("Let me compute"),
                 StreamChunk {
+                    thinking_content: None,
                     text: String::new(),
                     token_usage: Some(TokenUsage {
                         prompt_tokens: 5,

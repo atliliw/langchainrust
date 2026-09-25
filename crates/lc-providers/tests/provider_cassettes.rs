@@ -572,3 +572,81 @@ async fn openai_response_format_in_request() {
         "request carries response_format for structured output"
     );
 }
+
+// ===========================================================================
+// T1 (v0.25.0): live wire capture — the tape the USER records, CI never runs.
+// ===========================================================================
+//
+// The loopback recorder (`common::spawn_live_recorder`) relays one request to a
+// real upstream, captures the true wire response (status/headers/body), strips
+// credential headers + redacts key-shaped tokens, and writes a fixture envelope
+// to `tests/fixtures/<provider>/<case>.json`. Point it at a real provider with a
+// real key to produce committed replay data. Replay itself is hermetic: the
+// offline cassette tests above consume only committed fixtures.
+//
+// How to record (from the crate root):
+//   RECORD_UPSTREAM=https://api.openai.com/v1                                \
+//   OPENAI_API_KEY=sk-...                                                    \
+//   RECORD_PROVIDER=openai RECORD_CASE=chat_completion                       \
+//   cargo test -p lc-providers --test provider_cassettes record_chat_ -- --ignored --nocapture
+//
+// The checklist of providers / cases / env vars lives in
+// docs/internal/v0.25.0/T1_FIXTURE_RECORDING.md.
+
+#[tokio::test]
+#[ignore = "records a live fixture; set RECORD_UPSTREAM + a real key to run"]
+async fn record_chat_completion_fixture() {
+    let Ok(upstream) = std::env::var("RECORD_UPSTREAM") else {
+        eprintln!("RECORD_UPSTREAM not set; skipping live capture");
+        return;
+    };
+    let provider = std::env::var("RECORD_PROVIDER").unwrap_or_else(|_| "openai".into());
+    let case = std::env::var("RECORD_CASE").unwrap_or_else(|_| "chat_completion".into());
+
+    // Start clean: a failed prior run may have left a non-200 fixture behind.
+    let fixture_path = std::path::Path::new("tests/fixtures")
+        .join(&provider)
+        .join(format!("{case}.json"));
+    if fixture_path.exists() {
+        std::fs::remove_file(&fixture_path).ok();
+    }
+
+    let recorder = common::spawn_live_recorder(&upstream, &provider, &case).await;
+
+    // The provider key overrides RECORD_API_KEY, else falls back to OPENAI_API_KEY.
+    let key = std::env::var("RECORD_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .expect("set RECORD_API_KEY or OPENAI_API_KEY to record a fixture");
+
+    let body = r#"{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":8}"#;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/chat/completions",
+            recorder.addr.port()
+        ))
+        .header("content-type", "application/json")
+        .bearer_auth(&key)
+        .body(body)
+        .send()
+        .await
+        .expect("relay response from loopback recorder");
+    assert!(
+        resp.status().is_success(),
+        "upstream for {upstream} returned {}; pick a model the key can call",
+        resp.status()
+    );
+
+    // The recorder wrote a sanitized fixture; load it back both ways.
+    let loaded = common::load_fixture_opt(&provider, &case)
+        .unwrap_or_else(|| panic!("recorder did not write {fixture_path:?}"));
+    assert_eq!(loaded.status, 200);
+    // Strict loader agrees the fixture now exists on disk.
+    let _strict = common::load_fixture(&provider, &case);
+
+    eprintln!(
+        "\n[recorder] wrote fixture:\n  {}\n[recorder] sanitized body:\n{}",
+        fixture_path.display(),
+        loaded.body
+    );
+}

@@ -5954,7 +5954,7 @@ Production capabilities are assembled via builders (all since v0.13.0 unless not
 
 **Task persistence**: tasks are stored through the `TaskStore` trait (`upsert` / `get` / `list` / `delete` / `compare_and_update`); the default is an `InMemoryTaskStore` with LRU eviction — gone on process restart. The trait's built-in `compare_and_update` is a state-machine conditional replace (CAS); when you implement a database backend, override it with a real atomic conditional write so "cancel" and "chain completion" cannot overwrite each other's terminal state.
 
-**Idempotency and ownership**: a `tasks/send` carrying a `message_id` in request metadata is idempotent — retrying the same id only re-fetches the already-created task instead of running the chain twice (in-flight ids are atomically reserved; 0.20.0 also fixed a server bug where the loser of a reservation race never released it, permanently "poisoning" that id). A task may carry an `owner`; non-owners calling `tasks/get` / `tasks/cancel` are rejected (`-32003`).
+**Idempotency and ownership**: a `tasks/send` carrying a `message_id` in request metadata is idempotent — retrying the same id only re-fetches the already-created task instead of running the chain twice (in-flight ids are atomically reserved; 0.20.0 also fixed a server bug where the loser of a reservation race never released it, permanently "poisoning" that id). A task may carry an `owner`; non-owners calling `tasks/get` / `tasks/cancel` are rejected (`-32003`). **As of 0.25.0 ownership only trusts the server-issued identity**: by default `trust_metadata_owner=false`, so a client-supplied `owner` in request metadata is ignored — the owner is resolved exactly once at the HTTP boundary from the authenticated identity (`with_auth_identity` / `with_authenticator` → `Principal`) and threaded through every route and the `/events` subscription filter. Local migrations that genuinely need to trust a self-reported owner must opt in with `.with_trust_metadata_owner(true)`.
 
 ### Out-of-the-box axum server (`axum` feature)
 
@@ -5962,17 +5962,17 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.24"
-lc-a2a = { version = "0.24.0", features = ["axum"] }
+langchainrust = "0.25"
+lc-a2a = { version = "0.25.0", features = ["axum"] }
 ```
 
 ```rust
 // Routes: GET /.well-known/agent-card.json, POST /, GET /events (SSE)
-server.serve(8080).await?;              // binds 0.0.0.0:8080
+server.serve(8080).await?;              // B7 (0.25) secure default: binds 127.0.0.1:8080 (loopback)
 // Or server.serve_on(listener).await — custom address / TLS / ephemeral port
 ```
 
-CORS allows only `http://localhost` / `http://127.0.0.1` origins by default (before the 0.22.0 audit it allowed any origin); for public-facing deployments tighten the origin allowlist yourself and add TLS plus rate limiting at the gateway in front. A full runnable example is at `crates/lc/examples/a2a_http_server.rs`.
+**Public bind note (B7, 0.25+)**: `serve` binds loopback only. To expose a non-loopback address you must use `server.serve_with(ServeConfig)` — a non-loopback `bind` with no bearer token (`ServeConfig.auth_token`, or `with_auth_token` on the server) and no explicit `insecure_public = true` is refused at startup (`refusing to serve A2A on non-loopback bind ... without a bearer token`); `insecure_public` is only for deployments fronted by an authenticating reverse proxy. CORS allows only `http://localhost` / `http://127.0.0.1` origins by default (before the 0.22.0 audit it allowed any origin; since B7 `ServeConfig.cors_origins` gives an exact allow-list); for public-facing deployments tighten the allowlist in `ServeConfig` and add TLS plus rate limiting at the gateway in front. A full runnable example is at `crates/lc/examples/a2a_http_server.rs`.
 
 ### A2AClient (Call Remote Agent)
 
