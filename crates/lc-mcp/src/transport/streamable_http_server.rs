@@ -320,11 +320,31 @@ fn response_mode(accept: Option<&str>) -> AcceptMode {
         // Missing Accept: the spec lets a server assume a Streamable HTTP client.
         return AcceptMode::Json;
     };
-    let media_ranges: Vec<&str> = accept
-        .split(',')
-        .map(|part| part.split(';').next().unwrap_or("").trim())
-        .filter(|part| !part.is_empty())
-        .collect();
+    // M-5: honor RFC 9110 `q`-values. A range with `q=0` is *not acceptable* and
+    // must never be selected — `text/event-stream;q=0, */*` previously still
+    // picked SSE, violating the client's explicit refusal.
+    let q_is_zero = |v: &str| -> bool {
+        // "0", "0.0", "0.000", "-0" all denote q=0.
+        v.trim().trim_start_matches('-').trim_end_matches('0').trim_end_matches('.').is_empty()
+    };
+    let mut media_ranges: Vec<&str> = Vec::new();
+    for part in accept.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let mut pieces = part.split(';');
+        let media = pieces.next().unwrap_or("").trim();
+        let q_val = pieces.find_map(|p| {
+            p.split_once('=').and_then(|(k, v)| {
+                if k.trim().eq_ignore_ascii_case("q") {
+                    Some(v.trim())
+                } else {
+                    None
+                }
+            })
+        });
+        if q_val.is_some_and(q_is_zero) {
+            continue; // explicitly not acceptable to the client
+        }
+        media_ranges.push(media);
+    }
     let listed = |want: &str| media_ranges.iter().any(|m| m.eq_ignore_ascii_case(want));
     let wildcard = media_ranges
         .iter()
@@ -564,6 +584,30 @@ mod tests {
         // Explicit SSE still wins over a bare wildcard when listed first.
         assert!(matches!(
             response_mode(Some("text/event-stream, */*;q=0.1")),
+            AcceptMode::Sse
+        ));
+    }
+
+    #[test]
+    fn accept_negotiation_honors_q0_refusal() {
+        // M-5 regression: `q=0` means "not acceptable" (RFC 9110) and must never be
+        // selected — `text/event-stream;q=0, */*` previously returned SSE.
+        assert!(matches!(
+            response_mode(Some("text/event-stream;q=0, */*")),
+            AcceptMode::Json
+        ));
+        assert!(matches!(
+            response_mode(Some("text/event-stream;q=0 , application/json")),
+            AcceptMode::Json
+        ));
+        // Wildcard whitespace / zero spellings all denote q=0.
+        assert!(matches!(
+            response_mode(Some("text/event-stream ; Q=0.000, application/json")),
+            AcceptMode::Json
+        ));
+        // Excluding JSON leaves SSE, not a selection error.
+        assert!(matches!(
+            response_mode(Some("application/json;q=0, text/event-stream")),
             AcceptMode::Sse
         ));
     }

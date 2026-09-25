@@ -11,6 +11,10 @@ pub enum CohereError {
     Api(String),
     /// Response parsing error.
     Parse(String),
+    /// M-8: the stream closed before a terminal `message-end` event was seen —
+    /// the connection was truncated, so the partial reply must not be treated
+    /// as complete.
+    StreamInterrupted(String),
 }
 
 impl std::fmt::Display for CohereError {
@@ -19,6 +23,7 @@ impl std::fmt::Display for CohereError {
             CohereError::Http(msg) => write!(f, "Cohere HTTP error: {}", msg),
             CohereError::Api(msg) => write!(f, "Cohere API error: {}", msg),
             CohereError::Parse(msg) => write!(f, "Cohere parse error: {}", msg),
+            CohereError::StreamInterrupted(msg) => write!(f, "Cohere stream interrupted: {}", msg),
         }
     }
 }

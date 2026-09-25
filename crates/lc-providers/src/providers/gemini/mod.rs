@@ -277,6 +277,7 @@ impl GeminiChat {
                             function_response: None,
                             inline_data: None,
                             file_data: None,
+                            thought: None,
                         });
                     }
                     for media in msg.media_parts() {
@@ -293,6 +294,7 @@ impl GeminiChat {
                             function_response: None,
                             inline_data: None,
                             file_data: None,
+                            thought: None,
                         });
                     }
                     contents.push(GeminiContent {
@@ -318,6 +320,7 @@ impl GeminiChat {
                                 function_response: None,
                                 inline_data: None,
                                 file_data: None,
+                                thought: None,
                             });
                         }
                     }
@@ -328,6 +331,7 @@ impl GeminiChat {
                             function_response: None,
                             inline_data: None,
                             file_data: None,
+                            thought: None,
                         });
                     }
                     contents.push(GeminiContent {
@@ -355,6 +359,7 @@ impl GeminiChat {
                             }),
                             inline_data: None,
                             file_data: None,
+                            thought: None,
                         }],
                     });
                 }
@@ -407,6 +412,7 @@ impl GeminiChat {
             function_response: None,
             inline_data,
             file_data,
+            thought: None,
         })
     }
 
@@ -421,6 +427,7 @@ impl GeminiChat {
                 function_response: None,
                 inline_data: None,
                 file_data: None,
+                thought: None,
             }],
         });
 
@@ -497,10 +504,17 @@ impl GeminiChat {
         let content = candidate.content.ok_or(GeminiError::NoResponse)?;
 
         let mut text_parts = String::new();
+        let mut thinking = String::new();
         let mut tool_calls: Vec<lc_core::tools::ToolCall> = Vec::new();
 
         for part in content.parts {
-            if let Some(text) = part.text {
+            // M-9: `thought: true` parts carry chain-of-thought; surface them
+            // as `thinking_content` instead of polluting the visible reply.
+            if part.thought == Some(true) {
+                if let Some(text) = part.text {
+                    thinking.push_str(&text);
+                }
+            } else if let Some(text) = part.text {
                 text_parts.push_str(&text);
             }
             // H7: Parse functionCall parts into ToolCall
@@ -530,7 +544,11 @@ impl GeminiChat {
             } else {
                 Some(tool_calls)
             },
-            thinking_content: None,
+            thinking_content: if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking)
+            },
         })
     }
 
@@ -684,7 +702,50 @@ impl GeminiChat {
                                             }
                                             if let Some(content) = candidate.content {
                                                 for part in content.parts {
-                                                    if let Some(text) = part.text {
+                                                    // M-9: previously only `part.text` was
+                                                    // forwarded — functionCall deltas were
+                                                    // dropped, so streaming agent runs never saw
+                                                    // tool calls. Now emit tool calls and
+                                                    // thought (chain-of-thought) parts too.
+                                                    if let Some(fc) = part.function_call {
+                                                        let args_str = fc
+                                                            .args
+                                                            .unwrap_or(serde_json::json!({}))
+                                                            .to_string();
+                                                        let call = lc_core::tools::ToolCall::builder(
+                                                            format!("call_{}", fc.name),
+                                                        )
+                                                        .name(fc.name)
+                                                        .arguments(args_str)
+                                                        .build();
+                                                        if tx
+                                                            .send(Ok(StreamChunk {
+                                                                text: String::new(),
+                                                                thinking_content: None,
+                                                                token_usage: None,
+                                                                tool_calls: Some(vec![call]),
+                                                            }))
+                                                            .await
+                                                            .is_err()
+                                                        {
+                                                            return;
+                                                        }
+                                                    } else if part.thought == Some(true) {
+                                                        if let Some(text) = part.text {
+                                                            if tx
+                                                                .send(Ok(StreamChunk {
+                                                                    text: String::new(),
+                                                                    thinking_content: Some(text),
+                                                                    token_usage: None,
+                                                                    tool_calls: None,
+                                                                }))
+                                                                .await
+                                                                .is_err()
+                                                            {
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else if let Some(text) = part.text {
                                                         if tx
                                                             .send(Ok(StreamChunk::new(text)))
                                                             .await
@@ -795,8 +856,10 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
                 content: chunk.text,
                 model: model.clone(),
                 token_usage: chunk.token_usage,
-                tool_calls: None,
-                thinking_content: None,
+                // M-9: forward tool calls and thinking surfaced by the streaming
+                // layer instead of hardcoding them away.
+                tool_calls: chunk.tool_calls,
+                thinking_content: chunk.thinking_content,
             }),
             Err(e) => Err(e),
         });

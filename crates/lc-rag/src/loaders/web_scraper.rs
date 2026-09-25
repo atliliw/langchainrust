@@ -112,9 +112,20 @@ impl WebScraperLoader {
             let domain = DOMAIN_PREFIX_RE.find(base)?.as_str();
             Some(format!("{}{}", domain, href))
         } else {
-            // Relative path
-            let base_dir = base.rfind('/').map(|i| &base[..=i]).unwrap_or(base);
-            Some(format!("{}{}", base_dir, href))
+            // Relative path. Resolve against the base's directory: keep everything up to and
+            // including the last `/` that lies *after* the `scheme://` prefix. When the base is a
+            // bare host with no path (e.g. "https://example.com"), `rfind('/')` returns the
+            // scheme's own "//" — treat that as resolving against "https://example.com/" instead of
+            // the broken "https:/" (L2).
+            let scheme_end = base.find("://").map_or(0, |i| i + 3);
+            let base_dir = match base.rfind('/') {
+                Some(i) if i > scheme_end => &base[..=i],
+                _ => {
+                    let bare = format!("{base}/");
+                    return Some(format!("{bare}{href}"));
+                }
+            };
+            Some(format!("{base_dir}{href}"))
         }
     }
 
@@ -135,8 +146,14 @@ impl DocumentLoader for WebScraperLoader {
         let mut failed_count: usize = 0;
 
         while let Some((url, depth)) = queue.pop() {
-            if visited.contains(&url) || documents.len() >= self.max_pages {
+            if visited.contains(&url) {
                 continue;
+            }
+            // LOW: once the page cap is hit, stop crawling entirely. The previous `continue`
+            // shared this condition, so it drained the rest of the queue doing no work at all
+            // after the cap — wasted fetches of de-queued URLs (a minor DoS/waste surface).
+            if documents.len() >= self.max_pages {
+                break;
             }
             visited.insert(url.clone());
 
@@ -231,6 +248,17 @@ mod tests {
     fn test_resolve_url_root_relative() {
         let result = WebScraperLoader::resolve_url("https://example.com/dir/page", "/root");
         assert_eq!(result, Some("https://example.com/root".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_url_bare_host_no_trailing_slash() {
+        // L2: base with scheme+host but no path must resolve against "<host>/",
+        // not the broken "https:/..." produced by cutting at the scheme's "//".
+        let result = WebScraperLoader::resolve_url("https://example.com", "about");
+        assert_eq!(result, Some("https://example.com/about".to_string()));
+        // bare host with trailing slash keeps working
+        let result = WebScraperLoader::resolve_url("https://example.com/", "about");
+        assert_eq!(result, Some("https://example.com/about".to_string()));
     }
 
     #[test]

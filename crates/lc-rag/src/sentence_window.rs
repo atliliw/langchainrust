@@ -144,9 +144,9 @@ fn build_window(sentence_index: usize, sentences: &[SentenceRef], window: usize)
     while end < sentences.len() && sentences[end].doc_index == doc_index {
         end += 1;
     }
-    let lo = start
-        .saturating_add(0)
-        .max(sentence_index.saturating_sub(window));
+    // `saturating_add(0)` below was a no-op; `start` is bounded by the earlier `start -= 1`
+    // decrements, so plain `start.max(...)` is exactly equivalent and dead-code-free.
+    let lo = start.max(sentence_index.saturating_sub(window));
     let lo = lo.max(start);
     let hi = (sentence_index + 1 + window).min(end);
     sentences[lo..hi]

@@ -2,14 +2,15 @@
 //!
 //! On the stateless track there is no server-push channel, so the old
 //! "progress notification resets the deadline" semantics are gone. What
-//! remains is the bounded call: a default deadline with a hard-cap backstop
-//! (`max_timeout >= default_timeout`), preventing a hung tool from blocking
-//! the caller indefinitely.
+//! remains is the bounded call: a single `default_timeout` deadline aborts
+//! a hung tool so it cannot block the caller indefinitely. `ToolSpec` keeps
+//! an optional validated `max_timeout` (>= default) for API compatibility,
+//! but it is never the limiter — the default deadline always fires first.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
-use tokio::time::sleep;
+use tokio::time::timeout;
 
 use crate::protocol::MCPError;
 use crate::tool_client::McpToolClient;
@@ -45,48 +46,24 @@ impl ToolSpec {
 
 /// A tool call with a bounded deadline (P2-4, stateless form).
 ///
-/// Hard cap semantics preserved from the push-era implementation: past
-/// `spec.max_timeout` the call aborts even if it might still finish.
+/// The effective bound is `default_timeout`; `max_timeout` (>= default, enforced by
+/// `ToolSpec::with_max_timeout`) can never fire first, so a separate hard-cap deadline
+/// would be unreachable — a single `timeout` around the call is the whole story.
 pub async fn call_tool_with_timeout(
     client: &dyn McpToolClient,
     name: &str,
     arguments: Value,
     spec: &ToolSpec,
 ) -> Result<MCPToolResult, MCPError> {
-    let hard_deadline = Instant::now() + spec.max_timeout;
-    let deadline = Instant::now() + spec.default_timeout;
-
-    let mut call = Box::pin(client.call_tool(name, arguments));
-
-    loop {
-        let now = Instant::now();
-        if now >= hard_deadline {
-            return Err(MCPError::new(
-                -1,
-                format!(
-                    "tool '{name}' call exceeded hard cap {:?}, aborting",
-                    spec.max_timeout
-                ),
-            ));
-        }
-        let remain = deadline.saturating_duration_since(now);
-        if remain.is_zero() {
-            return Err(MCPError::new(
-                -1,
-                format!(
-                    "tool '{name}' call timed out after {} ms",
-                    spec.default_timeout.as_millis()
-                ),
-            ));
-        }
-        tokio::select! {
-            result = &mut call => {
-                return result;
-            }
-            _ = sleep(remain) => {
-                // Deadline expired: judged at the top of the next loop iteration.
-            }
-        }
+    match timeout(spec.default_timeout, client.call_tool(name, arguments)).await {
+        Ok(result) => result,
+        Err(_) => Err(MCPError::new(
+            -1,
+            format!(
+                "tool '{name}' call timed out after {} ms",
+                spec.default_timeout.as_millis()
+            ),
+        )),
     }
 }
 

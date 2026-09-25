@@ -118,7 +118,12 @@ impl JSONLoader {
 
                 for (k, v) in obj {
                     if self.content_key.as_ref() != Some(k) {
-                        doc = doc.with_metadata(k.clone(), self.extract_string_value(v));
+                        // L4: preserve the original JSON type (number/bool/nested) as metadata
+                        // instead of coercing everything to a string — mirroring the earlier
+                        // Qdrant/Neo4j metadata fix (a numeric filter on a metadata field no longer
+                        // silently compares against a String). Only the `content` position below
+                        // still uses `extract_string_value` (Document::content is a String).
+                        doc = doc.with_metadata(k.clone(), v.clone());
                     }
                 }
 
@@ -232,5 +237,32 @@ mod tests {
         assert!(result.is_ok());
         let docs = result.unwrap();
         assert!(docs[0].metadata.contains_key("raw_json"));
+    }
+
+    /// L4: numeric/bool JSON fields stay typed in metadata instead of becoming strings.
+    #[tokio::test]
+    async fn test_json_loader_preserves_typed_metadata() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            "{{\"title\": \"t\", \"count\": 123, \"active\": true, \"score\": 4.5}}"
+        )
+        .unwrap();
+
+        let loader = JSONLoader::new(temp_file.path());
+        let result = loader.load().await;
+
+        assert!(result.is_ok());
+        let docs = result.unwrap();
+        assert_eq!(docs[0].metadata.get("count"), Some(&serde_json::Value::from(123)));
+        assert_eq!(
+            docs[0].metadata.get("active"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        // 4.5 must round-trip as a number, not the string "4.5".
+        assert_eq!(
+            docs[0].metadata.get("score"),
+            Some(&serde_json::json!(4.5))
+        );
     }
 }

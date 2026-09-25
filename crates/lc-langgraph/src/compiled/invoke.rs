@@ -122,6 +122,24 @@ impl<S: StateSchema> CompiledGraph<S> {
                 ));
 
                 if self.interrupt_after.contains(&current_node) {
+                    // M-15: persist the node's post-run state before interrupting.
+                    // Previously the interrupt returned immediately and the next
+                    // checkpoint was only written in the next loop iteration, so the
+                    // interrupting node's updates (already folded into `state` above)
+                    // never reached a checkpoint. A crash-then-rebuild resume ran the
+                    // interrupted node a second time (double side effect). This matches
+                    // the streaming path (stream.rs), which already persists here.
+                    if let Some(ref checkpointer) = self.checkpointer {
+                        let checkpoint_id = checkpointer
+                            .lock()
+                            .await
+                            .save(&state, recursion_count)
+                            .await?;
+                        steps.push(ExecutionStep::checkpoint(
+                            checkpoint_id,
+                            format!("after_{}", current_node),
+                        ));
+                    }
                     return Err(GraphError::ExecutionInterrupted(format!(
                         "after_{}",
                         current_node

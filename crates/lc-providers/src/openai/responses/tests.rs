@@ -64,6 +64,34 @@ fn test_config_builder() {
     assert_eq!(config.builtin_tools.len(), 2);
 }
 
+/// M-13: per-invocation `RunnableConfig` sampling overrides must flow into the
+/// effective model used for the request (previously ignored for this backend).
+#[test]
+fn test_invocation_config_applies_sampling_overrides() {
+    use lc_core::RunnableConfig;
+
+    let model = ResponsesModel::new(ResponsesConfig::new("sk-test").with_model("gpt-4o"));
+
+    // No invocation config → effective temperature/max_tokens stay unset.
+    let effective = model.apply_sampling_overrides(&None);
+    assert_eq!(effective.config.temperature, None);
+    assert_eq!(effective.config.max_tokens, None);
+
+    // Config with overrides → they land on the effective model's request settings.
+    let cfg = RunnableConfig {
+        temperature: Some(0.3),
+        max_tokens: Some(777),
+        ..RunnableConfig::default()
+    };
+    let effective2 = model.apply_sampling_overrides(&Some(cfg));
+    assert_eq!(effective2.config.temperature, Some(0.3));
+    assert_eq!(effective2.config.max_tokens, Some(777));
+
+    // The original model is untouched (immutable override).
+    assert_eq!(model.config.temperature, None);
+    assert_eq!(model.config.max_tokens, None);
+}
+
 #[test]
 fn test_message_to_input_system() {
     let msg = Message::system("You are helpful.");

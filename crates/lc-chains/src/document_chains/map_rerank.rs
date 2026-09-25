@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
@@ -13,7 +14,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Default Map + Rerank prompt template.
@@ -173,9 +177,11 @@ impl MapRerankDocumentsChain {
 
     /// Build Map stage prompt.
     pub fn build_map_prompt(&self, context: &str, input: &str) -> String {
-        self.map_prompt_template
-            .replace(&format!("{{{}}}", self.document_variable_name), context)
-            .replace("{input}", input)
+        let vars = HashMap::from([
+            (self.document_variable_name.clone(), context.to_string()),
+            ("input".to_string(), input.to_string()),
+        ]);
+        crate::base::substitute_template(&self.map_prompt_template, &vars).0
     }
 
     async fn map_document(
@@ -183,13 +189,14 @@ impl MapRerankDocumentsChain {
         doc: &Document,
         input: &str,
         index: usize,
+        config: Option<&RunnableConfig>,
     ) -> Result<Option<(u32, String)>, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
             println!("\n--- Map document {} ---", index + 1);
         }
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await.map_err(|e| {
+        let response = self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
             ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e))
         })?;
 
@@ -239,15 +246,21 @@ impl MapRerankDocumentsChain {
         doc: &Document,
         input: &str,
         index: usize,
+        config: Option<&RunnableConfig>,
     ) -> Result<Option<(u32, String)>, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
         if self.verbose {
             println!("\n--- Map document {} (stream) ---", index + 1);
         }
         let messages = vec![Message::human(&prompt)];
-        let mut llm_stream = self.llm.stream_chat(messages, None).await.map_err(|e| {
-            ChainError::StreamError(format!("Map stream failed (document {}): {}", index + 1, e))
-        })?;
+        let mut llm_stream =
+            self.llm.stream_chat(messages, config.cloned()).await.map_err(|e| {
+                ChainError::StreamError(format!(
+                    "Map stream failed (document {}): {}",
+                    index + 1,
+                    e
+                ))
+            })?;
 
         let mut text = String::new();
         while let Some(chunk) = llm_stream.next().await {
@@ -271,6 +284,18 @@ impl MapRerankDocumentsChain {
         documents: Vec<Document>,
         input: &str,
     ) -> Result<Vec<(u32, String)>, ChainError> {
+        self.invoke_with_documents_cfg(documents, input, None).await
+    }
+
+    /// M-20: config-aware variant of [`Self::invoke_with_documents`]; the public
+    /// default runs with `None`, while `invoke_inner` threads the caller's
+    /// `RunnableConfig` into every map LLM call.
+    async fn invoke_with_documents_cfg(
+        &self,
+        documents: Vec<Document>,
+        input: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<Vec<(u32, String)>, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
                 "Document list is empty".to_string(),
@@ -285,7 +310,7 @@ impl MapRerankDocumentsChain {
 
         let mut map_futures = Vec::new();
         for (i, doc) in documents.iter().enumerate() {
-            map_futures.push(self.map_document(doc, input, i));
+            map_futures.push(self.map_document(doc, input, i, config));
         }
         // P1-3: drop documents whose output carried no score and had no default.
         let mut results: Vec<(u32, String)> = try_join_all(map_futures)
@@ -323,19 +348,15 @@ impl MapRerankDocumentsChain {
         }
         Ok(top_results)
     }
-}
 
-#[async_trait]
-impl BaseChain for MapRerankDocumentsChain {
-    fn input_keys(&self) -> Vec<&str> {
-        vec![&self.input_key, "documents"]
-    }
-    fn output_keys(&self) -> Vec<&str> {
-        vec![&self.output_key]
-    }
-
-    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        // P2-8: validate inputs on the invoke path too, matching stream.
+    /// M-20: the config-aware invoke body. Validates inputs, extracts the
+    /// documents, then delegates to the config-threading document pipeline so a
+    /// caller's `RunnableConfig` reaches every map LLM call.
+    async fn invoke_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -345,7 +366,9 @@ impl BaseChain for MapRerankDocumentsChain {
 
         let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
-        let results = self.invoke_with_documents(documents, input).await?;
+        let results = self
+            .invoke_with_documents_cfg(documents, input, config)
+            .await?;
         let output_json: Vec<serde_json::Value> = results
             .iter()
             .map(|(score, answer)| serde_json::json!({"score": score, "answer": answer}))
@@ -356,16 +379,17 @@ impl BaseChain for MapRerankDocumentsChain {
         Ok(result)
     }
 
-    /// Stream execution for MapRerankDocumentsChain.
-    ///
-    /// P2-2: the map phase runs via `stream_chat` per document (tokens
-    /// accumulated for scoring), then the reranked top answer(s) are emitted.
-    /// Raw token streaming of the final answer is impossible here — ranking
-    /// requires each document's complete output — so the ranked result is the
-    /// stream payload, produced without the base default's silent `unwrap_or("")`.
-    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
-        // P2-8: validate inputs on the stream path too (this was the one
-        // document chain that skipped it entirely), matching the others.
+    /// M-20: the config-aware streaming body. The map phase runs via
+    /// `stream_chat` per document (tokens accumulated for scoring), then the
+    /// reranked top answer(s) are emitted. Raw token streaming of the final
+    /// answer is impossible here — ranking requires each document's complete
+    /// output — so the ranked result is the stream payload, produced without
+    /// the base default's silent `unwrap_or("")`.
+    async fn stream_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -382,7 +406,7 @@ impl BaseChain for MapRerankDocumentsChain {
 
         let mut map_futures = Vec::new();
         for (i, doc) in documents.iter().enumerate() {
-            map_futures.push(self.map_document_stream(doc, input, i));
+            map_futures.push(self.map_document_stream(doc, input, i, config));
         }
         let mut results: Vec<(u32, String)> = try_join_all(map_futures)
             .await?
@@ -414,6 +438,57 @@ impl BaseChain for MapRerankDocumentsChain {
         });
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[async_trait]
+impl BaseChain for MapRerankDocumentsChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key, "documents"]
+    }
+    fn output_keys(&self) -> Vec<&str> {
+        vec![&self.output_key]
+    }
+
+    /// Config-less invoke: chain-callback dispatch is skipped, so the LLM call
+    /// runs with no config (matching the permissive direct-`invoke` contract).
+    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        self.invoke_inner(inputs, None).await
+    }
+
+    /// M-20: invoke with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM calls so
+    /// sampling / cancellation / LLM callbacks reach the provider.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.invoke_inner(inputs, inner.as_ref()).await
+        })
+        .await
+    }
+
+    /// Stream without a config (no callback dispatch, no LLM sampling overrides).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.stream_inner(inputs, None).await
+    }
+
+    /// M-20: stream with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM stream.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let inner = config.clone();
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(self.name(), inputs, config, output_key, |inputs| async move {
+            self.stream_inner(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     fn name(&self) -> &str {

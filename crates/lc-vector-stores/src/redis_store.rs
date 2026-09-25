@@ -333,6 +333,33 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
                 .query::<()>(&mut conn)
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
+            // H6: drop this parent's previous chunk set before writing the new one so a
+            // re-ingest that shrank / changed segmentation leaves no stale
+            // `{pid}:chunk:{n}` keys nor ghost membership in `pchunks` / `all_chunks`
+            // (mirrors the in-memory C5 behavior). SMEMBERS on a never-seen parent
+            // returns an empty set, so a first add is a no-op.
+            let pchunks_key = format!("{}:pchunks:{}", config.key_prefix, pid);
+            let old_ids: Vec<String> = redis::cmd("SMEMBERS")
+                .arg(&pchunks_key)
+                .query(&mut conn)
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+            let all_chunks_key = format!("{}:all_chunks", config.key_prefix);
+            for old in &old_ids {
+                redis::cmd("DEL")
+                    .arg(format!("{}:chunk:{}", config.key_prefix, old))
+                    .query::<()>(&mut conn)
+                    .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+                redis::cmd("SREM")
+                    .arg(&all_chunks_key)
+                    .arg(old)
+                    .query::<()>(&mut conn)
+                    .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+            }
+            redis::cmd("DEL")
+                .arg(&pchunks_key)
+                .query::<()>(&mut conn)
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
             let mut chunk_ids = Vec::new();
             for (i, text) in chunks.iter().enumerate() {
                 let cid = format!("{}:chunk:{}", pid, i);

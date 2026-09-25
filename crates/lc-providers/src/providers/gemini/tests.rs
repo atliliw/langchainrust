@@ -280,4 +280,74 @@ data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" world\"}]}}],\"usag
         );
         assert!(!line.contains("event-stream"));
     }
+
+    /// M-9: streaming must forward `functionCall` parts as `tool_calls` and
+    /// `thought` parts as `thinking_content` (previously both were dropped, so
+    /// streaming agent runs never saw tool calls and reasoning text was lost).
+    #[tokio::test]
+    async fn stream_forwards_function_call_and_thinking() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut header = Vec::new();
+                let mut byte = [0u8; 1];
+                while header.len() < 64 * 1024 {
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head_lower = String::from_utf8_lossy(&header).to_lowercase();
+                let content_length: usize = head_lower
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    let _ = socket.read_exact(&mut body).await;
+                }
+                let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Let me check\",\"thought\":true},{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"}}}]}}]}\r\n\r\n\
+data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":3,\"totalTokenCount\":5}}\r\n\r\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let chat =
+            GeminiChat::new(GeminiConfig::new("test-key").with_base_url(format!("http://{addr}")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut tool_calls: Vec<lc_core::tools::ToolCall> = Vec::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("stream ok");
+            text.push_str(&chunk.text);
+            if let Some(t) = chunk.thinking_content {
+                thinking.push_str(&t);
+            }
+            if let Some(calls) = chunk.tool_calls {
+                tool_calls.extend(calls);
+            }
+        }
+        assert_eq!(text, "Done", "thought text must not leak into visible content");
+        assert_eq!(thinking, "Let me check");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(tool_calls[0].function.arguments, "{\"city\":\"SF\"}");
+        assert_eq!(tool_calls[0].id, "call_get_weather");
+    }
 }

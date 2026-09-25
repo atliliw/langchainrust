@@ -352,7 +352,11 @@ impl Reranker for BM25Reranker {
                     .iter()
                     .filter(|doc| doc.contains(term.as_str()))
                     .count() as f32;
-                ((n_docs - df + 0.5) / (df + 0.5)).ln()
+                // L6: use the SAME one-plus IDF as `bm25::algorithm::compute_idf` (`+1`
+                // after the ratio). This re-ranker is meant to re-rank the primary BM25
+                // hit list; with the previous no-`+1` formula the two scorers disagree on
+                // the relative weight of rare vs common terms and can reorder results.
+                ((n_docs - df + 0.5) / (df + 0.5) + 1.0).ln()
             })
             .collect();
 

@@ -151,13 +151,14 @@ impl AgentExecutor {
                         continue;
                     }
 
-                    metrics.tool_calls += 1;
                     if self.verbose {
                         log::info!("Action: {}({})", action.tool, action.tool_input);
                     }
 
                     // Budget gate: check cumulative call count and wall-clock before the
-                    // tool runs.
+                    // tool runs. H2: `metrics.tool_calls` counts *executed* tools only
+                    // (no pre-increment) — a denied / not-found call must not consume
+                    // `max_tool_calls` nor trip the gate prematurely.
                     if let Some(err) = budget_tool_gate(self.budget.as_ref(), metrics, loop_start) {
                         return Err(err);
                     }
@@ -176,7 +177,10 @@ impl AgentExecutor {
                         inputs: inputs.clone(),
                         steps: intermediate_steps.clone(),
                         iteration,
-                        tool_calls_consumed: metrics.tool_calls,
+                        // H2: `metrics.tool_calls` is executed-only (no pre-increment),
+                        // so include the in-flight pending tool — on `Allow` (or crash
+                        // resume) it executes and counts as consumed.
+                        tool_calls_consumed: metrics.tool_calls + 1,
                         tokens_consumed: metrics.total_tokens,
                         trace_id: root_run.trace_id.map(|id| id.to_string()),
                     };
@@ -206,11 +210,11 @@ impl AgentExecutor {
                         Err(e) => return Err(e),
                     };
 
-                    // stage-G G6: a denied / unregistered call never executed, so it
-                    // must not consume the `max_tool_calls` budget — undo the
-                    // pre-increment above (only executed tools count).
-                    if is_non_execution_observation(&observation) {
-                        metrics.tool_calls = metrics.tool_calls.saturating_sub(1);
+                    // stage-G G6 / H2: count the call only when it actually executed.
+                    // A denied / unregistered call otherwise consumes `max_tool_calls`
+                    // (only executed tools count).
+                    if !is_non_execution_observation(&observation) {
+                        metrics.tool_calls += 1;
                     }
 
                     if self.verbose {
@@ -221,7 +225,6 @@ impl AgentExecutor {
                 }
 
                 AgentOutput::Actions(actions) => {
-                    metrics.tool_calls += actions.len();
                     if self.verbose {
                         log::info!("Parallel actions: {} count", actions.len());
                         for action in &actions {
@@ -237,15 +240,13 @@ impl AgentExecutor {
 
                     let observations = self.execute_tools_parallel(&actions, root_run).await?;
 
-                    // stage-G G6: denied / not-found calls in a batch never executed —
-                    // undo their share of the pre-increment so they don't consume the
-                    // `max_tool_calls` budget (only executed tools count).
-                    let never_executed = observations
+                    // stage-G G6 / H2: count only the batch members that actually executed;
+                    // denied / not-found members never consume `max_tool_calls`.
+                    let executed = observations
                         .iter()
-                        .filter(|o| is_non_execution_observation(o))
+                        .filter(|o| !is_non_execution_observation(o))
                         .count();
-                    metrics.tool_calls =
-                        metrics.tool_calls.saturating_sub(never_executed);
+                    metrics.tool_calls += executed;
 
                     if self.verbose {
                         for (i, obs) in observations.iter().enumerate() {

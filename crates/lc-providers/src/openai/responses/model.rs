@@ -170,6 +170,23 @@ impl ResponsesModel {
         body
     }
 
+    /// M-13: clone `self` and apply per-invocation sampling overrides
+    /// (temperature/max_tokens) from a [`RunnableConfig`], mirroring the other
+    /// chat backends (ollama, openai-chat). Returns an effective clone whose config
+    /// carries the overrides, so a `config`-supplied temperature/max_tokens is
+    /// actually sent to the Responses API instead of being silently dropped.
+    pub(crate) fn apply_sampling_overrides(&self, config: &Option<RunnableConfig>) -> Self {
+        let (temp, max) = crate::sampling::sampling_overrides(config);
+        let mut effective = self.clone();
+        if let Some(t) = temp {
+            effective.config.temperature = Some(t);
+        }
+        if let Some(m) = max {
+            effective.config.max_tokens = Some(m);
+        }
+        effective
+    }
+
     // -- Internal chat -------------------------------------------------------
 
     pub(crate) async fn chat_internal(
@@ -628,7 +645,12 @@ impl BaseChatModel for ResponsesModel {
             }
         }
 
-        let result = self.chat_internal(messages.clone()).await;
+        // M-13: apply per-invocation sampling overrides (see
+        // [`Self::apply_sampling_overrides`]). Without this, `config.temperature` /
+        // `max_tokens` are silently ignored for the Responses backend.
+        let effective = self.apply_sampling_overrides(&config);
+
+        let result = effective.chat_internal(messages.clone()).await;
 
         match result {
             Ok(response) => {
@@ -694,7 +716,10 @@ impl BaseChatModel for ResponsesModel {
             }
         }
 
-        let stream = self.stream_chat_internal(messages).await?;
+        // M-13: apply per-invocation sampling overrides on the streaming path too.
+        let effective = self.apply_sampling_overrides(&config);
+
+        let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
         let stream = stream.then(move |token_result| {

@@ -168,7 +168,10 @@ impl<M: BaseChatModel> ContextWindow<M> {
             } else if kept.is_empty() {
                 // H7: when even the newest message cannot fit, still keep the newest one — the
                 // result may exceed the budget (contract allows), but history is never silently
-                // emptied.
+                // emptied. L8: *also* charge its cost to `running_tokens` so it now reads as over
+                // budget and the next (older) message falls into the `break` below — otherwise we
+                // would keep appending older messages on top of an already-over-budget window.
+                running_tokens += cost;
                 kept.push(msg);
             } else {
                 // This message would push us over; stop adding more.
@@ -231,20 +234,44 @@ impl<M: BaseChatModel> ContextWindow<M> {
         // We try keeping the newest messages and summarizing the rest.
         // Iterate from the smallest window (fewest recent messages) to the largest,
         // keeping track of the best (smallest i = most messages kept) that fits.
-        let mut keep_from_idx = other_messages.len(); // default: keep all (no summarization)
+        //
+        // L8: the previous version rebuilt and re-counted the whole candidate for every `i`,
+        // making this O(n²) in history length. `count_messages` is additive per message plus a
+        // shared `+2` boundary, so we precompute one incremental cost per message and walk `i`
+        // forward — each step just drops `other_messages[i-1]` from the running total → O(n).
+        let msg_cost: Vec<usize> = other_messages
+            .iter()
+            .map(|m| {
+                (self.counter.count_messages(std::slice::from_ref(m)) as usize)
+                    .saturating_sub(2)
+            })
+            .collect();
+        let system_cost: usize = system_messages
+            .iter()
+            .map(|m| {
+                (self.counter.count_messages(std::slice::from_ref(m)) as usize)
+                    .saturating_sub(2)
+            })
+            .sum();
+        // Reserve space for a summary message (estimate ~100 tokens worth).
+        let placeholder_cost = {
+            let p = Message::system("summary placeholder");
+            (self.counter.count_messages(std::slice::from_ref(&p)) as usize).saturating_sub(2)
+        };
+        // +2 once for the whole concatenated list's boundary marker.
+        let mut total = 2 + system_cost + placeholder_cost + msg_cost.iter().sum::<usize>();
 
-        for i in 0..other_messages.len() {
-            let recent = &other_messages[i..];
-            let mut candidate = system_messages.clone();
-            // Reserve space for a summary message (estimate ~100 tokens).
-            candidate.push(Message::system("summary placeholder"));
-            candidate.extend(recent.iter().cloned());
-
-            let tokens = self.counter.count_messages(&candidate) as usize;
-            if tokens <= self.max_tokens {
+        // keep_from_idx == first message index (largest recent suffix) that fits;
+        // default keep all. `msg_cost` is built from `other_messages`, so their
+        // lengths match and we can index by enumerated position.
+        let mut keep_from_idx = other_messages.len();
+        for (i, cost) in msg_cost.iter().enumerate() {
+            if total <= self.max_tokens {
                 keep_from_idx = i;
                 break;
             }
+            // Drop the front message to shrink the retained suffix.
+            total = total.saturating_sub(*cost);
         }
 
         // If we can't even fit the recent messages with a summary placeholder,

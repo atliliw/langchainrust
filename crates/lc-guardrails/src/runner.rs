@@ -62,7 +62,7 @@ impl GuardrailRunner {
     }
 
     /// Records a violation: writes to the bounded shared log + (optional) async audit persistence (P1-2/P1-7).
-    async fn record_violation(&mut self, violation: GuardrailViolation) {
+    pub(crate) async fn record_violation(&mut self, violation: GuardrailViolation) {
         {
             let mut violations = self.violations.lock().unwrap_or_else(|e| e.into_inner());
             violations.push(violation.clone());

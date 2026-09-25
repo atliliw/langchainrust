@@ -130,9 +130,15 @@ impl DateTimeTool {
             "weeks" => dt + Duration::weeks(value),
             "months" => {
                 let months = value as i32;
-                let new_month = dt.month() as i32 + months;
-                let year = dt.year() + (new_month - 1) / 12;
-                let month = ((new_month - 1) % 12 + 1) as u32;
+                // M-27: `value` may be negative (subtract). Rust `/` and `%` truncate toward
+                // zero, so `(new_month - 1) / 12` and `% 12` produced a wrong year offset and a
+                // negative month that wrapped on `as u32` → "month calculation failed" whenever
+                // the delta crossed a year boundary backwards (e.g. 2024-03-15 minus 13 months).
+                // `div_euclid`/`rem_euclid` floor to the mathematical quotient, correct for both
+                // positive and negative deltas while leaving positive behavior unchanged.
+                let total_zero_based = dt.month() as i32 - 1 + months;
+                let year = dt.year() + total_zero_based.div_euclid(12);
+                let month = (total_zero_based.rem_euclid(12) + 1) as u32;
 
                 dt.with_year(year)
                     .and_then(|d| d.with_month(month))
@@ -191,14 +197,22 @@ impl DateTimeTool {
 
         let diff = dt2.signed_duration_since(dt1);
 
-        let days = diff.num_days();
-        let hours = diff.num_hours() % 24;
-        let minutes = diff.num_minutes() % 60;
+        // M-27: decompose the total duration once over its absolute seconds instead of mixing
+        // `num_days()` (floored whole days) with `num_hours() % 24` / `num_minutes() % 60`
+        // (truncation toward zero). For a negative diff the floored days already consumed the
+        // remainder the mod parts tried to contribute, double-counting hours/minutes. Working on
+        // `abs_seconds` keeps one authoritative, sign-correct decomposition for every magnitude.
+        let total_seconds = diff.num_seconds();
+        let direction = total_seconds.signum();
+        let abs_seconds = total_seconds.unsigned_abs();
+        let days = abs_seconds / 86_400;
+        let hours = (abs_seconds % 86_400) / 3_600;
+        let minutes = (abs_seconds % 3_600) / 60;
 
         Ok(DateTimeOutput {
-            result: format!("{}天 {}小时 {}分钟", days.abs(), hours.abs(), minutes.abs()),
+            result: format!("{}天 {}小时 {}分钟", days, hours, minutes),
             operation: "diff".to_string(),
-            details: Some(if diff.num_seconds() >= 0 {
+            details: Some(if direction >= 0 {
                 format!(
                     "从 {} 到 {} 相隔 {}天 {}小时 {}分钟",
                     dt1.format("%Y-%m-%d"),
@@ -212,9 +226,9 @@ impl DateTimeTool {
                     "从 {} 到 {} 相隔 {}天 {}小时 {}分钟",
                     dt2.format("%Y-%m-%d"),
                     dt1.format("%Y-%m-%d"),
-                    days.abs(),
-                    hours.abs(),
-                    minutes.abs()
+                    days,
+                    hours,
+                    minutes
                 )
             }),
         })
@@ -447,5 +461,45 @@ mod tests {
 
         let result = tool.invoke(input).await.unwrap();
         assert!(result.result.contains("14天"));
+    }
+
+    #[tokio::test]
+    async fn test_datetime_subtract_months_cross_year() {
+        let tool = DateTimeTool::new();
+        // M-27: subtracting 13 months from 2024-03-15 crosses a year backward.
+        // The old `/` `%` (truncate toward zero) arithmetic failed here with "month calculation failed".
+        let input = DateTimeInput {
+            operation: "subtract".to_string(),
+            datetime: Some("2024-03-15".to_string()),
+            unit: Some("months".to_string()),
+            value: Some(13),
+            target: None,
+        };
+        let result = tool.invoke(input).await.unwrap();
+        assert!(
+            result.result.contains("2023-02-15"),
+            "expected 2023-02-15, got: {}",
+            result.result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_datetime_diff_negative_decomposition() {
+        let tool = DateTimeTool::new();
+        // M-27: -25h ≡ 1 day 1 hour ago. Mixing `num_days()` (floored) with `num_hours() % 24`
+        // (truncated) double-counted negative diffs; absolute-seconds decomposition must not.
+        let input = DateTimeInput {
+            operation: "diff".to_string(),
+            datetime: Some("2024-01-02 01:00:00".to_string()),
+            unit: None,
+            value: None,
+            target: Some("2024-01-01 00:00:00".to_string()),
+        };
+        let result = tool.invoke(input).await.unwrap();
+        assert!(
+            result.result.contains("1天 1小时 0分钟"),
+            "expected 1天 1小时 0分钟, got: {}",
+            result.result
+        );
     }
 }

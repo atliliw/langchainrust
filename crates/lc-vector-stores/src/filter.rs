@@ -217,7 +217,16 @@ impl MetadataFilter {
 }
 
 /// Numeric-aware JSON equality: `1` and `1.0` are equal; everything else uses `Value`'s PartialEq.
+///
+/// Integers are compared exactly (via i64/u64) *before* the f64 fallback so metadata values above
+/// 2^53 (IDs, millisecond timestamps) don't silently round to equal when they differ.
 fn values_eq(a: &Value, b: &Value) -> bool {
+    if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+        return x == y;
+    }
+    if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+        return x == y;
+    }
     match (a.as_f64(), b.as_f64()) {
         (Some(x), Some(y)) => x == y,
         _ => a == b,
@@ -226,6 +235,13 @@ fn values_eq(a: &Value, b: &Value) -> bool {
 
 /// Numeric/string comparison; returns `None` when the types are incomparable (the condition is treated as not matching).
 fn values_cmp(a: &Value, b: &Value) -> Option<Ordering> {
+    // Exact integer comparison first (same rationale as `values_eq`).
+    if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+        return Some(x.cmp(&y));
+    }
+    if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+        return Some(x.cmp(&y));
+    }
     if let (Some(x), Some(y)) = (a.as_f64(), b.as_f64()) {
         return x.partial_cmp(&y);
     }
@@ -301,6 +317,20 @@ mod tests {
             MetadataFilter::field("year", FilterOp::Lt, 2000),
         ]);
         assert!(!neither.matches(&m));
+    }
+
+    /// Large integers (>2^53) must compare exactly, not be rounded through f64.
+    #[test]
+    fn test_large_integer_precision_eq_gt() {
+        let big = 9_007_199_254_740_993u64; // 2^53 + 1
+        let m: HashMap<String, Value> = HashMap::from([("id".into(), json!(big))]);
+        // Eq against the exact same value matches.
+        assert!(MetadataFilter::field("id", FilterOp::Eq, big).matches(&m));
+        // Eq against 2^53 (one less) must NOT match — f64 rounding would make them equal.
+        assert!(!MetadataFilter::field("id", FilterOp::Eq, big - 1).matches(&m));
+        // Ordering is still exact.
+        assert!(MetadataFilter::field("id", FilterOp::Gt, big - 1).matches(&m));
+        assert!(!MetadataFilter::field("id", FilterOp::Lt, big).matches(&m));
     }
 
     #[test]

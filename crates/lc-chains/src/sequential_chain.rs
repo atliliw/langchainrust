@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use lc_core::runnables::RunnableConfig;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::base::{
@@ -269,11 +269,26 @@ impl Default for SequentialChain {
 #[async_trait]
 impl BaseChain for SequentialChain {
     fn input_keys(&self) -> Vec<&str> {
-        if let Some(first) = self.chains.first() {
-            first.input_mapping.values().map(|s| s.as_str()).collect()
-        } else {
-            vec![]
+        // L13: report every *external* input, not just the first step's. A global key
+        // is external iff the caller must supply it — it appears in some step's input
+        // mapping and is not produced by any step's output mapping (keys produced
+        // inside the chain are intermediates, not inputs). A later step that maps a
+        // global key directly is otherwise silently under-reported.
+        let produced: HashSet<&str> = self
+            .chains
+            .iter()
+            .flat_map(|s| s.output_mapping.values().map(String::as_str))
+            .collect();
+        let mut seen = HashSet::new();
+        let mut keys = Vec::new();
+        for step in &self.chains {
+            for k in step.input_mapping.values() {
+                if !produced.contains(k.as_str()) && seen.insert(k.as_str()) {
+                    keys.push(k.as_str());
+                }
+            }
         }
+        keys
     }
 
     fn output_keys(&self) -> Vec<&str> {
@@ -594,6 +609,37 @@ mod tests {
             vec!["result"],
         );
         assert_eq!(chain.input_keys(), vec!["query"]);
+    }
+
+    /// L13: `input_keys` reports every *external* input. The second step maps the global
+    /// key `topic` directly (via mapping), so it is a real caller-supplied input even
+    /// though it is not the first step's input; the intermediate key `text`/`intermediate`
+    /// is produced inside the chain and must NOT be reported.
+    #[tokio::test]
+    async fn test_sequential_chain_input_keys_union_across_steps() {
+        let chain = SequentialChain::new()
+            .add_chain_with_mapping(
+                Arc::new(EchoChain::new("text", "intermediate")),
+                HashMap::from([("text".to_string(), "query".to_string())]),
+                HashMap::from([("intermediate".to_string(), "intermediate".to_string())]),
+            )
+            .add_chain_with_mapping(
+                Arc::new(UppercaseChain {
+                    input_key: "topic".to_string(),
+                    output_key: "answer".to_string(),
+                }),
+                HashMap::from([
+                    ("topic".to_string(), "topic".to_string()),
+                    ("intermediate".to_string(), "intermediate".to_string()),
+                ]),
+                HashMap::from([("answer".to_string(), "final_result".to_string())]),
+            );
+
+        let mut keys = chain.input_keys();
+        keys.sort();
+        // `intermediate` is chain-internal (produced by step 1) and must be excluded;
+        // `query` (step 1 mapped from global) and `topic` (step 2 mapped directly) are external.
+        assert_eq!(keys, vec!["query", "topic"]);
     }
 
     #[tokio::test]

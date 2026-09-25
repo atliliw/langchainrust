@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
 use rusqlite::Connection;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::document_store::{ChunkDocument, ChunkedDocumentStoreTrait, DocumentStore};
@@ -93,7 +93,7 @@ impl DocumentStore for SQLiteDocumentStore {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let meta = serde_json::to_string(&document.metadata).unwrap_or_else(|_| "{}".to_string());
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO documents (id, content, metadata) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, document.content, meta],
@@ -106,7 +106,7 @@ impl DocumentStore for SQLiteDocumentStore {
         &self,
         documents: Vec<Document>,
     ) -> Result<Vec<String>, VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut ids = Vec::new();
         for doc in documents {
             let id = doc.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -122,7 +122,7 @@ impl DocumentStore for SQLiteDocumentStore {
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT id, content, metadata FROM documents WHERE id = ?1")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -144,7 +144,7 @@ impl DocumentStore for SQLiteDocumentStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         conn.execute(
             "DELETE FROM chunks WHERE parent_id = ?1",
             rusqlite::params![id],
@@ -156,7 +156,15 @@ impl DocumentStore for SQLiteDocumentStore {
     }
 
     async fn count(&self) -> usize {
-        let conn = self.conn.lock().await;
+        // M-23: `count` returns usize (cannot `?`), so a poisoned sync lock
+        // surfaces as a logged error + 0, matching the error handling below.
+        let conn = match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::error!("SQLite lock poisoned in count(documents), returning 0: {}", e);
+                return 0;
+            }
+        };
         match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
             Ok(count) => count,
             // M3: the trait returns usize so errors cannot propagate — stop silently swallowing
@@ -170,7 +178,7 @@ impl DocumentStore for SQLiteDocumentStore {
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         conn.execute_batch("DELETE FROM chunks; DELETE FROM documents;")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         Ok(())
@@ -192,10 +200,20 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let meta = serde_json::to_string(&document.metadata).unwrap_or_else(|_| "{}".to_string());
 
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         conn.execute(
             "INSERT OR REPLACE INTO documents (id, content, metadata) VALUES (?1, ?2, ?3)",
             rusqlite::params![parent_id, document.content, meta],
+        )
+        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        // H5: replace the parent's prior chunk set first so a re-ingest that shrank /
+        // changed segmentation leaves no stale `{parent}:chunk:{n}` rows behind
+        // (INSERT OR REPLACE only overwrites equal ids; higher segment ids from a
+        // previous, larger set would otherwise linger and stay retrievable).
+        conn.execute(
+            "DELETE FROM chunks WHERE parent_id = ?1",
+            rusqlite::params![parent_id],
         )
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
@@ -230,7 +248,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
     }
 
     async fn get_chunk(&self, chunk_id: &str) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn.prepare("SELECT chunk_id, parent_id, content, segment, metadata FROM chunks WHERE chunk_id = ?1")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let result = stmt.query_row(rusqlite::params![chunk_id], |row| {
@@ -260,7 +278,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn.prepare("SELECT chunk_id, parent_id, content, segment, metadata FROM chunks WHERE parent_id = ?1 ORDER BY segment")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let chunks = stmt
@@ -306,7 +324,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
     }
 
     async fn parent_count(&self) -> usize {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         match conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0)) {
             Ok(count) => count,
             // M3: do not silently swallow errors and return 0; log an error to surface storage failures.
@@ -318,7 +336,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
     }
 
     async fn chunk_count(&self) -> usize {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         match conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)) {
             Ok(count) => count,
             // M3: do not silently swallow errors and return 0; log an error to surface storage failures.
@@ -330,7 +348,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
     }
 
     async fn get_all_chunks(&self) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT chunk_id, parent_id, content, segment, metadata FROM chunks")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -361,7 +379,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
     }
 
     async fn clear(&self) -> Result<(), VectorStoreError> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         conn.execute_batch("DELETE FROM chunks; DELETE FROM documents;")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         Ok(())
@@ -373,7 +391,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         document: Document,
         chunk_size: usize,
     ) -> Result<(String, Vec<String>), VectorStoreError> {
-        let conn = self.conn.blocking_lock();
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let splitter = RecursiveCharacterSplitter::new(chunk_size, chunk_size / 10);
         let chunks_text = splitter.split_text(&document.content);
         let parent_id = document
@@ -385,6 +403,13 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         conn.execute(
             "INSERT OR REPLACE INTO documents (id, content, metadata) VALUES (?1, ?2, ?3)",
             rusqlite::params![parent_id, document.content, meta],
+        )
+        .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+
+        // H5: drop the parent's prior chunk set so a shrunken re-ingest leaves none behind.
+        conn.execute(
+            "DELETE FROM chunks WHERE parent_id = ?1",
+            rusqlite::params![parent_id],
         )
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
@@ -403,7 +428,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Option<Document>, VectorStoreError> {
-        let conn = self.conn.blocking_lock();
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn
             .prepare("SELECT id, content, metadata FROM documents WHERE id = ?1")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -425,7 +450,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         &self,
         chunk_id: &str,
     ) -> Result<Option<ChunkDocument>, VectorStoreError> {
-        let conn = self.conn.blocking_lock();
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn.prepare("SELECT chunk_id, parent_id, content, segment, metadata FROM chunks WHERE chunk_id = ?1")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let result = stmt.query_row(rusqlite::params![chunk_id], |row| {
@@ -448,7 +473,7 @@ impl ChunkedDocumentStoreTrait for SQLiteDocumentStore {
         &self,
         parent_id: &str,
     ) -> Result<Vec<ChunkDocument>, VectorStoreError> {
-        let conn = self.conn.blocking_lock();
+        let conn = self.conn.lock().map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let mut stmt = conn.prepare("SELECT chunk_id, parent_id, content, segment, metadata FROM chunks WHERE parent_id = ?1 ORDER BY segment")
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let chunks = stmt

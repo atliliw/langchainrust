@@ -474,8 +474,9 @@ impl AgentExecutor {
                         // Previously the gate ran after, so a rejection left an orphan
                         // `ToolStart` with no matching `ToolEnd`/error. Order now mirrors
                         // the invoke path: reject first, emit the start event only when
-                        // the call is actually allowed.
-                        metrics.tool_calls += 1;
+                        // the call is actually allowed. H2: `metrics.tool_calls` is
+                        // executed-only (no pre-increment), so a denied / not-found call
+                        // never trips the gate prematurely.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
                             stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
@@ -535,10 +536,10 @@ impl AgentExecutor {
                                 }
                             };
 
-                        // stage-G G6: a denied / unregistered call never executed — undo
-                        // the pre-increment so it doesn't consume `max_tool_calls`.
-                        if is_non_execution_observation(&observation) {
-                            metrics.tool_calls = metrics.tool_calls.saturating_sub(1);
+                        // stage-G G6 / H2: count the call only when it actually executed; a
+                        // denied / unregistered call otherwise consumes `max_tool_calls`.
+                        if !is_non_execution_observation(&observation) {
+                            metrics.tool_calls += 1;
                         }
 
                         let _ = tx
@@ -571,8 +572,10 @@ impl AgentExecutor {
                             }
                         }
                         // A11: budget gate runs **before** any `ToolStart` is emitted for the
-                        // batch, so a rejection leaves no orphan start events.
-                        metrics.tool_calls += actions.len();
+                        // batch, so a rejection leaves no orphan start events. H2:
+                        // `metrics.tool_calls` is executed-only (no pre-increment), so a
+                        // batch whose denied / not-found members would be refunded does
+                        // not trip the gate before anything runs.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
                             stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
@@ -637,14 +640,13 @@ impl AgentExecutor {
                             }
                         };
 
-                        // stage-G G6: denied / not-found batch calls never executed — undo
-                        // their share of the pre-increment so they don't consume
-                        // `max_tool_calls` (only executed tools count).
-                        let never_executed = observations
+                        // stage-G G6 / H2: count only the batch members that actually executed;
+                        // denied / not-found members never consume `max_tool_calls`.
+                        let executed = observations
                             .iter()
-                            .filter(|o| is_non_execution_observation(o))
+                            .filter(|o| !is_non_execution_observation(o))
                             .count();
-                        metrics.tool_calls = metrics.tool_calls.saturating_sub(never_executed);
+                        metrics.tool_calls += executed;
 
                         // zip 第二参数收 IntoIterator,去掉多余 .into_iter()
                         // (stable clippy::useless_conversion)。

@@ -74,8 +74,10 @@ impl PiiKind {
 
 fn card_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
+    // M-1: 13–19 digits, aligned with the blocking-side `CREDIT_CARD_RE` and `luhn_check`
+    // (the checksum filters candidates, so widening the scan to 13–19 is low-false-positive).
     RE.get_or_init(|| {
-        Regex::new(r"\b\d(?:[ -]?\d){14,18}\b").expect("static regex literal must compile")
+        Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").expect("static regex literal must compile")
     })
 }
 

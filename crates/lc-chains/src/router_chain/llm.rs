@@ -195,15 +195,21 @@ impl LLMRouterChain {
         {
             return Some(dest);
         }
-        // 2. The LLM result starts or ends with the destination name
-        self.destinations.iter().find(|d| {
-            let d_lower = d.name().to_lowercase();
-            name_lower.starts_with(&d_lower)
-                || name_lower.ends_with(&d_lower)
-                || name_lower
-                    .split_whitespace()
-                    .any(|word| word.eq_ignore_ascii_case(&d_lower))
-        })
+        // 2. The LLM result contains a destination name. LOW: prefer the LONGEST matching name —
+        //    `.find` in declaration order made a shared-prefix pair like "science" vs
+        //    "science-fiction" route to whichever was declared first (often the vaguer one).
+        //    `max_by_key(name.len())` picks the most specific match instead.
+        self.destinations
+            .iter()
+            .filter(|d| {
+                let d_lower = d.name().to_lowercase();
+                name_lower.starts_with(&d_lower)
+                    || name_lower.ends_with(&d_lower)
+                    || name_lower
+                        .split_whitespace()
+                        .any(|word| word.eq_ignore_ascii_case(&d_lower))
+            })
+            .max_by_key(|d| d.name().len())
     }
 
     /// LLM routing takes priority over keyword matching.

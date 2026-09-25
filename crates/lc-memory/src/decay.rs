@@ -81,8 +81,6 @@ impl ForgetConfig {
 struct MemoryMeta {
     /// Importance in `[0, 1]`.
     importance: f64,
-    /// Epoch milliseconds of first write.
-    created_at: u64,
     /// Epoch milliseconds of most recent access (remember or recall).
     last_access_at: u64,
 }
@@ -91,7 +89,6 @@ impl MemoryMeta {
     fn new(importance: f64, now: SystemTime) -> Self {
         Self {
             importance,
-            created_at: epoch_ms(now),
             last_access_at: epoch_ms(now),
         }
     }
@@ -212,25 +209,25 @@ impl ForgettingMemory {
         Ok(())
     }
 
-    /// Age of a memory's last access, else `None` if untracked / missing.
-    fn idle(&self, name: &str, now: SystemTime) -> Option<Duration> {
-        let meta = self.meta.get(name)?;
-        let last = from_epoch_ms(meta.last_access_at);
-        now.duration_since(last).ok()
-    }
-
     /// Whether `name` should be pruned at `now`: either TTL-expired or weak-and-idle-grace.
+    ///
+    /// Clock rollback (a `now` earlier than the recorded `last_access_at`) is **not** treated as
+    /// forgettable — we cannot prove the memory has been idle, so we keep it alive (L9). Only a
+    /// memory genuinely missing from the ledger is pruned as unmanaged.
     pub fn should_forget(&self, name: &str, now: SystemTime) -> bool {
-        let Some(idle) = self.idle(name, now) else {
+        let Some(meta) = self.meta.get(name) else {
             return true; // untracked file is not a managed memory; consolidate prunes it
+        };
+        let last = from_epoch_ms(meta.last_access_at);
+        // `duration_since` errors exactly when the clock went backwards (now < last); that must
+        // not mark a recently-accessed memory as expiring.
+        let Ok(idle) = now.duration_since(last) else {
+            return false;
         };
         if idle >= self.config.ttl {
             return true;
         }
-        let weak = self
-            .meta
-            .get(name)
-            .is_none_or(|m| m.importance < self.config.min_importance);
+        let weak = meta.importance < self.config.min_importance;
         weak && idle >= self.config.weak_grace
     }
 
@@ -334,6 +331,21 @@ mod tests {
         // 150s after creation, but only 70s after the refresh -> survives
         let later = T0 + Duration::from_secs(150);
         assert!(!m.should_forget("a", later));
+    }
+
+    /// L9: a system clock rollback (`now` < recorded `last_access_at`) must NOT make a
+    /// memory look TTL-expired — `duration_since` errors backwards, and that error is now
+    /// treated as "recently accessed", not "forgettable".
+    #[test]
+    fn clock_rollback_does_not_forget() {
+        let (_d, files, cfg) = store_and_config(100, 0.4, 100);
+        let mut m = ForgettingMemory::new(files, cfg).unwrap();
+        m.remember("a", "x", 0.9, T0).unwrap();
+        // remember stamped `last_access_at = T0`; now queries at a time BEFORE T0.
+        let rollback = T0 - Duration::from_secs(500);
+        assert!(!m.should_forget("a", rollback));
+        assert_eq!(m.consolidate(rollback).unwrap(), 0);
+        assert!(m.live_at(rollback).contains(&"a".to_string()));
     }
 
     #[test]

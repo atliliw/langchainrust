@@ -256,9 +256,10 @@ pub(crate) fn scored_point_to_result(scored_point: ScoredPoint) -> SearchResult 
     let mut metadata = HashMap::new();
     for (key, value) in &payload {
         if key != "content" && key != "doc_id" {
-            if let Some(s) = value.as_str() {
-                metadata.insert(key.clone(), s.clone().into());
-            }
+            // M-21: preserve the original value (number / bool / object), not just
+            // strings — previously numeric/bool metadata was silently dropped on
+            // round-trip (server-side filtering matched, but the returned type was lost).
+            metadata.insert(key.clone(), value.clone());
         }
     }
 
@@ -508,9 +509,8 @@ impl VectorStore for QdrantVectorStore {
             let mut metadata = HashMap::new();
             for (key, value) in &payload_map {
                 if key != "content" && key != "doc_id" {
-                    if let Some(s) = value.as_str() {
-                        metadata.insert(key.clone(), s.clone().into());
-                    }
+                    // M-21: preserve original number/bool/object values, not only strings.
+                    metadata.insert(key.clone(), value.clone());
                 }
             }
 

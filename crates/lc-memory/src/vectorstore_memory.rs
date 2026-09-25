@@ -205,11 +205,26 @@ where
     /// P1-5 进程内语义:删除只覆盖本进程累积的 `owned_ids`;重启后 `owned_ids`
     /// 为空,`clear()` 为空操作,需直接操作向量库清理孤儿文档。
     async fn clear(&mut self) -> Result<(), MemoryError> {
-        // M68: Propagate delete errors instead of silently ignoring them
-        for id in std::mem::take(&mut self.owned_ids) {
-            self.store.delete_document(&id).await.map_err(|e| {
-                MemoryError::ClearError(format!("Failed to delete document '{}': {}", id, e))
-            })?;
+        // M-28: don't `take(&mut self.owned_ids)` up front and drop the whole vec on the first
+        // failure — a mid-clear delete error would then orphan the remaining documents *and*
+        // lose their ids from bookkeeping, so a retry (after fixing the backing store) could no
+        // longer find them. Retire an id only once its delete succeeds; on the first failure push
+        // the failed id and every not-yet-attempted id back so `clear()` stays retriable.
+        let ids = std::mem::take(&mut self.owned_ids);
+        let mut iter = ids.into_iter();
+        while let Some(id) = iter.next() {
+            if let Err(e) = self.store.delete_document(&id).await {
+                // clone the failed id into the restore set so the original is still alive for the
+                // error message below; everything not-yet-attempted rides along after it.
+                let mut restore = Vec::with_capacity(iter.len() + 1);
+                restore.push(id.clone());
+                restore.extend(iter);
+                self.owned_ids = restore;
+                return Err(MemoryError::ClearError(format!(
+                    "Failed to delete document '{}': {}",
+                    id, e
+                )));
+            }
         }
         Ok(())
     }
@@ -219,7 +234,10 @@ where
 mod tests {
     use super::*;
     use lc_embeddings::MockEmbeddings;
-    use lc_vector_stores::{Document, InMemoryVectorStore};
+    use lc_vector_stores::{
+        Document, InMemoryVectorStore, SearchResult, VectorStoreError,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn make_memory(k: usize) -> VectorStoreRetrieverMemory<InMemoryVectorStore, MockEmbeddings> {
         VectorStoreRetrieverMemory::new(InMemoryVectorStore::new(), MockEmbeddings::new(32), k)
@@ -378,5 +396,71 @@ mod tests {
         let vars = mem.load_memory_variables(&inputs("apple")).await.unwrap();
         let history = vars.get("history").unwrap().as_str().unwrap();
         assert!(history.is_empty());
+    }
+
+    /// VectorStore that fails exactly the first `delete_document` call, succeeding afterwards,
+    /// to exercise M-28's mid-clear partial-failure retry. All other ops delegate to an inner
+    /// `InMemoryVectorStore`.
+    struct FailsOnceDelete(InMemoryVectorStore, AtomicBool);
+
+    #[async_trait]
+    impl VectorStore for FailsOnceDelete {
+        async fn add_documents(
+            &self,
+            documents: Vec<Document>,
+            embeddings: Vec<Vec<f32>>,
+        ) -> Result<Vec<String>, VectorStoreError> {
+            self.0.add_documents(documents, embeddings).await
+        }
+        async fn similarity_search(
+            &self,
+            query_embedding: &[f32],
+            k: usize,
+        ) -> Result<Vec<SearchResult>, VectorStoreError> {
+            self.0.similarity_search(query_embedding, k).await
+        }
+        async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
+            self.0.get_document(id).await
+        }
+        async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
+            self.0.get_embedding(id).await
+        }
+        async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
+            if self.1.swap(false, Ordering::SeqCst) {
+                return Err(VectorStoreError::StorageError(
+                    "simulated transient delete failure".to_string(),
+                ));
+            }
+            self.0.delete_document(id).await
+        }
+        async fn count(&self) -> usize {
+            self.0.count().await
+        }
+        async fn clear(&self) -> Result<(), VectorStoreError> {
+            self.0.clear().await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clear_partial_failure_retriable() {
+        // M-28: a mid-clear delete failure must not retire the remaining owned ids, so a
+        // subsequent clear() can finish deleting them instead of orphaning the docs.
+        let store = FailsOnceDelete(InMemoryVectorStore::new(), AtomicBool::new(true));
+        let mut mem =
+            VectorStoreRetrieverMemory::new(store, MockEmbeddings::new(32), 3);
+        mem.save_context(&inputs("apple"), &outputs("a"))
+            .await
+            .unwrap();
+        mem.save_context(&inputs("banana"), &outputs("b"))
+            .await
+            .unwrap();
+
+        // first clear hits the simulated failure -> the failed id + the not-yet-tried ids stay tracked
+        assert!(mem.clear().await.is_err());
+        // second clear succeeds and actually deletes everything (proves nothing got orphaned)
+        mem.clear().await.unwrap();
+
+        let vars = mem.load_memory_variables(&inputs("apple")).await.unwrap();
+        assert!(vars.get("history").unwrap().as_str().unwrap().is_empty());
     }
 }

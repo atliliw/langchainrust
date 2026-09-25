@@ -15,7 +15,7 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const DEEPSEEK_EMBED_MODEL: &str = "deepseek-embedding";
 
 /// Configuration for DeepSeek embeddings API.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeepSeekEmbeddingsConfig {
     /// DeepSeek API key.
     pub api_key: String,
@@ -23,6 +23,17 @@ pub struct DeepSeekEmbeddingsConfig {
     pub base_url: String,
     /// Embedding model name.
     pub model: String,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for DeepSeekEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeepSeekEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl Default for DeepSeekEmbeddingsConfig {

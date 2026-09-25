@@ -3,6 +3,14 @@
 
 use reqwest::Client;
 use std::env;
+use std::time::Duration;
+
+/// M-18: a trace POST/PATCH must never hang the agent forever. Observability
+/// is a side channel — a slow or dead endpoint degrades to a logged error
+/// instead of blocking the run indefinitely. The caller still sees the error
+/// and, if the handler runs in the sync (default) mode, is only delayed by
+/// this bound rather than stalled.
+const LANGSMITH_TIMEOUT: Duration = Duration::from_secs(15);
 
 use super::run_tree::{RunCreate, RunTree, RunUpdate};
 
@@ -98,9 +106,21 @@ pub struct LangSmithClient {
 impl LangSmithClient {
     /// Create a new client
     pub fn new(config: LangSmithConfig) -> Self {
+        // M-18: `Client::new()` sets no request timeout, so a hung endpoint
+        // blocks the `.send().await` forever. Bound the whole request cycle
+        // (connect + send + response body) so the agent degrades to an error.
+        let http_client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(LANGSMITH_TIMEOUT)
+            .build()
+            // A builder failure here is a programming error (invalid TLS / too
+            // many redirects config), not a runtime condition — a plain reqwest
+            // client from valid static settings never fails to build. Falling
+            // back keeps `new()` infallible.
+            .unwrap_or_else(|_| Client::new());
         Self {
             config,
-            http_client: Client::new(),
+            http_client,
         }
     }
 

@@ -225,7 +225,16 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
                 .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
 
             for item in embedding_response.data {
-                let global_index = offset + item.index as usize;
+                // P0-2/negative index: `index` is i32; an `as usize` cast would wrap a
+                // negative provider index to a huge offset. Convert with `try_from` and
+                // error out on any negative value before adding the batch offset.
+                let rel = usize::try_from(item.index).map_err(|_| {
+                    EmbeddingError::ParseError(format!(
+                        "provider returned negative embedding index: {}",
+                        item.index
+                    ))
+                })?;
+                let global_index = offset + rel;
                 if global_index >= all_results.len() {
                     // Provider index beyond the requested range = batch misalignment; error out.
                     return Err(EmbeddingError::BatchMismatch {

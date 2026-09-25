@@ -46,13 +46,20 @@ pub enum RetrievalSource {
 
 /// Filters retrieval results by a minimum score (P1-2).
 ///
-/// Eliminates the duplicated `score > 0.0` ghost-threshold implementation across
+/// Eliminates the duplicated ghost-threshold implementation across
 /// `unified_hybrid` / `graph_rag::matcher`. `min_score` is compared on the **raw score scale**:
-/// the default 0.0 keeps the old behavior (only positive similarities are kept). Cosine
-/// similarity ranges over [-1, 1]; with non-normalized embedding models the cosine of a
-/// relevant document can be negative, so different models may lower the threshold.
+/// the default 0.0 keeps non-negative similarities. **L5:** the comparison is the inclusive
+/// `>=` — not strict `>` — specifically to match
+/// [`similarity_search_with_min_score`](lc_vector_stores::VectorStore::similarity_search_with_min_score),
+/// so a document scoring exactly the threshold is kept by both paths (the unified_hybrid/blend
+/// pipeline and the graph_rag matcher stay consistent at the boundary). Cosine similarity ranges
+/// over [-1, 1]; with non-normalized embedding models the cosine of a relevant document can be
+/// negative, so different models may lower the threshold.
 pub fn filter_by_score<T, S: PartialOrd>(scored: Vec<(T, S)>, min_score: S) -> Vec<(T, S)> {
-    scored.into_iter().filter(|(_, s)| *s > min_score).collect()
+    scored
+        .into_iter()
+        .filter(|(_, s)| *s >= min_score)
+        .collect()
 }
 
 /// RRF fusion algorithm
@@ -160,10 +167,13 @@ mod tests {
     fn test_filter_by_score() {
         let scored = vec![("a", 0.9_f32), ("b", 0.2), ("c", -0.3), ("d", 0.0)];
 
-        // Default threshold 0.0: keep only strictly-greater scores (matches the old `score > 0.0` behavior)
+        // Default threshold 0.0: keep scores >= 0.0 (inclusive, L5 — matches
+        // similarity_search_with_min_score's `>=` so the boundaries agree).
         let filtered = filter_by_score(scored.clone(), 0.0);
         let ids: Vec<&str> = filtered.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids, vec!["a", "b"]);
+        // L5: comparison is inclusive `>=`, so `("d", 0.0)` at threshold 0.0 is KEPT —
+        // matching similarity_search_with_min_score's `>=` semantics (boundary agreement).
+        assert_eq!(ids, vec!["a", "b", "d"]);
 
         // Lowering the threshold keeps negative similarities
         let relaxed = filter_by_score(scored.clone(), -0.5);
@@ -181,7 +191,8 @@ mod tests {
         let scored = vec![("x", 0.8_f64), ("y", 0.0), ("z", -0.5)];
         let filtered = filter_by_score(scored, 0.0);
         let ids: Vec<&str> = filtered.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids, vec!["x"]);
+        // L5: 0.0 is the inclusive boundary → "y" (0.0) now kept, matching `>=` semantics.
+        assert_eq!(ids, vec!["x", "y"]);
     }
 
     /// P2-3: `doc_content_hash` is a deterministic hash — the same content yields the same

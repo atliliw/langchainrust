@@ -99,10 +99,40 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
                         // error (matching the `invoke` path) instead of leaking the
                         // internal control-flow signal.
                         Err(crate::errors::GraphError::InterruptRequest { ref payload }) => {
+                            // M-14: persist the checkpoint and stamp `__checkpoint_id`
+                            // before surfacing the interrupt, mirroring the invoke path
+                            // (invoke.rs run_node). Streaming interrupts previously
+                            // returned without a saved/annotated snapshot, so a crash
+                            // between interrupt and `resume_from_interrupt` lost the run
+                            // and the resume resolver had no exact checkpoint to target.
+                            let payload = if let Some(ref cp) = graph.checkpointer {
+                                let checkpoint_id = match cp
+                                    .lock()
+                                    .await
+                                    .save(&state, recursion_count.saturating_sub(1))
+                                    .await
+                                {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        let _ = tx.send(Err(e)).await;
+                                        return;
+                                    }
+                                };
+                                let mut enriched = payload.clone();
+                                if let Some(map) = enriched.as_object_mut() {
+                                    map.insert(
+                                        "__checkpoint_id".to_string(),
+                                        serde_json::Value::String(checkpoint_id),
+                                    );
+                                }
+                                enriched
+                            } else {
+                                payload.clone()
+                            };
                             let _ = tx
                                 .send(Err(crate::errors::GraphError::DynamicInterrupt {
                                     node: current_node.clone(),
-                                    payload: payload.clone(),
+                                    payload,
                                 }))
                                 .await;
                             return;

@@ -294,7 +294,7 @@ impl CohereChat {
             // complete calls are flushed on `message-end`.
             let mut tool_acc = CohereToolCallAccumulator::default();
             let mut tool_calls_emitted = false;
-            let mut done = false;
+            let mut saw_terminal = false;
             while let Some(chunk_result) = byte_stream.next().await {
                 let chunk_bytes = match chunk_result {
                     Ok(bytes) => bytes,
@@ -316,7 +316,9 @@ impl CohereChat {
 
                 for event in events {
                     if event.is_done() {
-                        done = true;
+                        // Tolerate OpenAI-compatible proxies: `[DONE]` also counts
+                        // as a terminal. Real Cohere never sends it.
+                        saw_terminal = true;
                         break;
                     }
                     // 0.20.0 P4: Cohere v2 SSE 是**自己的**事件格式,不是 OpenAI
@@ -329,6 +331,13 @@ impl CohereChat {
                     // 因单条坏数据被截断却毫无提示。
                     match parse_cohere_event(&event.data) {
                         Ok(Some(ev)) => {
+                            // M-8: Cohere's real terminal is a `message-end` event
+                            // (it never sends `[DONE]`); track it so a truncated
+                            // connection is surfaced as an error rather than a
+                            // "complete" partial reply.
+                            if ev.event_type == "message-end" {
+                                saw_terminal = true;
+                            }
                             if let Some(chunk) = cohere_event_to_chunk(&mut tool_acc, &ev) {
                                 if chunk.tool_calls.is_some() {
                                     tool_calls_emitted = true;
@@ -347,10 +356,23 @@ impl CohereChat {
                         }
                     }
                 }
-                if done {
+                if saw_terminal {
                     break;
                 }
             }
+            // M-8: the byte stream ended without a terminal `message-end` (and no
+            // `[DONE]`): the connection was truncated. Surface the interruption
+            // instead of handing the partial reply back as if it were complete —
+            // aligns with OpenAI/Anthropic/Gemini/Azure/Ollama.
+            if !saw_terminal {
+                let _ = tx
+                    .send(Err(CohereError::StreamInterrupted(
+                        "connection closed before message-end".to_string(),
+                    )))
+                    .await;
+                return;
+            }
+
             // Defensive flush for streams that close without `message-end`:
             // tool calls must not vanish just because the terminal event did.
             if !tool_calls_emitted {

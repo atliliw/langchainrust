@@ -211,23 +211,65 @@ fn verdict_tool() -> ToolDefinition {
 /// B9: shared by the RAGAS boolean judges in `ragas.rs`.
 pub(crate) fn parse_yes_no(raw: &str) -> Option<bool> {
     let lower = raw.to_lowercase();
-    // check negatives first (so negated phrasings are not caught by the positive keywords; negatives take precedence over positives)
+    // L11: CJK has no word boundaries, so a bare `是`/`能` positive would also fire inside
+    // hedging/uncertain compounds ("可能是", "是否", "也许"). A clearly uncertain phrasing
+    // must be *undecidable* (None → fail-closed), not read as an affirmation — this mirrors
+    // the uncertainty guard lc-guardrails' judge already applies (M-25's whole-word tightening
+    // for English; this is its CJK counterpart). Checked before negatives, since uncertainty
+    // words like "不能确定" contain a negation-looking substring.
+    const CJK_HEDGES: &[&str] = &[
+        "不确定",
+        "无法判断",
+        "无法确定",
+        "很难判断",
+        "可能",
+        "是否",
+        "也许",
+        "或许",
+        "应该",
+        "大概",
+    ];
+    if CJK_HEDGES.iter().any(|h| lower.contains(h)) {
+        return None;
+    }
+    // check negatives next (so negated phrasings are not caught by the positive keywords; negatives take precedence over positives)
+    // M-25: English markers match as whole words only — a bare `contains("no")` would
+    // misread "cannot"/"notable"/"known" (which happen to contain the substring "no")
+    // as a negation. Chinese markers have no word boundaries, so they stay substrings.
     if lower.contains("否")
-        || lower.contains("no")
+        || contains_word(&lower, "no")
+        || contains_word(&lower, "not")
         || lower.contains("不能")
         || lower.contains("不是")
-        || lower.contains("false")
+        || contains_word(&lower, "false")
     {
         return Some(false);
     }
     if lower.contains("是")
-        || lower.contains("yes")
+        || contains_word(&lower, "yes")
         || lower.contains("能")
-        || lower.contains("true")
+        || contains_word(&lower, "true")
     {
         return Some(true);
     }
     None
+}
+
+/// True if `s` contains `target` delimited by ASCII word boundaries
+/// (alphanumerics or `_` on either side break a word), so substrings such
+/// as "no" inside "cannot" do not match.
+fn contains_word(s: &str, target: &str) -> bool {
+    let bytes = s.as_bytes();
+    let target_bytes = target.as_bytes();
+    if target_bytes.is_empty() || target_bytes.len() > bytes.len() {
+        return false;
+    }
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    bytes.windows(target_bytes.len()).enumerate().any(|(i, window)| {
+        window == target_bytes
+            && (i == 0 || !is_word(bytes[i - 1]))
+            && (i + target_bytes.len() == bytes.len() || !is_word(bytes[i + target_bytes.len()]))
+    })
 }
 
 #[cfg(test)]
@@ -417,8 +459,21 @@ mod tests {
         assert_eq!(parse_yes_no("no"), Some(false));
         assert_eq!(parse_yes_no("不是"), Some(false));
         assert_eq!(parse_yes_no("不能"), Some(false));
+        // M-25: English negatives match whole words, so substrings are not negations
+        assert_eq!(parse_yes_no("cannot confirm that"), None);
+        assert_eq!(parse_yes_no("a notable exception"), None);
+        assert_eq!(parse_yes_no("as is known"), None);
+        assert_eq!(parse_yes_no("not mentioned"), Some(false));
         // no yes/no marker = parse failure, must not silently default
         assert_eq!(parse_yes_no("我不会告诉你"), None);
+        // L11: CJK hedging compounds are not read as affirmations ("可能"/"是否" would
+        // otherwise trip the bare `是`/`能` substring positives) — fail-closed instead.
+        assert_eq!(parse_yes_no("可能是从上下文中推导的"), None);
+        assert_eq!(parse_yes_no("这条陈述是否来自上下文"), None);
+        assert_eq!(parse_yes_no("不太确定"), None);
+        // negative markers still win when no hedge is present.
+        assert_eq!(parse_yes_no("不能"), Some(false));
+        assert_eq!(parse_yes_no("不是"), Some(false));
     }
 
     /// P0-1: models supporting bind_tools use structured output (boolean verdict), no longer relying on text parsing.

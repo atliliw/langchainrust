@@ -22,8 +22,11 @@ static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
         .expect("static regex literal must compile")
 });
+// M-1: digit width 13–19, matching `luhn_check` (which filters candidates anyway) so a
+// 15-digit Amex / 13–14 digit card is caught here too — previously the redact side
+// (`pii.rs` card_re, 15–19) was wider than this blocking side (16–19), leaving a PII gap.
 static CREDIT_CARD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(\d[\s-]*){15,18}\d\b").expect("static regex literal must compile")
+    Regex::new(r"\b(\d[\s-]*){12,18}\d\b").expect("static regex literal must compile")
 });
 
 /// High-false-positive "mention" keywords (P2-2): plain mentions (e.g. "how to store passwords
@@ -469,6 +472,16 @@ mod tests {
                 "modern key should be blocked: {k}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_sensitive_info_credit_card_matches_luhn_width() {
+        // M-1 regression: a 15-digit Amex (Luhn-valid) passes `CREDIT_CARD_RE`+`luhn_check` and
+        // must be blocked — the old blocker regex only matched 16–19 digits, silently missing
+        // Amex while the redact side already caught it.
+        let g = SensitiveInfoGuardrail::new();
+        // 15-digit Amex test number (Luhn-valid).
+        assert!(g.validate("card: 378282246310005").await.is_block());
     }
 
     #[tokio::test]

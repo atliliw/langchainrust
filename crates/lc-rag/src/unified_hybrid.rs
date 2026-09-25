@@ -39,8 +39,6 @@ pub enum FusionMode {
 pub struct HybridIndexConfig {
     /// Document chunk size
     pub chunk_size: usize,
-    /// Chunk overlap size
-    pub chunk_overlap: usize,
     /// Number of BM25 retrieval results
     pub bm25_k: usize,
     /// Number of vector retrieval results
@@ -59,7 +57,6 @@ impl Default for HybridIndexConfig {
     fn default() -> Self {
         Self {
             chunk_size: 500,
-            chunk_overlap: 50,
             bm25_k: 10,
             vector_k: 10,
             rrf_k: RRF_K,

@@ -193,15 +193,22 @@ impl ContextualEnhancer {
     pub async fn enhance_documents(&self, docs: &[Document]) -> Vec<Document> {
         let mut handles = Vec::with_capacity(docs.len());
         for doc in docs {
+            // M-24: acquire the permit BEFORE spawning, so at most `max_concurrency`
+            // enhancement tasks are ever alive. Previously every chunk got its own
+            // `tokio::spawn`, leaving the rest parked on the semaphore's wait queue —
+            // for a million-chunk corpus that is a million queued tasks sitting in
+            // memory before any of them runs.
+            let permit = self.semaphore.clone().acquire_owned().await;
             let doc = doc.clone();
             let llm = self.llm.clone();
             let prompt_template = self.config.prompt_template.clone();
-            let permit = self.semaphore.clone();
             handles.push(tokio::spawn(async move {
+                // Held for the whole task; the idempotent-skip path returns
+                // immediately, releasing it right away.
+                let _permit = permit;
                 if doc.metadata.contains_key(CONTEXTUAL_METADATA_KEY) {
                     return doc; // idempotent skip
                 }
-                let _permit = permit.acquire().await;
                 let template = PromptTemplate::new(&prompt_template);
                 let mut vars = HashMap::new();
                 vars.insert("chunk", doc.content.as_str());

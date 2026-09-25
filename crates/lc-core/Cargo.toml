@@ -20,8 +20,6 @@ async-stream = "0.3"
 log = "0.4"
 schemars = "1.0"
 uuid = { version = "1.10", features = ["v4"] }
-chrono = { version = "0.4" }
-regex = "1"
 
 # Native-only dependencies (not available on WASM)
 tokio = { version = "1.0", features = ["full"] }

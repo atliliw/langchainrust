@@ -2792,10 +2792,7 @@ name = "langchainrust"
 version = "0.25.0"
 dependencies = [
  "async-trait",
- "bincode",
- "chrono",
  "criterion",
- "csv",
  "futures-util",
  "lc-a2a",
  "lc-agents",
@@ -2814,16 +2811,13 @@ dependencies = [
  "lc-rag",
  "lc-schema",
  "lc-sessions",
- "lc-shared",
  "lc-tools",
  "lc-vector-stores",
  "log",
  "mongodb",
  "opentelemetry",
- "pdf-extract",
  "qdrant-client",
  "redis",
- "regex",
  "reqwest",
  "rusqlite",
  "schemars",
@@ -2831,15 +2825,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
- "tiktoken-rs",
  "tokio",
- "tokio-stream",
  "tokio-test",
  "url",
- "urlencoding",
- "uuid",
  "wiremock",
- "zip 2.4.2",
 ]
 
 [[package]]
@@ -2895,7 +2884,6 @@ dependencies = [
  "lc-vector-stores",
  "log",
  "regex",
- "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -2914,7 +2902,6 @@ version = "0.25.0"
 dependencies = [
  "async-trait",
  "chrono",
- "futures-util",
  "lc-schema",
  "log",
  "opentelemetry",
@@ -2924,7 +2911,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "uuid",
 ]
@@ -2957,14 +2943,12 @@ dependencies = [
  "async-stream",
  "async-trait",
  "bytes",
- "chrono",
  "futures-util",
  "httpdate",
  "lc-callbacks",
  "lc-schema",
  "lc-shared",
  "log",
- "regex",
  "reqwest",
  "schemars",
  "serde",
@@ -3110,9 +3094,7 @@ name = "lc-observability"
 version = "0.25.0"
 dependencies = [
  "async-trait",
- "futures-util",
  "lc-core",
- "log",
  "mongodb",
  "serde_json",
  "tempfile",
@@ -3142,9 +3124,7 @@ dependencies = [
  "lc-callbacks",
  "lc-core",
  "lc-schema",
- "lc-shared",
  "log",
- "regex",
  "reqwest",
  "schemars",
  "serde",
@@ -3152,7 +3132,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
- "urlencoding",
  "uuid",
 ]
 
@@ -3215,7 +3194,6 @@ dependencies = [
 name = "lc-shared"
 version = "0.25.0"
 dependencies = [
- "async-trait",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

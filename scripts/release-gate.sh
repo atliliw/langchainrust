@@ -14,7 +14,7 @@
 #   4. rustdoc -D warnings(--no-deps [--all-features])
 #   5. semver-checks --workspace --baseline-version <BASELINE>(feature 选择:本地 --default-features / CI --all-features)
 #   6. security-scan.sh --fail-if-found
-#   7. 版本一致性:全 workspace 22 个 crates/*/Cargo.toml 的 [package].version 一致
+#   7. 版本一致性:全 workspace 23 个 crates/*/Cargo.toml 的 [package].version 一致
 #
 # 用法:
 #   scripts/release-gate.sh                # 本地门禁(不带 --all-features)

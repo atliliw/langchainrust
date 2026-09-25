@@ -436,7 +436,13 @@ impl EventSessionManager {
         let session_lock = self.session_lock(session_id).await;
         let _session_guard = session_lock.lock().await;
 
-        let (_, turn_count) = self.turn_count(session_id).await?;
+        // L12: parity with chat()/history()/replay_session() — a session with no events
+        // does not exist, so recording tool activity into it must error rather than
+        // silently creating an orphaned tool log for a never-created session.
+        let (next_id, turn_count) = self.turn_count(session_id).await?;
+        if next_id == 1 {
+            return Err(SessionError::NotFound(session_id.to_string()));
+        }
         self.append(
             session_id,
             turn_count,
@@ -837,6 +843,19 @@ mod tests {
 
         let events = mgr.store.read(&id, "main", None).await.unwrap();
         assert_eq!(assert_no_orphan_tool_results(&events).unwrap(), 0);
+    }
+
+    /// L12: recording a tool call into a session that was never created must error
+    /// (NotFound), matching chat()/history() — it must not silently create an orphan
+    /// tool log for a nonexistent session.
+    #[tokio::test]
+    async fn record_tool_use_nonexistent_session_errors() {
+        let mgr = manager();
+        let err = mgr
+            .record_tool_use("nope", "search", serde_json::json!({"q": "x"}), "c1", "found")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SessionError::NotFound(_)));
     }
 
     /// Forked sessions diverge independently (manager pinned to the branch).

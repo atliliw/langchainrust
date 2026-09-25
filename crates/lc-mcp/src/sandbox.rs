@@ -292,7 +292,44 @@ impl ServerSandbox {
         self.audit.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    fn record(&self, tool: &str, arguments: Value, allowed: bool, reason: Option<String>) {
+    fn record(&self, tool: &str, mut arguments: Value, allowed: bool, reason: Option<String>) {
+        // M-7: never retain secret-like argument values in the audit ring, even in
+        // memory — credentials (token/password/api_key/…) are redacted before storing.
+        fn redact(v: &mut Value) {
+            const SUBSTR: [&str; 5] = [
+                "password",
+                "secret",
+                "credential",
+                "authorization",
+                "token",
+            ];
+            const EXACT: [&str; 6] = [
+                "auth",
+                "apikey",
+                "api_key",
+                "api-key",
+                "access_token",
+                "bearer",
+            ];
+            match v {
+                Value::Object(map) => {
+                    for (k, val) in map.iter_mut() {
+                        let low = k.to_ascii_lowercase();
+                        if EXACT.iter().any(|s| low == *s)
+                            || SUBSTR.iter().any(|s| low.contains(s))
+                        {
+                            *val = Value::String("[REDACTED]".to_string());
+                        } else {
+                            redact(val);
+                        }
+                    }
+                }
+                Value::Array(arr) => arr.iter_mut().for_each(redact),
+                _ => {}
+            }
+        }
+        redact(&mut arguments);
+
         let rec = AuditRecord {
             server: self.server.clone(),
             tool: tool.to_string(),
@@ -338,6 +375,38 @@ mod tests {
             err.to_string().contains("missing string parameter"),
             "{}",
             err
+        );
+    }
+
+    /// M-7: audit records must never retain secret-like argument values.
+    #[test]
+    fn test_audit_redacts_secret_arguments() {
+        let sb = ServerSandbox::new("srv");
+        let args = json!({
+            "path": "/tmp/a.txt",
+            "token": "sk-live-secret",
+            "api_key": "AKIA-realsecret",
+            "meta": { "password": "hunter2", "file": "ok.txt" }
+        });
+        sb.check_call("write_file", &args).expect("no rules -> allow");
+
+        let recs = sb.audit_log();
+        assert_eq!(recs.len(), 1, "one audit record");
+        let stored = &recs[0].arguments;
+        assert_eq!(stored["token"], json!("[REDACTED]"));
+        assert_eq!(stored["api_key"], json!("[REDACTED]"));
+        assert_eq!(stored["meta"]["password"], json!("[REDACTED]"));
+        // benign fields preserved verbatim.
+        assert_eq!(stored["path"], json!("/tmp/a.txt"));
+        assert_eq!(stored["meta"]["file"], json!("ok.txt"));
+
+        // Arbitrary casing is caught too (SUBSTR match on the lowercased key).
+        let sb2 = ServerSandbox::new("srv");
+        sb2.check_call("x", &json!({ "Password": "p" }))
+            .expect("allow");
+        assert_eq!(
+            sb2.audit_log()[0].arguments["Password"],
+            json!("[REDACTED]")
         );
     }
 

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use futures_util::StreamExt;
 use futures_util::TryStreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
@@ -13,7 +14,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::base::{
-    substitute_template, BaseChain, ChainError, ChainResult, ChainStream, StreamToken,
+    run_chain_with_callbacks, stream_chain_with_callbacks, substitute_template, BaseChain,
+    ChainError, ChainResult, ChainStream, StreamToken,
 };
 use crate::BoxedChatModel;
 
@@ -162,6 +164,7 @@ impl MapReduceDocumentsChain {
         doc: &Document,
         input: &str,
         index: usize,
+        config: Option<&RunnableConfig>,
     ) -> Result<String, ChainError> {
         let prompt = self.build_map_prompt(&doc.content, input);
 
@@ -170,7 +173,7 @@ impl MapReduceDocumentsChain {
         }
 
         let messages = vec![Message::human(&prompt)];
-        let response = self.llm.invoke(messages, None).await.map_err(|e| {
+        let response = self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
             ChainError::ExecutionError(format!("Map call failed (document {}): {}", index + 1, e))
         })?;
 
@@ -191,6 +194,7 @@ impl MapReduceDocumentsChain {
         &self,
         documents: &[Document],
         input: &str,
+        config: Option<&RunnableConfig>,
     ) -> Result<Vec<String>, ChainError> {
         // Materialize the per-document futures first: a `.map()` closure
         // returning an async-fn future cannot express the higher-ranked
@@ -198,7 +202,7 @@ impl MapReduceDocumentsChain {
         // requires, so collect into a `Vec` of the concrete future type.
         let mut map_futures = Vec::with_capacity(documents.len());
         for (i, doc) in documents.iter().enumerate() {
-            map_futures.push(self.map_document(doc, input, i));
+            map_futures.push(self.map_document(doc, input, i, config));
         }
 
         match self.map_concurrency {
@@ -228,6 +232,18 @@ impl MapReduceDocumentsChain {
         documents: Vec<Document>,
         input: &str,
     ) -> Result<String, ChainError> {
+        self.invoke_with_documents_cfg(documents, input, None).await
+    }
+
+    /// M-20: config-aware variant of [`Self::invoke_with_documents`]; the public
+    /// default runs with `None`, while `invoke_inner` threads the caller's
+    /// `RunnableConfig` into every map and reduce LLM call.
+    async fn invoke_with_documents_cfg(
+        &self,
+        documents: Vec<Document>,
+        input: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<String, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
                 "Document list is empty".to_string(),
@@ -244,7 +260,7 @@ impl MapReduceDocumentsChain {
             println!("\n--- Map phase ---");
         }
 
-        let summaries = self.map_phase(&documents, input).await?;
+        let summaries = self.map_phase(&documents, input, config).await?;
 
         if self.verbose {
             println!("\n--- Reduce phase ---");
@@ -259,7 +275,7 @@ impl MapReduceDocumentsChain {
         let messages = vec![Message::human(&reduce_prompt)];
         let response = self
             .llm
-            .invoke(messages, None)
+            .invoke(messages, config.cloned())
             .await
             .map_err(|e| ChainError::ExecutionError(format!("Reduce call failed: {}", e)))?;
 
@@ -272,20 +288,15 @@ impl MapReduceDocumentsChain {
 
         Ok(final_answer)
     }
-}
 
-#[async_trait]
-impl BaseChain for MapReduceDocumentsChain {
-    fn input_keys(&self) -> Vec<&str> {
-        vec![&self.input_key, "documents"]
-    }
-
-    fn output_keys(&self) -> Vec<&str> {
-        vec![&self.output_key]
-    }
-
-    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        // P2-8: validate inputs on the invoke path too, matching stream.
+    /// M-20: the config-aware invoke body. Validates inputs, extracts the
+    /// documents, then delegates to the config-threading document pipeline so a
+    /// caller's `RunnableConfig` reaches every map and reduce LLM call.
+    async fn invoke_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -295,19 +306,23 @@ impl BaseChain for MapReduceDocumentsChain {
 
         let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
-        let output = self.invoke_with_documents(documents, input).await?;
+        let output = self
+            .invoke_with_documents_cfg(documents, input, config)
+            .await?;
 
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
         Ok(result)
     }
 
-    /// Stream execution for MapReduceDocumentsChain.
-    ///
-    /// The map phase runs via invoke (parallel, non-streaming, since reduce
-    /// needs all summaries) — bounded by `map_concurrency` when configured.
-    /// The reduce phase is streamed token by token via `stream_chat`.
-    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+    /// M-20: the config-aware streaming body. The map phase runs via the
+    /// config-aware document pipeline (parallel, non-streaming), and the reduce
+    /// phase streams via `stream_chat` with `config` threading.
+    async fn stream_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -325,7 +340,7 @@ impl BaseChain for MapReduceDocumentsChain {
 
         // Map phase: run all map calls in parallel (non-streaming), bounded by
         // `map_concurrency` when configured (P2-6).
-        let summaries = self.map_phase(&documents, input).await?;
+        let summaries = self.map_phase(&documents, input, config).await?;
 
         // Reduce phase: stream the final merged answer
         let reduce_prompt = self.build_reduce_prompt(&summaries, input);
@@ -333,7 +348,7 @@ impl BaseChain for MapReduceDocumentsChain {
 
         let llm_stream = self
             .llm
-            .stream_chat(messages, None)
+            .stream_chat(messages, config.cloned())
             .await
             .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
@@ -356,6 +371,58 @@ impl BaseChain for MapReduceDocumentsChain {
         }));
 
         Ok(Box::pin(final_stream))
+    }
+}
+
+#[async_trait]
+impl BaseChain for MapReduceDocumentsChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key, "documents"]
+    }
+
+    fn output_keys(&self) -> Vec<&str> {
+        vec![&self.output_key]
+    }
+
+    /// Config-less invoke: chain-callback dispatch is skipped, so the LLM call
+    /// runs with no config (matching the permissive direct-`invoke` contract).
+    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        self.invoke_inner(inputs, None).await
+    }
+
+    /// M-20: invoke with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM calls so
+    /// sampling / cancellation / LLM callbacks reach the provider.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.invoke_inner(inputs, inner.as_ref()).await
+        })
+        .await
+    }
+
+    /// Stream without a config (no callback dispatch, no LLM sampling overrides).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.stream_inner(inputs, None).await
+    }
+
+    /// M-20: stream with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM stream.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let inner = config.clone();
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(self.name(), inputs, config, output_key, |inputs| async move {
+            self.stream_inner(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     fn name(&self) -> &str {

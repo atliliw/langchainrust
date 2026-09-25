@@ -230,6 +230,8 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
 
         // C5: idempotent overwrite for a known chunk id.
         if let Some(&slot) = self.chunk_id_slots.get(&chunk_id) {
+            // Drop the slot's old postings so no stale term keeps a dangling
+            // doc-id that no longer carries it.
             for term in self.chunk_term_freqs[slot].keys() {
                 if let Some(postings) = self.term_index.get_mut(term) {
                     postings.retain(|(idx, _)| *idx != slot);
@@ -238,8 +240,17 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
                     }
                 }
             }
-            self.chunk_term_freqs[slot] = term_freq;
+            self.chunk_term_freqs[slot] = term_freq.clone();
             self.doc_lengths[slot] = doc_length;
+            // H4: re-insert the *new* postings. The previous overwrite removed the
+            // old ones but never repopulated `term_index` for the new tokens, so `df`
+            // (and thus IDF) drifted and new terms were scored against stale df.
+            for (term, freq) in &term_freq {
+                self.term_index
+                    .entry(term.clone())
+                    .or_default()
+                    .push((slot, *freq));
+            }
             self.update_avgdl();
             self.idf_cache.clear();
             return;
@@ -277,6 +288,96 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         for (chunk_id, parent_id, content) in chunks {
             self.add_chunk_index(chunk_id, parent_id, &content);
         }
+    }
+
+    /// H3: drops every index slot belonging to a parent (its Leaf chunks) and
+    /// rebuilds the contiguous slot arrays, remapping the inverted index and the
+    /// remaining parents' leaf indices. The store already replaces a re-ingested
+    /// parent's chunk set (deterministic `{parent}::{segment}` ids), so without
+    /// this a parent that shrank or changed would leave phantom slots behind that
+    /// inflate `n_docs`/`avgdl`, skew IDF and surface ghost hits. No-op when the
+    /// parent is not (or no longer) indexed.
+    fn remove_parent_from_index(&mut self, parent_id: &str) {
+        let Some(leaves) = self.parent_to_leaves.get(parent_id) else {
+            return;
+        };
+        if leaves.is_empty() {
+            self.parent_to_leaves.remove(parent_id);
+            return;
+        }
+        let removed: std::collections::HashSet<usize> = leaves.iter().copied().collect();
+
+        // Rebuild the parallel slot arrays from the survivors, remapping old
+        // slot → new contiguous slot. The removed parent's slots are dropped.
+        let mut old_to_new = vec![usize::MAX; self.n_docs];
+        let survive = self.n_docs.saturating_sub(removed.len());
+        let mut ids: Vec<String> = Vec::with_capacity(survive);
+        let mut freqs: Vec<HashMap<String, usize>> = Vec::with_capacity(survive);
+        let mut lengths: Vec<usize> = Vec::with_capacity(survive);
+        // `old_to_new` covers exactly slot 0..n_docs, so enumerate-driven writes
+        // here are a plain index walk over the survivor map.
+        for (old, slot) in old_to_new.iter_mut().enumerate() {
+            if removed.contains(&old) {
+                continue;
+            }
+            *slot = ids.len();
+            if old < self.chunk_id_list.len() {
+                ids.push(self.chunk_id_list[old].clone());
+            }
+            if old < self.chunk_term_freqs.len() {
+                freqs.push(self.chunk_term_freqs[old].clone());
+            }
+            if old < self.doc_lengths.len() {
+                lengths.push(self.doc_lengths[old]);
+            }
+        }
+
+        // Rebuild the inverted index from the surviving term freqs so no posting
+        // dangles or duplicates around the remapped slots.
+        let mut term_index: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        for (new_slot, tf) in freqs.iter().enumerate() {
+            for (term, freq) in tf {
+                term_index
+                    .entry(term.clone())
+                    .or_default()
+                    .push((new_slot, *freq));
+            }
+        }
+
+        // Remap the remaining parents' leaf slot lists; drop parents left empty.
+        let parent_to_leaves: HashMap<String, Vec<usize>> = self
+            .parent_to_leaves
+            .drain()
+            .filter_map(|(pid, ls)| {
+                let mapped: Vec<usize> = ls
+                    .into_iter()
+                    .filter_map(|s| {
+                        old_to_new.get(s).filter(|&&n| n != usize::MAX).copied()
+                    })
+                    .collect();
+                if mapped.is_empty() {
+                    None
+                } else {
+                    Some((pid, mapped))
+                }
+            })
+            .collect();
+
+        let chunk_id_slots: HashMap<String, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+
+        self.chunk_id_list = ids;
+        self.chunk_term_freqs = freqs;
+        self.doc_lengths = lengths;
+        self.term_index = term_index;
+        self.parent_to_leaves = parent_to_leaves;
+        self.chunk_id_slots = chunk_id_slots;
+        self.n_docs = self.chunk_id_list.len();
+        self.update_avgdl();
+        self.idf_cache.clear();
     }
 
     fn compute_term_freq(&self, terms: &[String]) -> HashMap<String, usize> {
@@ -428,6 +529,10 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
             self.index.config.leaf_chunk_size,
         )?;
 
+        // H3: drop this parent's previous index slots so a re-ingest that shrank /
+        // changed its chunk set leaves no phantom slots. No-op on a fresh parent.
+        self.index.remove_parent_from_index(&parent_id);
+
         let chunks = self
             .index
             .store
@@ -458,6 +563,9 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 self.index.config.leaf_chunk_size,
             )
             .await?;
+
+        // H3: drop this parent's previous index slots (see remove_parent_from_index).
+        self.index.remove_parent_from_index(&parent_id);
 
         let chunks = self.index.store.get_chunks_for_parent(&parent_id).await?;
 
@@ -911,5 +1019,96 @@ impl ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
 impl Default for ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
     fn default() -> Self {
         Self::new(Arc::new(lc_vector_stores::ChunkedDocumentStore::new()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// H3: re-ingesting a parent whose chunk set shrank must not leave phantom
+    /// index slots behind (inflated `n_docs` / stale `parent_to_leaves` / ghost hits).
+    #[test]
+    fn reingest_shrunk_parent_drops_phantom_slots() {
+        let mut retriever = ChunkedBM25Retriever::new(Arc::new(
+            lc_vector_stores::ChunkedDocumentStore::new(),
+        ));
+        let pid = "parent-a";
+
+        // Multi-segment parent with a distinctive trailing word.
+        let filler =
+            "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua. ";
+        let big = format!("{filler}{filler}{filler}{filler}{filler}{filler}{filler}{filler} zebra");
+        retriever
+            .add_document(Document::new(big).with_id(pid.to_string()))
+            .unwrap();
+
+        let big_count = retriever
+            .store()
+            .blocking_get_chunks_for_parent(pid)
+            .unwrap()
+            .len();
+        assert!(big_count > 1, "expected a multi-segment parent, got {big_count}");
+        assert_eq!(retriever.len(), big_count, "index must hold exactly the parent's chunks");
+
+        // Re-ingest the same parent with a single-segment content.
+        retriever
+            .add_document(Document::new("tiny single segment".to_string()).with_id(pid.to_string()))
+            .unwrap();
+        let small_count = retriever
+            .store()
+            .blocking_get_chunks_for_parent(pid)
+            .unwrap()
+            .len();
+        assert_eq!(small_count, 1, "tiny content should yield exactly 1 chunk");
+
+        assert_eq!(
+            retriever.len(),
+            small_count,
+            "H3: shrunken parent must leave no phantom slots (index={} store={})",
+            retriever.len(),
+            small_count
+        );
+        let ids = retriever.index.get_chunk_ids_for_parent(pid);
+        assert_eq!(
+            ids.len(),
+            small_count,
+            "parent_to_leaves must not retain removed phantom leaves, got {ids:?}"
+        );
+        if let Some(first) = ids.first() {
+            assert_eq!(first.as_str(), format!("{pid}::0").as_str());
+        }
+    }
+
+    /// H4: overwriting a chunk id with a different token set must repopulate the
+    /// inverted index — the new terms get a correct `df` (their postings re-inserted)
+    /// and the old terms' postings are gone.
+    #[test]
+    fn overwrite_chunk_reindexes_new_tokens() {
+        let mut r = ChunkedBM25Retriever::new(Arc::new(
+            lc_vector_stores::ChunkedDocumentStore::new(),
+        ));
+        r.add_chunk_index("c::0", "p", "alpha beta");
+        r.add_chunk_index("c::0", "p", "gamma delta");
+
+        let index = &r.index;
+        // New terms' postings must be present (df counted correctly).
+        assert_eq!(
+            index.term_index.get("gamma").map(Vec::len),
+            Some(1),
+            "H4: 'gamma' postings lost on overwrite"
+        );
+        assert_eq!(
+            index.term_index.get("delta").map(Vec::len),
+            Some(1),
+            "H4: 'delta' postings lost on overwrite"
+        );
+        // Old terms' postings are fully removed.
+        assert!(
+            !index.term_index.contains_key("alpha"),
+            "stale 'alpha' postings must be gone after overwrite"
+        );
+        assert!(!index.term_index.contains_key("beta"));
     }
 }

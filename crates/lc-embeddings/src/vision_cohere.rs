@@ -32,7 +32,7 @@ pub const COHERE_VISION_EMBED_MODEL: &str = "embed-v4.0";
 pub const COHERE_VISION_DIMENSION: usize = 1536;
 
 /// Cohere vision embedding configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CohereVisionEmbeddingsConfig {
     /// Cohere API key.
     pub api_key: String,
@@ -43,6 +43,18 @@ pub struct CohereVisionEmbeddingsConfig {
     /// Input type used for [`VisionEmbeddings::embed_text`] (image batches
     /// always use `"image"` per the API).
     pub text_input_type: CohereEmbedInputType,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for CohereVisionEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CohereVisionEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("text_input_type", &self.text_input_type)
+            .finish()
+    }
 }
 
 impl Default for CohereVisionEmbeddingsConfig {

@@ -66,8 +66,17 @@ pub(crate) fn denied_observation(reason: &str) -> String {
 /// an approval `Deny` or a hallucinated / unregistered name. Such calls must
 /// not consume the `max_tool_calls` budget (only executed tools count); the
 /// loops decrement `metrics.tool_calls` for these before continuing.
+///
+/// M-17: the set must cover every immutable "did not run" marker the gate can
+/// yield. `tool_gate.rs` also returns `Done("[Skipped by hook]")` for a
+/// `ToolCallAction::Skip` and `Done("[BLOCKED by Rule of Two: ...]")` for a
+/// high-risk tool — neither executes, but both were previously counted toward
+/// `max_tool_calls` and pushed into `intermediate_steps` as if a tool had run.
 pub(crate) fn is_non_execution_observation(obs: &str) -> bool {
-    obs.starts_with("[DENIED by approval:") || obs.starts_with("[Tool not found: ")
+    obs.starts_with("[DENIED by approval:")
+        || obs.starts_with("[Tool not found: ")
+        || obs.starts_with("[Skipped by hook]")
+        || obs.starts_with("[BLOCKED by Rule of Two:")
 }
 
 /// Executes a tool with an optional timeout.

@@ -34,9 +34,15 @@ impl DocumentLoader for PDFLoader {
             )));
         }
 
-        // Extract text using the pdf_extract library
-        let text = pdf_extract::extract_text(&self.path)
-            .map_err(|e| LoaderError::PdfError(format!("PDF parse failed: {}", e)))?;
+        // Extract text using the pdf_extract library. The extraction is CPU-bound and can be slow,
+        // so run it on the blocking thread pool rather than stalling the async executor (L1).
+        let path = self.path.clone();
+        let text = tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path))
+            .await
+            .map_err(|e| {
+                LoaderError::Other(format!("PDF extract task failed to complete: {e}"))
+            })?
+            .map_err(|e| LoaderError::PdfError(format!("PDF parse failed: {e}")))?;
 
         // Create the document object, including metadata
         let mut document = Document::new(text);

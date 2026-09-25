@@ -103,3 +103,62 @@ async fn test_persistence() {
     let parent = loaded.get_parent_document("parent_001").await.unwrap();
     assert!(parent.is_some());
 }
+
+#[tokio::test]
+async fn test_add_document_deduplicates_parent_mapping() {
+    // H7: the plain DocumentStore path registers the id as a single-chunk parent.
+    // Re-adding the same id must not push a duplicate mapping (a bug that made
+    // get_chunks_for_parent return the same chunk twice).
+    let store = ChunkedDocumentStore::new();
+
+    let doc = Document::new("内容").with_id("dup_001");
+    let id = store.add_document(doc.clone()).await.unwrap();
+    assert_eq!(id, "dup_001");
+
+    // Re-add the same id.
+    store.add_document(doc).await.unwrap();
+
+    assert_eq!(store.parent_count().await, 1);
+    assert_eq!(store.chunk_count().await, 1);
+
+    let chunks = store.get_chunks_for_parent("dup_001").await.unwrap();
+    assert_eq!(chunks.len(), 1, "duplicate add must not duplicate the chunk mapping");
+}
+
+#[tokio::test]
+async fn test_delete_document_cleans_all_structures() {
+    // H7: delete_document previously only removed the chunk, leaving residue in
+    // parent_docs / parent_to_chunks (parent_count inflated, re-add re-pushed).
+    let store = ChunkedDocumentStore::new();
+
+    store
+        .add_document(Document::new("内容").with_id("del_001"))
+        .await
+        .unwrap();
+    assert_eq!(store.parent_count().await, 1);
+    assert_eq!(store.chunk_count().await, 1);
+
+    store.delete_document("del_001").await.unwrap();
+
+    assert_eq!(store.parent_count().await, 0);
+    assert_eq!(store.chunk_count().await, 0);
+    assert!(
+        store
+            .get_chunks_for_parent("del_001")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Re-add after delete must not resurrect a duplicated mapping.
+    store
+        .add_document(Document::new("内容").with_id("del_001"))
+        .await
+        .unwrap();
+    assert_eq!(store.parent_count().await, 1);
+    assert_eq!(store.chunk_count().await, 1);
+    assert_eq!(
+        store.get_chunks_for_parent("del_001").await.unwrap().len(),
+        1
+    );
+}

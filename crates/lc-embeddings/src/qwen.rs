@@ -31,7 +31,7 @@ pub fn is_qwen3_embedding(model: &str) -> bool {
 }
 
 /// Configuration for Qwen embeddings API.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QwenEmbeddingsConfig {
     /// Qwen API key.
     pub api_key: String,
@@ -42,6 +42,18 @@ pub struct QwenEmbeddingsConfig {
     /// Optional matryoshka output dimension (0.21.0 S5.1): 32-4096. Only valid
     /// on Qwen3-Embedding models; `None` keeps the model default.
     pub dimensions: Option<usize>,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for QwenEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QwenEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("dimensions", &self.dimensions)
+            .finish()
+    }
 }
 
 impl Default for QwenEmbeddingsConfig {

@@ -11,7 +11,6 @@ rust-version.workspace = true
 lc-core = { path = "../lc-core", version = "0.25.0" }
 lc-schema = { path = "../lc-schema", version = "0.25.0" }
 lc-callbacks = { path = "../lc-callbacks", version = "0.25.0" }
-lc-shared = { path = "../lc-shared", version = "0.25.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -22,9 +21,7 @@ futures-util = "0.3"
 thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
-regex = "1"
 log = "0.4"
-urlencoding = "2"
 schemars = "1.0"
 base64 = "0.22"
 

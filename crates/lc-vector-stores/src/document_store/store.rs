@@ -120,10 +120,15 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
 
         chunks.insert(id.clone(), chunk);
 
-        // Also update parent_to_chunks mapping
+        // Also update parent_to_chunks mapping. H7: idempotent — re-adding the same
+        // document id must not push a duplicate mapping, else get_chunks_for_parent
+        // returns the same chunk twice (duplicate document).
         {
             let mut mapping = lock_error(self.parent_to_chunks.write())?;
-            mapping.entry(id.clone()).or_default().push(id.clone());
+            let ids = mapping.entry(id.clone()).or_default();
+            if !ids.contains(&id) {
+                ids.push(id.clone());
+            }
         }
 
         Ok(id)
@@ -146,8 +151,32 @@ impl DocumentStore for InMemoryChunkedDocumentStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
-        let mut chunks = lock_error(self.chunks.write())?;
-        chunks.remove(id);
+        // H7: the plain DocumentStore path also registers the id as a single-chunk
+        // parent (parent_to_chunks / parent_docs), so clean all three structures —
+        // mirroring delete_parent_document. Otherwise residue survives (parent_count()
+        // inflated, re-add re-pushes a duplicate mapping).
+        let chunk_ids = {
+            let mapping = lock_error(self.parent_to_chunks.read())?;
+            mapping.get(id).cloned().unwrap_or_default()
+        };
+
+        {
+            let mut chunks = lock_error(self.chunks.write())?;
+            for chunk_id in &chunk_ids {
+                chunks.remove(chunk_id);
+            }
+        }
+
+        {
+            let mut mapping = lock_error(self.parent_to_chunks.write())?;
+            mapping.remove(id);
+        }
+
+        {
+            let mut parents = lock_error(self.parent_docs.write())?;
+            parents.remove(id);
+        }
+
         Ok(())
     }
 

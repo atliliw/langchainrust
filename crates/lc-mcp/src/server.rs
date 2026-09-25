@@ -38,6 +38,32 @@ pub(crate) const HTTP_READ_TIMEOUT_SECS: u64 = 30;
 /// 0.22.0 C8 hardening: maximum concurrently served connections. Accept waits
 /// for a permit instead of spawning unbounded tasks.
 pub(crate) const HTTP_MAX_CONCURRENT_CONNECTIONS: usize = 256;
+/// M-3: maximum request-header region before the terminating `\r\n\r\n`. The
+/// body is already capped by [`HTTP_MAX_BODY_BYTES`]; this bounds the header
+/// prefix so a hostile client that never sends the blank line cannot grow the
+/// buffer (and the O(n) terminator scan per read) without limit.
+pub(crate) const HTTP_MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// M-2: fail-fast public-bind guard, mirroring lc-a2a's B7 guard. An MCP server
+/// without any token validator exposes arbitrary tool invocation to the whole
+/// network; a non-loopback bind is refused up front (panic with an actionable
+/// message) so the mistake is caught at startup, not after exposure. Loopback
+/// binds stay allowed — they are a local/CI-only surface that needs no auth.
+fn assert_safe_bind(listener: &tokio::net::TcpListener, has_auth: bool) {
+    if let Ok(addr) = listener.local_addr() {
+        if !addr.ip().is_loopback() && !has_auth {
+            panic!(
+                "refusing to serve MCP on non-loopback bind '{addr}' without a token \
+                 validator: attach one via with_token_validator(..) for a public deployment \
+                 (or bind a loopback address)"
+            );
+        }
+    }
+}
+
+/// Private alias factoring the `(session scope, request id) → wakeup` cancellation table
+/// so the field type stays readable. The table is only ever touched inside the server.
+type CancellationTable = Arc<Mutex<HashMap<(Option<String>, JsonRpcId), Arc<Notify>>>>;
 
 /// MCP Server - exposes a set of `BaseTool`s as MCP tools
 pub struct MCPServer {
@@ -71,7 +97,7 @@ pub struct MCPServer {
     /// in-flight tool call. The HTTP transport passes the `Mcp-Session-Id`;
     /// connection-local transports (stdio) and unscoped callers use `None`,
     /// where ids are unique by construction within the single connection.
-    cancellations: Arc<Mutex<HashMap<(Option<String>, JsonRpcId), Arc<Notify>>>>,
+    cancellations: CancellationTable,
 }
 
 impl MCPServer {
@@ -478,16 +504,18 @@ impl MCPServer {
         let tool = self.tools.iter().find(|t| t.name() == name);
         match tool {
             Some(t) => {
-                let input_str = serde_json::to_string(&arguments).unwrap_or_else(|_| "null".into());
-                // B8: register a cancellation signal for this request id; the
-                // client's `notifications/cancelled` fires it and the select!
-                // below aborts the in-flight tool (dropping the run future).
+                // B8/M-6: register a cancellation signal for this request id *before*
+                // any dispatch work (argument serialization), so an early
+                // `notifications/cancelled` is not dropped as "unknown request id"
+                // (TOCTOU between request receipt and Notify insertion). Removed
+                // once the tool completes.
                 let notify = {
                     let mut map = self.cancellations.lock().await;
                     map.entry((session.clone(), req.id.clone()))
                         .or_insert_with(|| Arc::new(Notify::new()))
                         .clone()
                 };
+                let input_str = serde_json::to_string(&arguments).unwrap_or_else(|_| "null".into());
                 let mut run = Box::pin(t.run(input_str));
                 let mut cancelled = Box::pin(notify.notified());
                 let mcp_result = tokio::select! {
@@ -604,12 +632,14 @@ impl MCPServer {
     /// No handshake, no session — every request is self-contained.
     ///
     /// - `listener`: a `TcpListener` already bound to an address. For local
-    ///   debugging bind `127.0.0.1:0`; for remote deployment bind
-    ///   `0.0.0.0:PORT`.
+    ///   debugging bind `127.0.0.1:0`; for a network deployment bind
+    ///   `0.0.0.0:PORT` **and** attach a token validator first (M-2) — a
+    ///   non-loopback bind without one is refused up front.
     ///
     /// Returns the endpoint URL immediately after startup; the accept loop
     /// runs on a background task until the process exits.
     pub fn serve_http(self: Arc<Self>, listener: tokio::net::TcpListener) -> String {
+        assert_safe_bind(&listener, self.auth_validator.is_some());
         let addr = listener
             .local_addr()
             .map(|a| a.to_string())
@@ -748,6 +778,7 @@ impl MCPServer {
     /// Returns the endpoint URL immediately; the accept loop runs on a
     /// background task until the listener is closed.
     pub fn serve_streamable_http(self: Arc<Self>, listener: tokio::net::TcpListener) -> String {
+        assert_safe_bind(&listener, self.auth_validator.is_some());
         crate::transport::streamable_http_server::serve(self, listener)
     }
 
@@ -869,6 +900,12 @@ pub(crate) async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Resul
                 end = Some(i);
                 break;
             }
+        }
+        // M-3: bound the header region. The blank line was never seen and the
+        // accumulated prefix already exceeds the cap → abort (transport closed),
+        // so a hostile client cannot grow `buf` (and the O(n) scan) without limit.
+        if end.is_none() && buf.len() > HTTP_MAX_HEADER_BYTES {
+            return Err(());
         }
         if let Some(pos) = end {
             let head = String::from_utf8_lossy(&buf[..pos]).to_string();
@@ -1666,6 +1703,16 @@ mod tests {
         let (status, resp_body) = post_raw(&addr, None, &body).await;
         assert!(status.contains("200 OK"), "{status}");
         assert!(resp_body.contains("echo"), "{resp_body}");
+    }
+
+    /// M-2: a public (non-loopback) bind with no token validator must be refused
+    /// up front — an open MCP server would let anyone on the network invoke tools.
+    #[tokio::test]
+    #[should_panic(expected = "refusing to serve MCP on non-loopback bind")]
+    async fn test_serve_http_refuses_public_bind_without_validator() {
+        let server = Arc::new(server_with_echo());
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let _url = server.serve_http(listener);
     }
 
     /// C8: with a validator, missing/wrong token → 401, correct token → 200.

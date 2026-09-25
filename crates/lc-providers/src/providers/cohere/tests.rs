@@ -504,4 +504,40 @@ data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usag
         assert_eq!(body["stream"], serde_json::json!(true));
         assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
     }
+
+    /// M-8: a stream that closes without a terminal `message-end` is surfaced as
+    /// `StreamInterrupted` rather than handed back as a partial but "complete" reply.
+    #[tokio::test]
+    async fn stream_truncation_without_message_end_is_interrupted() {
+        let sse = "\
+event: content-delta\n\
+data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"text\",\"text\":\"Partial \"}}}}\n\n\
+event: content-delta\n\
+data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"text\",\"text\":\"output\"}}}}\n\n";
+        let (base_url, _captured) = spawn_server(sse, "text/event-stream").await;
+
+        let chat = CohereChat::new(CohereConfig::new("cohere-secret").with_base_url(base_url));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut text = String::new();
+        let mut saw_interrupt = false;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => text.push_str(&chunk.text),
+                Err(CohereError::StreamInterrupted(_)) => {
+                    saw_interrupt = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
+        }
+        assert_eq!(text, "Partial output");
+        assert!(
+            saw_interrupt,
+            "truncated stream must surface StreamInterrupted, got text {text:?}"
+        );
+    }
 }

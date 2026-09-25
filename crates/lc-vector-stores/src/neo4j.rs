@@ -282,11 +282,11 @@ impl Neo4jVectorStore {
                 // Parse metadata from JSON object
                 if let Some(meta_obj) = row.row[2].as_object() {
                     for (key, value) in meta_obj {
-                        if let Some(s) = value.as_str() {
-                            doc = doc.with_metadata(key, s);
-                        } else {
-                            doc = doc.with_metadata(key, value.to_string());
-                        }
+                        // M-22: preserve the original value (number / bool / object).
+                        // Coercing everything through `to_string()` turned `2020` into
+                        // "2020" / `true` into "true", so server-side numeric filtering
+                        // matched but the returned type came back wrong.
+                        doc = doc.with_metadata(key, value.clone());
                     }
                 }
 
@@ -619,11 +619,8 @@ impl VectorStore for Neo4jVectorStore {
         if row.row.len() > 1 {
             if let Some(meta_obj) = row.row[1].as_object() {
                 for (key, value) in meta_obj {
-                    if let Some(s) = value.as_str() {
-                        doc = doc.with_metadata(key, s);
-                    } else {
-                        doc = doc.with_metadata(key, value.to_string());
-                    }
+                    // M-22: preserve original number/bool/object values (no string coercion).
+                    doc = doc.with_metadata(key, value.clone());
                 }
             }
         }

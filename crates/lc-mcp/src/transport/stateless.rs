@@ -109,9 +109,24 @@ impl StatelessTransport {
                 format!("stateless POST failed: HTTP {}", status.as_u16()),
             ));
         }
-        resp.json::<MCPResponse>()
+        let resp: MCPResponse = resp
+            .json()
             .await
-            .map_err(|e| MCPError::new(-32700, format!("invalid JSON-RPC response: {e}")))
+            .map_err(|e| MCPError::new(-32700, format!("invalid JSON-RPC response: {e}")))?;
+        // M-4: the server's response id must echo this request's id. A missing or
+        // mismatched id (replay / interleaved response / promiscuous server) must
+        // not be accepted as the answer to this request — the stdio/SSE transports
+        // all match; only the stateless track skipped it.
+        if resp.id.as_ref() != Some(&req.id) {
+            return Err(MCPError::new(
+                -32700,
+                format!(
+                    "JSON-RPC response id mismatch: sent {:?}, got {:?}",
+                    req.id, resp.id
+                ),
+            ));
+        }
+        Ok(resp)
     }
 }
 

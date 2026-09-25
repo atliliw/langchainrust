@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_memory::{BaseMemory, ConversationBufferMemory};
 use lc_providers::{wrap_chat_model, ProviderError};
@@ -17,7 +18,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// ConversationRetrievalChain
@@ -243,23 +247,16 @@ impl ConversationRetrievalChain {
             .map_err(|e| ChainError::ExecutionError(format!("Failed to save context: {}", e)))?;
         Ok(())
     }
-}
 
-#[async_trait]
-impl BaseChain for ConversationRetrievalChain {
-    fn input_keys(&self) -> Vec<&str> {
-        vec![&self.input_key]
-    }
-
-    fn output_keys(&self) -> Vec<&str> {
-        if self.return_source_documents {
-            vec![&self.output_key, &self.source_document_key]
-        } else {
-            vec![&self.output_key]
-        }
-    }
-
-    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+    /// M-20: the config-aware invoke body. `config` is threaded into the LLM call
+    /// so sampling overrides, cancellation and LLM callbacks reach the provider;
+    /// the config-less `invoke` (None) and `invoke_with_config` (the caller's
+    /// config, wrapped in chain-callback dispatch) share this one path.
+    async fn invoke_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let question = inputs
@@ -306,11 +303,13 @@ impl BaseChain for ConversationRetrievalChain {
             println!("\n--- Step 3: Assemble Prompt ---");
         }
 
-        let context = self.format_context(&documents);
+        // LOW: `context` was computed here only to log its length, then `format_context` ran a
+        // second time to build the messages — build it once and reuse it for both.
+        let context_str = self.format_context(&documents);
 
         if self.verbose {
             println!("History length: {} characters", history.len());
-            println!("Context length: {} characters", context.len());
+            println!("Context length: {} characters", context_str.len());
         }
 
         // Step 4: LLM generates answer
@@ -318,12 +317,11 @@ impl BaseChain for ConversationRetrievalChain {
             println!("\n--- Step 4: LLM generates answer ---");
         }
 
-        let context_str = self.format_context(&documents);
         let messages = self.build_messages(&history_messages, &context_str, question);
 
         let response = self
             .llm
-            .invoke(messages, None)
+            .invoke(messages, config.cloned())
             .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
@@ -352,13 +350,12 @@ impl BaseChain for ConversationRetrievalChain {
         Ok(result)
     }
 
-    /// Stream execution for ConversationRetrievalChain -- token by token output.
-    ///
-    /// P2-2: real streaming — loads history, retrieves and assembles the prompt,
-    /// then pushes LLM tokens via `stream_chat`. The full answer is accumulated
-    /// through an unbounded channel (the P1-4 pattern) and written to memory
-    /// once the stream completes, matching the invoke path's `save_context`.
-    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+    /// M-20: the config-aware streaming body; see [`Self::invoke_inner`].
+    async fn stream_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let question = inputs
@@ -392,7 +389,7 @@ impl BaseChain for ConversationRetrievalChain {
         // Step 4: Stream LLM tokens
         let llm_stream = self
             .llm
-            .stream_chat(messages, None)
+            .stream_chat(messages, config.cloned())
             .await
             .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
@@ -446,6 +443,62 @@ impl BaseChain for ConversationRetrievalChain {
         }));
 
         Ok(Box::pin(final_stream))
+    }
+}
+
+#[async_trait]
+impl BaseChain for ConversationRetrievalChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key]
+    }
+
+    fn output_keys(&self) -> Vec<&str> {
+        if self.return_source_documents {
+            vec![&self.output_key, &self.source_document_key]
+        } else {
+            vec![&self.output_key]
+        }
+    }
+
+    /// Config-less invoke: chain-callback dispatch is skipped, so the LLM call
+    /// runs with no config (matching the permissive direct-`invoke` contract).
+    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        self.invoke_inner(inputs, None).await
+    }
+
+    /// M-20: invoke with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM call so
+    /// sampling / cancellation / LLM callbacks reach the provider.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.invoke_inner(inputs, inner.as_ref()).await
+        })
+        .await
+    }
+
+    /// Stream without a config (no callback dispatch, no LLM sampling overrides).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.stream_inner(inputs, None).await
+    }
+
+    /// M-20: stream with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM stream.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let inner = config.clone();
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(self.name(), inputs, config, output_key, |inputs| async move {
+            self.stream_inner(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     fn name(&self) -> &str {

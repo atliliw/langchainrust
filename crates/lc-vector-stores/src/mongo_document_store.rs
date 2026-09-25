@@ -190,8 +190,15 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
             metadata: document.metadata.clone(),
         };
 
+        // M-29: re-ingesting a document with an existing id used to fail with a duplicate-key
+        // error (matching in-memory / redis, ingest should be idempotent and replace). Upsert the
+        // parent and each chunk, then drop any chunks of this parent that are no longer produced
+        // by the new split, so a later/shrunk re-ingest does not leave stale retrievable content.
+        let upsert = mongodb::options::ReplaceOptions::builder()
+            .upsert(true)
+            .build();
         self.parent_collection
-            .insert_one(mongo_parent, None)
+            .replace_one(doc! { "_id": parent_id.clone() }, mongo_parent, upsert.clone())
             .await
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
@@ -212,12 +219,21 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
             };
 
             self.chunk_collection
-                .insert_one(mongo_chunk, None)
+                .replace_one(doc! { "_id": chunk_id.clone() }, mongo_chunk, upsert.clone())
                 .await
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
             chunk_ids.push(chunk_id);
         }
+
+        // Remove chunks belonging to this parent but not present in the fresh split.
+        self.chunk_collection
+            .delete_many(
+                doc! { "parent_id": &parent_id, "chunk_id": doc! { "$nin": &chunk_ids } },
+                None,
+            )
+            .await
+            .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
         Ok((parent_id, chunk_ids))
     }

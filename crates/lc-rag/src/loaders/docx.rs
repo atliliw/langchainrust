@@ -80,12 +80,11 @@ impl DocxLoader {
             let Some(m) = cap.get(1) else {
                 continue;
             };
-            // Check whether a </w:p> (new paragraph) precedes this <w:t>
+            // Check whether a </w:p> (new paragraph) precedes this <w:t>; the former
+            // `else if !result.is_empty() { }` branch was a no-op and is dropped here.
             let before = &xml[last_end..m.start()];
             if PARA_REGEX.is_match(before) && !result.is_empty() {
                 result.push('\n');
-            } else if !result.is_empty() {
-                // Consecutive text within the same paragraph
             }
             result.push_str(m.as_str());
             last_end = m.end();

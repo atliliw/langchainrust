@@ -125,6 +125,10 @@ fn unsafe_name(name: &str, reason: &str) -> FileMemoryError {
 /// A deterministic, path-sandboxed collection of memory files under one root directory.
 pub struct FileMemoryStore {
     root: PathBuf,
+    // L7: serializes read-modify-write (create/write/append/str_replace/rename/delete) so
+    // concurrent writers to the same memory cannot lose each other's update. All methods here
+    // are synchronous (`std::fs::*`), so the guard never crosses an `await`.
+    guard: std::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for FileMemoryStore {
@@ -145,7 +149,16 @@ impl FileMemoryStore {
             path: root.display().to_string(),
             source,
         })?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            guard: std::sync::Mutex::new(()),
+        })
+    }
+
+    /// Locks the store for a read-modify-write operation, recovering from a poisoned
+    /// lock (a panicked writer) so later callers are not stuck forever.
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The canonicalized root directory.
@@ -161,6 +174,7 @@ impl FileMemoryStore {
 
     /// Creates a new memory. Fails if a memory with the same name already exists.
     pub fn create(&self, name: &str, content: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let path = self.path_for(name)?;
         if path.exists() {
             return Err(FileMemoryError::AlreadyExists(name.to_string()));
@@ -183,6 +197,7 @@ impl FileMemoryStore {
     /// Unlike [`Self::create`] this never fails on an existing name; it is the
     /// upsert primitive used by higher-level stacks (e.g. re-remembering).
     pub fn write(&self, name: &str, content: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let path = self.path_for(name)?;
         fs::write(&path, content).map_err(map_io(&path))?;
         Ok(())
@@ -190,6 +205,7 @@ impl FileMemoryStore {
 
     /// Appends `content` to an existing memory.
     pub fn append(&self, name: &str, content: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let path = self.path_for(name)?;
         if !path.exists() {
             return Err(FileMemoryError::NotFound(name.to_string()));
@@ -207,6 +223,7 @@ impl FileMemoryStore {
     /// Fails with [`FileMemoryError::OldTextNotFound`] if `old` is not present, rather
     /// than silently corrupting the file — str_replace must be idempotent and observable.
     pub fn str_replace(&self, name: &str, old: &str, new: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let path = self.path_for(name)?;
         if !path.exists() {
             return Err(FileMemoryError::NotFound(name.to_string()));
@@ -223,6 +240,7 @@ impl FileMemoryStore {
 
     /// Renames a memory to a new validated name.
     pub fn rename(&self, name: &str, new_name: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let from = self.path_for(name)?;
         let to = self.path_for(new_name)?;
         if !from.exists() {
@@ -237,6 +255,7 @@ impl FileMemoryStore {
 
     /// Deletes a memory.
     pub fn delete(&self, name: &str) -> Result<(), FileMemoryError> {
+        let _g = self.lock();
         let path = self.path_for(name)?;
         if !path.exists() {
             return Err(FileMemoryError::NotFound(name.to_string()));
@@ -406,6 +425,28 @@ mod tests {
                 "expected rejection for {bad:?}"
             );
         }
+    }
+
+    /// L7: two concurrent `str_replace` calls must serialize. Without the internal lock both
+    /// threads read "aaaa" and write "baaa" (losing one edit); with it the second call sees the
+    /// first's result and yields "bbaa".
+    #[test]
+    fn concurrent_str_replace_serialized() {
+        let (_d, s) = store();
+        s.write("m", "aaaa").unwrap();
+        let s = std::sync::Arc::new(s);
+        let t1 = {
+            let s = s.clone();
+            std::thread::spawn(move || s.str_replace("m", "a", "b"))
+        };
+        let t2 = {
+            let s = s.clone();
+            std::thread::spawn(move || s.str_replace("m", "a", "b"))
+        };
+        t1.join().unwrap().unwrap();
+        t2.join().unwrap().unwrap();
+        // Each call (serialized) replaces the first remaining "a": aaaa -> baaa -> bbaa.
+        assert_eq!(s.view("m").unwrap(), "bbaa");
     }
 
     #[test]

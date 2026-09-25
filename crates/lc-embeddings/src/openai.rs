@@ -12,7 +12,7 @@ use serde::Deserialize;
 const MAX_CONCURRENT_CHUNKS: usize = 8;
 
 /// OpenAI Embeddings configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAIEmbeddingsConfig {
     /// API key
     pub api_key: String,
@@ -25,6 +25,18 @@ pub struct OpenAIEmbeddingsConfig {
 
     /// Batch size (default: 2048)
     pub batch_size: usize,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for OpenAIEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAIEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("batch_size", &self.batch_size)
+            .finish()
+    }
 }
 
 impl Default for OpenAIEmbeddingsConfig {
@@ -254,7 +266,16 @@ impl Embeddings for OpenAIEmbeddings {
             let (chunk_idx, data) = result?;
             let base = chunk_idx * batch_size;
             for item in data {
-                let global_index = base + item.index as usize;
+                // P0-2/negative index: `index` is i32; an `as usize` cast would wrap a
+                // negative provider index to a huge offset. Convert with `try_from` and
+                // error out on any negative value before adding the chunk base.
+                let rel = usize::try_from(item.index).map_err(|_| {
+                    EmbeddingError::ParseError(format!(
+                        "provider returned negative embedding index: {}",
+                        item.index
+                    ))
+                })?;
+                let global_index = base + rel;
                 if global_index >= all_results.len() {
                     // Provider index beyond the requested range = batch misalignment; error out.
                     return Err(EmbeddingError::BatchMismatch {
@@ -463,6 +484,83 @@ mod tests {
             "out-of-range index should report BatchMismatch, got: {:?}",
             result
         );
+    }
+
+    /// P0-2: a negative provider index must not wrap to a huge offset via `as usize`;
+    /// it should surface as `ParseError` (checked conversion), not a panic / silent misalignment.
+    #[tokio::test]
+    async fn test_embed_documents_negative_index_errors() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut header = Vec::new();
+            let mut byte = [0u8; 1];
+            while !header.ends_with(b"\r\n\r\n") {
+                if socket.read_exact(&mut byte).await.is_err() {
+                    return;
+                }
+                header.push(byte[0]);
+            }
+            let header_str = String::from_utf8_lossy(&header).to_lowercase();
+            let content_length: usize = header_str
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; content_length];
+            if content_length > 0 {
+                let _ = socket.read_exact(&mut body).await;
+            }
+            // Malicious/buggy provider: index -1 (i32) in a valid-looking response.
+            let json = r#"{"data":[{"object":"embedding","index":-1,"embedding":[0.6,0.8]}],"model":"stub"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                json.len(),
+                json
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let config = OpenAIEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url: format!("http://{}", addr),
+            model: "text-embedding-ada-002".into(),
+            batch_size: 8,
+        };
+        let embeddings = OpenAIEmbeddings::new(config).unwrap();
+        let result = embeddings.embed_documents(&["a"]).await;
+        assert!(
+            matches!(result, Err(EmbeddingError::ParseError(_))),
+            "negative index should report ParseError, got: {:?}",
+            result
+        );
+    }
+
+    /// M-12: `Debug` for the config must not leak the API key; it is emitted as `[REDACTED]`.
+    #[test]
+    fn test_config_debug_redacts_api_key() {
+        let cfg = OpenAIEmbeddingsConfig {
+            api_key: "sk-super-secret".into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "text-embedding-ada-002".into(),
+            batch_size: 2,
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("super-secret"),
+            "Debug leaked api_key: {dbg}"
+        );
+        assert!(dbg.contains("[REDACTED]"), "Debug should redact api_key: {dbg}");
+        assert!(
+            dbg.contains("https://api.example.com"),
+            "non-secret fields must stay intact: {dbg}"
+        );
+        // Clone still works after dropping the derived Debug.
+        let _ = cfg.clone();
     }
 
     /// P2-5: `embed_query` wired to retry — two 429s then 200, 3 total requests, success returned.

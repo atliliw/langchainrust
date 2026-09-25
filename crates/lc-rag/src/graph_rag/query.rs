@@ -174,7 +174,7 @@ pub async fn global_query<M: BaseChatModel>(
         .iter()
         .filter_map(|id| all_summaries.get(*id).cloned())
         .collect();
-    let summaries_text = truncate_summaries(&selected, max_context_tokens);
+    let (summaries_text, kept_idx) = truncate_summaries(&selected, max_context_tokens);
     let question_str = question.to_string();
     let prompt = format_template(
         GLOBAL_QUERY_PROMPT,
@@ -187,13 +187,18 @@ pub async fn global_query<M: BaseChatModel>(
         .await
         .map_err(|e| super::GraphRAGError::LLMError(e.to_string()))?;
 
-    let sources: Vec<String> = selected_ids
+    // L3: derive sources from the summaries that actually survived truncation
+    // (`kept_idx`), not from every selected community — otherwise the reported
+    // sources can name entities the truncated prompt never showed the LLM.
+    let sources: Vec<String> = kept_idx
         .iter()
+        .filter_map(|&i| selected_ids.get(i))
+        .copied()
         .flat_map(|id| {
             store
                 .communities()
                 .iter()
-                .find(|c| c.id == *id)
+                .find(|c| c.id == id)
                 .into_iter()
                 .flat_map(|c| c.entities.iter().cloned())
         })
@@ -317,7 +322,7 @@ pub async fn hybrid_query<M: BaseChatModel>(
             .iter()
             .filter_map(|id| all_summaries.get(*id).cloned())
             .collect();
-        truncate_summaries(&selected, max_context_tokens)
+        truncate_summaries(&selected, max_context_tokens).0
     };
 
     let seed_entities = match entity_matcher {
@@ -419,19 +424,24 @@ fn count_tokens_estimate(text: &str) -> usize {
     })
 }
 
-/// Truncates community summaries to fit within a token budget.
+/// Truncates community summaries to fit within a token budget, returning the
+/// joined text **and the indices (into `summaries`) that were actually kept** —
+/// callers use the indices so reported sources stay consistent with what the
+/// LLM actually saw (L3).
 ///
 /// Keeps summaries from the beginning (highest-priority, largest communities)
 /// until the budget is exceeded, then drops the rest.
-fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String {
+fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> (String, Vec<usize>) {
     let all_text = summaries.join("\n\n");
+    let all_idx: Vec<usize> = (0..summaries.len()).collect();
 
     match max_tokens {
         Some(budget) => {
             let mut result = String::new();
             let mut used_tokens = 0usize;
+            let mut kept = Vec::new();
 
-            for summary in summaries {
+            for (i, summary) in summaries.iter().enumerate() {
                 let summary_tokens = count_tokens_estimate(summary);
                 if used_tokens + summary_tokens > budget {
                     break;
@@ -441,16 +451,21 @@ fn truncate_summaries(summaries: &[String], max_tokens: Option<usize>) -> String
                 }
                 result.push_str(summary);
                 used_tokens += summary_tokens;
+                kept.push(i);
             }
 
             if result.is_empty() {
-                // If even the first summary exceeds the budget, include it truncated
-                summaries.first().cloned().unwrap_or_default()
+                // If even the first summary exceeds the budget, include it truncated,
+                // and still report its index so sources are not dropped.
+                match summaries.first() {
+                    Some(first) => (first.clone(), vec![0]),
+                    None => (String::new(), Vec::new()),
+                }
             } else {
-                result
+                (result, kept)
             }
         }
-        None => all_text,
+        None => (all_text, all_idx),
     }
 }
 
@@ -639,15 +654,17 @@ mod tests {
     #[test]
     fn test_truncate_summaries_no_limit() {
         let summaries = vec!["Summary 1".to_string(), "Summary 2".to_string()];
-        let result = truncate_summaries(&summaries, None);
+        let (result, kept) = truncate_summaries(&summaries, None);
         assert_eq!(result, "Summary 1\n\nSummary 2");
+        assert_eq!(kept, vec![0, 1]);
     }
 
     #[test]
     fn test_truncate_summaries_within_budget() {
         let summaries = vec!["Short summary".to_string()];
-        let result = truncate_summaries(&summaries, Some(100));
+        let (result, kept) = truncate_summaries(&summaries, Some(100));
         assert_eq!(result, "Short summary");
+        assert_eq!(kept, vec![0]);
     }
 
     #[test]
@@ -657,9 +674,22 @@ mod tests {
             "Second summary that should be dropped".to_string(),
         ];
         // Budget of 5 tokens — only the first summary fits
-        let result = truncate_summaries(&summaries, Some(5));
+        let (result, kept) = truncate_summaries(&summaries, Some(5));
         assert!(result.contains("First summary"));
         assert!(!result.contains("Second summary"));
+        // L3: sources must reflect only the kept summary.
+        assert_eq!(kept, vec![0]);
+        assert!(!kept.contains(&1));
+    }
+
+    /// L3: even when truncation drops later summaries, kept indices stay aligned.
+    #[test]
+    fn test_truncate_summaries_kept_indices_align() {
+        let summaries = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        // Budget fits A and B (each ~1 token) but not C.
+        let (result, kept) = truncate_summaries(&summaries, Some(2));
+        assert_eq!(result, "A\n\nB");
+        assert_eq!(kept, vec![0, 1]);
     }
 
     #[test]

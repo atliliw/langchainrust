@@ -45,7 +45,7 @@ pub const QWEN_VISION_DIMENSION: usize = 1024;
 const MAX_CONTENTS_PER_REQUEST: usize = 10;
 
 /// Configuration for the DashScope native multimodal embeddings API.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QwenVisionEmbeddingsConfig {
     /// DashScope API key.
     pub api_key: String,
@@ -53,6 +53,17 @@ pub struct QwenVisionEmbeddingsConfig {
     pub base_url: String,
     /// Model name (model segment of the service path).
     pub model: String,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for QwenVisionEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QwenVisionEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl Default for QwenVisionEmbeddingsConfig {

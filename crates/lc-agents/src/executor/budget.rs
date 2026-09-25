@@ -107,11 +107,11 @@ pub(crate) fn budget_iteration_gate(
 /// Budget gate (§4.2): cumulative-token check after an LLM call. No effect when the
 /// agent does not report tokens.
 ///
-/// Uses `> limit` — the exact-`limit`-then-stop semantics of `budget_tool_gate`
-/// (stage-G G5): `max_tokens` allows up to and including `limit`, and trips only
-/// once the cumulative spend *exceeds* it. Previously this gate used `>=` (stopping
-/// *at* `limit`, silently allowing only `limit - 1` tokens), contradicting both the
-/// field name and the tool-call gate.
+/// Uses `> limit` — allowing up to and including `limit` tokens, tripping only once
+/// the cumulative spend *exceeds* it (stage-G G5; `>=` would silently allow only
+/// `limit - 1` tokens). Because token spend is only measurable post-LLM-call, the
+/// over-limit trip is the correct boundary here — it permits exactly `limit` tokens,
+/// the same "allow exactly the limit" outcome the tool-call gate achieves.
 pub(crate) fn budget_token_gate(
     budget: Option<&BudgetConfig>,
     metrics: &AgentMetrics,
@@ -149,8 +149,14 @@ pub(crate) fn budget_cost_gate(
 
 /// Budget gate (§4.2): checks cumulative call count and wall-clock before a tool runs.
 ///
-/// `metrics.tool_calls` is already incremented, so the check uses `> limit` — allowing
-/// exactly `limit` tool executions, with the `limit + 1`-th triggering the hard stop.
+/// H2: `metrics.tool_calls` counts tools that *actually executed* (parallel included)
+/// — no pre-increment, since non-executed calls (approval `Deny`, `ToolNotFound`, hook
+/// `Reject`) never enter the count. The check therefore uses `>= limit`: launching a
+/// further round is only allowed while `tool_calls < limit`, so exactly `limit` tools
+/// may execute and the `limit + 1`-th round is the hard stop. Previously the gate ran
+/// on a pre-incremented "attempted" count with `> limit`, so a batch whose *attempt*
+/// count crossed the cap but whose executed share stayed within it (denied / not-found
+/// slots) was wrongly stopped before anything ran.
 pub(crate) fn budget_tool_gate(
     budget: Option<&BudgetConfig>,
     metrics: &AgentMetrics,
@@ -158,7 +164,7 @@ pub(crate) fn budget_tool_gate(
 ) -> Option<AgentError> {
     let budget = budget?;
     if let Some(limit) = budget.max_tool_calls {
-        if metrics.tool_calls > limit {
+        if metrics.tool_calls >= limit {
             return Some(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
                 limit,
                 actual: metrics.tool_calls,
@@ -234,7 +240,7 @@ mod tests {
     /// trips only once the cumulative spend exceeds it.
     #[test]
     fn token_gate_matches_tool_gate_equality_semantics() {
-        // At exactly the limit: allowed (matches `budget_tool_gate`'s `>`).
+        // At exactly the limit: allowed (both gates permit exactly `limit` calls).
         assert!(budget_token_gate(Some(&token_cfg(100)), &metrics_with_tokens(100)).is_none());
         assert!(budget_token_gate(Some(&token_cfg(100)), &metrics_with_tokens(99)).is_none());
         // One past the limit: hard stop.

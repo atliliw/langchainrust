@@ -74,6 +74,12 @@ pub(crate) struct GeminiPart {
         default
     )]
     pub(crate) function_response: Option<GeminiFunctionResponse>,
+    /// M-9: reasoning models mark thought (chain-of-thought) parts with
+    /// `thought: true`; such text is surfaced as `thinking_content` instead of
+    /// being mixed into the visible reply. (`skip_serializing_if` keeps it off
+    /// outgoing request parts, where it is always `None`.)
+    #[serde(rename = "thought", skip_serializing_if = "Option::is_none", default)]
+    pub(crate) thought: Option<bool>,
     /// B7: inline base64 media (`inlineData`: image/audio/video/PDF bytes).
     #[serde(
         rename = "inlineData",

@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_memory::{BaseMemory, ConversationBufferMemory};
 use lc_providers::{wrap_chat_model, ProviderError};
@@ -14,7 +15,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Conversation Chain
@@ -191,19 +195,16 @@ impl ConversationChain {
 
         Ok(())
     }
-}
 
-#[async_trait]
-impl BaseChain for ConversationChain {
-    fn input_keys(&self) -> Vec<&str> {
-        vec![&self.input_key]
-    }
-
-    fn output_keys(&self) -> Vec<&str> {
-        vec![&self.output_key]
-    }
-
-    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+    /// M-20: the config-aware invoke body. `config` is threaded into the LLM call
+    /// so sampling overrides, cancellation and LLM callbacks reach the provider;
+    /// the config-less `invoke` (None) and `invoke_with_config` (the caller's
+    /// config, wrapped in chain-callback dispatch) share this one path.
+    async fn invoke_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -230,7 +231,7 @@ impl BaseChain for ConversationChain {
 
         let result = self
             .llm
-            .invoke(messages, None)
+            .invoke(messages, config.cloned())
             .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
@@ -252,8 +253,12 @@ impl BaseChain for ConversationChain {
         Ok(result)
     }
 
-    /// Stream execution for ConversationChain -- token by token output.
-    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+    /// M-20: the config-aware streaming body; see [`Self::invoke_inner`].
+    async fn stream_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -267,7 +272,7 @@ impl BaseChain for ConversationChain {
 
         let llm_stream = self
             .llm
-            .stream_chat(messages, None)
+            .stream_chat(messages, config.cloned())
             .await
             .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
@@ -323,6 +328,61 @@ impl BaseChain for ConversationChain {
         }));
 
         Ok(Box::pin(final_stream))
+    }
+}
+
+#[async_trait]
+impl BaseChain for ConversationChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key]
+    }
+
+    fn output_keys(&self) -> Vec<&str> {
+        vec![&self.output_key]
+    }
+
+    /// Config-less invoke: chain-callback dispatch is skipped, so the LLM call
+    /// runs with no config (matching the permissive direct-`invoke` contract).
+    async fn invoke(
+        &self,
+        inputs: HashMap<String, Value>,
+    ) -> Result<ChainResult, ChainError> {
+        self.invoke_inner(inputs, None).await
+    }
+
+    /// M-20: invoke with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM call so
+    /// sampling / cancellation / LLM callbacks reach the provider.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.invoke_inner(inputs, inner.as_ref()).await
+        })
+        .await
+    }
+
+    /// Stream without a config (no callback dispatch, no LLM sampling overrides).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.stream_inner(inputs, None).await
+    }
+
+    /// M-20: stream with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM stream.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let inner = config.clone();
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(self.name(), inputs, config, output_key, |inputs| async move {
+            self.stream_inner(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     fn name(&self) -> &str {
@@ -399,25 +459,37 @@ impl ConversationChainBuilder {
 
     /// Build the final [`ConversationChain`].
     pub fn build(self) -> ConversationChain {
+        // M-19: the chain's input/output keys (default "input"/"output", overridable
+        // via the builder) must reach the default memory, or `save_context` will
+        // address it with "query"/"result" while the buffer memory still looks for
+        // "input"/"output" → "Missing input key". `ConversationRetrievalChain::new`
+        // aligns its memory to "query"/"result"; the builder path missed this.
+        let final_input = self.input_key.clone();
+        let final_output = self.output_key.clone();
+
         let mut chain = match self.memory {
             Some(memory) => ConversationChain::from_wrapped_memory(self.llm, memory),
-            None => ConversationChain::from_wrapped_memory(
-                self.llm,
-                Arc::new(Mutex::new(
-                    ConversationBufferMemory::new().with_return_messages(true),
-                )),
-            ),
+            None => {
+                let mut mem = ConversationBufferMemory::new().with_return_messages(true);
+                if let Some(key) = &final_input {
+                    mem = mem.with_input_key(key.clone());
+                }
+                if let Some(key) = &final_output {
+                    mem = mem.with_output_key(key.clone());
+                }
+                ConversationChain::from_wrapped_memory(self.llm, Arc::new(Mutex::new(mem)))
+            }
         };
 
         if let Some(prompt) = self.system_prompt {
             chain = chain.with_system_prompt(prompt);
         }
 
-        if let Some(key) = self.input_key {
+        if let Some(key) = final_input {
             chain = chain.with_input_key(key);
         }
 
-        if let Some(key) = self.output_key {
+        if let Some(key) = final_output {
             chain = chain.with_output_key(key);
         }
 

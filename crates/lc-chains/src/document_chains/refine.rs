@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use lc_core::runnables::RunnableConfig;
 use lc_core::BaseChatModel;
 use lc_providers::{wrap_chat_model, ProviderError};
 use lc_schema::Message;
@@ -10,7 +11,10 @@ use lc_shared::document::Document;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+use crate::base::{
+    run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
+};
 use crate::BoxedChatModel;
 
 /// Default initial processing prompt template.
@@ -117,17 +121,21 @@ impl RefineDocumentsChain {
 
     /// Build the initial prompt from the first document's content and input.
     pub fn build_initial_prompt(&self, context: &str, input: &str) -> String {
-        self.initial_prompt_template
-            .replace(&format!("{{{}}}", self.document_variable_name), context)
-            .replace("{input}", input)
+        let vars = HashMap::from([
+            (self.document_variable_name.clone(), context.to_string()),
+            ("input".to_string(), input.to_string()),
+        ]);
+        crate::base::substitute_template(&self.initial_prompt_template, &vars).0
     }
 
     /// Build the refine prompt from the new context, input, and existing answer.
     pub fn build_refine_prompt(&self, context: &str, input: &str, existing_answer: &str) -> String {
-        self.refine_prompt_template
-            .replace(&format!("{{{}}}", self.document_variable_name), context)
-            .replace("{input}", input)
-            .replace("{existing_answer}", existing_answer)
+        let vars = HashMap::from([
+            (self.document_variable_name.clone(), context.to_string()),
+            ("input".to_string(), input.to_string()),
+            ("existing_answer".to_string(), existing_answer.to_string()),
+        ]);
+        crate::base::substitute_template(&self.refine_prompt_template, &vars).0
     }
 
     /// Invoke with documents and input directly (iterative refinement).
@@ -135,6 +143,19 @@ impl RefineDocumentsChain {
         &self,
         documents: Vec<Document>,
         input: &str,
+    ) -> Result<String, ChainError> {
+        self.invoke_with_documents_cfg(documents, input, None)
+            .await
+    }
+
+    /// M-20: config-aware variant of [`Self::invoke_with_documents`]; the public
+    /// default runs with `None`, while `invoke_inner` threads the caller's
+    /// `RunnableConfig` into every initial and refinement LLM call.
+    async fn invoke_with_documents_cfg(
+        &self,
+        documents: Vec<Document>,
+        input: &str,
+        config: Option<&RunnableConfig>,
     ) -> Result<String, ChainError> {
         if documents.is_empty() {
             return Err(ChainError::ExecutionError(
@@ -158,7 +179,7 @@ impl RefineDocumentsChain {
 
         let messages = vec![Message::human(&initial_prompt)];
         let response =
-            self.llm.invoke(messages, None).await.map_err(|e| {
+            self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
                 ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
             })?;
         let mut answer = response.content;
@@ -176,7 +197,7 @@ impl RefineDocumentsChain {
             let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
 
             let messages = vec![Message::human(&refine_prompt)];
-            let response = self.llm.invoke(messages, None).await.map_err(|e| {
+            let response = self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
                 ChainError::ExecutionError(format!("LLM refinement call failed: {}", e))
             })?;
             answer = response.content;
@@ -192,20 +213,15 @@ impl RefineDocumentsChain {
 
         Ok(answer)
     }
-}
 
-#[async_trait]
-impl BaseChain for RefineDocumentsChain {
-    fn input_keys(&self) -> Vec<&str> {
-        vec![&self.input_key, "documents"]
-    }
-
-    fn output_keys(&self) -> Vec<&str> {
-        vec![&self.output_key]
-    }
-
-    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        // P2-8: validate inputs on the invoke path too, matching stream.
+    /// M-20: the config-aware invoke body. Validates inputs, extracts the
+    /// documents, then delegates to the config-threading document pipeline so a
+    /// caller's `RunnableConfig` reaches every initial and refinement LLM call.
+    async fn invoke_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -215,21 +231,24 @@ impl BaseChain for RefineDocumentsChain {
 
         let documents = crate::base::documents_from_input(inputs.get("documents"))?;
 
-        let output = self.invoke_with_documents(documents, input).await?;
+        let output = self
+            .invoke_with_documents_cfg(documents, input, config)
+            .await?;
 
         let mut result = HashMap::new();
         result.insert(self.output_key.clone(), Value::String(output));
         Ok(result)
     }
 
-    /// Stream execution for RefineDocumentsChain.
-    ///
-    /// Runs the initial + all intermediate refine steps via invoke (since
-    /// their output feeds the next step), then streams the final refine step
-    /// token by token via `stream_chat`. With a single document there is no
-    /// final refine step — the initial answer is emitted directly (P2-4), so
-    /// the LLM is not re-called on the identical initial prompt.
-    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+    /// M-20: the config-aware streaming body. Runs the initial + all intermediate
+    /// refine steps via invoke (since their output feeds the next step), then
+    /// streams the final refine step via `stream_chat`, threading `config` into
+    /// every LLM boundary.
+    async fn stream_inner(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
         self.validate_inputs(&inputs)?;
 
         let input = inputs
@@ -250,7 +269,7 @@ impl BaseChain for RefineDocumentsChain {
         let initial_prompt = self.build_initial_prompt(first_context, input);
         let messages = vec![Message::human(&initial_prompt)];
         let response =
-            self.llm.invoke(messages, None).await.map_err(|e| {
+            self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
                 ChainError::ExecutionError(format!("LLM initial call failed: {}", e))
             })?;
         let mut answer = response.content;
@@ -270,7 +289,7 @@ impl BaseChain for RefineDocumentsChain {
         {
             let refine_prompt = self.build_refine_prompt(&doc.content, input, &answer);
             let messages = vec![Message::human(&refine_prompt)];
-            let response = self.llm.invoke(messages, None).await.map_err(|e| {
+            let response = self.llm.invoke(messages, config.cloned()).await.map_err(|e| {
                 ChainError::ExecutionError(format!("LLM refinement call failed: {}", e))
             })?;
             answer = response.content;
@@ -302,7 +321,7 @@ impl BaseChain for RefineDocumentsChain {
         let messages = vec![Message::human(&final_prompt)];
         let llm_stream = self
             .llm
-            .stream_chat(messages, None)
+            .stream_chat(messages, config.cloned())
             .await
             .map_err(|e| ChainError::StreamError(format!("LLM stream failed: {}", e)))?;
 
@@ -325,6 +344,58 @@ impl BaseChain for RefineDocumentsChain {
         }));
 
         Ok(Box::pin(final_stream))
+    }
+}
+
+#[async_trait]
+impl BaseChain for RefineDocumentsChain {
+    fn input_keys(&self) -> Vec<&str> {
+        vec![&self.input_key, "documents"]
+    }
+
+    fn output_keys(&self) -> Vec<&str> {
+        vec![&self.output_key]
+    }
+
+    /// Config-less invoke: chain-callback dispatch is skipped, so the LLM call
+    /// runs with no config (matching the permissive direct-`invoke` contract).
+    async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+        self.invoke_inner(inputs, None).await
+    }
+
+    /// M-20: invoke with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM calls so
+    /// sampling / cancellation / LLM callbacks reach the provider.
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.invoke_inner(inputs, inner.as_ref()).await
+        })
+        .await
+    }
+
+    /// Stream without a config (no callback dispatch, no LLM sampling overrides).
+    async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+        self.stream_inner(inputs, None).await
+    }
+
+    /// M-20: stream with the caller's `RunnableConfig`, dispatching chain-level
+    /// callbacks (like the default) AND threading `config` into the LLM stream.
+    async fn stream_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainStream, ChainError> {
+        let inner = config.clone();
+        let output_key = Some(self.output_key.clone());
+        stream_chain_with_callbacks(self.name(), inputs, config, output_key, |inputs| async move {
+            self.stream_inner(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     fn name(&self) -> &str {

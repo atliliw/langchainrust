@@ -70,6 +70,19 @@ pub use fastembed_emb::FastEmbedEmbeddings;
 #[cfg(feature = "local-candle")]
 pub use candle_emb::CandleEmbeddings;
 
+/// Debug wrapper that always prints `[REDACTED]`, never the wrapped value.
+///
+/// M-12: provider `Config` structs keep `pub api_key: String` (public API contract) but must
+/// not leak the key into logs via a derived `Debug`. Configs implement `Debug` manually and
+/// pass their key field through this wrapper so the secret never appears in output.
+pub(crate) struct RedactedDebug<T>(pub T);
+
+impl<T> std::fmt::Debug for RedactedDebug<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
 use async_trait::async_trait;
 
 /// Embedding error type

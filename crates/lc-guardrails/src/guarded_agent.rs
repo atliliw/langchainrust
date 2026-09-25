@@ -327,12 +327,27 @@ impl GuardedAgent {
             }
             let full_text = finalize_released.lock().await.clone();
             match phase2_runner.validate_output(&full_text).await {
-                // phase one has already emitted all (possibly rewritten) chunks, so concatenating them yields the full output;
-                // when phase two passes, emit only an empty-token end marker without re-outputting.
-                OutputValidation::Passed(_value) => steps.push(Ok(GuardableChunk {
-                    token: String::new(),
-                    is_final: true,
-                })),
+                // M-26: phase one already emitted every (possibly rewritten) chunk, so concatenating
+                // them is the full released output. A whole-document `Modify` output guardrail can only
+                // rewrite the full text, which an in-flight stream cannot retract; phase two is therefore
+                // validation-only for the released stream. When such a Modify actually diverged, record
+                // the drop so the lost correction is auditable instead of silently discarded — callers
+                // wanting an inline rewrite under streaming must register the rail via `with_streaming`.
+                OutputValidation::Passed(rewritten) => {
+                    if rewritten != full_text {
+                        phase2_runner
+                            .record_violation(GuardrailViolation {
+                                guardrail_name: "phase_two_modify".to_string(),
+                                stage: "output".to_string(),
+                                reason: "whole-document Modify cannot retract already-streamed text; correction dropped in streaming mode".to_string(),
+                            })
+                            .await;
+                    }
+                    steps.push(Ok(GuardableChunk {
+                        token: String::new(),
+                        is_final: true,
+                    }))
+                }
                 OutputValidation::Blocked { reason, partial } => steps.push(Err(
                     GuardrailError::from_blocked(
                         reason,
@@ -452,6 +467,33 @@ mod tests {
         }
     }
 
+    /// Streams a phrase containing a secret, in single tokens.
+    struct StreamSecretChain;
+    #[async_trait]
+    impl BaseChain for StreamSecretChain {
+        fn input_keys(&self) -> Vec<&str> {
+            vec!["input"]
+        }
+        fn output_keys(&self) -> Vec<&str> {
+            vec!["output"]
+        }
+        async fn invoke(&self, _inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+            Ok(HashMap::new())
+        }
+        async fn stream(&self, _inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
+            let tokens: Vec<Result<StreamToken, ChainError>> = "store this secret now"
+                .split(' ')
+                .map(|w| {
+                    Ok(StreamToken {
+                        token: format!("{w} "),
+                        is_final: false,
+                    })
+                })
+                .collect();
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
     #[tokio::test]
     async fn test_guardable_chain_invoke() {
         // any Arc<dyn BaseChain> goes through the ChainGuardable adapter (P1-3 decoupling).
@@ -520,6 +562,62 @@ mod tests {
         }
         assert!(saw_error);
         assert!(!g.violations().is_empty());
+    }
+
+    /// Whole-document Modify rail (output-only, no streaming counterpart): rewrites an email address.
+    struct RewriteSecret;
+    #[async_trait]
+    impl crate::guardrail::OutputGuardrail for RewriteSecret {
+        fn name(&self) -> &str {
+            "RewriteSecret"
+        }
+        async fn validate(
+            &self,
+            output: &str,
+        ) -> crate::guardrail::OutputGuardrailResult {
+            if output.contains("secret") {
+                crate::guardrail::OutputGuardrailResult::Modify {
+                    new_value: output.replace("secret", "[REDACTED]"),
+                }
+            } else {
+                crate::guardrail::OutputGuardrailResult::Pass
+            }
+        }
+    }
+
+    /// Streams a phrase containing a secret, registered only via `with_output`, so the whole-document
+    /// Modify fires in phase two — already-streamed tokens cannot be retracted. M-26: the released
+    /// stream stays as-is, but the dropped correction is recorded as an auditable violation.
+    #[tokio::test]
+    async fn test_invoke_stream_drops_output_modify_with_violation() {
+        let chain: Arc<dyn BaseChain> = Arc::new(StreamSecretChain);
+        let config = GuardrailsConfig::new().with_output(
+            Arc::new(RewriteSecret) as Arc<dyn crate::guardrail::OutputGuardrail>
+        );
+        let mut g = GuardedAgent::from_chain(chain, config);
+        let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
+
+        use futures_util::StreamExt;
+        let mut collected = String::new();
+        let mut finals = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            if chunk.is_final {
+                finals += 1;
+            }
+            collected.push_str(&chunk.token);
+        }
+        // the released (already-streamed) text is untouched — a whole-document Modify can't retract it
+        assert_eq!(collected, "store this secret now ");
+        assert_eq!(finals, 1);
+        // ...but the dropped correction is surfaced in the audit log rather than silently discarded
+        let violations = g.violations();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.guardrail_name == "phase_two_modify"),
+            "expected an audited phase-two Modify drop, got {violations:?}"
+        );
     }
 
     /// Chain that emits a fixed script of tokens as a stream.

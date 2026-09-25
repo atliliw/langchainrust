@@ -49,7 +49,7 @@ impl CohereEmbedInputType {
 }
 
 /// Cohere embedding configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CohereEmbeddingsConfig {
     /// Cohere API key.
     pub api_key: String,
@@ -59,6 +59,18 @@ pub struct CohereEmbeddingsConfig {
     pub model: String,
     /// Input type for the embedding request.
     pub input_type: CohereEmbedInputType,
+}
+
+/// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
+impl std::fmt::Debug for CohereEmbeddingsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CohereEmbeddingsConfig")
+            .field("api_key", &crate::RedactedDebug(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("input_type", &self.input_type)
+            .finish()
+    }
 }
 
 impl Default for CohereEmbeddingsConfig {

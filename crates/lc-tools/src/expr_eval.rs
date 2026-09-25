@@ -53,14 +53,26 @@ pub fn eval(input: &str) -> Result<f64, ExprEvalError> {
 /// `unary := ('+' | '-')* power`
 /// `power := postfix ('^' unary)?`  (right-associative)
 /// `postfix := number | constant | function '(' args ')' | '(' expr ')'`
+/// Hard cap on parser nesting depth. The recursive-descent rules call each other for
+/// parentheses, function arguments AND right-associative `^` chains, so a pathological input
+/// like `(((((...1...)))))` or `2^2^2^...` would otherwise overflow the stack (the calculator
+/// has no length limit, making it a trivial DoS surface). 256 is far below the stack budget.
+const MAX_NESTING_DEPTH: usize = 256;
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
+    /// Current unary/precedence recursion depth (see [`MAX_NESTING_DEPTH`]).
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -120,19 +132,34 @@ impl<'a> Parser<'a> {
 
     fn parse_unary(&mut self) -> Result<f64, ExprEvalError> {
         self.skip_ws();
-        let mut negate = false;
-        loop {
-            self.skip_ws();
-            if self.eat('-') {
-                negate = !negate;
-            } else if self.eat('+') {
-                // unary plus is a no-op
-            } else {
-                break;
+        // M-30: every unbounded recursion in this parser (parentheses, function arguments,
+        // `^` chains) re-enters `parse_unary`, so it is the single choke point to bound depth.
+        // The depth is always decremented on return — including the error path below — so
+        // sequential calls at the same nesting level do not accumulate.
+        self.depth += 1;
+        let result = (|| {
+            let mut negate = false;
+            loop {
+                self.skip_ws();
+                if self.eat('-') {
+                    negate = !negate;
+                } else if self.eat('+') {
+                    // unary plus is a no-op
+                } else {
+                    break;
+                }
             }
-        }
-        let value = self.parse_power()?;
-        Ok(if negate { -value } else { value })
+            if self.depth > MAX_NESTING_DEPTH {
+                return Err(ExprEvalError::Msg(format!(
+                    "expression nesting exceeds {} levels at position {} (possible stack overflow)",
+                    MAX_NESTING_DEPTH, self.pos
+                )));
+            }
+            let value = self.parse_power()?;
+            Ok(if negate { -value } else { value })
+        })();
+        self.depth -= 1;
+        result
     }
 
     fn parse_power(&mut self) -> Result<f64, ExprEvalError> {
@@ -475,5 +502,22 @@ mod tests {
         assert!(eval("min()").is_err()); // needs >= 1 arg
         assert!(eval("2e").is_err()); // exponent without digits
         assert!(eval("max(1,,2)").is_err()); // empty arg
+    }
+
+    #[test]
+    fn rejects_excessive_nesting() {
+        // M-30: depth-bounded recursion must reject pathological nesting instead of overflowing.
+        let deep_parens = format!("{}1{}", "(".repeat(2000), ")".repeat(2000));
+        assert!(
+            eval(&deep_parens).is_err(),
+            "2000 nested parens should be rejected as too deep"
+        );
+        let deep_power = format!("{}1", "2^".repeat(2000));
+        assert!(
+            eval(&deep_power).is_err(),
+            "2000-deep `^` chain should be rejected as too deep"
+        );
+        // a reasonable nesting depth still evaluates fine.
+        assert_close(&format!("{}1{}", "(".repeat(50), ")".repeat(50)), 1.0);
     }
 }

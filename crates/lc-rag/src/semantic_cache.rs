@@ -154,19 +154,20 @@ impl SemanticCacheCore {
             }
         }
 
-        // 2. Semantic match above threshold.
+        // 2. Semantic match above threshold — of all candidates exceeding the threshold, prefer the
+        //    most recently inserted (newest wins) instead of the first in storage order (LOW).
         let query_vector = query_vector?;
-        for entry in &inner.map {
-            if entry.k != k || self.is_expired(&entry.inserted_at, now) {
-                continue;
-            }
-            if lc_embeddings::cosine_similarity(query_vector, &entry.query_vector).unwrap_or(0.0)
-                >= self.config.threshold
-            {
-                return Some((entry.results.clone(), CacheHitKind::Semantic));
-            }
-        }
-        None
+        inner
+            .map
+            .iter()
+            .filter(|e| {
+                e.k == k
+                    && !self.is_expired(&e.inserted_at, now)
+                    && lc_embeddings::cosine_similarity(query_vector, &e.query_vector).unwrap_or(0.0)
+                        >= self.config.threshold
+            })
+            .max_by_key(|e| e.inserted_at)
+            .map(|e| (e.results.clone(), CacheHitKind::Semantic))
     }
 
     /// Inserts a result set for `(query, k)`.

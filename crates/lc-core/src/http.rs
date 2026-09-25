@@ -740,7 +740,7 @@ fn random_entropy() -> u64 {
     // `rand` dependency through the core crate.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| (d.as_secs() ^ d.subsec_nanos() as u64) as u64)
+        .map(|d| d.as_secs() ^ d.subsec_nanos() as u64)
         .unwrap_or(0)
 }
 

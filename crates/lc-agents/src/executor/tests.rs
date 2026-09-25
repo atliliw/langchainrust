@@ -1063,12 +1063,13 @@ async fn test_resume_budget_continues_from_consumed() {
         });
 
     // resume: first executes the pending tool (accumulated 1); the next plan round wants
-    // another tool → 2 > 1 hard-stop.
+    // another tool → the gate (executed-only, `>= limit`) hard-stops with actual = 1
+    // (exactly `limit` tools consumed).
     let err = exec.resume(ApprovalDecision::Allow).await.unwrap_err();
     match err {
         AgentError::BudgetExceeded(BudgetExceeded::ToolCalls { limit, actual }) => {
             assert_eq!(limit, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(actual, 1);
         }
         other => panic!("expected BudgetExceeded::ToolCalls, got {:?}", other),
     }
@@ -1641,6 +1642,89 @@ async fn parallel_batch_deny_is_soft_observation() {
     assert!(
         out.contains("steps=2"),
         "both tools (denied + sibling) must have completed, got: {out}"
+    );
+}
+
+/// Emits a two-action parallel batch once ("calculator" runs, "ghost" is an unregistered
+/// name → `ToolNotFound`), then finishes.
+struct MixedBudgetAgent;
+
+#[async_trait]
+impl BaseAgent for MixedBudgetAgent {
+    async fn plan(
+        &self,
+        intermediate_steps: &[AgentStep],
+        _inputs: &HashMap<String, String>,
+        _config: Option<&RunnableConfig>,
+    ) -> Result<AgentOutput, AgentError> {
+        if intermediate_steps.is_empty() {
+            return Ok(AgentOutput::Actions(vec![
+                AgentAction {
+                    tool: "calculator".to_string(),
+                    tool_input: ToolInput::String {
+                        value: "1+1".to_string(),
+                    },
+                    log: "call-a".to_string(),
+                    tool_call_id: None,
+                },
+                AgentAction {
+                    tool: "ghost".to_string(), // not registered → ToolNotFound
+                    tool_input: ToolInput::String {
+                        value: "x".to_string(),
+                    },
+                    log: "call-b".to_string(),
+                    tool_call_id: None,
+                },
+            ]));
+        }
+        let obs = intermediate_steps
+            .iter()
+            .map(|s| s.observation.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Ok(AgentOutput::Finish(AgentFinish::new(
+            format!("steps={} obs={}", intermediate_steps.len(), obs),
+            String::new(),
+        )))
+    }
+}
+
+/// H2: with `max_tool_calls = 1`, a parallel batch of [real tool, not-found] must run
+/// the real tool (executed count 1 = exactly the limit) and finish normally — the
+/// not-found slot neither consumes budget nor trips the gate. The old pre-increment
+/// gate saw an attempt count of 2 > 1 and hard-stopped before executing anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_mixed_batch_not_found_does_not_trip_gate() {
+    let executor = AgentExecutor::new(
+        std::sync::Arc::new(MixedBudgetAgent),
+        vec![std::sync::Arc::new(Calculator::new())],
+    )
+    .with_max_concurrency(4)
+    .with_budget(BudgetConfig {
+        max_tool_calls: Some(1),
+        ..Default::default()
+    });
+
+    let result =
+        tokio::time::timeout(Duration::from_secs(10), executor.invoke("go".to_string()))
+            .await
+            .expect("mixed batch must complete — the not-found slot must not trip the gate");
+
+    let out =
+        result.expect("with executed-only counting the run must finish, not BudgetExceeded");
+    assert!(
+        out.contains("[Tool not found"),
+        "the hallucinated slot must surface as a soft observation, got: {out}"
+    );
+    assert!(
+        out.contains("steps=2"),
+        "both slots must have produced observations, got: {out}"
+    );
+
+    let metrics = executor.last_metrics().unwrap();
+    assert_eq!(
+        metrics.tool_calls, 1,
+        "only the executed tool counts toward max_tool_calls, got {metrics:?}"
     );
 }
 
