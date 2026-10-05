@@ -37,6 +37,13 @@ use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
 use lc_schema::{Message, MessageType};
 
+/// 0.26.0 P0-2: the billed, non-idempotent Gemini `generateContent` POST must
+/// retry only provably pre-dispatch transport failures — never a post-dispatch
+/// timeout / 5xx that would run (and bill) the generation twice. Pins the chat
+/// call site to `SAFE_RETRY`'s mode so it cannot silently regress to
+/// `DEFAULT_RETRY`'s `AllTransportErrors` (which replays such timeouts).
+pub(crate) const CHAT_RETRY: crate::retry::RetryConfig = crate::retry::SAFE_RETRY;
+
 /// Gemini API base endpoint
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -578,7 +585,7 @@ impl GeminiChat {
                     .header("Content-Type", "application/json")
                     .json(&request_body)
             },
-            &crate::retry::DEFAULT_RETRY,
+            &CHAT_RETRY,
         )
         .await
         .map_err(|e| GeminiError::HttpError(e.to_string()))?;
@@ -671,12 +678,25 @@ impl GeminiChat {
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
                     // Extract complete events from the byte-level framer
+                    let mut overflow: Option<String> = None;
                     let events = {
                         let mut buffer_guard =
                             buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        buffer_guard.push(&bytes)
+                        match buffer_guard.push(&bytes) {
+                            Ok(events) => events,
+                            // 0.26.0 M5: bounded framer — overflow is malformed/
+                            // runaway; fail the stream after the guard drops.
+                            Err(e) => {
+                                overflow = Some(e.to_string());
+                                Vec::new()
+                            }
+                        }
                     };
                     // buffer_guard is dropped here, before any await
+                    if let Some(msg) = overflow {
+                        let _ = tx.send(Err(GeminiError::HttpError(msg))).await;
+                        return;
+                    }
 
                     for event_text in events {
                         for line in event_text.lines() {

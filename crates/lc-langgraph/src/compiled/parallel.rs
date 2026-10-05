@@ -69,6 +69,24 @@ impl<S: StateSchema> CompiledGraph<S> {
                 ));
 
                 if self.interrupt_after.contains(&current_node) {
+                    // 0.26.0 P0-3 (H2): persist the node's post-run state before
+                    // interrupting on the parallel invoke / dynamic paths (the
+                    // invoke_parallel and invoke_dynamic loops). The main `invoke`
+                    // (M-15), resume and streaming paths already persist; these
+                    // previously returned immediately, so the node's folded update
+                    // never reached a checkpoint and a crash-then-rebuild resume
+                    // re-ran the interrupted node (double side effect).
+                    if let Some(ref checkpointer) = self.checkpointer {
+                        let checkpoint_id = checkpointer
+                            .lock()
+                            .await
+                            .save(&state, recursion_count)
+                            .await?;
+                        steps.push(ExecutionStep::checkpoint(
+                            checkpoint_id,
+                            format!("after_{}", current_node),
+                        ));
+                    }
                     return Err(GraphError::ExecutionInterrupted(format!(
                         "after_{}",
                         current_node
@@ -312,10 +330,100 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
         }
 
+        // 0.26.0 P0-4 / 0.22.0 C3: field-level union of parallel branches.
+        //
+        // The old fold (`default_reducer.reduce(base, b1); reduce(.., b2)`)
+        // replaced the WHOLE state each step when no per-field reducer was
+        // registered (the default `ReplaceReducer` returns `update.clone()`).
+        // So with two branches writing different fields, only the LAST branch
+        // survived and earlier branches' unique fields were silently dropped.
+        //
+        // Now: start from `base` (the state at the fan-out point), then for each
+        // branch merge field-by-field — every top-level field the branch wrote
+        // is folded in on top of the running union, so multi-branch writes to
+        // DIFFERENT fields all survive. A field with a registered reducer is
+        // folded through that reducer across ALL branches (concatenating
+        // accumulating messages / steps), because dropping that would regress
+        // the C3 add_messages semantics.
+        //
+        // Structure: gather every branch's top-level field set into one JSON
+        // union (base ∪ b1 ∪ b2 …), then separately reducer-fold the registered
+        // fields over all branches so accumulating fields don't just take the
+        // last write.
         let mut merged = base.clone();
         for branch in branches {
-            merged = self.default_reducer.reduce(&merged, &branch.final_state);
+            merged = union_states(base, &merged, &branch.final_state)?;
+        }
+        for (field, reducer) in &self.field_reducers {
+            let mut acc = base.clone();
+            for branch in branches {
+                acc = reducer.reduce(&acc, &branch.final_state);
+            }
+            merged = patch_field(&merged, &acc, field)?;
         }
         Ok(merged)
     }
+}
+
+/// Field-level union of a parallel branch onto an accumulated merge, diffed
+/// against `base`.
+///
+/// Parallelled branch `final_state`s carry the WHOLE state (they started from a
+/// clone of `base`, so untouched fields equal base's). A plain "last insert
+/// wins" union therefore still lets a later branch's untouched field clobber an
+/// earlier branch's write. Instead: a field is only layered in when the branch
+/// value DIFFERS from `base`'s value for that key — i.e. the branch actually
+/// wrote it. Two branches writing DIFFERENT fields both survive; a branch
+/// writing the same value we already carry (written by an earlier branch) keeps
+/// the earlier value.
+fn union_states<S: StateSchema>(
+    base: &S,
+    merged: &S,
+    branch: &S,
+) -> GraphResult<S> {
+    let base_v = base.to_json()?;
+    let Some(base_map) = base_v.as_object() else {
+        // Non-map state can't be unioned field-by-field; fall back to the
+        // downstream value (old behavior: last branch wins).
+        return Ok(branch.clone());
+    };
+    let branch_v = branch.to_json()?;
+    let Some(branch_map) = branch_v.as_object() else {
+        return Ok(merged.clone());
+    };
+    let merged_v = merged.to_json()?;
+    let merged_map = merged_v.as_object().cloned().unwrap_or_default();
+
+    let mut result_map = merged_map;
+    for (k, v) in branch_map {
+        // Only layer in keys the branch actually changed relative to its input.
+        let base_same = base_map
+            .get(k)
+            .map(|b| b == v)
+            .unwrap_or(false);
+        if !base_same {
+            result_map.insert(k.clone(), v.clone());
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(result_map)).map_err(|e| {
+        GraphError::StateError(format!("Parallel branch merge failed to reassemble state: {e}"))
+    })
+}
+
+/// Copy a single reducer-managed field from `out` (a reducer result) into a
+/// running merged state, leaving every other field untouched.
+fn patch_field<S: StateSchema>(state: &S, out: &S, field: &str) -> GraphResult<S> {
+    let mut state_v = state.to_json()?;
+    let Some(state_map) = state_v.as_object_mut() else {
+        return Ok(state.clone());
+    };
+    let out_v = out.to_json()?;
+    let value = out_v
+        .as_object()
+        .and_then(|m| m.get(field).cloned())
+        .unwrap_or(serde_json::Value::Null);
+    state_map.insert(field.to_string(), value);
+    serde_json::from_value(state_v).map_err(|e| {
+        GraphError::StateError(format!("Parallel reducer patch failed to reassemble state: {e}"))
+    })
 }

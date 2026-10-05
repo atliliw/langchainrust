@@ -71,6 +71,7 @@ impl BaseAgent for FailThenFinishAgent {
                 },
                 log: "call_fail".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -101,6 +102,7 @@ impl BaseAgent for ParallelFailThenFinishAgent {
                     },
                     log: "call_fail".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -109,6 +111,7 @@ impl BaseAgent for ParallelFailThenFinishAgent {
                     },
                     log: "call_ok".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
             ]));
         }
@@ -331,6 +334,7 @@ impl BaseAgent for CallAbortAgent {
                 },
                 log: "call_abort".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -360,6 +364,7 @@ impl BaseAgent for ParallelAbortAgent {
                     },
                     log: "call_abort".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -368,6 +373,7 @@ impl BaseAgent for ParallelAbortAgent {
                     },
                     log: "call_ok".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
             ]));
         }
@@ -503,6 +509,7 @@ impl BaseAgent for ParallelGhostThenFinishAgent {
                     },
                     log: "call_ghost".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
                 AgentAction {
                     tool: "succeed".to_string(),
@@ -511,6 +518,7 @@ impl BaseAgent for ParallelGhostThenFinishAgent {
                     },
                     log: "call_ok".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
             ]));
         }

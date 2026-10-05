@@ -152,4 +152,92 @@ mod tests {
         token.cancelled().await;
         assert!(token.is_cancelled());
     }
+
+    // M4 (review): `cancelled()` was flagged as a lost-wakeup — the claim being
+    // that `cancel()`'s `notify_waiters()` has no sticky permit, so a cancel
+    // firing between the waiter's final flag re-check and its first poll would
+    // be dropped and `cancelled().await` would park forever.
+    //
+    // Manual verification (2026-09-26) against the locked tokio 1.53.1:
+    //  * `notify_waiters()` does NOT store a permit (SPIM notify.rs:749-754).
+    //  * But `Notify::notified()` captures `notify_waiters_calls` at *creation*
+    //    (SPIM notify.rs:569) and, on first poll, completes immediately if the
+    //    counter changed since then (SPIM notify.rs:1121, 1153).
+    //
+    // So a future created *before* a `notify_waiters` completes even if it has
+    // not been polled yet. Combined with the two flag re-checks in `cancelled()`
+    // (lines 78 and 82), every interleaving of `cancel` vs `cancelled()` wakes:
+    //   * cancel before re-check 78  -> line 78 returns.
+    //   * cancel between 78 and future creation -> line 82 returns.
+    //   * cancel between 82 and first poll -> counter bump completes the future
+    //     (created before the bump) -> loop top returns.
+    //   * cancel after registration -> `notify_waiters` wakes the registered
+    //     waiter.
+    // => no lost wake-up exists; M4 is a review false-positive on this tokio
+    //    version. Do NOT "fix" by adding `notify_one()` — a stored permit next
+    //    to `notify_waiters` is unnecessary and would only introduce spurious
+    //    wake semantics. The tests below pin this down so a tokio upgrade that
+    //    breaks the invariant fails loudly instead of silently hanging.
+
+    /// Deterministic: a `notified()` future created *before* `notify_waiters`
+    /// (but not yet polled) must still complete on first poll. This is the exact
+    /// mechanism the M4-lost-wakeup window relies on.
+    #[tokio::test]
+    async fn notify_waiters_wakes_future_created_before_it_even_unpolled() {
+        use std::time::Duration;
+        let notify = Notify::new();
+        // Create the future (takes the notify_waiters_calls snapshot) but do NOT
+        // poll it yet — simulates the window between `cancelled()` creating the
+        // future and its first poll/registration.
+        let fut = notify.notified();
+        // Broadcast with no waiter registered yet.
+        notify.notify_waiters();
+        // First poll: if the counter-snapshot invariant holds, resolves at once.
+        tokio::time::timeout(Duration::from_millis(500), fut)
+            .await
+            .expect("unpolled future created before notify_waiters must not park");
+    }
+
+    /// Stress: hammer the exact M4 window — cancel racing the moment a fresh
+    /// `cancelled()` future is created — and assert no waiter ever hangs. Runs
+    /// under a timeout so a real regression fails rather than wedging the test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelled_never_parks_when_cancel_races_registration() {
+        use std::time::Duration;
+
+        let rounds = 5_000;
+        for _ in 0..rounds {
+            let token = CancellationToken::new();
+            let clone = token.clone();
+
+            // Race: spawner registers a waiter while main cancels immediately.
+            let handle = tokio::spawn(async move { clone.cancelled().await });
+            token.cancel();
+
+            let _ = tokio::time::timeout(Duration::from_millis(500), handle)
+                .await
+                .expect("cancelled().await parked forever after cancel raced registration");
+        }
+    }
+
+    /// Stress with clones: several tasks await `cancelled()` on the same token
+    /// while cancellation is signalled from another task. All must wake.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn all_awaiters_wake_on_cancel() {
+        use std::time::Duration;
+        let token = CancellationToken::new();
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let clone = token.clone();
+            handles.push(tokio::spawn(async move { clone.cancelled().await }));
+        }
+        token.cancel();
+        for h in handles {
+            tokio::time::timeout(Duration::from_millis(500), h)
+                .await
+                .expect("an awaiter never woke after cancel")
+                .unwrap();
+        }
+        assert!(token.is_cancelled());
+    }
 }

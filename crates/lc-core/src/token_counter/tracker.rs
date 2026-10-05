@@ -8,6 +8,16 @@ use crate::observability::{MetricsSink, ObsEvent};
 use crate::runnables::Runnable;
 use crate::tools::ToolDefinition;
 use crate::{BaseChatModel, RunnableConfig};
+use crate::runnables::RUN_META_COST_SCOPE;
+
+/// Reads the enclosing per-run cost-attribution scope from a [`RunnableConfig`]
+/// (P0-5). None when the config is absent or does not carry a scope.
+fn read_cost_scope(config: Option<&RunnableConfig>) -> Option<&str> {
+    config
+        .and_then(|c| c.metadata.get(RUN_META_COST_SCOPE))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use lc_schema::Message;
@@ -107,6 +117,9 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         config: Option<RunnableConfig>,
     ) -> Result<LLMResult, L::Error> {
         let estimated_prompt = self.counter.count_messages(&messages);
+        // P0-5: read the per-run cost scope before `config` is moved into the
+        // inner model, so we can still attribute the recorded call afterwards.
+        let cost_scope = read_cost_scope(config.as_ref()).map(str::to_string);
         let result = self.llm.chat(messages, config).await?;
 
         // prefer the real usage returned by the LLM, otherwise use the estimate.
@@ -131,8 +144,17 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
             } else {
                 result.model.clone()
             };
+            // P0-5: attribute to the enclosing run's cost scope when the config
+            // carries one, so concurrent runs sharing this tracker don't bleed
+            // spend into each other's incremental budget.
             tracker
-                .record(self.provider.as_deref(), &model, prompt, completion)
+                .record_scoped(
+                    cost_scope.as_deref(),
+                    self.provider.as_deref(),
+                    &model,
+                    prompt,
+                    completion,
+                )
                 .await;
         }
 
@@ -291,12 +313,17 @@ where
         // counted usage may be 0 for providers that never report it
         // (v0.20.1 known boundary; estimation fallback moved to 0.21.0).
         let model_name = self.llm.model_name().to_string();
+        // P0-5: read the per-run cost scope before `config` is moved into the
+        // inner model; the owned value is captured into the counting closure so
+        // streaming usage is attributed to the enclosing run's bucket too.
+        let cost_scope = read_cost_scope(config.as_ref()).map(str::to_string);
         let stream = self.llm.stream_chat(messages, config).await?;
         let usage = self.usage.clone();
         let sink = self.metrics_sink.clone();
         let cost_tracker = self.cost_tracker.clone();
         let provider = self.provider.clone();
         let stream = stream.then(move |item| {
+            let cost_scope = cost_scope.clone();
             let usage = usage.clone();
             let sink = sink.clone();
             let cost_tracker = cost_tracker.clone();
@@ -308,7 +335,8 @@ where
                         usage.lock().await.add(u.prompt_tokens, u.completion_tokens);
                         if let Some(tracker) = &cost_tracker {
                             tracker
-                                .record(
+                                .record_scoped(
+                                    cost_scope.as_deref(),
                                     provider.as_deref(),
                                     &model_name,
                                     u.prompt_tokens,

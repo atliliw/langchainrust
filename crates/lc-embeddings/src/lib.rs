@@ -68,7 +68,7 @@ pub use vision_qwen::{
 pub use fastembed_emb::FastEmbedEmbeddings;
 
 #[cfg(feature = "local-candle")]
-pub use candle_emb::CandleEmbeddings;
+pub use candle_emb::{CandleEmbeddings, CandleEmbeddingsBuilder, Quantization};
 
 /// Debug wrapper that always prints `[REDACTED]`, never the wrapped value.
 ///

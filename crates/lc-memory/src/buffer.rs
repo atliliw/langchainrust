@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{
+    serialize_message_to_prompt, BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError,
+};
 use lc_schema::Message;
 
 /// Conversation Buffer Memory
@@ -148,14 +150,8 @@ impl BaseMemory for ConversationBufferMemory {
             // dropping context on the floor.
             let messages: Vec<Value> = self
                 .buffer_as_messages()
-                .into_iter()
-                .map(|msg| {
-                    serde_json::to_value(&msg).map_err(|e| {
-                        MemoryError::LoadError(format!(
-                            "failed to serialize memory message: {e}"
-                        ))
-                    })
-                })
+                .iter()
+                .map(serialize_message_to_prompt)
                 .collect::<Result<Vec<_>, MemoryError>>()?;
             result.insert(self.memory_key.clone(), Value::Array(messages));
         } else {

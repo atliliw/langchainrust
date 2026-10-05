@@ -8,7 +8,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{
+    serialize_message_to_prompt, BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError,
+};
 use lc_core::language_models::BaseChatModel;
 use lc_core::language_models::LLMResult;
 use lc_core::runnables::Runnable;
@@ -277,15 +279,11 @@ where
 
             // 0.25.0 D6 (M-me5): propagate folding failures instead of
             // silently injecting Null.
+            // M13: ids (persistence lineage) are stripped before serialization so
+            // the prompt history is byte-identical to pre-id-stamping memory output.
             let messages_value: Vec<Value> = all_messages
                 .iter()
-                .map(|m| {
-                    serde_json::to_value(m).map_err(|e| {
-                        MemoryError::LoadError(format!(
-                            "failed to serialize memory message: {e}"
-                        ))
-                    })
-                })
+                .map(serialize_message_to_prompt)
                 .collect::<Result<Vec<_>, MemoryError>>()?;
 
             result.insert(self.memory_key.clone(), Value::Array(messages_value));

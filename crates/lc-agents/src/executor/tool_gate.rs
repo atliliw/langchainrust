@@ -17,6 +17,15 @@
 //!   → run tool (timeout, RunTree child + callbacks) → on_after_tool_call → spotlight
 //! ```
 //!
+//! 0.26.0 T7-2 — tool-output isolation (data vs. instruction) is the **default**:
+//! every locally-executed tool observation gets spotlight-wrapped in
+//! `<untrusted_data>…</untrusted_data>` before it is fed back to the model, because
+//! indirect-injection instructions are delivered *via tool output* and must be read
+//! as data literals rather than as control. `[DENIED …]`, `[Tool not found …]`,
+//! `[Tool execution error …]` and hook `Skip` placeholders stay unwrapped (they are
+//! framework-authored, not tool output), and 0.26.0 M7 `server_executed` results are
+//! already-run provider outcomes reported verbatim — also unwrapped. An explicit
+//! `with_tool_spotlight(false)` opt-out restores verbatim pass-through.
 //! The tool is resolved **after** hooks/approval so a hook `Modify` that renames
 //! the tool executes the renamed tool, and the args / metadata all use that final
 //! tool (fixes the pre-B5 "old tool object + new params" bug).
@@ -123,6 +132,9 @@ pub(crate) struct ToolGate {
     policy: Option<ToolPolicy>,
     callbacks: Option<Arc<CallbackManager>>,
     rule_of_two: bool,
+    /// T7-2: spotlight-wrap each locally-executed observation (default on; `false`
+    /// opts out). `server_executed` results and framework placeholder observations
+    /// are never wrapped regardless.
     spotlight: bool,
     timeout: Option<Duration>,
     concurrency: Arc<Semaphore>,
@@ -203,6 +215,17 @@ impl ToolGate {
         resume: Option<&ResumeCtx<'_>>,
         pre_decided: Option<ApprovalDecision>,
     ) -> Result<ToolOutcome, AgentError> {
+        // 0.26.0 M7: a provider-side-managed tool (Responses web_search /
+        // file_search / code_interpreter / computer_use, MCP server tools, …)
+        // already executed — the outcome is embedded in the arguments. Skip the
+        // entire local chain (hooks / approval / rate limit / lookup): running a
+        // local tool of the same name would re-execute the side effect or report
+        // `ToolNotFound`. Hand the embedded result back as the observation. This
+        // is the single choke point, so both the sequential and parallel invoke
+        // paths inherit it.
+        if action.server_executed {
+            return Ok(ToolOutcome::Done(server_executed_observation(action)));
+        }
         // B5: resolve the tool_id up front. An explicit provider id wins; otherwise
         // the gate stamps a framework uuid so observability / resume never persist
         // an empty id.
@@ -514,5 +537,18 @@ impl ToolGate {
                 Err(e) => Err(e),
             })
             .collect()
+    }
+}
+
+/// 0.26.0 M7: builds the observation for a provider-side-executed tool. The
+/// outcome is whatever the provider embedded in the call's arguments
+/// (e.g. Responses `code_interpreter` results, `web_search` status), so we
+/// hand those arguments back verbatim — there is no local execution to
+/// observe. Counted as an *executed* observation (not a non-execution
+/// placeholder), so it consumes one budget slot like any real tool run.
+fn server_executed_observation(action: &AgentAction) -> String {
+    match &action.tool_input {
+        ToolInput::String { value: s } => s.clone(),
+        ToolInput::Object { value: v } => serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
     }
 }

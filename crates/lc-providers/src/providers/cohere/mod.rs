@@ -242,6 +242,7 @@ impl CohereChat {
                     .map(|tc| lc_core::tools::ToolCall {
                         id: tc.id,
                         tool_type: "function".to_string(),
+                        server_executed: false,
                         function: lc_core::tools::FunctionCall {
                             name: tc.function.name,
                             arguments: normalize_arguments(tc.function.arguments),
@@ -304,15 +305,27 @@ impl CohereChat {
                     }
                 };
 
+                let mut overflow: Option<String> = None;
                 let events = {
                     // 0.22.0 C1: byte-layer framing; only complete events are decoded
                     let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
                     let mut out = Vec::new();
-                    for text in guard.1.push(&chunk_bytes) {
-                        out.extend(guard.0.parse(&text));
+                    match guard.1.push(&chunk_bytes) {
+                        Ok(texts) => {
+                            for text in texts {
+                                out.extend(guard.0.parse(&text));
+                            }
+                        }
+                        // 0.26.0 M5: bounded framer — overflow is malformed/runaway;
+                        // fail the stream after the guard drops.
+                        Err(e) => overflow = Some(e.to_string()),
                     }
                     out
                 };
+                if let Some(msg) = overflow {
+                    let _ = tx.send(Err(CohereError::Http(msg))).await;
+                    return;
+                }
 
                 for event in events {
                     if event.is_done() {
@@ -469,6 +482,7 @@ impl CohereToolCallAccumulator {
             .map(|state| lc_core::tools::ToolCall {
                 id: state.id.clone(),
                 tool_type: "function".to_string(),
+                server_executed: false,
                 function: lc_core::tools::FunctionCall {
                     name: state.name.clone(),
                     arguments: state.arguments.clone(),

@@ -240,6 +240,38 @@ async fn test_truncate_system_only_over_budget() {
     assert_eq!(result.len(), 1);
 }
 
+/// The shared `+2` conversation-boundary marker must be charged exactly once to the kept
+/// suffix budget (0.26.0 §1.8). The old `truncate` started its running total at 0, so every
+/// window was undercounted by the boundary and could keep a suffix whose real
+/// `count_messages` cost is over `max_tokens` by 2.
+///
+/// Regression: each message costs `4 + 4-char content = 8`; two messages are
+/// `8 + 8 + 2 boundary = 18` real. With `max_tokens = 17` only one fits (8 + 2 boundary = 10
+/// <= 17; adding a second = 18 > 17). The pre-fix loop kept both (16 <= 17), landing the
+/// window 2 tokens over budget.
+#[tokio::test]
+async fn test_truncate_counts_shared_boundary_once() {
+    let cw: ContextWindow<OpenAIChat> =
+        ContextWindow::new(17).unwrap().with_counter(char_counter());
+    let messages = make_messages(&[("human", "aaaa"), ("human", "bbbb")]);
+    let result = cw.fit(messages).await.unwrap();
+
+    // Only one message can fit when the boundary token is counted.
+    assert_eq!(
+        result.len(),
+        1,
+        "the shared +2 boundary must count toward the budget, got {} messages",
+        result.len()
+    );
+    // The surviving window is genuinely within budget, not 2 tokens over.
+    let total = char_counter().count_messages(&result) as usize;
+    assert!(
+        total <= cw.max_tokens(),
+        "result must fit the real budget: {total} > {}",
+        cw.max_tokens()
+    );
+}
+
 #[tokio::test]
 async fn test_summarize_replaces_old_messages() {
     let mock_llm = MockLLM::new(vec!["S.".to_string()]);

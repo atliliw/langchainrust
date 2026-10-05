@@ -283,10 +283,12 @@ where
 
         if self.return_messages {
             let summary_msg = Message::system(&buffer);
-            result.insert(
-                self.memory_key.clone(),
-                serde_json::to_value(&summary_msg).unwrap_or(Value::Null),
-            );
+            let value = serde_json::to_value(&summary_msg).map_err(|e| {
+                // M14: propagate the serialization failure instead of silently
+                // shipping a `Value::Null` that would drop the summary.
+                MemoryError::Other(format!("failed to serialize summary message: {e}"))
+            })?;
+            result.insert(self.memory_key.clone(), value);
         } else {
             result.insert(self.memory_key.clone(), Value::String(buffer));
         }
@@ -441,6 +443,29 @@ mod tests {
         let history = vars.get("history").unwrap().as_str().unwrap();
 
         assert!(history.is_empty());
+    }
+
+    /// M14: with `return_messages`, the serialized summary system `Message` must be
+    /// surfaced as a real value, not the previously swallowed `Value::Null` — the
+    /// summary text has to survive serialization.
+    #[tokio::test]
+    async fn test_load_memory_variables_return_messages_not_null() {
+        let llm = OpenAIChat::new(create_test_config());
+        let mut memory: ConversationSummaryMemory<OpenAIChat> =
+            ConversationSummaryMemory::new(llm).with_return_messages(true);
+        memory.buffer = "This is a summary.".to_string();
+
+        let vars = memory.load_memory_variables(&HashMap::new()).await.unwrap();
+        let value = vars.get("history").unwrap();
+        assert!(
+            !value.is_null(),
+            "return_messages must yield a Message, not a swallowed Null"
+        );
+        let json = serde_json::to_value(value).unwrap();
+        assert!(
+            json.to_string().contains("This is a summary."),
+            "summary text must survive serialization, got: {json}"
+        );
     }
 
     #[tokio::test]

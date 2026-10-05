@@ -158,7 +158,9 @@ impl FileMemoryStore {
     /// Locks the store for a read-modify-write operation, recovering from a poisoned
     /// lock (a panicked writer) so later callers are not stuck forever.
     fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The canonicalized root directory.

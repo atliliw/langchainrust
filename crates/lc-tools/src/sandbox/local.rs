@@ -65,6 +65,32 @@ fn contains_dangerous_python_import(code: &str) -> Option<String> {
     None
 }
 
+/// Dangerous Python **calls** not gated by a top-level `import` statement — the explicit
+/// bypass routes the substring blacklist above leaves open (H4): dynamic import via
+/// `__import__(...)` / `importlib.import_module(...)`, and the exec/eval/compile family.
+/// Word-boundary guarded so ordinary identifiers (`evaluate(`/`exectest(`) do not
+/// false-positive. Still a *noise filter*, not a security boundary (see below).
+static BLOCKED_PYTHON_CALL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:__import__\s*\(|importlib\b|exec\s*\(|eval\s*\(|compile\s*\(|__builtins__)")
+        .expect("static Python call regex literal must compile")
+});
+
+/// Check if Python code reaches dangerous builtins/calls bypassing a plain import
+/// (noise-filter, see [`BLOCKED_PYTHON_CALL_REGEX`]).
+fn contains_dangerous_python_call(code: &str) -> Option<String> {
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let code_part = trimmed.split('#').next().unwrap_or(trimmed);
+        if let Some(m) = BLOCKED_PYTHON_CALL_REGEX.find(code_part) {
+            return Some(m.as_str().to_string());
+        }
+    }
+    None
+}
+
 /// Dangerous Node.js modules for the JS branch, mirroring [`BLOCKED_PYTHON_IMPORTS`].
 ///
 /// H1 (0.25.0): the JS branch previously executed `node -e <code>` with *no* guard while Python
@@ -125,9 +151,17 @@ fn contains_dangerous_javascript(code: &str) -> Option<String> {
 }
 
 /// Local process sandbox using `tokio::process::Command`.
+///
+/// By default dangerous operations (Python imports of os/subprocess/..., the
+/// `__import__`/`importlib`/exec family, Node.js `require`/process/eval) are **denied**.
+/// An explicit [`LocalSandbox::with_dangerously_allow`] opt-in turns them loose —
+/// that should only be done when the process itself already sits inside a real sandbox
+/// (container / VM / WASM), since the static scan is a noise filter, not a security boundary.
 pub struct LocalSandbox {
     python_path: String,
     node_path: String,
+    /// Opt-in that relaxes the dangerous-op noise filters. Off (deny) by default.
+    allow_dangerous: bool,
 }
 
 impl LocalSandbox {
@@ -136,6 +170,7 @@ impl LocalSandbox {
         Self {
             python_path: Self::find_python(),
             node_path: "node".to_string(),
+            allow_dangerous: false,
         }
     }
 
@@ -148,6 +183,14 @@ impl LocalSandbox {
     /// Use a custom Node.js runtime path.
     pub fn with_node_path(mut self, path: impl Into<String>) -> Self {
         self.node_path = path.into();
+        self
+    }
+
+    /// Opt in to running dangerous operations (default denies them). Only set this
+    /// when the subprocess is itself confined by a real sandbox; the static scan is
+    /// a noise filter, not a security boundary.
+    pub fn with_dangerously_allow(mut self, allow: bool) -> Self {
+        self.allow_dangerous = allow;
         self
     }
 
@@ -169,26 +212,40 @@ impl LocalSandbox {
     fn build_command(&self, code: &str, language: Language) -> Result<Command, SandboxError> {
         match language {
             Language::Python => {
-                if let Some(blocked) = contains_dangerous_python_import(code) {
-                    return Err(SandboxError::Runtime(format!(
-                        "Code contains dangerous import: '{}'. \
-                         Blocked by the noise-filter blacklist (note: this is not a \
-                         security boundary; untrusted code must run in a real sandbox).",
-                        blocked
-                    )));
+                // Dangerous ops are denied by default; only the explicit
+                // with_dangerously_allow(true) opt-in relaxes the noise filter.
+                if !self.allow_dangerous {
+                    if let Some(blocked) = contains_dangerous_python_import(code) {
+                        return Err(SandboxError::Runtime(format!(
+                            "Code contains dangerous import: '{}'. \
+                             Blocked by the noise-filter blacklist (note: this is not a \
+                             security boundary; untrusted code must run in a real sandbox).",
+                            blocked
+                        )));
+                    }
+                    if let Some(blocked) = contains_dangerous_python_call(code) {
+                        return Err(SandboxError::Runtime(format!(
+                            "Code contains dangerous Python call: '{}'. \
+                             Blocked by the noise-filter blacklist (note: this is not a \
+                             security boundary; untrusted code must run in a real sandbox).",
+                            blocked
+                        )));
+                    }
                 }
                 let mut cmd = Command::new(&self.python_path);
                 cmd.arg("-c").arg(code);
                 Ok(cmd)
             }
             Language::JavaScript => {
-                if let Some(dangerous) = contains_dangerous_javascript(code) {
-                    return Err(SandboxError::Runtime(format!(
-                        "Code contains dangerous Node.js API: '{}'. \
-                         Blocked by the noise-filter blacklist (note: this is not a \
-                         security boundary; untrusted code must run in a real sandbox).",
-                        dangerous
-                    )));
+                if !self.allow_dangerous {
+                    if let Some(dangerous) = contains_dangerous_javascript(code) {
+                        return Err(SandboxError::Runtime(format!(
+                            "Code contains dangerous Node.js API: '{}'. \
+                             Blocked by the noise-filter blacklist (note: this is not a \
+                             security boundary; untrusted code must run in a real sandbox).",
+                            dangerous
+                        )));
+                    }
                 }
                 let mut cmd = Command::new(&self.node_path);
                 cmd.arg("-e").arg(code);
@@ -251,6 +308,8 @@ mod tests {
         let sandbox = LocalSandbox::default();
         assert!(!sandbox.python_path.is_empty());
         assert_eq!(sandbox.node_path, "node");
+        // Dangerous ops denied by default (H4 opt-in gate off).
+        assert!(!sandbox.allow_dangerous);
     }
 
     #[test]
@@ -284,6 +343,20 @@ mod tests {
         assert!(contains_dangerous_python_import("import json").is_none());
         assert!(contains_dangerous_python_import("from datetime import datetime").is_none());
         assert!(contains_dangerous_python_import("# import os").is_none());
+    }
+
+    #[test]
+    fn test_dangerous_python_call_detection() {
+        // Explicit bypass routes that defeat the import-statement scan (H4).
+        assert!(contains_dangerous_python_call("__import__('os').system('id')").is_some());
+        assert!(contains_dangerous_python_call("importlib.import_module('os')").is_some());
+        assert!(contains_dangerous_python_call("exec('print(1)')").is_some());
+        assert!(contains_dangerous_python_call("eval('1+1')").is_some());
+        assert!(contains_dangerous_python_call("code = compile('a=1', '<s>', 'exec')").is_some());
+        assert!(contains_dangerous_python_call("__builtins__.__dict__").is_some());
+        // Benign identifiers must not false-positive.
+        assert!(contains_dangerous_python_call("evaluate(fn).run()").is_none());
+        assert!(contains_dangerous_python_call("x = 1 + evalue").is_none());
     }
 
     #[test]
@@ -321,6 +394,39 @@ mod tests {
             "Expected dangerous Node.js API error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn dangerous_ops_denied_by_default_and_opt_in_required() {
+        let sandbox = LocalSandbox::new();
+        // Default: dangerous bypass routes are denied.
+        assert!(sandbox
+            .build_command("__import__('os').system('id')", Language::Python)
+            .is_err());
+        assert!(sandbox
+            .build_command("importlib.import_module('os')", Language::Python)
+            .is_err());
+        assert!(sandbox
+            .build_command("exec('import os')", Language::Python)
+            .is_err());
+        assert!(sandbox
+            .build_command("require('child_process').exec('id')", Language::JavaScript)
+            .is_err());
+        // Without opt-in, benign code still passes even with the call filter on.
+        assert!(sandbox
+            .build_command("print('hi')", Language::Python)
+            .is_ok());
+        // Explicit opt-in relaxes the filter (command builds).
+        let allowed = LocalSandbox::new().with_dangerously_allow(true);
+        assert!(allowed
+            .build_command("__import__('os').system('id')", Language::Python)
+            .is_ok());
+        assert!(allowed
+            .build_command("exec('import os')", Language::Python)
+            .is_ok());
+        assert!(allowed
+            .build_command("require('child_process').exec('id')", Language::JavaScript)
+            .is_ok());
     }
 
     #[tokio::test]

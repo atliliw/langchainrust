@@ -49,10 +49,16 @@ fn mmr_gain<V: AsRef<[f32]>>(
     lambda: f32,
 ) -> f64 {
     let relevance = candidates[idx].1;
+    // True max over selected. The old `fold(0.0, f64::max)` clamped negative
+    // similarities to 0.0, collapsing the diversity penalty when text embeddings
+    // carry signed dimensions (all cosines < 0 ⇒ differently-dissimilar candidates
+    // became indistinguishable). Empty selected ⇒ no diversity penalty (first pick
+    // is pure relevance), matching the previous seed value 0.0.
     let max_sim = selected
         .iter()
         .map(|&s| cosine_similarity(candidates[idx].2.as_ref(), candidates[s].2.as_ref()))
-        .fold(0.0f64, f64::max);
+        .max_by(|&a, &b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0);
     lambda as f64 * relevance - (1.0 - lambda) as f64 * max_sim
 }
 
@@ -163,6 +169,25 @@ mod tests {
             ("C".to_string(), 0.8, vec![1.0f32]), // 与 A 余弦=1
         ];
         assert_eq!(mmr(&candidates, 0.5, 2), vec!["A", "C"]);
+    }
+
+    /// 负相似度域判别的回归:当未选候选对已选集的余弦**全为负**时,旧实现的
+    /// `fold(0.0, f64::max)` 把它们全钳成 0,使「正交(cos=0)」与「反相位(cos=−1)」
+    /// 两个差异程度不同的候选拿到相同多样性惩罚 → 无法区分。真 max 应保持负值。
+    ///
+    /// 局面(λ=0.5,k=2):A rel 0.9(首项纯相关必选);此后 B(rel 0.5, cos(B,A)=−1)
+    /// 与 D(rel 0.75, cos(D,A)=0)争第二:
+    ///   - 真 max:B 增益 = 0.5·0.5 − 0.5·(−1) = 0.75 → 选 B(更反相、更该树多样性)。
+    ///   - 旧码钳 0:B 增益 = 0.25 < D 增益 = 0.375 → 错选 D。
+    #[test]
+    fn mmr_distinguishes_negative_similarities() {
+        let candidates: Vec<(String, f64, Vec<f32>)> = vec![
+            ("A".into(), 0.9, vec![1.0f32, 0.0, 0.0]),
+            ("B".into(), 0.5, vec![-1.0f32, 0.0, 0.0]), // 与 A 反相位
+            ("D".into(), 0.75, vec![0.0f32, 1.0, 0.0]), // 与 A 正交
+        ];
+        // 真 max 使 B 的多样性增益压过 D 的相关优势。
+        assert_eq!(mmr(&candidates, 0.5, 2), vec!["A", "B"]);
     }
 
     /// 余弦相似度单元:全零向量返回 0(不 panic),单位向量对返回 ±1。

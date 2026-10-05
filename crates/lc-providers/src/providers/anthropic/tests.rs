@@ -1,9 +1,29 @@
 // src/language_models/providers/anthropic/tests.rs
 //! Tests for the Anthropic module.
 
-use super::chat::AnthropicChat;
+use super::chat::{AnthropicChat, CHAT_RETRY};
 use super::config::{AnthropicConfig, ThinkingConfig, ThinkingType};
 use super::types::{AnthropicContent, AnthropicDelta};
+
+/// 0.26.0 P0-2: the billed, non-idempotent Anthropic POST must retry only
+/// provably pre-dispatch transport failures — never a post-dispatch timeout /
+/// 5xx that would run (and bill) the generation twice. Pins the chat call
+/// site to `SAFE_RETRY`'s mode so it cannot silently regress to
+/// `DEFAULT_RETRY`'s `AllTransportErrors` (which replay such timeouts).
+#[test]
+fn assert_billed_chat_uses_predispatch_only_retry() {
+    use crate::retry::TransportRetryMode;
+    assert_ne!(
+        CHAT_RETRY.transport,
+        TransportRetryMode::AllTransportErrors,
+        "chat POST must not replay post-dispatch timeouts (double billing)"
+    );
+    assert_eq!(
+        CHAT_RETRY.transport,
+        TransportRetryMode::PreDispatchOnly,
+        "chat POST should opt into at-most-once (SAFE_RETRY) retries"
+    );
+}
 
 #[test]
 fn test_thinking_type_default() {

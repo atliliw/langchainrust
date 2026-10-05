@@ -40,6 +40,14 @@ use crate::server::{
 /// bounding the in-memory session table.
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 
+/// P0-6 (H7): hard ceiling on concurrent live sessions. TTL alone only bounds by
+/// *age*, so a caller that `initialize`s faster than the TTL retires them can
+/// grow the in-memory session table without bound → memory-exhaustion DoS. When
+/// the table is at this capacity a new `initialize` is rejected (503), never
+/// silently evicting an active session mid-use. Sized for real workloads while
+/// still failing closed under an unbounded initialize flood.
+const MAX_SESSIONS: usize = 1024;
+
 /// A live Streamable HTTP session.
 struct Session {
     /// Set once the client sends `notifications/initialized`.
@@ -243,7 +251,21 @@ async fn handle_connection(
             let envelope = envelope_with_id(&id_value, &response);
             return write_envelope(sock, 400, sse_only, None, &envelope).await;
         }
-        let session_id = insert_session(state);
+        let session_id = match insert_session(state) {
+            Ok(id) => id,
+            // P0-6 (H7): session table at capacity — fail closed instead of
+            // letting an initialize flood grow memory unboundedly.
+            Err(()) => {
+                return write_plain(
+                    sock,
+                    503,
+                    "Service Unavailable",
+                    &[],
+                    b"too many sessions",
+                )
+                .await
+            }
+        };
         // Echo the version the server actually negotiated so the header tracks
         // the wire track (B8): stateful → MCP_VERSION, stateless → STATELESS.
         let negotiated = response
@@ -388,11 +410,17 @@ fn require_session(
     Ok(session_id)
 }
 
-fn insert_session(state: &Arc<StreamableState>) -> String {
+fn insert_session(state: &Arc<StreamableState>) -> Result<String, ()> {
     let mut sessions = state.sessions.lock().expect("session lock");
-    // Opportunistic TTL sweep.
+    // Opportunistic TTL sweep (age bound).
     let now = Instant::now();
     sessions.retain(|_, s| now.duration_since(s.born) < SESSION_TTL);
+    // P0-6 (H7): cap by COUNT as well. Reject rather than evict, so a burst of
+    // `initialize`s cannot force out sessions another (legitimate) in-flight
+    // request is still using.
+    if sessions.len() >= MAX_SESSIONS {
+        return Err(());
+    }
     let id = new_session_id();
     sessions.insert(
         id.clone(),
@@ -401,7 +429,7 @@ fn insert_session(state: &Arc<StreamableState>) -> String {
             born: now,
         },
     );
-    id
+    Ok(id)
 }
 
 /// 128-bit opaque hex session id (RFC token charset, unguessable).
@@ -650,6 +678,30 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn session_table_is_count_bounded() {
+        // P0-6 (H7): the in-memory session table stops growing past MAX_SESSIONS
+        // and refuses new sessions, so a high initialize rate cannot exhaust
+        // memory. TTL (age) alone only bounds by recency; this is the count cap.
+        let state = Arc::new(StreamableState {
+            server: Arc::new(crate::MCPServer::new()),
+            sessions: Mutex::new(HashMap::new()),
+        });
+        for _ in 0..MAX_SESSIONS {
+            assert!(
+                insert_session(&state).is_ok(),
+                "room must exist for each session up to the ceiling"
+            );
+        }
+        assert_eq!(state.sessions.lock().unwrap().len(), MAX_SESSIONS);
+        assert!(
+            insert_session(&state).is_err(),
+            "a session past the ceiling must be rejected"
+        );
+        // Rejecting must not have evicted any existing session.
+        assert_eq!(state.sessions.lock().unwrap().len(), MAX_SESSIONS);
     }
 
     /// Loopback TCP pair so a unit test can capture the bytes `write_envelope`

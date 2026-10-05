@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Notify, Semaphore};
 
@@ -98,6 +99,14 @@ pub struct MCPServer {
     /// connection-local transports (stdio) and unscoped callers use `None`,
     /// where ids are unique by construction within the single connection.
     cancellations: CancellationTable,
+    /// 0.26.0 P0-1 (BLOCK): per-`tools/call` wall-clock deadline. When set
+    /// (`Some(d)`), the in-flight tool future is dropped once it exceeds `d`
+    /// and the call returns a hard error observation, so a single hung tool
+    /// (a remote dependency, a blocking host call, a runaway loop) cannot
+    /// permanently hold a concurrency permit and take the whole server down.
+    /// Defaults to `Some(60s)` (hardening); adjust per deployment via
+    /// [`Self::with_tool_timeout`] to suit genuinely long-running tools.
+    tool_timeout: Option<Duration>,
 }
 
 impl MCPServer {
@@ -114,7 +123,20 @@ impl MCPServer {
             sampling_handler: None,
             elicitation_handler: None,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
+            // 0.26.0 P0-1: bound every `tools/call` by default so a lone hung
+            // tool cannot exhaust the concurrency surface (BLOCK). Users with
+            // genuinely longer tools opt into a larger/`None` budget.
+            tool_timeout: Some(Duration::from_secs(60)),
         }
+    }
+
+    /// 0.26.0 P0-1: set the per-`tools/call` deadline. `None` disables the
+    /// bound (not recommended — a hung tool then holds a concurrency permit
+    /// indefinitely and can strand the whole server). The hardened default is
+    /// 60s; raise it for deployments whose tools legitimately run longer.
+    pub fn with_tool_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.tool_timeout = timeout.into();
+        self
     }
 
     /// 0.22.0 C8: requires authenticated requests on [`Self::serve_http`] and
@@ -518,20 +540,51 @@ impl MCPServer {
                 let input_str = serde_json::to_string(&arguments).unwrap_or_else(|_| "null".into());
                 let mut run = Box::pin(t.run(input_str));
                 let mut cancelled = Box::pin(notify.notified());
-                let mcp_result = tokio::select! {
-                    result = &mut run => match result {
-                        Ok(text) => MCPToolResult {
-                            content: vec![MCPContent::Text { text }],
-                            is_error: false,
+                let mcp_result = match self.tool_timeout {
+                    // 0.26.0 P0-1: a configured deadline adds a `timeout` branch to
+                    // the select. Firing it drops the in-flight tool future (freeing
+                    // its concurrency permit) and reports a hard error observation,
+                    // so a single hung tool can no longer strand the whole server.
+                    Some(timeout) => {
+                        let mut deadline = Box::pin(tokio::time::sleep(timeout));
+                        tokio::select! {
+                            result = &mut run => match result {
+                                Ok(text) => MCPToolResult {
+                                    content: vec![MCPContent::Text { text }],
+                                    is_error: false,
+                                },
+                                Err(e) => MCPToolResult {
+                                    content: vec![MCPContent::Text { text: e.to_string() }],
+                                    is_error: true,
+                                },
+                            },
+                            _ = &mut cancelled => MCPToolResult {
+                                content: vec![MCPContent::Text { text: "cancelled by client".into() }],
+                                is_error: true,
+                            },
+                            _ = &mut deadline => MCPToolResult {
+                                content: vec![MCPContent::Text {
+                                    text: format!("tool '{name}' exceeded its {timeout:?} execution deadline"),
+                                }],
+                                is_error: true,
+                            },
+                        }
+                    }
+                    None => tokio::select! {
+                        result = &mut run => match result {
+                            Ok(text) => MCPToolResult {
+                                content: vec![MCPContent::Text { text }],
+                                is_error: false,
+                            },
+                            Err(e) => MCPToolResult {
+                                content: vec![MCPContent::Text { text: e.to_string() }],
+                                is_error: true,
+                            },
                         },
-                        Err(e) => MCPToolResult {
-                            content: vec![MCPContent::Text { text: e.to_string() }],
+                        _ = &mut cancelled => MCPToolResult {
+                            content: vec![MCPContent::Text { text: "cancelled by client".into() }],
                             is_error: true,
                         },
-                    },
-                    _ = &mut cancelled => MCPToolResult {
-                        content: vec![MCPContent::Text { text: "cancelled by client".into() }],
-                        is_error: true,
                     },
                 };
                 self.cancellations.lock().await.remove(&(session, req.id.clone()));
@@ -554,8 +607,8 @@ impl MCPServer {
 
     /// Runs the server on stdio: reads JSON-RPC from stdin, processes it, writes responses back to stdout
     ///
-    /// Notifications (messages without an id, such as `notifications/initialized`) are ignored; requests
-    /// (with an id) get a response.
+    /// Notifications (messages without an id, such as `notifications/initialized`) are dispatched to
+    /// `handle_notification` and get no response; requests (with an id) get a response.
     pub async fn serve_stdio(&self) -> Result<(), MCPError> {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
@@ -733,18 +786,65 @@ impl MCPServer {
                             }
                         };
 
-                        // JSON-RPC over HTTP: a parse failure is answered with a
-                        // JSON-RPC error envelope carrying `id: null` (spec-compliant;
-                        // previously `id: 0`).
-                        let resp = match serde_json::from_str::<MCPRequest>(&body) {
-                            Ok(req) => server.handle_request(req).await,
-                            Err(e) => MCPResponse {
-                                jsonrpc: "2.0".to_string(),
-                                id: None,
-                                result: None,
-                                error: Some(MCPError::new(-32700, format!("parse error: {e}"))),
-                            },
+                        // JSON-RPC over HTTP (M2, 0.26.0 §1.1): distinguish a
+                        // request from a notification. A message with no `id` is a
+                        // *notification* — lenient-parse (same `ServerMessage` the
+                        // stdio path uses) and dispatch to `handle_notification`
+                        // instead of failing `MCPRequest`'s required-id field with
+                        // `-32700`. Per JSON-RPC, notifications get NO response.
+                        //
+                        // Unparseable body → error envelope with `id: null`
+                        // (spec-compliant; previously `id: 0`).
+                        let msg: ServerMessage = match serde_json::from_str(&body) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let resp = MCPResponse {
+                                    jsonrpc: "2.0".to_string(),
+                                    id: None,
+                                    result: None,
+                                    error: Some(MCPError::new(
+                                        -32700,
+                                        format!("parse error: {e}"),
+                                    )),
+                                };
+                                let payload = serde_json::to_string(&resp)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                let http = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                    payload.len(),
+                                    payload
+                                );
+                                if sock.write_all(http.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                                continue;
+                            }
                         };
+
+                        if msg.id.is_none() {
+                            // Notification (no id): no response per JSON-RPC — ACK
+                            // with 202 Accepted, empty body.
+                            server.handle_notification(&msg.method, msg.params).await;
+                            if sock
+                                .write_all(
+                                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n",
+                                )
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            continue;
+                        }
+
+                        let req = MCPRequest {
+                            jsonrpc: "2.0".to_string(),
+                            id: msg.id.expect("checked Some above"),
+                            method: msg.method,
+                            params: msg.params,
+                            meta: None,
+                        };
+                        let resp = server.handle_request(req).await;
                         let payload =
                             serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string());
                         let http = format!(
@@ -1635,6 +1735,57 @@ mod tests {
         assert_eq!(text_a, "done", "A must run to completion, uncancelled");
     }
 
+    /// 0.26.0 P0-1 (BLOCK): a configured `with_tool_timeout` bounds a hung tool.
+    /// `HangingTool` never completes, so the only way this `tools/call` resolves
+    /// is the deadline branch — proving a lone stuck tool can no longer hold a
+    /// concurrency permit forever (which previously took the whole server down).
+    #[tokio::test]
+    async fn test_tool_call_exceeding_timeout_returns_deadline_error() {
+        // Gate never released in this test → the tool would hang forever; only
+        // the 100 ms deadline can resolve the call.
+        let server = MCPServer::new()
+            .with_tool(Arc::new(HangingTool {
+                gate: Arc::new(tokio::sync::Notify::new()),
+            }))
+            .with_tool_timeout(std::time::Duration::from_millis(100));
+
+        let resp = server
+            .handle_request(MCPRequest::new(
+                900,
+                "tools/call",
+                Some(json!({"name": "hang", "arguments": {}})),
+            ))
+            .await;
+
+        assert!(!resp.is_error(), "timeout surfaces as a tool-result, not a transport error");
+        let result = resp.result.expect("has result");
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("deadline"),
+            "expect the deadline observation, got: {text}"
+        );
+        assert!(
+            result["isError"].as_bool() == Some(true),
+            "timeout must be flagged isError so the caller does not treat it as success"
+        );
+
+        // The registration is reaped even when the deadline fires.
+        assert!(
+            server.cancellations.lock().await.is_empty(),
+            "cancellation registration must be cleaned up after timeout"
+        );
+    }
+
+    /// 0.26.0 P0-1: default (no `with_tool_timeout` override) should carry a bound
+    /// — the security posture is timeout-by-default, never timeout-by-omission.
+    #[test]
+    fn test_tool_timeout_is_some_by_default() {
+        assert!(
+            MCPServer::new().tool_timeout.is_some(),
+            "hardened default must bound hung tools"
+        );
+    }
+
     #[tokio::test]
     async fn test_handle_notification_known_and_unknown() {
         let server = server_with_echo();
@@ -1750,6 +1901,31 @@ mod tests {
         assert!(status.contains("200 OK"), "{status}");
         assert!(resp_body.contains("\"id\":null"), "{resp_body}");
         assert!(resp_body.contains("-32700"), "{resp_body}");
+    }
+
+    /// M2 (0.26.0 §1.1): a JSON-RPC *notification* (no id) over the stateless
+    /// HTTP track is dispatched to `handle_notification` and ACKed 202 — it
+    /// must NOT be rejected with `-32700` (the old strict `MCPRequest` parse
+    /// required `id`, so a notification was misread as unparseable).
+    #[tokio::test]
+    async fn test_serve_http_notification_dispatched_not_parse_error() {
+        let server = Arc::new(server_with_echo());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let _url = server.serve_http(listener);
+        // A notification body: method + params, NO id.
+        let body = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
+        let (status, resp_body) = post_raw(&addr, None, body).await;
+        // Per JSON-RPC, notifications get no response — ACK with 202, empty body.
+        assert!(status.contains("202 Accepted"), "notification ACK expected, got: {status}");
+        assert!(
+            resp_body.is_empty(),
+            "notification must get no JSON payload, got: {resp_body}"
+        );
+        assert!(
+            !resp_body.contains("-32700"),
+            "notification must not be misread as a parse error: {resp_body}"
+        );
     }
 
     /// C8: an oversized declared body is rejected with 413, not buffered.

@@ -224,6 +224,7 @@ mod tests {
                     },
                     log: String::new(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
                 "obs".to_string(),
             )],

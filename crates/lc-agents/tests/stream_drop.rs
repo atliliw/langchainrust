@@ -67,6 +67,7 @@ impl BaseAgent for SingleCallAgent {
             },
             log: "call_gate".to_string(),
             tool_call_id: None,
+            server_executed: false,
         }))
     }
 }

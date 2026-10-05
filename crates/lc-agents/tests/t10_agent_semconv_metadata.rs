@@ -37,6 +37,7 @@ impl BaseAgent for SearchThenFinish {
                 },
                 log: "search".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(

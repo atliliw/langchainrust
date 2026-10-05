@@ -58,14 +58,13 @@ impl AgentExecutor {
         // max_iterations checks.
         let loop_start = Instant::now();
 
-        // stage-G G7: capture the shared `CostTracker`'s spend as this run's
-        // baseline. `max_cost_usd` then caps THIS run's incremental spend, not the
-        // tracker's lifetime cumulative total — a prior / concurrent run sharing the
-        // same `Arc` can no longer trip another run's budget.
-        let cost_baseline = match &self.cost_tracker {
-            Some(tracker) => tracker.total_cost_usd().await,
-            None => 0.0,
-        };
+        // G7 → P0-5: the cost gate below reads THIS run's scoped spend
+        // (CostTracker::run_cost_usd(root_run.id)) rather than a global baseline
+        // delta. The planning LLM is `Arc`-shared across concurrent runs, so two
+        // parallel runs each capturing `total_cost_usd()` at start would see the
+        // other's interleaved spend in their "incremental" — crossing run scopes
+        // via `build_plan_config`'s `RUN_META_COST_SCOPE` metadata keeps each
+        // run's bucket isolated.
 
         for iteration in start_iteration..self.max_iterations {
             // Budget gate: iteration-level (iteration count + wall-clock). Off by default
@@ -116,12 +115,15 @@ impl AgentExecutor {
             // B3 (0.22.4): cumulative USD spend gate after the LLM call. Reads the
             // shared CostTracker — the same Arc the tracking LLM records into, so the
             // spend reflects the call that just returned. No tracker → no measurement
-            // → the limit cannot trip. stage-G G7: gated on this run's *incremental*
-            // spend (current total minus the run-start baseline), so a shared tracker
-            // never lets one run's cumulative spend trip another run's budget.
+            // → the limit cannot trip. P0-5: reads THIS run's scoped spend keyed by
+            // its root run id (the same label `build_plan_config` stamps into the
+            // planning config), so concurrent runs sharing the tracker never bleed
+            // spend into each other's incremental budget.
             if let Some(tracker) = &self.cost_tracker {
-                let incremental = (tracker.total_cost_usd().await - cost_baseline).max(0.0);
-                if let Some(err) = budget_cost_gate(self.budget.as_ref(), incremental) {
+                let scope = root_run.id.to_string();
+                if let Some(err) =
+                    budget_cost_gate(self.budget.as_ref(), tracker.run_cost_usd(&scope).await)
+                {
                     return Err(err);
                 }
             }

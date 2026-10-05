@@ -103,6 +103,54 @@ async fn test_invoke_dynamic_runs_all_fanout_branches() {
     assert_eq!(result.final_state.output.as_deref(), Some("done"));
 }
 
+/// 0.26.0 P0-4: parallel fan-in used to be "last branch wins" — the merge folded
+/// each branch through the whole-state `default_reducer` (a `ReplaceReducer` when
+/// no per-field reducer is registered), so the LAST branch's full state
+/// overwrote the fields only EARLIER branches wrote. Two branches writing
+/// DIFFERENT fields must both survive the merge.
+#[tokio::test]
+async fn test_parallel_merge_preserves_unique_fields_per_branch() {
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node_fn("main", |state| Ok(StateUpdate::full(state.clone())))
+        // b1 writes ONLY `steps`; b2 writes ONLY `output`. Under "last branch
+        // wins", b1's steps were dropped the moment b2 replaced the whole state.
+        .add_node_fn("b1", |state| {
+            let mut s = state.clone();
+            s.add_step(crate::state::StepEntry::new("action_a", "obs_a"));
+            Ok(StateUpdate::full(s))
+        })
+        .add_node_fn("b2", |state| {
+            let mut s = state.clone();
+            s.set_output("from_b2".to_string());
+            Ok(StateUpdate::full(s))
+        })
+        .add_node_fn("join", |state| Ok(StateUpdate::full(state.clone())))
+        .add_edge(START, "main")
+        .add_fan_out("main", vec!["b1".to_string(), "b2".to_string()])
+        .add_fan_in(vec!["b1".to_string(), "b2".to_string()], "join")
+        .add_edge("join", END)
+        .compile()
+        .unwrap();
+
+    let result = compiled
+        .invoke_dynamic(AgentState::new("input".to_string()), &NoopPlanner)
+        .await
+        .unwrap();
+
+    let state = &result.final_state;
+    assert_eq!(
+        state.steps.len(),
+        1,
+        "b1's unique write (steps) must survive the parallel merge"
+    );
+    assert_eq!(state.steps[0].action, "action_a");
+    assert_eq!(
+        state.output.as_deref(),
+        Some("from_b2"),
+        "b2's unique write (output) must survive the parallel merge"
+    );
+}
+
 #[tokio::test]
 async fn test_stream_execution() {
     let compiled = GraphBuilder::<AgentState>::new()
@@ -462,6 +510,86 @@ async fn test_after_interrupt_resume_rechecks_interrupt_before_on_successor() {
     assert!(
         matches!(&err, GraphError::ExecutionInterrupted(n) if n.as_str() == "b"),
         "successor b must be before-interrupted on resume, got {err:?}"
+    );
+}
+
+/// 0.26.0 P0-3 (H2): an `after_` interrupt on a non-main execution path
+/// (`invoke_from_node` / time-travel from-node run) must persist the interrupted
+/// node's post-run state to the checkpointer BEFORE returning, exactly like the
+/// main `invoke` loop (M-15). Previously these loops returned
+/// `ExecutionInterrupted` without saving, so a crash-then-rebuild resume loaded
+/// the pre-node snapshot and re-ran the interrupted node — doubling its side
+/// effects. The `run_count` counter here proves the node does NOT re-run on
+/// resume-from-restart.
+#[tokio::test]
+async fn test_from_node_after_interrupt_persists_before_return() {
+    use crate::checkpointer::FileCheckpointer;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let run_count = Arc::new(AtomicUsize::new(0));
+
+    let build_into_file = |path: std::path::PathBuf, run_count: Arc<AtomicUsize>| {
+        GraphBuilder::<AgentState>::new()
+            .add_node_fn("work", move |state| {
+                run_count.fetch_add(1, Ordering::SeqCst);
+                let mut ns = state.clone();
+                ns.set_output("work_done".to_string());
+                Ok(StateUpdate::full(ns))
+            })
+            .add_node_fn("finish", |state| {
+                let mut ns = state.clone();
+                ns.set_output("final".to_string());
+                Ok(StateUpdate::full(ns))
+            })
+            .add_edge(START, "work")
+            .add_edge("work", "finish")
+            .add_edge("finish", END)
+            .compile()
+            .unwrap()
+            .with_recursion_limit(10)
+            .with_interrupt_after(vec!["work".to_string()])
+            .with_checkpointer(FileCheckpointer::new(path).unwrap())
+    };
+
+    // First "process": run from the START node, interrupt after "work" folded
+    // its update, then drop the graph (simulating a crash mid-execution).
+    {
+        let compiled = build_into_file(dir_path.clone(), run_count.clone());
+        // from_node path: invoke_from_node exercises the non-main execute loop.
+        let err = compiled
+            .invoke_from_node("work".to_string(), AgentState::new("x"))
+            .await
+            .unwrap_err();
+        match err {
+            GraphError::ExecutionInterrupted(n) => assert_eq!(n, "after_work"),
+            other => panic!("expected after_work interrupt, got {other:?}"),
+        }
+    }
+    assert_eq!(run_count.load(Ordering::SeqCst), 1, "node ran exactly once before crash");
+
+    // Second "process": brand-new graph over the same checkpoint directory. Resuming
+    // must pick up the persisted "after_work" state (node already folded) and
+    // continue at the successor WITHOUT re-running "work" (side effect preserved).
+    let compiled2 = build_into_file(dir_path, run_count.clone());
+    let execution = compiled2
+        .create_resume_execution("after_work", None)
+        .await
+        .expect("resume context loads the persisted post-node state");
+    let inv = compiled2
+        .invoke_with_execution(execution)
+        .await
+        .expect("resume completes");
+    assert_eq!(
+        inv.final_state.output.as_deref(),
+        Some("final"),
+        "successor ran after resume"
+    );
+    assert_eq!(
+        run_count.load(Ordering::SeqCst),
+        1,
+        "interrupted node must NOT re-run on crash-then-rebuild resume"
     );
 }
 
@@ -844,4 +972,111 @@ async fn test_two_field_reducers_patch_independently() {
             .collect::<Vec<_>>(),
         vec!["act1", "act2"]
     );
+}
+
+/// 0.26.0 track 1: a retention policy on the compiled graph keeps its checkpoint
+/// history bounded. A 4-save run (initial + save before each successor) written
+/// through a `max_checkpoints(2)` policy must leave exactly the 2 newest, never
+/// growing without bound across invokes.
+#[tokio::test]
+async fn test_with_checkpoint_retention_bounds_history() {
+    use crate::checkpointer::CheckpointRetention;
+
+    let build = |retention: Option<CheckpointRetention>| {
+        let mut g = GraphBuilder::<AgentState>::new()
+            .add_node_fn("a", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+            .add_node_fn("b", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+            .add_node_fn("c", |s| {
+                let mut ns = s.clone();
+                ns.set_output("done".to_string());
+                Ok(StateUpdate::full(ns))
+            })
+            .add_edge(START, "a")
+            .add_edge("a", "b")
+            .add_edge("b", "c")
+            .add_edge("c", END)
+            .compile()
+            .unwrap()
+            .with_recursion_limit(10)
+            .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+        if let Some(r) = retention {
+            g = g.with_checkpoint_retention(r);
+        }
+        g
+    };
+
+    // Unbounded: the 4-save run keeps all its checkpoints.
+    let unbound = build(None);
+    unbound.invoke(AgentState::new("x")).await.unwrap();
+    let raw = unbound.get_state_history().await.unwrap().len();
+    assert_eq!(raw, 4, "unbounded run keeps all 4 saves");
+
+    // Bounded: only the 2 newest survive.
+    let bounded = build(Some(CheckpointRetention::max_checkpoints(2)));
+    bounded.invoke(AgentState::new("x")).await.unwrap();
+    let hist = bounded.get_state_history().await.unwrap();
+    assert_eq!(hist.len(), 2, "retention must trim to the cap");
+
+    // A second run invokes through the same retained graph: still bounded.
+    bounded.invoke(AgentState::new("y")).await.unwrap();
+    assert_eq!(
+        bounded.get_state_history().await.unwrap().len(),
+        2,
+        "history stays bounded across invokes"
+    );
+}
+
+/// 0.26.0 track 1: cursor pagination over a graph's checkpoint history, mirroring
+/// the raw `snapshots_page` windows but through the compiled-graph public API.
+#[tokio::test]
+async fn test_get_state_history_page_windows() {
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node_fn("a", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+        .add_node_fn("b", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+        .add_node_fn("c", |s| {
+            let mut ns = s.clone();
+            ns.set_output("done".to_string());
+            Ok(StateUpdate::full(ns))
+        })
+        .add_edge(START, "a")
+        .add_edge("a", "b")
+        .add_edge("b", "c")
+        .add_edge("c", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    compiled.invoke(AgentState::new("x")).await.unwrap();
+
+    // Page size 2 over the 4-checkpoint history, following the id cursor.
+    let page1 = compiled.get_state_history_page(None, 2).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    let page2 = compiled
+        .get_state_history_page(Some(&page1[1].id), 2)
+        .await
+        .unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_ne!(page1[0].id, page2[0].id, "pages must not overlap");
+    let page3 = compiled
+        .get_state_history_page(Some(&page2[1].id), 2)
+        .await
+        .unwrap();
+    assert_eq!(page3.len(), 0, "all 4 consumed after two pages");
+
+    // Pagination reconstructs the full history exactly.
+    let all = compiled.get_state_history().await.unwrap();
+    let mut rebuilt: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = compiled
+            .get_state_history_page(cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = Some(page.last().unwrap().id.clone());
+        rebuilt.extend(page.iter().map(|s| s.id.clone()));
+    }
+    assert_eq!(rebuilt, all.iter().map(|s| s.id.clone()).collect::<Vec<_>>());
 }

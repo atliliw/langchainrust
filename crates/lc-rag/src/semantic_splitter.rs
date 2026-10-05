@@ -81,6 +81,17 @@ impl<E: Embeddings> SemanticSplitter<E> {
         let refs: Vec<&str> = sentences.iter().map(|s| s.as_str()).collect();
         let embeddings = self.embeddings.embed_documents(&refs).await?;
 
+        // LOW: 对位保护 — the scoring loop below indexes `embeddings[i]` for
+        // `i < sentences.len()`. A provider that returns fewer vectors than the
+        // sentence count would panic on an out-of-range index. Surface it as a
+        // clear batch-mismatch error instead of a crash.
+        if embeddings.len() < sentences.len() {
+            return Err(EmbeddingError::BatchMismatch {
+                expected: sentences.len(),
+                actual: embeddings.len(),
+            });
+        }
+
         let mut chunks = Vec::new();
         let mut current = sentences[0].clone();
 
@@ -129,6 +140,26 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use lc_embeddings::{EmbeddingError, Embeddings, MockEmbeddings};
+
+    /// An embedding that returns one vector fewer than requested — simulates a
+    /// provider whose batch output misaligns with the input sentence count.
+    struct ShortBatchEmbeddings;
+    #[async_trait]
+    impl Embeddings for ShortBatchEmbeddings {
+        async fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            Ok(vec![0.5; 4])
+        }
+        async fn embed_documents(&self, text: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            // Drop the last vector: embeddings.len() < text.len().
+            Ok(text[..text.len().saturating_sub(1)].iter().map(|_| vec![0.5; 4]).collect())
+        }
+        fn dimension(&self) -> usize {
+            4
+        }
+        fn model_name(&self) -> &str {
+            "short-batch"
+        }
+    }
 
     /// An embedding that always fails, used to test the error path
     struct FailingEmbeddings;
@@ -214,5 +245,21 @@ mod tests {
         let text = "句子一。句子二。句子三。";
         let result = s.split_text(text).await;
         assert!(result.is_err());
+    }
+
+    /// LOW: a provider returning fewer embeddings than the sentence count must
+    /// surface as a `BatchMismatch` error — not a panic on an out-of-range index
+    /// in the scoring loop.
+    #[tokio::test]
+    async fn test_short_batch_returns_error_not_panic() {
+        let s = SemanticSplitter::new(ShortBatchEmbeddings, 0.5, 1000);
+        // 3 sentences -> provider returns 2 vectors; the old code indexed
+        // embeddings[2] and panicked.
+        let text = "句子一。句子二。句子三。";
+        let err = s.split_text(text).await.unwrap_err();
+        assert!(
+            matches!(err, EmbeddingError::BatchMismatch { .. }),
+            "expected BatchMismatch, got {err}"
+        );
     }
 }

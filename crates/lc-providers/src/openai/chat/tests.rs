@@ -1,6 +1,7 @@
 // lc-providers/src/openai/chat/tests.rs
 
 use super::*;
+use crate::openai::is_openai_reasoning_model;
 
 mod tests_env {
     use super::*;
@@ -499,6 +500,168 @@ mod tests_response_format {
         );
         assert_eq!(body["tools"][0]["function"]["strict"], true);
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    /// 0.26.0 M6: the o-series reasoning family (o1/o3/o4/o5…, incl. previews /
+    /// fine-tunes / dated variants) shares an `o<digit>` id prefix that must
+    /// route sampling cap to `max_completion_tokens`, never `max_tokens`.
+    #[test]
+    fn is_openai_reasoning_model_matches_o_series_prefix() {
+        for model in ["o1", "o3", "o4-mini", "o5", "o1-preview", "o3-mini"] {
+            assert!(
+                is_openai_reasoning_model(model),
+                "{model} should be treated as reasoning"
+            );
+        }
+        for model in ["gpt-5", "gpt-4o", "gpt-4o-mini", "my-finetune", "text-embedding-3"] {
+            assert!(
+                !is_openai_reasoning_model(model),
+                "{model} should NOT be treated as reasoning"
+            );
+        }
+    }
+
+    /// Reasoning models must emit `max_completion_tokens` and NOT `max_tokens`
+    /// — sending `max_tokens` to an o-series model is a hard 400.
+    #[test]
+    fn build_request_body_uses_max_completion_tokens_for_reasoning_model() {
+        let body = OpenAIChat::new(
+            OpenAIConfig::new("k")
+                .with_model("o3-mini")
+                .with_max_tokens(4096),
+        )
+        .build_request_body(sample_messages(), false);
+
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    /// Non-reasoning models keep the legacy `max_tokens` field unchanged.
+    #[test]
+    fn build_request_body_keeps_max_tokens_for_chat_model() {
+        let body = OpenAIChat::new(
+            OpenAIConfig::new("k")
+                .with_model("gpt-4o")
+                .with_max_tokens(512),
+        )
+        .build_request_body(sample_messages(), false);
+
+        assert_eq!(body["max_tokens"], 512);
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+}
+
+/// 0.26.0 T4-3: Structured Output 前移 provider 端。取含(design tradeoff):OpenAI chat
+/// 请求体用 `response_format: { "type": "json_schema", json_schema: { name, schema,
+/// strict: true } }` 下发强约束,让**引擎端**保证 schema-valid JSON——客户端 parser 只兜底
+/// (streaming 中间 partial / 不支持 json_schema 的兼容 provider 才走本地解析)。四个用例都
+/// 建在请求体层(build_request_body),离线可控,不触网。
+mod tests_t43_structured_output_forward {
+    use super::*;
+    use crate::openai::response_format::ResponseFormat;
+    use crate::openai::make_strict_schema;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    struct SalesReport {
+        /// Quarter label, e.g. "Q3".
+        quarter: String,
+        /// Units sold in that quarter.
+        units: u32,
+    }
+
+    fn messages() -> Vec<Message> {
+        vec![Message::human("report on Q3 sales")]
+    }
+
+    /// 有 schema → 请求体含 `response_format.json_schema` 且 `strict==true`,字段名与
+    /// schema 正确。走 `lc-core` 结构化入口同款「裸 `serde_json::Value` schema」通道:
+    /// 调用方把 schema 交给 `config.with_response_format(ResponseFormat::json_schema(..))`,
+    /// `build_request_body` 原样下发。schema 由 `make_strict_schema` 规整,客户端不再需要
+    /// 猜 shape。
+    #[test]
+    fn schema_yields_strict_json_schema_response_format() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "quarter": {"type": "string"},
+                "units": {"type": "integer"}
+            },
+            "required": ["quarter"]
+        });
+        make_strict_schema(&mut schema);
+        let config = OpenAIConfig::new("k")
+            .with_response_format(ResponseFormat::json_schema("sales_report", schema));
+        let body = OpenAIChat::new(config).build_request_body(messages(), false);
+
+        let format = &body["response_format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["name"], "sales_report");
+        assert_eq!(format["json_schema"]["strict"], true);
+        let schema_value = &format["json_schema"]["schema"];
+        assert_eq!(
+            schema_value["additionalProperties"],
+            false,
+            "strict mode requires additionalProperties: false"
+        );
+        let required: Vec<&str> = schema_value["required"]
+            .as_array()
+            .expect("strict normalizes required")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(required, vec!["quarter", "units"]);
+    }
+
+    /// 无 schema(且用的是常见 gpt 模型)→ 请求体不含 `response_format`,现有调用不回归。
+    /// gpt 函数调用/普通对话不受结构化通道影响。
+    #[test]
+    fn no_schema_gpt_call_has_no_response_format() {
+        let body = OpenAIChat::new(
+            OpenAIConfig::new("k").with_model("gpt-4o").with_max_tokens(512),
+        )
+        .build_request_body(messages(), false);
+
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["max_tokens"], 512, "gpt 调用保持既有 max_tokens 通道");
+    }
+
+    /// o 系列推理模型 + schema 并存:推理字段(`max_completion_tokens`)与 `response_format`
+    /// 同存不冲突。复用 `is_openai_reasoning_model` 决定取值字段,两个约束是独立 body 键,
+    /// 结构化学强制不失推理采样。
+    #[test]
+    fn o_series_with_schema_coexists_with_reasoning_field() {
+        let mut schema =
+            serde_json::json!({"type": "object", "properties": {"answer": {"type": "string"}}});
+        make_strict_schema(&mut schema);
+        let config = OpenAIConfig::new("k")
+            .with_model("o3-mini")
+            .with_max_tokens(4096)
+            .with_response_format(ResponseFormat::json_schema("qa", schema));
+        let body = OpenAIChat::new(config).build_request_body(messages(), false);
+
+        // 推理采样字段:o 系列走 max_completion_tokens,绝不下发 max_tokens(硬 400)。
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+        // 结构化强约束同存,不与推理字段互踩。
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "qa");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+    }
+
+    /// 现有 gpt 函数调用不回归:bind_tools 走 tool 通道,不引入 `response_format`
+    /// (工具通道仍是客户端/引擎工具约束,不是 json_schema 强约束)。
+    #[test]
+    fn gpt_function_calling_keeps_no_response_format() {
+        use lc_core::tools::ToolDefinition;
+        let chat = OpenAIChat::new(OpenAIConfig::new("k").with_model("gpt-4o-mini"))
+            .bind_tools(vec![ToolDefinition::new("report", "produce a report")]);
+        let body = chat.build_request_body(messages(), false);
+
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["tools"][0]["function"]["name"], "report");
     }
 }
 

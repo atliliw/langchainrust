@@ -306,6 +306,24 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
 
             if self.interrupt_after.contains(&current_node) {
+                // 0.26.0 P0-3 (H2): persist the node's post-run state before
+                // interrupting on the resume / from-node / time-travel paths. The
+                // main `invoke` loop (M-15) and streaming already do this; these
+                // non-main shared loops previously returned immediately, so the
+                // node's folded update never reached a checkpoint and a
+                // crash-then-rebuild resume re-ran the interrupted node (double
+                // side effect). Mirrors the M-15 pattern.
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        format!("after_{}", current_node),
+                    ));
+                }
                 return Err(GraphError::ExecutionInterrupted(format!(
                     "after_{}",
                     current_node
@@ -433,6 +451,24 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
 
             if self.interrupt_after.contains(&current_node) {
+                // 0.26.0 P0-3 (H2): persist the node's post-run state before
+                // interrupting on the resume / from-node / time-travel paths. The
+                // main `invoke` loop (M-15) and streaming already do this; these
+                // non-main shared loops previously returned immediately, so the
+                // node's folded update never reached a checkpoint and a
+                // crash-then-rebuild resume re-ran the interrupted node (double
+                // side effect). Mirrors the M-15 pattern.
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        format!("after_{}", current_node),
+                    ));
+                }
                 return Err(GraphError::ExecutionInterrupted(format!(
                     "after_{}",
                     current_node

@@ -20,6 +20,18 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub tool_type: String,
 
+    /// Whether a provider-side managed tool has **already executed** this call
+    /// (0.26.0 M7: Responses `web_search` / `file_search` / `code_interpreter` /
+    /// `computer_use`, MCP server tools, …). When `true` the consumer MUST NOT
+    /// run a local tool of the same name — doing so would re-execute the
+    /// side-effecting work (or report `ToolNotFound`). The provider embeds the
+    /// outcome in `arguments`, so that is the observation to feed back.
+    ///
+    /// Default `false` (ordinary local execution). Kept backward-compatible via
+    /// `#[serde(default)]` so pre-0.26 persisted tool calls deserialize fine.
+    #[serde(default)]
+    pub server_executed: bool,
+
     /// Function call details
     pub function: FunctionCall,
 }
@@ -71,6 +83,7 @@ pub struct ToolCallBuilder {
     id: String,
     tool_type: String,
     function: FunctionCall,
+    server_executed: bool,
 }
 
 impl ToolCallBuilder {
@@ -83,6 +96,7 @@ impl ToolCallBuilder {
                 name: String::new(),
                 arguments: String::new(),
             },
+            server_executed: false,
         }
     }
 
@@ -98,12 +112,20 @@ impl ToolCallBuilder {
         self
     }
 
+    /// Mark this call as already executed provider-side (0.26.0 M7), so the
+    /// consumer skips local re-execution and feeds the embedded result back.
+    pub fn server_executed(mut self, server_executed: bool) -> Self {
+        self.server_executed = server_executed;
+        self
+    }
+
     /// Consume the builder and produce the [`ToolCall`].
     pub fn build(self) -> ToolCall {
         ToolCall {
             id: self.id,
             tool_type: self.tool_type,
             function: self.function,
+            server_executed: self.server_executed,
         }
     }
 }

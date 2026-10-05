@@ -414,11 +414,7 @@ impl ShortTermMemory {
     /// in that `consolidate` uses it to promote the *current* entry rather than
     /// a stale snapshot clone — eliminating the read-then-forget race where a
     /// concurrent re-put of a promoted key would be silently deleted.
-    async fn take(
-        &self,
-        namespace: &str,
-        key: &str,
-    ) -> Result<Option<StoredMemory>, MemoryError> {
+    async fn take(&self, namespace: &str, key: &str) -> Result<Option<StoredMemory>, MemoryError> {
         let mut inner = self
             .inner
             .lock()

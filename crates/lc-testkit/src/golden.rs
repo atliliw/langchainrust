@@ -130,7 +130,7 @@ fn scoring_exchanges(exchanges: &[RecordedExchange]) -> Vec<RecordedExchange> {
 }
 
 /// Reads a recording file and builds the golden dataset from it, skipping pure
-/// tool-call exchanges (see [`scoring_exchanges`]).
+/// tool-call exchanges (see `scoring_exchanges`).
 pub fn golden_dataset_from_file(path: impl AsRef<Path>) -> Result<Dataset, TestkitError> {
     let exchanges = read_exchanges(path)?;
     let exchanges = scoring_exchanges(&exchanges);

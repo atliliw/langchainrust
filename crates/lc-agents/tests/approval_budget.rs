@@ -19,6 +19,7 @@ use lc_agents::{
 };
 use lc_core::cost::{CostTracker, ModelPrice, PricingTable};
 use lc_core::language_models::TokenUsage;
+use lc_core::runnables::RUN_META_COST_SCOPE;
 use lc_core::tools::{BaseTool, ToolError};
 
 /// Records call counts and arguments: lets tests assert "it really executed / with which arguments".
@@ -64,6 +65,7 @@ impl BaseAgent for ActOnceAgent {
                 },
                 log: "call_1".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -91,6 +93,7 @@ impl BaseAgent for LoopAgent {
             },
             log: "loop".to_string(),
             tool_call_id: None,
+            server_executed: false,
         }))
     }
 }
@@ -113,6 +116,7 @@ impl BaseAgent for TokenLoopAgent {
             },
             log: "loop".to_string(),
             tool_call_id: None,
+            server_executed: false,
         }))
     }
     fn last_token_usage(&self) -> Option<TokenUsage> {
@@ -139,8 +143,15 @@ impl BaseAgent for CostLoopAgent {
         _config: Option<&lc_core::runnables::RunnableConfig>,
     ) -> Result<AgentOutput, AgentError> {
         // 1k input @ $2/1k + 1k output @ $8/1k = exactly $10 per plan.
+        // P0-5: mirror the real `TokenTrackingLLM` — read the run's cost scope
+        // the executor stamped into the config and record into that scoped bucket.
+        // This validates the full wiring: build_plan_config → config metadata →
+        // scoped record → the budget gate reading run_cost_usd(scope).
+        let scope = _config
+            .and_then(|c| c.metadata.get(RUN_META_COST_SCOPE))
+            .and_then(|v| v.as_str());
         self.tracker
-            .record(Some("mock"), "priced-model", 1_000, 1_000)
+            .record_scoped(scope, Some("mock"), "priced-model", 1_000, 1_000)
             .await;
         Ok(AgentOutput::Action(AgentAction {
             tool: "recorder".to_string(),
@@ -149,6 +160,7 @@ impl BaseAgent for CostLoopAgent {
             },
             log: "loop".to_string(),
             tool_call_id: None,
+            server_executed: false,
         }))
     }
 }
@@ -178,6 +190,7 @@ impl BaseAgent for ResumeAgent {
                 },
                 log: "call_1".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         if intermediate_steps
@@ -191,6 +204,7 @@ impl BaseAgent for ResumeAgent {
                 },
                 log: "call_2".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
         Ok(AgentOutput::Finish(AgentFinish::new(
@@ -337,7 +351,7 @@ async fn budget_max_tool_calls_stops() {
             err,
             AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
                 limit: 2,
-                actual: 3
+                actual: 2
             })
         ),
         "got: {err:?}"
@@ -445,6 +459,63 @@ async fn budget_max_cost_stops() {
     );
 }
 
+/// P0-5: two CONCURRENT runs sharing one tracker isolate their incremental
+/// spend. Each caps at $25; both spend $10/plan in their own scope, so each does
+/// 2 tools then trips at its own $30 — if a run read the GLOBAL total (the old
+/// baseline-delta bug) it would see the other run's spend (≈$60) and trip early.
+#[tokio::test]
+async fn concurrent_budget_max_cost_isolates_runs() {
+    let tracker = ten_dollar_per_plan_tracker();
+    let agent_a = Arc::new(CostLoopAgent {
+        tracker: tracker.clone(),
+    });
+    let agent_b = Arc::new(CostLoopAgent {
+        tracker: tracker.clone(),
+    });
+    let (executor_a, calls_a, _) = recorder_harness(agent_a);
+    let (executor_b, calls_b, _) = recorder_harness(agent_b);
+
+    // Two independent executors share the same tracker (the ask: parallel batch
+    // of runs, each with the same cost budget, must not trip on each other).
+    let a = executor_a
+        .with_cost_tracker(tracker.clone())
+        .with_budget(BudgetConfig {
+            max_cost_usd: Some(25.0),
+            ..Default::default()
+        });
+    let b = executor_b
+        .with_cost_tracker(tracker.clone())
+        .with_budget(BudgetConfig {
+            max_cost_usd: Some(25.0),
+            ..Default::default()
+        });
+
+    // `AgentExecutor` is not `Clone`; run both executors' futures concurrently.
+    let (ra, rb) = tokio::join!(a.invoke("a".to_string()), b.invoke("b".to_string()));
+
+    // Each run trips on ITS OWN 3rd plan ($30), not the shared total (~$60).
+    for (name, res, calls) in [("a", &ra, &calls_a), ("b", &rb, &calls_b)] {
+        let err = res.as_ref().unwrap_err();
+        assert!(
+            matches!(err, AgentError::BudgetExceeded(BudgetExceeded::Cost { limit: 25.0, actual })
+                if (actual - 30.0).abs() < 1e-9),
+            "run {name} should trip at its own $30, got: {err:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "run {name} must execute exactly 2 tools (2×$20 spent) before its own $30 trip"
+        );
+    }
+
+    // Both runs together spent $60 = two independent scopes' worth.
+    assert!(
+        (tracker.total_cost_usd().await - 60.0).abs() < 1e-9,
+        "shared tracker must aggregate both runs: got {}",
+        tracker.total_cost_usd().await
+    );
+}
+
 /// B3: a tracker without a `max_cost_usd` limit only measures — the gate never
 /// trips and the recorded spend stays queryable after the loop.
 #[tokio::test]
@@ -521,7 +592,7 @@ async fn stream_budget_tool_calls() {
             events.last(),
             Some(Err(AgentError::BudgetExceeded(BudgetExceeded::ToolCalls {
                 limit: 2,
-                actual: 3
+                actual: 2
             })))
         ),
         "流式最后一个事件应为 Err(BudgetExceeded::ToolCalls),got: {:?}",

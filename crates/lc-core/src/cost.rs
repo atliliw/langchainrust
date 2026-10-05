@@ -232,6 +232,13 @@ struct Inner {
     total_cost_usd: f64,
     by_model: HashMap<String, ModelSpend>,
     records: Vec<CostRecord>,
+    /// Per-run scoped spend (P0-5). Maps a run-scope label to the USD that
+    /// scope alone spent. Concurrent runs sharing one tracker each write their
+    /// own key here so budget gates can read `run_cost_usd(scope)` instead of
+    /// the global `total_cost_usd()` and never cross-contaminate each other's
+    /// incremental spend. Unscoped `record` calls fold into a `None`-keyed
+    /// bucket so the global aggregate remains the union of all scopes.
+    by_scope: HashMap<Option<String>, f64>,
 }
 
 /// Thread-safe cumulative cost tracker.
@@ -294,11 +301,45 @@ impl CostTracker {
         prompt_tokens: usize,
         completion_tokens: usize,
     ) -> f64 {
-        let cost = self
-            .table
-            .get(provider, model)
-            .map(|p| p.cost_of(prompt_tokens, completion_tokens))
-            .unwrap_or(0.0);
+        self.record_scoped(None, provider, model, prompt_tokens, completion_tokens)
+            .await
+    }
+
+    /// Records one LLM call attributed to a per-run scope and returns its USD
+    /// cost.
+    ///
+    /// P0-5: concurrent runs share one `Arc<CostTracker>` (the LLM is
+    /// `Arc`-shared), so a run computing its incremental spend from
+    /// `total_cost_usd() - baseline` sees *every* concurrent run's spend mixed
+    /// in. Attaching a per-run scope label lets the tracker keep an isolated
+    /// bucket per scope; a budget gate then reads [`Self::run_cost_usd`] for its
+    /// own scope only. The call still feeds the global aggregates and `records`,
+    /// so session-level reporting is unchanged. `None` scope is the unscoped
+    /// bucket (identical behavior to [`Self::record`]).
+    pub async fn record_scoped(
+        &self,
+        scope: Option<&str>,
+        provider: Option<&str>,
+        model: &str,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+    ) -> f64 {
+        let cost = match self.table.get(provider, model) {
+            Some(p) => p.cost_of(prompt_tokens, completion_tokens),
+            None => {
+                // LOW: an unpriced model silently costing $0 hides budget
+                // surprises. Surface it at debug level (usage still counted)
+                // rather than swallowing the missing price entirely. Local
+                // models legitimately price at 0.0; absent-from-table is a
+                // different first-class signpost, not a silent zero.
+                log::debug!(
+                    "lc_core::cost: model '{model}' has no price in the pricing table \
+                     -> cost recorded as $0 (usage/tokens still counted); add it to \
+                     PricingTable or `with_model_only` to price it"
+                );
+                0.0
+            }
+        };
 
         let record = CostRecord {
             provider: provider.map(str::to_string),
@@ -323,6 +364,14 @@ impl CostTracker {
             entry.prompt_tokens += prompt_tokens;
             entry.completion_tokens += completion_tokens;
             entry.cost_usd += cost;
+            // Scope bucket: isolate concurrent runs' spend. Folded into the
+            // `None` bucket when no scope is attached so the global totals stay
+            // the union of every scope.
+            if let Some(scope) = scope {
+                *inner.by_scope.entry(Some(scope.to_string())).or_default() += cost;
+            } else {
+                *inner.by_scope.entry(None).or_default() += cost;
+            }
             inner.records.push(record.clone());
         }
 
@@ -362,6 +411,22 @@ impl CostTracker {
     /// Cumulative USD spend (the value the budget gate reads).
     pub async fn total_cost_usd(&self) -> f64 {
         self.inner.lock().await.total_cost_usd
+    }
+
+    /// USD spend attributed to a single run scope (P0-5).
+    ///
+    /// A budget gate running inside one of several *concurrent* runs sharing
+    /// this tracker must read its own scope here — never `total_cost_usd()`
+    /// minus a stale baseline — so another run's interleaved spend cannot leak
+    /// into its incremental budget. Returns 0.0 for an unknown scope.
+    pub async fn run_cost_usd(&self, scope: &str) -> f64 {
+        self.inner
+            .lock()
+            .await
+            .by_scope
+            .get(&Some(scope.to_string()))
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Snapshot report of everything recorded so far.
@@ -504,6 +569,42 @@ mod tests {
         tracker.reset().await;
         assert_eq!(tracker.total_cost_usd().await, 0.0);
         assert_eq!(tracker.report().await.calls, 0);
+    }
+
+    #[tokio::test]
+    async fn scoped_runs_do_not_cross_contaminate_incremental_spend() {
+        // P0-5 regression: two concurrent runs sharing one tracker (the LLM is
+        // Arc-shared) must read only their own scoped spend. Simulates run A
+        // spending, then interleaved run B, then run A again — run_cost_usd(A)
+        // must stay A's total, never B's.
+        let tracker = CostTracker::with_builtin_prices();
+
+        // run A spends $0.75 (1000/1000 on gpt-4o-mini).
+        tracker
+            .record_scoped(Some("run-a"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .await;
+        // interleaved run B spends twice.
+        tracker
+            .record_scoped(Some("run-b"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .await;
+        tracker
+            .record_scoped(Some("run-b"), Some("anthropic"), "claude-3-5-haiku-latest", 1000, 1000)
+            .await;
+        // run A spends again.
+        tracker
+            .record_scoped(Some("run-a"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .await;
+
+        // Each run's scoped read equals exactly its own spend, unaffected by the
+        // other run's interleaved records.
+        assert_eq!(tracker.run_cost_usd("run-a").await, 1.5); // 2 * 0.75
+        // 0.75 (gpt-4o-mini) + 4.80 (haiku 1000/1000 @ 0.80/4.00 per 1k)
+        assert_eq!(tracker.run_cost_usd("run-b").await, 5.55);
+        assert_eq!(tracker.run_cost_usd("unknown-scope").await, 0.0);
+
+        // The global aggregate is still the union of every scope.
+        assert_eq!(tracker.total_cost_usd().await, 7.05);
+        assert_eq!(tracker.report().await.calls, 4);
     }
 
     #[tokio::test]

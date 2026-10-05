@@ -133,7 +133,7 @@ impl ManagedServer {
     /// and reported call results ([`ConnectionManager::report`]).
     async fn client(&self) -> Result<StatelessMcpClient, MCPError> {
         {
-            let breaker = self.breaker.lock().await;
+            let mut breaker = self.breaker.lock().await;
             if !breaker.allow_request() {
                 return Err(MCPError::new(
                     -1,

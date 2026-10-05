@@ -102,6 +102,7 @@ mod tests {
                 },
                 log: "我需要计算".to_string(),
                 tool_call_id: None,
+                server_executed: false,
             },
             "结果: 4".to_string(),
         )];

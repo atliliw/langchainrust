@@ -2,8 +2,19 @@
 //! Candle local inference backend (0.21.0 S5.3, feature = `local-candle`).
 //!
 //! Runs BERT-family embedding models (`bge-*`, Qwen3-Embedding-Mini, ...)
-//! through `candle` — pure Rust, no ONNX Runtime. CPU-only here (quantized /
-//! CUDA / Metal backends are candle capabilities this version does not wire).
+//! through `candle` — pure Rust, no ONNX Runtime. CPU-only here (CUDA / Metal
+//! backends are candle capabilities this version does not wire).
+//!
+//! Quantized inference (v0.26.0 T8.1): weights can be FP16-quantized
+//! ([`Quantization::F16`]) or routed through candle's 8-bit GGML backend
+//! ([`Quantization::Int8`], `Q8_0`). candle 0.11 ships no quantized BERT module
+//! (`QuantizedBertModel`/`QLinear` were removed upstream) and its `BertModel`
+//! cannot run a clean FP16 forward on CPU, so both modes quantize the weights
+//! then dequantize to FP32 for the standard model build — output stays `Vec<f32>`
+//! and near-identical to FP32. The default ([`Quantization::None`]) is unchanged
+//! FP32 behavior. (True footprint reduction is deferred until candle restores a
+//! native quantized BERT forward; these knobs wire and verify candle 0.11's
+//! scaling/`Q8_0` backends today.)
 //!
 //! Two loading paths, mirroring the ONNX backend's local-file contract:
 //! - [`CandleEmbeddings::from_dir`]: local `config.json` + `tokenizer.json`
@@ -11,16 +22,22 @@
 //! - [`CandleEmbeddings::from_hf_hub`]: downloads the three files from a
 //!   HuggingFace repo id via `hf-hub` (cache-aware).
 //!
+//! A deferred [`CandleEmbeddingsBuilder`] (`.with_quantization(..).build()`,
+//! matching the sibling providers' `with_*` style) lets callers pick the mode
+//! on either path; `from_*_with` are the equivalent one-shot constructors.
+//!
 //! The `local-candle` backend is an *optional alternative* to fastembed(ort),
 //! not a replacement — CI-gated like `local-embeddings`; real-model tests are
 //! `#[ignore]`d.
 
 use crate::{EmbeddingError, Embeddings};
 use async_trait::async_trait;
+use candle_core::quantized::{GgmlDType, QTensor};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Max texts per forward pass (memory bound; pad-aligned batching).
@@ -47,26 +64,60 @@ impl std::fmt::Debug for CandleEmbeddings {
     }
 }
 
-impl CandleEmbeddings {
-    /// Loads from a local model directory containing `config.json`,
+/// Weight precision for the local-candle backend.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Quantization {
+    /// FP32 weights (default — matches prior behavior).
+    #[default]
+    None,
+    /// FP16-quantized weights (rounded via half precision, dequantized to FP32).
+    F16,
+    /// Route weights through candle's 8-bit GGML backend (`Q8_0`) at load.
+    Int8,
+}
+
+/// Deferred (not-yet-loaded) constructor for the candle backend.
+///
+/// Mirrors the `with_*` builder style used by the sibling providers
+/// (`OpenAIEmbeddings::new(..).with_model(..)`, ...). The model is built on
+/// [`CandleEmbeddingsBuilder::build`], so call [`with_quantization`] before it.
+///
+/// ```
+/// # use lc_embeddings::{CandleEmbeddingsBuilder, Quantization};
+/// let res = CandleEmbeddingsBuilder::from_dir(std::env::temp_dir())
+///     .with_quantization(Quantization::F16)
+///     .build();
+/// assert!(res.is_err()); // temp_dir() has no model.safetensors — fails fast
+/// ```
+pub struct CandleEmbeddingsBuilder {
+    config: PathBuf,
+    tokenizer: PathBuf,
+    weights: PathBuf,
+    model_name: String,
+    quantization: Quantization,
+}
+
+impl CandleEmbeddingsBuilder {
+    /// Build from a local model directory containing `config.json`,
     /// `tokenizer.json` and `model.safetensors`.
-    pub fn from_dir(model_dir: impl AsRef<Path>) -> Result<Self, EmbeddingError> {
-        let dir = model_dir.as_ref();
+    pub fn from_dir(dir: impl AsRef<Path>) -> Self {
+        let dir = dir.as_ref();
         let model_name = dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("candle-bert")
             .to_string();
-        Self::load(
-            &dir.join("config.json"),
-            &dir.join("tokenizer.json"),
-            &dir.join("model.safetensors"),
+        Self {
+            config: dir.join("config.json"),
+            tokenizer: dir.join("tokenizer.json"),
+            weights: dir.join("model.safetensors"),
             model_name,
-        )
+            quantization: Quantization::None,
+        }
     }
 
     /// Downloads `config.json` / `tokenizer.json` / `model.safetensors` from a
-    /// HuggingFace repo (blocking, cache-aware) and loads the model.
+    /// HuggingFace repo (blocking, cache-aware).
     pub fn from_hf_hub(repo_id: &str) -> Result<Self, EmbeddingError> {
         let api = hf_hub::api::sync::Api::new().map_err(|e| {
             EmbeddingError::Config(format!("failed to initialize hf-hub client: {e}"))
@@ -75,7 +126,65 @@ impl CandleEmbeddings {
         let config = repo.get("config.json").map_err(hf_err)?;
         let tokenizer = repo.get("tokenizer.json").map_err(hf_err)?;
         let weights = repo.get("model.safetensors").map_err(hf_err)?;
-        Self::load(&config, &tokenizer, &weights, repo_id.to_string())
+        Ok(Self {
+            config,
+            tokenizer,
+            weights,
+            model_name: repo_id.to_string(),
+            quantization: Quantization::None,
+        })
+    }
+
+    /// Select the weight quantization mode (default [`Quantization::None`]).
+    pub fn with_quantization(mut self, quant: Quantization) -> Self {
+        self.quantization = quant;
+        self
+    }
+
+    /// Run the (potentially blocking) load.
+    pub fn build(&self) -> Result<CandleEmbeddings, EmbeddingError> {
+        CandleEmbeddings::load(
+            &self.config,
+            &self.tokenizer,
+            &self.weights,
+            self.model_name.clone(),
+            self.quantization,
+        )
+    }
+}
+
+impl CandleEmbeddings {
+    /// Loads from a local model directory containing `config.json`,
+    /// `tokenizer.json` and `model.safetensors` (FP32 weights).
+    pub fn from_dir(model_dir: impl AsRef<Path>) -> Result<Self, EmbeddingError> {
+        CandleEmbeddingsBuilder::from_dir(model_dir).build()
+    }
+
+    /// Loads with an explicit weight mode from a local model directory.
+    pub fn from_dir_with(
+        model_dir: impl AsRef<Path>,
+        quant: Quantization,
+    ) -> Result<Self, EmbeddingError> {
+        CandleEmbeddingsBuilder::from_dir(model_dir)
+            .with_quantization(quant)
+            .build()
+    }
+
+    /// Downloads `config.json` / `tokenizer.json` / `model.safetensors` from a
+    /// HuggingFace repo (blocking, cache-aware) — FP32 weights.
+    pub fn from_hf_hub(repo_id: &str) -> Result<Self, EmbeddingError> {
+        CandleEmbeddingsBuilder::from_hf_hub(repo_id)?.build()
+    }
+
+    /// Like [`from_hf_hub`](CandleEmbeddings::from_hf_hub), with an explicit
+    /// weight mode.
+    pub fn from_hf_hub_with(
+        repo_id: &str,
+        quant: Quantization,
+    ) -> Result<Self, EmbeddingError> {
+        CandleEmbeddingsBuilder::from_hf_hub(repo_id)?
+            .with_quantization(quant)
+            .build()
     }
 
     fn load(
@@ -83,6 +192,7 @@ impl CandleEmbeddings {
         tokenizer_path: &Path,
         weights_path: &Path,
         model_name: String,
+        quant: Quantization,
     ) -> Result<Self, EmbeddingError> {
         let config: Config =
             serde_json::from_reader(std::fs::File::open(config_path).map_err(|e| {
@@ -106,9 +216,28 @@ impl CandleEmbeddings {
                 weights_path.display()
             ))
         })?;
-        let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
-        let model = BertModel::load(vb, &config)
-            .map_err(|e| EmbeddingError::Config(format!("failed to build BERT model: {e}")))?;
+        // Quantization mode → weight pre-pass before the (FP32) model build.
+        // `None` is the unchanged FP32 path. `F16` FP16-roundtrips every weight;
+        // `Int8` routes them through candle's Q8_0 backend. Both dequantize to
+        // FP32 for the standard `BertModel` kernel — candle 0.11 has no native
+        // quantized BERT forward (see the helper docs).
+        let model = match quant {
+            Quantization::None => {
+                let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+                BertModel::load(vb, &config)
+            }
+            Quantization::F16 => {
+                let tensors = quantize_f16(tensors)?;
+                let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+                BertModel::load(vb, &config)
+            }
+            Quantization::Int8 => {
+                let tensors = quantize_int8(tensors, &device)?;
+                let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+                BertModel::load(vb, &config)
+            }
+        }
+        .map_err(|e| EmbeddingError::Config(format!("failed to build BERT model: {e}")))?;
 
         Ok(Self {
             dim: config.hidden_size,
@@ -126,6 +255,57 @@ fn hf_err(e: hf_hub::api::sync::ApiError) -> EmbeddingError {
 
 fn tensor_err(e: candle_core::Error) -> EmbeddingError {
     EmbeddingError::ApiError(format!("candle tensor error: {e}"))
+}
+
+/// FP16 weight pre-pass for [`Quantization::F16`].
+///
+/// Casts every weight through `DType::F16` (half precision) and back to FP32.
+/// candle 0.11 cannot run the stock `BertModel`'s forward at FP16 on CPU — its
+/// `get_extended_attention_mask` broadcasts `f32::MIN` to the model dtype,
+/// which overflows to `-inf` in FP16 and makes `0 * -inf = NaN` on every
+/// attended position — so the FP16-quantized weights are surfaced as FP32 for
+/// the standard kernel. (Mathematically this is exactly an FP16 rounding of
+/// the weights: ~11-bit mantissa, near-FP32 output.)
+fn quantize_f16(
+    tensors: HashMap<String, Tensor>,
+) -> Result<HashMap<String, Tensor>, EmbeddingError> {
+    let mut out = HashMap::with_capacity(tensors.len());
+    for (name, t) in tensors {
+        let restored = t.to_dtype(DType::F16).and_then(|h| h.to_dtype(DType::F32));
+        let r = match restored {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("failed to FP16-cast weight `{}`: {e}", name);
+                return Err(EmbeddingError::Config(msg));
+            }
+        };
+        out.insert(name, r);
+    }
+    Ok(out)
+}
+
+/// Int8 (`Q8_0`) weight pre-pass for [`Quantization::Int8`].
+///
+/// Runs every weight tensor through candle's 8-bit GGML block quantization
+/// (`QTensor::quantize(.., GgmlDType::Q8_0)`) and back (`dequantize`). candle
+/// 0.11 ships no quantized BERT module (`QuantizedBertModel`/`QLinear` were
+/// removed upstream), so the Q8_0 round-trip is applied at load and the
+/// dequantized (approximately-identical, `Q8_0` is lossy) FP32 weights feed the
+/// standard `BertModel::load`. Tensors whose last dim is not a multiple of the
+/// Q8_0 block size (32), or scalars, are left untouched rather than failing the
+/// load.
+fn quantize_int8(
+    tensors: HashMap<String, Tensor>,
+    device: &Device,
+) -> Result<HashMap<String, Tensor>, EmbeddingError> {
+    let mut out = HashMap::with_capacity(tensors.len());
+    for (name, t) in tensors {
+        let restored = QTensor::quantize(&t, GgmlDType::Q8_0)
+            .and_then(|q| q.dequantize(device))
+            .unwrap_or(t);
+        out.insert(name, restored);
+    }
+    Ok(out)
 }
 
 /// Mask-weighted mean pooling over the sequence axis.
@@ -288,10 +468,14 @@ impl BlockingEmbedder {
             .model
             .forward(&input_ids, &token_type_ids, Some(&attention_mask))
             .map_err(|e| EmbeddingError::ApiError(format!("candle forward failed: {e}")))?;
+        // Cast to FP32 before flattening/reading so quantized (FP16) models
+        // also return their `Vec<f32>` embedding rows unchanged.
         let hidden_data = hidden
             .flatten_all()
             .map_err(tensor_err)?
-            .to_vec1()
+            .to_dtype(DType::F32)
+            .map_err(tensor_err)?
+            .to_vec1::<f32>()
             .map_err(tensor_err)?;
 
         let masks: Vec<Vec<i64>> = (0..batch)
@@ -308,6 +492,75 @@ impl BlockingEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_transformers::models::bert::{HiddenAct, PositionEmbeddingType};
+
+    const TINY_HIDDEN: usize = 16;
+    const TINY_INTER: usize = 32;
+    const TINY_VOCAB: usize = 40;
+
+    /// Minimal BERT config matching the synthetic weight shapes.
+    fn tiny_bert_config() -> Config {
+        Config {
+            vocab_size: TINY_VOCAB,
+            hidden_size: TINY_HIDDEN,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            intermediate_size: TINY_INTER,
+            hidden_act: HiddenAct::Gelu,
+            hidden_dropout_prob: 0.0,
+            max_position_embeddings: 16,
+            type_vocab_size: 2,
+            initializer_range: 0.02,
+            layer_norm_eps: 1e-12,
+            pad_token_id: 0,
+            position_embedding_type: PositionEmbeddingType::Absolute,
+            use_cache: false,
+            classifier_dropout: None,
+            model_type: Some("bert".to_string()),
+        }
+    }
+
+    /// Synthetic FP32 weight set for a 1-layer BERT (F16 path casts on load).
+    fn tiny_bert_weights(device: &Device) -> HashMap<String, Tensor> {
+        let h = TINY_HIDDEN;
+        let mut w = HashMap::new();
+        fn add(w: &mut HashMap<String, Tensor>, path: &str, shape: (usize, usize), device: &Device) {
+            w.insert(
+                path.to_string(),
+                Tensor::randn(0f32, 0.01f32, shape, device).unwrap(),
+            );
+        }
+        fn add1(w: &mut HashMap<String, Tensor>, path: &str, n: usize, device: &Device) {
+            w.insert(
+                path.to_string(),
+                Tensor::randn(0f32, 0.01f32, (n,), device).unwrap(),
+            );
+        }
+        // embeddings
+        add(&mut w, "embeddings.word_embeddings.weight", (TINY_VOCAB, h), device);
+        add(&mut w, "embeddings.position_embeddings.weight", (16, h), device);
+        add(&mut w, "embeddings.token_type_embeddings.weight", (2, h), device);
+        add1(&mut w, "embeddings.LayerNorm.weight", h, device);
+        add1(&mut w, "embeddings.LayerNorm.bias", h, device);
+        // single encoder layer
+        add(&mut w, "encoder.layer.0.attention.self.query.weight", (h, h), device);
+        add1(&mut w, "encoder.layer.0.attention.self.query.bias", h, device);
+        add(&mut w, "encoder.layer.0.attention.self.key.weight", (h, h), device);
+        add1(&mut w, "encoder.layer.0.attention.self.key.bias", h, device);
+        add(&mut w, "encoder.layer.0.attention.self.value.weight", (h, h), device);
+        add1(&mut w, "encoder.layer.0.attention.self.value.bias", h, device);
+        add(&mut w, "encoder.layer.0.attention.output.dense.weight", (h, h), device);
+        add1(&mut w, "encoder.layer.0.attention.output.dense.bias", h, device);
+        add1(&mut w, "encoder.layer.0.attention.output.LayerNorm.weight", h, device);
+        add1(&mut w, "encoder.layer.0.attention.output.LayerNorm.bias", h, device);
+        add(&mut w, "encoder.layer.0.intermediate.dense.weight", (TINY_INTER, h), device);
+        add1(&mut w, "encoder.layer.0.intermediate.dense.bias", TINY_INTER, device);
+        add(&mut w, "encoder.layer.0.output.dense.weight", (h, TINY_INTER), device);
+        add1(&mut w, "encoder.layer.0.output.dense.bias", h, device);
+        add1(&mut w, "encoder.layer.0.output.LayerNorm.weight", h, device);
+        add1(&mut w, "encoder.layer.0.output.LayerNorm.bias", h, device);
+        w
+    }
 
     /// Mask-weighted mean: only mask=1 positions average in.
     #[test]
@@ -339,6 +592,117 @@ mod tests {
     fn mean_pool_short_tensor_errors() {
         let err = mean_pool_rows(&[1.0, 2.0], 1, 2, 2, &[vec![1, 1]]).unwrap_err();
         assert!(matches!(err, EmbeddingError::ParseError(_)));
+    }
+
+    /// The quantization knob defaults to disabled (status-quo F32).
+    #[test]
+    fn quantization_default_is_none() {
+        assert_eq!(Quantization::default(), Quantization::None);
+        let q = CandleEmbeddingsBuilder::from_dir(std::env::temp_dir()).with_quantization(Quantization::F16);
+        assert_eq!(q.quantization, Quantization::F16);
+    }
+
+    /// A `BertModel` built from the (dequantized) weight set runs the real
+    /// forward on CPU and reads back as a finite `Vec<f32>` — the path both
+    /// quantized modes land on (they dequantize to FP32 for the standard model).
+    #[test]
+    fn model_forward_on_cpu_returns_f32() {
+        let device = Device::Cpu;
+        let weights = tiny_bert_weights(&device);
+        let vb = VarBuilder::from_tensors(weights, DType::F32, &device);
+        let config = tiny_bert_config();
+        let model = BertModel::load(vb, &config).unwrap();
+
+        let ids = Tensor::new(&[[1i64, 2i64, 3i64]], &device).unwrap();
+        let types = Tensor::new(&[[0i64, 0i64, 0i64]], &device).unwrap();
+        let mask = Tensor::new(&[[1i64, 1i64, 1i64]], &device).unwrap();
+        let hidden = model.forward(&ids, &types, Some(&mask)).unwrap();
+
+        assert_eq!(hidden.dtype(), DType::F32);
+        assert_eq!(hidden.shape().dims(), &[1usize, 3usize, 16usize]);
+        let out = hidden.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(out.len(), 48);
+        assert!(out.iter().all(|v| v.is_finite()), "all outputs finite");
+    }
+
+    /// The FP16 weight round-trip (`quantize_f16`) preserves shape and stays
+    /// near-identical to the FP32 source (FP16 has ~11 bits of mantissa).
+    #[test]
+    fn f16_quantize_roundtrip_keeps_shape_and_values() {
+        let device = Device::Cpu;
+        let src = Tensor::randn(0f32, 0.1f32, (768, 384), &device).unwrap();
+        let dq = src
+            .to_dtype(DType::F16)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
+        assert_eq!(dq.shape(), src.shape());
+        let a = src.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let b = dq.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let max_err = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_err < 1e-2, "FP16 round-trip max error {max_err}");
+    }
+
+    /// candle's int8 (`Q8_0`) round-trip preserves shape and is lossy-but-tight.
+    #[test]
+    fn q8_quantize_roundtrip_keeps_shape_and_values() {
+        let device = Device::Cpu;
+        let src = Tensor::randn(0f32, 1f32, (768usize, 384usize), &device).unwrap();
+        let q = QTensor::quantize(&src, GgmlDType::Q8_0).unwrap();
+        let dq = q.dequantize(&device).unwrap();
+        assert_eq!(dq.shape(), src.shape());
+        let a = src.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let b = dq.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(a.len(), b.len());
+        let max_err = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        // Q8_0 is per-32-element block quantization: lossy, but each element
+        // stays within ~2% of its scaled magnitude (N(0,1) → ≤0.02 abs error).
+        assert!(max_err < 5e-2, "Q8_0 round-trip max error {max_err}");
+    }
+
+    /// The quantized constructors thread the knob and fail fast on missing files.
+    #[test]
+    fn quantization_knob_fails_fast_on_missing_dir() {
+        let dir = std::env::temp_dir().join("lc-candle-quant-nonexistent");
+        for quant in [Quantization::F16, Quantization::Int8] {
+            let err = CandleEmbeddings::from_dir_with(&dir, quant).unwrap_err();
+            assert!(matches!(err, EmbeddingError::Config(_)));
+        }
+    }
+
+    /// Live F16/Int8 parity against the F32 model (network + download, CI-gated).
+    /// Run: `cargo test -p lc-embeddings --features local-candle candle_emb -- --ignored`
+    #[tokio::test]
+    #[ignore = "downloads a real BERT model from HuggingFace (~120MB) per mode"]
+    async fn quantized_modes_match_f32_within_tolerance() {
+        let text = "Rust is a systems programming language.";
+        let f32v = CandleEmbeddings::from_hf_hub("BAAI/bge-small-en-v1.5")
+            .unwrap()
+            .embed_query(text)
+            .await
+            .unwrap();
+        let f16 = CandleEmbeddings::from_hf_hub_with("BAAI/bge-small-en-v1.5", Quantization::F16)
+            .unwrap()
+            .embed_query(text)
+            .await
+            .unwrap();
+        let i8 = CandleEmbeddings::from_hf_hub_with("BAAI/bge-small-en-v1.5", Quantization::Int8)
+            .unwrap()
+            .embed_query(text)
+            .await
+            .unwrap();
+        for (name, v) in [("f16", &f16), ("int8", &i8)] {
+            let dot: f32 = f32v.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+            assert!(dot > 0.999, "{name} vs F32 cosine similarity {dot}");
+        }
     }
 
     /// Config JSON parses into the candle `Config` (real struct, real serde).

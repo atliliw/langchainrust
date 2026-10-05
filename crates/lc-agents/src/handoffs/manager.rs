@@ -380,6 +380,7 @@ mod tests {
                     },
                     log: String::new(),
                     tool_call_id: None,
+                    server_executed: false,
                 }));
             }
             Ok(AgentOutput::Finish(AgentFinish::new(

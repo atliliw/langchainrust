@@ -7,6 +7,37 @@ use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
+use tokio::io::AsyncReadExt;
+
+/// Upper bound on a JSON file's on-disk size (bytes). `load` refuses to read past
+/// this so a malicious/erroneous path can't balloon memory (0.26.0 §1.9). Mirrors
+/// the DOCX loader's decompression cap for a consistent bounded-loading policy.
+const MAX_JSON_FILE_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+
+/// Asynchronously reads a file as UTF-8, aborting with a `LoaderError` if it exceeds
+/// `max_bytes` (bounded read: read-and-check per chunk, so a file that grows between
+/// an up-front `metadata` stat and the read is still caught).
+async fn bounded_read_utf8(path: &std::path::Path, max_bytes: usize) -> Result<String, LoaderError> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = file.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > max_bytes {
+            return Err(LoaderError::Other(format!(
+                "file exceeds size bound of {max_bytes} bytes: {}",
+                path.display()
+            )));
+        }
+    }
+    String::from_utf8(buf).map_err(|e| {
+        LoaderError::Other(format!("file is not valid UTF-8: {}", e))
+    })
+}
 
 /// JSON document loader
 ///
@@ -68,7 +99,9 @@ impl DocumentLoader for JSONLoader {
             )));
         }
 
-        let content = std::fs::read_to_string(&self.path)?;
+        // 0.26.0 §1.9: async + bounded read (the old `std::fs::read_to_string` was a
+        // sync syscall on an async path and read the whole file unconditionally).
+        let content = bounded_read_utf8(&self.path, MAX_JSON_FILE_BYTES).await?;
         let json: Value =
             serde_json::from_str(&content).map_err(|e| LoaderError::JsonError(e.to_string()))?;
 
@@ -177,6 +210,28 @@ mod tests {
         let result = loader.load().await;
 
         assert!(result.is_err());
+    }
+
+    /// 0.26.0 §1.9: a file larger than the bound must be refused (not read unbounded).
+    /// Tests `bounded_read_utf8` directly with a tiny limit so no 256 MiB fixture is needed.
+    #[tokio::test]
+    async fn test_bounded_read_utf8_refuses_oversized_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        // Write more than the small bound permits.
+        write!(temp_file, "a pretty long json-ish payload").unwrap();
+        temp_file.as_file().flush().unwrap();
+
+        // Fits under the bound → reads fine.
+        let ok = bounded_read_utf8(temp_file.path(), 4096).await.unwrap();
+        assert!(ok.contains("payload"));
+
+        // Refuses when the file exceeds the bound.
+        let err = bounded_read_utf8(temp_file.path(), 8).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds size bound of 8 bytes"),
+            "expected size-bound error, got {msg}"
+        );
     }
 
     #[tokio::test]

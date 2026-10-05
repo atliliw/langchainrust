@@ -20,6 +20,7 @@ use crate::hooks::{HookError, StreamAction};
 use crate::metrics::AgentMetrics;
 use crate::streaming::state::AgentStreamEvent;
 use crate::types::{AgentOutput, AgentStep, ToolInput};
+use lc_memory::BaseMemory;
 use futures_util::Stream;
 use lc_callbacks::{semconv::GEN_AI_OPERATION_NAME, CallbackManager, RunTree, RunType};
 use lc_core::observability::{MetricsSink, ObsEvent};
@@ -210,8 +211,8 @@ impl AgentExecutor {
                 }
             }
 
-            if let Some(memory) = &memory {
-                let memory_guard = memory.lock().await;
+            if let Some(mem) = &memory {
+                let memory_guard = mem.lock().await;
                 let variable_keys: Vec<String> = memory_guard
                     .memory_variables()
                     .into_iter()
@@ -221,7 +222,7 @@ impl AgentExecutor {
                     Ok(vars) => vars,
                     Err(e) => {
                         let msg = format!("Failed to load memory: {e}");
-                        stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                        emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                         for hook in &hooks {
                             hook.on_error(&HookError::Other(msg.clone()));
                         }
@@ -251,12 +252,10 @@ impl AgentExecutor {
             let loop_start = Instant::now();
             let mut metrics = AgentMetrics::default();
 
-            // stage-G G7: capture the shared tracker's spend as this run's baseline, so
-            // `max_cost_usd` caps THIS run's incremental spend (matches invoke).
-            let cost_baseline = match &cost_tracker {
-                Some(tracker) => tracker.total_cost_usd().await,
-                None => 0.0,
-            };
+            // P0-5: the cost gate below reads THIS run's scoped spend keyed by its
+            // root run id (the label `build_plan_config` stamps into the planning
+            // config). The planning LLM is `Arc`-shared across concurrent runs, so a
+            // global baseline delta would fold another run's interleaved spend in.
 
             for iteration in 0..max_iterations {
                 if verbose {
@@ -275,7 +274,7 @@ impl AgentExecutor {
                 if let Some(err) =
                     budget_iteration_gate(budget.as_ref(), max_iterations, iteration, loop_start)
                 {
-                    stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
@@ -285,7 +284,7 @@ impl AgentExecutor {
                 // the streaming path).
                 if let Err(e) = run_before_completion_hooks(&hooks, &inputs) {
                     let msg = e.to_string();
-                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(AgentError::Other(msg))).await;
                     return;
@@ -347,7 +346,7 @@ impl AgentExecutor {
                         Ok(o) => o,
                         Err(e) => {
                             let msg = e.to_string();
-                            stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                             for hook in &hooks {
                                 hook.on_error(&HookError::Other(msg.clone()));
                             }
@@ -369,18 +368,20 @@ impl AgentExecutor {
                 // Budget gate: cumulative tokens after the LLM call. Over the limit →
                 // send Err and stop.
                 if let Some(err) = budget_token_gate(budget.as_ref(), &metrics) {
-                    stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
                 }
                 // B3 (0.22.4): cumulative USD spend gate, same semantics as invoke.
-                // stage-G G7: gated on this run's incremental spend (total minus
-                // baseline), so a shared tracker never trips this run via another run.
+                // P0-5: gated on THIS run's scoped spend (root run id), so concurrent
+                // runs sharing the tracker never bleed spend into each other's budget.
                 if let Some(tracker) = &cost_tracker {
-                    let incremental = (tracker.total_cost_usd().await - cost_baseline).max(0.0);
-                    if let Some(err) = budget_cost_gate(budget.as_ref(), incremental) {
-                        stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                    let scope = root_run.id.to_string();
+                    if let Some(err) =
+                        budget_cost_gate(budget.as_ref(), tracker.run_cost_usd(&scope).await)
+                    {
+                        emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
                         publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                         let _ = tx.send(Err(err)).await;
                         return;
@@ -450,7 +451,7 @@ impl AgentExecutor {
                         if let Some(policy) = &tool_policy {
                             if let Err(e) = policy.check(&action.tool) {
                                 let msg = e.to_string();
-                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -478,7 +479,7 @@ impl AgentExecutor {
                         // executed-only (no pre-increment), so a denied / not-found call
                         // never trips the gate prematurely.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -523,7 +524,7 @@ impl AgentExecutor {
                                 }
                                 Err(e) => {
                                     let msg = e.to_string();
-                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -558,7 +559,7 @@ impl AgentExecutor {
                             for action in &actions {
                                 if let Err(e) = policy.check(&action.tool) {
                                     let msg = e.to_string();
-                                    stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -577,7 +578,7 @@ impl AgentExecutor {
                         // batch whose denied / not-found members would be refunded does
                         // not trip the gate before anything runs.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            stream_chain_error(&callbacks, &mut root_run, &err.to_string()).await;
+                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -627,7 +628,7 @@ impl AgentExecutor {
                                         }))
                                         .await;
                                 }
-                                stream_chain_error(&callbacks, &mut root_run, &msg).await;
+                                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -672,7 +673,7 @@ impl AgentExecutor {
                 on_max_iterations
             );
             if on_max_iterations == MaxIterationsPolicy::Error {
-                stream_chain_error(&callbacks, &mut root_run, "max iterations reached").await;
+                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, "max iterations reached").await;
                 publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                 let _ = tx.send(Err(AgentError::MaxIterationsReached)).await;
                 return;
@@ -748,15 +749,44 @@ impl Drop for AgentEventStream {
 /// 0.22.0 audit fix (H-A1): dispatches the chain-error callbacks on the stream
 /// path, mirroring invoke's `on_chain_error` handling. Best-effort — never
 /// fails, only marks the root run as errored first.
-async fn stream_chain_error(
+///
+/// 0.26.0 §1.8 (F7 / H-A9): **every** terminal error return on the stream path
+/// funnels through here, so this is the single choke point that also persists
+/// the errored round to memory — aligning the stream path with invoke's
+/// `engine.rs` error-save contract. The user's input is written back (empty
+/// assistant slot) so a crashed round is not lost to the next round; the raw
+/// error text is never stored as assistant output (H-A9). A save failure only
+/// warns and never masks the original error.
+async fn emit_stream_failure(
     callbacks: &Option<Arc<CallbackManager>>,
     root_run: &mut RunTree,
+    memory: &Option<Arc<tokio::sync::Mutex<dyn BaseMemory>>>,
+    inputs: &HashMap<String, String>,
     message: &str,
 ) {
     root_run.end_with_error(message.to_string());
     if let Some(callbacks) = callbacks {
         for handler in callbacks.handlers() {
             handler.on_chain_error(root_run, message).await;
+        }
+    }
+    save_errored_round_to_memory(memory, inputs).await;
+}
+
+/// F7 / H-A9 (0.26.0 §1.8): persists the errored round to memory — the user's
+/// input is saved with an **empty assistant slot**, matching the invoke path
+/// (`engine.rs` errored-round branch). Assistant text is left out deliberately
+/// so framework error noise can never be mistaken for real assistant reasoning.
+/// Best-effort: a save failure only warns, never masks the original error.
+async fn save_errored_round_to_memory(
+    memory: &Option<Arc<tokio::sync::Mutex<dyn BaseMemory>>>,
+    inputs: &HashMap<String, String>,
+) {
+    if let Some(memory) = memory {
+        let mut outputs = HashMap::new();
+        outputs.insert("output".to_string(), String::new());
+        if let Err(e) = memory.lock().await.save_context(inputs, &outputs).await {
+            log::warn!("failed to save errored round to memory [stream]: {e}");
         }
     }
 }

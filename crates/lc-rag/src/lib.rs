@@ -7,7 +7,10 @@
 //! multimodal (image+text) retrieval, and a full RAG pipeline builder.
 
 pub mod adapter;
+pub mod agentic_retrieval;
 pub mod bm25;
+pub mod colbert;
+pub mod context_injection;
 pub mod contextual;
 pub mod graph_rag;
 pub mod hybrid;
@@ -32,6 +35,10 @@ mod structured;
 pub mod unified_hybrid;
 
 pub use adapter::RagRunnable;
+pub use agentic_retrieval::{refine_query, IterativeRetrieval, IterativeRetriever};
+pub use context_injection::{
+    ContextInjectionConfig, ContextInjector, CONTEXT_INJECTED_KEY, PARENT_TITLE_KEY,
+};
 pub use contextual::{
     ContextualConfig, ContextualEnhancer, ContextualError, CONTEXTUAL_METADATA_KEY,
 };
@@ -76,6 +83,7 @@ pub use multimodal::{
 pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
 pub use late_chunking::{late_chunk, late_index_in, pool_tokens, LateChunk, LateChunkConfig};
 
+pub use colbert::{score as colbert_score, ColbertRerank};
 pub use neural_rerank::{rerank_async, AsyncReranker, CohereRerank, JinaRerank};
 pub use reranking::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,

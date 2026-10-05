@@ -182,6 +182,7 @@ impl ReActAgent {
                     },
                     log: "0.22.0 audit fix: parse repair".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 }))
             }
         }

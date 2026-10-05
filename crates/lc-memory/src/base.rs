@@ -140,6 +140,13 @@ impl ChatMessageHistory {
         &self.messages
     }
 
+    /// M13: mutable access to all messages, so a memory implementation can stamp
+    /// stable lineage ids in place. Used by the persistent memory to tag every
+    /// message before the optimistic-lock merge dedups by identity.
+    pub fn messages_mut(&mut self) -> &mut [Message] {
+        &mut self.messages
+    }
+
     /// Clear messages
     pub fn clear(&mut self) {
         self.messages.clear();
@@ -180,6 +187,18 @@ impl Default for ChatMessageHistory {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// M13: serialize a message for the LLM prompt, stripping the internal
+/// persistence `id` (lineage metadata) so the prompt history stays byte-identical
+/// to pre-id-stamping memory output. Ids are stamped only for optimistic-lock
+/// dedup on the persistent store (see `mongo_memory`); they must never reach the
+/// prompt. Shared by every memory's `return_messages` path.
+pub(crate) fn serialize_message_to_prompt(msg: &Message) -> Result<serde_json::Value, MemoryError> {
+    let mut stripped = msg.clone();
+    stripped.id = None;
+    serde_json::to_value(&stripped)
+        .map_err(|e| MemoryError::LoadError(format!("failed to serialize memory message: {e}")))
 }
 
 /// Convert `load_memory_variables` output into a message list for LLM consumption.
@@ -282,5 +301,30 @@ mod tests {
         let messages = memory_variables_to_messages(&vars);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_type, lc_schema::MessageType::System);
+    }
+
+    /// M13: `serialize_message_to_prompt` strips the internal persistence `id`
+    /// so a stamped message serializes to the exact pre-id prompt shape — the
+    /// LLM history must never leak lineage metadata.
+    #[test]
+    fn test_serialize_message_to_prompt_strips_id() {
+        let msg = Message::human("hi").with_id("persistence-lineage-1");
+        let value = serialize_message_to_prompt(&msg).unwrap();
+        release_assert_no_id(&value);
+
+        // and with no id set (legacy / non-persistent), output is unchanged.
+        let plain = Message::human("hi");
+        let before = serde_json::to_value(&plain).unwrap();
+        let after = serialize_message_to_prompt(&plain).unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// M13 helper: assert a serialized message carries no `id` field.
+    fn release_assert_no_id(value: &serde_json::Value) {
+        assert_eq!(
+            value.get("id"),
+            None,
+            "prompt message must not carry the persistence id: {value}"
+        );
     }
 }

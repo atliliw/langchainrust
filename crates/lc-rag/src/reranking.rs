@@ -338,6 +338,12 @@ impl Reranker for BM25Reranker {
             .map(|d| d.content.split_whitespace().count() as f32)
             .sum::<f32>()
             / n_docs;
+        // LOW: a non-empty list of *empty-content* documents yields `avgdl == 0.0`
+        // (sum 0 / n_docs), which would then make the term score `doc_len/avgdl =
+        // 0/0 = NaN`. `denom <= 0.0` never fires for NaN, so a NaN leaks into the
+        // result. Clamping the divisor keeps normalization finite; an empty doc
+        // scores 0 (its term freq is 0 anyway).
+        let avgdl = avgdl.max(f32::MIN_POSITIVE);
 
         // Per-query-term inverse document frequency. Standard BM25 uses
         // IDF so that rare terms contribute more than common ones; the
@@ -483,6 +489,26 @@ mod tests {
         let reranker = BM25Reranker::new();
         let scores = reranker.score("query", &[]).unwrap();
         assert!(scores.is_empty());
+    }
+
+    /// LOW: a non-empty list of *empty-content* documents must not produce NaN
+    /// scores. The old code computed `avgdl = 0 / n_docs = 0.0`, then
+    /// `doc_len/avgdl = 0/0 = NaN` in the term score, and the `denom <= 0.0`
+    /// guard never fires on NaN → NaN leaked into the result.
+    #[test]
+    fn test_bm25_all_empty_content_no_nan() {
+        let reranker = BM25Reranker::new();
+        let docs: Vec<Document> = vec![
+            Document::new(""),
+            Document::new(""),
+            Document::new("   "),
+        ];
+        let scores = reranker.score("query", &docs).unwrap();
+        assert_eq!(scores.len(), 3);
+        for s in scores {
+            assert!(s.is_finite(), "NaN leaked into BM25 score: {s:?}");
+            assert_eq!(s, 0.0, "empty-content doc should score 0");
+        }
     }
 
     #[test]

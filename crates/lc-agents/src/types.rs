@@ -26,6 +26,15 @@ pub struct AgentAction {
     /// derive a stable pairing id so a `ToolCall` and its `tool` result stay linked.
     #[serde(default)]
     pub tool_call_id: Option<String>,
+
+    /// 0.26.0 M7: this tool was already executed on the provider side
+    /// (Responses `web_search` / `file_search` / `code_interpreter` /
+    /// `computer_use`, MCP server tools). The executor must NOT run a local
+    /// tool of the same name — it just feeds the embedded result (the
+    /// arguments) back as the observation. Copied from the originating
+    /// `ToolCall::server_executed`. Default `false` (ordinary local execution).
+    #[serde(default)]
+    pub server_executed: bool,
 }
 
 /// Tool input type
@@ -211,6 +220,7 @@ mod tests {
             },
             log: "test".to_string(),
             tool_call_id: None,
+            server_executed: false,
         }
     }
 

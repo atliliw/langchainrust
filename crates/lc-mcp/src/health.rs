@@ -121,6 +121,11 @@ pub struct CircuitBreaker {
     backoff: Duration,
     /// Next backoff step (increments on each trip, growing exponentially).
     backoff_step: u32,
+    /// LOW: set when the half-open window grants its single probe, cleared when
+    /// that probe resolves. Enforces exactly-one concurrent probe — a pure
+    /// timestamp check would let every caller in the window probe at once and
+    /// storm the recovering server.
+    probe_in_flight: bool,
 }
 
 impl CircuitBreaker {
@@ -133,6 +138,7 @@ impl CircuitBreaker {
             next_retry_at: None,
             backoff: Duration::ZERO,
             backoff_step: 0,
+            probe_in_flight: false,
         }
     }
 
@@ -148,15 +154,35 @@ impl CircuitBreaker {
 
     /// Whether a request may be sent.
     ///
-    /// `Closed` always allows; `Open` allows once only after the backoff time has passed (half-open probe window).
-    pub fn allow_request(&self) -> bool {
+    /// `Closed` always allows. `Open` in the half-open window (backoff elapsed)
+    /// grants a probe to exactly **one** caller and marks it in flight; every
+    /// other caller in that window (and normal requests until the probe
+    /// resolves) gets `false` and backs off instead of storming the recovering
+    /// server with concurrent probes.
+    pub fn allow_request(&mut self) -> bool {
         match self.state {
             BreakerState::Closed => true,
-            BreakerState::Open => self
-                .next_retry_at
-                .map(|t| Instant::now() >= t)
-                .unwrap_or(true),
+            BreakerState::Open => {
+                let window_open = self
+                    .next_retry_at
+                    .map(|t| Instant::now() >= t)
+                    .unwrap_or(true);
+                if window_open && !self.probe_in_flight {
+                    self.probe_in_flight = true;
+                    true
+                } else {
+                    false
+                }
+            }
         }
+    }
+
+    /// Whether a half-open probe is currently in flight (a probe was granted
+    /// via [`CircuitBreaker::allow_request`] but has not yet resolved). Callers
+    /// that want to *queue* behind the active probe rather than fail outright
+    /// may inspect this.
+    pub fn probe_in_flight(&self) -> bool {
+        self.probe_in_flight
     }
 
     /// Records a success: back to `Closed`, resets the failure count and backoff steps.
@@ -166,6 +192,7 @@ impl CircuitBreaker {
         self.backoff = Duration::ZERO;
         self.backoff_step = 0;
         self.next_retry_at = None;
+        self.probe_in_flight = false;
     }
 
     /// Records a failure: increments the failure count; at the threshold → Open + schedules the next backoff retry time.
@@ -173,6 +200,9 @@ impl CircuitBreaker {
     /// On a failed half-open probe (already Open), re-opens and advances the backoff step (exponential growth).
     pub fn record_failure(&mut self) {
         self.failures += 1;
+        // A failed probe has resolved; clear its in-flight marker so the NEXT
+        // half-open window can grant a fresh probe.
+        self.probe_in_flight = false;
         if self.failures >= self.max_failures {
             self.state = BreakerState::Open;
             self.backoff = backoff_delay(self.backoff_step);
@@ -189,6 +219,16 @@ impl CircuitBreaker {
     /// Derives the health status from the current breaker state.
     pub fn health_status(&self) -> HealthStatus {
         to_status(self.state, self.failures)
+    }
+
+    /// Test-only: force the breaker into an immediately-grantable half-open
+    /// window (Open, backoff expired). Lets tests exercise the single-probe
+    /// semantics without sleeping past the real backoff.
+    #[cfg(test)]
+    fn force_half_open(&mut self) {
+        self.state = BreakerState::Open;
+        self.next_retry_at = Some(Instant::now());
+        self.probe_in_flight = false;
     }
 }
 
@@ -267,6 +307,46 @@ mod tests {
             cb.record_failure();
         }
         assert_eq!(cb.backoff(), MAX_BACKOFF);
+    }
+
+    /// LOW: the half-open window grants exactly ONE probe; concurrent callers
+    /// back off (queue) instead of a pure timestamp check letting them all
+    /// through and storming the recovering server. The marker is cleared when
+    /// the probe resolves.
+    #[test]
+    fn test_circuit_breaker_half_open_single_probe() {
+        let mut cb = CircuitBreaker::new(1);
+        cb.force_half_open();
+
+        // First caller wins the half-open probe.
+        assert!(cb.allow_request());
+        assert!(cb.probe_in_flight());
+
+        // Concurrent callers queue (reject) while the probe is in flight.
+        assert!(
+            !cb.allow_request(),
+            "second half-open caller must back off, not probe"
+        );
+        assert!(
+            !cb.allow_request(),
+            "third caller (and normal requests) must also back off"
+        );
+
+        // Probe resolves (failure re-opens, advancing backoff): in-flight clears,
+        // and the window is no longer grantable until the next deadline.
+        cb.record_failure();
+        assert!(!cb.probe_in_flight());
+        assert!(!cb.allow_request(), "re-opened, backoff still running");
+
+        // A second half-open window grants a fresh probe.
+        cb.force_half_open();
+        assert!(cb.allow_request());
+        assert!(cb.probe_in_flight());
+
+        // Probe resolves success -> Closed, marker cleared.
+        cb.record_success();
+        assert!(!cb.probe_in_flight());
+        assert_eq!(cb.state(), BreakerState::Closed);
     }
 
     /// Recovery: a successful call closes the breaker and allows requests.

@@ -63,13 +63,46 @@ impl std::fmt::Debug for StreamableHttpTransport {
     }
 }
 
+fn build_http() -> Client {
+    Client::builder()
+        // M3 (0.26.0 §1.1): never auto-follow a redirect that changes origin.
+        //
+        // HttpRequest::exchange attaches `Mcp-Session-Id` (and a bearer token)
+        // to every POST; reqwest re-sends custom headers — unlike `authorization`,
+        // which it strips on a cross-host redirect — after a cross-domain
+        // redirect. Following it would exfiltrate the session token to the
+        // redirected origin. Same-origin redirects (path-level) are still
+        // honored.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let target = reqwest::Url::parse(attempt.url().as_str()).ok();
+            let original = attempt.previous().first();
+            let origin_same = match (target, original) {
+                (Some(t), Some(o)) => {
+                    t.scheme() == o.scheme()
+                        && t.host_str() == o.host_str()
+                        && t.port_or_known_default() == o.port_or_known_default()
+                }
+                // Parse failure / no original URL → fail closed rather than
+                // risk a cross-origin session-header leak.
+                _ => false,
+            };
+            if origin_same {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
 impl StreamableHttpTransport {
     /// Creates a transport for a Streamable HTTP MCP endpoint (e.g.
     /// `https://host/mcp`) without authentication.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            http: Client::new(),
+            http: build_http(),
             token_provider: None,
             session: Mutex::new(None),
             egress: None,
@@ -84,7 +117,7 @@ impl StreamableHttpTransport {
     ) -> Self {
         Self {
             url: url.into(),
-            http: Client::new(),
+            http: build_http(),
             token_provider: Some(provider),
             session: Mutex::new(None),
             egress: None,
@@ -644,6 +677,139 @@ mod tests {
         let sub = StreamableHttpTransport::new("https://api.example.com/mcp")
             .with_egress(EgressPolicy::new().allow("example.com"));
         assert!(sub.check_egress().is_ok());
+    }
+
+    // ---- M3: redirect policy (0.26.0 §1.1) ----
+
+    /// Reads one HTTP request head + a bounded body chunk; returns the request
+    /// path and parsed headers (lowercased keys). The caller closes the socket.
+    async fn loopback_read_once(
+        stream: &mut tokio::net::TcpStream,
+    ) -> (String, std::collections::HashMap<String, String>) {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 16 * 1024];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read(&mut buf),
+        )
+        .await
+        .ok() // timeout killed the read
+        .map(|r| r.unwrap_or(0))
+        .unwrap_or(0);
+        let text = String::from_utf8_lossy(&buf[..n]);
+        let mut lines = text.lines();
+        let path = lines
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("")
+            .to_string();
+        let mut headers = std::collections::HashMap::new();
+        for line in lines {
+            if let Some((k, v)) = line.split_once(':') {
+                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+            }
+        }
+        (path, headers)
+    }
+
+    /// M3: a **cross-origin** redirect is NOT followed. reqwest re-sends custom
+    /// headers (`Mcp-Session-Id`, bearer token) after a cross-host redirect —
+    /// following it would exfiltrate the session token to the redirected
+    /// origin. The transport refuses the redirect and the redirected origin is
+    /// never contacted.
+    #[tokio::test]
+    async fn cross_origin_redirect_is_not_followed() {
+        use tokio::io::AsyncWriteExt;
+
+        // Probe server B: if a request ever arrives here, the session (and
+        // bearer token) were forwarded across the redirect — a leak.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let probe_port = probe.local_addr().unwrap().port();
+        let probe_received = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let probe_received = probe_received.clone();
+            tokio::spawn(async move {
+                if let Ok((mut sock, _)) = probe.accept().await {
+                    probe_received.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                        )
+                        .await;
+                }
+            });
+        }
+
+        // Redirector A: 302 → probe on a DIFFERENT port (different origin).
+        let redirector = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirector_port = redirector.local_addr().unwrap().port();
+        let location = format!("http://127.0.0.1:{probe_port}/mcp");
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = redirector.accept().await {
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let transport =
+            StreamableHttpTransport::new(format!("http://127.0.0.1:{redirector_port}/mcp"));
+        // Seed a session id — the secret a cross-origin redirect would leak.
+        *transport.session.lock().unwrap() = Some("SECRET-SESSION".into());
+
+        let result = transport
+            .request(&MCPRequest::new(1, "tools/list", None))
+            .await;
+        assert!(
+            result.is_err(),
+            "cross-origin redirect must be refused, got {result:?}"
+        );
+        assert!(
+            !probe_received.load(std::sync::atomic::Ordering::SeqCst),
+            "redirect must NOT reach the cross-origin probe target"
+        );
+    }
+
+    /// M3: a **same-origin** redirect (same scheme/host/port, different path)
+    /// is still followed — the policy only blocks origin changes, not
+    /// path-level redirects.
+    #[tokio::test]
+    async fn same_origin_redirect_is_followed() {
+        use tokio::io::AsyncWriteExt;
+
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // Serve up to two requests: /redir → 302 /mcp, then /mcp → 200.
+            for _ in 0..2 {
+                if let Ok((mut sock, _)) = server.accept().await {
+                    let (path, _) = loopback_read_once(&mut sock).await;
+                    if path == "/redir" {
+                        let resp =
+                            "HTTP/1.1 302 Found\r\nLocation: /mcp\r\nContent-Length: 0\r\n\r\n";
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    } else {
+                        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    }
+                }
+            }
+        });
+
+        let transport = StreamableHttpTransport::new(format!("http://127.0.0.1:{port}/redir"));
+        let resp = transport
+            .request(&MCPRequest::new(1, "tools/list", None))
+            .await
+            .expect("same-origin redirect should be followed");
+        assert!(!resp.is_error(), "expected tools response, got {resp:?}");
     }
 
     /// B8: an empty policy fails the whole client request (no network reached).

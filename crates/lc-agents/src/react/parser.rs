@@ -119,6 +119,7 @@ impl ReActOutputParser {
                 tool_input,
                 log: text.to_string(),
                 tool_call_id: None,
+                server_executed: false,
             }));
         }
 

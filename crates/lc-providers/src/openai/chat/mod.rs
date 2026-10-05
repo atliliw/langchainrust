@@ -140,8 +140,17 @@ impl OpenAIChat {
             body["temperature"] = json!(temp);
         }
 
+        // 0.26.0 M6: the reasoning family (o1/o3/o4/o5…) rejects `max_tokens`
+        // and only accepts `max_completion_tokens` — sending the former is a
+        // hard 400. Pick the field by model family; non-reasoning models keep
+        // `max_tokens`.
         if let Some(max) = self.config.max_tokens {
-            body["max_tokens"] = json!(max);
+            let key = if super::is_openai_reasoning_model(&self.config.model) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            body[key] = json!(max);
         }
 
         if let Some(top_p) = self.config.top_p {
@@ -644,18 +653,31 @@ impl OpenAIChat {
                     }
                 };
 
+                let mut overflow: Option<String> = None;
                 let events = {
                     // 0.22.0 C1: frame at the byte layer; only complete events
                     // are decoded, so multi-byte characters split across TCP
                     // chunks never hit from_utf8_lossy mid-character.
                     let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
                     let mut out = Vec::new();
-                    for text in guard.1.push(&chunk_bytes) {
-                        out.extend(guard.0.parse(&text));
+                    match guard.1.push(&chunk_bytes) {
+                        Ok(texts) => {
+                            for text in texts {
+                                out.extend(guard.0.parse(&text));
+                            }
+                        }
+                        // 0.26.0 M5: framer is bounded — a buffer-overflow is a
+                        // malformed/runaway stream; fail the stream (never a
+                        // silent OOM). Sent after the guard drops (Send).
+                        Err(e) => overflow = Some(e.to_string()),
                     }
                     out
                 };
                 // parser_guard is dropped here, before any await
+                if let Some(msg) = overflow {
+                    let _ = tx.send(Err(OpenAIError::Http(msg))).await;
+                    return;
+                }
 
                 for event in events {
                     if event.is_done() {

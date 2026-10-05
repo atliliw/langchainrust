@@ -239,6 +239,9 @@ fn test_parse_response_with_web_search() {
     assert_eq!(tc.len(), 1);
     assert_eq!(tc[0].id, "ws_001");
     assert_eq!(tc[0].function.name, "web_search");
+    // 0.26.0 M7: server-side-managed tools are marked server_executed so an
+    // agent feeds the embedded result back instead of re-running them locally.
+    assert!(tc[0].server_executed, "web_search is a provider-managed tool");
 }
 
 #[test]
@@ -271,6 +274,77 @@ fn test_parse_response_with_code_interpreter() {
     assert_eq!(result.content, "The answer is 4.");
     let tc = result.tool_calls.unwrap();
     assert_eq!(tc[0].function.name, "code_interpreter");
+    // 0.26.0 M7: the code-interpreter outcome is provider-side-executed.
+    assert!(tc[0].server_executed, "code_interpreter runs on the provider");
+}
+
+/// 0.26.0 M7: ALL provider-side-managed tools (web_search / file_search /
+/// code_interpreter / computer_use) are extracted as `server_executed`, so an
+/// agent can distinguish "already ran on the provider" from a normal local
+/// function call and skip re-execution. Ordinary function calls stay `false`.
+#[test]
+fn server_tools_are_marked_server_executed_but_function_calls_are_not() {
+    let api_response = ResponsesApiResponse {
+        id: "resp_m7".to_string(),
+        object: Some("response".to_string()),
+        model: Some("gpt-4o".to_string()),
+        output: vec![
+            ResponsesOutputItem::WebSearchCall(ResponsesWebSearchCall {
+                id: "ws_a".to_string(),
+                status: "completed".to_string(),
+                query: Some("q".to_string()),
+            }),
+            ResponsesOutputItem::FileSearchCall(ResponsesFileSearchCall {
+                id: "fs_b".to_string(),
+                status: "completed".to_string(),
+                query: Some("q".to_string()),
+            }),
+            ResponsesOutputItem::CodeInterpreterCall(ResponsesCodeInterpreterCall {
+                id: "ci_c".to_string(),
+                code: Some("print(1)".to_string()),
+                results: Some(vec![json!({"type": "text", "text": "1"})]),
+                status: Some("completed".to_string()),
+            }),
+            ResponsesOutputItem::ComputerCall(ResponsesComputerCall {
+                id: "cmp_d".to_string(),
+                action: Some(json!({"action": "click", "coordinate": [1, 2]})),
+                status: Some("completed".to_string()),
+            }),
+            ResponsesOutputItem::FunctionCall(ResponsesFunctionCall {
+                id: Some("fc_e".to_string()),
+                name: "get_weather".to_string(),
+                arguments: "{\"city\":\"beijing\"}".to_string(),
+                call_id: "call_e".to_string(),
+                status: Some("completed".to_string()),
+            }),
+        ],
+        usage: None,
+    };
+
+    let tc = ResponsesModel::parse_response(api_response)
+        .unwrap()
+        .tool_calls
+        .unwrap();
+
+    assert_eq!(tc.len(), 5, "all five items become tool calls");
+    for server_name in ["web_search", "file_search", "code_interpreter", "computer_use"] {
+        let call = tc
+            .iter()
+            .find(|c| c.function.name == server_name)
+            .unwrap_or_else(|| panic!("{server_name} missing"));
+        assert!(
+            call.server_executed,
+            "{server_name} must be server_executed (provider-run tool)"
+        );
+    }
+    let fn_call = tc
+        .iter()
+        .find(|c| c.function.name == "get_weather")
+        .unwrap();
+    assert!(
+        !fn_call.server_executed,
+        "an ordinary function call stays locally executable"
+    );
 }
 
 #[test]

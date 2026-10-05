@@ -20,6 +20,21 @@ pub const OPENAI_MODELS: [&str; 6] = [
     "o4-mini",     // small reasoning
 ];
 
+/// Returns `true` for the OpenAI **reasoning** model family (0.26.0 M6).
+///
+/// The o-series (`o1`, `o3`, `o4`, `o5` and their previews / fine-tunes such
+/// as `o1-preview`, `o3-mini`, `o4-mini`, `o5-2026-xx`) reject `max_tokens`
+/// and only accept the newer `max_completion_tokens` sampling knob — sending
+/// `max_tokens` to one is a hard 400. Detection is by the shared `o<digit>`
+/// id prefix, which is more future-proof than a growing finite list: it covers
+/// every current and likely next o-series id, including fine-tunes and dated
+/// variants, without needing a crate upgrade. Non-reasoning ids (`gpt-*`,
+/// `gpt-4o*`, custom fine-tunes) are untouched and keep `max_tokens`.
+pub fn is_openai_reasoning_model(model: &str) -> bool {
+    let mut chars = model.chars();
+    matches!((chars.next(), chars.next()), (Some('o'), Some(c)) if c.is_ascii_digit())
+}
+
 /// OpenAI configuration
 #[derive(Clone)]
 pub struct OpenAIConfig {

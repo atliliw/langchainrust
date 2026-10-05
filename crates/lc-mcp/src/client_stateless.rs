@@ -78,7 +78,11 @@ pub struct StatelessMcpClient {
     answers: Option<Arc<dyn MrtrAnswerProvider>>,
     rate_limiter: Option<Arc<Mutex<MethodRateLimiter>>>,
 
-    request_id: AtomicU64,
+    /// M13/LOW: shared across clones so two `Clone`s of the same client can
+    /// never emit the same JSON-RPC id. A clone must *share* the request-id
+    /// space (fetch_add is atomic), not start a fresh counter from the copied
+    /// value — that would collide under concurrency.
+    request_id: Arc<AtomicU64>,
     /// T10: optional `tools/call` OTel instrumentation.
     #[cfg(feature = "opentelemetry")]
     instrumentation: Option<Arc<crate::instrument::McpInstrumentation>>,
@@ -92,7 +96,7 @@ impl Clone for StatelessMcpClient {
             mrtr: self.mrtr.clone(),
             answers: self.answers.clone(),
             rate_limiter: self.rate_limiter.clone(),
-            request_id: AtomicU64::new(self.request_id.load(Ordering::SeqCst)),
+            request_id: self.request_id.clone(),
             #[cfg(feature = "opentelemetry")]
             instrumentation: self.instrumentation.clone(),
         }
@@ -120,7 +124,7 @@ impl StatelessMcpClient {
             mrtr: MrtrConfig::default(),
             answers: None,
             rate_limiter: None,
-            request_id: AtomicU64::new(1),
+            request_id: Arc::new(AtomicU64::new(1)),
             #[cfg(feature = "opentelemetry")]
             instrumentation: None,
         }
@@ -135,7 +139,7 @@ impl StatelessMcpClient {
             mrtr: MrtrConfig::default(),
             answers: None,
             rate_limiter: None,
-            request_id: AtomicU64::new(1),
+            request_id: Arc::new(AtomicU64::new(1)),
             #[cfg(feature = "opentelemetry")]
             instrumentation: None,
         }
@@ -322,6 +326,29 @@ mod tests {
                 })
                 .collect())
         }
+    }
+
+    /// LOW: a clone must *share* the request-id counter. The old `Clone`
+    /// copied the current value into a fresh `AtomicU64`, so two clones each
+    /// starting from the same number could emit identical JSON-RPC ids under
+    /// concurrency → response/failure mismatches on a shared transport.
+    #[test]
+    fn request_ids_are_shared_across_clones_and_unique() {
+        let client = StatelessMcpClient::connect("http://127.0.0.1:1/ignored");
+        let c1 = client.clone();
+        let c2 = client.clone();
+
+        // Interleave fetches across all three handles: every id must be distinct.
+        let mut ids = std::collections::BTreeSet::new();
+        for step in 0..12usize {
+            let id = match step % 3 {
+                0 => client.next_id(),
+                1 => c1.next_id(),
+                _ => c2.next_id(),
+            };
+            assert!(ids.insert(id), "duplicate request id across clones: {id}");
+        }
+        assert_eq!(ids.len(), 12);
     }
 
     /// M1 stateless_roundtrip: no handshake — connect → list_tools →

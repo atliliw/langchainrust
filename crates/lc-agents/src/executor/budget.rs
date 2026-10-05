@@ -132,13 +132,20 @@ pub(crate) fn budget_token_gate(
 /// reads `CostTracker::total_cost_usd()` and passes the value in; when no
 /// tracker is attached the measured spend stays `0.0`, so a cost limit without
 /// a tracker simply never trips (measurement and enforcement stay explicit).
+///
+/// Uses `> limit` — M12: matches the "allow exactly the limit, trip past it"
+/// boundary the token gate (`max_tokens`) and tool gate (pre-launch, so it lets
+/// exactly `limit` calls run) already share. The previous `>=` denied the very
+/// spend equal to the cap, so `max_cost_usd` silently allowed only `limit` minus
+/// one dollar's worth — the same off-by-boundary treatment this crate normalized
+/// for tokens/tools in 0.25.
 pub(crate) fn budget_cost_gate(
     budget: Option<&BudgetConfig>,
     current_cost_usd: f64,
 ) -> Option<AgentError> {
     let budget = budget?;
     let limit = budget.max_cost_usd?;
-    if current_cost_usd >= limit {
+    if current_cost_usd > limit {
         return Some(AgentError::BudgetExceeded(BudgetExceeded::Cost {
             limit,
             actual: current_cost_usd,
@@ -209,16 +216,20 @@ mod tests {
         assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 0.99).is_none());
     }
 
+    /// M12: cost gate matches the tool/token "allow exactly the limit, trip past
+    /// it" boundary — exactly `limit` USD is permitted; anything above stops.
     #[test]
-    fn cost_gate_at_and_above_limit_stops() {
-        match budget_cost_gate(Some(&cost_cfg(1.0)), 1.0) {
+    fn cost_gate_allows_exactly_limit_and_stops_above() {
+        // At exactly the limit: allowed (same as token/tool exact-limit semantics).
+        assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 1.0).is_none());
+        // Just past the limit: hard stop, reporting the actual spend.
+        match budget_cost_gate(Some(&cost_cfg(1.0)), 1.5) {
             Some(AgentError::BudgetExceeded(BudgetExceeded::Cost { limit, actual })) => {
                 assert_eq!(limit, 1.0);
-                assert_eq!(actual, 1.0);
+                assert_eq!(actual, 1.5);
             }
-            other => panic!("expected Cost stop at the limit, got {other:?}"),
+            other => panic!("expected Cost stop past the limit, got {other:?}"),
         }
-        assert!(budget_cost_gate(Some(&cost_cfg(1.0)), 1.5).is_some());
     }
 
     fn token_cfg(limit: usize) -> BudgetConfig {

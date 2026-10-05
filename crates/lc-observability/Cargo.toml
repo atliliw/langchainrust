@@ -1,6 +1,6 @@
 [package]
 name = "lc-observability"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Pluggable observability sinks for langchainrust — JSON-lines file, MongoDB."
@@ -8,7 +8,7 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version.workspace = true
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.25.0" }
+lc-core = { path = "../lc-core", version = "0.26.0" }
 async-trait = "0.1"
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["fs", "io-util", "sync"] }
@@ -16,14 +16,26 @@ tokio = { version = "1.0", features = ["fs", "io-util", "sync"] }
 # Optional: MongoDB sink (feature `mongodb`).
 mongodb = { version = "2.8", optional = true }
 
+# Optional: OTLP sink (feature `otlp`). Versions/features mirror `lc-callbacks`
+# exactly so the locked 0.27 SDK does not drift across the workspace.
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", optional = true, features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, optional = true, features = ["trace", "http-json", "reqwest-client"] }
+
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+
+# In-memory span exporter lets the OTLP mapping tests run offline (no collector).
+[dev-dependencies.opentelemetry_sdk]
+version = "0.27"
+features = ["trace", "testing", "rt-tokio"]
 
 [features]
 default = ["jsonl"]
 jsonl = []
 mongodb = ["dep:mongodb"]
+otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 
 [package.metadata.docs.rs]
 all-features = true

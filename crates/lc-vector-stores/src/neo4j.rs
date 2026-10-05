@@ -185,6 +185,18 @@ impl Neo4jVectorStore {
         )
     }
 
+    /// 0.26.0 §1.9: validates every config string that is interpolated verbatim into a
+    /// Cypher statement (node label + the four property names). Called at the top of each
+    /// store operation so an unsafe name fails-fast before it reaches the DB.
+    fn validate_config(&self) -> Result<(), VectorStoreError> {
+        validate_cypher_identifier(&self.config.node_label)?;
+        validate_cypher_identifier(&self.config.id_property)?;
+        validate_cypher_identifier(&self.config.content_property)?;
+        validate_cypher_identifier(&self.config.embedding_property)?;
+        validate_cypher_identifier(&self.config.metadata_property)?;
+        Ok(())
+    }
+
     /// Executes a Cypher query via the HTTP transaction API.
     async fn run_query(
         &self,
@@ -312,6 +324,9 @@ pub fn filter_to_cypher(
     filter: &MetadataFilter,
     metadata_prop: &str,
 ) -> Result<(String, serde_json::Value), VectorStoreError> {
+    // 0.26.0 §1.9: `metadata_prop` is interpolated into `node.{prop}[$k]` verbatim —
+    // refuse anything that is not a bare Cypher identifier before it reaches the query.
+    validate_cypher_identifier(metadata_prop)?;
     let mut state = CypherState { next: 0 };
     let mut params = serde_json::Map::new();
     let expr = state.expr(filter, metadata_prop, &mut params)?;
@@ -401,6 +416,28 @@ impl CypherState {
     }
 }
 
+/// S3 / 0.26.0 §1.9: validates a name that will be interpolated verbatim into a Cypher
+/// statement (node label, `{id,content,metadata,embedding}_property`) is a **bare Cypher
+/// identifier**: `[A-Za-z_][A-Za-z0-9_]*`. The property names and label are configuration
+/// strings inserted raw into `node.{prop}` / `(n:{label})` positions; pgvector already
+/// whitelists these, neo4j previously did not. Rejecting anything wider (escaped backtick
+/// identifiers included) keeps the whitelist tight and closes the gap.
+pub(crate) fn validate_cypher_identifier(name: &str) -> Result<(), VectorStoreError> {
+    let mut chars = name.chars();
+    let valid = match chars.next() {
+        Some(c) => c.is_ascii_alphabetic() || c == '_',
+        None => false,
+    } && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(VectorStoreError::ConfigError(format!(
+            "invalid Cypher identifier {name:?}: must match [A-Za-z_][A-Za-z0-9_]* \
+             (labels and property names are interpolated verbatim)"
+        )))
+    }
+}
+
 fn cypher_op(op: &FilterOp) -> &'static str {
     match op {
         FilterOp::Eq => "=",
@@ -486,6 +523,7 @@ impl VectorStore for Neo4jVectorStore {
         documents: Vec<Document>,
         embeddings: Vec<Vec<f32>>,
     ) -> Result<Vec<String>, VectorStoreError> {
+        self.validate_config()?;
         if documents.len() != embeddings.len() {
             return Err(VectorStoreError::EmbeddingError(
                 "Number of documents and embeddings must match".to_string(),
@@ -544,6 +582,7 @@ impl VectorStore for Neo4jVectorStore {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        self.validate_config()?;
         let query = format!(
             "{}{}",
             self.search_query_prefix(),
@@ -568,6 +607,7 @@ impl VectorStore for Neo4jVectorStore {
         k: usize,
         filter: Option<&MetadataFilter>,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        self.validate_config()?;
         let mut query = self.search_query_prefix();
         let mut params = json!({
             "index_name": self.config.index_name,
@@ -588,6 +628,7 @@ impl VectorStore for Neo4jVectorStore {
     }
 
     async fn get_document(&self, id: &str) -> Result<Option<Document>, VectorStoreError> {
+        self.validate_config()?;
         let query = format!(
             "MATCH (n:{label} {{{id_prop}: $id}}) \
              RETURN n.{content_prop} AS content, n.{metadata_prop} AS metadata",
@@ -629,6 +670,7 @@ impl VectorStore for Neo4jVectorStore {
     }
 
     async fn get_embedding(&self, id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
+        self.validate_config()?;
         let query = format!(
             "MATCH (n:{label} {{{id_prop}: $id}}) \
              RETURN n.{embedding_prop} AS embedding",
@@ -670,6 +712,7 @@ impl VectorStore for Neo4jVectorStore {
     }
 
     async fn delete_document(&self, id: &str) -> Result<(), VectorStoreError> {
+        self.validate_config()?;
         let query = format!(
             "MATCH (n:{label} {{{id_prop}: $id}}) \
              DETACH DELETE n",
@@ -805,6 +848,52 @@ mod tests {
         let debug_str = format!("{:?}", store);
         assert!(debug_str.contains("Neo4jVectorStore"));
         assert!(debug_str.contains("idx"));
+    }
+
+    /// 0.26.0 §1.9: bare-identifier whitelist for interpolated label/property names.
+    #[test]
+    fn test_validate_cypher_identifier() {
+        // Accept plain bare identifiers.
+        for good in ["metadata", "embedding", "_x", "a1", "node_label"] {
+            assert!(validate_cypher_identifier(good).is_ok(), "{good:?} should be accepted");
+        }
+        // Reject anything that is not a bare identifier (injection surface when
+        // interpolated verbatim into `node.{prop}` / `(n:{label})`).
+        for bad in ["", "1x", "meta data", "metadata] DETACH", "metadata}", "`meta`", "a-b", "a.b"] {
+            assert!(
+                validate_cypher_identifier(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    /// 0.26.0 §1.9: the public Cypher translator refuses a non-identifier metadata property.
+    #[test]
+    fn test_filter_to_cypher_rejects_unsafe_property() {
+        let f = MetadataFilter::field("lang", FilterOp::Eq, "rust");
+        let err = filter_to_cypher(&f, "metadata] RETURN 1").unwrap_err();
+        assert!(
+            matches!(err, VectorStoreError::ConfigError(_)),
+            "expected ConfigError, got {err:?}"
+        );
+    }
+
+    /// 0.26.0 §1.9: a store configured with an unsafe interpolated value must fail-fast
+    /// (ConfigError) before any network call, on every store operation.
+    #[tokio::test]
+    async fn test_store_op_rejects_unsafe_config_without_network() {
+        let config = Neo4jConfig::new("bolt://localhost:7687", "neo4j", "pass", "idx")
+            .with_embedding_property("embedding] DETACH DELETE n");
+        let store = Neo4jVectorStore::new(config);
+
+        let err = store
+            .add_documents(vec![], vec![])
+            .await
+            .expect_err("unsafe config must fail before the network");
+        assert!(
+            matches!(err, VectorStoreError::ConfigError(_)),
+            "expected ConfigError, got {err:?}"
+        );
     }
 
     /// S3: 单字段条件 → 参数化 Cypher 表达式 + 参数表。

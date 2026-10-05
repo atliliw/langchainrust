@@ -4,6 +4,26 @@ use super::*;
 use lc_core::tools::ToolDefinition;
 use serde_json::json;
 
+/// 0.26.0 P0-2: Gemini's billed `generateContent` POST is non-idempotent, so it
+/// must retry only provably pre-dispatch transport failures — never a
+/// post-dispatch timeout / 5xx that would run (and bill) the generation twice.
+/// Pins the chat call site to `SAFE_RETRY`'s mode so it cannot silently regress
+/// to `DEFAULT_RETRY`'s `AllTransportErrors` (which replays such timeouts).
+#[test]
+fn assert_billed_chat_uses_predispatch_only_retry() {
+    use crate::retry::TransportRetryMode;
+    assert_ne!(
+        CHAT_RETRY.transport,
+        TransportRetryMode::AllTransportErrors,
+        "generateContent POST must not replay post-dispatch timeouts (double billing)"
+    );
+    assert_eq!(
+        CHAT_RETRY.transport,
+        TransportRetryMode::PreDispatchOnly,
+        "generateContent POST should opt into at-most-once (SAFE_RETRY) retries"
+    );
+}
+
 #[test]
 fn test_bind_tools_creates_new_chat_with_tools() {
     let config = GeminiConfig::new("test-key");

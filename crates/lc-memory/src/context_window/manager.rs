@@ -139,12 +139,19 @@ impl<M: BaseChatModel> ContextWindow<M> {
         // M7: System messages are always kept and do **not** consume budget — base starts at 0.
         // The old implementation counted `count_messages(&system_messages)` into base, crowding
         // out usable context.
-        let mut running_tokens: usize = 0;
+        //
+        // The running total starts at the shared `+2` conversation-boundary marker
+        // (`count_messages` adds it once for the whole list) so the kept-suffix cost is
+        // accounted exactly. The old code started at 0 and undercounted every window by the
+        // boundary — the loop could keep a suffix that is really 2 tokens over budget. This
+        // matches `summarize`'s `2 + system_cost + ...` treatment of the same boundary.
+        let mut running_tokens: usize = 2;
 
         // Pre-compute per-message incremental cost.
         // For a single message, count_messages returns (4 + content_tokens + 2).
         // The incremental cost of adding a message to an existing list is (4 + content_tokens).
         // We subtract the boundary overhead (2) from single-message counts to get incremental cost.
+        // The one shared boundary marker is charged separately above (running_tokens init).
         let msg_incremental_costs: Vec<usize> = other_messages
             .iter()
             .map(|m| {
@@ -242,15 +249,13 @@ impl<M: BaseChatModel> ContextWindow<M> {
         let msg_cost: Vec<usize> = other_messages
             .iter()
             .map(|m| {
-                (self.counter.count_messages(std::slice::from_ref(m)) as usize)
-                    .saturating_sub(2)
+                (self.counter.count_messages(std::slice::from_ref(m)) as usize).saturating_sub(2)
             })
             .collect();
         let system_cost: usize = system_messages
             .iter()
             .map(|m| {
-                (self.counter.count_messages(std::slice::from_ref(m)) as usize)
-                    .saturating_sub(2)
+                (self.counter.count_messages(std::slice::from_ref(m)) as usize).saturating_sub(2)
             })
             .sum();
         // Reserve space for a summary message (estimate ~100 tokens worth).

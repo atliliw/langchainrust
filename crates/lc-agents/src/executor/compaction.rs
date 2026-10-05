@@ -222,6 +222,7 @@ mod tests {
                 },
                 log: String::new(),
                 tool_call_id: None,
+                server_executed: false,
             },
             "x".repeat(observation_len),
         )

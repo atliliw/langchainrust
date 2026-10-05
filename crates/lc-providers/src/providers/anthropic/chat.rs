@@ -22,6 +22,15 @@ use super::types::{
 use crate::openai::sse::SseByteFramer;
 use crate::ProviderError;
 
+/// 0.26.0 P0-2: retry policy for the billed `chat` POST, pinned so it can be
+/// asserted in a test. Non-idempotent and paid per generation, so only
+/// provably pre-dispatch transport failures are replayed (`SAFE_RETRY`) —
+/// never a post-dispatch timeout/5xx, which would bill the generation twice.
+/// Extracted to a named const (rather than an inline `SAFE_RETRY`) specifically
+/// so `tests::assert_billed_chat_uses_predispatch_only_retry` guarantees the
+/// call site cannot silently regress to [`crate::retry::DEFAULT_RETRY`].
+pub(crate) const CHAT_RETRY: crate::retry::RetryConfig = crate::retry::SAFE_RETRY;
+
 /// Anthropic Claude chat client.
 #[derive(Clone)]
 pub struct AnthropicChat {
@@ -423,9 +432,11 @@ impl AnthropicChat {
         let body = self.build_request_body(messages, false);
 
         // 0.22.0 audit fix (H-P2): retry transient failures (429/5xx/network).
-        // A14: non-idempotent POST — DEFAULT_RETRY may replay a post-dispatch
-        // timeout/5xx and double-bill; use retry::SAFE_RETRY to retry only
-        // provably pre-dispatch transport failures.
+        // 0.26.0 P0-2 (fix of A14 deferral): this is a non-idempotent, billed
+        // POST. DEFAULT_RETRY replays a post-dispatch timeout/5xx and runs (and
+        // bills) the generation twice, discarding the first result. Route the
+        // call through the pinned `CHAT_RETRY` (= SAFE_RETRY) so only provably
+        // pre-dispatch transport failures are replayed — at-most-once billing.
         let response = crate::retry::send_with_retry(
             || {
                 self.client
@@ -435,7 +446,7 @@ impl AnthropicChat {
                     .header("Content-Type", "application/json")
                     .json(&body)
             },
-            &crate::retry::DEFAULT_RETRY,
+            &CHAT_RETRY,
         )
         .await
         .map_err(|e| AnthropicError::Http(e.to_string()))?;
@@ -586,12 +597,25 @@ impl AnthropicChat {
             while let Some(chunk_result) = byte_stream.next().await {
                 if let Ok(bytes) = chunk_result {
                     // Extract complete SSE events from the byte-level framer
+                    let mut overflow: Option<String> = None;
                     let events = {
                         let mut buffer_guard =
                             buffer_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        buffer_guard.push(&bytes)
+                        match buffer_guard.push(&bytes) {
+                            Ok(events) => events,
+                            // 0.26.0 M5: bounded framer — overflow is malformed/
+                            // runaway; fail the stream after the guard drops.
+                            Err(e) => {
+                                overflow = Some(e.to_string());
+                                Vec::new()
+                            }
+                        }
                     };
                     // buffer_guard is dropped here, before any await
+                    if let Some(msg) = overflow {
+                        let _ = tx.send(Err(AnthropicError::Http(msg))).await;
+                        return;
+                    }
 
                     for event_text in events {
                         for line in event_text.lines() {

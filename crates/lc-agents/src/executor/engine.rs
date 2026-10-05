@@ -20,7 +20,7 @@ use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{semconv::GEN_AI_OPERATION_NAME, CallbackManager, RunTree, RunType};
 use lc_core::cost::CostTracker;
 use lc_core::observability::{MetricsSink, ObsEvent};
-use lc_core::runnables::{RunnableConfig, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
+use lc_core::runnables::{RunnableConfig, RUN_META_COST_SCOPE, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
 use lc_core::tools::BaseTool;
 use lc_memory::{BaseMemory, MemoryExtractor, TwoTierMemory};
 use serde_json::json;
@@ -37,21 +37,24 @@ use tokio::sync::Semaphore;
 /// The config carries the effective callback manager plus reserved trace-linkage
 /// metadata (parent = this run's chain root, trace = root trace id), so the
 /// provider-built LLM [`RunTree`] is dispatched under the agent chain tree
-/// instead of becoming a trace root. Returns `None` when no callbacks are
-/// configured, preserving the pre-A18 behavior where providers fire nothing for
-/// observers-less executors (and zero per-round allocation happens).
+/// instead of becoming a trace root. Callbacks are attached only when present;
+/// the returned value is always `Some` so the P0-5 per-run cost scope
+/// ([`RUN_META_COST_SCOPE`]) reaches the tracking LLM even for observers-less
+/// executors — otherwise its budget gate would read `run_cost_usd(scope)` as 0
+/// and silently skip (not enforce) the cost limit.
 pub(super) fn build_plan_config(
     callbacks: &Option<Arc<CallbackManager>>,
     root_run: &RunTree,
 ) -> Option<RunnableConfig> {
-    let manager = callbacks.as_ref()?;
     let trace_id = root_run.trace_id.unwrap_or(root_run.id);
-    Some(
-        RunnableConfig::new()
-            .with_callbacks(manager.clone())
-            .with_metadata(RUN_META_PARENT_RUN_ID, json!(root_run.id.to_string()))
-            .with_metadata(RUN_META_TRACE_ID, json!(trace_id.to_string())),
-    )
+    let mut cfg = RunnableConfig::new()
+        .with_metadata(RUN_META_PARENT_RUN_ID, json!(root_run.id.to_string()))
+        .with_metadata(RUN_META_TRACE_ID, json!(trace_id.to_string()))
+        .with_metadata(RUN_META_COST_SCOPE, json!(root_run.id.to_string()));
+    if let Some(manager) = callbacks {
+        cfg = cfg.with_callbacks(manager.clone());
+    }
+    Some(cfg)
 }
 
 /// Agent executor.
@@ -153,9 +156,13 @@ pub struct AgentExecutor {
     /// an undeclared tool has an all-false profile and is never intercepted.
     pub(crate) rule_of_two: bool,
 
-    /// A1 Spotlighting (v0.22.1 §S8): when enabled, tool output observations are wrapped in
-    /// `<untrusted_data>…</untrusted_data>` before entering the intermediate steps, so the
-    /// model reads untrusted tool results as delimited data. Default `false` (off, zero change).
+    /// A1 Spotlighting (v0.22.1 §S8; T7-2 default in 0.26.0): tool output observations
+    /// are wrapped in `<untrusted_data>…</untrusted_data>` before entering the
+    /// intermediate steps, so the model reads untrusted tool results as delimited data
+    /// rather than as instructions. Indirect-injection payloads travel *through tool
+    /// output*, so isolating them as data literals on the way to the model is the
+    /// safe default. Default `true`; flip off with [`Self::with_tool_spotlight`] for
+    /// trusted/internal-only tool sets.
     pub(crate) spotlight_tool_output: bool,
 }
 
@@ -201,7 +208,9 @@ impl AgentExecutor {
             semantic_memory: None,
             on_max_iterations: MaxIterationsPolicy::default(),
             rule_of_two: false,
-            spotlight_tool_output: false,
+            // T7-2 (0.26.0): tool-output isolation is the default — indirect injection
+            // arrives via tool output, so delimit it as data before the model reads it.
+            spotlight_tool_output: true,
         }
     }
 
@@ -241,9 +250,12 @@ impl AgentExecutor {
         self
     }
 
-    /// A1 tool-output spotlighting (v0.22.1 §S8): when enabled, tool observations are wrapped
-    /// in `<untrusted_data>…</untrusted_data>` before entering intermediate steps. Default off —
-    /// tool output passes through unchanged.
+    /// A1 tool-output spotlighting (v0.22.1 §S8; T7-2 default in 0.26.0): tool
+    /// observations are wrapped in `<untrusted_data>…</untrusted_data>` before entering
+    /// intermediate steps, isolating tool-delivered indirect injection as data. Default
+    /// **on** since 0.26.0; pass `false` to restore verbatim pass-through (e.g. for a
+    /// trusted, internal-only tool set). Provider-side-executed (`server_executed`)
+    /// results are always reported verbatim and are never wrapped regardless of this flag.
     pub fn with_tool_spotlight(mut self, on: bool) -> Self {
         self.spotlight_tool_output = on;
         self
@@ -606,6 +618,7 @@ impl AgentExecutor {
             },
             log: String::new(),
             tool_call_id: Some(pending.tool_id.clone()),
+            server_executed: false,
         };
 
         let mut root_run = RunTree::new(

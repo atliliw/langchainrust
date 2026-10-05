@@ -549,6 +549,47 @@ pub struct OAuthTokenResponse {
     pub scope: Option<String>,
 }
 
+/// Error response from the token endpoint (RFC 6749 §5.2, subset). The
+/// `error` / `error_description` / `error_uri` fields are *meant* to be
+/// user-visible and carry no secrets — the only fields we forward to
+/// [`MCPError`] from a failed token exchange.
+#[derive(Debug, Deserialize)]
+struct OAuthErrorResponse {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, rename = "error_description")]
+    error_description: Option<String>,
+    #[serde(default, rename = "error_uri")]
+    error_uri: Option<String>,
+}
+
+/// Formats a failed token-endpoint response for an error message without
+/// leaking secrets. A raw body can echo `client_secret`, `refresh_token`, or
+/// even a partially-delivered `access_token`, so it is never forwarded as-is.
+/// When the body is a well-formed RFC 6749 error object, only the safe
+/// `error`/`error_description`/`error_uri` fields surface; otherwise the
+/// message carries just the HTTP status.
+fn redact_token_body_error(status: u16, body: &str) -> String {
+    let base = format!("token endpoint returned HTTP {status}");
+    let parsed = serde_json::from_str::<OAuthErrorResponse>(body).ok();
+    match parsed {
+        Some(e) if e.error.is_some() => {
+            let mut msg = base;
+            if let Some(code) = e.error {
+                msg.push_str(&format!(", code: {code}"));
+            }
+            if let Some(desc) = e.error_description {
+                msg.push_str(&format!(", description: {desc}"));
+            }
+            if let Some(uri) = e.error_uri {
+                msg.push_str(&format!(", uri: {uri}"));
+            }
+            msg
+        }
+        _ => base,
+    }
+}
+
 /// Minimal OAuth 2.1 token-endpoint client.
 ///
 /// Client credentials are sent in the form body, which works for both
@@ -698,11 +739,17 @@ impl OAuthTokenClient {
         if !status.is_success() {
             return Err(MCPError::new(
                 MCP_ERROR_UNAUTHORIZED,
-                format!("token endpoint returned HTTP {status}: {body}"),
+                redact_token_body_error(status.as_u16(), &body),
             ));
         }
-        serde_json::from_str::<OAuthTokenResponse>(&body)
-            .map_err(|e| MCPError::new(-32700, format!("invalid token response: {e}: {body}")))
+        serde_json::from_str::<OAuthTokenResponse>(&body).map_err(|e| {
+            MCPError::new(
+                -32700,
+                format!(
+                    "invalid token response: {e}",
+                ),
+            )
+        })
     }
 }
 
@@ -1008,5 +1055,36 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("issuer mismatch"), "{err}");
         handle.abort();
+    }
+
+    /// LOW: a failed token exchange must never echo the raw body (which can
+    /// carry `client_secret` / `refresh_token` / a leaked `access_token`) into
+    /// the returned error. Safe RFC 6749 error fields are forwarded; anything
+    /// else drops down to just the HTTP status.
+    #[test]
+    fn token_error_body_is_redacted_not_echoed() {
+        // Well-formed error object -> only safe fields surface.
+        let msg = redact_token_body_error(
+            401,
+            r#"{"error":"invalid_client","error_description":"bad secret","error_uri":"https://idp/help"}"#,
+        );
+        assert!(msg.contains("HTTP 401"), "{msg}");
+        assert!(msg.contains("invalid_client"), "{msg}");
+        assert!(msg.contains("bad secret"), "{msg}");
+        assert!(msg.contains("idp/help"), "{msg}");
+
+        // Body that leaks a secret must never leak into the message. A raw echo
+        // would put this token into `MCPError.message`.
+        let leak_body = r#"{"error":"server_error","access_token":"super-secret-abc-donot-leak","refresh_token":"also-secret"}"#;
+        let msg = redact_token_body_error(500, leak_body);
+        assert!(msg.contains("server_error"), "{msg}");
+        assert!(!msg.contains("donot-leak"), "access_token leaked: {msg}");
+        assert!(!msg.contains("also-secret"), "refresh_token leaked: {msg}");
+
+        // Not even an error object -> status only, body dropped.
+        let msg = redact_token_body_error(502, "<html>secret-or-garbage</html>");
+        assert!(msg.contains("HTTP 502"), "{msg}");
+        assert!(!msg.contains("<html>"), "{msg}");
+        assert!(!msg.contains("secret"), "{msg}");
     }
 }

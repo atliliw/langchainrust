@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -161,6 +162,151 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
     ) -> GraphResult<Option<(String, Option<String>)>> {
         let _ = checkpoint_id;
         Ok(None)
+    }
+
+    // ------------------------------------------------------------------
+    // Growth control (0.26.0 track 1): pruning + cursor pagination. These
+    // exist so a long-lived checkpointer cannot accumulate checkpoints without
+    // bound. Existing implementors are unaffected: every method has a default
+    // that builds on the snapshot/delete primitives already in the trait.
+    // ------------------------------------------------------------------
+
+    /// Prune checkpoints under `thread` to enforce a retention policy: keep at
+    /// most `max_count` of the newest, and drop any checkpoint older than
+    /// `max_age_secs` seconds (relative to `now`). Returns how many were
+    /// deleted. `None` for either dimension means "not enforced" there.
+    ///
+    /// This is the primitive behind [`RetainingCheckpointer`], which calls it
+    /// after each save so a running graph keeps its history bounded.
+    ///
+    /// The default works over every backend: it reads the ordered snapshots,
+    /// computes the ids to drop with [`retention_trim_ids`], and deletes them.
+    /// Backends with a cheap id/timestamp index (e.g. the file backend's
+    /// `sorted_ids`) should override to avoid materializing full states.
+    async fn prune(
+        &self,
+        thread: &str,
+        max_count: Option<usize>,
+        max_age_secs: Option<i64>,
+        now: i64,
+    ) -> GraphResult<usize> {
+        let snaps = self.snapshots_threaded(thread).await?;
+        let ordered: Vec<(String, i64)> =
+            snaps.iter().map(|s| (s.id.clone(), s.timestamp)).collect();
+        let to_delete = retention_trim_ids(&ordered, max_count, max_age_secs, now);
+        let mut deleted = 0;
+        for id in to_delete {
+            self.delete_threaded(thread, &id).await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+    /// Cursor-paginated snapshot history: up to `limit` snapshots strictly
+    /// *after* `after_id` (exclusive), oldest-first. Pass `None` for `after_id`
+    /// to start from the oldest; pass back the last returned snapshot's `id` as
+    /// the next page's cursor. A `limit` of `0` yields an empty page. The cursor
+    /// is a checkpoint id, so paging stays stable even if new checkpoints are
+    /// written between pages.
+    async fn snapshots_page_threaded(
+        &self,
+        thread: &str,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let all = self.snapshots_threaded(thread).await?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let skip = match after_id {
+            Some(aid) => all
+                .iter()
+                .position(|s| s.id == aid)
+                .map(|p| p + 1)
+                .unwrap_or(all.len()),
+            None => 0,
+        };
+        Ok(all.into_iter().skip(skip).take(limit).collect())
+    }
+
+    /// Non-threaded alias of [`snapshots_page_threaded`](Self::snapshots_page_threaded)
+    /// over [`DEFAULT_THREAD`].
+    async fn snapshots_page(
+        &self,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.snapshots_page_threaded(DEFAULT_THREAD, after_id, limit).await
+    }
+}
+
+/// 0.26.0 track 1: select which checkpoints to prune to enforce a retention
+/// policy, given an **oldest-first** list of `(id, unix-second timestamp)`.
+///
+/// Returns the ids to delete, in oldest-first order and without duplicates:
+/// the oldest `n.saturating_sub(max_count)` entries (when `max_count` is set)
+/// are dropped as excess, plus every remaining entry whose age at `now` exceeds
+/// `max_age_secs` (when set). The two dimensions are independent, so a policy
+/// can combine a hard cap with a time-to-live. Pure and deterministic, which
+/// makes it directly unit-testable without a checkpointer.
+pub fn retention_trim_ids(
+    ordered: &[(String, i64)],
+    max_count: Option<usize>,
+    max_age_secs: Option<i64>,
+    now: i64,
+) -> Vec<String> {
+    let n = ordered.len();
+    let mut marked = vec![false; n];
+    if let Some(max) = max_count {
+        let excess = n.saturating_sub(max);
+        for slot in marked.iter_mut().take(excess) {
+            *slot = true;
+        }
+    }
+    if let Some(age) = max_age_secs {
+        for (i, (_, ts)) in ordered.iter().enumerate() {
+            if now.saturating_sub(*ts) > age {
+                marked[i] = true;
+            }
+        }
+    }
+    ordered
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| marked[*i])
+        .map(|(_, (id, _))| id.clone())
+        .collect()
+}
+
+/// A retention policy applied to a checkpointer's growth: a hard cap on how
+/// many checkpoints each thread may keep and/or a time-to-live beyond which
+/// checkpoints are dropped. Both dimensions are optional; a default policy
+/// (`max_checkpoints: None`, `max_age_secs: None`) enforces nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CheckpointRetention {
+    /// Keep at most this many checkpoints per thread, dropping the oldest
+    /// beyond the cap after each save. `None` disables the cap.
+    pub max_checkpoints: Option<usize>,
+    /// Drop checkpoints older than this many seconds (checked at save time).
+    /// `None` disables the time-to-live.
+    pub max_age_secs: Option<i64>,
+}
+
+impl CheckpointRetention {
+    /// A retention policy that only caps the number of checkpoints per thread.
+    pub fn max_checkpoints(max: usize) -> Self {
+        Self {
+            max_checkpoints: Some(max),
+            max_age_secs: None,
+        }
+    }
+
+    /// A retention policy that only drops checkpoints older than `secs`.
+    pub fn ttl(secs: i64) -> Self {
+        Self {
+            max_checkpoints: None,
+            max_age_secs: Some(secs),
+        }
     }
 }
 
@@ -1025,6 +1171,26 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
         self.snapshots_threaded(DEFAULT_THREAD).await
     }
 
+    /// Prune the thread's history using the cheap `sorted_ids` id/timestamp
+    /// index instead of the default materializing full state snapshots.
+    async fn prune(
+        &self,
+        thread: &str,
+        max_count: Option<usize>,
+        max_age_secs: Option<i64>,
+        now: i64,
+    ) -> GraphResult<usize> {
+        let ids = self.sorted_ids(thread).await?;
+        let ordered: Vec<(String, i64)> = ids.into_iter().map(|(t, _, id)| (id, t)).collect();
+        let to_delete = retention_trim_ids(&ordered, max_count, max_age_secs, now);
+        let mut deleted = 0;
+        for id in to_delete {
+            self.delete_threaded(thread, &id).await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
     async fn update_state(
         &self,
         checkpoint_id: &str,
@@ -1112,6 +1278,192 @@ impl<S: StateSchema> Checkpointer<S> for FileCheckpointer<S> {
             }
         }
         Ok(None)
+    }
+}
+
+/// A checkpointer decorator that enforces a [`CheckpointRetention`] policy on
+/// every save. It forwards the save to the wrapped checkpointer, then prunes the
+/// affected thread so a long-running graph cannot grow its history without bound.
+///
+/// The graph attaches this automatically via
+/// [`CompiledGraph::with_checkpoint_retention`](crate::compiled::CompiledGraph::with_checkpoint_retention),
+/// but it is also usable standalone as a drop-in `Checkpointer<S>`. Because it
+/// only *adds* pruning on top of a delegate, any backend (memory, file, sqlite,
+/// postgres, redis) benefits without changing the backend itself.
+///
+/// This is intentionally a decorator (not a trait default on `save`): pruning is
+/// the graph/application's policy, so it should be opt-in rather than silently
+/// applied to every raw `Checkpointer`.
+pub struct RetainingCheckpointer<S: StateSchema> {
+    /// The wrapped checkpointer. A second lock is safe: the graph's outer mutex
+    /// serializes graph-driven saves, and this inner guard is only held for the
+    /// duration of a single forwarded call.
+    inner: Arc<Mutex<dyn Checkpointer<S> + Send>>,
+    retention: CheckpointRetention,
+}
+
+impl<S: StateSchema> RetainingCheckpointer<S> {
+    /// Wrap `inner` so every save under it is followed by a prune to `retention`.
+    pub fn new(inner: Arc<Mutex<dyn Checkpointer<S> + Send>>, retention: CheckpointRetention) -> Self {
+        Self { inner, retention }
+    }
+
+    /// Prune the thread the checkpointer just wrote to, resolving that thread
+    /// from the saved checkpoint's lineage so a thread-bound durable backend
+    /// (sqlite/postgres/redis) is pruned in the thread it actually wrote, not
+    /// assumed to be [`DEFAULT_THREAD`].
+    async fn prune_after_save(&self, checkpoint_id: &str) -> GraphResult<()> {
+        let r = self.retention;
+        if r.max_checkpoints.is_none() && r.max_age_secs.is_none() {
+            return Ok(());
+        }
+        let now = chrono::Utc::now().timestamp();
+        let thread = self
+            .inner
+            .lock()
+            .await
+            .checkpoint_lineage(checkpoint_id)
+            .await?
+            .map(|(t, _)| t)
+            .unwrap_or_else(|| DEFAULT_THREAD.to_string());
+        self.inner
+            .lock()
+            .await
+            .prune(&thread, r.max_checkpoints, r.max_age_secs, now)
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema> Checkpointer<S> for RetainingCheckpointer<S> {
+    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+        let id = self.inner.lock().await.save(state, recursion_count).await?;
+        self.prune_after_save(&id).await?;
+        Ok(id)
+    }
+
+    async fn save_threaded(
+        &self,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        let id = self
+            .inner
+            .lock()
+            .await
+            .save_threaded(thread, state, recursion_count)
+            .await?;
+        self.prune_after_save(&id).await?;
+        Ok(id)
+    }
+
+    async fn save_fork_threaded(
+        &self,
+        parent_id: Option<&str>,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        let id = self
+            .inner
+            .lock()
+            .await
+            .save_fork_threaded(parent_id, thread, state, recursion_count)
+            .await?;
+        self.prune_after_save(&id).await?;
+        Ok(id)
+    }
+
+    async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
+        self.inner.lock().await.load(checkpoint_id).await
+    }
+
+    async fn load_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<S> {
+        self.inner
+            .lock()
+            .await
+            .load_threaded(thread, checkpoint_id)
+            .await
+    }
+
+    async fn list(&self) -> GraphResult<Vec<String>> {
+        self.inner.lock().await.list().await
+    }
+
+    async fn list_threaded(&self, thread: &str) -> GraphResult<Vec<String>> {
+        self.inner.lock().await.list_threaded(thread).await
+    }
+
+    async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
+        self.inner.lock().await.delete(checkpoint_id).await
+    }
+
+    async fn delete_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<()> {
+        self.inner
+            .lock()
+            .await
+            .delete_threaded(thread, checkpoint_id)
+            .await
+    }
+
+    async fn last(&self) -> GraphResult<Option<(S, usize)>> {
+        self.inner.lock().await.last().await
+    }
+
+    async fn last_threaded(&self, thread: &str) -> GraphResult<Option<(S, usize)>> {
+        self.inner.lock().await.last_threaded(thread).await
+    }
+
+    async fn snapshots(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.inner.lock().await.snapshots().await
+    }
+
+    async fn snapshots_threaded(&self, thread: &str) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.inner.lock().await.snapshots_threaded(thread).await
+    }
+
+    async fn snapshots_page(
+        &self,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.inner.lock().await.snapshots_page(after_id, limit).await
+    }
+
+    async fn snapshots_page_threaded(
+        &self,
+        thread: &str,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        self.inner
+            .lock()
+            .await
+            .snapshots_page_threaded(thread, after_id, limit)
+            .await
+    }
+
+    async fn prune(
+        &self,
+        thread: &str,
+        max_count: Option<usize>,
+        max_age_secs: Option<i64>,
+        now: i64,
+    ) -> GraphResult<usize> {
+        self.inner
+            .lock()
+            .await
+            .prune(thread, max_count, max_age_secs, now)
+            .await
+    }
+
+    async fn checkpoint_lineage(
+        &self,
+        checkpoint_id: &str,
+    ) -> GraphResult<Option<(String, Option<String>)>> {
+        self.inner.lock().await.checkpoint_lineage(checkpoint_id).await
     }
 }
 
@@ -1455,5 +1807,168 @@ mod tests {
         let (state, recursion_count) = checkpointer.last().await.unwrap().unwrap();
         assert_eq!(state.input, "two");
         assert_eq!(recursion_count, 2);
+    }
+
+    // ------------------------------------------------------------------
+    // 0.26.0 track 1: retention trimming, pruning, and history pagination.
+    // ------------------------------------------------------------------
+
+    fn ordered_pair(prefix: &str, timestamps: &[i64]) -> Vec<(String, i64)> {
+        timestamps
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (format!("{prefix}{i}"), *t))
+            .collect()
+    }
+
+    #[test]
+    fn test_retention_trim_excess_keeps_newest() {
+        // Oldest-first: ids c0..c4. Cap of 2 keeps the two newest, drops c0..c2.
+        let ordered = ordered_pair("c", &[100, 101, 102, 103, 104]);
+        let to_delete = retention_trim_ids(&ordered, Some(2), None, 1000);
+        assert_eq!(to_delete, vec!["c0".to_string(), "c1".to_string(), "c2".to_string()]);
+        assert_eq!(ordered.iter().find(|(id, _)| id == "c3"), Some(&("c3".to_string(), 103)));
+    }
+
+    #[test]
+    fn test_retention_trim_ttl_drops_expired_only() {
+        // Age relative to now=1000; ttl 50s drops timestamps <= 950 (c0=100, c1=900).
+        let ordered = ordered_pair("c", &[100, 900, 951, 1000]);
+        let to_delete = retention_trim_ids(&ordered, None, Some(50), 1000);
+        assert_eq!(to_delete, vec!["c0".to_string(), "c1".to_string()]);
+    }
+
+    #[test]
+    fn test_retention_trim_combined_no_duplicates() {
+        // Oldest-first, now=600. Cap 3 drops the oldest two (c0,c1); ttl 150s
+        // (threshold ts <= 450) also expires c2,c3. The union is c0..c3 once each
+        // — no duplicates — and leaves only c4 (the newest), which is what the cap
+        // alone would keep too.
+        let ordered = ordered_pair("c", &[100, 200, 300, 400, 500]);
+        let mut to_delete = retention_trim_ids(&ordered, Some(3), Some(150), 600);
+        to_delete.sort();
+        to_delete.dedup();
+        assert_eq!(
+            to_delete,
+            vec!["c0".to_string(), "c1".to_string(), "c2".to_string(), "c3".to_string()]
+        );
+        // The two dimensions independently over-marked c2/c3 without double
+        // counting them, and the survivor is exactly the cap's newest.
+        assert_eq!(ordered.iter().find(|(id, _)| id == "c4"), Some(&("c4".to_string(), 500)));
+    }
+
+    #[test]
+    fn test_retention_trim_no_policy_is_noop() {
+        let ordered = ordered_pair("c", &[100, 101, 102]);
+        assert!(retention_trim_ids(&ordered, None, None, 1000).is_empty());
+    }
+
+    #[test]
+    fn test_retention_trim_cap_larger_than_count_is_noop() {
+        let ordered = ordered_pair("c", &[100, 101]);
+        assert!(retention_trim_ids(&ordered, Some(10), None, 1000).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_memory_prune_enforces_max_checkpoints() {
+        let cp = ThreadSafeMemoryCheckpointer::<AgentState>::new();
+        for i in 0..5 {
+            cp.save(&AgentState::new(format!("s{i}")), i).await.unwrap();
+        }
+        // Cap keeps the 2 newest (s3, s4).
+        let deleted = cp
+            .prune(DEFAULT_THREAD, Some(2), None, 1000)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 3);
+        let snaps = cp.snapshots().await.unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].state.input, "s3");
+        assert_eq!(snaps[1].state.input, "s4");
+    }
+
+    #[tokio::test]
+    async fn test_memory_prune_ttl_expires_old() {
+        let cp = ThreadSafeMemoryCheckpointer::<AgentState>::new();
+        // Fresh saves share `now` (within the same second); an age of 1s at
+        // now = 0 means only timestamps <= -1 are expired, so nothing drops.
+        cp.save(&AgentState::new("a"), 0).await.unwrap();
+        cp.save(&AgentState::new("b"), 1).await.unwrap();
+        let deleted = cp.prune(DEFAULT_THREAD, None, Some(1), 0).await.unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(cp.snapshots().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_file_prune_enforces_max_checkpoints() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cp = FileCheckpointer::<AgentState>::new(temp_dir.path()).unwrap();
+        for i in 0..4 {
+            cp.save(&AgentState::new(format!("s{i}")), i).await.unwrap();
+        }
+        let deleted = cp.prune(DEFAULT_THREAD, Some(1), None, 1000).await.unwrap();
+        assert_eq!(deleted, 3);
+        let snaps = cp.snapshots().await.unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].state.input, "s3");
+    }
+
+    #[tokio::test]
+    async fn test_retaining_checkpointer_bounds_growth_on_save() {
+        let inner = Arc::new(Mutex::new(
+            ThreadSafeMemoryCheckpointer::<AgentState>::new(),
+        )) as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
+        let deco = RetainingCheckpointer::new(inner, CheckpointRetention::max_checkpoints(3));
+
+        for i in 0..6 {
+            deco.save(&AgentState::new(format!("s{i}")), i).await.unwrap();
+        }
+        // The decorator trims to the 3 newest after each save.
+        let snaps = deco.snapshots().await.unwrap();
+        assert_eq!(snaps.len(), 3, "history stays bounded at the cap");
+        assert_eq!(snaps[0].state.input, "s3");
+        assert_eq!(snaps[2].state.input, "s5");
+    }
+
+    #[tokio::test]
+    async fn test_retaining_checkpointer_no_policy_is_transparent() {
+        let inner = Arc::new(Mutex::new(
+            ThreadSafeMemoryCheckpointer::<AgentState>::new(),
+        )) as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
+        let deco = RetainingCheckpointer::new(inner, CheckpointRetention::default());
+        deco.save(&AgentState::new("a"), 0).await.unwrap();
+        deco.save(&AgentState::new("b"), 1).await.unwrap();
+        assert_eq!(deco.snapshots().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_snapshots_page_windows() {
+        let cp = ThreadSafeMemoryCheckpointer::<AgentState>::new();
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            ids.push(cp.save(&AgentState::new(format!("s{i}")), i).await.unwrap());
+        }
+
+        // First page starts at the oldest, page size 2.
+        let page1 = cp.snapshots_page(None, 2).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].id, ids[0]);
+        assert_eq!(page1[1].id, ids[1]);
+
+        // Next page uses the last id as cursor (exclusive).
+        let page2 = cp
+            .snapshots_page(Some(&page1[1].id), 2)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page2[0].id, ids[2]);
+        assert_eq!(page2[1].id, ids[3]);
+
+        // Final page returns the rest (1). A limit of 0 yields nothing.
+        let page3 = cp.snapshots_page(Some(&page2[1].id), 2).await.unwrap();
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].id, ids[4]);
+        assert!(cp.snapshots_page(Some(&page3[0].id), 2).await.unwrap().is_empty());
+        assert!(cp.snapshots_page(None, 0).await.unwrap().is_empty());
     }
 }

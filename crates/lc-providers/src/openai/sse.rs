@@ -6,6 +6,17 @@
 use lc_core::tools::ToolCall;
 use serde::Deserialize;
 
+/// Cap on incomplete bytes the framer will hold while waiting for an event
+/// terminator (0.26.0 M5).
+///
+/// A healthy OpenAI-compatible stream delivers complete events per chunk; at
+/// most the trailing partial event sits in the buffer (a few KB). Reaching
+/// this cap therefore means the peer is emitting data with **no** `\n\n`
+/// separator — a malformed or runaway stream — and is the memory-exhaustion
+/// guard: without it `SseByteFramer` would grow its `Vec` without bound and an
+/// attacker streaming unterminated bytes could OOM the process.
+const DEFAULT_MAX_BUFFERED_BYTES: usize = 16 * 1024 * 1024;
+
 /// Byte-level SSE framer (0.22.0 C1 fix).
 ///
 /// Accumulates **raw bytes** and only decodes complete events to UTF-8.
@@ -14,6 +25,12 @@ use serde::Deserialize;
 /// across TCP chunks is therefore never lossy-converted mid-character. Feed
 /// the returned event texts into [`SSEParser`] (or any event parser) instead
 /// of feeding raw chunks into `String::from_utf8_lossy` first.
+///
+/// 0.26.0 M5: `push` is O(n) for the pushed bytes (a single left-to-right scan
+/// that retains only the incomplete trailer, replacing the old per-event
+/// re-scan + `drain` that was quadratic in the number of complete events) and
+/// returns an error instead of growing without bound if the buffered partial
+/// exceeds `DEFAULT_MAX_BUFFERED_BYTES`.
 ///
 /// ```rust
 /// use lc_providers::openai::sse::{SseByteFramer, SSEParser};
@@ -25,7 +42,7 @@ use serde::Deserialize;
 /// let (a, b) = full.split_at(full.len() - 1);
 /// let mut events = Vec::new();
 /// for part in [a, b] {
-///     for text in framer.push(part) {
+///     for text in framer.push(part).unwrap() {
 ///         events.extend(parser.parse(&text));
 ///     }
 /// }
@@ -34,26 +51,85 @@ use serde::Deserialize;
 /// ```
 pub struct SseByteFramer {
     buf: Vec<u8>,
+    /// Fail-fast cap on buffered incomplete bytes (M5 bounded-memory guard).
+    max_buffered: usize,
+}
+
+/// Framing error (0.26.0 M5).
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum SseError {
+    /// The incomplete-event buffer exceeded its cap — the peer sent bytes with
+    /// no `\n\n` terminator. Reported as a stream error (never silently
+    /// truncated) and the framer clears its buffer, so a hostile/corrupt peer
+    /// cannot keep a partial buffer alive by poking one byte at a time.
+    #[error(
+        "SSE stream exceeded buffered-event cap of {max} bytes (buffered {buffered}); \
+         no event terminator received — malformed or runaway stream"
+    )]
+    BufferOverflow {
+        /// How many incomplete bytes had buffered when the cap was hit.
+        buffered: usize,
+        /// The configured cap that was exceeded (`DEFAULT_MAX_BUFFERED_BYTES`
+        /// unless [`SseByteFramer::with_max_buffered`] was used).
+        max: usize,
+    },
 }
 
 impl SseByteFramer {
-    /// Creates an empty framer
+    /// Creates an empty framer with the default `DEFAULT_MAX_BUFFERED_BYTES`
+    /// cap.
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self::with_max_buffered(DEFAULT_MAX_BUFFERED_BYTES)
+    }
+
+    /// Creates an empty framer with an explicit incomplete-buffer cap
+    /// (primarily for tests / low-memory consumers).
+    pub fn with_max_buffered(max_buffered: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            max_buffered,
+        }
     }
 
     /// Pushes one raw chunk; returns the text of each **complete** SSE event
     /// (decoded to UTF-8, terminator normalized to `\n\n` so downstream
     /// string-level parsers see a finished event).
-    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+    ///
+    /// Returns [`Err(SseError::BufferOverflow)`](SseError::BufferOverflow) if
+    /// the incomplete buffer would exceed its cap — see [`SseByteFramer`].
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, SseError> {
         self.buf.extend_from_slice(chunk);
-        let mut events = Vec::new();
-        while let Some((sep_len, end)) = find_event_end(&self.buf) {
-            let raw: Vec<u8> = self.buf.drain(..end).collect();
-            self.buf.drain(..sep_len);
-            events.push(format!("{}\n\n", String::from_utf8_lossy(&raw)));
+        if self.buf.len() > self.max_buffered {
+            let buffered = self.buf.len();
+            let max = self.max_buffered;
+            // Fail-closed: drop the partial so a follow-up single-byte poke
+            // after the overflow cannot grow memory again.
+            self.buf.clear();
+            return Err(SseError::BufferOverflow { buffered, max });
         }
-        events
+        // Single left-to-right pass. Each `find_event_end(&self.buf[start..])`
+        // scans only from where the last event ended, so every byte is examined
+        // at most once per push (O(n)); the old loop re-scanned from index 0 and
+        // `drain`ed the consumed prefix per event (quadratic in event count).
+        // At the end, one `drain(..start)` compact keeps only the incomplete
+        // trailer (a single O(trailer) move per push).
+        let mut events = Vec::new();
+        let mut start = 0usize;
+        loop {
+            let Some((sep_len, end)) = find_event_end(&self.buf[start..]) else {
+                break;
+            };
+            let end_abs = start + end;
+            events.push(format!(
+                "{}\n\n",
+                String::from_utf8_lossy(&self.buf[start..end_abs])
+            ));
+            start = end_abs + sep_len;
+        }
+        if start > 0 {
+            self.buf.drain(..start);
+        }
+        Ok(events)
     }
 
     /// Bytes still buffered (incomplete event); for tests / diagnostics.
@@ -555,6 +631,61 @@ mod tests {
         assert_eq!(calls[1].id, "call_2");
         assert_eq!(calls[1].name(), "add");
         assert_eq!(calls[1].arguments(), r#"{"a":1}"#);
+    }
+
+    // 0.26.0 M5: framer bounded buffer + O(n) scan regression.
+
+    /// Runaway stream (bytes but never a terminator) must error, not grow
+    /// memory without bound, and must fail-closed (buffer cleared) so a
+    /// one-byte-after-overflow poke cannot regrow it.
+    #[test]
+    fn test_framer_rejects_runaway_buffer() {
+        let mut framer = SseByteFramer::with_max_buffered(1024);
+        let runaway = vec![b'x'; 4096];
+        let err = framer.push(&runaway).unwrap_err();
+        match err {
+            SseError::BufferOverflow { buffered, max } => {
+                assert_eq!(max, 1024);
+                assert!(buffered >= 1024, "reports how much had buffered");
+            }
+        }
+        // Fail-closed: buffer cleared, so a subsequent small poke stays small.
+        assert_eq!(framer.pending(), 0);
+        assert_eq!(framer.push(b"y").unwrap(), Vec::<String>::new());
+        assert!(framer.pending() <= 1);
+    }
+
+    /// The O(n) scan must emit every complete event in one push — including a
+    /// boundary-crossing chunk — and retain only the incomplete trailer.
+    #[test]
+    fn test_framer_emits_many_complete_events_and_keeps_trailer() {
+        let mut framer = SseByteFramer::new();
+        // Three complete events + an unterminated trailer, all in one chunk.
+        let chunk = "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: {\"c\":3}\n\ndata: {\"d\":4}";
+        let events = framer.push(chunk.as_bytes()).unwrap();
+        assert_eq!(events.len(), 3, "three complete events framed in one pass");
+        assert_eq!(events[0], "data: {\"a\":1}\n\n");
+        assert_eq!(events[2], "data: {\"c\":3}\n\n");
+        assert_eq!(framer.pending(), "data: {\"d\":4}".len(), "trailer retained");
+
+        // Completing the trailer next push produces the final event.
+        let events = framer.push(b"\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], "data: {\"d\":4}\n\n");
+        assert_eq!(framer.pending(), 0);
+    }
+
+    /// O(n) regression anchor: a large number of complete events must frame in
+    /// one push (the old per-event rescale was quadratic). This is a loose but
+    /// measurable guard against the algorithmic regression, not a benchmark.
+    #[test]
+    fn test_framer_handles_many_events_linearly_in_one_push() {
+        let mut framer = SseByteFramer::new();
+        let n = 20_000;
+        let chunk = "data: {}\n\n".repeat(n);
+        let events = framer.push(chunk.as_bytes()).unwrap();
+        assert_eq!(events.len(), n);
+        assert_eq!(framer.pending(), 0);
     }
 
     #[test]

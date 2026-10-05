@@ -375,6 +375,13 @@ impl CdpBrowser {
             ToolError::ExecutionFailed(format!("failed to parse page metadata JSON: {e}"))
         })
     }
+
+    /// The URL the page actually landed on (after HTTP / client-side redirects
+    /// and load-time meta-refresh), read via `location.href`.
+    async fn current_url(&self) -> Result<String, ToolError> {
+        let value = self.evaluate("location.href").await?;
+        Ok(value.as_str().map(str::to_string).unwrap_or_default())
+    }
 }
 
 /// Deserializes a by-value CDP result. Pages return these as JSON strings
@@ -515,55 +522,68 @@ impl Tool for CdpBrowserTool {
 
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
         self.validate_target(&input.url).await?;
-        match input.operation.as_str() {
+        let output = match input.operation.as_str() {
             "navigate" => {
                 let info = self.browser.navigate(&input.url, input.wait_ms).await?;
-                Ok(BrowserOutput {
+                BrowserOutput {
                     operation: "navigate".into(),
                     url: info.url,
                     title: Some(info.title),
                     text: None,
                     links: None,
                     description: None,
-                })
+                }
             }
             "extract_text" => {
                 let text = self.browser.extract_text(&input.url, input.wait_ms).await?;
-                Ok(BrowserOutput {
+                BrowserOutput {
                     operation: "extract_text".into(),
                     url: input.url,
                     title: None,
                     text: Some(text),
                     links: None,
                     description: None,
-                })
+                }
             }
             "extract_links" => {
                 let links = self.browser.extract_links(&input.url, input.wait_ms).await?;
-                Ok(BrowserOutput {
+                BrowserOutput {
                     operation: "extract_links".into(),
                     url: input.url,
                     title: None,
                     text: None,
                     links: Some(links),
                     description: None,
-                })
+                }
             }
             "metadata" => {
                 let meta = self.browser.metadata(&input.url, input.wait_ms).await?;
-                Ok(BrowserOutput {
+                BrowserOutput {
                     operation: "metadata".into(),
                     url: meta.url,
                     title: Some(meta.title),
                     text: None,
                     links: None,
                     description: Some(meta.description),
-                })
+                }
             }
-            other => Err(ToolError::InvalidInput(format!(
-                "unsupported operation: {other}, use: navigate, extract_text, extract_links, metadata"
-            ))),
+            other => {
+                return Err(ToolError::InvalidInput(format!(
+                    "unsupported operation: {other}, use: navigate, extract_text, extract_links, metadata"
+                )))
+            }
+        };
+
+        // H5 (per-hop SSRF recheck): the initial URL was validated above, but
+        // Chrome may follow HTTP / client-side redirects or a load-time
+        // meta-refresh to a private address that the one-time check never saw.
+        // Re-read the landed URL and reject it if private. Non-http final URLs
+        // (about:blank, data:, blob:) are not a network SSRF vector, so skip.
+        let landed = self.browser.current_url().await?;
+        if landed.starts_with("http://") || landed.starts_with("https://") {
+            validate_navigation_url(&landed, self.allow_private_urls).await?;
         }
+        Ok(output)
     }
 }
 
@@ -695,6 +715,11 @@ mod tests {
                             .unwrap_or("");
                         let value = if expr.contains("querySelectorAll") {
                             serde_json::json!(r#"[{"text":"A","href":"https://a.example/"}]"#)
+                        } else if expr.trim() == "location.href" {
+                            // Bare `location.href` (used by the per-hop SSRF
+                            // recheck): land on a private address so the
+                            // public-initial → private-landed case is exercised.
+                            serde_json::json!("http://127.0.0.1/")
                         } else if expr.contains("location.href") {
                             serde_json::json!(
                                 r#"{"title":"Meta Title","description":"desc","url":"https://example.test/final"}"#
@@ -755,6 +780,38 @@ mod tests {
         assert_eq!(meta.title, "Meta Title");
         assert_eq!(meta.description, "desc");
         assert_eq!(meta.url, "https://example.test/final");
+    }
+
+    #[tokio::test]
+    async fn public_initial_but_private_landing_is_blocked() {
+        // H5 per-hop recheck: the requested URL is public and passes the initial
+        // check, but the fake page lands on a loopback address (simulating an
+        // HTTP redirect / load-time meta-refresh to an internal host). The
+        // post-navigation re-read must block it even though the first check passed.
+        // Initial URL is a public IP literal (`1.1.1.1`) so the one-time check
+        // passes without a DNS round-trip; the fake then lands on 127.0.0.1.
+        let tool = CdpBrowserTool::from_browser(Arc::new(connect_fake().await));
+        let input = BrowserInput {
+            operation: "navigate".into(),
+            url: "http://1.1.1.1:1/".into(),
+            wait_ms: None,
+        };
+        let err = tool.invoke(input).await.unwrap_err();
+        assert!(
+            err.to_string().contains("SSRF"),
+            "expected SSRF block on private landing, got: {err}"
+        );
+
+        // Opting into private URLs lets the same (initial public, landed
+        // private) navigation through.
+        let tool = CdpBrowserTool::from_browser(Arc::new(connect_fake().await))
+            .with_allow_private_urls(true);
+        let input = BrowserInput {
+            operation: "navigate".into(),
+            url: "http://1.1.1.1:1/".into(),
+            wait_ms: None,
+        };
+        assert!(tool.invoke(input).await.is_ok());
     }
 
     #[tokio::test]

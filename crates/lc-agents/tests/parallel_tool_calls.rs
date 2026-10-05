@@ -70,6 +70,7 @@ impl BaseAgent for ParallelOnceAgent {
                     },
                     log: "call-a".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
                 AgentAction {
                     tool: "b".to_string(),
@@ -78,6 +79,7 @@ impl BaseAgent for ParallelOnceAgent {
                     },
                     log: "call-b".to_string(),
                     tool_call_id: None,
+                    server_executed: false,
                 },
             ]));
         }
@@ -87,10 +89,19 @@ impl BaseAgent for ParallelOnceAgent {
             2,
             "batch must attach as two steps"
         );
+        // T7-2 (0.26.0): tool observations default to spotlight isolation, so each
+        // locally-executed output is wrapped. (Rewritten from the old "A-out"/
+        // "B-out" bare form that assumed the spotlight-off default.)
         assert_eq!(intermediate_steps[0].action.tool, "a");
-        assert_eq!(intermediate_steps[0].observation, "A-out");
+        assert_eq!(
+            intermediate_steps[0].observation,
+            "<untrusted_data>A-out</untrusted_data>"
+        );
         assert_eq!(intermediate_steps[1].action.tool, "b");
-        assert_eq!(intermediate_steps[1].observation, "B-out");
+        assert_eq!(
+            intermediate_steps[1].observation,
+            "<untrusted_data>B-out</untrusted_data>"
+        );
         Ok(AgentOutput::Finish(AgentFinish::new(
             format!(
                 "{}|{}",
@@ -134,7 +145,11 @@ async fn invoke_runs_multiple_tool_calls_concurrently_in_action_order() {
         .expect("serialized execution would deadlock on the shared barrier")
         .expect("parallel invoke should finish successfully");
 
-    assert_eq!(out, "A-out|B-out");
+    // T7-2: observations default to spotlight isolation → wrapped on the invoke path.
+    assert_eq!(
+        out,
+        "<untrusted_data>A-out</untrusted_data>|<untrusted_data>B-out</untrusted_data>"
+    );
     assert_eq!(
         calls_a.load(Ordering::SeqCst),
         1,
@@ -175,11 +190,18 @@ async fn stream_runs_multiple_tool_calls_concurrently_in_action_order() {
         .expect("serialized execution would deadlock on the shared barrier")
         .expect("parallel stream should finish successfully");
 
-    assert_eq!(out, "A-out|B-out");
+    // T7-2: the stream path wraps observations identically (FinalAnswer + ToolEnd).
+    assert_eq!(
+        out,
+        "<untrusted_data>A-out</untrusted_data>|<untrusted_data>B-out</untrusted_data>"
+    );
     assert_eq!(
         tool_ends,
-        vec!["A-out".to_string(), "B-out".to_string()],
-        "ToolEnd order must follow action order, not completion order"
+        vec![
+            "<untrusted_data>A-out</untrusted_data>".to_string(),
+            "<untrusted_data>B-out</untrusted_data>".to_string(),
+        ],
+        "ToolEnd order must follow action order, not completion order (and carry wrapped observations)"
     );
     assert_eq!(calls_a.load(Ordering::SeqCst), 1);
     assert_eq!(calls_b.load(Ordering::SeqCst), 1);

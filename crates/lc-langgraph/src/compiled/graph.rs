@@ -2,7 +2,9 @@
 //! CompiledGraph struct definition, constructors, getters, and runtime injection
 
 use super::types::{DynamicTask, GraphExecution, GraphInvocation, PendingInterrupt};
-use crate::checkpointer::{CheckpointInfo, Checkpointer, DEFAULT_THREAD};
+use crate::checkpointer::{
+    CheckpointInfo, CheckpointRetention, Checkpointer, RetainingCheckpointer, DEFAULT_THREAD,
+};
 use crate::edge::{ConditionalEdge, GraphEdge};
 use crate::errors::{GraphError, GraphResult};
 use crate::node::GraphNode;
@@ -27,8 +29,17 @@ pub struct CompiledGraph<S: StateSchema> {
     pub(super) edges: Vec<GraphEdge>,
     pub(super) entry_point: String,
     pub(super) default_reducer: Arc<dyn Reducer<S>>,
+    // 0.26.0 P0-4: per-field reducers kept separate from `default_reducer` so
+    // `merge_parallel_states` can do a field-level union (base + each branch's
+    // unique fields) and only reducer-merge fields that have a registered
+    // reducer. Previously the parallel fold used the whole-state
+    // `default_reducer` directly, and the default `ReplaceReducer` let the LAST
+    // branch overwrite the fields only earlier branches wrote. Registration
+    // order preserved (mirrors `StateGraph::reducers`).
+    pub(super) field_reducers: Vec<(String, Arc<dyn Reducer<S>>)>,
     pub(super) conditional_routers: HashMap<String, Arc<dyn ConditionalEdge<S>>>,
     pub(super) checkpointer: Option<Arc<Mutex<dyn Checkpointer<S> + Send>>>,
+    pub(super) retention: CheckpointRetention,
     pub(super) recursion_limit: usize,
     pub(super) interrupt_before: Vec<String>,
     pub(super) interrupt_after: Vec<String>,
@@ -59,14 +70,17 @@ impl<S: StateSchema> CompiledGraph<S> {
         edges: Vec<GraphEdge>,
         entry_point: String,
         default_reducer: Arc<dyn Reducer<S>>,
+        field_reducers: Vec<(String, Arc<dyn Reducer<S>>)>,
     ) -> Self {
         Self {
             nodes,
             edges,
             entry_point,
             default_reducer,
+            field_reducers,
             conditional_routers: HashMap::new(),
             checkpointer: None,
+            retention: CheckpointRetention::default(),
             recursion_limit: 25,
             interrupt_before: Vec::new(),
             interrupt_after: Vec::new(),
@@ -82,8 +96,31 @@ impl<S: StateSchema> CompiledGraph<S> {
     }
 
     /// Attach a checkpointer to this graph for state persistence.
+    ///
+    /// If a retention policy is set (via [`with_checkpoint_retention`](Self::with_checkpoint_retention),
+    /// before or after this call), the checkpointer is transparently wrapped in a
+    /// [`RetainingCheckpointer`] so each save keeps its history within the policy.
     pub fn with_checkpointer<C: Checkpointer<S> + 'static>(mut self, checkpointer: C) -> Self {
-        self.checkpointer = Some(Arc::new(Mutex::new(checkpointer)));
+        let retention = self.retention;
+        let inner: Arc<Mutex<dyn Checkpointer<S> + Send>> = Arc::new(Mutex::new(checkpointer));
+        self.checkpointer = Some(Arc::new(Mutex::new(RetainingCheckpointer::new(inner, retention))));
+        self
+    }
+
+    /// Enforce a retention policy on the attached checkpointer: keep at most
+    /// [`CheckpointRetention::max_checkpoints`] per thread and/or drop checkpoints
+    /// older than [`CheckpointRetention::max_age_secs`], pruning after each save.
+    /// Prevents a long-lived graph from accumulating checkpoints without bound.
+    ///
+    /// Order-independent with [`with_checkpointer`](Self::with_checkpointer): when
+    /// a checkpointer is already attached it is re-wrapped with the new policy,
+    /// and when this is called first the policy is applied when the checkpointer
+    /// is attached.
+    pub fn with_checkpoint_retention(mut self, retention: CheckpointRetention) -> Self {
+        self.retention = retention;
+        if let Some(cp) = self.checkpointer.take() {
+            self.checkpointer = Some(Arc::new(Mutex::new(RetainingCheckpointer::new(cp, retention))));
+        }
         self
     }
 
@@ -170,6 +207,20 @@ impl<S: StateSchema> CompiledGraph<S> {
     pub async fn get_state_history(&self) -> GraphResult<Vec<CheckpointInfo<S>>> {
         let guard = self.checkpointer_locked().await?;
         guard.snapshots().await
+    }
+
+    /// Cursor-paginated [`get_state_history`](Self::get_state_history): up to
+    /// `limit` snapshots, oldest-first, starting strictly after `after` (the id
+    /// of the last snapshot of the previous page; `None` starts at the oldest).
+    /// Use the last returned snapshot's `id` as the next page's cursor. This
+    /// bounds memory when a graph has accumulated many checkpoints.
+    pub async fn get_state_history_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let guard = self.checkpointer_locked().await?;
+        guard.snapshots_page(after, limit).await
     }
 
     /// Time-travel: fork a fresh execution timeline from an old checkpoint.

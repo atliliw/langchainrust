@@ -20,6 +20,11 @@ static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PARA_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"</w:p>").expect("static regex literal must compile"));
 
+/// Cap on the decompressed size of `word/document.xml`. A DOCX is a ZIP; a
+/// crafted archive can compress a huge XML body to a tiny on-disk entry, so
+/// without a bound decompression balloons memory (decompression bomb).
+const DEFAULT_MAX_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+
 /// DOCX document loader
 ///
 /// Loads documents from a .docx file path, extracting the body text.
@@ -35,11 +40,22 @@ impl DocxLoader {
         Self { path: path.into() }
     }
 
-    /// Extracts text from DOCX bytes
+    /// Extracts text from DOCX bytes (default decompression-size cap).
     ///
     /// A DOCX file is a ZIP package; the body lives in `word/document.xml`,
     /// with the text inside `<w:t>` tags.
     fn extract_text_from_bytes(data: &[u8]) -> Result<String, LoaderError> {
+        Self::extract_text_from_bytes_with_limit(data, DEFAULT_MAX_DECOMPRESSED_BYTES)
+    }
+
+    /// Extracts text from DOCX bytes, bounding the decompressed size of
+    /// `word/document.xml` to `max_decompressed_bytes`. A crafted small .docx
+    /// (whole archive read into memory by the caller) can decompress a single
+    /// entry to far beyond the on-disk size; without a cap this balloons memory.
+    fn extract_text_from_bytes_with_limit(
+        data: &[u8],
+        max_decompressed_bytes: usize,
+    ) -> Result<String, LoaderError> {
         let reader = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(reader)
             .map_err(|e| LoaderError::Other(format!("DOCX is not a valid ZIP: {}", e)))?;
@@ -52,9 +68,18 @@ impl DocxLoader {
                 .by_index(i)
                 .map_err(|e| LoaderError::Other(format!("failed to read ZIP entry: {}", e)))?;
             if file.name() == "word/document.xml" {
-                file.read_to_string(&mut xml_content).map_err(|e| {
-                    LoaderError::Other(format!("failed to read document.xml: {}", e))
-                })?;
+                // Bound the decompressed bytes: take cap+1 so we can tell "exactly
+                // at cap" from "truncated", and fail closed rather than silently
+                // accept an over-limit entry.
+                (&mut file)
+                    .take((max_decompressed_bytes + 1) as u64)
+                    .read_to_string(&mut xml_content)
+                    .map_err(|e| LoaderError::Other(format!("failed to read document.xml: {}", e)))?;
+                if xml_content.len() > max_decompressed_bytes {
+                    return Err(LoaderError::Other(format!(
+                        "decompressed document.xml exceeds {max_decompressed_bytes} bytes (decompression bomb)"
+                    )));
+                }
                 found = true;
                 break;
             }
@@ -160,5 +185,38 @@ mod tests {
     fn test_new() {
         let loader = DocxLoader::new("/path/to/file.docx");
         assert_eq!(loader.path, "/path/to/file.docx");
+    }
+
+    /// Build a minimal .docx (ZIP) whose `word/document.xml` is `entry_xml`.
+    fn build_docx(entry_xml: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut buf);
+            zw.start_file("word/document.xml", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zw.write_all(entry_xml.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn decompression_bomb_is_rejected() {
+        // Highly-compressible body (~500 KiB of repeated text) compresses to a
+        // tiny on-disk entry but balloons on decompression. A small cap must make
+        // extraction fail closed instead of materializing the whole entry.
+        let bomb_xml = format!("<w:p>{}</w:p>", "A".repeat(500 * 1024));
+        let docx = build_docx(&bomb_xml);
+        assert!(docx.len() < bomb_xml.len(), "sanity: bomb has a good ratio");
+        let err = DocxLoader::extract_text_from_bytes_with_limit(&docx, 1024).unwrap_err();
+        assert!(err.to_string().contains("decompression bomb"), "got: {err}");
+    }
+
+    #[test]
+    fn within_cap_extracts_ok() {
+        let docx = build_docx("<w:p><w:t>Hello World</w:t></w:p>");
+        let text = DocxLoader::extract_text_from_bytes_with_limit(&docx, 1 << 20).unwrap();
+        assert!(text.contains("Hello World"));
     }
 }

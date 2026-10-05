@@ -234,9 +234,7 @@ where
 mod tests {
     use super::*;
     use lc_embeddings::MockEmbeddings;
-    use lc_vector_stores::{
-        Document, InMemoryVectorStore, SearchResult, VectorStoreError,
-    };
+    use lc_vector_stores::{Document, InMemoryVectorStore, SearchResult, VectorStoreError};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn make_memory(k: usize) -> VectorStoreRetrieverMemory<InMemoryVectorStore, MockEmbeddings> {
@@ -446,8 +444,7 @@ mod tests {
         // M-28: a mid-clear delete failure must not retire the remaining owned ids, so a
         // subsequent clear() can finish deleting them instead of orphaning the docs.
         let store = FailsOnceDelete(InMemoryVectorStore::new(), AtomicBool::new(true));
-        let mut mem =
-            VectorStoreRetrieverMemory::new(store, MockEmbeddings::new(32), 3);
+        let mut mem = VectorStoreRetrieverMemory::new(store, MockEmbeddings::new(32), 3);
         mem.save_context(&inputs("apple"), &outputs("a"))
             .await
             .unwrap();

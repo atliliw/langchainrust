@@ -182,6 +182,10 @@ impl FunctionCallingAgent {
                     // its tool result by real id and the executor can stamp it into
                     // observability without guessing.
                     tool_call_id: Some(call.id.clone()),
+                    // 0.26.0 M7: propagate the server-executed marker so the
+                    // executor re-uses the embedded result instead of re-running
+                    // (or not-finding) the server-side tool locally.
+                    server_executed: call.server_executed,
                 }
             })
             .collect();
@@ -456,6 +460,7 @@ mod tests {
                 },
                 log: "call_123".to_string(),
                 tool_call_id: Some("call_123".to_string()),
+                server_executed: false,
             },
             "5".to_string(),
         )];
@@ -488,6 +493,7 @@ mod tests {
                 },
                 log: String::new(),
                 tool_call_id: Some("call_explicit".to_string()),
+                server_executed: false,
             },
             "2".to_string(),
         )];
@@ -518,6 +524,7 @@ mod tests {
                 },
                 log: String::new(),
                 tool_call_id: None,
+                server_executed: false,
             },
             "2".to_string(),
         )];

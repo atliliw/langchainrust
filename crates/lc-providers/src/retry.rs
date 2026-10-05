@@ -65,9 +65,9 @@ pub(crate) enum TransportRetryMode {
     /// `is_request`/`is_timeout` can fire after the server accepted the
     /// request (in reqwest 0.12 a post-dispatch timeout has both flags set).
     ///
-    /// Opt-in via [`SAFE_RETRY`]; exercised in tests even though no default
-    /// provider call site selects it (A14 keeps historical behavior).
-    #[allow(dead_code)]
+    /// Opt-in via [`SAFE_RETRY`]. Selected by default for billed non-idempotent
+    /// POSTs (Anthropic, 0.26.0 P0-2) where double-billing outweighs a lost
+    /// availability retry.
     PreDispatchOnly,
 }
 
@@ -99,9 +99,8 @@ pub(crate) const DEFAULT_RETRY: RetryConfig = RetryConfig {
 /// [`DEFAULT_RETRY`], but transport retries are limited to provably
 /// pre-dispatch errors ([`TransportRetryMode::PreDispatchOnly`]). Opt in at a
 /// call site (`send_with_retry(builder, &SAFE_RETRY)`) where double-billing a
-/// generation outweighs a lost retry. Not referenced by default provider
-/// paths by design (A14 preserves historical behavior), hence the allow.
-#[allow(dead_code)]
+/// generation outweighs a lost retry (0.26.0 P0-2 selects it for the billed
+/// Anthropic chat POST).
 pub(crate) const SAFE_RETRY: RetryConfig = RetryConfig {
     max_attempts: 3,
     base_delay: Duration::from_millis(500),

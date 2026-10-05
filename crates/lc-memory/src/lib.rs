@@ -21,6 +21,7 @@
 
 pub mod base;
 pub mod buffer;
+pub mod context_manager;
 pub mod context_window;
 pub mod decay;
 pub mod file_memory;
@@ -44,6 +45,7 @@ pub use base::{
     memory_variables_to_messages, BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError,
 };
 pub use buffer::ConversationBufferMemory;
+pub use context_manager::{ContextManager, ContextManagerBuilder, ReadStrategy, WriteStrategy};
 pub use context_window::{ContextWindow, Strategy};
 pub use decay::{ForgetConfig, ForgettingMemory};
 pub use file_memory::{FileMemoryError, FileMemoryStore, MemoryEntry};

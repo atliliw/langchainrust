@@ -23,6 +23,17 @@ pub const RUN_META_PARENT_RUN_ID: &str = "__lc_parent_run_id";
 /// See [`RUN_META_PARENT_RUN_ID`] for the linkage contract.
 pub const RUN_META_TRACE_ID: &str = "__lc_trace_id";
 
+/// Reserved metadata key (string): per-run cost attribution scope.
+///
+/// P0-5: when several *concurrent* agent runs share one [`crate::cost::CostTracker`]
+/// (the planning LLM is `Arc`-shared), the enclosing executor stamps each run's
+/// unique scope (its root run id) here so [`crate::token_counter::TokenTrackingLLM`]
+/// can attribute every recorded call to the right run's bucket. A budget gate
+/// then reads [`crate::cost::CostTracker::run_cost_usd`] for its own scope and
+/// never sees another run's interleaved spend. Like the other reserved keys it
+/// is stripped from the run's user-visible metadata.
+pub const RUN_META_COST_SCOPE: &str = "__lc_cost_scope";
+
 /// Builds the [`RunTree`] a component dispatches its lifecycle callbacks
 /// against, applying the config every provider is expected to honor.
 ///
@@ -51,7 +62,10 @@ pub fn run_tree_from_config(
         run = run.with_tag(tag.clone());
     }
     for (key, value) in &cfg.metadata {
-        if key == RUN_META_PARENT_RUN_ID || key == RUN_META_TRACE_ID {
+        if key == RUN_META_PARENT_RUN_ID
+            || key == RUN_META_TRACE_ID
+            || key == RUN_META_COST_SCOPE
+        {
             continue;
         }
         run = run.with_metadata(key.clone(), value.clone());

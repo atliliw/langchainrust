@@ -46,6 +46,18 @@ pub const DEFAULT_API_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_API_MAX_BYTES: usize = 10 * 1024 * 1024;
 /// Default total budget for establishing an SSE stream.
 pub const DEFAULT_SSE_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Per-chunk idle timeout for an open SSE stream (0.26.0 M5).
+///
+/// `open_sse` deliberately streams the body without the API-profile total
+/// deadline (a long generation must not be cut mid-flight), so a server that
+/// goes silent — stops sending bytes but keeps the connection open — would
+/// otherwise pin the consumer task forever. Real OpenAI-compatible vendors
+/// emit keep-alive framing (`: ping`, periodic deltas), so a generous 120s
+/// window only fires on a genuinely dead peer. Applied once per `.next()` at
+/// the single [`HttpClient::open_sse`] choke point so every SSE consumer inherits it
+/// instead of six duplicated read-loop timeouts.
+pub const DEFAULT_SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Upper bound read from an error response body so messages stay bounded.
 pub const ERROR_BODY_BYTES: usize = 64 * 1024;
 
@@ -206,6 +218,7 @@ pub struct HttpClientBuilder {
     default_headers: HeaderMap,
     use_system_proxy: bool,
     cancel: Option<CancellationToken>,
+    sse_idle_timeout: Duration,
 }
 
 impl HttpClientBuilder {
@@ -228,6 +241,7 @@ impl HttpClientBuilder {
             // a production incident (T4).
             use_system_proxy: false,
             cancel: None,
+            sse_idle_timeout: DEFAULT_SSE_IDLE_TIMEOUT,
         }
     }
 
@@ -280,6 +294,16 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Overrides the per-chunk idle timeout for open SSE streams (0.26.0 M5).
+    ///
+    /// Defaults to [`DEFAULT_SSE_IDLE_TIMEOUT`]. Primarily set in tests to a
+    /// short window so a silent peer is proven to fail fast; production can
+    /// leave the default.
+    pub fn sse_idle_timeout(mut self, idle: Duration) -> Self {
+        self.sse_idle_timeout = idle;
+        self
+    }
+
     /// Builds the client.
     pub fn build(self) -> Result<HttpClient, HttpError> {
         let mut builder = reqwest::Client::builder()
@@ -306,6 +330,7 @@ impl HttpClientBuilder {
             bearer: self.bearer,
             default_headers: self.default_headers,
             cancel: self.cancel,
+            sse_idle_timeout: self.sse_idle_timeout,
         })
     }
 }
@@ -321,6 +346,7 @@ pub struct HttpClient {
     bearer: Option<String>,
     default_headers: HeaderMap,
     cancel: Option<CancellationToken>,
+    sse_idle_timeout: Duration,
 }
 
 impl HttpClient {
@@ -467,10 +493,12 @@ impl HttpClient {
                 body,
             });
         }
-        let stream = resp
+        let inner = resp
             .bytes_stream()
             .map(|result| result.map_err(|e| io::Error::other(e.to_string())));
-        Ok(Box::pin(stream))
+        // 0.26.0 M5: bound each read decision by an idle timeout so a server
+        // that goes silent mid-stream cannot pin the consumer task forever.
+        Ok(Box::pin(with_sse_idle_timeout(inner, self.sse_idle_timeout)))
     }
 
     /// Read the buffered body subject to the overall deadline.
@@ -668,6 +696,43 @@ impl BoundedResponse {
 
 /// Boxed SSE byte stream.
 pub type SseStream = Pin<Box<dyn Stream<Item = io::Result<bytes::Bytes>> + Send>>;
+
+/// Wraps a byte stream so every item-read is bounded by `idle`: if the inner
+/// stream yields nothing for that window the next item is an `io::Error` of
+/// kind [`io::ErrorKind::TimedOut`]. Ends (and propagates errors) unchanged.
+///
+/// 0.26.0 M5: applied once in [`HttpClient::open_sse`] so every SSE consumer —
+/// OpenAI, Azure, Cohere, Anthropic, Gemini, Ollama — inherits an anti-hang
+/// guarantee without six duplicated read-loop timers.
+fn with_sse_idle_timeout<S>(
+    stream: S,
+    idle: Duration,
+) -> impl Stream<Item = io::Result<bytes::Bytes>> + Send
+where
+    S: Stream<Item = io::Result<bytes::Bytes>> + Send + 'static,
+{
+    futures_util::stream::unfold(Box::pin(stream), move |mut inner: Pin<Box<S>>| async move {
+        let decision = tokio::time::timeout(
+            idle,
+            futures_util::future::poll_fn(|cx| inner.as_mut().poll_next(cx)),
+        )
+        .await;
+        match decision {
+            Ok(Some(item)) => Some((item, inner)),
+            // Inner stream exhausted → end.
+            Ok(None) => None,
+            // Idle window elapsed with no bytes → fail the read. The returned
+            // state keeps `inner`, so a subsequent poll re-arms the timer.
+            Err(_elapsed) => Some((
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "SSE stream idle timeout (no bytes for the configured window)",
+                )),
+                inner,
+            )),
+        }
+    })
+}
 
 /// Returns true for the closed set of retriable statuses:
 /// 408, 429, 500, 502, 503, 504. Notably 501/505 are NOT retriable.
@@ -1090,6 +1155,43 @@ mod tests {
             .unwrap();
         let err = client.get(&url).await.unwrap_err();
         assert!(matches!(err, HttpError::Timeout(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn sse_idle_timeout_fires_when_stream_goes_silent() {
+        use futures_util::StreamExt;
+        // A stream that yields one healthy frame, then never yields again (as a
+        // peer that stops mid-generation). Without the M5 idle deadline the
+        // consumer would park on `.next().await` forever.
+        let inner = futures_util::stream::iter([Ok::<bytes::Bytes, io::Error>(bytes::Bytes::from_static(
+            b"data: {\"ok\":true}\n\n",
+        ))])
+        .chain(futures_util::stream::pending());
+        let stream = with_sse_idle_timeout(inner, Duration::from_millis(150));
+        // The opaque adapter stream is !Unpin; pin it so `next()` can poll it.
+        futures_util::pin_mut!(stream);
+
+        // First read delivers the healthy frame.
+        let first = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+        assert!(matches!(first, Ok(Some(Ok(_)))), "got {first:?}");
+
+        // Second read: peer silent past the idle window → must fail fast.
+        let start = tokio::time::Instant::now();
+        let second = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+        match second {
+            Ok(Some(Err(e))) => {
+                assert_eq!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut,
+                    "idle gap must surface as a timeout, got {e:?}"
+                );
+                assert!(
+                    start.elapsed() < Duration::from_secs(2),
+                    "must not park forever"
+                );
+            }
+            other => panic!("silent stream did not time out: got {other:?}"),
+        }
     }
 
     #[tokio::test]

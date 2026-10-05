@@ -8,7 +8,7 @@ use mongodb::{
     Client, Collection, Database,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock as StdRwLock;
 use tokio::sync::RwLock;
 
@@ -71,20 +71,40 @@ impl From<MongoMemoryDoc> for MemoryData {
 /// - messages: append local-snapshot messages the remote lacks (deduped by role + content),
 ///   preserving relative order, losing nothing;
 /// - summary: take the longer of the two, preventing summary regression.
-/// M-me4/D5: occurrence-aware merge of two concurrent writers' message streams.
 ///
-/// Dedup is keyed by `(role, content, occurrence#)` rather than by `(role, content)`
-/// alone. Two **real** messages that are byte-identical (e.g. the user literally
-/// asked the same thing twice) therefore stay separate — the bare role+content
-/// key would collapse them. A local occurrence is still dropped when the remote
-/// document already carries that exact occurrence of the message, so genuine
-/// overlap from a shared snapshot is not duplicated.
+/// M13: the message merge is keyed by per-message identity. Two **real**
+/// messages that are byte-identical (e.g. the user literally asked the same
+/// thing twice) therefore stay separate — a (role, content) count canvas would
+/// silently swallow one concurrent append. A local message whose stamped id is
+/// already in the remote document is the shared snapshot and is not duplicated.
 fn merge_memory_data(
     remote: &MemoryData,
     local_messages: &[Message],
     local_summary: &str,
 ) -> (Vec<Message>, String) {
-    // How many occurrences of each (role, content) the remote already holds.
+    // M13: PER-MESSAGE IDENTITY is the only sound dedup. Two concurrent writers
+    // each genuinely appending an identical ask ("hi") MUST both survive, but a
+    // (role, content) count canvas equates them with the shared snapshot and
+    // silently swallows one. A stamped `Message::id` distinguishes "same logical
+    // message re-read by both writers" (dedup) from "two distinct messages with
+    // same bytes" (keep both). Ids already round-trip through MongoDB serde and
+    // never reach a provider body (requests are built field-by-field).
+    //
+    // Primary rule: a local message whose id the remote carries is part of the
+    // shared snapshot -> skip; one whose id the remote never saw is genuine ->
+    // append unconditionally (content is irrelevant to the decision).
+    //
+    // Fallback (legacy docs / manually-built messages with no id anywhere):
+    // the pre-M13 occurrence heuristic, unchanged, so pre-lineage documents are
+    // still handled with the old semantics rather than newly duplicated or lost.
+    let remote_ids: HashSet<&str> = remote
+        .messages
+        .iter()
+        .filter_map(|m| m.id.as_deref())
+        .collect();
+
+    // Legacy fallback uses the *static* remote occurrence counts (counted once),
+    // exactly matching the pre-M13 behavior for id-less documents.
     let mut remote_occurrences: HashMap<(String, String), u32> = HashMap::new();
     for m in &remote.messages {
         *remote_occurrences.entry(message_key(m)).or_insert(0) += 1;
@@ -93,13 +113,21 @@ fn merge_memory_data(
     let mut messages = remote.messages.clone();
     let mut local_occurrences: HashMap<(String, String), u32> = HashMap::new();
     for msg in local_messages {
+        // Identity path: exact, content-independent dedup.
+        if let Some(id) = msg.id.as_deref() {
+            if remote_ids.contains(id) {
+                // Same logical message both writers already hold -> shared snapshot.
+                continue;
+            }
+            messages.push(msg.clone());
+            continue;
+        }
+
+        // Legacy / id-less path: fall back to the occurrence-count heuristic.
         let base = message_key(msg);
         let occ = local_occurrences.entry(base.clone()).or_insert(0);
         let this_occ = *occ;
         *occ += 1;
-        // The remote already has >= this_occ+1 copies of this key: this occurrence
-        // is part of the shared snapshot, skip it. Otherwise it is a genuinely new
-        // (possibly identical) message — append.
         if remote_occurrences.get(&base).copied().unwrap_or(0) > this_occ {
             continue;
         }
@@ -139,6 +167,22 @@ fn message_key(msg: &Message) -> (String, String) {
         MessageType::Tool { .. } => "tool",
     };
     (role.to_string(), msg.content.clone())
+}
+
+/// M13: stamp a stable lineage id onto every message that lacks one, in place.
+///
+/// This is the identity that lets the optimistic-lock merge dedup by message
+/// rather than by (role, content) count — without it, two concurrent writers
+/// both appending an identical ask would collapse into one. Called from
+/// `save_context` (holding the write lock on the inner history) so the ids are
+/// assigned the moment a message enters the session and persist through the
+/// Mongo round-trip. Existing ids are preserved verbatim.
+fn stamp_missing_ids(messages: &mut [Message]) {
+    for m in messages.iter_mut() {
+        if m.id.is_none() {
+            m.id = Some(uuid::Uuid::new_v4().to_string());
+        }
+    }
 }
 
 /// B6: whether the assistant message at `idx` has at least one `Tool` result message later in the
@@ -369,13 +413,18 @@ impl<M: BaseChatModel> MongoPersistentMemory<M> {
             let expected_version = existing.as_ref().map(|d| d.version).unwrap_or(0);
             let existing_created_at = existing.as_ref().map(|d| d.created_at.clone());
 
-            let (messages, summary) = match existing {
+            let (mut messages, summary) = match existing {
                 Some(remote) => {
                     let remote_data: MemoryData = remote.into();
                     merge_memory_data(&remote_data, &local_messages, &local_summary)
                 }
                 None => (local_messages, local_summary),
             };
+            // M13: converge the *persisted* document to full lineage even when the
+            // merge carried forward id-less remote messages (legacy docs). Stamping
+            // here keeps every stored message id-carrying, so the next merge is
+            // identity-exact rather than count-heuristic.
+            stamp_missing_ids(&mut messages);
 
             let now = chrono::Utc::now().to_rfc3339();
             let data = MemoryData {
@@ -471,6 +520,13 @@ where
         {
             let mut inner = self.inner.write().await;
             inner.save_context(inputs, outputs).await?;
+            // M13: stamp lineage ids on the messages just added (and any legacy
+            // id-less ones) so the merge dedups by identity. New ids persist
+            // through the Mongo round-trip; surviving messages keep their ids on
+            // later saves, giving the "shared snapshot re-read by both writers"
+            // dedup a stable hook.
+            let live = inner.chat_memory_mut();
+            stamp_missing_ids(live.messages_mut());
         }
 
         let config = self.config.read().await;
@@ -606,6 +662,107 @@ mod tests {
         let doc: MongoMemoryDoc = data.clone().into();
         let back: MemoryData = doc.into();
         assert_eq!(back.version, 42);
+    }
+
+    /// M13: when both sides carry stable `Message::id`s, the merge must preserve
+    /// *identity*, not collapse by count. Two writers genuinely asking "hi" twice
+    /// are distinct messages that each survive; the byte-identical content must
+    /// not be treated as one shared-snapshot occurrence. The old count-based
+    /// heuristic (`remote_occ > this_occ`) walked only the *local* consecutive
+    /// occurrence index, so a remote copy of the same bytes silently swallowed a
+    /// genuine duplicate. With ids, dedup is exact: a local message with an id
+    /// remote never saw is unconditionally kept.
+    #[test]
+    fn test_merge_preserves_genuine_duplicates_by_id() {
+        // Remote (another writer) has one "hi" and one "ai" with their own ids.
+        let remote = MemoryData::new("s".to_string()).with_messages(vec![
+            Message::human("hi").with_id("remote-hi"),
+            Message::ai("ok").with_id("remote-ok"),
+        ]);
+        // Local (this writer) asked "hi" twice — two *genuine* duplicates, each
+        // freshly stamped. Ids are globally unique, so neither matches remote.
+        let local = vec![
+            Message::human("hi").with_id("local-hi-1"),
+            Message::human("hi").with_id("local-hi-2"),
+        ];
+
+        let (messages, _) = merge_memory_data(&remote, &local, "");
+        let hi_count = messages.iter().filter(|m| m.content == "hi").count();
+        // All three "hi" are real messages from the two writers; the old
+        // count heuristic dropped local occurrence index 0 because remote had 1.
+        assert_eq!(
+            hi_count, 3,
+            "two writers' genuine 'hi' messages must all survive, got {hi_count}"
+        );
+        assert_eq!(messages.len(), 4);
+    }
+
+    /// M13: a local message whose id the remote already carries is part of the
+    /// shared snapshot (the same logical message, re-read by both writers) and
+    /// must NOT be re-appended — identity makes the overlap dedup exact.
+    #[test]
+    fn test_merge_dedups_shared_snapshot_by_id() {
+        let remote = MemoryData::new("s".to_string()).with_messages(vec![
+            Message::human("hi").with_id("shared-hi"),
+            Message::ai("ok").with_id("shared-ok"),
+        ]);
+        // Local re-read the same snapshot (ids match remote) and then added one new turn.
+        let local = vec![
+            Message::human("hi").with_id("shared-hi"),
+            Message::ai("ok").with_id("shared-ok"),
+            Message::human("new").with_id("local-new"),
+        ];
+
+        let (messages, _) = merge_memory_data(&remote, &local, "");
+        assert_eq!(messages.len(), 3, "shared snapshot must not be re-appended");
+        assert!(messages.iter().any(|m| m.content == "new"));
+    }
+
+    /// M13: id-less messages (legacy docs, pre-lineage) fall back to the count
+    /// heuristic unchanged — backward compatible behavior for docs that never
+    /// carried identity.
+    #[test]
+    fn test_merge_falls_back_to_counts_without_ids() {
+        // No ids present anywhere: must behave exactly as before (dedup by
+        // role+content occurrence so a shared snapshot isn't duplicated).
+        let remote = MemoryData::new("s".to_string())
+            .with_messages(vec![Message::human("h1"), Message::ai("a1")]);
+        let local = vec![
+            Message::human("h1"),
+            Message::ai("a1"),
+            Message::human("h2"),
+            Message::ai("a2"),
+        ];
+
+        let (messages, _) = merge_memory_data(&remote, &local, "");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].content, "h2");
+        assert_eq!(messages[3].content, "a2");
+    }
+
+    /// M13: the merge stamps a unique id onto messages that lack one, so a
+    /// mixed id-ful/id-less history converges to full lineage on the next save.
+    #[test]
+    fn test_merge_stamps_missing_local_ids() {
+        let remote = MemoryData::new("s".to_string());
+        let local = vec![
+            Message::human("h1"),
+            Message::human("h1").with_id("kept-id"),
+        ];
+
+        let (mut messages, _) = merge_memory_data(&remote, &local, "");
+        // Production save path converges the merged history to full lineage
+        // (stamping lives at the persistence boundary so it also covers the
+        // absent-session branch, not just the merge).
+        stamp_missing_ids(&mut messages);
+        // h1 had no id -> fresh uuid; kept-id preserves its own id.
+        let h1 = messages.iter().find(|m| m.id.as_deref() == Some("kept-id"));
+        assert!(h1.is_some(), "existing id must be preserved");
+        // Every message now carries a unique id (dedup is identity-ready).
+        let ids: Vec<_> = messages.iter().filter_map(|m| m.id.clone()).collect();
+        assert_eq!(ids.len(), 2, "both messages must be stamped");
+        let uniq: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(uniq.len(), 2, "stamped ids must be unique across messages");
     }
 
     /// P2-3: merging appends new local messages (deduped by type + content), preserving order.

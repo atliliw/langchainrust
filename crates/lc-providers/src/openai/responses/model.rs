@@ -227,10 +227,16 @@ impl ResponsesModel {
                             .build(),
                     );
                 }
+                // 0.26.0 M7: these are provider-managed tools — the server has
+                // ALREADY executed them and embedded the outcome in `arguments`
+                // (query/status, code/results). Mark `server_executed` so an agent
+                // feeding these back skips local re-execution / never reports
+                // ToolNotFound for a tool it never registered locally.
                 ResponsesOutputItem::WebSearchCall(call) => {
                     tool_calls.push(
                         ToolCall::builder(&call.id)
                             .name("web_search")
+                            .server_executed(true)
                             .arguments(
                                 json!({
                                     "query": call.query,
@@ -245,6 +251,7 @@ impl ResponsesModel {
                     tool_calls.push(
                         ToolCall::builder(&call.id)
                             .name("file_search")
+                            .server_executed(true)
                             .arguments(
                                 json!({
                                     "query": call.query,
@@ -259,6 +266,7 @@ impl ResponsesModel {
                     tool_calls.push(
                         ToolCall::builder(&call.id)
                             .name("code_interpreter")
+                            .server_executed(true)
                             .arguments(
                                 json!({
                                     "code": call.code,
@@ -274,6 +282,7 @@ impl ResponsesModel {
                     tool_calls.push(
                         ToolCall::builder(&call.id)
                             .name("computer_use")
+                            .server_executed(true)
                             .arguments(
                                 json!({
                                     "action": call.action,
@@ -385,15 +394,27 @@ impl ResponsesModel {
 
                 // H41: unwrap_or_else recovers from a poisoned mutex.
                 // 0.22.0 C1: byte-layer framing; only complete events decode.
+                let mut overflow: Option<String> = None;
                 let events = {
                     let mut guard = parser_clone.lock().unwrap_or_else(|e| e.into_inner());
                     let mut out = Vec::new();
-                    for text in guard.1.push(&chunk_bytes) {
-                        out.extend(guard.0.parse(&text));
+                    match guard.1.push(&chunk_bytes) {
+                        Ok(texts) => {
+                            for text in texts {
+                                out.extend(guard.0.parse(&text));
+                            }
+                        }
+                        // 0.26.0 M5: bounded framer — buffer overflow means a
+                        // malformed/runaway stream; fail it after the guard drops.
+                        Err(e) => overflow = Some(e.to_string()),
                     }
                     out
                 };
                 // guard is dropped here, before any await
+                if let Some(msg) = overflow {
+                    let _ = tx.send(Err(ResponsesError::Http(msg))).await;
+                    return;
+                }
 
                 for event in events {
                     if event.is_done() {
