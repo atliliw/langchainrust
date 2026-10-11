@@ -3,19 +3,78 @@
 //!
 //! Embeds each conversation turn and stores in a vector store, loading history by semantic relevance to the current input.
 //! Suitable for long conversations and cross-session knowledge memory.
+//!
+//! Retrieval is vector-only by default. [`HybridRetrieval`] (T2) adds a full-text
+//! channel: over-fetch a wider candidate pool by similarity, then re-rank it by
+//! fusing the vector score with a term-frequency score, so exact literals the
+//! embedding blurred (error codes, ids, symbol names) can still surface.
 
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use super::base::{BaseMemory, MemoryError};
+use super::semantic::LexicalScorer;
 use lc_embeddings::Embeddings;
 use lc_vector_stores::{Document, VectorStore};
+
+/// Hybrid (vector + full-text) retrieval settings (T2).
+///
+/// The vector channel alone misses exact literals — an error code, an id, a symbol —
+/// because embeddings average them away. Hybrid retrieval over-fetches a wider
+/// candidate pool from the vector channel and re-ranks it by fusing the vector score
+/// with a full-text (term-frequency) score:
+///
+/// `fused = (1 − lexical_weight) · vector + lexical_weight · full_text`
+///
+/// The full-text channel can only reorder candidates the vector channel returned, so
+/// `over_fetch` is what buys it room to promote a document that ranked just outside
+/// the top-k by similarity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HybridRetrieval {
+    /// Weight of the full-text channel in `[0, 1]`; the vector channel gets the rest.
+    pub lexical_weight: f64,
+    /// Candidate-pool multiplier: fetch `k * over_fetch` documents before re-ranking.
+    pub over_fetch: usize,
+}
+
+impl HybridRetrieval {
+    /// Enables hybrid retrieval with the given full-text weight (clamped to `[0, 1]`)
+    /// and the default 3× over-fetch.
+    pub fn new(lexical_weight: f64) -> Self {
+        Self {
+            lexical_weight: lexical_weight.clamp(0.0, 1.0),
+            over_fetch: 3,
+        }
+    }
+
+    /// Sets the candidate-pool multiplier (clamped to at least 1).
+    pub fn with_over_fetch(mut self, over_fetch: usize) -> Self {
+        self.over_fetch = over_fetch.max(1);
+        self
+    }
+}
+
+/// Whether a document was written by this memory (`type = memory`).
+///
+/// Shared vector stores mix in other applications' documents; recall must not pull
+/// those into the conversation history.
+fn is_memory_document(document: &Document) -> bool {
+    document
+        .metadata
+        .get("type")
+        .map(|t| t == "memory")
+        .unwrap_or(false)
+}
 
 /// Vector retrieval memory
 ///
 /// Combines `VectorStore` + `Embeddings`: `save_context` embeds each conversation turn and stores in the vector store,
 /// `load_memory_variables` retrieves top-k relevant history using the current input.
+///
+/// With [`with_hybrid_retrieval`](Self::with_hybrid_retrieval) the retrieval becomes
+/// hybrid: over-fetch by vector, then re-rank by fusing vector similarity with a
+/// full-text score (T2).
 ///
 /// # Example
 /// ```ignore
@@ -46,6 +105,8 @@ pub struct VectorStoreRetrieverMemory<V, E> {
     /// P1-5 注意:这是**进程内语义**——重启后 `owned_ids` 为空,`clear()` 退化为
     /// 空操作,孤儿文档留在向量库。需跨重启清理时请直接操作向量库。
     owned_ids: Vec<String>,
+    /// Optional hybrid (vector + full-text) re-ranking of the vector candidates.
+    hybrid: Option<HybridRetrieval>,
 }
 
 impl<V, E> VectorStoreRetrieverMemory<V, E> {
@@ -65,6 +126,7 @@ impl<V, E> VectorStoreRetrieverMemory<V, E> {
             memory_key: "history".to_string(),
             document_api: true,
             owned_ids: Vec::new(),
+            hybrid: None,
         }
     }
 
@@ -93,6 +155,34 @@ impl<V, E> VectorStoreRetrieverMemory<V, E> {
     pub fn with_document_api(mut self, use_document_api: bool) -> Self {
         self.document_api = use_document_api;
         self
+    }
+
+    /// T2: enables hybrid retrieval — over-fetch vector candidates, then re-rank them
+    /// by fusing the vector score with a full-text score.
+    pub fn with_hybrid_retrieval(mut self, hybrid: HybridRetrieval) -> Self {
+        self.hybrid = Some(hybrid);
+        self
+    }
+
+    /// T2: convenience for [`with_hybrid_retrieval`](Self::with_hybrid_retrieval) with
+    /// the default over-fetch.
+    pub fn with_lexical_weight(self, lexical_weight: f64) -> Self {
+        self.with_hybrid_retrieval(HybridRetrieval::new(lexical_weight))
+    }
+
+    /// T2: the configured hybrid settings, if any.
+    pub fn hybrid_retrieval(&self) -> Option<HybridRetrieval> {
+        self.hybrid
+    }
+
+    /// Fuses the vector and full-text scores of one candidate.
+    ///
+    /// Vector scores are cosine similarities in `[-1, 1]`; negatives carry no useful
+    /// ranking signal for a weighted sum, so they are clamped to `0` before fusing.
+    fn fuse(&self, lexical_weight: f64, vector_score: f32, text: &str, query: &str) -> f64 {
+        let vector = (vector_score as f64).clamp(0.0, 1.0);
+        let lexical = LexicalScorer::score(query, text);
+        (lexical_weight * lexical + (1.0 - lexical_weight) * vector).clamp(0.0, 1.0)
     }
 }
 
@@ -124,27 +214,58 @@ where
             .await
             .map_err(|e| MemoryError::LoadError(e.to_string()))?;
 
+        // T2: hybrid retrieval needs a wider candidate pool than it returns, so the
+        // full-text channel has something to promote into the top-k.
+        let fetch = match self.hybrid {
+            Some(hybrid) => self.k.saturating_mul(hybrid.over_fetch),
+            None => self.k,
+        };
+
         let results = self
             .store
-            .similarity_search(&q_emb, self.k)
+            .similarity_search(&q_emb, fetch)
             .await
             .map_err(|e| MemoryError::LoadError(e.to_string()))?;
 
         // P1-5: `type` 元数据真正消费——只召回本记忆写入的文档(type=memory),
         // 共享向量库时避免把其他业务文档混进会话历史。
         // `VectorStore` trait 暂不支持 metadata 过滤,采用召回后过滤(结果可能少于 k)。
-        let history = results
+        let candidates: Vec<(f32, String)> = results
             .iter()
-            .filter(|r| {
-                r.document
-                    .metadata
-                    .get("type")
-                    .map(|t| t == "memory")
-                    .unwrap_or(false)
-            })
-            .map(|r| r.document.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+            .filter(|r| is_memory_document(&r.document))
+            .map(|r| (r.score, r.document.content.clone()))
+            .collect();
+
+        let history = match self.hybrid {
+            None => candidates
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            Some(hybrid) => {
+                // Re-rank: fused score first, then the raw vector score, then the text
+                // — a total order, so equal scores never reorder between runs.
+                let mut reranked: Vec<(f64, f32, String)> = candidates
+                    .into_iter()
+                    .map(|(score, text)| {
+                        let fused = self.fuse(hybrid.lexical_weight, score, &text, &query);
+                        (fused, score, text)
+                    })
+                    .collect();
+                reranked.sort_by(|a, b| {
+                    b.0.partial_cmp(&a.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| a.2.cmp(&b.2))
+                });
+                reranked.truncate(self.k);
+                reranked
+                    .into_iter()
+                    .map(|(_, _, text)| text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+        };
 
         result.insert(self.memory_key.clone(), Value::String(history));
         Ok(result)
@@ -394,6 +515,202 @@ mod tests {
         let vars = mem.load_memory_variables(&inputs("apple")).await.unwrap();
         let history = vars.get("history").unwrap().as_str().unwrap();
         assert!(history.is_empty());
+    }
+
+    // ---- T2: hybrid (vector + full-text) retrieval ----
+
+    /// Store returning a fixed candidate list in the given order, so the vector
+    /// channel's scores are fully controlled by the test.
+    struct ScriptedStore(Vec<SearchResult>);
+
+    impl ScriptedStore {
+        /// `(vector_score, content)` pairs, most similar first.
+        fn new(entries: &[(f32, &str)]) -> Self {
+            Self(
+                entries
+                    .iter()
+                    .map(|(score, content)| SearchResult {
+                        document: Document::new(*content).with_metadata("type", "memory"),
+                        score: *score,
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    #[async_trait]
+    impl VectorStore for ScriptedStore {
+        async fn add_documents(
+            &self,
+            _documents: Vec<Document>,
+            _embeddings: Vec<Vec<f32>>,
+        ) -> Result<Vec<String>, VectorStoreError> {
+            Ok(Vec::new())
+        }
+        async fn similarity_search(
+            &self,
+            _query_embedding: &[f32],
+            k: usize,
+        ) -> Result<Vec<SearchResult>, VectorStoreError> {
+            Ok(self.0.iter().take(k).cloned().collect())
+        }
+        async fn get_document(&self, _id: &str) -> Result<Option<Document>, VectorStoreError> {
+            Ok(None)
+        }
+        async fn get_embedding(&self, _id: &str) -> Result<Option<Vec<f32>>, VectorStoreError> {
+            Ok(None)
+        }
+        async fn delete_document(&self, _id: &str) -> Result<(), VectorStoreError> {
+            Ok(())
+        }
+        async fn count(&self) -> usize {
+            self.0.len()
+        }
+        async fn clear(&self) -> Result<(), VectorStoreError> {
+            Ok(())
+        }
+    }
+
+    fn scripted_memory(
+        entries: &[(f32, &str)],
+        k: usize,
+    ) -> VectorStoreRetrieverMemory<ScriptedStore, MockEmbeddings> {
+        VectorStoreRetrieverMemory::new(ScriptedStore::new(entries), MockEmbeddings::new(32), k)
+    }
+
+    fn segments(vars: &HashMap<String, Value>) -> Vec<String> {
+        vars.get("history")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .split("\n\n")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The point of hybrid retrieval: the full-text channel promotes an exact-literal
+    /// match the vector channel ranked below a topically-similar but literal-free one.
+    #[tokio::test]
+    async fn hybrid_retrieval_promotes_full_text_match() {
+        let entries = [
+            (0.9, "we discussed the weather and the weekend plans"),
+            (0.4, "the error code E4021 means the quota was exceeded"),
+        ];
+
+        // Pure vector: the high-similarity, literal-free turn wins.
+        let plain = scripted_memory(&entries, 1);
+        let plain_vars = plain
+            .load_memory_variables(&inputs("error code E4021"))
+            .await
+            .unwrap();
+        assert!(segments(&plain_vars)[0].contains("weather"));
+
+        // Hybrid with a full-text-heavy weight: the literal match wins.
+        let hybrid = scripted_memory(&entries, 1)
+            .with_hybrid_retrieval(HybridRetrieval::new(0.8).with_over_fetch(3));
+        let hybrid_vars = hybrid
+            .load_memory_variables(&inputs("error code E4021"))
+            .await
+            .unwrap();
+        assert_eq!(segments(&hybrid_vars), vec![entries[1].1.to_string()]);
+    }
+
+    /// `lexical_weight = 0.0` must degrade exactly to the vector ordering.
+    #[tokio::test]
+    async fn hybrid_retrieval_with_zero_lexical_weight_is_vector_order() {
+        let entries = [
+            (0.9, "we discussed the weather and the weekend plans"),
+            (0.4, "the error code E4021 means the quota was exceeded"),
+        ];
+        let mem = scripted_memory(&entries, 2).with_lexical_weight(0.0);
+        let vars = mem
+            .load_memory_variables(&inputs("error code E4021"))
+            .await
+            .unwrap();
+        let got = segments(&vars);
+        assert_eq!(
+            got,
+            vec![entries[0].1.to_string(), entries[1].1.to_string()]
+        );
+    }
+
+    /// Over-fetch is what lets the full-text channel reach a document the vector
+    /// channel placed outside the top-k.
+    #[tokio::test]
+    async fn hybrid_retrieval_over_fetch_reaches_beyond_top_k() {
+        let entries = [
+            (0.95, "alpha unrelated chatter one"),
+            (0.90, "beta unrelated chatter two"),
+            (0.30, "the migration id ZQ-7781 is the one to use"),
+        ];
+        // k = 1, over-fetch 3 → the third candidate is fetched and can be promoted.
+        let mem = scripted_memory(&entries, 1).with_hybrid_retrieval(HybridRetrieval::new(0.9));
+        let vars = mem
+            .load_memory_variables(&inputs("migration id ZQ-7781"))
+            .await
+            .unwrap();
+        assert_eq!(segments(&vars), vec![entries[2].1.to_string()]);
+    }
+
+    /// The over-fetch pool must never grow the *result* past `k`.
+    #[tokio::test]
+    async fn hybrid_retrieval_still_caps_results_at_k() {
+        let entries = [
+            (0.9, "one memory about alpha"),
+            (0.8, "two memory about beta"),
+            (0.7, "three memory about gamma"),
+            (0.6, "four memory about delta"),
+        ];
+        let mem = scripted_memory(&entries, 2).with_lexical_weight(0.5);
+        let vars = mem
+            .load_memory_variables(&inputs("memory about"))
+            .await
+            .unwrap();
+        assert_eq!(segments(&vars).len(), 2);
+    }
+
+    /// `type = memory` filtering happens *before* re-ranking, so a foreign document
+    /// with a perfect full-text match can never enter the history.
+    #[tokio::test]
+    async fn hybrid_retrieval_filters_foreign_documents_before_reranking() {
+        let store = ScriptedStore(vec![
+            SearchResult {
+                document: Document::new("the error code E4021 means the quota was exceeded")
+                    .with_metadata("type", "kb"),
+                score: 0.95,
+            },
+            SearchResult {
+                document: Document::new("an unrelated memory turn").with_metadata("type", "memory"),
+                score: 0.2,
+            },
+        ]);
+        let mem = VectorStoreRetrieverMemory::new(store, MockEmbeddings::new(32), 1)
+            .with_lexical_weight(1.0);
+        let vars = mem
+            .load_memory_variables(&inputs("error code E4021"))
+            .await
+            .unwrap();
+        assert_eq!(
+            segments(&vars),
+            vec!["an unrelated memory turn".to_string()]
+        );
+    }
+
+    #[test]
+    fn hybrid_settings_are_clamped() {
+        assert_eq!(HybridRetrieval::new(2.0).lexical_weight, 1.0);
+        assert_eq!(HybridRetrieval::new(-1.0).lexical_weight, 0.0);
+        assert_eq!(HybridRetrieval::new(0.5).over_fetch, 3);
+        assert_eq!(HybridRetrieval::new(0.5).with_over_fetch(0).over_fetch, 1);
+
+        let mem = make_memory(2).with_lexical_weight(0.25);
+        assert_eq!(
+            mem.hybrid_retrieval(),
+            Some(HybridRetrieval::new(0.25)),
+            "with_lexical_weight must enable hybrid retrieval"
+        );
+        assert_eq!(make_memory(2).hybrid_retrieval(), None);
     }
 
     /// VectorStore that fails exactly the first `delete_document` call, succeeding afterwards,

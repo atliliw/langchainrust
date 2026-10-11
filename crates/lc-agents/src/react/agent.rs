@@ -332,7 +332,7 @@ mod tests {
     /// Creates an OpenAI config for tests
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
-            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string(),
+            api_key: "sk-6eb65fcf5d17491ca10b984efe1f43e7".into(),
             base_url:
                 "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
                     .to_string(),
@@ -347,8 +347,10 @@ mod tests {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
+            reasoning_effort: None,
         }
     }
 

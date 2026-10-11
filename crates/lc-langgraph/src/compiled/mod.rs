@@ -17,3 +17,4 @@ pub use types::{
     DynamicInjection, DynamicPlanner, DynamicTask, ExecutionStep, GraphExecution, GraphInvocation,
     ParallelBranch, ParallelInvocation, PendingInterrupt, StreamEvent,
 };
+pub use visualize::GraphFormat;

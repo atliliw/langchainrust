@@ -205,6 +205,35 @@ pub struct ModelSpend {
     pub cost_usd: f64,
 }
 
+/// Kind of spend a [`CostTracker`] buckets (成本门纳入工具/嵌入). The budget
+/// gate reads a scope's `total`, so tool / embedding spend recorded via
+/// [`CostTracker::record_cost_scoped`] joins LLM spend under the same run budget;
+/// the per-type buckets feed layered aggregation and reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CostType {
+    /// LLM generation spend (priced via the pricing table on token counts).
+    Llm,
+    /// Tool-invocation spend (caller-priced, e.g. a web-search API call).
+    Tool,
+    /// Embedding-model spend (caller-priced).
+    Embedding,
+}
+
+/// Per-scope spend split by cost type. The budget gate reads `total`; the
+/// per-type fields feed `run_cost_usd_by_type` and layered reporting.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopeCosts {
+    /// Cumulative spend across every cost type in this scope (what the budget
+    /// gate and [`CostTracker::run_cost_usd`] read).
+    pub total: f64,
+    /// LLM-generation spend.
+    pub llm: f64,
+    /// Tool-invocation spend.
+    pub tool: f64,
+    /// Embedding spend.
+    pub embedding: f64,
+}
+
 /// Point-in-time aggregate report of a [`CostTracker`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CostReport {
@@ -236,9 +265,11 @@ struct Inner {
     /// scope alone spent. Concurrent runs sharing one tracker each write their
     /// own key here so budget gates can read `run_cost_usd(scope)` instead of
     /// the global `total_cost_usd()` and never cross-contaminate each other's
-    /// incremental spend. Unscoped `record` calls fold into a `None`-keyed
-    /// bucket so the global aggregate remains the union of all scopes.
-    by_scope: HashMap<Option<String>, f64>,
+    /// incremental spend. Value is split per [`CostType`] so tool / embedding
+    /// spend recorded into a scope rolls into its budget too. Unscoped `record`
+    /// calls fold into a `None`-keyed bucket so the global aggregate remains the
+    /// union of all scopes.
+    by_scope: HashMap<Option<String>, ScopeCosts>,
 }
 
 /// Thread-safe cumulative cost tracker.
@@ -301,8 +332,15 @@ impl CostTracker {
         prompt_tokens: usize,
         completion_tokens: usize,
     ) -> f64 {
-        self.record_scoped(None, provider, model, prompt_tokens, completion_tokens)
-            .await
+        self.record_scoped(
+            None,
+            None,
+            provider,
+            model,
+            prompt_tokens,
+            completion_tokens,
+        )
+        .await
     }
 
     /// Records one LLM call attributed to a per-run scope and returns its USD
@@ -318,6 +356,7 @@ impl CostTracker {
     /// bucket (identical behavior to [`Self::record`]).
     pub async fn record_scoped(
         &self,
+        trace_id: Option<&str>,
         scope: Option<&str>,
         provider: Option<&str>,
         model: &str,
@@ -327,12 +366,13 @@ impl CostTracker {
         let cost = match self.table.get(provider, model) {
             Some(p) => p.cost_of(prompt_tokens, completion_tokens),
             None => {
-                // LOW: an unpriced model silently costing $0 hides budget
-                // surprises. Surface it at debug level (usage still counted)
-                // rather than swallowing the missing price entirely. Local
-                // models legitimately price at 0.0; absent-from-table is a
-                // different first-class signpost, not a silent zero.
-                log::debug!(
+                // 0.26.0 §3.5: an unpriced model silently costing $0 hides
+                // budget surprises, so this is a *warn* signpost (usage still
+                // counted) rather than a swallowed `debug!` or silent zero.
+                // Local models legitimately price at 0.0 but are then present in
+                // the table; absent-from-table is a distinct misconfiguration
+                // worth surfacing. Tokens still count toward the aggregates.
+                log::warn!(
                     "lc_core::cost: model '{model}' has no price in the pricing table \
                      -> cost recorded as $0 (usage/tokens still counted); add it to \
                      PricingTable or `with_model_only` to price it"
@@ -364,19 +404,19 @@ impl CostTracker {
             entry.prompt_tokens += prompt_tokens;
             entry.completion_tokens += completion_tokens;
             entry.cost_usd += cost;
-            // Scope bucket: isolate concurrent runs' spend. Folded into the
-            // `None` bucket when no scope is attached so the global totals stay
-            // the union of every scope.
-            if let Some(scope) = scope {
-                *inner.by_scope.entry(Some(scope.to_string())).or_default() += cost;
-            } else {
-                *inner.by_scope.entry(None).or_default() += cost;
-            }
+            // Scope bucket: isolate concurrent runs' spend, split by cost type
+            // (Llm here; tool/embedding via `record_cost_scoped`). Folded into
+            // the `None` bucket when no scope is attached so the global totals
+            // stay the union of every scope.
+            let scoped = inner.by_scope.entry(scope.map(str::to_string)).or_default();
+            scoped.total += cost;
+            scoped.llm += cost;
             inner.records.push(record.clone());
         }
 
         if let Some(sink) = &self.sink {
             let evt = ObsEvent::Cost(crate::observability::CostEvent {
+                trace_id: trace_id.map(str::to_string),
                 scope: self.scope.clone(),
                 provider: provider.map(str::to_string),
                 model: model.to_string(),
@@ -408,6 +448,70 @@ impl CostTracker {
         .await
     }
 
+    /// Records caller-priced spend (tool / embedding / service calls) attributed
+    /// to a run scope and a [`CostType`], so it joins the LLM spend that
+    /// [`record`](Self::record_scoped) buckets for the same scope and is counted
+    /// by the budget gate's `run_cost_usd`. `cost_usd` is taken as-given (no
+    /// pricing-table lookup — the caller already priced the call). The record
+    /// feeds the global aggregates, the per-scope cost-type buckets, `records`,
+    /// and (when a sink is attached) one `Cost` observability event carrying the
+    /// run `trace_id`/`scope`, so non-LLM spend joins the run's other events.
+    /// Negative costs are rejected with a warning and ignored.
+    pub async fn record_cost_scoped(
+        &self,
+        trace_id: Option<&str>,
+        scope: Option<&str>,
+        cost_type: CostType,
+        provider: Option<&str>,
+        model: &str,
+        cost_usd: f64,
+    ) {
+        if cost_usd < 0.0 {
+            log::warn!(target: "lc_core::cost", "negative cost {cost_usd} for {model} ignored");
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            inner.calls += 1;
+            inner.total_cost_usd += cost_usd;
+            let key = match provider {
+                Some(provider) => format!("{provider}/{model}"),
+                None => model.to_string(),
+            };
+            let entry = inner.by_model.entry(key).or_default();
+            entry.calls += 1;
+            entry.cost_usd += cost_usd;
+            let scoped = inner.by_scope.entry(scope.map(str::to_string)).or_default();
+            scoped.total += cost_usd;
+            match cost_type {
+                CostType::Llm => scoped.llm += cost_usd,
+                CostType::Tool => scoped.tool += cost_usd,
+                CostType::Embedding => scoped.embedding += cost_usd,
+            }
+            inner.records.push(CostRecord {
+                provider: provider.map(str::to_string),
+                model: model.to_string(),
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                cost_usd,
+            });
+        }
+        if let Some(sink) = &self.sink {
+            let evt = ObsEvent::Cost(crate::observability::CostEvent {
+                trace_id: trace_id.map(str::to_string),
+                scope: self.scope.clone(),
+                provider: provider.map(str::to_string),
+                model: model.to_string(),
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                cost_usd,
+            });
+            if let Err(e) = sink.export(&evt).await {
+                log::warn!(target: "lc_core::cost", "cost event export failed: {e}");
+            }
+        }
+    }
+
     /// Cumulative USD spend (the value the budget gate reads).
     pub async fn total_cost_usd(&self) -> f64 {
         self.inner.lock().await.total_cost_usd
@@ -418,15 +522,46 @@ impl CostTracker {
     /// A budget gate running inside one of several *concurrent* runs sharing
     /// this tracker must read its own scope here — never `total_cost_usd()`
     /// minus a stale baseline — so another run's interleaved spend cannot leak
-    /// into its incremental budget. Returns 0.0 for an unknown scope.
+    /// into its incremental budget. The value is the scope's `total`, i.e. the
+    /// union of LLC / tool / embedding spend recorded for that scope, so a
+    /// `max_cost_usd` budget gate now covers non-LLM spend too. Returns 0.0 for
+    /// an unknown scope.
     pub async fn run_cost_usd(&self, scope: &str) -> f64 {
         self.inner
             .lock()
             .await
             .by_scope
             .get(&Some(scope.to_string()))
-            .copied()
+            .map(|c| c.total)
             .unwrap_or(0.0)
+    }
+
+    /// Layered aggregation (`run_cost_usd` 分层聚合): USD spend attributed to a
+    /// single run scope and one cost kind (LLM / tool / embedding). Reads only
+    /// the requested bucket, so a run can report how much of its spend was LLM
+    /// vs. tool vs. embedding. Returns 0.0 for an unknown scope.
+    pub async fn run_cost_usd_by_type(&self, scope: &str, cost_type: CostType) -> f64 {
+        let inner = self.inner.lock().await;
+        let Some(costs) = inner.by_scope.get(&Some(scope.to_string())) else {
+            return 0.0;
+        };
+        match cost_type {
+            CostType::Llm => costs.llm,
+            CostType::Tool => costs.tool,
+            CostType::Embedding => costs.embedding,
+        }
+    }
+
+    /// Per-scope cost breakdown by [`CostType`] (LLM + tool + embedding + total),
+    /// for reporting a run's spend composition.
+    pub async fn run_cost_breakdown(&self, scope: &str) -> ScopeCosts {
+        self.inner
+            .lock()
+            .await
+            .by_scope
+            .get(&Some(scope.to_string()))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Snapshot report of everything recorded so far.
@@ -572,6 +707,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cost_type_layering_feeds_budget_gate() {
+        let tracker = CostTracker::with_builtin_prices();
+        // LLM spend via the token-priced path.
+        tracker
+            .record_scoped(
+                None,
+                Some("run-x"),
+                Some("openai"),
+                "gpt-4o-mini",
+                1000,
+                1000,
+            )
+            .await; // $0.75
+                    // Tool + embedding spend via the caller-priced path.
+        tracker
+            .record_cost_scoped(
+                None,
+                Some("run-x"),
+                CostType::Tool,
+                Some("search"),
+                "web-api",
+                0.50,
+            )
+            .await;
+        tracker
+            .record_cost_scoped(
+                None,
+                Some("run-x"),
+                CostType::Embedding,
+                Some("openai"),
+                "text-embedding-3-small",
+                0.25,
+            )
+            .await;
+
+        // The budget gate's read (`run_cost_usd`) now includes tool/embedding spend.
+        assert_eq!(tracker.run_cost_usd("run-x").await, 0.75 + 0.50 + 0.25);
+        // Layered reads isolate each kind.
+        assert_eq!(
+            tracker.run_cost_usd_by_type("run-x", CostType::Llm).await,
+            0.75
+        );
+        assert_eq!(
+            tracker.run_cost_usd_by_type("run-x", CostType::Tool).await,
+            0.50
+        );
+        assert_eq!(
+            tracker
+                .run_cost_usd_by_type("run-x", CostType::Embedding)
+                .await,
+            0.25
+        );
+        let breakdown = tracker.run_cost_breakdown("run-x").await;
+        assert_eq!(breakdown.total, 1.5);
+        assert_eq!(breakdown.llm, 0.75);
+        assert_eq!(breakdown.tool, 0.50);
+        assert_eq!(breakdown.embedding, 0.25);
+        // Unknown scope still reads zero.
+        assert_eq!(
+            tracker.run_cost_usd_by_type("nope", CostType::Tool).await,
+            0.0
+        );
+    }
+
+    #[tokio::test]
     async fn scoped_runs_do_not_cross_contaminate_incremental_spend() {
         // P0-5 regression: two concurrent runs sharing one tracker (the LLM is
         // Arc-shared) must read only their own scoped spend. Simulates run A
@@ -581,24 +781,52 @@ mod tests {
 
         // run A spends $0.75 (1000/1000 on gpt-4o-mini).
         tracker
-            .record_scoped(Some("run-a"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .record_scoped(
+                None,
+                Some("run-a"),
+                Some("openai"),
+                "gpt-4o-mini",
+                1000,
+                1000,
+            )
             .await;
         // interleaved run B spends twice.
         tracker
-            .record_scoped(Some("run-b"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .record_scoped(
+                None,
+                Some("run-b"),
+                Some("openai"),
+                "gpt-4o-mini",
+                1000,
+                1000,
+            )
             .await;
         tracker
-            .record_scoped(Some("run-b"), Some("anthropic"), "claude-3-5-haiku-latest", 1000, 1000)
+            .record_scoped(
+                None,
+                Some("run-b"),
+                Some("anthropic"),
+                "claude-3-5-haiku-latest",
+                1000,
+                1000,
+            )
             .await;
         // run A spends again.
         tracker
-            .record_scoped(Some("run-a"), Some("openai"), "gpt-4o-mini", 1000, 1000)
+            .record_scoped(
+                None,
+                Some("run-a"),
+                Some("openai"),
+                "gpt-4o-mini",
+                1000,
+                1000,
+            )
             .await;
 
         // Each run's scoped read equals exactly its own spend, unaffected by the
         // other run's interleaved records.
         assert_eq!(tracker.run_cost_usd("run-a").await, 1.5); // 2 * 0.75
-        // 0.75 (gpt-4o-mini) + 4.80 (haiku 1000/1000 @ 0.80/4.00 per 1k)
+                                                              // 0.75 (gpt-4o-mini) + 4.80 (haiku 1000/1000 @ 0.80/4.00 per 1k)
         assert_eq!(tracker.run_cost_usd("run-b").await, 5.55);
         assert_eq!(tracker.run_cost_usd("unknown-scope").await, 0.0);
 

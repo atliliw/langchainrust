@@ -10,6 +10,7 @@ use futures_util::Stream;
 use serde_json::json;
 use std::pin::Pin;
 
+use crate::sampling::SamplingOverride;
 use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
@@ -44,6 +45,17 @@ pub struct ResponsesModel {
     http_sse: HttpClient,
 }
 
+impl SamplingOverride for ResponsesModel {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            self.config.max_tokens = Some(m);
+        }
+    }
+}
+
 impl ResponsesModel {
     /// Create a new model with the given configuration.
     pub fn new(config: ResponsesConfig) -> Self {
@@ -57,8 +69,12 @@ impl ResponsesModel {
     }
 
     /// Per-request auth/headers assembled from the provider config.
-    fn request_options(&self) -> lc_core::http::RequestOptions {
-        provider_request_options(true, &self.config.api_key, &[])
+    ///
+    /// # Errors
+    /// Returns an error when the configured API key is empty (fail-fast before
+    /// the wire instead of a silent 401).
+    fn request_options(&self) -> Result<lc_core::http::RequestOptions, ResponsesError> {
+        provider_request_options(true, self.config.api_key.expose_secret(), &[]).map_err(ResponsesError::Api)
     }
 
     /// Maps a unified-layer error onto the Responses error enum while keeping
@@ -170,23 +186,6 @@ impl ResponsesModel {
         body
     }
 
-    /// M-13: clone `self` and apply per-invocation sampling overrides
-    /// (temperature/max_tokens) from a [`RunnableConfig`], mirroring the other
-    /// chat backends (ollama, openai-chat). Returns an effective clone whose config
-    /// carries the overrides, so a `config`-supplied temperature/max_tokens is
-    /// actually sent to the Responses API instead of being silently dropped.
-    pub(crate) fn apply_sampling_overrides(&self, config: &Option<RunnableConfig>) -> Self {
-        let (temp, max) = crate::sampling::sampling_overrides(config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
-        effective
-    }
-
     // -- Internal chat -------------------------------------------------------
 
     pub(crate) async fn chat_internal(
@@ -200,7 +199,7 @@ impl ResponsesModel {
         // POST pre-dispatch-only retry semantics live in lc_core::http.
         let response = self
             .http_api
-            .post_json_with(&url, &body, self.request_options())
+            .post_json_with(&url, &body, self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
 
@@ -363,7 +362,7 @@ impl ResponsesModel {
         // the response head arrives the stream runs without reconnecting.
         let byte_stream = self
             .http_sse
-            .open_sse(&url, Some(&body), self.request_options())
+            .open_sse(&url, Some(&body), self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
 
@@ -578,13 +577,17 @@ impl Runnable<Vec<Message>, LLMResult> for ResponsesModel {
     async fn stream(
         &self,
         input: Vec<Message>,
-        _config: Option<RunnableConfig>,
+        config: Option<RunnableConfig>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
         use futures_util::StreamExt;
 
-        let model = self.config.model.clone();
-        let token_stream = self.stream_chat_internal(input).await?;
+        // 0.26.0 review 3.6: this path previously used `_config` and dropped the
+        // caller's sampling overrides (temperature/max_output_tokens), so invoke
+        // and stream disagreed on the same config. Apply them like `stream_chat`.
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
+        let model = effective.config.model.clone();
+        let token_stream = effective.stream_chat_internal(input).await?;
 
         // 0.25.0: pass chunks through as they arrive instead of folding the
         // whole stream into one buffered LLMResult (the old fold also dropped
@@ -667,9 +670,10 @@ impl BaseChatModel for ResponsesModel {
         }
 
         // M-13: apply per-invocation sampling overrides (see
-        // [`Self::apply_sampling_overrides`]). Without this, `config.temperature` /
-        // `max_tokens` are silently ignored for the Responses backend.
-        let effective = self.apply_sampling_overrides(&config);
+        // [`crate::sampling::with_sampling_overrides`]). Without this,
+        // `config.temperature` / `max_tokens` are silently ignored for the
+        // Responses backend.
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
 
         let result = effective.chat_internal(messages.clone()).await;
 
@@ -738,7 +742,7 @@ impl BaseChatModel for ResponsesModel {
         }
 
         // M-13: apply per-invocation sampling overrides on the streaming path too.
-        let effective = self.apply_sampling_overrides(&config);
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
 
         let stream = effective.stream_chat_internal(messages).await?;
 

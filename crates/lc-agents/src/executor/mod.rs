@@ -142,6 +142,16 @@ pub trait BaseAgent: Send + Sync {
         None
     }
 
+    /// Optional iteration cap the agent wants the executor to run with.
+    ///
+    /// Default is `None` ("no preference"); `AgentExecutor::new` uses this as
+    /// its initial `max_iterations` when the caller never calls
+    /// `with_max_iterations`. This lets `AgentBuilder::max_iterations` actually
+    /// take effect instead of being a silent no-op (§8.2.2).
+    fn max_iterations(&self) -> Option<usize> {
+        None
+    }
+
     /// Returns stopped response when max iterations reached.
     fn return_stopped_response(&self, _intermediate_steps: &[AgentStep]) -> AgentFinish {
         AgentFinish::new(

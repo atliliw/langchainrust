@@ -6,6 +6,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Builds a fake embedding vector of exactly `dim` floats, with `first` and
+/// `second` at indices 0 and 1 and zeros elsewhere, serialized as a JSON array.
+///
+/// Provider tests feed these to stub responses; since the return-side width
+/// assertion (§4 / §3.1) rejects any vector whose length differs from the model's
+/// declared dimension, fixtures must pad to `dim` instead of shipping the tiny
+/// hand-written `[a, b]` vectors that would otherwise trip the check.
+pub fn embedding_json(dim: usize, first: f32, second: f32) -> serde_json::Value {
+    let mut v = vec![0.0f32; dim];
+    v[0] = first;
+    v[1] = second;
+    serde_json::json!(v)
+}
+
 /// Minimal HTTP stub: the first `failures_before_success` requests return `transient_status`,
 /// then `success_status` (with `success_body`). Returns `(base_url, received request count)`.
 ///
@@ -223,10 +237,20 @@ pub async fn spawn_embeddings_stub(n_vectors: Arc<dyn Fn(usize) -> usize + Send 
                     .map(|i| {
                         // P2-8: vector [sum, 1.0] still differs per text after normalization,
                         // so alignment tests can distinguish each text under normalization semantics.
-                        let embedding = match inputs.get(i) {
-                            Some(s) => vec![s.bytes().map(|b| b as f32).sum::<f32>(), 1.0_f32],
-                            None => vec![i as f32 + 1000.0, 0.0_f32],
-                        };
+                        // Pad to the batching providers' declared dimension (1536 for
+                        // ada-002 / DeepSeek / Qwen) so the return-side width
+                        // assertion (§3.1) accepts them; leading components still
+                        // discriminate each text for alignment checks.
+                        let mut embedding = vec![0.0_f32; 1536];
+                        match inputs.get(i) {
+                            Some(s) => {
+                                embedding[0] = s.bytes().map(|b| b as f32).sum::<f32>();
+                                embedding[1] = 1.0_f32;
+                            }
+                            None => {
+                                embedding[0] = i as f32 + 1000.0;
+                            }
+                        }
                         serde_json::json!({
                             "object": "embedding",
                             "index": i,

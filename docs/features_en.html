@@ -2042,7 +2042,7 @@ graph.validate()?;
                     <div class="feature-card"><h3>Deep Research</h3><p>Multi-round research with citations</p></div>
                     <div class="feature-card"><h3>RouterLLM</h3><p>5 strategies: Fallback/RoundRobin/Latency/Cost/Input</p></div>
                     <div class="feature-card"><h3>MCP Primitives</h3><p>initialize / tools/list / tools/call + resources / prompts / completion registration-based wiring; sampling / elicitation initiating methods (see v0.18 capability completion)</p></div>
-                    <div class="feature-card" id="sandbox"><h3>Code Sandbox</h3><p>LocalSandbox (subprocess + timeout + resource limits)</p></div>
+                    <div class="feature-card" id="sandbox"><h3>Code Sandbox</h3><p>LocalSandbox (subprocess + timeout); as of v0.27.0 also WasmSandbox (WASI preview1 on the wasmi interpreter)</p></div>
                     <div class="feature-card" id="responses-api"><h3>Responses API</h3><p>/v1/responses with web_search/file_search/code/computer</p></div>
                     <div class="feature-card" id="extended-thinking"><h3>Extended Thinking</h3><p>with_thinking(budget_tokens) + thinking_content</p></div>
                     <div class="feature-card" id="streaming-structured"><h3>Streaming Structured</h3><p>PartialJsonParser + stream_structured_output&lt;T&gt;</p></div>
@@ -2267,7 +2267,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card">
-                    <p><strong>MCP</strong> (Model Context Protocol) connects tools from any MCP Server into your Agent. As of 0.22.0 the crate is stateless single-track: <code>StatelessMcpClient</code> posts self-contained JSON-RPC (with <code>Mcp-Method</code>/<code>Mcp-Name</code> routing headers and <code>_meta</code>) and adapts tools into <code>BaseTool</code> automatically; <code>MCPServer</code> exposes local tools via serve_http / serve_stdio.</p>
+                    <p><strong>MCP</strong> (Model Context Protocol) connects tools from any MCP Server into your Agent. As of 0.27.0 both tracks are available: the stateless self-contained HTTP POST (<code>StatelessMcpClient</code>, with <code>Mcp-Method</code>/<code>Mcp-Name</code> routing headers and <code>_meta</code>) sits beside Streamable HTTP / stdio clients; <code>server/discover</code> exposes capabilities and tool listings without an initialize handshake, <code>MRTR</code> (<code>input_required</code> → <code>resend</code> → <code>resolve</code>) is driven by a state machine in the real <code>send()</code> loop, and <code>tools/list</code>/<code>resources/list</code>/<code>prompts/list</code> paginate on <code>nextCursor</code> end-to-end. <code>MCPServer</code> exposes local tools via serve_http / serve_stdio and adds the Tasks extension (<code>tasks/get</code>/<code>tasks/cancel</code>), <code>ResourcePushSink</code> subscription push, <code>logging/setLevel</code>, and <code>ServerSandbox::ToolAcl</code> fine-grained ACLs.</p>
                 </div>
 
                 <div class="card-grid">
@@ -2331,6 +2331,27 @@ println!(<span class="str">"{}"</span>, report.summary);
                     <div class="feature-card"><h3>Function-calling Word Stream</h3><p>FunctionCallingAgent final answer streams token-by-token, typewriter effect</p></div>
                     <div class="feature-card"><h3>MCP Primitive Wiring</h3><p>resources / prompts / completion registration handlers + sampling / elicitation initiating methods</p></div>
                     <div class="feature-card"><h3>Strict Signature Replay</h3><p>ReplayStrategy::Exact matches by full message signature, precise under parallel out-of-order</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.27.0 Gap Close-out -->
+            <section class="module" id="v027-new" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🧩</span>
+                    <h2>Gap Close-out v0.27.0 <span class="badge new">v0.27.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.27.0 closes the four gaps the audit had confirmed as real but deliberately deferred: A2A's WebSocket transport and sendSubscribe subscription context, hop-by-hop SSRF interception in the CDP browser, and a genuinely implemented WASM sandbox backend.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>A2A WebSocket Transport</h3><p><code>ws</code> feature: server <code>GET /ws</code> sharing <code>/events</code>' auth and per-connection filtering; client <code>connect_ws</code> / <code>send_task_streaming_ws</code></p></div>
+                    <div class="feature-card"><h3>sendSubscribe Context</h3><p>Requests may carry <code>id</code> / <code>contextId</code>; push frames carry an optional <code>context_id</code> so several subscriptions on one connection can be demultiplexed</p></div>
+                    <div class="feature-card"><h3>Hop-by-hop Browser SSRF</h3><p>The CDP <code>Fetch</code> domain stops every hop before it leaves: private hops <code>failRequest</code>, public ones <code>continueRequest</code> — redirects, DNS rebinding and subresources included</p></div>
+                    <div class="feature-card" id="wasm-sandbox"><h3>WASM Sandbox Backend</h3><p><code>sandbox-wasm</code> feature: <code>WasmSandbox</code> runs WASI preview1 (wasmi interpreter + its own host + fuel-metered timeouts); OS isolation holds by construction</p></div>
                 </div>
 
                 <hr class="divider">

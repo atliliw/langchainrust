@@ -19,6 +19,12 @@ use super::screen::ComputerUseTool;
 pub enum ComputerMode {
     /// Forward actions to the Anthropic computer-use API.
     AnthropicApi,
+    /// Drive the *real* local desktop (screenshot + pointer/keyboard/scroll).
+    ///
+    /// Compile-time-gated behind the `computer-native` feature and only
+    /// reachable by explicitly building the native tool (see
+    /// `ComputerUseTool::new_native`).
+    Native,
 }
 
 // ---------------------------------------------------------------------------

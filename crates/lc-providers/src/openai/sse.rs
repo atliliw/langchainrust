@@ -666,7 +666,11 @@ mod tests {
         assert_eq!(events.len(), 3, "three complete events framed in one pass");
         assert_eq!(events[0], "data: {\"a\":1}\n\n");
         assert_eq!(events[2], "data: {\"c\":3}\n\n");
-        assert_eq!(framer.pending(), "data: {\"d\":4}".len(), "trailer retained");
+        assert_eq!(
+            framer.pending(),
+            "data: {\"d\":4}".len(),
+            "trailer retained"
+        );
 
         // Completing the trailer next push produces the final event.
         let events = framer.push(b"\n\n").unwrap();

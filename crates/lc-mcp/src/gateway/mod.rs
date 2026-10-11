@@ -93,8 +93,11 @@ pub struct MCPGateway {
     discovery: RwLock<ToolDiscovery>,
     /// Server names whose tools have been synced (idempotent sync).
     synced: RwLock<HashSet<String>>,
-    /// Per-server rate limiter.
-    rate_limiters: Mutex<HashMap<String, RateLimiter>>,
+    /// Per-server rate limiter. Stored behind an `Arc<StdMutex<_>>` so the
+    /// same shared bucket can be handed to `as_base_tools` adapters (M1, framework
+    /// review): a tool reduced to a `BaseTool` must throttle against the *same*
+    /// count as a `gateway.call`, not a private clone that lets limits be bypassed.
+    rate_limiters: Mutex<HashMap<String, Arc<StdMutex<RateLimiter>>>>,
     /// Runtime per-call approval gate (A16): consulted for servers left on the
     /// default [`crate::ToolExecutionPolicy::RequireApproval`] policy.
     approver: RwLock<Option<Arc<dyn ToolCallApprover>>>,
@@ -157,10 +160,10 @@ impl MCPGateway {
         let rate_limit = spec.rate_limit;
         self.manager.register(spec.to_server_spec()).await?;
         if let Some((max_calls, window)) = rate_limit {
-            self.rate_limiters
-                .lock()
-                .await
-                .insert(spec.name.clone(), RateLimiter::new(max_calls, window));
+            self.rate_limiters.lock().await.insert(
+                spec.name.clone(),
+                Arc::new(StdMutex::new(RateLimiter::new(max_calls, window))),
+            );
         }
         let policy = ServerPolicy {
             conflict: spec.conflict,
@@ -286,8 +289,9 @@ impl MCPGateway {
 
         // Rate limit (fixed window).
         {
-            let mut limiters = self.rate_limiters.lock().await;
-            if let Some(limiter) = limiters.get_mut(&server) {
+            let limiters = self.rate_limiters.lock().await;
+            if let Some(limiter) = limiters.get(&server) {
+                let mut limiter = limiter.lock().unwrap_or_else(|e| e.into_inner());
                 if !limiter.allow() {
                     self.record(
                         &server,
@@ -365,6 +369,13 @@ impl MCPGateway {
     /// bypass it. Tools must be `sync`ed first before they can be converted.
     pub async fn as_base_tools(&self) -> Result<Vec<Arc<dyn BaseTool>>, MCPError> {
         let approver = self.approver.read().await.clone();
+        // M1 (framework review): the ring is shared (Arc) with the unified `call`
+        // entry, so audit coverage is preserved on this reduced-to-BaseTool path.
+        let shared_audit = self.audit.clone();
+        // Per-server shared limiter buckets, looked up once and reused for every
+        // tool of the same server so they throttle against the same fixed window.
+        let limiter_by_server: HashMap<String, Arc<StdMutex<RateLimiter>>> =
+            self.rate_limiters.lock().await.clone();
         let mut out = Vec::new();
         for nt in self.tools().await {
             let client = self.manager.client(&nt.server).await?;
@@ -374,7 +385,11 @@ impl MCPGateway {
                 .map(|p| p.execution.clone())
                 .unwrap_or_default();
             let mut adapter = MCPToolAdapter::namespaced(client, &nt.server, nt.definition)
-                .with_execution_policy(execution);
+                .with_execution_policy(execution)
+                .with_shared_audit(shared_audit.clone());
+            if let Some(limiter) = limiter_by_server.get(&nt.server) {
+                adapter = adapter.with_shared_rate_limiter(Arc::clone(limiter));
+            }
             if let Some(approver) = approver.clone() {
                 adapter = adapter.with_approver(approver);
             }

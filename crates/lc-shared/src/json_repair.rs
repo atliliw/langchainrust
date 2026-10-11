@@ -46,32 +46,115 @@ pub fn parse_tolerant_json<T: DeserializeOwned>(raw: &str) -> Result<T, JsonRepa
 /// Repairs common LLM JSON mistakes and extracts the JSON portion.
 ///
 /// Returns the repaired JSON string, or an error if no JSON content is found.
+///
+/// Delegates to [`JsonRepairPipeline::default`]; see there for the fixed
+/// step order, or build a custom [`JsonRepairPipeline`] to select/reorder
+/// repair steps.
 pub fn repair_json(raw: &str) -> Result<String, JsonRepairError> {
-    let trimmed = raw.trim();
+    JsonRepairPipeline::default().repair(raw)
+}
 
-    // Step 1: Strip markdown code fences
-    let stripped = strip_code_fences(trimmed);
+/// A selectable JSON repair step.
+///
+/// The default [`JsonRepairPipeline`] runs these in order; callers can drop,
+/// reorder or suppress steps via [`JsonRepairPipeline::with_steps`] when the
+/// fixed chain is too aggressive or too weak for a given LLM's output habit,
+/// or to trade repair coverage against fidelity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum JsonRepairStep {
+    /// Trim surrounding whitespace. Applied first in the default chain.
+    Trim,
+    /// Strip markdown code fences (` ```json ... ``` `).
+    StripCodeFences,
+    /// Extract the outermost `[...]` or `{...}` bracket pair.
+    ExtractBracketPair,
+    /// Escape unescaped inner quotes inside string values (heuristic).
+    FixUnescapedQuotes,
+    /// Remove trailing commas before `}` or `]`.
+    RemoveTrailingCommas,
+    /// Truncate to the last matching `}` or `]` when trailing garbage follows.
+    TruncateTrailingGarbage,
+}
 
-    // Step 2: Find outermost JSON bracket pair
-    let extracted = extract_bracket_pair(&stripped);
+/// A configurable JSON repair policy chain.
+///
+/// By default it reproduces exactly the historical [`repair_json`] pipeline:
+/// `Trim → StripCodeFences → ExtractBracketPair → FixUnescapedQuotes →
+/// RemoveTrailingCommas → TruncateTrailingGarbage`. Customize with
+/// [`JsonRepairPipeline::with_steps`] to drop or reorder steps.
+#[derive(Debug, Clone)]
+pub struct JsonRepairPipeline {
+    steps: Vec<JsonRepairStep>,
+}
 
-    // Step 3: Fix unescaped inner quotes inside string values
-    let quotes_fixed = fix_unescaped_quotes(&extracted);
+impl Default for JsonRepairPipeline {
+    fn default() -> Self {
+        Self {
+            steps: vec![
+                JsonRepairStep::Trim,
+                JsonRepairStep::StripCodeFences,
+                JsonRepairStep::ExtractBracketPair,
+                JsonRepairStep::FixUnescapedQuotes,
+                JsonRepairStep::RemoveTrailingCommas,
+                JsonRepairStep::TruncateTrailingGarbage,
+            ],
+        }
+    }
+}
 
-    // Step 4: Remove trailing commas before } or ]
-    let no_trailing = remove_trailing_commas(&quotes_fixed);
-
-    // Step 5: Try to truncate trailing garbage
-    let truncated = truncate_to_matching_bracket(&no_trailing);
-
-    // Verify the result is at least syntactically plausible
-    if truncated.is_empty() {
-        return Err(JsonRepairError::RepairFailed(
-            "no JSON content found".to_string(),
-        ));
+impl JsonRepairPipeline {
+    /// A pipeline that applies no steps, so the raw text passes through
+    /// untouched (only the empty-check runs).
+    pub fn identity() -> Self {
+        Self { steps: Vec::new() }
     }
 
-    Ok(truncated)
+    /// Builds a pipeline from an explicit step list, applied in the given order.
+    pub fn with_steps(steps: impl IntoIterator<Item = JsonRepairStep>) -> Self {
+        Self {
+            steps: steps.into_iter().collect(),
+        }
+    }
+
+    /// The configured step order.
+    pub fn steps(&self) -> &[JsonRepairStep] {
+        &self.steps
+    }
+
+    /// Runs the configured repair chain and returns the repaired JSON string.
+    pub fn repair(&self, raw: &str) -> Result<String, JsonRepairError> {
+        let mut out = raw.to_string();
+        for step in &self.steps {
+            out = apply_step(out, *step);
+        }
+        if out.is_empty() {
+            return Err(JsonRepairError::RepairFailed(
+                "no JSON content found".to_string(),
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Runs the configured repair chain and deserializes into `T`.
+    pub fn parse<T: DeserializeOwned>(&self, raw: &str) -> Result<T, JsonRepairError> {
+        let repaired = self.repair(raw)?;
+        serde_json::from_str::<T>(&repaired).map_err(|e| JsonRepairError::DeserializationFailed {
+            details: format!("{} (repaired JSON: {})", e, truncate(&repaired, 200)),
+        })
+    }
+}
+
+/// Applies a single repair step to `input`.
+fn apply_step(input: String, step: JsonRepairStep) -> String {
+    match step {
+        JsonRepairStep::Trim => input.trim().to_string(),
+        JsonRepairStep::StripCodeFences => strip_code_fences(&input),
+        JsonRepairStep::ExtractBracketPair => extract_bracket_pair(&input),
+        JsonRepairStep::FixUnescapedQuotes => fix_unescaped_quotes(&input),
+        JsonRepairStep::RemoveTrailingCommas => remove_trailing_commas(&input),
+        JsonRepairStep::TruncateTrailingGarbage => truncate_to_matching_bracket(&input),
+    }
 }
 
 /// Strips markdown code fences from the text.
@@ -261,6 +344,75 @@ pub fn truncate_to_matching_bracket(json: &str) -> String {
     }
 
     json.to_string()
+}
+
+/// Repairs a *partial* (still-streaming) JSON string by closing unclosed
+/// structures and truncating incomplete values.
+///
+/// Unlike [`repair_json`] — which repairs a believed-complete value — this is
+/// the streaming-oriented repairer: it closes an unclosed string, then every
+/// still-open `{`/`[` in true LIFO (last-opened, first-closed) nesting order,
+/// then drops trailing commas. Used by the incremental/streaming structured
+/// output path as a fallback when [`repair_json`]'s complete-value repairs
+/// cannot yet succeed on an unterminated buffer.
+///
+/// v0.27.0 (T2): the incremental `PartialJsonParser` delegates here so the two
+/// historical "partial JSON repair" logic sets share one module (and one
+/// string-aware `remove_trailing_commas`) instead of drifting.
+pub fn repair_partial_json(text: &str) -> String {
+    let mut repaired = text.trim().to_string();
+
+    // Scan tracking string state to identify structure characters outside of
+    // strings, and expected-closer stack in open order (LIFO at the end
+    // reproduces true nesting).
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut expected_closers: Vec<u8> = Vec::new();
+    let mut unescaped_quote_count = 0usize;
+
+    for ch in repaired.chars() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            unescaped_quote_count += 1;
+            in_string = !in_string;
+            continue;
+        }
+        if !in_string {
+            match ch {
+                '{' => expected_closers.push(b'}'),
+                '[' => expected_closers.push(b']'),
+                '}' | ']' => {
+                    // Ignore stray closers (more closes than opens);
+                    // pop is a no-op on an empty stack.
+                    expected_closers.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // If we are in the middle of a string value, close it.
+    // Heuristic: odd number of unescaped quotes means an unclosed string.
+    if unescaped_quote_count % 2 != 0 {
+        repaired.push('"');
+    }
+
+    // Close unclosed structures in reverse open order (LIFO) — before removing
+    // trailing commas, so that commas before the newly-added closers get dropped.
+    for closer in expected_closers.iter().rev() {
+        repaired.push(*closer as char);
+    }
+
+    // Remove trailing commas before closing brackets/braces (must come after
+    // the closers are added so they can be detected).
+    remove_trailing_commas(&repaired)
 }
 
 /// Truncates a string for display purposes.
@@ -459,5 +611,70 @@ mod tests {
     fn test_error_display() {
         let err = JsonRepairError::RepairFailed("no json".to_string());
         assert!(err.to_string().contains("no json"));
+    }
+
+    #[test]
+    fn test_pipeline_default_matches_repair_json() {
+        // The default pipeline reproduces the legacy fixed chain exactly.
+        let raw = "```json\n{ \"a\": 1, } trailing";
+        assert_eq!(
+            JsonRepairPipeline::default().repair(raw).unwrap(),
+            repair_json(raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_pipeline_drops_step_observably() {
+        // A chain without RemoveTrailingCommas leaves the trailing comma in
+        // place, so strict deserialization must fail — proving the step's
+        // suppression is real rather than cosmetic.
+        let strict = JsonRepairPipeline::with_steps(vec![
+            JsonRepairStep::Trim,
+            JsonRepairStep::ExtractBracketPair,
+            JsonRepairStep::FixUnescapedQuotes,
+            JsonRepairStep::TruncateTrailingGarbage, // RemoveTrailingCommas omitted
+        ]);
+        assert!(
+            strict.parse::<serde_json::Value>(r#"{"a": 1,}"#).is_err(),
+            "trailing comma must survive when the step is dropped"
+        );
+        // The default chain parses the same input fine.
+        assert!(JsonRepairPipeline::default()
+            .parse::<serde_json::Value>(r#"{"a": 1,}"#)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_pipeline_custom_tailored_step_chain() {
+        // A conservative chain — only strip fences + extract brackets, skip the
+        // quote/trailing/garbage heuristics — still parses cleanly-fenced JSON.
+        let pipeline = JsonRepairPipeline::with_steps(vec![
+            JsonRepairStep::Trim,
+            JsonRepairStep::StripCodeFences,
+            JsonRepairStep::ExtractBracketPair,
+        ]);
+        // multi-line fenced form
+        let v: serde_json::Value = pipeline
+            .parse("```json\n{\"name\": \"hi\", \"n\": 3}\n```")
+            .unwrap();
+        assert_eq!(v["name"], "hi");
+        assert_eq!(v["n"], 3);
+        // single-line fenced form
+        let v2: serde_json::Value = pipeline.parse(r#"```json {"name":"hi","n":3}```"#).unwrap();
+        assert_eq!(v2["name"], "hi");
+        assert_eq!(v2["n"], 3);
+    }
+
+    #[test]
+    fn test_pipeline_identity_passes_raw_through() {
+        // An empty chain repairs nothing: invalid JSON must fail at
+        // deserialization, valid JSON must deserialize untouched.
+        let pipeline = JsonRepairPipeline::identity();
+        assert!(
+            pipeline.parse::<serde_json::Value>("not json").is_err(),
+            "invalid JSON must still fail even with an empty chain"
+        );
+        let v: serde_json::Value = pipeline.parse(r#"{"ok": true}"#).unwrap();
+        assert_eq!(v["ok"], true);
     }
 }

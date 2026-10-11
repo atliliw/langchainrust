@@ -62,10 +62,7 @@ pub fn run_tree_from_config(
         run = run.with_tag(tag.clone());
     }
     for (key, value) in &cfg.metadata {
-        if key == RUN_META_PARENT_RUN_ID
-            || key == RUN_META_TRACE_ID
-            || key == RUN_META_COST_SCOPE
-        {
+        if key == RUN_META_PARENT_RUN_ID || key == RUN_META_TRACE_ID || key == RUN_META_COST_SCOPE {
             continue;
         }
         run = run.with_metadata(key.clone(), value.clone());

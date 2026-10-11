@@ -36,9 +36,12 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
-use crate::protocol::{A2ARequest, A2AResponse, AgentCard};
+use crate::protocol::{A2ARequest, A2AResponse, AgentCard, TaskPushNotification};
 use crate::server::A2AServer;
 use crate::A2AError;
+
+#[cfg(feature = "ws")]
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 
 /// Agent card route (A2A standard location).
 const CARD_PATH: &str = "/.well-known/agent-card.json";
@@ -47,6 +50,8 @@ const CARD_PATH: &str = "/.well-known/agent-card.json";
 const AGENT_JSON_PATH: &str = "/.well-known/agent.json";
 /// SSE route for streaming task notifications (P2-1).
 const SSE_PATH: &str = "/events";
+/// WebSocket route for streaming task notifications (V0.27, #186).
+const WS_PATH: &str = "/ws";
 /// Default bind address for [`A2AServer::serve`]: the loopback interface, so an
 /// unauthenticated server is not silently exposed to the network (B7 security
 /// default). Reach further hosts explicitly via [`A2AServer::serve_with`].
@@ -230,13 +235,23 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// exact cross-origin allow-list.
 fn router(server: Arc<A2AServer>, cors_origins: &[String]) -> Router {
     let cors_origins = cors_origins.to_vec();
-    Router::new()
+    let base = Router::new()
         .route(CARD_PATH, get(get_agent_card))
         .route(AGENT_JSON_PATH, get(get_agent_card))
         .route("/", post(post_request))
-        .route(SSE_PATH, get(sse_stream))
-        .layer(cors_layer(&cors_origins))
-        .with_state(server)
+        .route(SSE_PATH, get(sse_stream));
+    // V0.27 (#186): WebSocket transport shares the SSE stream's auth and
+    // per-connection task filtering, so it is exposed alongside `/events`.
+    #[cfg(feature = "ws")]
+    {
+        base.route(WS_PATH, get(ws_stream))
+            .layer(cors_layer(&cors_origins))
+            .with_state(server)
+    }
+    #[cfg(not(feature = "ws"))]
+    {
+        base.layer(cors_layer(&cors_origins)).with_state(server)
+    }
 }
 
 /// `GET /.well-known/agent-card.json` (and `/.well-known/agent.json` alias).
@@ -298,6 +313,34 @@ struct SseQuery {
     task_id: Option<String>,
 }
 
+/// Filter + serialize a single broadcast notification for one connection.
+///
+/// Used by both the SSE (`/events`) and WebSocket (`/ws`, V0.27 #186) streams so
+/// the two transports share identical authz semantics: a notification is
+/// delivered only when the connection's principal owns its task, and — when an
+/// explicit `?taskId=` restriction is set — only for that exact task. Returns
+/// `None` when the event is filtered out or fails to serialize.
+async fn owned_notification(
+    server: &A2AServer,
+    principal: Option<&str>,
+    task_id: &Option<String>,
+    notification: TaskPushNotification,
+) -> Option<String> {
+    // 0.25.0 authz fix: the bus is process-global, so filter every event down
+    // to tasks this connection's principal owns. Previously any authenticated
+    // connection received every tenant's task notifications. B7 additionally
+    // honors an explicit `?taskId=` restriction.
+    let owned = server
+        .notification_visible(principal, notification.id())
+        .await;
+    let wanted = task_id.as_ref().is_none_or(|want| want == notification.id());
+    if !owned || !wanted {
+        None
+    } else {
+        serde_json::to_string(&notification).ok()
+    }
+}
+
 /// `GET /events` — SSE stream of task notifications (P2-1).
 ///
 /// Enforces the same bearer auth as [`post_request`] when the server was
@@ -312,7 +355,7 @@ async fn sse_stream(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let principal = match server.check_auth(bearer) {
+    let principal = match server.check_auth(0, bearer) {
         Ok(principal) => principal,
         Err(resp) => return (StatusCode::UNAUTHORIZED, Json(resp)).into_response(),
     };
@@ -341,10 +384,6 @@ async fn sse_stream(
         }
     }
 
-    // 0.25.0 authz fix: the bus is process-global, so filter every event down
-    // to tasks this connection's principal owns. Previously any authenticated
-    // connection received every tenant's task notifications. B7 additionally
-    // honors an explicit `?taskId=` restriction.
     let task_id = query.task_id.clone();
     let stream = BroadcastStream::new(rx)
         .then(move |item| {
@@ -354,21 +393,14 @@ async fn sse_stream(
             async move {
                 match item {
                     Ok(notification) => {
-                        // Hard filter on the owning principal and/or an exact
-                        // requested task id.
-                        let owned = server
-                            .notification_visible(principal.as_deref(), notification.id())
-                            .await;
-                        let wanted = task_id
-                            .as_ref()
-                            .is_none_or(|want| want == notification.id());
-                        if !owned || !wanted {
-                            None
-                        } else {
-                            serde_json::to_string(&notification)
-                                .ok()
-                                .map(|data| Event::default().event("task").data(data))
-                        }
+                        owned_notification(
+                            &server,
+                            principal.as_deref(),
+                            &task_id,
+                            notification,
+                        )
+                        .await
+                        .map(|data| Event::default().event("task").data(data))
                     }
                     // A slow subscriber dropped events; signal a reset rather
                     // than stall (a dropped sender ends the stream).
@@ -378,6 +410,83 @@ async fn sse_stream(
         })
         .filter_map(|event| event.map(Ok::<_, Infallible>));
     Sse::new(stream).into_response()
+}
+
+/// `GET /ws` — WebSocket stream of task notifications (V0.27, #186).
+///
+/// Mirrors [`sse_stream`] exactly: same bearer auth, same B7 cross-tenant guard,
+/// same `?taskId=` restriction, and the same `owned_notification` filtering.
+/// Each upgrade sends the serialized `TaskPushNotification` that the matched SSE
+/// stream would emit, one per text frame, for this connection alone.
+#[cfg(feature = "ws")]
+async fn ws_stream(
+    State(server): State<Arc<A2AServer>>,
+    Query(query): Query<SseQuery>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let principal = match server.check_auth(0, bearer) {
+        Ok(principal) => principal,
+        Err(resp) => return (StatusCode::UNAUTHORIZED, Json(resp)).into_response(),
+    };
+    let Some(rx) = server.subscribe() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "WS stream not enabled (call A2AServer::with_streaming)",
+        )
+            .into_response();
+    };
+
+    if let (Some(principal), Some(task_id)) = (&principal, &query.task_id) {
+        if !server.notification_visible(Some(principal), task_id).await {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(A2AResponse::error(
+                    0,
+                    -32003,
+                    "caller does not own the requested task",
+                )),
+            )
+                .into_response();
+        }
+    }
+
+    let server = server.clone();
+    let task_id = query.task_id.clone();
+    upgrade.on_upgrade(move |socket| ws_serve(socket, server, principal, task_id, rx))
+}
+
+/// Async task for a single WebSocket session: drain the broadcast bus and push
+/// each filtered notification as one text frame, mirroring the SSE wire output.
+#[cfg(feature = "ws")]
+async fn ws_serve(
+    socket: WebSocket,
+    server: Arc<A2AServer>,
+    principal: Option<String>,
+    task_id: Option<String>,
+    rx: tokio::sync::broadcast::Receiver<TaskPushNotification>,
+) {
+    let mut socket = socket;
+    let mut stream = BroadcastStream::new(rx);
+    while let Some(item) = stream.next().await {
+        let data = match item {
+            Ok(notification) => owned_notification(&server, principal.as_deref(), &task_id, notification).await,
+            // A slow subscriber dropped events: skip silently — the text
+            // stream carries no reset event, so a lagged frame is best dropped
+            // than mis-serialized as a task payload.
+            Err(_lagged) => None,
+        };
+        if let Some(data) = data {
+            // An error means the peer is gone; stop draining the bus for it.
+            if socket.send(Message::Text(data.into())).await.is_err() {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -550,6 +659,45 @@ mod tests {
         }
         assert!(saw_working, "expected a working status-update");
         assert!(saw_completed, "expected a completed status-update");
+    }
+
+    #[tokio::test]
+    async fn serve_subscribe_send_subscribe_pushes_real_http() {
+        // v0.27 (A2A push): the P2-9 `sendSubscribe` path must actually deliver
+        // increments over the real HTTP/SSE boundary of a mounted framework
+        // server — not just against a mock SSE server. `subscribe()` opens
+        // `GET /events`, posts `tasks/sendSubscribe`, and the returned stream
+        // must carry each status push the chain emits (Working → Completed),
+        // proving bus → `/events` → client stream end-to-end.
+        let server = A2AServer::new(Arc::new(EchoChain)).with_streaming(64);
+        let (base, _handle) = spawn(server).await;
+        let client = A2AClient::new(base.clone()).unwrap();
+
+        // Open the SSE subscription and stream the acknowledged task itself:
+        // the ack carries `submitted`, and subsequent increments arrive
+        // without polling.
+        let mut sub = client
+            .subscribe(&format!("{base}/events"), A2AMessage::user("greet"))
+            .await
+            .expect("sendSubscribe should establish a subscription");
+        assert_eq!(sub.task().status, TaskStatus::Submitted);
+
+        let mut saw_working = false;
+        let mut saw_completed = false;
+        while let Some(event) = sub.next().await {
+            let event = event.expect("a push event over the wire");
+            assert_eq!(event.id(), sub.task().id, "push should carry the task id");
+            match event.status_value() {
+                Some(TaskStatus::Working) => saw_working = true,
+                Some(TaskStatus::Completed) => {
+                    saw_completed = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_working, "expected a working status push");
+        assert!(saw_completed, "expected a completed status push");
     }
 
     #[tokio::test]

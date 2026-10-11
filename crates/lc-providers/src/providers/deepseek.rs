@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -34,7 +35,7 @@ pub const DEEPSEEK_MODELS: [&str; 2] = [
 #[derive(Clone)]
 pub struct DeepSeekConfig {
     /// DeepSeek API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the DeepSeek API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -61,7 +62,7 @@ impl std::fmt::Debug for DeepSeekConfig {
 impl Default for DeepSeekConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: DEEPSEEK_BASE_URL.to_string(),
             model: "deepseek-chat".to_string(),
             temperature: None,
@@ -74,7 +75,7 @@ impl DeepSeekConfig {
     /// Creates a new DeepSeekConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -96,7 +97,7 @@ impl DeepSeekConfig {
         let model = env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -135,6 +136,7 @@ impl DeepSeekConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -143,6 +145,7 @@ impl DeepSeekConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
         }

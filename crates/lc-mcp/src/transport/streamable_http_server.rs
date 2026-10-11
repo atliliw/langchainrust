@@ -256,14 +256,8 @@ async fn handle_connection(
             // P0-6 (H7): session table at capacity — fail closed instead of
             // letting an initialize flood grow memory unboundedly.
             Err(()) => {
-                return write_plain(
-                    sock,
-                    503,
-                    "Service Unavailable",
-                    &[],
-                    b"too many sessions",
-                )
-                .await
+                return write_plain(sock, 503, "Service Unavailable", &[], b"too many sessions")
+                    .await
             }
         };
         // Echo the version the server actually negotiated so the header tracks
@@ -346,8 +340,11 @@ fn response_mode(accept: Option<&str>) -> AcceptMode {
     // must never be selected — `text/event-stream;q=0, */*` previously still
     // picked SSE, violating the client's explicit refusal.
     let q_is_zero = |v: &str| -> bool {
-        // "0", "0.0", "0.000", "-0" all denote q=0.
-        v.trim().trim_start_matches('-').trim_end_matches('0').trim_end_matches('.').is_empty()
+        // RFC 9110 lower-bounds `q` at 0.000; any form that numerically equals 0
+        // ("0", "0.0", "0.000", "-0") is *not acceptable*. The previous
+        // string-trim trick misread `q=0.000` (trailing zeros trimmed left a
+        // non-empty "0"), so parse numerically instead — safe for "-0".
+        v.trim().parse::<f64>().map(|q| q == 0.0).unwrap_or(false)
     };
     let mut media_ranges: Vec<&str> = Vec::new();
     for part in accept.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -657,10 +654,7 @@ mod tests {
         // zeroed) — the cancellation table keys by it, and zeroing would let
         // two concurrent string-id requests collide on a single cancellation
         // slot. Only a *missing* id is synthesized as `0`.
-        assert_eq!(
-            typed.id,
-            crate::JsonRpcId::String("req-42".to_string())
-        );
+        assert_eq!(typed.id, crate::JsonRpcId::String("req-42".to_string()));
         let response = MCPResponse {
             jsonrpc: "2.0".to_string(),
             id: Some(crate::JsonRpcId::String("req-42".to_string())),

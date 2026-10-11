@@ -17,6 +17,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 
 use super::OpenAIConfig;
+use crate::sampling::SamplingOverride;
 use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
@@ -38,14 +39,30 @@ pub struct OpenAIChat {
     pub(crate) http_sse: lc_core::http::HttpClient,
 }
 
+impl SamplingOverride for OpenAIChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            self.config.max_tokens = Some(m);
+        }
+    }
+}
+
 impl OpenAIChat {
     /// Per-request auth/headers assembled from the provider config.
-    pub(crate) fn request_options(&self) -> lc_core::http::RequestOptions {
+    ///
+    /// # Errors
+    /// Returns an error when `send_auth` is required but the configured API key
+    /// is empty (fail-fast before the wire instead of a silent 401).
+    pub(crate) fn request_options(&self) -> Result<lc_core::http::RequestOptions, OpenAIError> {
         crate::provider_http::provider_request_options(
             self.config.send_auth,
-            &self.config.api_key,
+            self.config.api_key.expose_secret(),
             &self.config.extra_headers,
         )
+        .map_err(OpenAIError::from)
     }
 
     /// Maps a unified-layer error to the provider error type, preserving the
@@ -99,11 +116,10 @@ impl OpenAIChat {
                     "content": message.content,
                 });
                 if let Some(tool_calls) = &message.tool_calls {
-                    msg["tool_calls"] =
-                        serde_json::to_value(tool_calls).unwrap_or_else(|e| {
-                            log::warn!("OpenAI: failed to serialize tool_calls, omitting them: {e}");
-                            serde_json::Value::Null
-                        });
+                    msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or_else(|e| {
+                        log::warn!("OpenAI: failed to serialize tool_calls, omitting them: {e}");
+                        serde_json::Value::Null
+                    });
                 }
                 msg
             }
@@ -153,6 +169,13 @@ impl OpenAIChat {
             body[key] = json!(max);
         }
 
+        // 0.27.0 T2: surface the `reasoning_effort` sampling knob (o-series /
+        // gpt-5) when configured; omitted entirely otherwise so providers keep
+        // their default behavior.
+        if let Some(effort) = &self.config.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+
         if let Some(top_p) = self.config.top_p {
             body["top_p"] = json!(top_p);
         }
@@ -172,6 +195,19 @@ impl OpenAIChat {
         if let Some(format) = &self.config.response_format {
             body["response_format"] =
                 serde_json::to_value(format).unwrap_or(serde_json::Value::Null);
+        }
+
+        // Prompt cache: OpenAI's prefix cache is automatic, so the only knob is
+        // `prompt_cache_key`, which pins related requests to the same cache
+        // bucket. A `PromptCache` with no key adds nothing to the body, so the
+        // request stays byte-identical to the un-cached form.
+        if let Some(key) = self
+            .config
+            .prompt_cache
+            .as_ref()
+            .and_then(lc_core::PromptCache::key)
+        {
+            body["prompt_cache_key"] = json!(key);
         }
 
         body
@@ -261,6 +297,31 @@ impl OpenAIChat {
             _phantom: PhantomData,
         }
     }
+
+    /// Raw-JSON-Schema structured output: constrains the response with a schema
+    /// the caller already holds as a [`serde_json::Value`], so no Rust type
+    /// implementing `JsonSchema` is needed.
+    ///
+    /// Equivalent to
+    /// `with_response_format(ResponseFormat::from_output(output))` — the
+    /// schema is normalized for OpenAI strict mode when
+    /// [`JsonSchemaOutput::is_strict`](lc_core::JsonSchemaOutput::is_strict) is
+    /// set. The parsed JSON comes back in `LLMResult.content`; use
+    /// [`serde_json::from_str`] to decode it.
+    pub fn with_json_schema_output_raw(mut self, output: lc_core::JsonSchemaOutput) -> Self {
+        self.config = self.config.with_json_schema(output);
+        self
+    }
+
+    /// Sets the provider-agnostic prompt-cache request.
+    ///
+    /// OpenAI caches automatically, so only [`lc_core::PromptCache::key`] is
+    /// sent (`prompt_cache_key`); the `ttl` and last-message breakpoint have no
+    /// OpenAI equivalent and are silently ignored.
+    pub fn with_prompt_cache(mut self, cache: lc_core::PromptCache) -> Self {
+        self.config = self.config.with_prompt_cache(cache);
+        self
+    }
 }
 
 #[async_trait]
@@ -284,14 +345,7 @@ impl Runnable<Vec<Message>, LLMResult> for OpenAIChat {
         use futures_util::StreamExt;
 
         let model = self.config.model.clone();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         // H4: True streaming — emit one LLMResult per token instead of
@@ -376,14 +430,7 @@ impl BaseChatModel for OpenAIChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
 
         // Q4: honor `config.streaming` — aggregate the streaming token stream
         // into a single LLMResult instead of ignoring the field.
@@ -471,14 +518,7 @@ impl BaseChatModel for OpenAIChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
@@ -528,7 +568,7 @@ impl OpenAIChat {
         // pre-dispatch (connect) failures unless explicitly opted in.
         let response = self
             .http_api
-            .post_json_with(&url, &body, self.request_options())
+            .post_json_with(&url, &body, self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
 
@@ -613,7 +653,7 @@ impl OpenAIChat {
         // stream runs without mid-flight reconnect.
         let byte_stream = self
             .http_sse
-            .open_sse(&url, Some(&body), self.request_options())
+            .open_sse(&url, Some(&body), self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
 

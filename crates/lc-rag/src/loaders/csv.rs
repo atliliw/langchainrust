@@ -6,8 +6,6 @@
 use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use csv::Reader;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 
 /// CSV document loader
@@ -44,10 +42,12 @@ impl DocumentLoader for CSVLoader {
             )));
         }
 
-        // Create a CSV reader
-        let file = File::open(&self.path)?;
-        let buf_reader = BufReader::new(file);
-        let mut reader = Reader::from_reader(buf_reader);
+        // Create a CSV reader. 0.26.0 (MEDIUM): the file was opened and streamed
+        // with no size cap, so an oversized CSV ballooned memory. Read it through
+        // the shared bounded read (256 MiB, consistent with the other loaders)
+        // and hand the parser the in-memory bytes instead.
+        let content = super::bounded_read_utf8(&self.path, super::MAX_LOCAL_FILE_BYTES).await?;
+        let mut reader = Reader::from_reader(content.as_bytes());
 
         let mut documents = Vec::new();
 
@@ -58,16 +58,17 @@ impl DocumentLoader for CSVLoader {
             Err(e) => return Err(LoaderError::CsvError(e.to_string())),
         };
 
+        // §3.2 (LOW): resolve the content column index once, outside the record
+        // loop — it does not change per row.
+        let content_idx = headers
+            .iter()
+            .position(|h| h == self.content_column.as_str());
+
         for result in reader.records() {
             let record = match result {
                 Ok(record) => record,
                 Err(e) => return Err(LoaderError::CsvError(e.to_string())),
             };
-
-            // Find the index of the content column
-            let content_idx = headers
-                .iter()
-                .position(|h| h == self.content_column.as_str());
 
             if let Some(idx) = content_idx {
                 // Get the content

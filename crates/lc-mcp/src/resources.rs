@@ -42,6 +42,18 @@ pub struct ResourceContent {
 pub struct ListResourcesResult {
     /// List of resources
     pub resources: Vec<Resource>,
+    /// Opaque pagination cursor; present when there are more results to fetch
+    /// (pass it back in the `cursor` param of `resources/list` to continue).
+    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// `resources/list` request parameters (cursor pagination).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListResourcesParams {
+    /// Opaque cursor returned by a previous `resources/list` call; `None` = first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// `resources/read` request parameters
@@ -65,6 +77,21 @@ pub struct ReadResourceResult {
 pub trait ResourceProvider: Send + Sync {
     /// Returns the full list of resources.
     async fn list_resources(&self) -> Result<Vec<Resource>, MCPError>;
+    /// `resources/list` with cursor pagination.
+    ///
+    /// Default implementation returns the whole `list_resources` output with a
+    /// `None` cursor (single page). Providers wanting cursor-based pagination
+    /// override this and return a page plus a continuation cursor.
+    async fn list_resources_page(
+        &self,
+        _cursor: Option<String>,
+    ) -> Result<ListResourcesResult, MCPError> {
+        let resources = self.list_resources().await?;
+        Ok(ListResourcesResult {
+            resources,
+            next_cursor: None,
+        })
+    }
     /// Reads the resource content by URI.
     async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError>;
 }

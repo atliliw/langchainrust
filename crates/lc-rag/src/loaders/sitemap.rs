@@ -6,8 +6,14 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures_util::stream::{self, StreamExt};
 use regex::Regex;
 use std::sync::LazyLock;
+
+/// Max concurrent page fetches while crawling a sitemap (0.26.0 MEDIUM: the
+/// crawler previously fetched pages one at a time, so a long target site made
+/// `load` block for many multiples of `self.timeout`).
+const SITEMAP_FETCH_CONCURRENCY: usize = 8;
 
 use super::{DocumentLoader, LoaderError};
 use lc_vector_stores::Document;
@@ -97,30 +103,38 @@ impl DocumentLoader for SitemapLoader {
 
         // Parse the URL list
         let urls = Self::parse_urls(&xml);
-        let mut documents = Vec::new();
-
-        for url in urls.iter().take(self.max_pages) {
-            match Self::fetch_page(url, self.timeout).await {
-                Ok(html) => {
-                    let text = super::HTMLLoader::extract_text(&html);
-                    let mut metadata = HashMap::new();
-                    metadata.insert("format".to_string(), "html".to_string().into());
-                    metadata.insert("source".to_string(), url.clone().into());
-
-                    documents.push(Document {
-                        content: text,
-                        metadata,
-                        id: None,
-                    });
+        // 0.26.0 (MEDIUM): crawl up to `max_pages` URLs concurrently (bounded by
+        // SITEMAP_FETCH_CONCURRENCY) instead of strictly sequentially. The old
+        // loop let N slow-but-bounded fetches (each up to `self.timeout`) sum
+        // into minutes of wall-clock blocking; concurrent+ordered preserves the
+        // same documents while finishing in their combined parallel share.
+        let max_pages = self.max_pages;
+        let timeout = self.timeout;
+        let fetched: Vec<Option<Document>> = stream::iter(urls.iter().take(max_pages).cloned())
+            .map(|url| async move {
+                match Self::fetch_page(&url, timeout).await {
+                    Ok(html) => {
+                        let text = super::HTMLLoader::extract_text(&html);
+                        let mut metadata = HashMap::new();
+                        metadata.insert("format".to_string(), "html".to_string().into());
+                        metadata.insert("source".to_string(), url.clone().into());
+                        Some(Document {
+                            content: text,
+                            metadata,
+                            id: None,
+                        })
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to crawl {} (skipped from results): {}", url, e);
+                        None
+                    }
                 }
-                Err(e) => {
-                    log::warn!("Failed to crawl {} (skipped from results): {}", url, e);
-                    continue;
-                }
-            }
-        }
+            })
+            .buffer_unordered(SITEMAP_FETCH_CONCURRENCY)
+            .collect()
+            .await;
 
-        Ok(documents)
+        Ok(fetched.into_iter().flatten().collect())
     }
 }
 

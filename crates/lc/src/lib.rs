@@ -73,9 +73,41 @@ pub mod guardrails;
 /// Unified error type aggregating all sub-module errors.
 pub mod error;
 pub use error::Error;
+// 0.27.0 T1 ($5 low): the bare `Error` name sits beside the `error` module and ~30 per-crate
+// error types re-exported at root, so also expose the unambiguous alias `LcError`.
+pub use error::LcError;
 
 /// A2A: Agent-to-Agent protocol for inter-agent communication.
 pub mod a2a;
+
+// T2-3 (0.27.0): feature-matrix export inventory. The facade gates 18 root/module exports
+// behind the following features (each is a real re-export in `lib.rs` — dropping a gate or
+// renaming a feature without updating this map is a drift signal). Kept as documentation so
+// the matrix is auditable in one place instead of scattered ad-hoc:
+//
+// | feature                   | loads when feature is on                          |
+// |---------------------------|---------------------------------------------------|
+// | `observability`           | `JsonLinesSink`                                   |
+// | `observability-mongodb`   | `MongoSink`                                       |
+// | `vectorstore-memory`      | `VectorStoreRetrieverMemory`                      |
+// | `browser-cdp`             | `tools::browser::{*}` CDP tool surface            |
+// | `mongodb-persistence`     | `MongoPersistentMemory`, `MongoChunkedDocumentStore`/`MongoStoreConfig` |
+// | `local-embeddings`        | `LocalEmbeddings`                                 |
+// | `redis-storage`           | `RedisDocumentStore`/`RedisStoreConfig`           |
+// | `sqlite-storage`          | `SQLiteDocumentStore`/`SQLiteStoreConfig`         |
+// | `pgvector-storage`        | `vector_stores::pgvector` module + `PGVectorConfig`/`PGVectorStore` |
+// | `qdrant-integration`      | `QdrantConfig`/`QdrantVectorStore`                |
+// | `otlp`                    | `callbacks::otlp` submodule                       |
+// | `opentelemetry`           | `OtelHandler`, `OtelTracingBackend`               |
+// | `checkpoint-postgres`     | `PostgresCheckpointer`                            |
+// | `checkpoint-redis`        | `RedisCheckpointer`                               |
+// | `checkpoint-sqlite`       | `SqliteCheckpointer`                              |
+//
+// Note on `local-candle`/`fastembed` (`lc-embeddings` forward features): they add no new
+// `#[cfg]` export here — the embedding entry points they enable live inside `lc-embeddings`.
+// See the `[package.metadata.docs.rs]` list above for the docs build's explicit feature set
+// (excludes `pgvector-storage` — sqlx 0.8.0 fails on docs.rs's newer rustc — and the
+// candle/ort pulls that need platform binaries).
 
 // Re-export the commonly used types
 pub use agents::{
@@ -153,11 +185,12 @@ pub use core::{
     ToolRegistry,
 };
 pub use evaluation::{
-    compare_reports, AnswerRelevancy, Bleu, ContextPrecision, ContextRecall, ContainsKeyword,
-    Dataset, EmbeddingSimilarity, EvalError, EvalRunner, Evaluator, ExactMatch, Example,
-    Faithfulness, LLMAsJudge, LengthCheck, MetricDelta, OverallCost, PairwiseEvaluator,
-    PairwiseJudge, Predictor, Price, PriceBook, RagEvaluator, RegexMatch, Regression, Report,
-    ReportComparison, Score, StringDistance, Verdict,
+    compare_reports, compare_reports_with, paired_significance, percentile, AnswerRelevancy, Bleu,
+    CompareOptions, ContainsKeyword, ContextPrecision, ContextRecall, Dataset, EmbeddingSimilarity,
+    EvalError, EvalRunner, Evaluator, ExactMatch, Example, Faithfulness, LLMAsJudge, LengthCheck,
+    MetricDelta, OverallCost, PairedSignificance, PairwiseEvaluator, PairwiseJudge, Predictor,
+    Price, PriceBook, RagEvaluator, RegexMatch, Regression, Report, ReportComparison, Score,
+    StringDistance, Verdict,
 };
 pub use guardrails::{
     ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
@@ -283,7 +316,7 @@ pub use retrieval::{MultiQueryConfig, MultiQueryError, MultiQueryRetriever, Stat
 // Prompts
 pub use prompts::{
     ChatPromptTemplate, ExampleSelector, FewShotPromptTemplate, LengthBasedExampleSelector,
-    PromptRegistry, PromptTemplate, PromptVersionInfo, RegisteredPrompt, VersionSpec,
+    PromptRegistry, PromptTemplate, PromptVersionInfo, RegisteredPrompt, VariableDiff, VersionSpec,
     MIN_HASH_PREFIX,
 };
 
@@ -347,3 +380,114 @@ pub use langgraph::PostgresCheckpointer;
 pub use langgraph::RedisCheckpointer;
 #[cfg(feature = "checkpoint-sqlite")]
 pub use langgraph::SqliteCheckpointer;
+
+// ===========================================================================
+// Re-export guard — 0.27.0 T1 ($4 high): the root re-export surface is built by
+// hand and leans on rename-aliases to dodge collisions, with no compile-time
+// fence guarding it. These tests pin the collision-resolution aliases (so an
+// orphan or a merge of two colliding types pulls the build red), and verify the
+// hand-picked core provenance of name-prone exports like `Tool`/`BaseTool`
+// (the future-additive ambiguity the triage flags). A full trybuild / cargo
+// public-api snapshot (`$5 high`) remains a follow-up T2.
+// ===========================================================================
+#[cfg(test)]
+mod reexport_guard {
+    use std::any::TypeId;
+    use std::sync::Arc;
+
+    // B13-style collision: both `agents::BudgetExceeded` and
+    // `core::router_llm::BudgetExceeded` are exported at root; the rename
+    // `as RouterBudgetExceeded` keeps them distinct. If someone merges the
+    // types or drops the alias, this (and the `pub use`) fail together.
+    #[test]
+    fn budget_exceeded_collision_is_disambiguated() {
+        let agents = TypeId::of::<crate::agents::BudgetExceeded>();
+        let router = TypeId::of::<crate::core::router_llm::BudgetExceeded>();
+        assert_ne!(
+            agents, router,
+            "agents 与 router_llm 的 BudgetExceeded 撞名,根级必须靠 RouterBudgetExceeded 区分"
+        );
+        assert_eq!(
+            TypeId::of::<crate::RouterBudgetExceeded>(),
+            router,
+            "RouterBudgetExceeded 别名必须解析到 router_llm 侧"
+        );
+    }
+
+    // Generic names from the retrieval facade are prefixed to avoid future
+    // ambiguity at root (`GlobalLevel`→`GraphGlobalLevel`, `QueryMode`→`GraphQueryMode`).
+    #[test]
+    fn graph_prefixed_aliases_resolve_to_retrieval_source() {
+        assert_eq!(
+            TypeId::of::<crate::GraphGlobalLevel>(),
+            TypeId::of::<crate::retrieval::GlobalLevel>(),
+        );
+        assert_eq!(
+            TypeId::of::<crate::GraphQueryMode>(),
+            TypeId::of::<crate::retrieval::QueryMode>(),
+        );
+    }
+
+    // The root `Tool` / `BaseTool` must keep resolving to the core (LCEL)
+    // abstractions the facade pins its public API to, not a same-named future
+    // type from `lc-tools` — a regressing provenance on either is a layout
+    // regression that would otherwise go silent.
+    #[test]
+    fn tool_and_base_tool_resolve_from_core() {
+        // Root `Tool`/`BaseTool` are core's (LCEL) **traits**, so `TypeId` can't
+        // probe a separate identity. Pin provenance structurally:
+        //  - BaseTool is object-safe (`Arc<dyn BaseTool>` is used across core),
+        //    so coercing a root `&dyn crate::BaseTool` to the core trait object
+        //    only type-checks because they are the very same item.
+        //  - Both `Tool` and `BaseTool` are also bound together against the root
+        //    and core paths on one generic param.
+        // An lc-tools `Tool`/`BaseTool` that shadows the root export (the §4 中T1
+        // future-additive ambiguity) makes these references fail to compile.
+        let _: fn(&dyn crate::core::BaseTool) = |_: &dyn crate::BaseTool| {};
+    }
+
+    // The unambiguous error alias added for $5 low resolves to the unified error.
+    #[test]
+    fn lc_error_alias_is_the_unified_error() {
+        assert_eq!(
+            TypeId::of::<crate::LcError>(),
+            TypeId::of::<crate::error::Error>(),
+        );
+    }
+
+    // T2-1: `core/mod.rs` builds `pub mod language_models` as an explicit override of the
+    // glob `pub use lc_core::*;` (the glob already re-exports `lc_core::language_models` at
+    // that same path). Dropping the explicit module — e.g. assuming the glob covers it —
+    // silently reverts to `lc_core::language_models` and hides the facade's wrapper surface.
+    // These pin-references compile ONLY while the override is present; a glob-fallback makes
+    // `crate::core::language_models::{ChatModelWrapper, wrap_provider_model}` unresolved and
+    // pulls the build red.
+    #[test]
+    #[allow(clippy::type_complexity)] // the verbose fn-pointer signature is intentional: it pins `wrap_provider_model`'s provenance exactly
+    fn core_language_models_override_keeps_wrapper_surface() {
+        let _: Option<crate::core::language_models::ChatModelWrapper<()>> = None;
+        let _: fn(
+            Arc<dyn crate::core::BaseChatModel<Error = lc_providers::ProviderError> + Send + Sync>,
+        ) -> Arc<
+            dyn crate::core::BaseChatModel<Error = crate::error::Error> + Send + Sync,
+        > = crate::core::language_models::wrap_provider_model;
+    }
+
+    // T2-2: the facade re-exports a large surface at BOTH root and module level to keep the
+    // convenience paths reachable. The drift risk is a same-named type re-exported from a
+    // different module at one level (a silently divergent double-export). Pin representative
+    // concrete items so root↔module provenance is held to a single item.
+    #[test]
+    fn double_exports_resolve_to_one_item() {
+        assert_eq!(
+            TypeId::of::<crate::Message>(),
+            TypeId::of::<crate::schema::Message>(),
+            "root `Message` 必须与 `schema::Message` 是同一项"
+        );
+        assert_eq!(
+            TypeId::of::<crate::RunnableConfig>(),
+            TypeId::of::<crate::core::RunnableConfig>(),
+            "root `RunnableConfig` 必须与 `core::RunnableConfig` 是同一项"
+        );
+    }
+}

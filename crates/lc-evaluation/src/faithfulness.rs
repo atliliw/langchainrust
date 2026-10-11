@@ -265,11 +265,15 @@ fn contains_word(s: &str, target: &str) -> bool {
         return false;
     }
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    bytes.windows(target_bytes.len()).enumerate().any(|(i, window)| {
-        window == target_bytes
-            && (i == 0 || !is_word(bytes[i - 1]))
-            && (i + target_bytes.len() == bytes.len() || !is_word(bytes[i + target_bytes.len()]))
-    })
+    bytes
+        .windows(target_bytes.len())
+        .enumerate()
+        .any(|(i, window)| {
+            window == target_bytes
+                && (i == 0 || !is_word(bytes[i - 1]))
+                && (i + target_bytes.len() == bytes.len()
+                    || !is_word(bytes[i + target_bytes.len()]))
+        })
 }
 
 #[cfg(test)]

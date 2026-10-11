@@ -225,15 +225,29 @@ impl CallbackManager {
     // ---- Tracing-span bridge (Q6) ----
 
     /// Publish `run` start as a tracing span when a tracer is attached.
+    ///
+    /// Idempotent for a given run id (§3.1): if the run already has an active span, the
+    /// second start is ignored rather than overwritten. Otherwise an `insert` would drop
+    /// the first guard (closing the span mid-run and popping it off the tracer stack)
+    /// while a duplicate span id stays pushed, polluting parentage for later runs.
     async fn begin_trace_span(&self, run: &RunTree) {
         if let Some(tracer) = &self.tracer {
+            let key = run.id.to_string();
+            // Check without holding the lock across span creation (start_child may do I/O
+            // on the backend). Double-checked after creation to stay correct under a race.
+            if self.active_trace_spans.lock().await.contains_key(&key) {
+                return;
+            }
             let kind = SpanKind::from(run.run_type);
             // start_child falls back to a root span when no span is active
             let guard = tracer.start_child(&run.name, kind);
-            self.active_trace_spans
-                .lock()
-                .await
-                .insert(run.id.to_string(), guard);
+            let mut spans = self.active_trace_spans.lock().await;
+            if spans.contains_key(&key) {
+                // A concurrent start won this round; drop this guard (closing its span)
+                // so it does not linger or pollute the stack.
+                return;
+            }
+            spans.insert(key, guard);
         }
     }
 
@@ -272,138 +286,250 @@ impl Clone for CallbackManager {
 // ============ Helper methods for dispatching callbacks ============
 
 impl CallbackManager {
+    /// Runs `make(handler)` for every registered handler, isolating each on its own
+    /// tokio task and waiting for all of them before returning.
+    ///
+    /// The legacy dispatch loop was serial: a handler that panicked unwound the `for`
+    /// loop and skipped the remaining handlers, while a slow or blocking handler
+    /// stalled every one after it. Running each handler on its own task contains a
+    /// panic at the task boundary (a panicking task ends and shadows the panic instead
+    /// of unwinding the dispatcher) and lets slow handlers run concurrently. Every
+    /// `JoinHandle` is awaited before `emit` returns, so no dispatch surfaces until all
+    /// handlers have finished — event ordering across dispatches is preserved.
+    async fn emit<T, F>(&self, make: F)
+    where
+        F: Fn(Arc<dyn CallbackHandler>) -> T,
+        T: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handlers = self.inner.handlers.clone();
+        let mut tasks = Vec::with_capacity(handlers.len());
+        for handler in handlers {
+            tasks.push(tokio::spawn(make(handler)));
+        }
+        for task in tasks {
+            // A task that panicked returns Err(JoinError) — log and keep going so one
+            // bad handler never silences the rest.
+            if let Err(err) = task.await {
+                log::error!("callback handler panicked: {err}");
+            }
+        }
+    }
+
     /// Dispatch `on_run_start` to all handlers.
     pub async fn dispatch_run_start(&self, run: &RunTree) {
         self.begin_trace_span(run).await;
-        for handler in &self.inner.handlers {
-            handler.on_run_start(run).await;
-        }
+        let run = run.clone();
+        self.emit(move |handler| {
+            let run = run.clone();
+            async move { handler.on_run_start(&run).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_run_end` to all handlers.
     pub async fn dispatch_run_end(&self, run: &RunTree) {
         self.end_trace_span(run, None).await;
-        for handler in &self.inner.handlers {
-            handler.on_run_end(run).await;
-        }
+        let run = run.clone();
+        self.emit(move |handler| {
+            let run = run.clone();
+            async move { handler.on_run_end(&run).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_run_error` to all handlers.
     pub async fn dispatch_run_error(&self, run: &RunTree, error: &str) {
         self.end_trace_span(run, Some(error)).await;
-        for handler in &self.inner.handlers {
-            handler.on_run_error(run, error).await;
-        }
+        let run = run.clone();
+        let error = error.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let error = error.clone();
+            async move { handler.on_run_error(&run, &error).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_chain_start` to all handlers.
     pub async fn dispatch_chain_start(&self, run: &RunTree, inputs: &serde_json::Value) {
         self.begin_trace_span(run).await;
-        for handler in &self.inner.handlers {
-            handler.on_chain_start(run, inputs).await;
-        }
+        let run = run.clone();
+        let inputs = inputs.clone();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let inputs = inputs.clone();
+            async move { handler.on_chain_start(&run, &inputs).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_chain_end` to all handlers.
     pub async fn dispatch_chain_end(&self, run: &RunTree, outputs: &serde_json::Value) {
         self.end_trace_span(run, None).await;
-        for handler in &self.inner.handlers {
-            handler.on_chain_end(run, outputs).await;
-        }
+        let run = run.clone();
+        let outputs = outputs.clone();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let outputs = outputs.clone();
+            async move { handler.on_chain_end(&run, &outputs).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_chain_error` to all handlers.
     pub async fn dispatch_chain_error(&self, run: &RunTree, error: &str) {
         self.end_trace_span(run, Some(error)).await;
-        for handler in &self.inner.handlers {
-            handler.on_chain_error(run, error).await;
-        }
+        let run = run.clone();
+        let error = error.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let error = error.clone();
+            async move { handler.on_chain_error(&run, &error).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_llm_start` to all handlers.
     pub async fn dispatch_llm_start(&self, run: &RunTree, messages: &[lc_schema::Message]) {
         self.begin_trace_span(run).await;
-        for handler in &self.inner.handlers {
-            handler.on_llm_start(run, messages).await;
-        }
+        let run = run.clone();
+        let messages = messages.to_vec();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let messages = messages.clone();
+            async move { handler.on_llm_start(&run, &messages).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_llm_end` to all handlers.
     pub async fn dispatch_llm_end(&self, run: &RunTree, response: &str) {
         self.end_trace_span(run, None).await;
-        for handler in &self.inner.handlers {
-            handler.on_llm_end(run, response).await;
-        }
+        let run = run.clone();
+        let response = response.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let response = response.clone();
+            async move { handler.on_llm_end(&run, &response).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_llm_error` to all handlers.
     pub async fn dispatch_llm_error(&self, run: &RunTree, error: &str) {
         self.end_trace_span(run, Some(error)).await;
-        for handler in &self.inner.handlers {
-            handler.on_llm_error(run, error).await;
-        }
+        let run = run.clone();
+        let error = error.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let error = error.clone();
+            async move { handler.on_llm_error(&run, &error).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_llm_new_token` to all handlers.
     pub async fn dispatch_llm_new_token(&self, run: &RunTree, token: &str) {
-        for handler in &self.inner.handlers {
-            handler.on_llm_new_token(run, token).await;
-        }
+        let run = run.clone();
+        let token = token.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let token = token.clone();
+            async move { handler.on_llm_new_token(&run, &token).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_llm_thinking` to all handlers.
     pub async fn dispatch_llm_thinking(&self, run: &RunTree, thinking: &str) {
-        for handler in &self.inner.handlers {
-            handler.on_llm_thinking(run, thinking).await;
-        }
+        let run = run.clone();
+        let thinking = thinking.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let thinking = thinking.clone();
+            async move { handler.on_llm_thinking(&run, &thinking).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_tool_start` to all handlers.
     pub async fn dispatch_tool_start(&self, run: &RunTree, tool_name: &str, input: &str) {
         self.begin_trace_span(run).await;
-        for handler in &self.inner.handlers {
-            handler.on_tool_start(run, tool_name, input).await;
-        }
+        let run = run.clone();
+        let tool_name = tool_name.to_string();
+        let input = input.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let tool_name = tool_name.clone();
+            let input = input.clone();
+            async move { handler.on_tool_start(&run, &tool_name, &input).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_tool_end` to all handlers.
     pub async fn dispatch_tool_end(&self, run: &RunTree, output: &str) {
         self.end_trace_span(run, None).await;
-        for handler in &self.inner.handlers {
-            handler.on_tool_end(run, output).await;
-        }
+        let run = run.clone();
+        let output = output.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let output = output.clone();
+            async move { handler.on_tool_end(&run, &output).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_tool_error` to all handlers.
     pub async fn dispatch_tool_error(&self, run: &RunTree, error: &str) {
         self.end_trace_span(run, Some(error)).await;
-        for handler in &self.inner.handlers {
-            handler.on_tool_error(run, error).await;
-        }
+        let run = run.clone();
+        let error = error.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let error = error.clone();
+            async move { handler.on_tool_error(&run, &error).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_retriever_start` to all handlers.
     pub async fn dispatch_retriever_start(&self, run: &RunTree, query: &str) {
         self.begin_trace_span(run).await;
-        for handler in &self.inner.handlers {
-            handler.on_retriever_start(run, query).await;
-        }
+        let run = run.clone();
+        let query = query.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let query = query.clone();
+            async move { handler.on_retriever_start(&run, &query).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_retriever_end` to all handlers.
     pub async fn dispatch_retriever_end(&self, run: &RunTree, documents: &[serde_json::Value]) {
         self.end_trace_span(run, None).await;
-        for handler in &self.inner.handlers {
-            handler.on_retriever_end(run, documents).await;
-        }
+        let run = run.clone();
+        let documents = documents.to_vec();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let documents = documents.clone();
+            async move { handler.on_retriever_end(&run, &documents).await }
+        })
+        .await;
     }
 
     /// Dispatch `on_retriever_error` to all handlers.
     pub async fn dispatch_retriever_error(&self, run: &RunTree, error: &str) {
         self.end_trace_span(run, Some(error)).await;
-        for handler in &self.inner.handlers {
-            handler.on_retriever_error(run, error).await;
-        }
+        let run = run.clone();
+        let error = error.to_string();
+        self.emit(move |handler| {
+            let run = run.clone();
+            let error = error.clone();
+            async move { handler.on_retriever_error(&run, &error).await }
+        })
+        .await;
     }
 }
 
@@ -485,6 +611,38 @@ mod tests {
 
         let received = handler.received.lock().await.clone();
         assert_eq!(received, vec!["let me think".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn dispatch_isolates_a_panicking_handler() {
+        // T1: a handler that panics must not skip the others — each is run on its own
+        // task, so a panic is contained at the task boundary and logged, and the
+        // remaining handlers still receive the event.
+        struct Panicky;
+        #[async_trait]
+        impl CallbackHandler for Panicky {
+            async fn on_run_start(&self, _run: &RunTree) {
+                panic!("this handler is broken");
+            }
+            async fn on_run_end(&self, _run: &RunTree) {}
+            async fn on_run_error(&self, _run: &RunTree, _e: &str) {}
+        }
+        let healthy = Arc::new(RecordingHandler {
+            events: Mutex::new(Vec::new()),
+        });
+        let cm = CallbackManager::new()
+            .add_handler(Arc::new(Panicky))
+            .add_handler(healthy.clone());
+
+        let run = RunTree::new("iso", crate::RunType::Chain, serde_json::json!({}));
+        cm.dispatch_run_start(&run).await;
+
+        let events = healthy.events.lock().await.clone();
+        assert_eq!(
+            events,
+            vec!["start:iso".to_string()],
+            "healthy handler was skipped"
+        );
     }
 
     #[tokio::test]

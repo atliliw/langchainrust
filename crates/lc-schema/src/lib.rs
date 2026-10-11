@@ -5,6 +5,6 @@
 pub mod messages;
 
 pub use messages::{
-    AudioContent, FileContent, ImageContent, MediaPart, Message, MessageType, Modality,
-    VideoContent,
+    AudioContent, FileContent, ImageContent, MediaPart, Message, MessageError, MessageType,
+    Modality, VideoContent,
 };

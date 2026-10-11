@@ -282,10 +282,13 @@ impl GuardedAgent {
                 let emitted = match action {
                     ChunkAction::Pass => token.clone(),
                     ChunkAction::Replace(new_value) => new_value,
-                    ChunkAction::Block => {
+                    ChunkAction::Block { reason } => {
+                        // The detecting rail's own reason travels to the caller: it is the only
+                        // description of what was wrong, and a generic message here would throw
+                        // away the one piece of feedback the caller can act on.
                         let partial = released.lock().await.clone();
                         return Err(GuardrailError::Blocked {
-                            reason: "streaming output was blocked by a guardrail".to_string(),
+                            reason,
                             partial: Some(partial),
                             suggestion: Some(
                                 "output was blocked by a safety guardrail; please adjust your request and retry"
@@ -536,7 +539,9 @@ mod tests {
             ctx: &crate::guardrail::ChunkContext<'_>,
         ) -> crate::guardrail::ChunkAction {
             if ctx.window.contains("world") {
-                crate::guardrail::ChunkAction::Block
+                crate::guardrail::ChunkAction::Block {
+                    reason: "window matched the blocked keyword `world`".to_string(),
+                }
             } else {
                 crate::guardrail::ChunkAction::Pass
             }
@@ -556,7 +561,9 @@ mod tests {
         use futures_util::StreamExt;
         let mut saw_error = false;
         while let Some(chunk) = stream.next().await {
-            if chunk.is_err() {
+            // the rail's own reason must reach the caller, not a generic "blocked by a guardrail"
+            if let Err(GuardrailError::Blocked { reason, .. }) = chunk {
+                assert!(reason.contains("world"), "got: {reason}");
                 saw_error = true;
             }
         }
@@ -571,10 +578,7 @@ mod tests {
         fn name(&self) -> &str {
             "RewriteSecret"
         }
-        async fn validate(
-            &self,
-            output: &str,
-        ) -> crate::guardrail::OutputGuardrailResult {
+        async fn validate(&self, output: &str) -> crate::guardrail::OutputGuardrailResult {
             if output.contains("secret") {
                 crate::guardrail::OutputGuardrailResult::Modify {
                     new_value: output.replace("secret", "[REDACTED]"),
@@ -591,9 +595,8 @@ mod tests {
     #[tokio::test]
     async fn test_invoke_stream_drops_output_modify_with_violation() {
         let chain: Arc<dyn BaseChain> = Arc::new(StreamSecretChain);
-        let config = GuardrailsConfig::new().with_output(
-            Arc::new(RewriteSecret) as Arc<dyn crate::guardrail::OutputGuardrail>
-        );
+        let config = GuardrailsConfig::new()
+            .with_output(Arc::new(RewriteSecret) as Arc<dyn crate::guardrail::OutputGuardrail>);
         let mut g = GuardedAgent::from_chain(chain, config);
         let mut stream = g.invoke_stream("q".to_string()).await.unwrap();
 

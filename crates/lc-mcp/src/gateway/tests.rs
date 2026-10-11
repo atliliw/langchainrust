@@ -476,3 +476,51 @@ async fn test_as_base_tools_carry_approval_gate() {
         .expect("after approval the adapter dispatches");
     assert!(out.contains("echo"), "actual: {out}");
 }
+
+/// T2 §5: adapters produced by `as_base_tools` carry the Gateway's shared
+/// per-server rate limiter and unified audit ring, so a reduced-to-BaseTool
+/// tool cannot bypass the per-server limit or slip its allow/block out of the
+/// audit log by calling the adapter directly.
+#[tokio::test]
+async fn test_as_base_tools_carry_rate_limit_and_audit() {
+    let fake = start_fake_stateless_server(StatelessMode::Normal).await;
+    let gw = MCPGateway::new();
+    gw.register(
+        GatewayServerSpec::new("fs", &fake.url)
+            .allow_unattended_execution()
+            .with_rate_limit(1, Duration::from_secs(60)),
+    )
+    .await
+    .unwrap();
+    gw.sync("fs").await.unwrap();
+
+    let tools = gw
+        .as_base_tools()
+        .await
+        .expect("building adapters should succeed");
+    assert_eq!(tools.len(), 1);
+
+    // 1st call within the window is allowed.
+    let first = tools[0].run("{}".into()).await;
+    assert!(
+        first.is_ok(),
+        "1st adapter call within window should be allowed"
+    );
+
+    // 2nd call must hit the SAME shared bucket the Gateway `call` entry uses.
+    let err = tools[0].run("{}".into()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("rate limit"),
+        "adapter must bypass-proof the per-server limiter, actual: {err}"
+    );
+
+    // Both calls were recorded into the unified audit ring (allow + block).
+    let log = gw.audit_log();
+    assert_eq!(log.len(), 2, "allow and block each audited once");
+    assert!(log[0].allowed);
+    assert!(!log[1].allowed);
+    assert!(
+        log[1].reason.as_deref().unwrap().contains("rate limit"),
+        "blocked call must carry the rate-limit reason"
+    );
+}

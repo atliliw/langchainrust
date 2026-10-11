@@ -28,7 +28,7 @@
 //! # Ok(()) }
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,6 +64,8 @@ const LINK_LIMIT: usize = 200;
 pub struct CdpBrowser {
     ws: tokio::sync::Mutex<Ws>,
     next_id: AtomicU64,
+    /// Reads as the SSRF default during per-hop interception (V0.27, #200).
+    allow_private_urls: AtomicBool,
 }
 
 impl std::fmt::Debug for CdpBrowser {
@@ -88,6 +90,10 @@ impl CdpBrowser {
         }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
+            // SSRF hardening: never follow redirects on the CDP control endpoints —
+            // a redirect can bounce to an internal address and leak into the browser's
+            // navigation. Same policy as lc-rag's guarded fetch path.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ToolError::ExecutionFailed(format!("CDP HTTP client error: {e}")))?;
 
@@ -156,9 +162,20 @@ impl CdpBrowser {
         let browser = Self {
             ws: tokio::sync::Mutex::new(ws),
             next_id: AtomicU64::new(0),
+            allow_private_urls: AtomicBool::new(false),
         };
         browser.enable_domains().await?;
         Ok(browser)
+    }
+
+    /// Opt in/out of navigating to private/loopback addresses (V0.27, #200).
+    pub fn set_allow_private_urls(&self, allow: bool) {
+        self.allow_private_urls.store(allow, Ordering::Relaxed);
+    }
+
+    /// Whether this browser currently permits private addresses.
+    pub fn allow_private(&self) -> bool {
+        self.allow_private_urls.load(Ordering::Relaxed)
     }
 
     async fn enable_domains(&self) -> Result<(), ToolError> {
@@ -214,7 +231,20 @@ impl CdpBrowser {
 
     /// Navigates and waits for the load event (bounded by [`LOAD_TIMEOUT`]),
     /// then optionally settles for `wait_ms` more.
+    ///
+    /// While navigating, per-hop SSRF interception is armed (V0.27, #200): the
+    /// `Fetch` CDP domain pauses every request before it leaves, and each
+    /// `Fetch.requestPaused` is validated — private hops are failed, public ones
+    /// continued — so a top-level check that passed cannot be followed later by
+    /// a redirect, DNS-rebound, or subresource request to an internal host. The
+    /// interception is disarmed as soon as the page loads (or on any failure) so
+    /// a post-load `Runtime.evaluate` is never stranded on an unanswered pause.
     async fn goto(&self, url: &str, wait_ms: Option<u64>) -> Result<(), ToolError> {
+        self.command(
+            "Fetch.enable",
+            serde_json::json!({"patterns": [{"urlPattern": "*"}]}),
+        )
+        .await?;
         let fut = async {
             let mut ws = self.ws.lock().await;
             let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -239,6 +269,53 @@ impl CdpBrowser {
                     serde_json::from_str(text.as_str()).map_err(|e| {
                         ToolError::ExecutionFailed(format!("CDP frame parse failed: {e}"))
                     })?;
+                if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
+                    // V0.27 (#200): a request hop was paused *before* it goes
+                    // out — validate its URL now and continue or fail it on the
+                    // same connection.
+                    if method == "Fetch.requestPaused" {
+                        let request_id = value
+                            .pointer("/params/requestId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let request_url = value
+                            .pointer("/params/request/url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let allow_private = self.allow_private_urls.load(Ordering::Relaxed);
+                        let block = block_request_hop(request_url, allow_private).await?;
+                        let (hop_method, hop_params) = if block {
+                            // Deny the request before any packet reaches the net.
+                            (
+                                "Fetch.failRequest",
+                                serde_json::json!({
+                                    "requestId": request_id,
+                                    "errorReason": "BlockedByClient",
+                                }),
+                            )
+                        } else {
+                            ("Fetch.continueRequest", serde_json::json!({ "requestId": request_id }))
+                        };
+                        let hop_id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+                        ws.send(Message::Text(
+                            serde_json::json!({
+                                "id": hop_id,
+                                "method": hop_method,
+                                "params": hop_params,
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .map_err(|e| {
+                            ToolError::ExecutionFailed(format!("CDP send failed: {e}"))
+                        })?;
+                        continue;
+                    }
+                    if method == "Page.loadEventFired" && got_response {
+                        return Ok(());
+                    }
+                }
                 if value.get("id").and_then(|v| v.as_u64()) == Some(id) {
                     if let Some(error) = value.get("error") {
                         return Err(ToolError::ExecutionFailed(format!(
@@ -254,21 +331,23 @@ impl CdpBrowser {
                         )));
                     }
                     got_response = true;
-                } else if value.get("method").and_then(|v| v.as_str())
-                    == Some("Page.loadEventFired")
-                    && got_response
-                {
-                    return Ok(());
                 }
             }
         };
-        match tokio::time::timeout(LOAD_TIMEOUT, fut).await {
-            Ok(result) => result?,
+        let result = match tokio::time::timeout(LOAD_TIMEOUT, fut).await {
+            Ok(result) => result,
             Err(_) => {
                 // Some pages keep long-polling open and never fire "load": accept
                 // a committed navigation once the deadline passes.
+                Ok(())
             }
-        }
+        };
+        // Disarm interception on every exit path — including timeout and error —
+        // so a later `Runtime.evaluate` is not stalled on pending pauses.
+        let _ = self
+            .command("Fetch.disable", serde_json::json!({}))
+            .await;
+        result?;
         if let Some(ms) = wait_ms {
             tokio::time::sleep(Duration::from_millis(ms.min(MAX_WAIT_MS))).await;
         }
@@ -475,22 +554,30 @@ impl std::fmt::Debug for CdpBrowserTool {
 impl CdpBrowserTool {
     /// Opens a fresh tab against the given Chrome debugger endpoint.
     pub async fn connect(debugger_url: impl AsRef<str>) -> Result<Self, ToolError> {
+        let browser = Arc::new(CdpBrowser::connect(debugger_url).await?);
+        let allow_private_urls = browser.allow_private();
         Ok(Self {
-            browser: Arc::new(CdpBrowser::connect(debugger_url).await?),
-            allow_private_urls: false,
+            browser,
+            allow_private_urls,
         })
     }
 
     /// Wraps an already-connected browser (shares one tab across callers).
     pub fn from_browser(browser: Arc<CdpBrowser>) -> Self {
+        let allow_private_urls = browser.allow_private();
         Self {
             browser,
-            allow_private_urls: false,
+            allow_private_urls,
         }
     }
 
     /// Allows navigating to private/loopback/link-local addresses (SSRF opt-in).
+    ///
+    /// Mirrors the decision onto the shared [`CdpBrowser`] so per-hop
+    /// interception (V0.27, #200) honors the same setting: public-by-default,
+    /// and every request Chrome issues is validated against it.
     pub fn with_allow_private_urls(mut self, allow: bool) -> Self {
+        self.browser.set_allow_private_urls(allow);
         self.allow_private_urls = allow;
         self
     }
@@ -498,6 +585,23 @@ impl CdpBrowserTool {
     async fn validate_target(&self, url: &str) -> Result<(), ToolError> {
         validate_navigation_url(url, self.allow_private_urls).await
     }
+}
+
+/// Decide whether one request hop must be blocked by per-hop SSRF interception
+/// (V0.27, #200).
+///
+/// Returns `true` when `allow_private` is off and `url` resolves to a
+/// private/loopback/link-local address. A private opt-in, or a non-network URL
+/// (data:/blob:/about:), is never blocked here — such requests carry no SSRF
+/// vector. Shared by the `Fetch.requestPaused` handler and its tests.
+async fn block_request_hop(url: &str, allow_private: bool) -> Result<bool, ToolError> {
+    if allow_private
+        || url.is_empty()
+        || !(url.starts_with("http://") || url.starts_with("https://"))
+    {
+        return Ok(false);
+    }
+    url_points_to_private_ip(url).await
 }
 
 /// Scheme + SSRF validation shared by the tool and tests.
@@ -864,7 +968,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_failure_is_surfaced() {
+    async fn per_hop_block_request_private_vs_public() {
+        use std::net::{IpAddr, Ipv4Addr};
+        // Private IP literals are rejected (no DNS round-trip, stays offline).
+        assert!(
+            block_request_hop("http://127.0.0.1:1/x", false).await.unwrap(),
+            "loopback must be blocked"
+        );
+        assert!(
+            block_request_hop("http://192.168.1.10:1/x", false)
+                .await
+                .unwrap(),
+            "private RFC1918 must be blocked"
+        );
+        assert!(
+            block_request_hop("http://10.0.0.5:1/x", false).await.unwrap(),
+            "private 10/8 must be blocked"
+        );
+        // Non-network URLs carry no SSRF vector and are never blocked.
+        assert!(!block_request_hop("data:text/plain,hi", false).await.unwrap());
+        assert!(!block_request_hop("about:blank", false).await.unwrap());
+        assert!(!block_request_hop("", false).await.unwrap());
+        // Private opt-in lets a loopback hop through.
+        assert!(!block_request_hop("http://127.0.0.1:1/x", true).await.unwrap());
+        // A public IP literal is allowed (lc-core considers non-private).
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        assert!(!lc_core::ssrf::is_private_ip(&ip));
+    }
+
+    /// A fake CDP ws that, during `Page.navigate`, pauses a **private** hop
+/// (`Fetch.requestPaused` for a loopback URL) before firing the load event, and
+/// records how the client answered it. The client must `Fetch.failRequest` the
+/// hop and never `Fetch.continueRequest`.
+async fn spawn_intercepting_cdp_ws() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::sync::Mutex;
+    use tokio::net::TcpListener;
+    let decisions: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = decisions.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        while let Some(Ok(Message::Text(raw))) = ws.next().await {
+            let msg: serde_json::Value = match serde_json::from_str(raw.as_str()) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            let ack = || {
+                serde_json::json!({"id": id, "result": {}}).to_string()
+            };
+            match method {
+                "Fetch.enable" | "Fetch.disable" => {
+                    let _ = ws.send(Message::Text(ack().into())).await;
+                }
+                "Fetch.failRequest" | "Fetch.continueRequest" => {
+                    recorder.lock().unwrap().push(method.to_string());
+                    let _ = ws.send(Message::Text(ack().into())).await;
+                }
+                "Page.navigate" => {
+                    let _ = ws.send(Message::Text(ack().into())).await;
+                    // A loopback hop is paused while navigating.
+                    let _ = ws
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "method": "Fetch.requestPaused",
+                                "params": {
+                                    "requestId": "req-private-1",
+                                    "request": {"url": "http://127.0.0.1:1/"},
+                                }
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await;
+                    let _ = ws
+                        .send(Message::Text(
+                            serde_json::json!({"method": "Page.loadEventFired", "params": {}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await;
+                }
+                _ => {
+                    let _ = ws.send(Message::Text(ack().into())).await;
+                }
+            }
+        }
+    });
+    (format!("ws://{addr}"), decisions)
+}
+
+#[tokio::test]
+async fn per_hop_interception_sends_failrequest_for_private() {
+    // End-to-end over a mock CDP exchange: connect through the fake HTTP
+    // discovery, then navigate. The paused loopback hop must be answered with
+    // Fetch.failRequest (default SSRF posture), not continueRequest.
+    let (ws_url, decisions) = spawn_intercepting_cdp_ws().await;
+    let http_url = spawn_fake_cdp_http(ws_url).await;
+    let browser = CdpBrowser::connect(http_url).await.unwrap();
+
+    browser.goto("http://1.1.1.1:1/", None).await.unwrap();
+
+    let got = decisions.lock().unwrap();
+    assert_eq!(got.as_slice(), &["Fetch.failRequest".to_string()]);
+
+    // Opting into private URLs lets the same loopback hop through.
+    let (ws_url, decisions) = spawn_intercepting_cdp_ws().await;
+    let http_url = spawn_fake_cdp_http(ws_url).await;
+    let browser = CdpBrowser::connect(http_url).await.unwrap();
+    browser.set_allow_private_urls(true);
+
+    browser.goto("http://1.1.1.1:1/", None).await.unwrap();
+
+    let got = decisions.lock().unwrap();
+    assert_eq!(got.as_slice(), &["Fetch.continueRequest".to_string()]);
+}
+
+#[tokio::test]
+async fn connect_failure_is_surfaced() {
         let err = CdpBrowser::connect("http://127.0.0.1:1").await.unwrap_err();
         // Either discovery transport failure or a CDP-labeled message.
         let text = err.to_string();

@@ -182,6 +182,24 @@ mod tests {
         assert!(parsed.results.is_empty());
     }
 
+    #[test]
+    fn parse_never_divides_by_zero_denominator() {
+        // The denominator `n` is the organic-count (`.max(1)`): an empty array must not
+        // produce a NaN/Inf score, and a position far beyond the count must clamp to 0..=1.
+        let empty = SerperBackend::parse(&json!({"organic": []}), 5);
+        assert!(empty.results.is_empty());
+
+        let weird = json!({"organic": [
+            {"title": "A", "link": "https://a.example", "snippet": "s", "position": 999}
+        ]});
+        let parsed = SerperBackend::parse(&weird, 5);
+        let score = parsed.results[0].score;
+        assert!(
+            score.is_finite() && (0.0..=1.0).contains(&score),
+            "score must be finite and clamped, got: {score}"
+        );
+    }
+
     #[tokio::test]
     async fn http_call_sends_api_key_header_and_q_num() {
         let reply = json!({"organic": [

@@ -229,4 +229,62 @@ mod tests {
         // Results should include scores
         assert!(results[0].score >= -1.0 && results[0].score <= 1.0);
     }
+
+    /// `k` semantics regression — 零查询: a `k` of `0` is a valid "fetch none" request, not an
+    /// error and not a panic, and must return an empty set from both the plain and scored paths.
+    #[tokio::test]
+    async fn test_retriever_k_zero_returns_empty() {
+        let store = Arc::new(InMemoryVectorStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(64));
+        let retriever = SimilarityRetriever::new(store.clone(), embeddings.clone());
+
+        retriever
+            .add_documents(vec![Document::new("A"), Document::new("B")])
+            .await
+            .unwrap();
+
+        assert!(
+            retriever.retrieve("query", 0).await.unwrap().is_empty(),
+            "k=0 应返回空集"
+        );
+        assert!(
+            retriever
+                .retrieve_with_scores("query", 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "retrieve_with_scores 在 k=0 时应返回空集"
+        );
+    }
+
+    /// `k` semantics regression — 超量: a `k` larger than the document count must cap at the
+    /// available documents (return every one, no error, no spillover).
+    #[tokio::test]
+    async fn test_retriever_k_exceeds_documents_caps_at_count() {
+        let store = Arc::new(InMemoryVectorStore::new());
+        let embeddings = Arc::new(MockEmbeddings::new(64));
+        let retriever = SimilarityRetriever::new(store.clone(), embeddings.clone());
+
+        retriever
+            .add_documents(vec![
+                Document::new("A dog"),
+                Document::new("B cat"),
+                Document::new("C bird"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.count().await, 3);
+
+        // k = 10 requests far more than the 3 stored docs.
+        let results = retriever.retrieve("animals", 10).await.unwrap();
+        assert_eq!(
+            results.len(),
+            3,
+            "k 超过文档数时应封顶为文档数, 实际 {}",
+            results.len()
+        );
+
+        let scored = retriever.retrieve_with_scores("animals", 10).await.unwrap();
+        assert_eq!(scored.len(), 3, "带分数路径同样封顶");
+    }
 }

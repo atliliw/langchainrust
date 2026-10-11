@@ -115,13 +115,11 @@ impl RetrievalRail {
             }
             RailAction::Redact => {
                 for result in results.iter_mut() {
-                    if self.detector.detect(&result.document.content).is_some() {
-                        if let Some(pattern) = self.detector.detect(&result.document.content) {
-                            result.document.content = format!(
-                                "[REDACTED by retrieval rail: potential prompt injection ({})]",
-                                pattern
-                            );
-                        }
+                    if let Some(pattern) = self.detector.detect(&result.document.content) {
+                        result.document.content = format!(
+                            "[REDACTED by retrieval rail: potential prompt injection ({})]",
+                            pattern
+                        );
                         report.redacted += 1;
                     }
                 }

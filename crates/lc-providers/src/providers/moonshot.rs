@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -30,7 +31,7 @@ pub const MOONSHOT_MODELS: [&str; 4] = [
 #[derive(Clone)]
 pub struct MoonshotConfig {
     /// Moonshot API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Moonshot API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -57,7 +58,7 @@ impl std::fmt::Debug for MoonshotConfig {
 impl Default for MoonshotConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: MOONSHOT_BASE_URL.to_string(),
             model: "moonshot-v1-8k".to_string(),
             temperature: None,
@@ -70,7 +71,7 @@ impl MoonshotConfig {
     /// Creates a new MoonshotConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -92,7 +93,7 @@ impl MoonshotConfig {
         let model = env::var("MOONSHOT_MODEL").unwrap_or_else(|_| "moonshot-v1-8k".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -131,6 +132,7 @@ impl MoonshotConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -139,6 +141,7 @@ impl MoonshotConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
         }

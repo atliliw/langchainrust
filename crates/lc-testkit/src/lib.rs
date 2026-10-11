@@ -23,8 +23,8 @@ pub mod wire;
 pub use canon::assert_json_canonical;
 pub use error::TestkitError;
 pub use golden::{
-    golden_dataset, golden_dataset_from_file, is_scoring_candidate, replay_golden_from_file,
-    write_golden_jsonl, GoldenError, ReplayPredictor,
+    golden_dataset, golden_dataset_filtered, golden_dataset_from_file, is_scoring_candidate,
+    replay_golden_from_file, write_golden_jsonl, GoldenError, ReplayPredictor,
 };
 pub use recording::{read_exchanges, RecordedExchange, Recorder, RecordingProvider};
-pub use replay::{ReplayProvider, ReplayStrategy};
+pub use replay::{ExactMatchFilter, MatchDiff, MessageDiff, ReplayProvider, ReplayStrategy};

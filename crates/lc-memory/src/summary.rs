@@ -377,7 +377,7 @@ mod tests {
 
     fn create_test_config() -> OpenAIConfig {
         OpenAIConfig {
-            api_key: "sk-test".to_string(),
+            api_key: "sk-test".into(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-3.5-turbo".to_string(),
             streaming: false,

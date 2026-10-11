@@ -9,9 +9,15 @@ use super::model::{EventPayload, SessionEvent, Turn};
 use crate::session::{Session, SessionStatus};
 use crate::store::SessionError;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// A replayed session view.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Serialize`/`Deserialize` so a projection can be persisted by a
+/// [`SessionCheckpoint`](super::checkpoint::SessionCheckpoint) and merged with a
+/// replayed tail after a restart ([`merge_projections`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectedSession {
     /// Session id (from the events).
     pub session_id: String,
@@ -25,6 +31,54 @@ pub struct ProjectedSession {
     pub messages: Vec<lc_schema::Message>,
     /// Highest event id folded into this projection.
     pub last_id: u64,
+}
+
+/// How much of a tool observation is echoed into the replayed context.
+///
+/// Same budget as [`summarize_turns`]: enough to recognize what the tool
+/// returned, not enough to flood the window with stale payloads.
+const TOOL_OBSERVATION_PREVIEW_CHARS: usize = 120;
+
+/// Renders one event as a tool-activity context line, or `None` for non-tool
+/// events.
+///
+/// # Why a labeled context line instead of a real tool message
+///
+/// `MessageType::Tool` is a *protocol* message: providers require it to answer a
+/// preceding assistant message that carries the matching `tool_calls`. A replayed
+/// log has no such message — the original assistant tool-call turn is not stored
+/// as an assistant message — so emitting a raw tool message makes OpenAI answer
+/// HTTP 400 ("messages with role 'tool' must be a response to a preceding message
+/// with 'tool_calls'"). Tool activity is therefore replayed as a clearly labeled
+/// system line, the same convention the projector already uses for
+/// `[context summary]`.
+///
+/// The point is that the *tool name survives* (T2): a windowed replay used to
+/// drop tool events entirely, so a session where an agent ran `search_docs`
+/// looked to the model like nothing had ever been called.
+pub(crate) fn tool_context_message(payload: &EventPayload) -> Option<lc_schema::Message> {
+    match payload {
+        EventPayload::ToolCall { tool, .. } => {
+            Some(lc_schema::Message::system(format!("[tool call] {tool}")))
+        }
+        EventPayload::ToolResult { observation, .. } => Some(lc_schema::Message::system(format!(
+            "[tool result] {}",
+            truncate(observation, TOOL_OBSERVATION_PREVIEW_CHARS)
+        ))),
+        // L253: in-place tool edits and revocations surface as labeled context
+        // lines so a replay sees the correction, not just the original call.
+        EventPayload::ToolEdit {
+            tool,
+            superseded_call_id,
+            ..
+        } => Some(lc_schema::Message::system(format!(
+            "[tool edit] {tool} (replaces {superseded_call_id})"
+        ))),
+        EventPayload::ToolUndo { undo_call_id, .. } => Some(lc_schema::Message::system(format!(
+            "[tool undo] {undo_call_id}"
+        ))),
+        _ => None,
+    }
 }
 
 /// Projects an event sequence into a [`ProjectedSession`].
@@ -83,8 +137,17 @@ pub fn project(events: &[SessionEvent]) -> Result<ProjectedSession, SessionError
                 current_turn!(turn_index).events.push(e.clone());
                 messages.push(lc_schema::Message::ai(content));
             }
-            EventPayload::ToolCall { .. } | EventPayload::ToolResult { .. } => {
+            EventPayload::ToolCall { .. }
+            | EventPayload::ToolResult { .. }
+            | EventPayload::ToolEdit { .. }
+            | EventPayload::ToolUndo { .. } => {
                 current_turn!(turn_index).events.push(e.clone());
+                // T2: keep the tool name (and a truncated observation) in the
+                // message view instead of dropping tool activity silently.
+                // L253: edits and undos reuse the same labeled context line.
+                if let Some(msg) = tool_context_message(&e.payload) {
+                    messages.push(msg);
+                }
             }
             EventPayload::Snapshot { summary, .. } => {
                 // A snapshot replaces the prefix: emit it as a synthetic
@@ -171,6 +234,83 @@ pub fn compact_to_snapshot(
             compacted_turns: dropped as u64,
         },
     )))
+}
+
+/// Returns the id of the first event that must be kept after a compaction,
+/// i.e. the opening event of the first *kept* turn (kept = the trailing
+/// `max_turns` turns). Everything with `id < boundary` was summarized into the
+/// just-created Snapshot and can be physically pruned with
+/// [`super::store::EventStore::delete_before`] (mirrors `compact_to_snapshot`'s
+/// own `turns[..dropped]` arithmetic, so the boundary always matches what the
+/// Snapshot replaced).
+///
+/// Returns `None` when compaction would drop nothing (total turns <= `max_turns`).
+pub fn compaction_prune_boundary(
+    events: &[SessionEvent],
+    max_turns: usize,
+) -> Result<Option<u64>, SessionError> {
+    let projection = project(events)?;
+    let total = projection.turns.len();
+    if total <= max_turns {
+        return Ok(None);
+    }
+    let dropped = total - max_turns;
+    Ok(projection
+        .turns
+        .get(dropped)
+        .and_then(|t| t.events.first())
+        .map(|e| e.id))
+}
+
+/// T2 (time-based compaction/GC): tightens a turn budget by age.
+///
+/// `max_turns` alone never reclaims an *idle* session: a conversation with three
+/// turns from two years ago sits below every turn-count threshold, so its events
+/// stay in the log forever. This returns the effective budget at `now_ms` —
+/// `max_turns`, tightened to the turns that ended at or after `now_ms - max_age`.
+///
+/// A turn straddling the cutoff is counted as recent (it ended after it), and the
+/// result never drops below 1: compaction always leaves a live turn behind.
+pub fn age_bounded_turns(
+    turns: &[Turn],
+    max_turns: usize,
+    max_age: Duration,
+    now_ms: i64,
+) -> usize {
+    let max_age_ms = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
+    let cutoff = now_ms.saturating_sub(max_age_ms);
+    let recent = turns
+        .iter()
+        .filter(|t| {
+            // A turn's age is the age of its newest event; a turn with no events
+            // cannot be dated and is treated as recent (never pruned blindly).
+            t.events.last().map(|e| e.ts >= cutoff).unwrap_or(true)
+        })
+        .count();
+    max_turns.min(recent).max(1)
+}
+
+/// T2: folds a replayed tail into a checkpointed projection.
+///
+/// `base` is the projection materialized in a [`super::checkpoint::SessionCheckpoint`];
+/// `tail` is the projection of the events appended since (`id > up_to_id`). The
+/// result is identical to projecting the whole log at once — the invariant the
+/// tests assert — because a tail turn that shares `base`'s last turn index is
+/// *extended* rather than appended, exactly as [`project`] merges same-index
+/// events into one turn.
+///
+/// The tail must not be empty: [`project`] rejects an empty event list, so a caller
+/// with nothing to replay should keep `base` unchanged instead of calling this.
+pub fn merge_projections(mut base: ProjectedSession, tail: ProjectedSession) -> ProjectedSession {
+    for turn in tail.turns {
+        match base.turns.last_mut() {
+            Some(last) if last.index == turn.index => last.events.extend(turn.events),
+            _ => base.turns.push(turn),
+        }
+    }
+    base.messages.extend(tail.messages);
+    base.last_id = base.last_id.max(tail.last_id);
+    base
 }
 
 /// Deterministic summary of dropped turns: "user: … / ai: …" per turn,
@@ -417,6 +557,32 @@ mod tests {
         assert!(compact_to_snapshot(id + 1, &events, 10).unwrap().is_none());
     }
 
+    /// H-bounded: compaction_prune_boundary returns the id of the first kept
+    /// turn's opening event — everything below it is summary-prefix (§3.1).
+    #[test]
+    fn compaction_prune_boundary_matches_compact_to_snapshot() {
+        let mut events = Vec::new();
+        let mut id = 1u64;
+        for turn in 0..4 {
+            events.push(user(id, turn, &format!("q{turn}")));
+            id += 1;
+            events.push(ai(id, turn, &format!("a{turn}")));
+            id += 1;
+        }
+        // ids: turn0 (1,2), turn1 (3,4), turn2 (5,6), turn3 (7,8).
+        // Keeping 2 turns keeps turn2/3; the first kept event is user id 5.
+        let boundary = compaction_prune_boundary(&events, 2).unwrap().unwrap();
+        assert_eq!(boundary, 5);
+
+        // And the snapshot compact_to_snapshot would emit summarizes ids < 5.
+        let snapshot = compact_to_snapshot(id, &events, 2).unwrap().unwrap();
+        let snapshot_id = snapshot.id;
+        assert!(snapshot_id > boundary);
+
+        // Under the limit there is nothing to prune.
+        assert!(compaction_prune_boundary(&events, 10).unwrap().is_none());
+    }
+
     /// The projection is deterministic: same events, same view.
     #[test]
     fn projection_is_deterministic() {
@@ -439,5 +605,207 @@ mod tests {
         let s = to_session(&project(&events).unwrap());
         assert_eq!(s.id, "s1");
         assert_eq!(s.messages.len(), 2);
+    }
+
+    // ---- T2: tool activity survives the projection -------------------------
+
+    /// T2: tool activity is replayed as labeled context lines, so the model can
+    /// see that a tool ran and which one — previously tool events were dropped
+    /// from the message view entirely.
+    #[test]
+    fn tool_activity_is_replayed_as_context_lines() {
+        let events = vec![
+            user(1, 0, "查一下"),
+            call(2, 0, "c1"),
+            result(3, 0, "c1"),
+            ai(4, 0, "答案"),
+        ];
+        let p = project(&events).unwrap();
+        let contents: Vec<&str> = p.messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            contents,
+            vec![
+                "查一下",
+                "[tool call] search",
+                "[tool result] found",
+                "答案"
+            ]
+        );
+    }
+
+    /// A raw `MessageType::Tool` would be rejected by providers (no preceding
+    /// assistant `tool_calls` in a replayed log), so tool activity must arrive as
+    /// a system line — never as a protocol tool message.
+    #[test]
+    fn tool_activity_is_not_a_protocol_tool_message() {
+        let events = vec![user(1, 0, "go"), call(2, 0, "c1"), result(3, 0, "c1")];
+        let p = project(&events).unwrap();
+        assert!(
+            p.messages.iter().all(|m| m.message_type
+                != lc_schema::MessageType::Tool {
+                    tool_call_id: "c1".into()
+                }),
+            "a replayed log must not emit protocol tool messages"
+        );
+    }
+
+    /// A long observation is previewed, not echoed whole — the window must not
+    /// be flooded by a stale tool payload.
+    #[test]
+    fn long_tool_observation_is_truncated() {
+        let long = "x".repeat(TOOL_OBSERVATION_PREVIEW_CHARS + 500);
+        let events = vec![
+            user(1, 0, "go"),
+            SessionEvent::now(
+                2,
+                "s1",
+                0,
+                "main",
+                EventPayload::ToolResult {
+                    call_id: "c1".into(),
+                    observation: long,
+                },
+            ),
+        ];
+        let p = project(&events).unwrap();
+        let line = p
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with("[tool result]"))
+            .expect("tool result line present");
+        assert_eq!(
+            line.content.len(),
+            "[tool result] ".len() + TOOL_OBSERVATION_PREVIEW_CHARS
+        );
+    }
+
+    // ---- T2: age-bounded compaction ---------------------------------------
+
+    /// Stamps an event with an explicit timestamp (age-bounded tests need
+    /// controlled time; `now()` always uses the wall clock).
+    fn at(mut e: SessionEvent, ts: i64) -> SessionEvent {
+        e.ts = ts;
+        e
+    }
+
+    /// Builds `n` one-event turns timestamped `ts_step` apart, newest last.
+    fn timed_turns(n: u64, ts_step: i64) -> Vec<Turn> {
+        project(
+            &(0..n)
+                .map(|t| {
+                    at(
+                        user(t * 2 + 1, t, &format!("q{t}")),
+                        (t as i64 + 1) * ts_step,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .turns
+    }
+
+    /// T2: the age bound tightens the turn budget — turns that ended before the
+    /// cutoff are no longer protected, so an idle session can be reclaimed.
+    #[test]
+    fn age_bound_tightens_the_turn_budget() {
+        // 4 turns at ts 1000/2000/3000/4000; now = 4000.
+        let turns = timed_turns(4, 1000);
+        // 2500ms window → cutoff 1500 → only ts 2000/3000/4000 are recent.
+        assert_eq!(
+            age_bounded_turns(&turns, 10, Duration::from_millis(2500), 4000),
+            3
+        );
+        // A wide window protects everything...
+        assert_eq!(
+            age_bounded_turns(&turns, 10, Duration::from_secs(3600), 4000),
+            4
+        );
+        // ...and the count bound still caps it when it is the tighter one.
+        assert_eq!(
+            age_bounded_turns(&turns, 2, Duration::from_secs(3600), 4000),
+            2
+        );
+    }
+
+    /// The floor: however old the log, compaction always leaves one live turn
+    /// behind (dropping every turn would leave nothing to project).
+    #[test]
+    fn age_bound_never_drops_below_one_turn() {
+        let turns = timed_turns(3, 1000);
+        assert_eq!(
+            age_bounded_turns(&turns, 10, Duration::from_millis(1), 100_000),
+            1
+        );
+    }
+
+    /// A turn is as recent as its newest event, so a turn straddling the cutoff
+    /// is kept; an undatable turn (no events) is kept too, never pruned blindly.
+    #[test]
+    fn age_bound_keeps_straddling_and_undated_turns() {
+        let mut turns = timed_turns(1, 1000); // one turn ending at ts 1000
+        turns.push(Turn {
+            index: 1,
+            events: Vec::new(),
+        });
+        // cutoff = 1000 (now 1000, age 0) → the dated turn is recent (>= cutoff).
+        assert_eq!(
+            age_bounded_turns(&turns, 10, Duration::from_millis(0), 1000),
+            2
+        );
+        // cutoff = 2000 → the dated turn is old, the undated one still counts.
+        assert_eq!(
+            age_bounded_turns(&turns, 10, Duration::from_millis(1000), 3000),
+            1
+        );
+    }
+
+    // ---- T2: checkpoint recovery merge ------------------------------------
+
+    /// The recovery invariant: merging a checkpointed prefix with a replayed
+    /// tail equals projecting the whole log — including when the split falls
+    /// *inside* a turn (the case that makes a naive append wrong).
+    #[test]
+    fn merge_of_prefix_and_tail_equals_full_projection() {
+        let full = vec![
+            user(1, 0, "查"),
+            call(2, 0, "c1"),
+            result(3, 0, "c1"),
+            ai(4, 0, "答"),
+            user(5, 1, "再查"),
+        ];
+        // Split inside turn 0 (after the ToolCall): the tail opens mid-turn.
+        let merged = merge_projections(project(&full[..3]).unwrap(), project(&full[3..]).unwrap());
+        assert_eq!(merged, project(&full).unwrap());
+
+        // And on a turn boundary.
+        let merged = merge_projections(project(&full[..4]).unwrap(), project(&full[4..]).unwrap());
+        assert_eq!(merged, project(&full).unwrap());
+    }
+
+    /// The merged `last_id` is the tail's — the caller resumes from there.
+    #[test]
+    fn merge_takes_the_higher_last_id() {
+        let full = [
+            user(1, 0, "a"),
+            ai(2, 0, "b"),
+            user(3, 1, "c"),
+            ai(4, 1, "d"),
+        ];
+        let merged = merge_projections(project(&full[..2]).unwrap(), project(&full[2..]).unwrap());
+        assert_eq!(merged.last_id, 4);
+        assert_eq!(merged.turns.len(), 2);
+        assert_eq!(merged.messages.len(), 4);
+    }
+
+    /// A tail that opens a new turn is appended, not merged into the previous
+    /// turn — turn identity is the index, not "whatever came last".
+    #[test]
+    fn merge_appends_a_tail_that_opens_a_new_turn() {
+        let full = [user(1, 0, "a"), ai(2, 0, "b"), user(3, 1, "c")];
+        let merged = merge_projections(project(&full[..2]).unwrap(), project(&full[2..]).unwrap());
+        assert_eq!(merged.turns.len(), 2);
+        assert_eq!(merged.turns[0].index, 0);
+        assert_eq!(merged.turns[1].index, 1);
+        assert_eq!(merged.turns[1].events.len(), 1);
     }
 }

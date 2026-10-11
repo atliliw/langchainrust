@@ -14,6 +14,11 @@ use std::collections::HashMap;
 
 impl<S: StateSchema> CompiledGraph<S> {
     /// Run the graph while capturing parallel fan-out branches into a [`ParallelInvocation`].
+    ///
+    /// Interrupt and checkpoint semantics match [`invoke`](Self::invoke): nodes run
+    /// through `run_node`, so a runtime interrupt becomes a
+    /// checkpointed, `__checkpoint_id`-stamped [`GraphError::DynamicInterrupt`]
+    /// rather than a bare [`GraphError::InterruptRequest`].
     pub async fn invoke_parallel(&self, input: S) -> GraphResult<ParallelInvocation<S>> {
         let mut state = input;
         let mut current_node = self.entry_point.clone();
@@ -49,15 +54,21 @@ impl<S: StateSchema> CompiledGraph<S> {
             if current_node != crate::START {
                 recursion_count += 1;
 
-                let node = self.get_node(&current_node).await?;
-
-                let config = NodeConfig {
-                    recursion_limit: self.recursion_limit,
-                    debug: false,
-                    metadata: HashMap::new(),
-                };
-
-                let update = node.execute(&state, Some(config)).await?;
+                // T2: run through the shared `run_node` (like `invoke`), not a raw
+                // `node.execute`. A node that suspends itself with
+                // `GraphError::InterruptRequest` must surface as a
+                // `DynamicInterrupt` with the suspend state persisted and
+                // `__checkpoint_id` stamped — otherwise this entry point breaks
+                // the contract documented on `GraphError::InterruptRequest` and
+                // the interrupt is unrecoverable.
+                let update = self
+                    .run_node(
+                        &state,
+                        &current_node,
+                        recursion_count,
+                        self.node_config(self.recursion_limit, &NodeConfig::default(), None),
+                    )
+                    .await?;
 
                 if let Some(new_state) = update.update {
                     state = self.default_reducer.reduce(&state, &new_state);
@@ -166,9 +177,24 @@ impl<S: StateSchema> CompiledGraph<S> {
 
     /// Execute the graph with dynamic task injection support.
     ///
-    /// After each node completes, checks the task_inbox for newly submitted tasks.
-    /// If tasks are found, uses the provided `planner` to convert them into new
-    /// nodes/edges and injects them into the runtime registries before continuing.
+    /// At the top of every step — before the next node runs, and therefore after
+    /// the previous one completed (including once before the entry node, so a
+    /// task submitted before the run is planned too) — the task inbox is drained.
+    /// When tasks are found, the provided `planner` converts them into new
+    /// nodes/edges which are injected into the runtime registries before the step
+    /// continues.
+    ///
+    /// # Interrupt and checkpoint semantics
+    ///
+    /// This entry point upholds the same invariant as [`invoke`](Self::invoke):
+    /// **a checkpoint is persisted before any interrupt is surfaced**. Both
+    /// interrupt kinds save first — a node-requested runtime
+    /// [`GraphError::InterruptRequest`] is translated by
+    /// `run_node` into a [`GraphError::DynamicInterrupt`] whose
+    /// payload carries `__checkpoint_id`, and the configured
+    /// `interrupt_before` / `interrupt_after` boundaries save the state at the
+    /// boundary. A crash after an interrupt therefore resumes from the real
+    /// boundary instead of re-running nodes that already produced side effects.
     pub async fn invoke_dynamic(
         &self,
         input: S,
@@ -221,18 +247,44 @@ impl<S: StateSchema> CompiledGraph<S> {
             }
 
             if self.interrupt_before.contains(&current_node) {
+                // M-15 parity (HIGH, framework review §3.1): the dynamic-routing
+                // path previously returned immediately without writing a checkpoint,
+                // unlike `invoke`. A crash-then-rebuild resume then had no record of
+                // the work completed before the interrupt boundary and re-ran nodes
+                // that had already produced side effects. Persist before interrupting
+                // exactly like the main `invoke` path does.
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        current_node.clone(),
+                    ));
+                }
                 return Err(GraphError::ExecutionInterrupted(current_node.clone()));
             }
 
             recursion_count += 1;
 
-            let node = self.get_node(&current_node).await?;
-            let config = NodeConfig {
-                recursion_limit: self.recursion_limit,
-                debug: false,
-                metadata: HashMap::new(),
-            };
-            let update = node.execute(&state, Some(config)).await?;
+            // T2: share `run_node` with the main path so a runtime interrupt on
+            // the dynamic-routing entry point is translated to a
+            // `DynamicInterrupt`, checkpointed at the suspension point, and
+            // stamped with `__checkpoint_id` — the same invariant every other
+            // entry point upholds. Previously a node-requested interrupt escaped
+            // here as a bare `InterruptRequest`: no checkpoint, no stamped id, so
+            // `resume_from_interrupt` had nothing to resolve and a crash-resume
+            // re-ran nodes that had already produced side effects.
+            let update = self
+                .run_node(
+                    &state,
+                    &current_node,
+                    recursion_count,
+                    self.node_config(self.recursion_limit, &NodeConfig::default(), None),
+                )
+                .await?;
 
             if let Some(new_state) = update.update {
                 state = self.default_reducer.reduce(&state, &new_state);
@@ -243,6 +295,21 @@ impl<S: StateSchema> CompiledGraph<S> {
             ));
 
             if self.interrupt_after.contains(&current_node) {
+                // M-15 parity (HIGH, framework review §3.1): persist the node's
+                // post-run state before interrupting, matching the main `invoke`
+                // path. Without this the dynamic-routing path lost the interrupting
+                // node's updates on a crash resume (double side effect).
+                if let Some(ref checkpointer) = self.checkpointer {
+                    let checkpoint_id = checkpointer
+                        .lock()
+                        .await
+                        .save(&state, recursion_count)
+                        .await?;
+                    steps.push(ExecutionStep::checkpoint(
+                        checkpoint_id,
+                        format!("after_{}", current_node),
+                    ));
+                }
                 return Err(GraphError::ExecutionInterrupted(format!(
                     "after_{}",
                     current_node
@@ -376,11 +443,7 @@ impl<S: StateSchema> CompiledGraph<S> {
 /// wrote it. Two branches writing DIFFERENT fields both survive; a branch
 /// writing the same value we already carry (written by an earlier branch) keeps
 /// the earlier value.
-fn union_states<S: StateSchema>(
-    base: &S,
-    merged: &S,
-    branch: &S,
-) -> GraphResult<S> {
+fn union_states<S: StateSchema>(base: &S, merged: &S, branch: &S) -> GraphResult<S> {
     let base_v = base.to_json()?;
     let Some(base_map) = base_v.as_object() else {
         // Non-map state can't be unioned field-by-field; fall back to the
@@ -397,16 +460,15 @@ fn union_states<S: StateSchema>(
     let mut result_map = merged_map;
     for (k, v) in branch_map {
         // Only layer in keys the branch actually changed relative to its input.
-        let base_same = base_map
-            .get(k)
-            .map(|b| b == v)
-            .unwrap_or(false);
+        let base_same = base_map.get(k).map(|b| b == v).unwrap_or(false);
         if !base_same {
             result_map.insert(k.clone(), v.clone());
         }
     }
     serde_json::from_value(serde_json::Value::Object(result_map)).map_err(|e| {
-        GraphError::StateError(format!("Parallel branch merge failed to reassemble state: {e}"))
+        GraphError::StateError(format!(
+            "Parallel branch merge failed to reassemble state: {e}"
+        ))
     })
 }
 
@@ -424,6 +486,8 @@ fn patch_field<S: StateSchema>(state: &S, out: &S, field: &str) -> GraphResult<S
         .unwrap_or(serde_json::Value::Null);
     state_map.insert(field.to_string(), value);
     serde_json::from_value(state_v).map_err(|e| {
-        GraphError::StateError(format!("Parallel reducer patch failed to reassemble state: {e}"))
+        GraphError::StateError(format!(
+            "Parallel reducer patch failed to reassemble state: {e}"
+        ))
     })
 }

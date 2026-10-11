@@ -18,7 +18,8 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use super::client_stateless::StatelessMcpClient;
 use super::execution::{authorize_call, ToolCallApprover, ToolExecutionPolicy};
@@ -82,6 +83,15 @@ pub struct MCPToolAdapter {
     /// Runtime per-call approval gate, consulted under the default
     /// [`ToolExecutionPolicy::RequireApproval`] policy.
     approver: Option<Arc<dyn ToolCallApprover>>,
+    /// Shared fixed-window rate limiter (M1, framework review): when present,
+    /// `run` throttles against the *same* bucket the Gateway's `call` entry uses
+    /// for that server — so an adapter reduced to a `BaseTool` cannot bypass the
+    /// per-server rate limit by holding a private clone.
+    limiter: Option<Arc<StdMutex<crate::gateway::RateLimiter>>>,
+    /// Shared unified audit ring buffer (M1, framework review): when present,
+    /// every allow/block from this adapter is recorded into the Gateway's audit
+    /// log instead of silently bypassing it.
+    audit: Option<Arc<StdMutex<VecDeque<crate::gateway::GatewayAuditRecord>>>>,
 }
 
 impl MCPToolAdapter {
@@ -114,6 +124,8 @@ impl MCPToolAdapter {
             server: String::new(),
             policy: ToolExecutionPolicy::default(),
             approver: None,
+            limiter: None,
+            audit: None,
         }
     }
 
@@ -148,6 +160,8 @@ impl MCPToolAdapter {
             server: server.to_string(),
             policy: ToolExecutionPolicy::default(),
             approver: None,
+            limiter: None,
+            audit: None,
         }
     }
 
@@ -194,6 +208,51 @@ impl MCPToolAdapter {
         self
     }
 
+    /// Attaches the Gateway's shared per-server rate limiter (M1, framework
+    /// review). The lambda-shaped `call` entry and a reduced `BaseTool` adapter
+    /// then throttle against the same bucket, so converting a registry of tools
+    /// to `BaseTool`s can no longer bypass the per-server limit.
+    pub(crate) fn with_shared_rate_limiter(
+        mut self,
+        limiter: Arc<StdMutex<crate::gateway::RateLimiter>>,
+    ) -> Self {
+        self.limiter = Some(limiter);
+        self
+    }
+
+    /// Attaches the Gateway's unified audit ring (M1, framework review). Every
+    /// allow/block this adapter records lands in the same audit log the `call`
+    /// entry writes, so audit coverage is restored on the `as_base_tools` path.
+    pub(crate) fn with_shared_audit(
+        mut self,
+        audit: Arc<StdMutex<VecDeque<crate::gateway::GatewayAuditRecord>>>,
+    ) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Records an allow/block into the shared audit ring (M1, framework review),
+    /// mirroring `Gateway::record`'s cap-and-push behavior. No-op when no shared
+    /// audit ring is attached (plain adapters keep their existing behavior).
+    fn record_audit(&self, allowed: bool, reason: Option<String>) {
+        if let Some(audit) = &self.audit {
+            let rec = crate::gateway::GatewayAuditRecord {
+                server: self.server.clone(),
+                tool: self.display_name.clone(),
+                allowed,
+                reason,
+                at: std::time::SystemTime::now(),
+            };
+            let mut audit = audit.lock().unwrap_or_else(|e| e.into_inner());
+            // Reuse the gateway's default audit cap (1000) straight from the type;
+            // there is no max_audit field on the shared ring.
+            if audit.len() >= 1000 {
+                audit.pop_front();
+            }
+            audit.push_back(rec);
+        }
+    }
+
     /// The externally visible tool name (P2-2): `server:tool` after namespacing, otherwise the original name.
     pub fn display_name(&self) -> &str {
         &self.display_name
@@ -228,14 +287,32 @@ impl BaseTool for MCPToolAdapter {
             &args,
         )
         .await?;
+
+        // M1 (framework review): if this adapter carries the Gateway's shared
+        // per-server limiter, throttle here exactly like `gateway.call` — a
+        // reduced `BaseTool` must not bypass the per-server rate limit.
+        if let Some(limiter) = &self.limiter {
+            let mut limiter = limiter.lock().unwrap_or_else(|e| e.into_inner());
+            if !limiter.allow() {
+                self.record_audit(false, Some("rate limit exceeded".to_string()));
+                return Err(ToolError::ExecutionFailed(format!(
+                    "MCP server '{server}' exceeded rate limit, request rejected",
+                    server = self.server
+                )));
+            }
+        }
+
         let result = match &self.timeout_spec {
             Some(spec) => {
                 call_tool_with_timeout(&*self.client, &self.definition.name, args, spec).await
             }
             None => self.client.call_tool(&self.definition.name, args).await,
         }
-        .map_err(from_mcp_error)?;
-        result_to_string_or_error(&result)
+        .map_err(from_mcp_error);
+        let ok = result.is_ok();
+        let out = result.and_then(|r| result_to_string_or_error(&r));
+        self.record_audit(ok, None);
+        out
     }
 }
 

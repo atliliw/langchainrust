@@ -20,7 +20,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
 | **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
 | **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / **Supervisor dynamic sub-agent routing (v0.24.0)** / parallel tool calls (bounded concurrency) |
-| **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client |
+| **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client over SSE, plus a **WebSocket transport (v0.27.0, `ws` feature: `GET /ws` sharing `/events`' auth and filtering)** and **`sendSubscribe` subscription context (v0.27.0: `id`/`contextId` on the request, optional `context_id` on push frames)** |
 | **MCP** | Model Context Protocol Client + Server (stdio + Streamable HTTP, stateless track, OAuth 2.1), full 6 primitives, MCP tool adapter to BaseTool |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
 | **Sessions** | Multi-turn event-sourced lifecycle (`EventSessionManager` + `EventStore`, fork-from-any-point), pluggable storage |
@@ -35,7 +35,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Guardrails** | Input/output safety guardrails, SensitiveInfo / ForbiddenWords / MaxLength, GuardedAgent |
 | **Token Counter** | Tiktoken counting + TokenTrackingLLM usage statistics + ModelPricing cost estimation |
 | **Output Parsers** | StrOutputParser, JsonOutputParser, CommaSeparatedList, Structured, Typed |
-| **Tools** | Calculator / DateTime / Math / URLFetch / Wikipedia / WebSearch / PythonREPL / HTTPTool / FileTool (sandbox) / SQLTool (read-only) / ComputerUseTool |
+| **Tools** | Calculator / DateTime / Math / URLFetch / Wikipedia / WebSearch / PythonREPL / HTTPTool / FileTool (sandbox) / SQLTool (read-only) / ComputerUseTool / CdpBrowserTool (`browser-cdp`, hop-by-hop SSRF since v0.27.0) |
 | **Vector DB** | InMemory / Qdrant / MongoDB / ChromaDB / Redis / SQLite / PGVector / Pinecone / FileVectorStore |
 | **Document Loaders** | Text / JSON / Markdown / PDF / CSV / HTML + WebScraper / Sitemap / Docx |
 | **Cache** | LLMCache with TTL support |
@@ -45,7 +45,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval) / GraphRAG (knowledge graph) |
 | **Model Routing** | RouterLLM with 6 strategies (Fallback / RoundRobin / LeastLatency / LatencyWeighted / LowestCost / InputDirected) |
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
-| **Code Interpreter** | LocalSandbox (subprocess + timeout) |
+| **Code Interpreter** | LocalSandbox (subprocess + timeout); **WasmSandbox (v0.27.0, `sandbox-wasm` feature: WASI preview1 on the wasmi interpreter, fuel-metered timeouts, no filesystem/network/processes)** |
 | **Batch API** | BatchClient for OpenAI/Anthropic batch inference, 50% cost reduction |
 | **Tracing** | Tracer + SpanGuard (RAII), InMemory / Console / OTel backends, parent-child span tree |
 
@@ -133,17 +133,17 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.24.0"
+langchainrust = "0.27.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.24.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.24.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.24.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.24.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.27.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.27.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.27.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.27.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

@@ -34,6 +34,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
+use tracing::Instrument;
 
 use crate::runnables::CancellationToken;
 use crate::ssrf::read_body_bounded;
@@ -415,33 +416,70 @@ impl HttpClient {
         form: reqwest::multipart::Form,
         opts: RequestOptions,
     ) -> Result<BoundedResponse, HttpError> {
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
-        {
-            return Err(HttpError::Cancelled);
-        }
-        let deadline = tokio::time::Instant::now() + self.total_timeout;
-        let request = self
-            .client
-            .request(Method::POST, url)
-            .multipart(form)
-            .headers(self.compose_headers(&opts));
-        let remaining = deadline
-            .checked_duration_since(tokio::time::Instant::now())
-            .ok_or(HttpError::Timeout(self.total_timeout))?;
-        let resp = match tokio::time::timeout(remaining, request.send()).await {
-            Err(_) => return Err(HttpError::Timeout(self.total_timeout)),
-            Ok(Ok(resp)) => resp,
-            Ok(Err(err)) => {
-                if err.is_timeout() {
+        // L137: single-send path (multipart cannot be replayed), so a span is
+        // created and closed here rather than inside `execute`.
+        let span = Self::http_span(&Method::POST, url, self.profile);
+        let fields = span.clone();
+        async move {
+            let start = tokio::time::Instant::now();
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                fields.record("status", "cancelled");
+                fields.record("elapsed_ms", start.elapsed().as_millis());
+                tracing::debug!("request cancelled");
+                return Err(HttpError::Cancelled);
+            }
+            let deadline = tokio::time::Instant::now() + self.total_timeout;
+            let request = self
+                .client
+                .request(Method::POST, url)
+                .multipart(form)
+                .headers(self.compose_headers(&opts));
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .ok_or(HttpError::Timeout(self.total_timeout))?;
+            let resp = match tokio::time::timeout(remaining, request.send()).await {
+                Err(_) => {
+                    fields.record("status", "timeout");
+                    fields.record("elapsed_ms", start.elapsed().as_millis());
+                    tracing::debug!("send timed out");
                     return Err(HttpError::Timeout(self.total_timeout));
                 }
-                return Err(HttpError::Transport(err.to_string()));
-            }
-        };
-        self.read_bounded_within(resp, deadline).await
+                Ok(Ok(resp)) => resp,
+                Ok(Err(err)) => {
+                    if err.is_timeout() {
+                        fields.record("status", "timeout");
+                        fields.record("elapsed_ms", start.elapsed().as_millis());
+                        tracing::debug!("transport timeout");
+                        return Err(HttpError::Timeout(self.total_timeout));
+                    }
+                    fields.record("status", "transport_error");
+                    fields.record("attempts", 1);
+                    fields.record("elapsed_ms", start.elapsed().as_millis());
+                    tracing::debug!(
+                        error = %err,
+                        attempts = 1,
+                        "request failed",
+                    );
+                    return Err(HttpError::Transport(err.to_string()));
+                }
+            };
+            fields.record("status", resp.status().as_u16());
+            fields.record("attempts", 1);
+            fields.record("elapsed_ms", start.elapsed().as_millis());
+            tracing::debug!(
+                status = resp.status().as_u16(),
+                attempts = 1,
+                elapsed_ms = start.elapsed().as_millis(),
+                "request completed",
+            );
+            self.read_bounded_within(resp, deadline).await
+        }
+        .instrument(span)
+        .await
     }
 
     /// Opens an SSE byte stream. Retries cover only stream establishment;
@@ -498,7 +536,10 @@ impl HttpClient {
             .map(|result| result.map_err(|e| io::Error::other(e.to_string())));
         // 0.26.0 M5: bound each read decision by an idle timeout so a server
         // that goes silent mid-stream cannot pin the consumer task forever.
-        Ok(Box::pin(with_sse_idle_timeout(inner, self.sse_idle_timeout)))
+        Ok(Box::pin(with_sse_idle_timeout(
+            inner,
+            self.sse_idle_timeout,
+        )))
     }
 
     /// Read the buffered body subject to the overall deadline.
@@ -587,53 +628,116 @@ impl HttpClient {
         json: Option<&Value>,
         opts: &RequestOptions,
     ) -> Result<(reqwest::Response, tokio::time::Instant), HttpError> {
-        let deadline = tokio::time::Instant::now() + self.total_timeout;
-        // Non-idempotent methods default to pre-dispatch-only retries
-        // unless the caller explicitly opts in, so a POST already on the
-        // wire cannot be duplicated by a transport timeout (0.25.0).
-        let retry_mode = effective_retry_mode(&method, opts, self.retry.transport);
-        let mut attempt: usize = 0;
-        loop {
-            if self
-                .cancel
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-            {
-                return Err(HttpError::Cancelled);
-            }
-            let remaining = match deadline.checked_duration_since(tokio::time::Instant::now()) {
-                Some(remaining) => remaining,
-                None => return Err(HttpError::Timeout(self.total_timeout)),
-            };
-            let request = self.prepare_request(method.clone(), url, json, opts);
-            match tokio::time::timeout(remaining, request.send()).await {
-                Err(_) => return Err(HttpError::Timeout(self.total_timeout)),
-                Ok(Ok(resp)) => {
-                    let status = resp.status();
-                    if attempt + 1 < self.retry.max_attempts && is_retryable_status(status) {
-                        let retry_after = parse_retry_after(resp.headers());
-                        drop(resp);
-                        self.wait(attempt, retry_after, deadline).await?;
-                        attempt += 1;
-                        continue;
-                    }
-                    return Ok((resp, deadline));
+        // L137: every provider/API request funnels through here, so the span is
+        // the workspace's single structured trace of outbound HTTP. `status` /
+        // `attempts` / `elapsed_ms` are recorded against a clone at the terminal
+        // return so the final outcome lands on the span when it closes; method,
+        // url and profile are captured at creation.
+        let span = Self::http_span(&method, url, self.profile);
+        let fields = span.clone();
+        async move {
+            let start = tokio::time::Instant::now();
+            let deadline = tokio::time::Instant::now() + self.total_timeout;
+            // Non-idempotent methods default to pre-dispatch-only retries
+            // unless the caller explicitly opts in, so a POST already on the
+            // wire cannot be duplicated by a transport timeout (0.25.0).
+            let retry_mode = effective_retry_mode(&method, opts, self.retry.transport);
+            let mut attempt: usize = 0;
+            loop {
+                if self
+                    .cancel
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                {
+                    fields.record("status", "cancelled");
+                    fields.record("elapsed_ms", start.elapsed().as_millis());
+                    tracing::debug!("request cancelled");
+                    return Err(HttpError::Cancelled);
                 }
-                Ok(Err(err)) => {
-                    if attempt + 1 < self.retry.max_attempts
-                        && is_retryable_transport(&err, retry_mode)
-                    {
-                        self.wait(attempt, None, deadline).await?;
-                        attempt += 1;
-                        continue;
-                    }
-                    if err.is_timeout() {
+                let remaining = match deadline.checked_duration_since(tokio::time::Instant::now()) {
+                    Some(remaining) => remaining,
+                    None => {
+                        fields.record("status", "timeout");
+                        fields.record("elapsed_ms", start.elapsed().as_millis());
+                        tracing::debug!("deadline elapsed before send");
                         return Err(HttpError::Timeout(self.total_timeout));
                     }
-                    return Err(HttpError::Transport(err.to_string()));
+                };
+                let request = self.prepare_request(method.clone(), url, json, opts);
+                match tokio::time::timeout(remaining, request.send()).await {
+                    Err(_) => {
+                        fields.record("status", "timeout");
+                        fields.record("elapsed_ms", start.elapsed().as_millis());
+                        tracing::debug!("send timed out");
+                        return Err(HttpError::Timeout(self.total_timeout));
+                    }
+                    Ok(Ok(resp)) => {
+                        let status = resp.status();
+                        if attempt + 1 < self.retry.max_attempts && is_retryable_status(status) {
+                            let retry_after = parse_retry_after(resp.headers());
+                            drop(resp);
+                            self.wait(attempt, retry_after, deadline).await?;
+                            attempt += 1;
+                            continue;
+                        }
+                        fields.record("status", status.as_u16());
+                        fields.record("attempts", attempt + 1);
+                        fields.record("elapsed_ms", start.elapsed().as_millis());
+                        tracing::debug!(
+                            status = status.as_u16(),
+                            attempts = attempt + 1,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "request completed",
+                        );
+                        return Ok((resp, deadline));
+                    }
+                    Ok(Err(err)) => {
+                        if attempt + 1 < self.retry.max_attempts
+                            && is_retryable_transport(&err, retry_mode)
+                        {
+                            self.wait(attempt, None, deadline).await?;
+                            attempt += 1;
+                            continue;
+                        }
+                        if err.is_timeout() {
+                            fields.record("status", "timeout");
+                            fields.record("elapsed_ms", start.elapsed().as_millis());
+                            tracing::debug!("transport timeout");
+                            return Err(HttpError::Timeout(self.total_timeout));
+                        }
+                        fields.record("status", "transport_error");
+                        fields.record("attempts", attempt + 1);
+                        fields.record("elapsed_ms", start.elapsed().as_millis());
+                        tracing::debug!(
+                            error = %err,
+                            attempts = attempt + 1,
+                            "request failed",
+                        );
+                        return Err(HttpError::Transport(err.to_string()));
+                    }
                 }
             }
         }
+        .instrument(span)
+        .await
+    }
+
+    /// L137: builds the `http.request` span carrying the request's identity.
+    ///
+    /// `status` / `attempts` / `elapsed_ms` start empty and are recorded by
+    /// [`HttpClient::execute`] (and the multipart path) right before the span
+    /// closes, so a subscriber sees the terminal outcome as span fields rather
+    /// than only free-floating events.
+    fn http_span(method: &Method, url: &str, profile: Profile) -> tracing::Span {
+        tracing::info_span!(
+            "http.request",
+            method = %method.as_str(),
+            url = %url,
+            profile = ?profile,
+            status = tracing::field::Empty,
+            attempts = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        )
     }
 
     async fn wait(
@@ -1011,6 +1115,31 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// L137: a `http.request` span is emitted with the request identity and,
+    /// after a retry-set that lands on success, the terminal status/attempts.
+    /// Uses the loopback stub so no real server is involved.
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn emits_http_request_span() {
+        let script = vec![
+            status_response(503, "Service Unavailable"),
+            body_ok("{\"ok\":true}"),
+        ];
+        let (url, count) = spawn_stub(script);
+        let client = HttpClient::api()
+            .timeouts(Duration::from_secs(5), Duration::from_secs(10))
+            .retry(fast_retry())
+            .build()
+            .unwrap();
+        let resp = client.get(&url).await.unwrap();
+        assert!(resp.is_success());
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        assert!(logs_contain("http.request"));
+        assert!(logs_contain("status=200"));
+        assert!(logs_contain("attempts=2"));
+    }
+
     #[tokio::test]
     async fn retries_503_twice_then_succeeds() {
         let script = vec![
@@ -1163,9 +1292,9 @@ mod tests {
         // A stream that yields one healthy frame, then never yields again (as a
         // peer that stops mid-generation). Without the M5 idle deadline the
         // consumer would park on `.next().await` forever.
-        let inner = futures_util::stream::iter([Ok::<bytes::Bytes, io::Error>(bytes::Bytes::from_static(
-            b"data: {\"ok\":true}\n\n",
-        ))])
+        let inner = futures_util::stream::iter([Ok::<bytes::Bytes, io::Error>(
+            bytes::Bytes::from_static(b"data: {\"ok\":true}\n\n"),
+        )])
         .chain(futures_util::stream::pending());
         let stream = with_sse_idle_timeout(inner, Duration::from_millis(150));
         // The opaque adapter stream is !Unpin; pin it so `next()` can poll it.

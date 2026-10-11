@@ -3,6 +3,12 @@
 pub mod actions;
 pub mod screen;
 
+// V0.27 (Track 3): real local execution — only present when the `computer-native`
+// feature is on; the deps it pulls (enigo/xcap/image) stay out of the default build.
+#[cfg(feature = "computer-native")]
+#[cfg_attr(docsrs, doc(cfg(feature = "computer-native")))]
+pub mod native;
+
 pub use actions::{ComputerMode, ComputerUseInput, ComputerUseOutput};
 pub use screen::ComputerUseTool;
 

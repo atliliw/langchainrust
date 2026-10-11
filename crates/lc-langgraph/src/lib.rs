@@ -73,11 +73,12 @@ pub mod subgraph;
 // Re-export core types
 pub use checkpointer::{
     CheckpointData, CheckpointInfo, Checkpointer, FileCheckpointer, MemoryCheckpointer,
-    ThreadSafeMemoryCheckpointer, DEFAULT_THREAD,
+    RetainingCheckpointer, TerritoryCheckpointer, ThreadSafeMemoryCheckpointer, DEFAULT_THREAD,
 };
 pub use compiled::{
     CompiledGraph, DynamicInjection, DynamicPlanner, DynamicTask, ExecutionStep, GraphExecution,
-    GraphInvocation, ParallelBranch, ParallelInvocation, PendingInterrupt, StreamEvent,
+    GraphFormat, GraphInvocation, ParallelBranch, ParallelInvocation, PendingInterrupt,
+    StreamEvent,
 };
 pub use edge::{AsyncFunctionRouter, ConditionalEdge, EdgeTarget, FunctionRouter, GraphEdge};
 pub use errors::{GraphError, GraphResult};

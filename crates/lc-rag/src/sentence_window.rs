@@ -145,9 +145,10 @@ fn build_window(sentence_index: usize, sentences: &[SentenceRef], window: usize)
         end += 1;
     }
     // `saturating_add(0)` below was a no-op; `start` is bounded by the earlier `start -= 1`
-    // decrements, so plain `start.max(...)` is exactly equivalent and dead-code-free.
+    // decrements, so plain `start.max(...)` is exactly equivalent (the removed
+    // `lo.max(start)` line was a no-op: `lo` is derived from `start.max(...)`, so
+    // `lo >= start` always, making it dead -- §3.2).
     let lo = start.max(sentence_index.saturating_sub(window));
-    let lo = lo.max(start);
     let hi = (sentence_index + 1 + window).min(end);
     sentences[lo..hi]
         .iter()
@@ -201,7 +202,13 @@ impl SentenceWindowRetriever {
 #[async_trait]
 impl RetrieverTrait for SentenceWindowRetriever {
     async fn retrieve(&self, query: &str, k: usize) -> Result<Vec<Document>, RetrieverError> {
-        Ok(self.windowed_results(query, k.max(self.top_k)))
+        // 0.26.0 (MEDIUM): the old `k.max(self.top_k)` cancelled the `min` inside
+        // `windowed_results`, so the caller's `k` never took effect — `retrieve(q,1)`
+        // returned `top_k` rows and `retrieve(q,10)` was silently clamped to
+        // `top_k`. The intended semantics is `min(k, top_k)`: respect the caller's
+        // request, bounded by the configured cap. Pass `k` through untouched and
+        // let `windowed_results` clamp.
+        Ok(self.windowed_results(query, k))
     }
 
     async fn retrieve_with_scores(
@@ -211,7 +218,7 @@ impl RetrieverTrait for SentenceWindowRetriever {
     ) -> Result<Vec<SearchResult>, RetrieverError> {
         // Scores are not surfaced (windows are re-assembled context, not ranked
         // documents); report the hit sentence's score as a rough relevance signal.
-        let docs = self.windowed_results(query, k.max(self.top_k));
+        let docs = self.windowed_results(query, k);
         Ok(docs
             .into_iter()
             .map(|document| SearchResult {

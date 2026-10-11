@@ -255,6 +255,14 @@ pub enum Error {
     A2A(#[from] A2AError),
 }
 
+/// Canonical root-level name for the unified error type.
+///
+/// Disambiguates the terse [`Error`] (which is also the `error` module's
+/// head type and sits beside ~30 per-crate error types re-exported at root)
+/// with an unambiguous, dependency-framework-idiomatic name. `LcError` and
+/// `Error` are interchangeable; both are reachable from the crate root.
+pub type LcError = Error;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::protocol::{A2AErrorData, A2AResponse, A2ATaskResult, TaskPushNotification, TaskStatus};
+use crate::protocol::{A2AArtifact, A2AErrorData, A2AResponse, TaskPushNotification, TaskStatus};
 use crate::store::StoredTask;
 
 /// Build a `{task, result?, error?}` response for `tasks/get`.
@@ -48,10 +48,13 @@ pub(crate) fn publish_status(
 }
 
 /// Publish an artifact-update event on the optional event bus (P2-1).
+///
+/// The artifact carries a heterogenous array of [`Part`]s so a streamed result
+/// can carry text and/or structured data (A2A v0.3 `TaskArtifactUpdateEvent`).
 pub(crate) fn publish_artifact(
     bus: &Option<Arc<broadcast::Sender<TaskPushNotification>>>,
     task_id: &str,
-    artifact: A2ATaskResult,
+    artifact: A2AArtifact,
 ) {
     if let Some(sender) = bus {
         let _ = sender.send(TaskPushNotification::artifact(task_id, artifact));

@@ -540,3 +540,133 @@ async fn test_summarize_fallback_to_truncate() {
     // Should still return some messages (truncation fallback).
     assert!(!result.is_empty());
 }
+
+// ---- T2: real token-counted summary budget ----
+
+/// The summary reservation is derived from `max_tokens` (not a fixed probe
+/// string), is overridable, and never takes more than half the budget.
+#[test]
+fn test_summary_reserve_is_dynamic_and_capped() {
+    let base = || -> ContextWindow<OpenAIChat> { ContextWindow::new(1000).unwrap() };
+
+    assert_eq!(
+        base().summary_reserve(),
+        (1000.0 * DEFAULT_SUMMARY_RESERVE_RATIO) as usize,
+        "default reservation must scale with max_tokens"
+    );
+
+    // Ratio is clamped to [0, 0.5] so the live window always keeps room.
+    assert_eq!(
+        base().with_summary_reserve_ratio(0.1).summary_reserve(),
+        100
+    );
+    assert_eq!(
+        base().with_summary_reserve_ratio(0.9).summary_reserve(),
+        500
+    );
+
+    // Explicit override wins, and is capped at half the budget too.
+    assert_eq!(base().with_summary_reserve_tokens(40).summary_reserve(), 40);
+    assert_eq!(
+        base().with_summary_reserve_tokens(700).summary_reserve(),
+        500
+    );
+}
+
+/// A conversation that overflows `max_tokens` on its own, so `fit` actually
+/// reaches the summarize path: system `"S"` + ten 2-char turns = 67 tokens.
+fn overflow_conversation() -> Vec<Message> {
+    make_messages(&[
+        ("system", "S"),
+        ("human", "Q1"),
+        ("ai", "A1"),
+        ("human", "Q2"),
+        ("ai", "A2"),
+        ("human", "Q3"),
+        ("ai", "A3"),
+        ("human", "Q4"),
+        ("ai", "A4"),
+        ("human", "Q5"),
+        ("ai", "A5"),
+    ])
+}
+
+/// Number of non-System messages (the live window, excluding the summary).
+fn tail_len(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| !matches!(m.message_type, MessageType::System))
+        .count()
+}
+
+/// T2 regression: the summary's own tokens must be charged to the budget.
+///
+/// The old implementation reserved the cost of the literal `"summary placeholder"`
+/// and, on overflow, called `truncate(final_messages)` — where the summary is a
+/// `System` message and System messages are free — so the returned list could
+/// exceed `max_tokens` by the entire length of the summary. Here the summary
+/// costs 30 real tokens, which pushed the old path to 71 tokens against a
+/// 60-token budget; the measured-cost rebuild lands at 59.
+#[tokio::test]
+async fn test_summarize_charges_real_summary_tokens() {
+    // "[Conversation Summary] " is 22 chars; a 4-char answer makes the summary
+    // message cost 4 + 26 = 30 tokens.
+    let mock_llm = MockLLM::new(vec!["long".to_string()]);
+
+    let cw: ContextWindow<MockLLM> =
+        ContextWindow::with_strategy(60, Strategy::summarize(mock_llm))
+            .unwrap()
+            .with_counter(char_counter());
+
+    let result = cw.fit(overflow_conversation()).await.unwrap();
+    let total = char_counter().count_messages(&result) as usize;
+
+    assert!(
+        total <= cw.max_tokens(),
+        "the summary's real tokens must be charged: {total} > {}",
+        cw.max_tokens()
+    );
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.content.starts_with("[Conversation Summary]"))
+            .count(),
+        1,
+        "the summary must survive the measured-cost rebuild"
+    );
+    assert!(result.iter().any(|m| m.content == "S"), "system preserved");
+}
+
+/// T2: the window is sized by the summary's *measured* token count, not by the
+/// reservation. Same conversation, same budget — only the length of the LLM's
+/// answer differs, and the longer summary must cost recent history.
+#[tokio::test]
+async fn test_summarize_measured_cost_decides_window() {
+    let short_summary =
+        ContextWindow::with_strategy(60, Strategy::summarize(MockLLM::new(vec!["x".to_string()])))
+            .unwrap()
+            .with_counter(char_counter());
+    let long_summary = ContextWindow::with_strategy(
+        60,
+        Strategy::summarize(MockLLM::new(vec!["longer summary here".to_string()])),
+    )
+    .unwrap()
+    .with_counter(char_counter());
+
+    let short_result = short_summary.fit(overflow_conversation()).await.unwrap();
+    let long_result = long_summary.fit(overflow_conversation()).await.unwrap();
+
+    assert!(
+        tail_len(&short_result) > tail_len(&long_result),
+        "a longer summary must shrink the live window: {} vs {}",
+        tail_len(&short_result),
+        tail_len(&long_result)
+    );
+    for result in [&short_result, &long_result] {
+        let total = char_counter().count_messages(result) as usize;
+        assert!(
+            total <= 60,
+            "both runs must respect the budget, got {total}"
+        );
+    }
+}

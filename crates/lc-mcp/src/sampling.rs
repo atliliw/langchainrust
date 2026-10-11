@@ -282,6 +282,39 @@ impl SamplingGuard {
     pub fn tokens_used(&self) -> usize {
         self.tokens_used.load(Ordering::SeqCst)
     }
+
+    /// Decreases the accumulated token budget by `n`, **saturating at zero** (Rust
+    /// 1.85 MSRV-safe, unlike `fetch_sub` which would underflow).
+    ///
+    /// Return the new accumulated count. This lets a host return tokens to the
+    /// pool after a sub-chain completes (the default guard is chain-cumulative,
+    /// so a finished branch keeps its budget if you do not release it).
+    ///
+    /// ```no_run
+    /// # use lc_mcp::SamplingGuard;
+    /// # let guard = SamplingGuard::new(3, 1000);
+    /// guard.enter(20).unwrap();
+    /// assert_eq!(guard.tokens_used(), 20);
+    /// assert_eq!(guard.release_tokens(10), 10); // 20 - 10
+    /// assert_eq!(guard.release_tokens(999), 0); // saturate at zero
+    /// ```
+    pub fn release_tokens(&self, n: usize) -> usize {
+        let _ = self
+            .tokens_used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                Some(used.saturating_sub(n))
+            });
+        self.tokens_used.load(Ordering::SeqCst)
+    }
+
+    /// Resets the accumulated token budget to zero.
+    ///
+    /// Use this when a top-level logical chain finishes and the next one should
+    /// not inherit the previous chain's cumulative consumption.
+    pub fn reset_budget(&self) -> usize {
+        self.tokens_used.store(0, Ordering::SeqCst);
+        self.tokens_used.load(Ordering::SeqCst)
+    }
 }
 
 impl std::fmt::Debug for SamplingGuard {
@@ -532,5 +565,33 @@ mod tests {
             drop(lease);
         }
         assert_eq!(guard.depth(), 0, "all leases are released");
+    }
+
+    /// Explicit release returns tokens to the pool (saturating at zero).
+    #[test]
+    fn test_release_tokens_decreases_and_saturates() {
+        let guard = SamplingGuard::new(3, 1000);
+        guard.enter(20).unwrap();
+        guard.enter(10).unwrap();
+        assert_eq!(guard.tokens_used(), 30);
+        assert_eq!(guard.release_tokens(10), 20, "30 - 10");
+        assert_eq!(
+            guard.release_tokens(999),
+            0,
+            "saturate at zero, no underflow"
+        );
+    }
+
+    /// Reset clears the accumulated budget so a fresh chain starts clean.
+    #[test]
+    fn test_reset_budget_reallows_fresh_accumulation() {
+        let guard = SamplingGuard::new(3, 20);
+        guard.enter(15).unwrap();
+        assert_eq!(guard.tokens_used(), 15);
+        assert_eq!(guard.reset_budget(), 0, "reset to zero");
+        guard
+            .enter(15)
+            .expect("after reset the budget is fresh again");
+        assert_eq!(guard.tokens_used(), 15);
     }
 }

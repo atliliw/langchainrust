@@ -4,6 +4,24 @@
 //!
 //! Provides document vector storage and retrieval functionality.
 
+/// Separator joining a parent document id to its chunk index to form a
+/// deterministic chunk id.
+///
+/// Unified **across every chunking backend** (in-memory `document_store`,
+/// Mongo, Redis, SQLite) so the same `(parent_id, segment)` yields the same
+/// `chunk_id` regardless of storage. Prior implementations drifted between
+/// `::`, `_`, and `:chunk:`; see `chunk_id`. The double-colon is chosen
+/// because it is extremely unlikely to appear inside an arbitrary document id,
+/// keeping the `{parent}::{segment}` shape unambiguous.
+pub const CHUNK_ID_SEPARATOR: &str = "::";
+
+/// Builds the deterministic `{parent_id}{CHUNK_ID_SEPARATOR}{segment}` chunk id
+/// shared by all backends. Prefer this over hand-rolled `format!` so the
+/// separator stays in one place (categories: in-memory / mongo / redis / sqlite).
+pub(crate) fn chunk_id(parent_id: &str, segment: usize) -> String {
+    format!("{parent_id}{CHUNK_ID_SEPARATOR}{segment}")
+}
+
 pub mod chromadb;
 pub mod chunked_vector_store;
 pub mod document_store;

@@ -87,17 +87,26 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
             .unwrap_or(inputs.len())
             .max(1);
 
-        let results = futures_util::stream::iter(inputs)
+        let expected = inputs.len();
+        let mut stream = futures_util::stream::iter(inputs)
             .map(|input| {
                 let config = config.clone();
                 async move { self.invoke(input, config).await }
             })
-            .buffered(limit)
-            .collect::<Vec<Result<_, _>>>()
-            .await;
+            .buffered(limit);
 
-        // Short-circuit on the first error, preserving input order otherwise.
-        results.into_iter().collect()
+        // 0.26.0 §3.2: consume one result at a time and short-circuit on the
+        // first error. The old `collect::<Vec<_>>()` kept going until *every*
+        // input finished — a fast failure could not stop slow/sibling LLM or
+        // tool calls, contradicting the documented "short-circuit" semantics
+        // and LangChain Core's behavior. Returning here drops the stream,
+        // cancelling the still-pending invocations and saving their cost+latency.
+        // Results keep input order otherwise (`buffered`, not unordered).
+        let mut results = Vec::with_capacity(expected);
+        while let Some(result) = stream.next().await {
+            results.push(result?);
+        }
+        Ok(results)
     }
 
     /// Batch processing that returns results in *completion* order.
@@ -134,7 +143,8 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
             .unwrap_or(inputs.len())
             .max(1);
 
-        let results = futures_util::stream::iter(inputs.into_iter().enumerate())
+        let expected = inputs.len();
+        let mut stream = futures_util::stream::iter(inputs.into_iter().enumerate())
             .map(|(index, input)| {
                 let config = config.clone();
                 async move {
@@ -143,12 +153,16 @@ pub trait Runnable<Input: Send + Sync + 'static, Output: Send + Sync + 'static>:
                         .map(|output| (index, output))
                 }
             })
-            .buffer_unordered(limit)
-            .collect::<Vec<Result<(usize, Output), _>>>()
-            .await;
+            .buffer_unordered(limit);
 
-        // Short-circuit on the first error (in completion order).
-        results.into_iter().collect()
+        // 0.26.0 §3.2: same short-circuit fix as `batch` — consume in
+        // completion order, returning on the first error (which drops the
+        // stream and cancels still-pending invokes).
+        let mut results = Vec::with_capacity(expected);
+        while let Some(result) = stream.next().await {
+            results.push(result?);
+        }
+        Ok(results)
     }
 
     /// Streaming output - for real-time responses (LLM, etc).

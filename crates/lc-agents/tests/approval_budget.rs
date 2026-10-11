@@ -151,7 +151,7 @@ impl BaseAgent for CostLoopAgent {
             .and_then(|c| c.metadata.get(RUN_META_COST_SCOPE))
             .and_then(|v| v.as_str());
         self.tracker
-            .record_scoped(scope, Some("mock"), "priced-model", 1_000, 1_000)
+            .record_scoped(None, scope, Some("mock"), "priced-model", 1_000, 1_000)
             .await;
         Ok(AgentOutput::Action(AgentAction {
             tool: "recorder".to_string(),

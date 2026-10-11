@@ -141,7 +141,12 @@ impl OpenAIChat {
         // replayed, so the unified layer sends them exactly once.
         let response = self
             .http_api
-            .post_multipart_with(&url, form, self.request_options())
+            .post_multipart_with(
+                &url,
+                form,
+                self.request_options()
+                    .map_err(|e| MultimodalError::HttpError(e.to_string()))?,
+            )
             .await
             .map_err(map_multimodal_http)?;
 
@@ -169,7 +174,12 @@ impl OpenAIChat {
 
         let response = self
             .http_api
-            .post_json_with(&url, &body, self.request_options())
+            .post_json_with(
+                &url,
+                &body,
+                self.request_options()
+                    .map_err(|e| MultimodalError::HttpError(e.to_string()))?,
+            )
             .await
             .map_err(map_multimodal_http)?;
 
@@ -195,7 +205,12 @@ impl OpenAIChat {
 
         let response = self
             .http_api
-            .post_json_with(&url, &body, self.request_options())
+            .post_json_with(
+                &url,
+                &body,
+                self.request_options()
+                    .map_err(|e| MultimodalError::HttpError(e.to_string()))?,
+            )
             .await
             .map_err(map_multimodal_http)?;
 

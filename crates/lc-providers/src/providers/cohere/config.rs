@@ -4,6 +4,7 @@
 use std::env;
 
 use crate::ProviderError;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 
 /// Cohere API endpoint.
@@ -16,7 +17,7 @@ pub const COHERE_MODELS: [&str; 4] = ["command-r-plus", "command-r", "command", 
 #[derive(Clone)]
 pub struct CohereConfig {
     /// Cohere API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Cohere API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -55,7 +56,7 @@ impl std::fmt::Debug for CohereConfig {
 impl Default for CohereConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: COHERE_BASE_URL.to_string(),
             model: "command-r-plus".to_string(),
             temperature: None,
@@ -71,7 +72,7 @@ impl CohereConfig {
     /// Creates a new CohereConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -92,7 +93,7 @@ impl CohereConfig {
         let model = env::var("COHERE_MODEL").unwrap_or_else(|_| "command-r-plus".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()

@@ -81,6 +81,15 @@ impl Score {
         self.label = Some(label.into());
         self
     }
+
+    /// Returns whether the score meets or exceeds `threshold`.
+    ///
+    /// Convenience helper for gating: `score.pass_above(0.8)` is true when the
+    /// score is at least 0.8. The boundary is inclusive, so a score exactly
+    /// equal to the threshold counts as passing.
+    pub fn pass_above(&self, threshold: f64) -> bool {
+        self.value >= threshold
+    }
 }
 
 /// Evaluation example
@@ -137,11 +146,27 @@ impl Dataset {
 
     /// Loads from a JSONL file (one `{input, reference}` per line).
     ///
-    /// P2-2: async I/O (`tokio::fs`), avoiding synchronous blocking in the async evaluation pipeline.
+    /// Async variant (I/O via `tokio::fs`), for the async evaluation pipeline.
+    /// The sync counterpart [`Self::from_jsonl_sync`] shares the same parser.
     pub async fn from_jsonl(path: &str) -> Result<Self, EvalError> {
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| EvalError::IoError(e.to_string()))?;
+        Self::from_jsonl_str(&content)
+    }
+
+    /// Loads from a JSONL file synchronously, matching the sync `to_jsonl`
+    /// export path for offline/non-async use. Shares the parser with the
+    /// async [`Self::from_jsonl`], so both align on `{input, reference}` per line.
+    pub fn from_jsonl_sync(path: &str) -> Result<Self, EvalError> {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| EvalError::IoError(e.to_string()))?;
+        Self::from_jsonl_str(&content)
+    }
+
+    /// Parses JSONL content into a dataset, reporting the 1-based line number
+    /// of the first malformed row. Shared by the async and sync file loaders.
+    fn from_jsonl_str(content: &str) -> Result<Self, EvalError> {
         let mut examples = Vec::new();
         for (i, line) in content.lines().enumerate() {
             let line = line.trim();
@@ -267,6 +292,14 @@ mod tests {
     }
 
     #[test]
+    fn test_score_pass_above() {
+        // boundary is inclusive
+        assert!(Score::new(0.8).pass_above(0.8));
+        assert!(Score::new(0.9).pass_above(0.8));
+        assert!(!Score::new(0.7).pass_above(0.8));
+    }
+
+    #[test]
     fn test_score_new_clamps_overflow() {
         assert_eq!(Score::new(2.0).value, 1.0);
         assert_eq!(Score::new(-1.0).value, 0.0);
@@ -327,6 +360,31 @@ mod tests {
         let err = Dataset::from_jsonl(path.to_str().unwrap())
             .await
             .unwrap_err();
+        assert!(matches!(err, EvalError::ParseError(_)));
+    }
+
+    /// T1: the sync loader shares the same parser and parses a bad line into the
+    /// same error domain as the async one, so the from/to jsonl paths align.
+    #[test]
+    fn test_from_jsonl_sync_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.jsonl");
+        std::fs::write(
+            &path,
+            "{\"input\":\"q1\",\"reference\":\"a1\"}\n{\"input\":\"q2\",\"reference\":\"a2\"}\n",
+        )
+        .unwrap();
+        let dataset = Dataset::from_jsonl_sync(path.to_str().unwrap()).unwrap();
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.examples[1].input, "q2");
+    }
+
+    #[test]
+    fn test_from_jsonl_sync_bad_line_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.jsonl");
+        std::fs::write(&path, "{\"input\":\"q\"}\n").unwrap();
+        let err = Dataset::from_jsonl_sync(path.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, EvalError::ParseError(_)));
     }
 }

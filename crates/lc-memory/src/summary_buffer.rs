@@ -29,6 +29,11 @@ New lines of conversation:
 
 New summary:";
 
+/// 0.26.0 §3.3: 摘要连续失败多少轮后,不等摘要成功先强制把历史修剪回窗口预算,
+/// 保证内存有界。瞬态故障在此上限内保留原始消息供重试(不丢数据);持久故障越过
+/// 上限即放弃重试,避免 `chat_memory` 因失败批次不断累积而无界膨胀。
+const MAX_CONSECUTIVE_SUMMARY_FAILURES: u32 = 3;
+
 /// Conversation Summary Buffer Memory
 ///
 /// Combines summary and full conversation:
@@ -70,6 +75,14 @@ pub struct ConversationSummaryBufferMemory<M: BaseChatModel> {
     /// P2-4: 最近一次摘要 LLM 失败的原因;成功总结或 `clear()` 后清空。
     /// 摘要失败时保留旧摘要与原始消息,不清空 `chat_memory`,下轮 prune 重试。
     last_summary_error: Option<String>,
+
+    /// 0.26.0 §3.3: 连续摘要失败次数。达到 `max_consecutive_summary_failures`
+    /// 后强制窗口修剪,保证内存有界;成功总结或 `clear()` 后清零。
+    consecutive_summary_failures: u32,
+
+    /// §3.3: 允许连续失败的最大次数(阈值),默认 [`MAX_CONSECUTIVE_SUMMARY_FAILURES`]。
+    /// 可 `with_max_consecutive_summary_failures` 调整。
+    max_consecutive_summary_failures: u32,
 }
 
 impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
@@ -87,6 +100,8 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
             summary_prompt: DEFAULT_SUMMARY_PROMPT.to_string(),
             return_messages: false,
             last_summary_error: None,
+            consecutive_summary_failures: 0,
+            max_consecutive_summary_failures: MAX_CONSECUTIVE_SUMMARY_FAILURES,
         }
     }
 
@@ -129,6 +144,12 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
         self
     }
 
+    /// §3.3: 设置连续摘要失败多少次后强制窗口修剪(默认 `MAX_CONSECUTIVE_SUMMARY_FAILURES`)。
+    pub fn with_max_consecutive_summary_failures(mut self, max: u32) -> Self {
+        self.max_consecutive_summary_failures = max.max(1);
+        self
+    }
+
     /// P1-3: 从持久化存储回灌摘要状态,保证续写会话摘要链连续。
     pub fn set_summary(&mut self, summary: impl Into<String>) {
         self.buffer = summary.into();
@@ -167,6 +188,26 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
     /// P1-2: 估算文本 token 数,委托给可插拔计数器(默认 BPE 口径)。
     fn estimate_tokens(&self, text: &str) -> usize {
         self.counter.count_tokens(text) as usize
+    }
+
+    /// Rebuild `chat_memory` to contain exactly the kept-window `kept`
+    /// messages, dropping bare Tool messages and AI messages that carry
+    /// `tool_calls` (their Tool results are gone — mirroring summary.rs H-M2).
+    /// Shared by the summary-success path and the §3.3 persistent-failure prune,
+    /// so both keep the buffer bounded to the window.
+    fn retain_to_window(&mut self, kept: &[Message]) {
+        self.chat_memory.clear();
+        for msg in kept {
+            if matches!(msg.message_type, MessageType::Human) {
+                self.chat_memory.add_user_message(&msg.content);
+            } else if matches!(msg.message_type, MessageType::AI) {
+                if msg.tool_calls.is_none() {
+                    self.chat_memory.add_ai_message(&msg.content);
+                }
+            } else if matches!(msg.message_type, MessageType::System) {
+                self.chat_memory.add_system_message(&msg.content);
+            }
+        }
     }
 
     fn prune_messages(&self, messages: &[Message]) -> Vec<Message> {
@@ -362,38 +403,38 @@ where
                     // P2-4: 摘要失败时保留旧摘要、不清空 chat_memory(原始消息
                     // 留下,下轮 prune 会再次尝试总结);错误记录到 last_summary_error
                     // 供上层观察,不冒泡打断链。
+                    // 0.26.0 §3.3: 但"保留供重试"只对瞬态故障正确——若摘要长期
+                    // 失败,每轮失败的待总结批次一直累积,chat_memory 无界膨胀。
+                    // 连续失败达阈值后强制修剪回窗口,保证内存有界。
                     match self.predict_new_summary(&new_lines).await {
                         Ok(new_summary) => {
                             self.buffer = new_summary;
                             self.last_summary_error = None;
+                            self.consecutive_summary_failures = 0;
 
-                            self.chat_memory.clear();
-                            for msg in pruned {
-                                if matches!(msg.message_type, lc_schema::MessageType::Human) {
-                                    self.chat_memory.add_user_message(&msg.content);
-                                } else if matches!(msg.message_type, lc_schema::MessageType::AI) {
-                                    // 0.25.0 D1 (H6): the rebuild loop keeps only
-                                    // Human/AI/System — Tool messages are dropped.
-                                    // Mirror the summary.rs H-M2 fix: an assistant
-                                    // message that *carries* tool_calls must be dropped
-                                    // too (its Tool results are gone), or the retained
-                                    // pair is dangling → OpenAI/Anthropic 400.
-                                    if msg.tool_calls.is_none() {
-                                        self.chat_memory.add_ai_message(&msg.content);
-                                    }
-                                } else if matches!(msg.message_type, lc_schema::MessageType::System)
-                                {
-                                    // H28: Preserve System messages during pruning
-                                    self.chat_memory.add_system_message(&msg.content);
-                                }
-                            }
+                            self.retain_to_window(&pruned);
                         }
                         Err(e) => {
                             self.last_summary_error = Some(e.to_string());
-                            log::warn!(
-                                "ConversationSummaryBufferMemory summarization failed, keeping old summary and original messages for next retry: {}",
-                                e
-                            );
+                            self.consecutive_summary_failures += 1;
+                            if self.consecutive_summary_failures
+                                >= self.max_consecutive_summary_failures
+                            {
+                                // 越过阈值:放弃重试,将历史修剪回窗口(丢弃未能总结的
+                                // 最旧轮次),让内存回到预算内。瞬态故障已获得全部
+                                // 重试次数,不会因单次抖动丢数据。
+                                self.retain_to_window(&pruned);
+                                self.consecutive_summary_failures = 0;
+                                log::error!(
+                                    "ConversationSummaryBufferMemory: summarization failed {} consecutive times; forced window prune, dropped un-summarized turns to keep memory bounded: {}",
+                                    self.max_consecutive_summary_failures, e
+                                );
+                            } else {
+                                log::warn!(
+                                    "ConversationSummaryBufferMemory summarization failed (attempt {}), keeping old summary and original messages for next retry: {}",
+                                    self.consecutive_summary_failures, e
+                                );
+                            }
                         }
                     }
                 }
@@ -407,6 +448,7 @@ where
         self.buffer = String::new();
         self.chat_memory.clear();
         self.last_summary_error = None;
+        self.consecutive_summary_failures = 0;
         Ok(())
     }
 }
@@ -487,6 +529,42 @@ mod tests {
                 .with_counter(std::sync::Arc::new(CharRatioCounter::new(4)));
 
         assert_eq!(memory.estimate_tokens("abcdefgh"), 2);
+    }
+
+    /// 0.26.0 §3.3 — persistent summarization failure must not let
+    /// `chat_memory` grow unbounded. After `max_consecutive_summary_failures`
+    /// consecutive failures the buffer force-prunes back to the window, so many
+    /// failing saves stay bounded instead of accumulating every turn.
+    #[tokio::test]
+    async fn persistent_summary_failure_keeps_chat_memory_bounded() {
+        // LLM always fails summarization.
+        let llm = MockLlm::new(vec![Err("summary provider down".to_string()); 100]);
+        let mut memory: ConversationSummaryBufferMemory<MockLlm> =
+            ConversationSummaryBufferMemory::new(llm, 40)
+                .with_counter(std::sync::Arc::new(CharRatioCounter::new(4)))
+                .with_max_consecutive_summary_failures(3);
+
+        // 20 large saving turns: each pushes `chat_memory` over the 40-token
+        // budget and attempts (and fails) the summary. Without the §3.3 bound
+        // this accumulates ~40 messages; with it, memory collapses back to the
+        // window every threshold failures.
+        for _ in 0..20 {
+            let mut inputs = HashMap::new();
+            inputs.insert("input".to_string(), "x".repeat(400)); // ~100 tokens
+            let mut outputs = HashMap::new();
+            outputs.insert("output".to_string(), "y".repeat(20));
+            memory.save_context(&inputs, &outputs).await.unwrap();
+        }
+
+        let len = memory.chat_memory().messages().len();
+        assert!(
+            len < 30,
+            "chat_memory must stay bounded under persistent summary failure (got {len} messages after 20 saves)"
+        );
+        assert!(
+            memory.last_summary_error().is_some(),
+            "the summary failure must remain observable via last_summary_error"
+        );
     }
 
     #[tokio::test]

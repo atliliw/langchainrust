@@ -154,8 +154,11 @@ mod tests {
     /// P2-5: DeepSeek (reusing the OpenAI-compatible base class) also wires in 429 retry.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
-        let success_body = r#"{"data":[{"embedding":[0.6,0.8],"index":0}],"model":"stub","usage":{"prompt_tokens":0,"total_tokens":0}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let one = crate::test_support::embedding_json(1536, 0.6, 0.8).to_string();
+        let success_body = format!(
+            r#"{{"data":[{{"embedding":{one},"index":0}}],"model":"stub","usage":{{"prompt_tokens":0,"total_tokens":0}}}}"#
+        );
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let config = DeepSeekEmbeddingsConfig {
             api_key: "test-key".into(),
             base_url,
@@ -167,7 +170,7 @@ mod tests {
             .embed_query("hello")
             .await
             .expect("should retry successfully after two 429s");
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), 1536, "declared deepseek dimension");
         // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);

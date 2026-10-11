@@ -12,14 +12,14 @@
 //!
 //! This is the **inference-side** integration: it re-ranks a candidate set you
 //! already retrieved (typically the cheap first pass), exactly like the hosted
-//! [`AsyncReranker`](crate::neural_rerank::AsyncReranker) implementations. It
+//! [`AsyncReranker`] implementations. It
 //! does **not** store dense per-token document embeddings at index time — that
 //! is the deferred (0.27) training/ingestion track.
 //!
 //! The token embedder comes from [`TokenLevelEmbeddings`], which is a
-//! *non-object-safe* native-async trait (only the ONNX [`LocalEmbeddings`]
+//! *non-object-safe* native-async trait (only the ONNX `LocalEmbeddings`
 //! path implements it). So [`ColbertRerank`] is **generic** over the embedder
-//! type and implements the object-safe [`AsyncReranker`](crate::neural_rerank::AsyncReranker)
+//! type and implements the object-safe [`AsyncReranker`]
 //! trait, so it plugs straight into [`rerank_async`](crate::neural_rerank::rerank_async).
 //!
 //! ```ignore
@@ -35,8 +35,8 @@
 //! ```
 
 use async_trait::async_trait;
-use lc_embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings};
 use lc_embeddings::cosine_similarity;
+use lc_embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings};
 use lc_vector_stores::Document;
 
 use crate::neural_rerank::AsyncReranker;
@@ -129,7 +129,7 @@ pub struct ColbertRerank<E> {
 }
 
 impl<E> ColbertRerank<E> {
-    /// Wrap a token-level embedder (e.g. the ONNX [`LocalEmbeddings`]).
+    /// Wrap a token-level embedder (e.g. the ONNX `LocalEmbeddings`).
     pub fn new(embedder: E) -> Self {
         Self {
             embedder,
@@ -184,8 +184,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lc_embeddings::EmbeddingError;
     use lc_embeddings::token_level::TokenSpan;
+    use lc_embeddings::EmbeddingError;
     use lc_vector_stores::SearchResult;
     use std::collections::HashMap;
 
@@ -212,10 +212,7 @@ mod tests {
     }
 
     impl TokenLevelEmbeddings for MockTokenEmbedder {
-        async fn embed_tokens(
-            &self,
-            text: &str,
-        ) -> Result<Vec<TokenEmbedding>, EmbeddingError> {
+        async fn embed_tokens(&self, text: &str) -> Result<Vec<TokenEmbedding>, EmbeddingError> {
             if text.trim().is_empty() {
                 return Err(EmbeddingError::EmptyInput);
             }
@@ -295,13 +292,23 @@ mod tests {
     async fn empty_document_sinks_to_bottom() {
         let emb = embedder();
         let reranker = ColbertRerank::new(emb);
-        let ranked =
-            crate::neural_rerank::rerank_async(&reranker, "dog food", vec![
-                SearchResult { document: Document::new("dog walk"), score: 5.0 },
-                SearchResult { document: Document::new(""), score: 4.0 },
-            ], 2)
-            .await
-            .unwrap();
+        let ranked = crate::neural_rerank::rerank_async(
+            &reranker,
+            "dog food",
+            vec![
+                SearchResult {
+                    document: Document::new("dog walk"),
+                    score: 5.0,
+                },
+                SearchResult {
+                    document: Document::new(""),
+                    score: 4.0,
+                },
+            ],
+            2,
+        )
+        .await
+        .unwrap();
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].document.page_content(), "dog walk");
         assert_eq!(ranked[1].document.page_content(), "");

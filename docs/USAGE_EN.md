@@ -174,7 +174,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.24.0"
+langchainrust = "0.27.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2777,7 +2777,9 @@ let result = guarded.invoke("Summarize this".to_string()).await?;
 
 ### Streaming Guardrails ✨ v0.15.0
 
-The `StreamingOutputGuardrail` trait (`validate_chunk -> ChunkAction::{Pass, Replace, Block}`) works with `GuardedAgent::invoke_stream` for two-phase checking: incremental keyword checks + a 24-char sliding window (so cross-chunk cuts can't slip through) + a full-output recheck.
+The `StreamingOutputGuardrail` trait (`validate_chunk -> ChunkAction::{Pass, Replace, Block { reason }}`) works with `GuardedAgent::invoke_stream` for two-phase checking: incremental keyword checks + a 24-char sliding window (so cross-chunk cuts can't slip through) + a full-output recheck.
+
+**A block carries its reason, and the rewrite is a separate step.** The `reason` inside `ChunkAction::Block { reason }` reaches the audit log and travels unchanged into `GuardrailError::Blocked { reason }`, instead of being replaced by a generic "blocked by a guardrail". Before the chunk is actually dropped, every rail in the chain is asked `rewrite(&RewriteRequest { guardrail, reason, token, full })`: the first to return `Some(text)` supplies the replacement that keeps flowing (audited as `chunk rewritten after detection: <original detection reason>`); if all return `None`, the block stands. So detection and repair can be two different rails — a detector just reports `Block { reason }` and leaves `rewrite` at its `None` default, while a dedicated rewriter claims the violations it handles via `req.guardrail`.
 
 ```rust
 use futures_util::StreamExt;
@@ -2856,6 +2858,10 @@ let config = GuardrailsConfig::new()
 // undeclared fields by default; to allow them:
 // SchemaOutputGuardrail::for_type::<Person>().allow_additional_properties()
 ```
+
+**"Undeclared property" is judged against the whole composition.** The synthesized `additionalProperties: false` (keyword omitted, `strict_properties` on) does not look only at the current level's `properties`: it also counts `allOf`/`anyOf`/`oneOf` branches and their `$ref` targets. That is exactly the shape schemars emits for `#[serde(flatten)]` — the outer `properties` beside an `allOf` branch holding the flattened fields — and judging on the current level alone rejected those legal fields. Two boundaries: an explicit `additionalProperties: false` is honoured literally (per the JSON Schema spec it only sees its own schema object); and when the schema has `patternProperties` the synthesized judgment is skipped — this validator does not evaluate regexes, so it stays quiet rather than rejecting a key a pattern would have allowed.
+
+**Every block carries the expected shape.** A block reason ends with a fillable JSON skeleton derived from the schema (`; expected shape: {...}`, e.g. `{"name":"","age":0}`): `const`/`enum` contribute their first case, a union its first branch, and `allOf` merges its branches' object fields. Knowing only what was wrong is not enough — the shape is the half a caller (or a retry loop feeding the message back to the model) can act on.
 
 **What the two phases catch (strictness is deliberately different):**
 
@@ -3705,10 +3711,14 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 // {"query": "...", "top_k": 5, "include_answer": true}
 ```
 
-**`CdpBrowserTool` — drive a local Chrome over CDP (`browser-cdp` feature)**: DuckDuckGo/`URLFetchTool` only fetch static HTML and are helpless against JS-rendered pages. `connect()` takes Chrome's **HTTP debugger base URL** (`http://127.0.0.1:9222` — it must start with `http://`/`https://`; passing `ws://` fails with `InvalidInput`). The tool first does `PUT /json/new` (falling back to `GET /json` and attaching to an existing page on older Chrome builds) to obtain that tab's `webSocketDebuggerUrl`, then speaks the Chrome DevTools Protocol over the WebSocket (plaintext `ws://` in the local case) and performs four operations on a fresh tab: `navigate` / `extract_text` (post-render body text) / `extract_links` / `metadata`. Input is `BrowserInput { operation, url, wait_ms: Option (extra settle time after the load event, max 10s) }`. SSRF posture matches the network tools: **private/loopback navigation targets are blocked by default** (this checks the page URL, not the debugger endpoint), explicitly allowed via `with_allow_private_urls(true)`. It is an opt-in feature (pulls in tokio-tungstenite):
+**`CdpBrowserTool` — drive a local Chrome over CDP (`browser-cdp` feature)**: DuckDuckGo/`URLFetchTool` only fetch static HTML and are helpless against JS-rendered pages. `connect()` takes Chrome's **HTTP debugger base URL** (`http://127.0.0.1:9222` — it must start with `http://`/`https://`; passing `ws://` fails with `InvalidInput`). The tool first does `PUT /json/new` (falling back to `GET /json` and attaching to an existing page on older Chrome builds) to obtain that tab's `webSocketDebuggerUrl`, then speaks the Chrome DevTools Protocol over the WebSocket (plaintext `ws://` in the local case) and performs four operations on a fresh tab: `navigate` / `extract_text` (post-render body text) / `extract_links` / `metadata`. Input is `BrowserInput { operation, url, wait_ms: Option (extra settle time after the load event, max 10s) }`. SSRF posture matches the network tools: **private/loopback navigation targets are blocked by default** (this checks the page URL, not the debugger endpoint), explicitly allowed via `with_allow_private_urls(true)`.
+
+**As of 0.27.0 navigation is intercepted hop by hop (#200)**: before `Page.navigate`, `goto` enables the CDP `Fetch` domain (`patterns: [{"urlPattern": "*"}]`), so the browser pauses **every** request with `Fetch.requestPaused` before it leaves. Each paused hop's `params.request.url` is validated — private hops get `Fetch.failRequest { errorReason: "BlockedByClient" }`, public ones `Fetch.continueRequest`. The domain is disabled as soon as the page loads (or on any failure), so a later `Runtime.evaluate` is never stranded on an unanswered pause. A redirect, DNS rebinding, or subresource request toward an internal host is therefore stopped **before it goes out**, even though the top-level URL check passed; the original top-level `validate_navigation_url` and the post-landing recheck remain as a second line of defence.
+
+It is an opt-in feature (pulls in tokio-tungstenite):
 
 ```toml
-langchainrust = { version = "0.24", features = ["browser-cdp"] }
+langchainrust = { version = "0.27.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3923,7 +3933,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.24.0", features = ["local-candle"] }
+langchainrust = { version = "0.27.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4135,7 +4145,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["chromadb"] }
+langchainrust = { version = "0.27.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4524,7 +4534,7 @@ If you only need the vector leg, the free function (available since v0.23.0) `la
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5377,7 +5387,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.27.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5395,7 +5405,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 **One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
 
 ```toml
-langchainrust = { version = "0.24.0", features = ["otlp"] }
+langchainrust = { version = "0.27.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5423,7 +5433,7 @@ Quantify LLM output quality: after changing prompts / models / adding RAG, run a
 | Literal | `ExactMatch` / `StringDistance` | exact equal / Levenshtein distance normalized |
 | Semantic | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | cosine / LLM judge / pairwise (swap A/B to remove position bias) |
 | Rule | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | keyword / regex / length |
-| Classic NLP | `Bleu` | n-gram precision (char-level + smoothing) |
+| Classic NLP | `Bleu` | n-gram precision (char-level + smoothing + effective order) |
 | RAG | `Faithfulness` | split claims, verify each, detect hallucination |
 
 ### EvalRunner
@@ -5586,11 +5596,20 @@ What `ReportComparison` contains:
 
 | Field | Content |
 |---|---|
-| `deltas: Vec<MetricDelta>` | Per-evaluator `baseline_mean` / `candidate_mean` / `delta` / scored counts on both sides |
+| `metrics: HashMap<String, MetricDelta>` | Per-evaluator `baseline_mean` / `candidate_mean` / `delta` / scored counts on both sides |
 | `regressions: Vec<Regression>` | Only metrics with `delta < -tolerance` (strict inequality; the boundary passes — it absorbs judge noise) |
 | `added: Vec<String>` / `dropped: Vec<String>` | Evaluators the candidate added / lost relative to the baseline — a candidate that silently stops running an evaluator shows up in the same table |
+| `count_mismatches: Vec<String>` | Shared evaluators with different sample counts in the two runs (score-set drift), gated by default |
+| `significance: HashMap<String, PairedSignificance>` | Paired sign test per shared evaluator (per-example candidate wins/losses/ties + p-value) |
+| `gate_on_dropped: bool` | Whether a candidate dropping an evaluator fails the gate (on by default) |
 
-`cmp.to_table()` renders a comparison table you can paste straight into CI logs. Bootstrap the baseline by running once on a known-good build and serializing the `Report`.
+`cmp.to_table()` renders a comparison table you can paste straight into CI logs, with a `p` column carrying the paired sign-test p-value (significant entries marked `*`). Bootstrap the baseline by running once on a known-good build and serializing the `Report`.
+
+**Drop-aware layered gate**: `is_gate_failing()` goes red on four conditions — ① any regression; ② non-empty `count_mismatches` (score-set drift); ③ non-empty `dropped` — the candidate silently stopped running an evaluator (default `gate_on_dropped: true`, fail-closed, and old artifacts without the field also default it on); or ④ zero shared evaluators to compare (an empty/diverged run). If a candidate legitimately removes an evaluator, allow it explicitly with `compare_reports_with(&base, &cand, CompareOptions { gate_on_dropped: false, ..Default::default() })`.
+
+**Beyond the mean — a paired sign test**: the mean is dragged by individual samples. `paired_significance(&base, &cand, "evaluator")` (or `ReportComparison.significance`) runs a sign test over the two runs' **per-example** scores, yielding `wins` (candidate higher per example) / `losses` / `ties` / `n` / `p_value` (two-sided exact binomial over `n = wins + losses`). A large p-value means the mean wobble is likely per-example noise; `is_significant("evaluator")` checks whether it is below `significance_level` (default 0.05, tunable via `CompareOptions.significance_level`). A regression only means something when it is also significant — CI decides noise vs real change.
+
+**Tail metrics**: `report.percentile("evaluator", 0.05)` is the P5 of that evaluator's per-example scores (the worst-decile quality tail — the samples dragging the mean down), `0.95` / `0.99` the best case; for latency-style scores `0.95` is the latency tail. The underlying `percentile` is a nearest-rank implementation that handles `NaN` without panicking (see `runner::percentile`).
 
 ---
 
@@ -5620,7 +5639,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -5694,14 +5713,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["redis-storage"] }
+langchainrust = { version = "0.27.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5962,8 +5981,8 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.25"
-lc-a2a = { version = "0.25.0", features = ["axum"] }
+langchainrust = "0.27.0"
+lc-a2a = { version = "0.27.0", features = ["axum"] }
 ```
 
 ```rust
@@ -6024,6 +6043,29 @@ while let Some(event) = stream.next().await {
 }
 // To subscribe to an existing task only: client.connect_sse(url).await?
 ```
+
+**WebSocket transport (`ws` feature, 0.27.0 #186)**: a second transport alongside SSE. With the `ws` feature on, the server exposes `GET /ws`, sharing the **exact same auth and per-connection filtering** as `/events` — bearer auth, the B7 cross-tenant `notification_visible` guard, and the `?taskId=` restriction all apply identically, and each filtered `TaskPushNotification` is serialized into **one text frame** for that connection. On the client, `connect_ws` / `send_task_streaming_ws` mirror `connect_sse` / `send_task_streaming`, and `A2AWebSocketStream::next()` answers protocol pings to keep an idle subscription alive while skipping pongs and binary frames. The two transports carry identical semantics; pick per deployment (WS suits a long-lived connection that does not want HTTP/SSE buffering):
+
+```toml
+lc-a2a = { version = "0.27.0", features = ["ws"] }   # the server also needs the axum feature to serve
+```
+
+```rust
+use langchainrust::a2a::{A2AClient, A2AMessage, TaskPushNotification};
+
+// Subscribe first, then send, so no early event is missed
+let mut stream = client
+    .send_task_streaming_ws("ws://remote-agent:8080/ws", A2AMessage::user("quarterly summary"))
+    .await?;
+while let Some(event) = stream.next().await {
+    let note: TaskPushNotification = event?;
+}
+// To subscribe to an existing task only: client.connect_ws("ws://remote-agent:8080/ws").await?
+```
+
+**Subscription context on sendSubscribe (0.27.0 #94)**: `tasks/sendSubscribe` can now carry a client-chosen subscription handle and context. On the request side use `A2ARequest::send_subscribe_with_context(id, &message, subscription_id, context_id)` — `subscription_id` goes into the params as `"id"` and `context_id` as `"contextId"`; on the client side `client.subscribe_with_context(sse_url, message, subscription_id, context_id)` forwards them (`subscribe` / `send_subscribe` are the convenience forms without a context). On the response side `TaskPushNotification::StatusUpdate` / `ArtifactUpdate` each gained an optional `context_id` field (`skip_serializing_if`, so the wire stays byte-compatible with pre-0.27 when absent) for a server to echo which subscription a task belongs to, letting a caller with several subscriptions on one connection route each frame back to the right one.
+
+> Current state: the **bundled server does not echo `context_id` yet** (`handle_tasks_send_subscribe` is `tasks/send` under another name — it creates the task and acks). What ships in this version is therefore the **protocol and client side**: the field and the entry points are in place and wire-compatible, and cross-subscription isolation is guaranteed by `A2ASubscription::next()` filtering on task id rather than by server cooperation.
 
 **Workflows**: `tasks/runWorkflow` submits an ordered sequence of steps in one call; the server executes them in the background with a hard cap of 50 steps:
 
@@ -6643,7 +6685,7 @@ The MCP spec defines 6 categories of primitives. In LangChainRust the client→s
 
 ### Code Interpreter Sandbox
 
-> **Security precondition (read first):** `SandboxTool` is **disabled by default** — without calling `.with_dangerously_allow(true)`, every execution request returns an error directly (the v0.20.0 hardening). The bundled `LocalSandbox` is nothing more than "subprocess + timeout" with **no OS-level isolation whatsoever**; the Python dangerous-import blocklist is explicitly called a *noise filter* in source comments (things like `__import__("o"+"s")` bypass it) and is **not a security boundary**. Untrusted code must run inside a container / VM / WASM, reached through your own `CodeSandbox` implementation. The old `WasmSandbox` / `E2BSandbox` were only ever interfaces whose bodies always returned "not implemented"; the v0.20.0 review deleted them together with the `sandbox-wasm` / `sandbox-e2b` features — a backend that is promised but cannot deliver is worse than none.
+> **Security precondition (read first):** `SandboxTool` is **disabled by default** — without calling `.with_dangerously_allow(true)`, every execution request returns an error directly (the v0.20.0 hardening). The bundled `LocalSandbox` is nothing more than "subprocess + timeout" with **no OS-level isolation whatsoever**; the Python dangerous-import blocklist is explicitly called a *noise filter* in source comments (things like `__import__("o"+"s")` bypass it) and is **not a security boundary**. Untrusted code needs real isolation: use the **genuinely implemented `WasmSandbox` (0.27.0, see the next section)**, or a container / VM reached through your own `CodeSandbox` implementation. (The old `WasmSandbox` / `E2BSandbox` were only ever interfaces whose bodies always returned "not implemented"; the v0.20.0 review deleted them together with the `sandbox-wasm` / `sandbox-e2b` features — a backend that is promised but cannot deliver is worse than none. In 0.27.0 `WasmSandbox` returned as **real code**; `E2BSandbox` did not.)
 
 ```rust
 use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox, SandboxTool, Language};
@@ -6668,7 +6710,55 @@ Backend capability boundaries (v0.22.4):
 - **Python**: `python -c` subprocess; a dangerous-import substring check (20 modules including os/subprocess/sys/socket/pickle; a hit is an error) runs first — restated: it can be bypassed and only stops casually-written dangerous code
 - **JavaScript**: `node -e` subprocess with no additional checks
 - **Rust**: the `Language::Rust` enum variant exists (full serialization/matching) but `LocalSandbox` returns `SandboxError::UnsupportedLanguage` directly — a compiled toolchain would be required, so it is deliberately unimplemented
+- **WASM**: `Language::Wasm` is executed by `WasmSandbox` (next section); `LocalSandbox` returns `SandboxError::UnsupportedLanguage` for it too
 - Custom backend: implement the `CodeSandbox` trait's `async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError>` and the same `SandboxTool<S>` accepts it
+
+#### WASM backend (`sandbox-wasm` feature, 0.27.0 #201)
+
+`WasmSandbox` runs WASI preview1 modules on the **wasmi** interpreter (a pure interpreter: no cranelift/JIT, offline, MSRV-light). The host side supplies its own set of WASI imports — `fd_write` (stdout/stderr), `fd_close`, `proc_exit`, `args_sizes_get`/`args_get`, `environ_sizes_get`/`environ_get`, `random_get`, `clock_time_get`/`clock_res_get` — and **nothing but buffered stdout/stderr crosses the host boundary**: no filesystem, no network, no processes. OS isolation holds by construction rather than by hoping a subprocess sandbox holds.
+
+The execution budget is enforced with **wasm fuel** (`timeout_ms × 1000` instructions, at least 1000) instead of a racy wall-clock thread, and exhaustion maps **deterministically** to `SandboxError::Timeout`. Any language other than `Language::Wasm` yields `SandboxError::UnsupportedLanguage`.
+
+```toml
+lc-tools = { version = "0.27.0", features = ["sandbox-wasm"] }
+# The `langchainrust` facade does not forward this feature yet, so enable it on lc-tools;
+# cargo feature unification still lets you import the type from the facade:
+# langchainrust::tools::sandbox::WasmSandbox
+```
+
+```rust
+use langchainrust::tools::sandbox::{WasmSandbox, CodeSandbox, SandboxTool, Language};
+
+// Input may be .wat text (WasmSandbox parses it with the `wat` crate) or compiled wasm bytes
+let wat = r#"
+    (module
+        (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+        (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+        (memory 1)
+        (data (i32.const 16) "Hello from WASM!\n")
+        (export "memory" (memory 0))
+        (func $_start
+            (i32.store (i32.const 0) (i32.const 16))   ;; iovec.buf
+            (i32.store (i32.const 4) (i32.const 17))   ;; iovec.len (incl. newline)
+            (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 32))
+            (drop)
+            (call $proc_exit (i32.const 0)))
+        (export "_start" (func $_start)))
+"#;
+
+let sandbox = WasmSandbox::new();
+let result = sandbox.run(wat, Language::Wasm, 5_000).await?;
+assert_eq!(result.stdout, "Hello from WASM!\n");
+assert_eq!(result.exit_code, 0);
+
+// It wraps into a BaseTool the same way (again gated behind with_dangerously_allow(true))
+let tool = SandboxTool::new(WasmSandbox::new(), Language::Wasm)
+    .with_timeout(5_000)
+    .with_dangerously_allow(true);
+```
+
+Honest scope: **small, self-contained WASI modules** (WAT text or wasm bytes). It does **not** compile Rust / Python / JS source to wasm for you — that needs a whole toolchain; `WasmSandbox` takes an **already-compiled module**, and source languages go to the other backends via `Language::Python` and friends.
 
 ---
 
@@ -6922,7 +7012,7 @@ Additional improvements:
 <a id="v052-fixes"></a>
 ### Other v0.5.2 Changes
 
-- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — they were declared at the time, **but these two backends were ever only interface stubs whose bodies always returned "not implemented"; both backends and their features were removed wholesale in v0.20.0** (see [Code Interpreter Sandbox](#code-interpreter-sandbox) above). In v0.22.4 only `LocalSandbox` remains.
+- **Feature gate declarations**: `sandbox-e2b` and `sandbox-wasm` features were referenced in code but not declared in `Cargo.toml` `[features]` — they were declared at the time, **but these two backends were only interface stubs whose bodies always returned "not implemented"; both backends and their features were removed wholesale in v0.20.0** (see [Code Interpreter Sandbox](#code-interpreter-sandbox) above). **0.27.0 update**: the `sandbox-wasm` feature and `WasmSandbox` returned as **real code** (wasmi interpreter + its own WASI preview1 host + fuel-metered timeouts); `sandbox-e2b` did not come back.
 - **Clippy zero warnings**: All clippy warnings resolved
 
 ---

@@ -15,16 +15,29 @@
 //!
 //! # Backends
 //!
-//! - **[`LocalSandbox`]**: the current only backend, a subprocess + timeout.
+//! - **[`LocalSandbox`]**: subprocess + timeout (the only backend in the default build). It
+//!   provides **no OS-level isolation**; treat it as convenience, not a security boundary.
 //!
-//! > The former `WasmSandbox` / `E2BSandbox` were hollow shells with a complete interface but
-//! > a permanent "not implemented" body (review Q2). They were removed together with the
-//! > `sandbox-wasm` / `sandbox-e2b` features — a backend that promises but cannot deliver
-//! > damages trust the most; they will come back once actually implemented.
+//! ## WASM backend (`sandbox-wasm` feature)
+//!
+//! - **[`WasmSandbox`]**: a long-foreshadowed backend that is now *actually implemented*
+//!   (Track 3 #201). It runs a WASI-preview1 module under the **wasmi interpreter** with a
+//!   self-contained host covering stdio / exit / args / environ / random / clock. OS isolation
+//!   is by construction — nothing but buffered stdout/stderr crosses the host boundary — and
+//!   the execution budget is enforced with deterministic wasm **fuel** metering rather than a
+//!   racy wall-clock thread. The earlier `WasmSandbox` / `E2BSandbox` (review Q2) were hollow
+//!   shells — a complete interface with a permanent "not implemented" body — and were removed;
+//!   the wasm backend only returned as real code. [`Language::Wasm`] is handled by this
+//!   backend; [`LocalSandbox`] reports it unsupported.
 
+#[cfg(feature = "sandbox-wasm")]
+mod wasm;
 mod local;
 
 pub use local::LocalSandbox;
+
+#[cfg(feature = "sandbox-wasm")]
+pub use wasm::WasmSandbox;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -41,6 +54,11 @@ pub enum Language {
     JavaScript,
     /// Rust.
     Rust,
+    /// WebAssembly (WASI preview1): a `wat`/`wasm` module, executed by [`WasmSandbox`].
+    ///
+    /// Other backends ([`LocalSandbox`]) do not execute wasm and report it
+    /// [`SandboxError::UnsupportedLanguage`].
+    Wasm,
 }
 
 impl std::fmt::Display for Language {
@@ -49,6 +67,7 @@ impl std::fmt::Display for Language {
             Language::Python => write!(f, "python"),
             Language::JavaScript => write!(f, "javascript"),
             Language::Rust => write!(f, "rust"),
+            Language::Wasm => write!(f, "wasm"),
         }
     }
 }
@@ -209,6 +228,7 @@ mod tests {
         assert_eq!(Language::Python.to_string(), "python");
         assert_eq!(Language::JavaScript.to_string(), "javascript");
         assert_eq!(Language::Rust.to_string(), "rust");
+        assert_eq!(Language::Wasm.to_string(), "wasm");
     }
 
     #[test]
@@ -218,6 +238,9 @@ mod tests {
 
         let lang: Language = serde_json::from_str("\"javascript\"").unwrap();
         assert_eq!(lang, Language::JavaScript);
+
+        let wasm: Language = serde_json::from_str("\"wasm\"").unwrap();
+        assert_eq!(wasm, Language::Wasm);
     }
 
     #[test]

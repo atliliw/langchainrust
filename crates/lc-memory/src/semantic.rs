@@ -34,6 +34,13 @@
 //! embedding-backed scorer can be supplied with `with_scorer` without touching the
 //! stores.
 //!
+//! # Hybrid retrieval (T2)
+//!
+//! Dense and full-text retrieval fail differently — embeddings match paraphrase but
+//! blur rare literals, term matching does the opposite. [`HybridScorer`] wraps a
+//! dense scorer together with a full-text one and returns their weighted fusion, so
+//! the same stores gain hybrid ranking by swapping one `Arc<dyn SemanticScorer>`.
+//!
 //! All time-dependent logic takes an injected clock, so decay/consolidation tests are
 //! pure — no sleeps.
 
@@ -310,6 +317,81 @@ impl LexicalScorer {
 impl SemanticScorer for LexicalScorer {
     async fn similarity(&self, query: &str, document: &str) -> f64 {
         Self::score(query, document)
+    }
+}
+
+/// Hybrid retrieval: fuses a dense (vector/embedding) channel with a full-text channel.
+///
+/// The two channels fail in different ways, which is the whole reason to run both:
+///
+/// - A **dense** scorer matches meaning, so "how do I rotate the signing key" finds a
+///   paragraph that never says "rotate". It blurs rare literals — an error code, a
+///   user id, a symbol name — into an averaged vector.
+/// - A **full-text** scorer (the default is [`LexicalScorer`], term-frequency cosine)
+///   nails exactly those literals, but misses paraphrase entirely.
+///
+/// Fusing them, `score = w · dense + (1 − w) · text`, keeps both behaviours. Use it
+/// anywhere a [`SemanticScorer`] is accepted:
+///
+/// ```ignore
+/// let scorer = Arc::new(HybridScorer::new(dense_scorer).with_dense_weight(0.6));
+/// let memory = LongTermMemory::with_config(DecayWeights::default(), scorer);
+/// ```
+///
+/// `dense_weight` defaults to `0.5` (an even split) and is clamped to `[0, 1]`;
+/// `0.0` degenerates to full-text only and `1.0` to dense only.
+pub struct HybridScorer {
+    dense: Arc<dyn SemanticScorer>,
+    text: Arc<dyn SemanticScorer>,
+    dense_weight: f64,
+}
+
+impl std::fmt::Debug for HybridScorer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HybridScorer")
+            .field("dense_weight", &self.dense_weight)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HybridScorer {
+    /// Fuses `dense` with the dependency-free [`LexicalScorer`] full-text channel,
+    /// weighted 50/50.
+    pub fn new(dense: Arc<dyn SemanticScorer>) -> Self {
+        Self::with_text_scorer(dense, Arc::new(LexicalScorer::new()))
+    }
+
+    /// Fuses two explicit channels (e.g. a BM25 service on the text side).
+    pub fn with_text_scorer(dense: Arc<dyn SemanticScorer>, text: Arc<dyn SemanticScorer>) -> Self {
+        Self {
+            dense,
+            text,
+            dense_weight: 0.5,
+        }
+    }
+
+    /// Sets the dense channel's weight; the full-text channel gets the remainder.
+    /// Clamped to `[0, 1]`.
+    pub fn with_dense_weight(mut self, dense_weight: f64) -> Self {
+        self.dense_weight = dense_weight.clamp(0.0, 1.0);
+        self
+    }
+
+    /// The dense channel's weight (`1 - this` is the full-text weight).
+    pub fn dense_weight(&self) -> f64 {
+        self.dense_weight
+    }
+}
+
+#[async_trait]
+impl SemanticScorer for HybridScorer {
+    async fn similarity(&self, query: &str, document: &str) -> f64 {
+        let dense = self.dense.similarity(query, document).await;
+        let text = self.text.similarity(query, document).await;
+        let fused = self.dense_weight * dense + (1.0 - self.dense_weight) * text;
+        // A misbehaving channel could return out-of-range values; the trait contract
+        // says `[0, 1]`, so keep the fused score inside it.
+        fused.clamp(0.0, 1.0)
     }
 }
 
@@ -1381,6 +1463,132 @@ mod tests {
         assert!(mem.forget("ns", "both").await.unwrap());
         // long still holds short_only; short is now empty.
         assert_eq!(mem.len_namespace("ns").await.unwrap(), 1);
+    }
+
+    // ---- T2: hybrid (vector + full-text) scorer ----
+
+    /// Dense stand-in: a fixed similarity per document text.
+    struct FixedScorer(HashMap<String, f64>);
+
+    impl FixedScorer {
+        fn shared(entries: &[(&str, f64)]) -> Arc<dyn SemanticScorer> {
+            Arc::new(Self(
+                entries
+                    .iter()
+                    .map(|(text, score)| (text.to_string(), *score))
+                    .collect(),
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl SemanticScorer for FixedScorer {
+        async fn similarity(&self, _query: &str, document: &str) -> f64 {
+            self.0.get(document).copied().unwrap_or(0.0)
+        }
+    }
+
+    const WEATHER: &str = "we discussed the weather and the weekend plans";
+    const LITERAL: &str = "the error code E4021 means the quota was exceeded";
+
+    #[tokio::test]
+    async fn hybrid_scorer_weights_choose_the_channel() {
+        let dense = FixedScorer::shared(&[(WEATHER, 0.9), (LITERAL, 0.1)]);
+        let query = "error code E4021";
+
+        // Dense-favoured mixes still follow the embedding (0.9 vs 0.1 is a wide gap).
+        let leaning_dense = HybridScorer::new(dense.clone()).with_dense_weight(0.5);
+        assert!(
+            leaning_dense.similarity(query, WEATHER).await
+                > leaning_dense.similarity(query, LITERAL).await
+        );
+
+        // Past the crossover the full-text channel takes over: the literal match wins.
+        let leaning_text = HybridScorer::new(dense.clone()).with_dense_weight(0.3);
+        assert!(
+            leaning_text.similarity(query, LITERAL).await
+                > leaning_text.similarity(query, WEATHER).await
+        );
+
+        // Dense-only: the embedding's favourite wins.
+        let dense_only = HybridScorer::new(dense.clone()).with_dense_weight(1.0);
+        assert!(
+            dense_only.similarity(query, WEATHER).await
+                > dense_only.similarity(query, LITERAL).await
+        );
+
+        // Full-text-only: the literal match wins outright.
+        let text_only = HybridScorer::new(dense).with_dense_weight(0.0);
+        assert!(text_only.similarity(query, LITERAL).await > 0.0);
+        assert_eq!(text_only.similarity(query, WEATHER).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn hybrid_scorer_clamps_weights_and_scores() {
+        assert_eq!(
+            HybridScorer::new(FixedScorer::shared(&[]))
+                .with_dense_weight(2.0)
+                .dense_weight(),
+            1.0
+        );
+        assert_eq!(
+            HybridScorer::new(FixedScorer::shared(&[]))
+                .with_dense_weight(-1.0)
+                .dense_weight(),
+            0.0
+        );
+        assert_eq!(
+            HybridScorer::new(FixedScorer::shared(&[])).dense_weight(),
+            0.5
+        );
+
+        // A channel that violates the [0, 1] contract must not leak out.
+        let rogue = FixedScorer::shared(&[("doc", 5.0)]);
+        let scorer = HybridScorer::new(rogue).with_dense_weight(1.0);
+        assert_eq!(scorer.similarity("q", "doc").await, 1.0);
+    }
+
+    /// End-to-end: the same store and weights, only the scorer swapped — the hybrid
+    /// one retrieves by literal, the dense-only one by meaning.
+    #[tokio::test]
+    async fn long_term_memory_ranks_hybrid_over_dense_only() {
+        let dense = FixedScorer::shared(&[(WEATHER, 0.9), (LITERAL, 0.1)]);
+        let query = MemoryQuery::new("ns", "error code E4021").k(5);
+
+        let dense_only = LongTermMemory::with_config(DecayWeights::default(), dense.clone())
+            .with_clock(clock_at(0));
+        dense_only
+            .put("ns", item("weather", WEATHER, 0.5))
+            .await
+            .unwrap();
+        dense_only
+            .put("ns", item("literal", LITERAL, 0.5))
+            .await
+            .unwrap();
+        let hits = dense_only.search(&query).await.unwrap();
+        assert_eq!(
+            hits[0].key, "weather",
+            "dense-only ranking follows the embedding"
+        );
+
+        let hybrid = LongTermMemory::with_config(
+            DecayWeights::default(),
+            Arc::new(HybridScorer::new(dense).with_dense_weight(0.3)),
+        )
+        .with_clock(clock_at(0));
+        hybrid
+            .put("ns", item("weather", WEATHER, 0.5))
+            .await
+            .unwrap();
+        hybrid
+            .put("ns", item("literal", LITERAL, 0.5))
+            .await
+            .unwrap();
+        let hits = hybrid.search(&query).await.unwrap();
+        assert_eq!(
+            hits[0].key, "literal",
+            "hybrid ranking recovers the literal match"
+        );
     }
 
     #[tokio::test]

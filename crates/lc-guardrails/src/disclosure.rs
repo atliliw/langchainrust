@@ -90,26 +90,20 @@ pub async fn disclose(
     text
 }
 
-/// Convenience: disclose to a file audit sink.
+/// Convenience: disclose through a `FileAuditSink`.
+///
+/// `FileAuditSink: AuditSink`, so the body is not duplicated here — this just
+/// widens the concrete `&Arc<FileAuditSink>` into a `&Arc<dyn AuditSink>` and
+/// routes into [`disclose`]. A thin alias so callers that already hold a
+/// concrete file sink need not unsize it themselves.
 pub async fn disclose_to_file(
     audit: &Arc<FileAuditSink>,
     config: &DisclosureConfig,
     system: &str,
     trace_id: Option<&str>,
 ) -> String {
-    let text = config.render(system);
-    let violation = GuardrailViolation {
-        guardrail_name: "ai_disclosure".to_string(),
-        stage: "disclosure".to_string(),
-        reason: format!(
-            "disclosed system={} session_disclosed={} trace_id={}",
-            system,
-            config.session_disclosed,
-            trace_id.unwrap_or("-")
-        ),
-    };
-    audit.record(&violation).await;
-    text
+    let sink: Arc<dyn AuditSink> = audit.clone();
+    disclose(&sink, config, system, trace_id).await
 }
 
 #[cfg(test)]

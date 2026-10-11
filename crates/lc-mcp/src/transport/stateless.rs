@@ -145,17 +145,17 @@ fn validate_target_url(url: &str) -> Result<(), MCPError> {
     let is_loopback = match parsed.host_str() {
         Some(h) => {
             let lower = h.trim_matches(['[', ']']).to_ascii_lowercase();
-            lower == "localhost"
-                || lower == "localhost."
-                || lower == "127.0.0.1"
-                || lower == "::1"
+            lower == "localhost" || lower == "localhost." || lower == "127.0.0.1" || lower == "::1"
         }
         None => false,
     };
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && is_loopback) {
         return Err(MCPError::new(
             -32000,
-            format!("stateless target must use HTTPS (got scheme '{}')", parsed.scheme()),
+            format!(
+                "stateless target must use HTTPS (got scheme '{}')",
+                parsed.scheme()
+            ),
         ));
     }
     Ok(())
@@ -221,16 +221,13 @@ mod tests {
 
         // If redirects were followed, the client would reach the sink (200) and
         // parse `{}`; hitting the 302 proves the policy is `none`.
-        let transport = StatelessTransport::with_auth(target, AuthScheme::Bearer("secret-token".into()));
+        let transport =
+            StatelessTransport::with_auth(target, AuthScheme::Bearer("secret-token".into()));
         let err = transport
             .post_jsonrpc(&MCPRequest::new(1, "ping", None))
             .await
             .expect_err("a 302 must not be followed");
-        assert!(
-            err.message.contains("302"),
-            "error: {:?}",
-            err.message
-        );
+        assert!(err.message.contains("302"), "error: {:?}", err.message);
 
         origin_task.abort();
         sink_task.abort();

@@ -33,7 +33,7 @@ use crate::protocol::{
     negotiate_protocol_version, JsonRpcId, MCPError, ProtocolInfo, VersionPolicy, MCP_VERSION,
 };
 use crate::transport::stdio::{StdioCommand, StdioTransport};
-use crate::types::{MCPToolDefinition, MCPToolResult};
+use crate::types::{ListToolsParams, ListToolsResult, MCPToolDefinition, MCPToolResult};
 
 /// Default per-request timeout for stdio sessions.
 const STDIO_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -195,6 +195,24 @@ impl StdioMcpClient {
         Ok(tools)
     }
 
+    /// `tools/list` with cursor pagination (#79).
+    ///
+    /// Sends the opaque `cursor` param and returns the full envelope including
+    /// `nextCursor`, so a caller can page through a large tool set. `None` is
+    /// the first page.
+    pub async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        let params = ListToolsParams { cursor };
+        let params = serde_json::to_value(&params).map_err(|e| {
+            MCPError::new(-1, format!("failed to encode tools/list params: {e}"))
+        })?;
+        let result = self.send("tools/list", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|e| MCPError::new(-1, format!("failed to parse tool list: {e}")))
+    }
+
     /// `tools/call`, mirroring the stateless client (emits a `tools/call
     /// {name}` OTel client span when instrumentation is attached — T10).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
@@ -237,6 +255,13 @@ impl StdioMcpClient {
 impl crate::tool_client::McpToolClient for StdioMcpClient {
     async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError> {
         StdioMcpClient::list_tools(self).await
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        StdioMcpClient::list_tools_page(self, cursor).await
     }
 
     async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {

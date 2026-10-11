@@ -84,6 +84,29 @@ pub enum EventPayload {
         /// Observation text.
         observation: String,
     },
+    /// A tool call being *edited in place* (0.27.0 L253): the assistant issued a
+    /// revised version of a previously-recorded [`EventPayload::ToolCall`].
+    /// The superseded call is named so consumers can retract its result and
+    /// apply the edit atomically on replay.
+    ToolEdit {
+        /// Revised tool name.
+        tool: String,
+        /// Revised tool input as JSON.
+        tool_input: Value,
+        /// Pairing key of the edited [`EventPayload::ToolCall`].
+        call_id: String,
+        /// The call being superseded (its own `call_id`).
+        superseded_call_id: String,
+    },
+    /// A tool invocation being *undone* (0.27.0 L253): the assistant revokes a
+    /// previously-recorded [`EventPayload::ToolCall`], signalling that its side
+    /// effect (or its result) should be retracted rather than carried forward.
+    ToolUndo {
+        /// Pairing key of the undone [`EventPayload::ToolCall`].
+        undo_call_id: String,
+        /// Optional human/model-readable reason for the revocation.
+        reason: Option<String>,
+    },
     /// A compaction/consolidation product: a synthetic summary standing in for
     /// dropped turns. Appended — never rewrites history.
     Snapshot {
@@ -103,7 +126,12 @@ pub enum EventPayload {
 
 /// A turn: the events of one `turn_index`, in id order. A turn is complete
 /// when its `ToolResult`s all pair with a `ToolCall` in the same turn.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serde-derived so a projection can be persisted as a
+/// [`SessionCheckpoint`](super::checkpoint::SessionCheckpoint) — the snapshot
+/// must survive a restart, so it round-trips through JSON like the events it
+/// was built from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Turn {
     /// Turn index (== `turn_index` of every contained event).
     pub index: u64,
@@ -165,6 +193,55 @@ mod tests {
         let json = serde_json::to_string(&e).unwrap();
         let back: EventPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn tool_edit_and_undo_serde_tagged_roundtrip() {
+        // L253: tool edit/undo event types serialize under snake_case tags and
+        // round-trip losslessly, so a compacted session with in-place edits can
+        // be replayed atomically.
+        let cases = vec![
+            EventPayload::ToolEdit {
+                tool: "search".into(),
+                tool_input: serde_json::json!({"q": "rust 2"}),
+                call_id: "c1".into(),
+                superseded_call_id: "c0".into(),
+            },
+            EventPayload::ToolUndo {
+                undo_call_id: "c2".into(),
+                reason: Some("result was wrong".into()),
+            },
+        ];
+        for e in &cases {
+            let json = serde_json::to_string(e).unwrap();
+            let back: EventPayload = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, e);
+        }
+        let edit_json = serde_json::to_string(&cases[0]).unwrap();
+        assert_eq!(
+            edit_json,
+            r#"{"type":"tool_edit","tool":"search","tool_input":{"q":"rust 2"},"call_id":"c1","superseded_call_id":"c0"}"#
+        );
+    }
+
+    #[test]
+    fn tool_undo_reason_is_optional() {
+        let with: EventPayload =
+            serde_json::from_str(r#"{"type":"tool_undo","undo_call_id":"c","reason":"nope"}"#)
+                .unwrap();
+        assert!(matches!(
+            with,
+            EventPayload::ToolUndo {
+                reason: Some(_),
+                ..
+            }
+        ));
+        let without: EventPayload =
+            serde_json::from_str(r#"{"type":"tool_undo","undo_call_id":"c"}"#).unwrap();
+        assert!(matches!(
+            without,
+            EventPayload::ToolUndo { reason: None, .. }
+        ));
     }
 
     #[test]

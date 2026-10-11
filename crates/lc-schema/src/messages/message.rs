@@ -98,6 +98,34 @@ impl MediaPart<'_> {
             .map(|(_, data)| data)
     }
 
+    /// Convenient access to the raw attachment bytes.
+    ///
+    /// When the value is a base64 data URI this decodes that payload and returns
+    /// the resulting bytes; for a plain URL — or a `data:` URI carrying a
+    /// non-base64 encoding — it returns `None`. This saves callers from routing
+    /// through [`Self::base64_data`] and decoding by hand.
+    ///
+    /// Payloads may be padded or unpadded (data-URI construction never
+    /// guarantees canonical padding), and file-read URIs can embed
+    /// whitespace/newlines; both are tolerated. The standard and URL-safe
+    /// alphabets are accepted.
+    pub fn content_bytes(&self) -> Option<Vec<u8>> {
+        use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+        use base64::Engine;
+
+        let b64 = self.base64_data()?;
+        // Drop whitespace (tolerated by parsers reading from files) and any
+        // padding; the NO_PAD engines then accept padded and unpadded payloads.
+        let clean: String = b64
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace() && *c != '=')
+            .collect();
+        STANDARD_NO_PAD
+            .decode(clean.as_bytes())
+            .or_else(|_| URL_SAFE_NO_PAD.decode(clean.as_bytes()))
+            .ok()
+    }
+
     /// Returns whether the value is a `data:` URI.
     pub fn is_data_uri(&self) -> bool {
         self.url().starts_with("data:")
@@ -207,82 +235,27 @@ impl Message {
 
     /// Creates a human message with an image (vision).
     pub fn human_with_image(content: impl Into<String>, image_url: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            images: vec![ImageContent::from_url(image_url)],
-            audio: Vec::new(),
-            videos: Vec::new(),
-            files: Vec::new(),
-            message_type: MessageType::Human,
-            name: None,
-            additional_kwargs: HashMap::new(),
-            id: None,
-            tool_calls: None,
-        }
+        Self::human(content).with_image(ImageContent::from_url(image_url))
     }
 
     /// Creates a human message with multiple images.
     pub fn human_with_images(content: impl Into<String>, images: Vec<ImageContent>) -> Self {
-        Self {
-            content: content.into(),
-            images,
-            audio: Vec::new(),
-            videos: Vec::new(),
-            files: Vec::new(),
-            message_type: MessageType::Human,
-            name: None,
-            additional_kwargs: HashMap::new(),
-            id: None,
-            tool_calls: None,
-        }
+        Self::human(content).with_images(images)
     }
 
     /// Creates a human message with audio content.
     pub fn human_with_audio(content: impl Into<String>, audio: AudioContent) -> Self {
-        Self {
-            content: content.into(),
-            images: Vec::new(),
-            audio: vec![audio],
-            videos: Vec::new(),
-            files: Vec::new(),
-            message_type: MessageType::Human,
-            name: None,
-            additional_kwargs: HashMap::new(),
-            id: None,
-            tool_calls: None,
-        }
+        Self::human(content).with_audio(audio)
     }
 
     /// Creates a human message with video content.
     pub fn human_with_video(content: impl Into<String>, video: VideoContent) -> Self {
-        Self {
-            content: content.into(),
-            images: Vec::new(),
-            audio: Vec::new(),
-            videos: vec![video],
-            files: Vec::new(),
-            message_type: MessageType::Human,
-            name: None,
-            additional_kwargs: HashMap::new(),
-            id: None,
-            tool_calls: None,
-        }
+        Self::human(content).with_video(video)
     }
 
     /// Creates a human message with file content.
     pub fn human_with_file(content: impl Into<String>, file: FileContent) -> Self {
-        Self {
-            content: content.into(),
-            images: Vec::new(),
-            audio: Vec::new(),
-            videos: Vec::new(),
-            files: vec![file],
-            message_type: MessageType::Human,
-            name: None,
-            additional_kwargs: HashMap::new(),
-            id: None,
-            tool_calls: None,
-        }
+        Self::human(content).with_file(file)
     }
 
     /// Creates an AI (assistant) message.
@@ -302,6 +275,10 @@ impl Message {
     }
 
     /// Creates an AI message with tool calls.
+    ///
+    /// v0.27.0 (T2): tool-call `id`s are deduplicated — only the first
+    /// occurrence of each `id` is kept, since a tool result references a call
+    /// by `id` and two calls sharing one id would be ambiguous.
     pub fn ai_with_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             content: content.into(),
@@ -313,7 +290,7 @@ impl Message {
             name: None,
             additional_kwargs: HashMap::new(),
             id: None,
-            tool_calls: Some(tool_calls),
+            tool_calls: Some(dedup_tool_calls(tool_calls)),
         }
     }
 
@@ -359,6 +336,12 @@ impl Message {
         self
     }
 
+    /// Adds multiple images to the message (vision).
+    pub fn with_images(mut self, images: Vec<ImageContent>) -> Self {
+        self.images.extend(images);
+        self
+    }
+
     /// Adds audio content to the message.
     pub fn with_audio(mut self, audio: AudioContent) -> Self {
         self.audio.push(audio);
@@ -375,6 +358,38 @@ impl Message {
     pub fn with_file(mut self, file: FileContent) -> Self {
         self.files.push(file);
         self
+    }
+
+    /// Clears all image attachments.
+    pub fn clear_images(&mut self) {
+        self.images.clear();
+    }
+
+    /// Clears all audio attachments.
+    pub fn clear_audio(&mut self) {
+        self.audio.clear();
+    }
+
+    /// Clears all video attachments.
+    pub fn clear_videos(&mut self) {
+        self.videos.clear();
+    }
+
+    /// Clears all file attachments.
+    pub fn clear_files(&mut self) {
+        self.files.clear();
+    }
+
+    /// Clears every media attachment (images, audio, video, and files) at once.
+    ///
+    /// Convenient for dropping multimodal payloads (e.g. before streaming back
+    /// a chat history that must stay textual) without clearing the text
+    /// `content` or replacing the whole message.
+    pub fn clear_media(&mut self) {
+        self.images.clear();
+        self.audio.clear();
+        self.videos.clear();
+        self.files.clear();
     }
 
     /// Returns whether the message has images.
@@ -440,6 +455,144 @@ impl Message {
     /// Returns the tool calls if present.
     pub fn get_tool_calls(&self) -> Option<&[ToolCall]> {
         self.tool_calls.as_deref()
+    }
+
+    // -----------------------------------------------------------------------
+    // v0.27.0 T2: id dedup, structured projections, strong-correlation checks
+    // -----------------------------------------------------------------------
+
+    /// Appends tool calls to the message, deduplicating by `id` — existing
+    /// ids win, later duplicates are dropped; a message that already had no
+    /// tool calls adopts the (deduplicated) incoming list.
+    ///
+    /// v0.27.0 (T2): this is the `extend` counterpart to
+    /// [`Self::ai_with_tool_calls`] for merging tool-call streams that can
+    /// legitimately overlap.
+    pub fn extend_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
+        match &mut self.tool_calls {
+            Some(existing) => extend_dedup(existing, tool_calls),
+            None => self.tool_calls = Some(dedup_tool_calls(tool_calls)),
+        }
+        self
+    }
+
+    /// Returns the tool-call id of a tool-result message, preserving the
+    /// original structured [`MessageType::Tool`] field.
+    ///
+    /// v0.27.0 (T2): `type_str()` flattens the id into a modified `tool:<id>`
+    /// string; callers that only need the id use this borrow accessor instead
+    /// of parsing the id back out of the string (and avoid allocating).
+    pub fn tool_call_id(&self) -> Option<&str> {
+        match &self.message_type {
+            MessageType::Tool { tool_call_id } => Some(tool_call_id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns whether this is a system message (cheap role check that avoids
+    /// building the `type_str()` string).
+    pub fn is_system(&self) -> bool {
+        matches!(self.message_type, MessageType::System)
+    }
+
+    /// Returns whether this is a human (user) message.
+    pub fn is_human(&self) -> bool {
+        matches!(self.message_type, MessageType::Human)
+    }
+
+    /// Returns whether this is an AI (assistant) message.
+    pub fn is_ai(&self) -> bool {
+        matches!(self.message_type, MessageType::AI)
+    }
+
+    /// Returns whether this is a tool-result message.
+    pub fn is_tool(&self) -> bool {
+        matches!(self.message_type, MessageType::Tool { .. })
+    }
+
+    /// Validates the message's internal consistency — the strong correlation
+    /// between its role/`content` and its attachments and tool calls.
+    ///
+    /// v0.27.0 (T2). Enforced invariants:
+    /// * a tool-result message must carry a non-empty `tool_call_id`;
+    /// * an AI message's tool calls must each have a non-empty `id` and an
+    ///   empty-function-name is rejected (a name is required to dispatch);
+    /// * the message must be meaningful — non-empty `content`, at least one
+    ///   media attachment, or (AI) tool calls — not an empty shell.
+    pub fn validate(&self) -> Result<(), MessageError> {
+        match &self.message_type {
+            MessageType::Tool { tool_call_id } if tool_call_id.is_empty() => {
+                return Err(MessageError::MissingToolCallId);
+            }
+            MessageType::AI => {
+                for call in self.tool_calls.iter().flatten() {
+                    if call.id.is_empty() {
+                        return Err(MessageError::EmptyToolCallId);
+                    }
+                    if call.function.name.is_empty() {
+                        return Err(MessageError::MissingFunctionName);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if self.content.is_empty()
+            && !self.is_multimodal()
+            && self.tool_calls.as_deref().is_none_or(|calls| calls.is_empty())
+        {
+            return Err(MessageError::EmptyMessage);
+        }
+        Ok(())
+    }
+}
+
+/// Invalid-message conditions surfaced by [`Message::validate`].
+///
+/// v0.27.0 (T2): typed (not a bare `String`), so callers can match on a
+/// concrete invariant instead of comparing error text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageError {
+    /// A tool-result message has an empty/missing `tool_call_id`.
+    MissingToolCallId,
+    /// An AI message tool call has an empty `id`.
+    EmptyToolCallId,
+    /// An AI message tool call is missing its function name.
+    MissingFunctionName,
+    /// The message carries neither content, media attachments, nor tool calls.
+    EmptyMessage,
+}
+
+impl std::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::MissingToolCallId => "tool message is missing its tool_call_id",
+            Self::EmptyToolCallId => "ai message tool call has an empty id",
+            Self::MissingFunctionName => "ai message tool call is missing its function name",
+            Self::EmptyMessage => "message carries neither content, media, nor tool calls",
+        };
+        f.write_str(msg)
+    }
+}
+
+impl std::error::Error for MessageError {}
+
+/// Removes duplicate tool calls by `id`, keeping only the first occurrence.
+fn dedup_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    let mut seen = std::collections::HashSet::with_capacity(calls.len());
+    calls
+        .into_iter()
+        .filter(|call| seen.insert(call.id.clone()))
+        .collect()
+}
+
+/// In-place append of `incoming` tool calls to `existing`, keeping the first
+/// `id` occurrence (existing ids win). Private helper used by the builder
+/// methods that own `self`.
+fn extend_dedup(existing: &mut Vec<ToolCall>, incoming: Vec<ToolCall>) {
+    for call in incoming {
+        if !existing.iter().any(|c| c.id == call.id) {
+            existing.push(call);
+        }
     }
 }
 
@@ -595,6 +748,65 @@ mod tests {
         assert_eq!(p.mime_type(), None);
     }
 
+    /// Custom `with_images` builder (the human_with_images constructor converges onto it).
+    #[test]
+    fn test_with_images_builder() {
+        let msg = Message::human("multi")
+            .with_images(vec![
+                ImageContent::from_url("a"),
+                ImageContent::from_url("b"),
+            ])
+            .with_image(ImageContent::from_url("c"));
+        assert_eq!(msg.images.len(), 3);
+    }
+
+    /// v0.27.0: media attachments can be cleared individually and all at once
+    /// without replacing the message or touching text `content`.
+    #[test]
+    fn test_clear_media_attachments() {
+        let mut msg = Message::human("mixed")
+            .with_image(ImageContent::from_base64("i"))
+            .with_audio(AudioContent::from_base64("a"))
+            .with_video(VideoContent::from_base64("v"))
+            .with_file(FileContent::from_base64("f", "application/pdf"));
+        assert!(msg.is_multimodal());
+
+        // Per-type clearing.
+        msg.clear_images();
+        assert!(!msg.has_images());
+        assert!(msg.has_audio());
+        assert!(msg.is_multimodal());
+
+        // All-at-once clearing removes the rest; text content is preserved.
+        msg.clear_media();
+        assert!(!msg.is_multimodal());
+        assert_eq!(msg.content, "mixed");
+        assert_eq!(msg.media_parts().len(), 0);
+    }
+
+    /// v0.27.0: `MediaPart::content_bytes()` decodes a base64 data URI payload.
+    #[test]
+    fn test_media_part_content_bytes() {
+        // base64("BBBB") = "QkJCQg".
+        let msg = Message::human("h").with_image(ImageContent::from_base64_with_mime(
+            "QkJCQg",
+            "image/webp",
+        ));
+        let part = &msg.media_parts()[0];
+        assert_eq!(part.content_bytes().as_deref(), Some(&b"BBBB"[..]));
+
+        // Whitespace inside the payload is tolerated.
+        let spaced_msg = Message::human("h")
+            .with_image(ImageContent::from_url("data:image/png;base64,QkJC\nQg"));
+        let p2 = &spaced_msg.media_parts()[0];
+        assert_eq!(p2.content_bytes().as_deref(), Some(&b"BBBB"[..]));
+
+        // A plain URL carries no embedded bytes.
+        let url_msg = Message::human_with_image("h", "https://example.com/x.png");
+        let p3 = &url_msg.media_parts()[0];
+        assert_eq!(p3.content_bytes(), None);
+    }
+
     #[test]
     fn test_file_part_explicit_mime_and_name() {
         let file = FileContent::from_url_with_mime("https://e.com/d.pdf", "application/pdf")
@@ -603,5 +815,86 @@ mod tests {
         let part = &msg.media_parts()[0];
         assert_eq!(part.mime_type(), Some("application/pdf"));
         assert_eq!(part.name(), Some("d.pdf"));
+    }
+
+    // --- v0.27.0 T2: id dedup, structured projections, validate ---
+
+    fn call(id: &str, name: &str) -> ToolCall {
+        ToolCall::builder(id).name(name).arguments("{}").build()
+    }
+
+    #[test]
+    fn test_ai_with_tool_calls_dedups_ids() {
+        let msg = Message::ai_with_tool_calls(
+            "go",
+            vec![call("a", "t1"), call("b", "t2"), call("a", "t1_dup")],
+        );
+        let calls = msg.get_tool_calls().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "a");
+        assert_eq!(calls[1].id, "b");
+    }
+
+    #[test]
+    fn test_extend_tool_calls_dedups_existing_wins() {
+        let base = Message::ai_with_tool_calls("go", vec![call("a", "t1")]);
+        // Merge an overlapping stream: "a" already present, "c" is new.
+        let merged = base.extend_tool_calls(vec![call("a", "t1_dup"), call("c", "t3")]);
+        let calls = merged.get_tool_calls().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "a");
+        assert_eq!(calls[1].id, "c");
+    }
+
+    #[test]
+    fn test_extend_tool_calls_sets_when_none() {
+        let msg = Message::ai("no calls yet").extend_tool_calls(vec![call("x", "t")]);
+        assert_eq!(msg.get_tool_calls().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_tool_call_id_structured_projection() {
+        assert_eq!(Message::tool("call_9", "r").tool_call_id(), Some("call_9"));
+        assert_eq!(Message::system("s").tool_call_id(), None);
+        assert_eq!(Message::ai("a").tool_call_id(), None);
+        assert_eq!(Message::human("h").tool_call_id(), None);
+    }
+
+    #[test]
+    fn test_role_predicates() {
+        assert!(Message::system("s").is_system() && !Message::system("s").is_tool());
+        assert!(Message::human("h").is_human());
+        assert!(Message::ai("a").is_ai());
+        assert!(Message::tool("id", "c").is_tool());
+    }
+
+    #[test]
+    fn test_validate_content_attachment_correlation() {
+        // Meaningful: content present.
+        assert_eq!(Message::human("hi").validate(), Ok(()));
+        // Meaningful: content empty but multimodal attachment present.
+        assert_eq!(Message::human("").with_image(ImageContent::from_url("u")).validate(), Ok(()));
+        // Broken: empty text, no media, no tool calls.
+        assert_eq!(
+            Message::human("").validate(),
+            Err(MessageError::EmptyMessage)
+        );
+        // Broken: tool message with empty id.
+        let empty_id = Message {
+            content: "r".into(),
+            images: Vec::new(),
+            audio: Vec::new(),
+            videos: Vec::new(),
+            files: Vec::new(),
+            message_type: MessageType::Tool { tool_call_id: String::new() },
+            name: None,
+            additional_kwargs: HashMap::new(),
+            id: None,
+            tool_calls: None,
+        };
+        assert_eq!(empty_id.validate(), Err(MessageError::MissingToolCallId));
+        // Broken: ai tool call missing its function name.
+        let empty_name = Message::ai_with_tool_calls("go", vec![ToolCall::builder("a").build()]);
+        assert_eq!(empty_name.validate(), Err(MessageError::MissingFunctionName));
     }
 }

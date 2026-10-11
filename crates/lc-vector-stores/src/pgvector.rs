@@ -87,6 +87,19 @@ pub fn build_table_sql(table: &str, dim: usize) -> String {
     )
 }
 
+/// Build the cosine-distance HNSW index SQL for a table (pure function, convenient for testing).
+///
+/// The index name is derived from the (whitelist-validated) table name, so both identifiers are
+/// safe for interpolation. `vector_cosine_ops` is the operator class for the `<=>` cosine-distance
+/// operator the store's `similarity_search` uses — an index on this opclass is what actually makes
+/// the `ORDER BY (1 - (embedding <=> $1))` query use an index instead of a full-table scan.
+pub fn build_hnsw_index_sql(table: &str) -> String {
+    format!(
+        "CREATE INDEX IF NOT EXISTS {}_embedding_hnsw_idx ON {} USING hnsw (embedding vector_cosine_ops)",
+        table, table
+    )
+}
+
 /// PGVector store configuration.
 #[derive(Debug, Clone)]
 pub struct PGVectorConfig {
@@ -457,6 +470,20 @@ impl PGVectorStore {
         Ok(())
     }
 
+    /// Creates a cosine-distance HNSW index on the embedding column (`CREATE INDEX IF NOT EXISTS`,
+    /// idempotent; re-running is a no-op).
+    ///
+    /// pgvector creates **no** index automatically, so before this runs `similarity_search` is a
+    /// full-table scan. The index (operator class `vector_cosine_ops`) matches the `<=>` operator
+    /// the store's queries use, so retrieval actually accelerates once it exists. HNSW parameters
+    /// use pgvector's defaults (`m=16`, `ef_construction=64`); pass `table` through
+    /// `CREATE EXTENSION vector;` first (see [`initialize`](Self::initialize)).
+    pub async fn create_hnsw_index(&self) -> Result<(), VectorStoreError> {
+        let sql = build_hnsw_index_sql(&self.table);
+        query(&sql).execute(&self.pool).await.map_err(map_sqlx)?;
+        Ok(())
+    }
+
     /// Unified retrieval implementation: optional metadata filtering + optional minimum score threshold.
     ///
     /// SQL shape: `SELECT … (1 - (embedding <=> $1)) AS score FROM <table>
@@ -682,6 +709,25 @@ mod tests {
         let sql = build_table_sql("docs", 1536);
         assert!(sql.contains("metadata JSONB"));
         assert!(sql.contains("id TEXT PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_build_hnsw_index_sql_uses_cosine_opclass() {
+        // The opclass must match the store's `<=>` cosine operator so the index actually accelerates search.
+        let sql = build_hnsw_index_sql("docs");
+        assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
+        assert!(sql.contains("docs_embedding_hnsw_idx"));
+        assert!(sql.contains("USING hnsw"));
+        assert!(sql.contains("embedding vector_cosine_ops"));
+    }
+
+    #[test]
+    fn test_build_hnsw_index_sql_idempotent() {
+        // IF NOT EXISTS makes re-running the method a no-op, safe to call every boot.
+        let sql = build_hnsw_index_sql("embeddings");
+        assert!(sql.contains("IF NOT EXISTS"));
+        assert!(sql.contains("embeddings_embedding_hnsw_idx"));
+        assert!(sql.contains("embeddings"));
     }
 
     #[test]

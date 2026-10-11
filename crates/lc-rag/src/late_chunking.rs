@@ -14,7 +14,7 @@
 
 use lc_embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings};
 use lc_embeddings::EmbeddingError;
-use lc_vector_stores::{Document, VectorStore, VectorStoreError};
+use lc_vector_stores::{Document, VectorStore, VectorStoreError, CHUNK_ID_SEPARATOR};
 
 /// Configuration for late chunking.
 #[derive(Debug, Clone)]
@@ -209,8 +209,12 @@ pub async fn late_chunk<E: TokenLevelEmbeddings>(
 ///
 /// Scope is deliberately vector-side and backend-agnostic: pair it with a BM25
 /// retriever fed the same chunk texts for a hybrid index. Each stored
-/// [`Document`]'s id is `{parent_key}:{index}`, its text the original windowed
-/// slice, its embedding the pooled (already L2-normalized) vector.
+/// [`Document`]'s id is `{parent_key}{CHUNK_ID_SEPARATOR}{index}`, its text
+/// the original windowed slice, its embedding the pooled (already
+/// L2-normalized) vector. The separator is the canonical
+/// [`lc_vector_stores::CHUNK_ID_SEPARATOR`] so a late-chunked index shares the
+/// same `{parent}::{segment}` chunk-id shape as every other chunking backend
+/// (L118 unification).
 ///
 /// See `crates/lc-rag/examples/late_chunking.rs` for a retrieval demo.
 pub async fn late_index_in<E: TokenLevelEmbeddings>(
@@ -232,7 +236,9 @@ pub async fn late_index_in<E: TokenLevelEmbeddings>(
     let docs: Vec<Document> = chunks
         .iter()
         .enumerate()
-        .map(|(i, c)| Document::new(c.text.clone()).with_id(format!("{parent_key}:{i}")))
+        .map(|(i, c)| {
+            Document::new(c.text.clone()).with_id(format!("{parent_key}{CHUNK_ID_SEPARATOR}{i}"))
+        })
         .collect();
     let embeddings: Vec<Vec<f32>> = chunks.into_iter().map(|c| c.vector).collect();
     vector_store.add_documents(docs, embeddings).await
@@ -450,8 +456,9 @@ mod tests {
         let ids = late_index_in(&store, &MockTokenEmbeddings, "doc", text, &config)
             .await
             .unwrap();
-        // One whole-document pass → two pooled chunks, deterministically id'd.
-        assert_eq!(ids, vec!["doc:0".to_string(), "doc:1".to_string()]);
+        // One whole-document pass → two pooled chunks, deterministically id'd
+        // with the canonical `::` separator (L118 unification).
+        assert_eq!(ids, vec!["doc::0".to_string(), "doc::1".to_string()]);
 
         // The pooled vectors are actually retrievable through the same backend.
         let hits = store.similarity_search(&[1.0, 1.0], 2).await.unwrap();

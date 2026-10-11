@@ -20,10 +20,11 @@ static WT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static PARA_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"</w:p>").expect("static regex literal must compile"));
 
-/// Cap on the decompressed size of `word/document.xml`. A DOCX is a ZIP; a
-/// crafted archive can compress a huge XML body to a tiny on-disk entry, so
-/// without a bound decompression balloons memory (decompression bomb).
-const DEFAULT_MAX_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+// Screen before unzipping: the on-disk file cap is the shared `super::MAX_LOCAL_FILE_BYTES`
+// (checked in `load` via a metadata stat), and the decompressed `word/document.xml` body is
+// bounded by the shared `super::MAX_EXTRACTED_BYTES` — a DOS is a ZIP, so a crafted archive
+// can compress a huge XML body to a tiny on-disk entry (decompression bomb); both come from
+// the unified loader policy (0.27.0 §4, previously DOCX kept its own duplicated constant).
 
 /// DOCX document loader
 ///
@@ -45,7 +46,7 @@ impl DocxLoader {
     /// A DOCX file is a ZIP package; the body lives in `word/document.xml`,
     /// with the text inside `<w:t>` tags.
     fn extract_text_from_bytes(data: &[u8]) -> Result<String, LoaderError> {
-        Self::extract_text_from_bytes_with_limit(data, DEFAULT_MAX_DECOMPRESSED_BYTES)
+        Self::extract_text_from_bytes_with_limit(data, super::MAX_EXTRACTED_BYTES)
     }
 
     /// Extracts text from DOCX bytes, bounding the decompressed size of
@@ -74,7 +75,9 @@ impl DocxLoader {
                 (&mut file)
                     .take((max_decompressed_bytes + 1) as u64)
                     .read_to_string(&mut xml_content)
-                    .map_err(|e| LoaderError::Other(format!("failed to read document.xml: {}", e)))?;
+                    .map_err(|e| {
+                        LoaderError::Other(format!("failed to read document.xml: {}", e))
+                    })?;
                 if xml_content.len() > max_decompressed_bytes {
                     return Err(LoaderError::Other(format!(
                         "decompressed document.xml exceeds {max_decompressed_bytes} bytes (decompression bomb)"
@@ -126,6 +129,18 @@ impl DocxLoader {
 #[async_trait]
 impl DocumentLoader for DocxLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
+        // 0.27.0 §4: unified on-disk budget — reject an oversized .docx before reading it into
+        // memory. A DOCX can decompress far beyond its on-disk size, and the unzipped
+        // `word/document.xml` is separately capped by `MAX_EXTRACTED_BYTES` inside
+        // `extract_text_from_bytes`; this stat check bounds the archive we're willing to read.
+        let file_size = tokio::fs::metadata(&self.path).await?.len();
+        if file_size > super::MAX_LOCAL_FILE_BYTES as u64 {
+            return Err(LoaderError::Other(format!(
+                "DOCX file size {file_size} exceeds pre-parse limit of {} bytes",
+                super::MAX_LOCAL_FILE_BYTES
+            )));
+        }
+
         let data = tokio::task::spawn_blocking({
             let path = self.path.clone();
             move || std::fs::read(&path)
@@ -193,8 +208,11 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         {
             let mut zw = zip::ZipWriter::new(&mut buf);
-            zw.start_file("word/document.xml", zip::write::SimpleFileOptions::default())
-                .unwrap();
+            zw.start_file(
+                "word/document.xml",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
             zw.write_all(entry_xml.as_bytes()).unwrap();
             zw.finish().unwrap();
         }

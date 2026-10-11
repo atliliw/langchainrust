@@ -26,6 +26,27 @@ use crate::{EmbeddingError, Embeddings};
 /// FastEmbed embedding provider.
 ///
 /// Wraps the `fastembed::TextEmbedding` ONNX Runtime engine.
+///
+/// ## §3.4 — why this is a single global lock (deliberate serialization tradeoff)
+///
+/// All concurrent embeddings share one `Arc<Mutex<TextEmbedding>>` and serialize on it. That
+/// is accepted deliberately because the alternatives are not viable here:
+///
+/// - **per-request instances are not lightweight.** `TextEmbedding::try_new` resolves the
+///   model repo (first use can download via hf-hub), reads the `.onnx` weight file and
+///   `commit_from_file`s an ONNX session, and loads the tokenizer. Reconstructing that for
+///   every call — especially in a hot batch path — would cost more than the lock it replaces.
+/// - **no cheap clone.** `fastembed::TextEmbedding` is not `Clone`, so there is no
+///   Arc-session clone to hand to each task.
+/// - **`embed(&mut self)` is exclusive.** The engine needs `&mut self` (and is not `Sync`), so
+///   independent instances are the *only* way to run inference in parallel, and they are
+///   ruled out above.
+///
+/// Each `embed_documents` call already batches its whole input under a single lock acquisition,
+/// so parallelism is lost only *across* distinct concurrent calls — the documented tradeoff.
+/// A future pool of pre-constructed models (`Arc<Mutex<TextEmbedding>>` per worker) could
+/// recover cross-call concurrency without reloading per request; wiring it in would keep the
+/// public API unchanged.
 pub struct FastEmbedEmbeddings {
     // `TextEmbedding::embed` 需要 `&mut self`,而 `Embeddings` trait 方法只给 `&self`;
     // 用 `Arc<Mutex<>>` 提供内部可变性,并让 `spawn_blocking` 能以 `'static` 捕获模型。
@@ -186,8 +207,12 @@ impl Embeddings for FastEmbedEmbeddings {
 
         let text = text.to_string();
         let model = Arc::clone(&self.model);
+        // §4 (return-side): the model's dimension comes from the static
+        // `infer_dimension` table; the ONNX runtime's actual output width must be
+        // checked against it rather than trusted.
+        let expected_dim = self.dimension;
 
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> Result<Vec<f32>, EmbeddingError> {
             let mut model = model.lock().map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
             })?;
@@ -195,15 +220,15 @@ impl Embeddings for FastEmbedEmbeddings {
                 EmbeddingError::ApiError(format!("FastEmbed inference failed: {}", e))
             })?;
 
-            // A12: uniform L2 normalization, matching every other backend (P2-8).
-            result
+            let mut embedding = result
                 .first()
-                .cloned()
-                .map(|mut v| {
-                    crate::l2_normalize(&mut v);
-                    v
-                })
-                .ok_or_else(|| EmbeddingError::ApiError("No embedding returned".to_string()))
+                .ok_or_else(|| EmbeddingError::ApiError("No embedding returned".to_string()))?
+                .clone();
+            // §3.1: returned width must equal the static-model-table dimension.
+            crate::ensure_dimension(&embedding, expected_dim)?;
+            // A12: uniform L2 normalization, matching every other backend (P2-8).
+            crate::l2_normalize(&mut embedding);
+            Ok(embedding)
         })
         .await
         .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?
@@ -220,6 +245,9 @@ impl Embeddings for FastEmbedEmbeddings {
 
         let text_vec: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
         let model = Arc::clone(&self.model);
+        // §4 (return-side): same width check as embed_query — the static table's
+        // dimension is separate from what the ONNX model actually emits.
+        let expected_dim = self.dimension;
 
         tokio::task::spawn_blocking(move || {
             let mut model = model.lock().map_err(|e| {
@@ -249,6 +277,8 @@ impl Embeddings for FastEmbedEmbeddings {
                 }
                 out
             };
+            // §3.1: returned widths must equal the static-model-table dimension.
+            crate::ensure_all_dimensions(&normalized, expected_dim)?;
             Self::aligned_batch(normalized, expected)
         })
         .await

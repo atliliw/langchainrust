@@ -169,6 +169,16 @@ impl OtelHandler {
     /// Every span gets the framework run/trace ids so exported spans join back
     /// to evaluation reports and trace trees.
     async fn start_span(&self, name: &str, run: &RunTree) {
+        // Idempotent for a given run id (same dedup as base.rs `active_trace_spans`):
+        // if the run already has an active span, a re-entrant start is ignored rather
+        // than overwritten. A plain `insert` would replace the existing span — dropping
+        // (emitting) it mid-run and installing a fresh one with a new SpanId, breaking
+        // the trace topology for everything published after.
+        let key = run.id.to_string();
+        if self.spans.lock().await.contains_key(&key) {
+            return;
+        }
+
         // If the run has a parent run with an active span, build an OTel Context
         // carrying that span's SpanContext so the new span is a true child in the
         // trace topology. The SpanContext is cloned while the lock is held, then
@@ -181,6 +191,12 @@ impl OtelHandler {
                         .get(&parent_id.to_string())
                         .map(|parent_span| parent_span.span_context().clone())
                 })
+                // §3.6 (verified non-issue): `with_remote_span_context` is the propagator-oriented
+                // method but its impl is just `span_context.into()` — it stores the input
+                // `SpanContext` verbatim and does NOT force `is_remote`. An in-process parent's
+                // `SpanContext` already carries `is_remote == false` (local spans default to
+                // non-remote in the SDK), so the child is correctly a local parent here. The
+                // opentelemetry 0.27 `Context` has no local-favouring `with_span_context`.
                 .map(|parent_ctx| Context::new().with_remote_span_context(parent_ctx))
         };
 
@@ -193,7 +209,12 @@ impl OtelHandler {
             TRACE_ID_ATTR,
             run.trace_id.unwrap_or(run.id).to_string(),
         ));
-        self.spans.lock().await.insert(run.id.to_string(), span);
+        let mut spans = self.spans.lock().await;
+        if spans.contains_key(&key) {
+            // A concurrent start won this round; drop this span instead of overwriting.
+            return;
+        }
+        spans.insert(key, span);
     }
 
     /// End the span associated with the given run ID.
@@ -1126,5 +1147,25 @@ mod tests {
         assert_eq!(h.active_span_count().await, 0);
         h.end_span(&r1).await;
         assert_eq!(h.active_span_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn reentrant_start_span_is_idempotent() {
+        // T1 去抖: a re-entrant start for the same run id must be ignored, not
+        // overwrite the active span (which would emit it mid-run and orphan the trace).
+        let (h, exporter) = handler_with_exporter();
+        let run = RunTree::new("re", crate::RunType::Chain, json!({}));
+        for _ in 0..3 {
+            h.start_span("re-entrant", &run).await;
+            assert_eq!(
+                h.active_span_count().await,
+                1,
+                "re-entrant start leaked a span"
+            );
+        }
+        h.end_span(&run).await;
+        assert_eq!(h.active_span_count().await, 0);
+        // Exactly one span was created and exported (not three).
+        assert_eq!(exporter.get_finished_spans().unwrap().len(), 1);
     }
 }

@@ -47,13 +47,13 @@ pub use base::{
 pub use buffer::ConversationBufferMemory;
 pub use context_manager::{ContextManager, ContextManagerBuilder, ReadStrategy, WriteStrategy};
 pub use context_window::{ContextWindow, Strategy};
-pub use decay::{ForgetConfig, ForgettingMemory};
+pub use decay::{ForgetConfig, ForgettingCurve, ForgettingMemory};
 pub use file_memory::{FileMemoryError, FileMemoryStore, MemoryEntry};
 pub use persistent::{MemoryData, PersistenceConfig, PersistentMemory};
 pub use semantic::{
-    DecayWeights, LexicalScorer, LongTermMemory, MemoryExtractor, MemoryHit, MemoryItem,
-    MemoryQuery, MemoryStore, MemoryTier, PromotionPolicy, SemanticScorer, ShortTermMemory,
-    StoredMemory, TwoTierMemory,
+    DecayWeights, HybridScorer, LexicalScorer, LongTermMemory, MemoryExtractor, MemoryHit,
+    MemoryItem, MemoryQuery, MemoryStore, MemoryTier, PromotionPolicy, SemanticScorer,
+    ShortTermMemory, StoredMemory, TwoTierMemory,
 };
 pub use summary::ConversationSummaryMemory;
 pub use summary_buffer::ConversationSummaryBufferMemory;

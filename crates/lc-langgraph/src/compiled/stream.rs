@@ -11,7 +11,9 @@ use crate::node::NodeConfig;
 use crate::state::StateSchema;
 use futures_util::future::join_all;
 use futures_util::Stream;
+use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -30,7 +32,7 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         let graph = self.clone();
-        tokio::spawn(async move {
+        let body = async move {
             let mut state = input;
             let mut current_node = graph.entry_point.clone();
             let mut recursion_count = 0;
@@ -292,7 +294,8 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
             }
 
             let _ = tx.send(Ok(StreamEvent::end(state))).await;
-        });
+        };
+        spawn_stream_producer(body);
 
         Box::pin(ReceiverStream::new(rx))
     }
@@ -304,7 +307,6 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
     pub async fn stream_collected(&self, input: S) -> GraphResult<Vec<StreamEvent<S>>> {
         let mut events = Vec::new();
         let mut stream = self.stream(input);
-        use futures_util::StreamExt;
         while let Some(event) = stream.next().await {
             events.push(event?);
         }
@@ -542,7 +544,23 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
             })
             .collect();
 
-        let results = join_all(futures).await;
+        // T2: honour the configured fan-out concurrency bound.
+        //
+        // `join_all` polls every branch future at once, so a wide fan-out over a
+        // rate-limited backend issues all of its requests simultaneously.
+        // `buffered(n)` keeps at most `n` in flight and starts the next as one
+        // finishes. It yields in INPUT order (unlike `buffer_unordered`), so the
+        // branch results — and therefore the field-union merge and the recorded
+        // steps — stay identical to the unbounded run.
+        let results = match self.max_concurrency {
+            Some(limit) => {
+                futures_util::stream::iter(futures)
+                    .buffered(limit)
+                    .collect()
+                    .await
+            }
+            None => join_all(futures).await,
+        };
 
         let mut successful = Vec::new();
         for result in results {
@@ -553,5 +571,38 @@ impl<S: StateSchema + Send + Sync + 'static> CompiledGraph<S> {
         }
 
         Ok(successful)
+    }
+}
+
+/// Drives `body` using the ambient Tokio runtime when present, otherwise builds
+/// a dedicated current-thread runtime and runs it on a background thread.
+///
+/// `tokio::spawn` panics when called outside a Tokio runtime (e.g. when
+/// [`CompiledGraph::stream`] is pumped by a non-Tokio async executor). This
+/// helper avoids that crash while keeping the stream honest — events still flow
+/// through the shared mpsc channel either way.
+fn spawn_stream_producer<F>(body: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Inside a Tokio runtime: drive on the runtime's own threads.
+        tokio::spawn(body);
+    } else {
+        // No ambient runtime: run on a fresh current-thread runtime + thread.
+        // A failed runtime build is effectively impossible with the `rt`
+        // feature (which `tokio::spawn` above already requires), so a dropped
+        // producer would leave only an empty stream in that unreachable case.
+        let _ = std::thread::Builder::new()
+            .name("lc-langgraph-stream".into())
+            .spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                rt.block_on(body);
+            });
     }
 }

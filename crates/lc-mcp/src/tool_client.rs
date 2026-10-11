@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::protocol::MCPError;
-use crate::types::{MCPToolDefinition, MCPToolResult};
+use crate::types::{ListToolsResult, MCPToolDefinition, MCPToolResult};
 
 /// The tool-oriented operations every MCP client track supports.
 ///
@@ -21,6 +21,24 @@ use crate::types::{MCPToolDefinition, MCPToolResult};
 pub trait McpToolClient: Send + Sync {
     /// Lists the tools the server exposes (`tools/list`).
     async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError>;
+
+    /// `tools/list` with cursor pagination (#79).
+    ///
+    /// Default implementation issues `tools/list` with the cursor and returns
+    /// the full envelope including `nextCursor`, so a caller can page through a
+    /// large tool set. Concrete clients override `send`-backed pagination; the
+    /// fallback here degrades to a single page via `list_tools` when a client
+    /// does not implement the cursor-aware path.
+    async fn list_tools_page(
+        &self,
+        _cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        let tools = self.list_tools().await?;
+        Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+        })
+    }
 
     /// Invokes one server tool by its server-side name (`tools/call`).
     async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError>;

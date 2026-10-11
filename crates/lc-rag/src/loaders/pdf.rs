@@ -7,10 +7,11 @@ use super::{Document, DocumentLoader, LoaderError};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-/// Cap on extracted PDF text bytes. `pdf_extract` has no size limit of its own,
-/// so a crafted PDF can balloon to huge extracted text; cap the produced
-/// `Document` so the caller never receives an unbounded payload.
-const DEFAULT_MAX_PDF_TEXT_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+// Size budgets are the shared loader-wide constants in `super`: the on-disk file
+// cap (`MAX_LOCAL_FILE_BYTES`, checked via a `metadata` stat before parsing) and
+// the produced-text cap (`MAX_EXTRACTED_BYTES`, checked after extraction).
+// `pdf_extract` has no size limit of its own, so both are enforced here (0.27.0 §4
+// unified policy; the PDF loader previously kept its own 1 GiB on-disk budget).
 
 /// PDF document loader
 pub struct PDFLoader {
@@ -51,20 +52,34 @@ impl DocumentLoader for PDFLoader {
             )));
         }
 
+        // Pre-flight size guard (0.26.0 MEDIUM): a compressed PDF can expand
+        // enormously inside `pdf_extract` (which has no size limit we can hand
+        // it), so refuse to even begin parsing an absurdly large file. This
+        // bounds the CPU + layout memory spent on a bomb; the post-extract
+        // byte cap below still stops the produced payload from flowing on.
+        let file_size = tokio::fs::metadata(&self.path)
+            .await
+            .map_err(|e| LoaderError::Other(format!("PDF stat failed: {e}")))?
+            .len();
+        if file_size > super::MAX_LOCAL_FILE_BYTES as u64 {
+            return Err(LoaderError::Other(format!(
+                "PDF file size {file_size} exceeds pre-parse limit of {} bytes",
+                super::MAX_LOCAL_FILE_BYTES
+            )));
+        }
+
         // Extract text using the pdf_extract library. The extraction is CPU-bound and can be slow,
         // so run it on the blocking thread pool rather than stalling the async executor (L1).
         let path = self.path.clone();
         let text = tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path))
             .await
-            .map_err(|e| {
-                LoaderError::Other(format!("PDF extract task failed to complete: {e}"))
-            })?
+            .map_err(|e| LoaderError::Other(format!("PDF extract task failed to complete: {e}")))?
             .map_err(|e| LoaderError::PdfError(format!("PDF parse failed: {e}")))?;
 
         // Bound the extracted text (decompression-bomb guard): `pdf_extract`
         // materializes the full string internally before we see it, so cap the
         // output and fail closed rather than let an oversized `Document` flow on.
-        let text = Self::bound_text_len(text, DEFAULT_MAX_PDF_TEXT_BYTES)?;
+        let text = Self::bound_text_len(text, super::MAX_EXTRACTED_BYTES)?;
 
         // Create the document object, including metadata
         let mut document = Document::new(text);

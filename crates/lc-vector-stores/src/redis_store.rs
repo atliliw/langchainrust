@@ -40,9 +40,44 @@ impl RedisStoreConfig {
     }
 }
 
+/// Checks a live blocking connection out of the shared pool, opening a fresh one only when the pool
+/// is empty. The pool lock is released before the network connect so a slow Redis does not block
+/// other borrowers while it establishes a new connection.
+fn redis_checkout(
+    client: &redis::Client,
+    pool: &std::sync::Mutex<std::collections::VecDeque<redis::Connection>>,
+) -> Result<redis::Connection, VectorStoreError> {
+    let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+    match guard.pop_back() {
+        Some(conn) => Ok(conn),
+        None => {
+            drop(guard);
+            client
+                .get_connection()
+                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))
+        }
+    }
+}
+
+/// Returns a connection to the pool. Only called on the success path; a failed operation drops its
+/// `conn` instead, so a broken connection is never recycled back into the pool.
+fn redis_release(
+    pool: &std::sync::Mutex<std::collections::VecDeque<redis::Connection>>,
+    conn: redis::Connection,
+) {
+    pool.lock().unwrap_or_else(|e| e.into_inner()).push_back(conn);
+}
+
 /// Redis document store implementation
 pub struct RedisDocumentStore {
     config: RedisStoreConfig,
+    /// Reusable named client. `redis::Client` is cheap to clone (an inner registry handle); keeping
+    /// it avoids re-parsing the URL / re-resolving the connection opener on every small operation.
+    client: redis::Client,
+    /// Shared FIFO pool of live blocking connections. `redis::Client` does not pool internally, so
+    /// we keep a hand-rolled `VecDeque` under a mutex: each op checks one out for its brief blocking
+    /// window and returns it on success (dropped on error so a broken connection can't be recycled).
+    pool: Arc<std::sync::Mutex<std::collections::VecDeque<redis::Connection>>>,
 }
 
 impl RedisDocumentStore {
@@ -50,11 +85,16 @@ impl RedisDocumentStore {
     pub async fn new(config: RedisStoreConfig) -> Result<Self, VectorStoreError> {
         let client = redis::Client::open(config.url.as_str())
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-        // verify the connection (the client is not kept; later operations reconnect on demand)
+        // verify the connection; operations then draw from (and replenish) the shared pool instead
+        // of re-running `Client::open` + `get_connection` (a TCP/TLS handshake) on every call.
         let _ = client
             .get_connection()
             .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            client,
+            pool: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        })
     }
 
     fn doc_key(&self, id: &str) -> String {
@@ -87,12 +127,12 @@ impl DocumentStore for RedisDocumentStore {
         let json = serde_json::to_string(&document)
             .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let id2 = id.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+            let mut conn = redis_checkout(&client, &pool)?;
             redis::cmd("SET")
                 .arg(format!("{}:doc:{}", config.key_prefix, id2))
                 .arg(&json)
@@ -103,6 +143,7 @@ impl DocumentStore for RedisDocumentStore {
                 .arg(&id2)
                 .query::<()>(&mut conn)
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
+            redis_release(&pool, conn);
             Ok(())
         })
         .await
@@ -159,15 +200,17 @@ impl DocumentStore for RedisDocumentStore {
 impl RedisDocumentStore {
     async fn get_str(&self, key: &str) -> Result<Option<String>, VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let key = key.to_string();
         tokio::task::spawn_blocking(move || -> Result<Option<String>, VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("GET")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("GET")
                 .arg(&key)
                 .query(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -175,15 +218,17 @@ impl RedisDocumentStore {
 
     async fn del(&self, key: &str) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let key = key.to_string();
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("DEL")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("DEL")
                 .arg(&key)
                 .query::<()>(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -191,16 +236,18 @@ impl RedisDocumentStore {
 
     async fn srem(&self, key: &str, member: &str) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let (k, m) = (key.to_string(), member.to_string());
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SREM")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("SREM")
                 .arg(&k)
                 .arg(&m)
                 .query::<()>(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -208,15 +255,17 @@ impl RedisDocumentStore {
 
     async fn smembers(&self, key: &str) -> Result<Vec<String>, VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let key = key.to_string();
         tokio::task::spawn_blocking(move || -> Result<Vec<String>, VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SMEMBERS")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("SMEMBERS")
                 .arg(&key)
                 .query(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -224,15 +273,17 @@ impl RedisDocumentStore {
 
     async fn scard(&self, key: &str) -> Result<usize, VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let key = key.to_string();
         tokio::task::spawn_blocking(move || -> Result<usize, VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SCARD")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("SCARD")
                 .arg(&key)
                 .query(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -241,10 +292,10 @@ impl RedisDocumentStore {
     /// M29: Clear only keys with the configured prefix using SCAN + DEL
     async fn clear_with_prefix(&self) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+            let mut conn = redis_checkout(&client, &pool)?;
 
             let pattern = format!("{}:*", config.key_prefix);
             let mut cursor: u64 = 0;
@@ -272,6 +323,7 @@ impl RedisDocumentStore {
                 }
             }
 
+            redis_release(&pool, conn);
             Ok(())
         })
         .await
@@ -285,13 +337,15 @@ impl RedisDocumentStore {
     /// file path, so this is now a parameterless inherent method.
     pub async fn save_to_disk(&self) -> Result<(), VectorStoreError> {
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || -> Result<(), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
-            redis::cmd("SAVE")
+            let mut conn = redis_checkout(&client, &pool)?;
+            let result = redis::cmd("SAVE")
                 .query::<()>(&mut conn)
-                .map_err(|e| VectorStoreError::StorageError(e.to_string()))
+                .map_err(|e| VectorStoreError::StorageError(e.to_string()));
+            redis_release(&pool, conn);
+            result
         })
         .await
         .map_err(|e| VectorStoreError::StorageError(e.to_string()))?
@@ -319,13 +373,13 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
 
         // run all Redis operations via spawn_blocking
         let config = self.config.clone();
+        let client = self.client.clone();
+        let pool = self.pool.clone();
         let pid = parent_id.clone();
         let chunks = chunks_text.clone();
 
         tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), VectorStoreError> {
-            let mut conn = redis::Client::open(config.url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| VectorStoreError::ConnectionError(e.to_string()))?;
+            let mut conn = redis_checkout(&client, &pool)?;
 
             redis::cmd("SET")
                 .arg(format!("{}:doc:{}", config.key_prefix, pid))
@@ -335,9 +389,9 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
 
             // H6: drop this parent's previous chunk set before writing the new one so a
             // re-ingest that shrank / changed segmentation leaves no stale
-            // `{pid}:chunk:{n}` keys nor ghost membership in `pchunks` / `all_chunks`
-            // (mirrors the in-memory C5 behavior). SMEMBERS on a never-seen parent
-            // returns an empty set, so a first add is a no-op.
+            // `{prefix}:chunk:{pid}::{n}` keys nor ghost membership in `pchunks` /
+            // `all_chunks` (mirrors the in-memory C5 behavior). SMEMBERS on a
+            // never-seen parent returns an empty set, so a first add is a no-op.
             let pchunks_key = format!("{}:pchunks:{}", config.key_prefix, pid);
             let old_ids: Vec<String> = redis::cmd("SMEMBERS")
                 .arg(&pchunks_key)
@@ -362,7 +416,7 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
 
             let mut chunk_ids = Vec::new();
             for (i, text) in chunks.iter().enumerate() {
-                let cid = format!("{}:chunk:{}", pid, i);
+                let cid = crate::chunk_id(&pid, i);
                 let chunk = ChunkDocument::new(cid.clone(), pid.clone(), text.clone(), i);
                 let cjson = serde_json::to_string(&chunk)
                     .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
@@ -394,6 +448,7 @@ impl ChunkedDocumentStoreTrait for RedisDocumentStore {
                 .query::<()>(&mut conn)
                 .map_err(|e| VectorStoreError::StorageError(e.to_string()))?;
 
+            redis_release(&pool, conn);
             Ok((pid, chunk_ids))
         })
         .await

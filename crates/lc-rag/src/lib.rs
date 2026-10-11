@@ -10,6 +10,8 @@ pub mod adapter;
 pub mod agentic_retrieval;
 pub mod bm25;
 pub mod colbert;
+pub mod colbert_finetune;
+pub mod context_editing;
 pub mod context_injection;
 pub mod contextual;
 pub mod graph_rag;
@@ -36,6 +38,10 @@ pub mod unified_hybrid;
 
 pub use adapter::RagRunnable;
 pub use agentic_retrieval::{refine_query, IterativeRetrieval, IterativeRetriever};
+pub use context_editing::{
+    dedup_hits, dedup_hits_with_threshold, fit_to_budget, fit_to_budget_owned, trim_redundant,
+    trim_redundant_with_min_run, ContextEditor, ContextEditorConfig, DropReason, EditedDoc,
+};
 pub use context_injection::{
     ContextInjectionConfig, ContextInjector, CONTEXT_INJECTED_KEY, PARENT_TITLE_KEY,
 };
@@ -84,6 +90,12 @@ pub use hyde::{HyDEConfig, HyDEError, HyDERetriever};
 pub use late_chunking::{late_chunk, late_index_in, pool_tokens, LateChunk, LateChunkConfig};
 
 pub use colbert::{score as colbert_score, ColbertRerank};
+pub use colbert_finetune::{
+    build_triplets, distillation_loss, distillation_pair_weights, embed_triplets, finetune_step,
+    learn_fusion_weights, margin_components, maxsim_margin_loss, maxsim_score, temperature_softmax,
+    train_epoch, EmbeddedTriplet, EpochResult, FusionWeights, MarginComponents, TripletDataset,
+    TripletExample,
+};
 pub use neural_rerank::{rerank_async, AsyncReranker, CohereRerank, JinaRerank};
 pub use reranking::{
     BM25Reranker, KeywordReranker, Reranker, RerankingConfig, RerankingError, RerankingExecutor,

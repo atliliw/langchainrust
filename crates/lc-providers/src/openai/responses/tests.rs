@@ -56,7 +56,7 @@ fn test_config_builder() {
         .with_builtin_tool(BuiltinTool::WebSearch)
         .with_builtin_tool(BuiltinTool::CodeInterpreter);
 
-    assert_eq!(config.api_key, "sk-test");
+    assert_eq!(config.api_key.expose_secret(), "sk-test");
     assert_eq!(config.model, "gpt-4o");
     assert_eq!(config.base_url, "https://api.openai.com/v1");
     assert_eq!(config.temperature, Some(0.7));
@@ -73,7 +73,8 @@ fn test_invocation_config_applies_sampling_overrides() {
     let model = ResponsesModel::new(ResponsesConfig::new("sk-test").with_model("gpt-4o"));
 
     // No invocation config → effective temperature/max_tokens stay unset.
-    let effective = model.apply_sampling_overrides(&None);
+    // §4: consolidated through the shared `with_sampling_overrides` helper.
+    let effective = crate::sampling::with_sampling_overrides(&model, &None);
     assert_eq!(effective.config.temperature, None);
     assert_eq!(effective.config.max_tokens, None);
 
@@ -83,7 +84,7 @@ fn test_invocation_config_applies_sampling_overrides() {
         max_tokens: Some(777),
         ..RunnableConfig::default()
     };
-    let effective2 = model.apply_sampling_overrides(&Some(cfg));
+    let effective2 = crate::sampling::with_sampling_overrides(&model, &Some(cfg));
     assert_eq!(effective2.config.temperature, Some(0.3));
     assert_eq!(effective2.config.max_tokens, Some(777));
 
@@ -241,7 +242,10 @@ fn test_parse_response_with_web_search() {
     assert_eq!(tc[0].function.name, "web_search");
     // 0.26.0 M7: server-side-managed tools are marked server_executed so an
     // agent feeds the embedded result back instead of re-running them locally.
-    assert!(tc[0].server_executed, "web_search is a provider-managed tool");
+    assert!(
+        tc[0].server_executed,
+        "web_search is a provider-managed tool"
+    );
 }
 
 #[test]
@@ -275,7 +279,10 @@ fn test_parse_response_with_code_interpreter() {
     let tc = result.tool_calls.unwrap();
     assert_eq!(tc[0].function.name, "code_interpreter");
     // 0.26.0 M7: the code-interpreter outcome is provider-side-executed.
-    assert!(tc[0].server_executed, "code_interpreter runs on the provider");
+    assert!(
+        tc[0].server_executed,
+        "code_interpreter runs on the provider"
+    );
 }
 
 /// 0.26.0 M7: ALL provider-side-managed tools (web_search / file_search /
@@ -327,7 +334,12 @@ fn server_tools_are_marked_server_executed_but_function_calls_are_not() {
         .unwrap();
 
     assert_eq!(tc.len(), 5, "all five items become tool calls");
-    for server_name in ["web_search", "file_search", "code_interpreter", "computer_use"] {
+    for server_name in [
+        "web_search",
+        "file_search",
+        "code_interpreter",
+        "computer_use",
+    ] {
         let call = tc
             .iter()
             .find(|c| c.function.name == server_name)

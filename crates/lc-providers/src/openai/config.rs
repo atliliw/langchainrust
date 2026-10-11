@@ -2,6 +2,7 @@
 //! OpenAI configuration types
 
 use lc_core::tools::ToolDefinition;
+use lc_core::{PromptCache, SensitiveString};
 use std::env;
 
 use crate::openai::response_format::ResponseFormat;
@@ -39,7 +40,11 @@ pub fn is_openai_reasoning_model(model: &str) -> bool {
 #[derive(Clone)]
 pub struct OpenAIConfig {
     /// OpenAI API key.
-    pub api_key: String,
+    ///
+    /// Held as a [`SensitiveString`] so `Debug`/`Display` can never render it;
+    /// read the plaintext only via
+    /// [`expose_secret`](lc_core::SensitiveString::expose_secret).
+    pub api_key: SensitiveString,
     /// Base URL of the OpenAI-compatible API endpoint.
     pub base_url: String,
     /// Model name to use for chat completions.
@@ -48,6 +53,11 @@ pub struct OpenAIConfig {
     pub temperature: Option<f32>,
     /// Maximum number of tokens to generate.
     pub max_tokens: Option<usize>,
+    /// Reasoning effort (v0.27.0 T2 `reasoning_effort` 暴露): sends the
+    /// `reasoning_effort` request field for the o-series / gpt-5 reasoning
+    /// family. Accepted values: `"minimal" | "low" | "medium" | "high"`. `None`
+    /// omits the field and lets the provider use its default.
+    pub reasoning_effort: Option<String>,
     /// Nucleus sampling probability mass.
     pub top_p: Option<f32>,
     /// Frequency penalty applied to repeated tokens.
@@ -71,17 +81,28 @@ pub struct OpenAIConfig {
     /// B5: whether to send the `Authorization: Bearer` header. Keyless local
     /// endpoints (LM Studio, vLLM, Ollama's OpenAI shim) set this to `false`.
     pub send_auth: bool,
+    /// Provider-agnostic prompt-cache request (see [`lc_core::PromptCache`]).
+    ///
+    /// OpenAI caches automatically, so only
+    /// [`key`](lc_core::PromptCache::key) is mapped — it becomes the request's
+    /// `prompt_cache_key`, routing related requests to the same cache bucket.
+    /// The `ttl` and last-message breakpoint settings have no OpenAI
+    /// equivalent and are silently ignored. `None` (default) omits the field
+    /// and keeps OpenAI's prefix-keyed default.
+    pub prompt_cache: Option<PromptCache>,
 }
 
 impl std::fmt::Debug for OpenAIConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // A13: redact the API key so `{:?}` on a config never leaks the secret.
+        // A13: the API key field is a `SensitiveString`, whose own `Debug`
+        // renders `***` — the secret cannot reach this output.
         f.debug_struct("OpenAIConfig")
-            .field("api_key", &"***")
+            .field("api_key", &self.api_key)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("temperature", &self.temperature)
             .field("max_tokens", &self.max_tokens)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("top_p", &self.top_p)
             .field("frequency_penalty", &self.frequency_penalty)
             .field("presence_penalty", &self.presence_penalty)
@@ -92,6 +113,7 @@ impl std::fmt::Debug for OpenAIConfig {
             .field("response_format", &self.response_format)
             .field("extra_headers", &self.extra_headers)
             .field("send_auth", &self.send_auth)
+            .field("prompt_cache", &self.prompt_cache)
             .finish()
     }
 }
@@ -99,11 +121,12 @@ impl std::fmt::Debug for OpenAIConfig {
 impl Default for OpenAIConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-3.5-turbo".to_string(),
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -114,6 +137,7 @@ impl Default for OpenAIConfig {
             response_format: None,
             extra_headers: Vec::new(),
             send_auth: true,
+            prompt_cache: None,
         }
     }
 }
@@ -122,7 +146,7 @@ impl OpenAIConfig {
     /// Create new configuration
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -144,7 +168,7 @@ impl OpenAIConfig {
         let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-3.5-turbo".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Self::default()
@@ -175,6 +199,14 @@ impl OpenAIConfig {
         self
     }
 
+    /// Set the `reasoning_effort` sampling knob (v0.27.0 T2). Pass one of
+    /// `"minimal" | "low" | "medium" | "high"` for the o-series / gpt-5 reasoning
+    /// family; the value is forwarded verbatim into the request body.
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(effort.into());
+        self
+    }
+
     /// Enable streaming
     pub fn with_streaming(mut self, streaming: bool) -> Self {
         self.streaming = streaming;
@@ -202,6 +234,39 @@ impl OpenAIConfig {
     /// Set the response format constraint (0.21.0 S3.1).
     pub fn with_response_format(mut self, format: ResponseFormat) -> Self {
         self.response_format = Some(format);
+        self
+    }
+
+    /// Sets the provider-agnostic prompt-cache request (see [`PromptCache`]).
+    ///
+    /// OpenAI caching is automatic; only [`PromptCache::key`] is sent (as
+    /// `prompt_cache_key`). `ttl` and the last-message breakpoint are ignored
+    /// because OpenAI exposes no equivalent knob.
+    pub fn with_prompt_cache(mut self, cache: PromptCache) -> Self {
+        self.prompt_cache = Some(cache);
+        self
+    }
+
+    /// Convenience for the common OpenAI case: route this request to a named
+    /// cache bucket via `prompt_cache_key`.
+    ///
+    /// Equivalent to
+    /// `with_prompt_cache(PromptCache::new().with_key(key))`.
+    pub fn with_prompt_cache_key(self, key: impl Into<String>) -> Self {
+        self.with_prompt_cache(PromptCache::new().with_key(key))
+    }
+
+    /// Sets an engine-side structured-output constraint from a raw JSON Schema.
+    ///
+    /// Unlike [`OpenAIChat::with_json_schema_output`](crate::OpenAIChat::with_json_schema_output)
+    /// this needs no Rust type: the caller passes the schema it already has.
+    /// When the schema requests strict mode, it is normalized for OpenAI
+    /// (`additionalProperties: false`, every property required) before being
+    /// sent.
+    pub fn with_json_schema(mut self, output: lc_core::JsonSchemaOutput) -> Self {
+        self.response_format = Some(crate::openai::response_format::ResponseFormat::from_output(
+            output,
+        ));
         self
     }
 
@@ -254,7 +319,7 @@ mod tests {
         let old = save_and_set("OPENAI_API_KEY", "test-key-123");
         let result = OpenAIConfig::from_env_result();
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().api_key, "test-key-123");
+        assert_eq!(result.unwrap().api_key.expose_secret(), "test-key-123");
         restore("OPENAI_API_KEY", old);
     }
 
@@ -314,5 +379,50 @@ mod tests {
         restore("OPENAI_API_KEY", old_key);
         restore("OPENAI_BASE_URL", old_url);
         restore("OPENAI_MODEL", old_model);
+    }
+
+    /// 0.27.0 T2: the `with_reasoning_effort` builder stores the knob and the
+    /// default omits it.
+    #[test]
+    fn test_reasoning_effort_builder_and_default() {
+        assert!(OpenAIConfig::new("k").reasoning_effort.is_none());
+        let config = OpenAIConfig::new("k").with_reasoning_effort("medium");
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    /// T3: the API key is stored as a `SensitiveString`, so neither `Debug`
+    /// nor `Display` on the config can render the plaintext.
+    #[test]
+    fn api_key_is_held_in_a_sensitive_string() {
+        let config = OpenAIConfig::new("sk-live-abcdef");
+        assert_eq!(config.api_key.expose_secret(), "sk-live-abcdef");
+        assert_eq!(format!("{}", config.api_key), "***");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("sk-live-abcdef"), "leaked: {debug}");
+        assert!(debug.contains("SensitiveString(***)"), "got: {debug}");
+    }
+
+    /// T3 (task B): `with_prompt_cache_key` stores the key for
+    /// `prompt_cache_key` emission; the default omits it.
+    #[test]
+    fn prompt_cache_key_builder_and_default() {
+        assert!(OpenAIConfig::new("k").prompt_cache.is_none());
+        let config = OpenAIConfig::new("k").with_prompt_cache_key("tenant-42");
+        assert_eq!(config.prompt_cache.unwrap().key(), Some("tenant-42"));
+    }
+
+    /// T3 (task B): `with_json_schema` accepts a raw schema and wires it into
+    /// `response_format`.
+    #[test]
+    fn with_json_schema_sets_response_format_from_raw_schema() {
+        let output = lc_core::JsonSchemaOutput::new(
+            "person",
+            serde_json::json!({"type": "object", "properties": {}}),
+        );
+        let config = OpenAIConfig::new("k").with_json_schema(output);
+        let format = config.response_format.expect("response_format set");
+        let value = serde_json::to_value(format).unwrap();
+        assert_eq!(value["type"], "json_schema");
+        assert_eq!(value["json_schema"]["name"], "person");
     }
 }

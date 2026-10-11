@@ -31,6 +31,14 @@ pub const COHERE_VISION_EMBED_MODEL: &str = "embed-v4.0";
 /// Output dimension of Embed v4 (English and multilingual variants share it).
 pub const COHERE_VISION_DIMENSION: usize = 1536;
 
+/// Maximum images per v2/embed request.
+///
+/// §3.5: mirrors the text path's [`crate::cohere::COHERE_MAX_BATCH`] (96) so a
+/// large image batch is split into multiple requests instead of one oversized
+/// POST that a provider rejects with 400/413. (Cohere caps the `images` array at
+/// 96, the same bound as `texts`.)
+const COHERE_VISION_MAX_IMAGES: usize = 96;
+
 /// Cohere vision embedding configuration.
 #[derive(Clone)]
 pub struct CohereVisionEmbeddingsConfig {
@@ -217,7 +225,11 @@ impl CohereVisionEmbeddings {
             .json()
             .await
             .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
-        Ok(parsed.embeddings.float)
+        let vectors = parsed.embeddings.float;
+        // §3.1: reject any vector whose width disagrees with the declared dimension
+        // (server model change / truncation) instead of propagating wrong-width vectors.
+        crate::ensure_all_dimensions(&vectors, self.dimension)?;
+        Ok(vectors)
     }
 }
 
@@ -246,19 +258,25 @@ impl VisionEmbeddings for CohereVisionEmbeddings {
             }));
         }
 
-        let body = json!({
-            "model": self.config.model,
-            "input_type": "image",
-            "images": payload,
-            "embedding_types": ["float"],
-        });
-
-        let mut embeddings = self.post_float_embeddings(&body).await?;
-        if embeddings.len() != images.len() {
-            return Err(EmbeddingError::BatchMismatch {
-                expected: images.len(),
-                actual: embeddings.len(),
+        // §3.5: split the batch into COHERE_VISION_MAX_IMAGES-sized requests (mirroring the
+        // text chunking in cohere.rs) instead of one oversized POST that a provider would
+        // reject with 400/413; each chunk keeps its own count/width validation.
+        let mut embeddings = Vec::with_capacity(images.len());
+        for chunk in payload.chunks(COHERE_VISION_MAX_IMAGES) {
+            let body = json!({
+                "model": self.config.model,
+                "input_type": "image",
+                "images": chunk,
+                "embedding_types": ["float"],
             });
+            let mut chunk_embeddings = self.post_float_embeddings(&body).await?;
+            if chunk_embeddings.len() != chunk.len() {
+                return Err(EmbeddingError::BatchMismatch {
+                    expected: chunk.len(),
+                    actual: chunk_embeddings.len(),
+                });
+            }
+            embeddings.append(&mut chunk_embeddings);
         }
         for vector in embeddings.iter_mut() {
             l2_normalize(vector);
@@ -352,7 +370,12 @@ mod tests {
     /// B7 snapshot: image requests use the v2 image shape with inline bytes.
     #[tokio::test]
     async fn image_request_body_matches_v2_snapshot() {
-        let response = json!({"embeddings": {"float": [[0.6, 0.8], [0.8, -0.6]]}});
+        let response = serde_json::json!(
+            {"embeddings": {"float": [
+                crate::test_support::embedding_json(1536, 0.6, 0.8),
+                crate::test_support::embedding_json(1536, 0.8, -0.6),
+            ]}}
+        );
         let (base_url, bodies) = spawn_json_recording_stub(response).await;
         let embeddings = CohereVisionEmbeddings::new(config_with(base_url)).unwrap();
 
@@ -385,13 +408,15 @@ mod tests {
 
     #[tokio::test]
     async fn text_request_uses_configured_input_type() {
-        let response = json!({"embeddings": {"float": [[0.6, 0.8]]}});
+        let response = serde_json::json!(
+            {"embeddings": {"float": [crate::test_support::embedding_json(1536, 0.6, 0.8)]}}
+        );
         let (base_url, bodies) = spawn_json_recording_stub(response).await;
         let cfg = config_with(base_url).with_text_input_type(CohereEmbedInputType::SearchDocument);
         let embeddings = CohereVisionEmbeddings::new(cfg).unwrap();
 
         let v = embeddings.embed_text("a red shoe").await.unwrap();
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), COHERE_VISION_DIMENSION);
 
         let recorded = bodies.lock().unwrap();
         assert_eq!(recorded[0]["input_type"], "search_document");
@@ -402,7 +427,9 @@ mod tests {
     /// would bypass the SSRF guard).
     #[tokio::test]
     async fn plain_url_images_are_rejected() {
-        let response = json!({"embeddings": {"float": [[0.6, 0.8]]}});
+        let response = serde_json::json!(
+            {"embeddings": {"float": [crate::test_support::embedding_json(1536, 0.6, 0.8)]}}
+        );
         let (base_url, _bodies) = spawn_json_recording_stub(response).await;
         let embeddings = CohereVisionEmbeddings::new(config_with(base_url)).unwrap();
 
@@ -416,7 +443,9 @@ mod tests {
     #[tokio::test]
     async fn batch_mismatch_is_reported() {
         // Two images sent, stub returns one vector.
-        let response = json!({"embeddings": {"float": [[0.6, 0.8]]}});
+        let response = serde_json::json!(
+            {"embeddings": {"float": [crate::test_support::embedding_json(1536, 0.6, 0.8)]}}
+        );
         let (base_url, _bodies) = spawn_json_recording_stub(response).await;
         let embeddings = CohereVisionEmbeddings::new(config_with(base_url)).unwrap();
 
@@ -436,15 +465,16 @@ mod tests {
 
     #[tokio::test]
     async fn retries_on_429_and_rejects_empty_inputs() {
-        let success_body = r#"{"embeddings":{"float":[[0.6,0.8]]}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let one = crate::test_support::embedding_json(1536, 0.6, 0.8).to_string();
+        let success_body = format!(r#"{{"embeddings":{{"float":[{one}]}}}}"#);
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let embeddings = CohereVisionEmbeddings::new(config_with(base_url)).unwrap();
 
         let v = embeddings
             .embed_text("hello")
             .await
             .expect("should retry after two 429s");
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), COHERE_VISION_DIMENSION);
         assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
 
         assert!(matches!(

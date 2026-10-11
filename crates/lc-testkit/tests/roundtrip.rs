@@ -82,8 +82,8 @@ async fn record_with_bound_tools_then_replay() {
 
 #[test]
 fn old_fixture_without_tools_still_deserializes() {
-    // Old-format fixture (llm_chain_f01.jsonl) has no tools field → reads as None, zero changes.
+    // Old-format fixture (llm_chain_f01.jsonl) has no tools field → reads as an empty list, zero changes.
     let line = r#"{"messages":[{"content":"q","type":"human"}],"response":{"content":"a","model":"m","token_usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}}"#;
     let exchange: lc_testkit::RecordedExchange = serde_json::from_str(line).unwrap();
-    assert!(exchange.tools.is_none());
+    assert!(exchange.tools.is_empty());
 }

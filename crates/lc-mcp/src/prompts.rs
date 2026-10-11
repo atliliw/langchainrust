@@ -75,6 +75,18 @@ pub struct PromptMessage {
 pub struct ListPromptsResult {
     /// List of prompts
     pub prompts: Vec<Prompt>,
+    /// Opaque pagination cursor; present when there are more results to fetch
+    /// (pass it back in the `cursor` param of `prompts/list` to continue).
+    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// `prompts/list` request parameters (cursor pagination).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListPromptsParams {
+    /// Opaque cursor returned by a previous `prompts/list` call; `None` = first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// `prompts/get` request parameters
@@ -104,6 +116,21 @@ pub struct GetPromptResult {
 pub trait PromptProvider: Send + Sync {
     /// Returns the full list of prompts.
     async fn list_prompts(&self) -> Result<Vec<Prompt>, MCPError>;
+    /// `prompts/list` with cursor pagination.
+    ///
+    /// Default implementation returns the whole `list_prompts` output with a
+    /// `None` cursor (single page). Providers wanting cursor-based pagination
+    /// override this and return a page plus a continuation cursor.
+    async fn list_prompts_page(
+        &self,
+        _cursor: Option<String>,
+    ) -> Result<ListPromptsResult, MCPError> {
+        let prompts = self.list_prompts().await?;
+        Ok(ListPromptsResult {
+            prompts,
+            next_cursor: None,
+        })
+    }
     /// Builds the prompt messages by name + optional arguments.
     async fn get_prompt(
         &self,

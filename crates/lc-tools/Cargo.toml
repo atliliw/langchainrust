@@ -1,6 +1,6 @@
 [package]
 name = "lc-tools"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Built-in tools for langchainrust — Calculator, DateTime, URLFetch, etc."
@@ -8,8 +8,8 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version.workspace = true
 
 [dependencies]
-lc-core = { path = "../lc-core", version = "0.26.0" }
-lc-tools-derive = { path = "../lc-tools-derive", version = "0.26.0" }
+lc-core = { path = "../lc-core", version = "0.27.0" }
+lc-tools-derive = { path = "../lc-tools-derive", version = "0.27.0" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -27,6 +27,20 @@ rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 # only (the debugger endpoint is local), so no TLS stack is pulled in.
 futures-util = { version = "0.3", optional = true }
 tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["connect", "handshake"] }
+# V0.27 (Track 3): computer-use *native* mode — real screenshot + screen input
+# (pointer / keyboard / scroll) on the local machine. Gated behind
+# `computer-native` so the published default build does not pull native deps.
+enigo = { version = "0.2", optional = true }
+xcap = { version = "0.4", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# V0.27 (Track 3 #201): WASM sandbox backend (`lc_tools::sandbox::WasmSandbox`). wasmi is a
+# pure interpreter (no cranelift/JIT, MSRV-light, offline) driving a *self-contained* WASI
+# preview1 host (stdio / exit / args / environ / random / clock). OS isolation is by
+# construction — nothing but buffered stdout/stderr crosses the host boundary. Gated so the
+# published default build stays dependency-clean.
+wasmi = { version = "0.31", optional = true }
+# wasmi does not parse `.wat` text itself; `wat` turns the text format into wasm bytes.
+wat = { version = "1.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -36,4 +50,10 @@ default = []
 sqlite-storage = ["rusqlite"]
 # B6 (0.22.4): enable the CDP browser tool (`lc_tools::browser::CdpBrowserTool`).
 browser-cdp = ["dep:futures-util", "dep:tokio-tungstenite"]
+# V0.27 (Track 3): computer-use `Native` mode — real local screenshot + screen
+# input. Opt-in: constructing the native tool requires `new_native()`, and the
+# heavy native deps (enigo/xcap/image) are only linked with this feature on.
+computer-native = ["dep:enigo", "dep:xcap", "dep:image"]
+# V0.27 (Track 3 #201): enable the wasm interpreter sandbox (`WasmSandbox`).
+sandbox-wasm = ["dep:wasmi", "dep:wat"]
 

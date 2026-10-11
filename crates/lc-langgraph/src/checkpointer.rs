@@ -236,7 +236,8 @@ pub trait Checkpointer<S: StateSchema>: Send + Sync {
         after_id: Option<&str>,
         limit: usize,
     ) -> GraphResult<Vec<CheckpointInfo<S>>> {
-        self.snapshots_page_threaded(DEFAULT_THREAD, after_id, limit).await
+        self.snapshots_page_threaded(DEFAULT_THREAD, after_id, limit)
+            .await
     }
 }
 
@@ -1304,7 +1305,10 @@ pub struct RetainingCheckpointer<S: StateSchema> {
 
 impl<S: StateSchema> RetainingCheckpointer<S> {
     /// Wrap `inner` so every save under it is followed by a prune to `retention`.
-    pub fn new(inner: Arc<Mutex<dyn Checkpointer<S> + Send>>, retention: CheckpointRetention) -> Self {
+    pub fn new(
+        inner: Arc<Mutex<dyn Checkpointer<S> + Send>>,
+        retention: CheckpointRetention,
+    ) -> Self {
         Self { inner, retention }
     }
 
@@ -1429,7 +1433,11 @@ impl<S: StateSchema> Checkpointer<S> for RetainingCheckpointer<S> {
         after_id: Option<&str>,
         limit: usize,
     ) -> GraphResult<Vec<CheckpointInfo<S>>> {
-        self.inner.lock().await.snapshots_page(after_id, limit).await
+        self.inner
+            .lock()
+            .await
+            .snapshots_page(after_id, limit)
+            .await
     }
 
     async fn snapshots_page_threaded(
@@ -1463,7 +1471,219 @@ impl<S: StateSchema> Checkpointer<S> for RetainingCheckpointer<S> {
         &self,
         checkpoint_id: &str,
     ) -> GraphResult<Option<(String, Option<String>)>> {
-        self.inner.lock().await.checkpoint_lineage(checkpoint_id).await
+        self.inner
+            .lock()
+            .await
+            .checkpoint_lineage(checkpoint_id)
+            .await
+    }
+}
+
+/// A checkpointer decorator that isolates a graph's checkpoints into a named
+/// "territory" (a namespace-prefixed thread) so it can never collide with — or
+/// advance — the checkpoint key space of a parent or sibling graph sharing one
+/// back-end.
+///
+/// Every graph that attaches the same [`Checkpointer`] writes into the same
+/// thread (*`default`* for the thread-agnostic API the engine uses), so a
+/// subgraph running against a shared back-end would otherwise save into and
+/// advance the parent's checkpoint history. Wrapping the shared checkpointer in
+/// a [`TerritoryCheckpointer`] namespaced by, e.g., the subgraph's name pins
+/// every operation to `"<namespace>::<thread>"`, so each territory gets its own
+/// isolated `save`/`load`/`last`/`list`/`snapshots`/`delete`/lineage — safe
+/// nesting and multi-tenant sharing of one back-end.
+///
+/// The thread-agnostic API (the engine's `save`, history's `last()`) maps to
+/// `"<namespace>::default"`; an explicit threaded call maps to
+/// `"<namespace>::<thread>"`. This is a pure decorator that only namespace-
+/// prefixes the thread — it stores no state and never touches the underlying
+/// checkpoint ids (see [`RetainingCheckpointer`] for pruning, which stacks on
+/// top of this transparently).
+pub struct TerritoryCheckpointer<S: StateSchema> {
+    inner: Arc<Mutex<dyn Checkpointer<S> + Send>>,
+    namespace: String,
+}
+
+impl<S: StateSchema> TerritoryCheckpointer<S> {
+    /// Wrap `inner` so every checkpoint lives under a thread namespaced by
+    /// `namespace`: `"<namespace>::default"` for the thread-agnostic API and
+    /// `"<namespace>::<thread>"` for explicit threaded calls.
+    pub fn new(
+        inner: Arc<Mutex<dyn Checkpointer<S> + Send>>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner,
+            namespace: namespace.into(),
+        }
+    }
+
+    /// The thread the thread-agnostic API resolves to inside this territory.
+    fn ns_default(&self) -> String {
+        format!("{}::{}", self.namespace, DEFAULT_THREAD)
+    }
+
+    /// The thread an explicit `*_threaded(thread, ..)` call resolves to inside
+    /// this territory.
+    fn ns_thread(&self, thread: &str) -> String {
+        format!("{}::{thread}", self.namespace)
+    }
+}
+
+#[async_trait]
+impl<S: StateSchema> Checkpointer<S> for TerritoryCheckpointer<S> {
+    async fn save(&self, state: &S, recursion_count: usize) -> GraphResult<String> {
+        let thread = self.ns_default();
+        self.inner
+            .lock()
+            .await
+            .save_threaded(&thread, state, recursion_count)
+            .await
+    }
+
+    async fn load(&self, checkpoint_id: &str) -> GraphResult<S> {
+        let thread = self.ns_default();
+        self.inner
+            .lock()
+            .await
+            .load_threaded(&thread, checkpoint_id)
+            .await
+    }
+
+    async fn list(&self) -> GraphResult<Vec<String>> {
+        let thread = self.ns_default();
+        self.inner.lock().await.list_threaded(&thread).await
+    }
+
+    async fn delete(&self, checkpoint_id: &str) -> GraphResult<()> {
+        let thread = self.ns_default();
+        self.inner
+            .lock()
+            .await
+            .delete_threaded(&thread, checkpoint_id)
+            .await
+    }
+
+    async fn last(&self) -> GraphResult<Option<(S, usize)>> {
+        let thread = self.ns_default();
+        self.inner.lock().await.last_threaded(&thread).await
+    }
+
+    async fn update_state(
+        &self,
+        checkpoint_id: &str,
+        state: &S,
+        expected_version: u64,
+    ) -> GraphResult<u64> {
+        // Checkpoint ids are globally unique across all threads; a territory's
+        // edit resolves by id regardless of thread.
+        self.inner
+            .lock()
+            .await
+            .update_state(checkpoint_id, state, expected_version)
+            .await
+    }
+
+    async fn save_threaded(
+        &self,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .save_threaded(&thread, state, recursion_count)
+            .await
+    }
+
+    async fn save_fork_threaded(
+        &self,
+        parent_id: Option<&str>,
+        thread: &str,
+        state: &S,
+        recursion_count: usize,
+    ) -> GraphResult<String> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .save_fork_threaded(parent_id, &thread, state, recursion_count)
+            .await
+    }
+
+    async fn load_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<S> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .load_threaded(&thread, checkpoint_id)
+            .await
+    }
+
+    async fn list_threaded(&self, thread: &str) -> GraphResult<Vec<String>> {
+        let thread = self.ns_thread(thread);
+        self.inner.lock().await.list_threaded(&thread).await
+    }
+
+    async fn delete_threaded(&self, thread: &str, checkpoint_id: &str) -> GraphResult<()> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .delete_threaded(&thread, checkpoint_id)
+            .await
+    }
+
+    async fn last_threaded(&self, thread: &str) -> GraphResult<Option<(S, usize)>> {
+        let thread = self.ns_thread(thread);
+        self.inner.lock().await.last_threaded(&thread).await
+    }
+
+    async fn snapshots_threaded(&self, thread: &str) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let thread = self.ns_thread(thread);
+        self.inner.lock().await.snapshots_threaded(&thread).await
+    }
+
+    async fn snapshots_page_threaded(
+        &self,
+        thread: &str,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> GraphResult<Vec<CheckpointInfo<S>>> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .snapshots_page_threaded(&thread, after_id, limit)
+            .await
+    }
+
+    async fn prune(
+        &self,
+        thread: &str,
+        max_count: Option<usize>,
+        max_age_secs: Option<i64>,
+        now: i64,
+    ) -> GraphResult<usize> {
+        let thread = self.ns_thread(thread);
+        self.inner
+            .lock()
+            .await
+            .prune(&thread, max_count, max_age_secs, now)
+            .await
+    }
+
+    async fn checkpoint_lineage(
+        &self,
+        checkpoint_id: &str,
+    ) -> GraphResult<Option<(String, Option<String>)>> {
+        self.inner
+            .lock()
+            .await
+            .checkpoint_lineage(checkpoint_id)
+            .await
     }
 }
 
@@ -1543,6 +1763,107 @@ mod tests {
         let (thread, parent) = cp.checkpoint_lineage(&fork).await.unwrap().unwrap();
         assert_eq!(thread, DEFAULT_THREAD);
         assert_eq!(parent.as_deref(), Some(root.as_str()));
+    }
+
+    // ------------------------------------------------------------------
+    // 0.27.0 T3 (territorial subgraph): a TerritoryCheckpointer namespaces a
+    // graph's checkpoints so they never collide with / advance a parent or a
+    // sibling graph sharing the same back-end.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_territory_isolates_from_parent_default_thread() {
+        let raw = ThreadSafeMemoryCheckpointer::<AgentState>::new();
+        // Parent writes through the raw checkpointer (engine → thread-agnostic
+        // save → DEFAULT_THREAD).
+        let parent_id = raw.save(&AgentState::new("parent"), 0).await.unwrap();
+
+        // The territorial graph shares the SAME back-end but is namespaced.
+        let raw_lock: Arc<Mutex<dyn Checkpointer<AgentState> + Send>> =
+            Arc::new(Mutex::new(raw));
+        let boundary: Arc<Mutex<dyn Checkpointer<AgentState> + Send>> = Arc::new(Mutex::new(
+            TerritoryCheckpointer::new(raw_lock.clone(), "cart"),
+        ));
+
+        let ter_id = boundary
+            .lock()
+            .await
+            .save(&AgentState::new("cart-run"), 3)
+            .await
+            .unwrap();
+
+        // The territory's own thread-agnostic reads see only its own checkpoint.
+        let ter_snapshots = boundary.lock().await.snapshots().await.unwrap();
+        assert_eq!(ter_snapshots.len(), 1, "territory sees only its own save");
+        assert_eq!(ter_snapshots[0].id, ter_id);
+        let (ter_last, ter_rc) = boundary.lock().await.last().await.unwrap().unwrap();
+        assert_eq!((ter_last.input.as_str(), ter_rc), ("cart-run", 3));
+
+        // The parent (on DEFAULT_THREAD) is untouched: it still sees only its own
+        // save, and cannot load the territorial checkpoint.
+        let parent_snaps = raw_lock.lock().await.snapshots().await.unwrap();
+        assert_eq!(parent_snaps.len(), 1, "parent history not advanced by territory");
+        assert_eq!(parent_snaps[0].id, parent_id);
+        assert!(raw_lock.lock().await.load(&ter_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_two_territories_sharing_one_backend_do_not_collide() {
+        // One physical back-end shared by two territories (multi-tenant / nested
+        // subgraphs each scoped to their own key space).
+        let raw: Arc<Mutex<dyn Checkpointer<AgentState> + Send>> = Arc::new(Mutex::new(
+            ThreadSafeMemoryCheckpointer::<AgentState>::new(),
+        ));
+        let cart: Arc<Mutex<dyn Checkpointer<AgentState> + Send>> = Arc::new(Mutex::new(
+            TerritoryCheckpointer::new(raw.clone(), "cart"),
+        ));
+        let wishlist: Arc<Mutex<dyn Checkpointer<AgentState> + Send>> = Arc::new(Mutex::new(
+            TerritoryCheckpointer::new(raw.clone(), "wishlist"),
+        ));
+
+        let cart_id = cart
+            .lock()
+            .await
+            .save(&AgentState::new("c1"), 1)
+            .await
+            .unwrap();
+        let cart_last = cart
+            .lock()
+            .await
+            .save(&AgentState::new("c2"), 2)
+            .await
+            .unwrap();
+        let wish_id = wishlist
+            .lock()
+            .await
+            .save(&AgentState::new("w1"), 5)
+            .await
+            .unwrap();
+
+        // Each territory lists only its own history, in its own order.
+        assert_eq!(
+            cart.lock().await.list().await.unwrap(),
+            vec![cart_id.clone(), cart_last.clone()]
+        );
+        assert_eq!(wishlist.lock().await.list().await.unwrap(), vec![wish_id.clone()]);
+
+        // last() is per-territory.
+        let (c_last, c_rc) = cart.lock().await.last().await.unwrap().unwrap();
+        assert_eq!((c_last.input.as_str(), c_rc), ("c2", 2));
+        let (w_last, w_rc) = wishlist.lock().await.last().await.unwrap().unwrap();
+        assert_eq!((w_last.input.as_str(), w_rc), ("w1", 5));
+
+        // Cross-territory reads are invisible.
+        assert!(cart.lock().await.load(&wish_id).await.is_err());
+        assert!(wishlist.lock().await.load(&cart_id).await.is_err());
+
+        // Deleting in one territory leaves the other intact.
+        cart.lock().await.delete(&cart_id).await.unwrap();
+        assert_eq!(
+            cart.lock().await.list().await.unwrap(),
+            vec![cart_last.clone()]
+        );
+        assert_eq!(wishlist.lock().await.list().await.unwrap(), vec![wish_id]);
     }
 
     #[tokio::test]
@@ -1826,8 +2147,14 @@ mod tests {
         // Oldest-first: ids c0..c4. Cap of 2 keeps the two newest, drops c0..c2.
         let ordered = ordered_pair("c", &[100, 101, 102, 103, 104]);
         let to_delete = retention_trim_ids(&ordered, Some(2), None, 1000);
-        assert_eq!(to_delete, vec!["c0".to_string(), "c1".to_string(), "c2".to_string()]);
-        assert_eq!(ordered.iter().find(|(id, _)| id == "c3"), Some(&("c3".to_string(), 103)));
+        assert_eq!(
+            to_delete,
+            vec!["c0".to_string(), "c1".to_string(), "c2".to_string()]
+        );
+        assert_eq!(
+            ordered.iter().find(|(id, _)| id == "c3"),
+            Some(&("c3".to_string(), 103))
+        );
     }
 
     #[test]
@@ -1850,11 +2177,19 @@ mod tests {
         to_delete.dedup();
         assert_eq!(
             to_delete,
-            vec!["c0".to_string(), "c1".to_string(), "c2".to_string(), "c3".to_string()]
+            vec![
+                "c0".to_string(),
+                "c1".to_string(),
+                "c2".to_string(),
+                "c3".to_string()
+            ]
         );
         // The two dimensions independently over-marked c2/c3 without double
         // counting them, and the survivor is exactly the cap's newest.
-        assert_eq!(ordered.iter().find(|(id, _)| id == "c4"), Some(&("c4".to_string(), 500)));
+        assert_eq!(
+            ordered.iter().find(|(id, _)| id == "c4"),
+            Some(&("c4".to_string(), 500))
+        );
     }
 
     #[test]
@@ -1876,10 +2211,7 @@ mod tests {
             cp.save(&AgentState::new(format!("s{i}")), i).await.unwrap();
         }
         // Cap keeps the 2 newest (s3, s4).
-        let deleted = cp
-            .prune(DEFAULT_THREAD, Some(2), None, 1000)
-            .await
-            .unwrap();
+        let deleted = cp.prune(DEFAULT_THREAD, Some(2), None, 1000).await.unwrap();
         assert_eq!(deleted, 3);
         let snaps = cp.snapshots().await.unwrap();
         assert_eq!(snaps.len(), 2);
@@ -1915,13 +2247,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_retaining_checkpointer_bounds_growth_on_save() {
-        let inner = Arc::new(Mutex::new(
-            ThreadSafeMemoryCheckpointer::<AgentState>::new(),
-        )) as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
+        let inner = Arc::new(Mutex::new(ThreadSafeMemoryCheckpointer::<AgentState>::new()))
+            as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
         let deco = RetainingCheckpointer::new(inner, CheckpointRetention::max_checkpoints(3));
 
         for i in 0..6 {
-            deco.save(&AgentState::new(format!("s{i}")), i).await.unwrap();
+            deco.save(&AgentState::new(format!("s{i}")), i)
+                .await
+                .unwrap();
         }
         // The decorator trims to the 3 newest after each save.
         let snaps = deco.snapshots().await.unwrap();
@@ -1932,9 +2265,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_retaining_checkpointer_no_policy_is_transparent() {
-        let inner = Arc::new(Mutex::new(
-            ThreadSafeMemoryCheckpointer::<AgentState>::new(),
-        )) as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
+        let inner = Arc::new(Mutex::new(ThreadSafeMemoryCheckpointer::<AgentState>::new()))
+            as Arc<Mutex<dyn Checkpointer<AgentState> + Send>>;
         let deco = RetainingCheckpointer::new(inner, CheckpointRetention::default());
         deco.save(&AgentState::new("a"), 0).await.unwrap();
         deco.save(&AgentState::new("b"), 1).await.unwrap();
@@ -1956,10 +2288,7 @@ mod tests {
         assert_eq!(page1[1].id, ids[1]);
 
         // Next page uses the last id as cursor (exclusive).
-        let page2 = cp
-            .snapshots_page(Some(&page1[1].id), 2)
-            .await
-            .unwrap();
+        let page2 = cp.snapshots_page(Some(&page1[1].id), 2).await.unwrap();
         assert_eq!(page2.len(), 2);
         assert_eq!(page2[0].id, ids[2]);
         assert_eq!(page2[1].id, ids[3]);
@@ -1968,7 +2297,11 @@ mod tests {
         let page3 = cp.snapshots_page(Some(&page2[1].id), 2).await.unwrap();
         assert_eq!(page3.len(), 1);
         assert_eq!(page3[0].id, ids[4]);
-        assert!(cp.snapshots_page(Some(&page3[0].id), 2).await.unwrap().is_empty());
+        assert!(cp
+            .snapshots_page(Some(&page3[0].id), 2)
+            .await
+            .unwrap()
+            .is_empty());
         assert!(cp.snapshots_page(None, 0).await.unwrap().is_empty());
     }
 }

@@ -23,9 +23,11 @@
 //! `Last-Event-ID` resumption) is not implemented in 0.22.4 — clients
 //! advertise no capabilities that need it.
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::Value;
 
@@ -248,6 +250,67 @@ impl StreamableHttpTransport {
                 }
             }
         }
+    }
+
+    /// Opens a long-lived server→client push channel (§5 T3 resource push loop).
+    ///
+    /// Issues a `GET` to the endpoint with `Accept: text/event-stream` and
+    /// returns a stream of the server's JSON-RPC notification frames (e.g.
+    /// `notifications/resources/list_changed`). The connection stays open until
+    /// the server closes it or the returned stream is dropped, so a client can
+    /// "push loop": subscribe to a resource, then drain notifications here.
+    ///
+    /// Session id and bearer token are attached exactly as on POSTs; HTTP 401
+    /// yields the parsed OAuth challenge. Response frames (those carrying an
+    /// `id` with `result`/`error`) are skipped — a push channel only carries
+    /// notifications, never answers to requests the client makes over POST.
+    pub async fn open_push_stream(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Value, MCPError>> + Send>>, MCPError> {
+        self.check_egress()?;
+
+        let mut builder = self
+            .http
+            .get(&self.url)
+            .header("Accept", "text/event-stream");
+        if let Some(session) = self.session_id() {
+            builder = builder.header(SESSION_HEADER, session);
+        }
+        if let Some(provider) = &self.token_provider {
+            let token = provider.token().await?;
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = builder
+            .send()
+            .await
+            .map_err(|e| MCPError::new(-32000, format!("streamable HTTP push GET failed: {e}")))?;
+
+        if resp.status().as_u16() == 401 {
+            let challenge = resp
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            return Err(unauthorized_error(challenge.as_deref()));
+        }
+        if !resp.status().is_success() {
+            return Err(MCPError::new(
+                -32000,
+                format!(
+                    "streamable HTTP push GET failed: HTTP {}",
+                    resp.status().as_u16()
+                ),
+            ));
+        }
+        self.capture_session(&resp);
+
+        let bytes = resp.bytes_stream();
+        Ok(Box::pin(PushFrameStream {
+            inner: bytes,
+            buf: Vec::new(),
+            cursor: 0,
+        }))
     }
 
     /// Performs one POST, normalizing the HTTP status into [`Exchange`].
@@ -498,6 +561,71 @@ fn empty_accepted_response() -> MCPResponse {
     }
 }
 
+/// Drains a server→client SSE push channel, yielding each JSON-RPC notification
+/// frame as it arrives. Response frames (with an `id` plus `result`/`error`) are
+/// skipped — a push channel only carries server-initiated notifications. The
+/// stream ends when the underlying SSE connection closes.
+struct PushFrameStream<S> {
+    /// The raw HTTP response body stream.
+    inner: S,
+    /// Buffered, not-yet-parsed bytes.
+    buf: Vec<u8>,
+    /// Offset into `buf` past already-consumed complete event blocks.
+    cursor: usize,
+}
+
+impl<S, B> Stream for PushFrameStream<S>
+where
+    S: Unpin + Stream<Item = Result<B, reqwest::Error>>,
+    B: AsRef<[u8]>,
+{
+    type Item = Result<Value, MCPError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            // Emit any buffered complete frame first, before asking for more bytes.
+            if let Some((block_len, block)) = take_event_block(&this.buf[this.cursor..]) {
+                this.cursor += block_len;
+                if let Some((event_type, data)) = parse_sse_event(&block) {
+                    if event_type == "message" {
+                        if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                            let is_response = value.get("id").is_some()
+                                && (value.get("result").is_some()
+                                    || value.get("error").is_some());
+                            if !is_response {
+                                return Poll::Ready(Some(Ok(value)));
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            // Compact consumed prefixes periodically.
+            if this.cursor > 0 && this.cursor == this.buf.len() {
+                this.buf.clear();
+                this.cursor = 0;
+            } else if this.cursor > 4096 {
+                this.buf.drain(..this.cursor);
+                this.cursor = 0;
+            }
+            // Need more bytes from the transport.
+            return match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => {
+                    this.buf.extend_from_slice(bytes.as_ref());
+                    continue; // re-check for a complete frame
+                }
+                Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(MCPError::new(
+                    -32000,
+                    format!("streamable HTTP push stream failed: {e}"),
+                )))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            };
+        }
+    }
+}
+
 /// Normalized HTTP outcome after status-code handling.
 enum Exchange {
     /// HTTP 202: notification accepted, no body.
@@ -688,14 +816,11 @@ mod tests {
     ) -> (String, std::collections::HashMap<String, String>) {
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; 16 * 1024];
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.read(&mut buf),
-        )
-        .await
-        .ok() // timeout killed the read
-        .map(|r| r.unwrap_or(0))
-        .unwrap_or(0);
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .ok() // timeout killed the read
+            .map(|r| r.unwrap_or(0))
+            .unwrap_or(0);
         let text = String::from_utf8_lossy(&buf[..n]);
         let mut lines = text.lines();
         let path = lines
@@ -826,6 +951,61 @@ mod tests {
             .notify("notifications/initialized", None)
             .await
             .unwrap_err();
+        assert!(err.to_string().contains("egress blocked"), "{err}");
+    }
+
+    /// T3 §5 resource push loop: a GET SSE push stream yields the server's
+    /// notification frames and skips response frames, ending when the server
+    /// closes the connection.
+    #[tokio::test]
+    async fn push_stream_yields_notifications_and_filters_responses() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = server.accept().await {
+                // Drain the request head, then stream a valid HTTP 200 with an
+                // SSE body carrying one notification + one response frame (the
+                // response frame must be filtered out).
+                let mut buf = vec![0u8; 4 * 1024];
+                let _ = sock.read(&mut buf).await;
+                let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{\"uri\":\"file:///a.txt\"}}\n\n\
+event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n\n";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+            }
+        });
+
+        let transport =
+            StreamableHttpTransport::new(format!("http://127.0.0.1:{port}/mcp"));
+        let mut stream = transport
+            .open_push_stream()
+            .await
+            .expect("open push stream");
+        let mut frames = Vec::new();
+        while let Some(frame) = stream.next().await {
+            frames.push(frame.expect("frame"));
+        }
+        assert_eq!(frames.len(), 1, "response frame must be filtered out");
+        assert_eq!(frames[0]["method"], "notifications/resources/list_changed");
+        assert_eq!(frames[0]["params"]["uri"], "file:///a.txt");
+    }
+
+    /// T3 §5: an empty egress policy blocks the push GET before any network I/O.
+    #[tokio::test]
+    async fn push_stream_honors_egress_policy() {
+        let t = StreamableHttpTransport::new("https://example.com/mcp")
+            .with_egress(EgressPolicy::new());
+        // `match` (not unwrap_err/expect_err) so the non-Debug stream type is OK.
+        let err = match t.open_push_stream().await {
+            Ok(_) => panic!("empty egress policy must block the push GET"),
+            Err(e) => e,
+        };
         assert!(err.to_string().contains("egress blocked"), "{err}");
     }
 }

@@ -116,6 +116,27 @@ impl AnthropicChat {
         }
     }
 
+    /// Raw-JSON-Schema structured output: constrains the response via Anthropic
+    /// native structured outputs (`output_config.format`), so no Rust type is
+    /// needed — just the schema the caller already holds.
+    ///
+    /// The parsed JSON arrives in
+    /// [`LLMResult::content`](lc_core::language_models::LLMResult) and can be
+    /// decoded with `serde_json::from_str`. Requires a model / API version that
+    /// supports structured outputs; unsupported ones return a 4xx.
+    pub fn with_json_schema_output_raw(mut self, output: lc_core::JsonSchemaOutput) -> Self {
+        self.config = self.config.with_json_schema(output);
+        self
+    }
+
+    /// Sets the provider-agnostic prompt-cache request (see
+    /// [`lc_core::PromptCache`]). Emits `cache_control` breakpoints on the
+    /// stable prefix, and on the last message block when requested.
+    pub fn with_prompt_cache(mut self, cache: lc_core::PromptCache) -> Self {
+        self.config = self.config.with_prompt_cache(cache);
+        self
+    }
+
     pub(crate) fn message_to_anthropic_format(message: &Message) -> AnthropicMessage {
         match &message.message_type {
             lc_schema::MessageType::Human => {
@@ -184,18 +205,20 @@ impl AnthropicChat {
                         content_parts.push(AnthropicContentBlock::ToolUse {
                             id: tc.id.clone(),
                             name: tc.function.name.clone(),
-                            input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(|e| {
-                                // L: malformed tool_use `arguments` is replayed as
-                                // `{}` instead of failing the request, but the drop
-                                // is now visible rather than silent. Anthropic
-                                // requires exact tool_use replay, so warn on drift.
-                                log::warn!(
-                                    "Anthropic: malformed tool_use arguments for {:?} \
+                            input: serde_json::from_str(&tc.function.arguments).unwrap_or_else(
+                                |e| {
+                                    // L: malformed tool_use `arguments` is replayed as
+                                    // `{}` instead of failing the request, but the drop
+                                    // is now visible rather than silent. Anthropic
+                                    // requires exact tool_use replay, so warn on drift.
+                                    log::warn!(
+                                        "Anthropic: malformed tool_use arguments for {:?} \
                                      replaying as empty object: {e}",
-                                    tc.function.name
-                                );
-                                json!({})
-                            }),
+                                        tc.function.name
+                                    );
+                                    json!({})
+                                },
+                            ),
                         });
                     }
                 }
@@ -402,15 +425,56 @@ impl AnthropicChat {
             }
         }
 
+        // T3 (task B): raw JSON Schema passthrough -> Anthropic native
+        // structured outputs. Anthropic takes `output_config.format` with a
+        // `json_schema` + the schema itself; it has no `name`/`strict` fields,
+        // so those are dropped by this mapping.
+        if let Some(output) = &self.config.json_schema {
+            body["output_config"] = json!({
+                "format": {
+                    "type": "json_schema",
+                    "schema": output.schema(),
+                }
+            });
+        }
+
+        // T3 (task B): optionally place a breakpoint on the last message block
+        // so a stable conversation tail is cached across turns (agent loops).
+        if self.caches_last_message() {
+            if let Some(marker) = self.cache_breakpoint() {
+                if let Some(last) = body["messages"].as_array_mut().and_then(|arr| arr.last_mut()) {
+                    Self::mark_content_block_cached(last, marker);
+                }
+            }
+        }
+
         body
     }
 
-    /// T5 (v0.23.0): the `cache_control` marker for every caching breakpoint, or
-    /// `None` when prompt caching is off. `with_prompt_cache_ttl` wins (long-lived
-    /// TTL cache) over the ephemeral marker from `prompt_caching`.
+    /// T5 (v0.23.0) / T3 (task B): the `cache_control` marker for every caching
+    /// breakpoint, or `None` when prompt caching is off.
+    ///
+    /// The provider-agnostic [`lc_core::PromptCache`] (if set) takes precedence
+    /// over the legacy `prompt_caching` / `prompt_cache_ttl` knobs. A configured
+    /// TTL selects the long-lived marker `{"type":"ephemeral","ttl":…}`; without
+    /// one, the ephemeral marker `{"type":"ephemeral"}` is used. (`key` has no
+    /// Anthropic equivalent and is ignored.)
     fn cache_marker(&self) -> Option<serde_json::Value> {
+        self.cache_breakpoint()
+    }
+
+    /// Unified resolution of the `cache_control` marker, consulting the new
+    /// provider-agnostic [`lc_core::PromptCache`] field first, then the legacy
+    /// `prompt_cache_ttl` / `prompt_caching` knobs.
+    fn cache_breakpoint(&self) -> Option<serde_json::Value> {
+        if let Some(cache) = &self.config.prompt_cache {
+            return Some(match cache.ttl() {
+                Some(ttl) => json!({"type": "ephemeral", "ttl": ttl}),
+                None => json!({"type": "ephemeral"}),
+            });
+        }
         if let Some(ref ttl) = self.config.prompt_cache_ttl {
-            return Some(json!({"type": "ttl", "ttl": ttl}));
+            return Some(json!({"type": "ephemeral", "ttl": ttl}));
         }
         if self.config.prompt_caching {
             return Some(json!({"type": "ephemeral"}));
@@ -418,10 +482,46 @@ impl AnthropicChat {
         None
     }
 
+    /// Whether the last message content block should also carry a breakpoint.
+    fn caches_last_message(&self) -> bool {
+        self.config
+            .prompt_cache
+            .as_ref()
+            .is_some_and(lc_core::PromptCache::caches_last_message)
+    }
+
+    /// Rewrites `msg`'s `content` so its last block carries an explicit
+    /// `cache_control` breakpoint. A plain-string content is first promoted to
+    /// a single `text` block (Anthropic only honors `cache_control` on
+    /// content-block arrays).
+    fn mark_content_block_cached(
+        msg: &mut serde_json::Value,
+        marker: serde_json::Value,
+    ) {
+        let content = msg.get_mut("content").expect("message carries content");
+        let array = match content.as_array_mut() {
+            Some(array) => array,
+            None => {
+                let text = content.take();
+                *content = json!([{"type": "text", "text": text}]);
+                // Unwrap is safe: we just assigned an array.
+                content.as_array_mut().expect("content is now an array")
+            }
+        };
+        if let Some(last) = array.last_mut() {
+            last["cache_control"] = marker;
+        }
+    }
+
     pub(crate) async fn chat_internal(
         &self,
         messages: Vec<Message>,
     ) -> Result<LLMResult, AnthropicError> {
+        // §4: fail fast on an empty key (covers manual `Config::new("")` /
+        // post-construction mutation) instead of shipping a keyless `x-api-key`
+        // header that 401s over the wire — mirrors `provider_request_options`.
+        crate::provider_http::ensure_provider_api_key(self.config.api_key.expose_secret(), "ANTHROPIC_API_KEY")
+            .map_err(AnthropicError::from)?;
         let url = format!("{}/messages", self.config.base_url);
         // B7: fetch inline-only media through the SSRF guard and reject
         // modalities the Messages API does not support (audio/video, non-PDF).
@@ -441,7 +541,7 @@ impl AnthropicChat {
             || {
                 self.client
                     .post(&url)
-                    .header("x-api-key", &self.config.api_key)
+                    .header("x-api-key", self.config.api_key.expose_secret())
                     .header("anthropic-version", "2023-06-01")
                     .header("Content-Type", "application/json")
                     .json(&body)
@@ -453,7 +553,13 @@ impl AnthropicChat {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+            // T1: don't swallow a failure to read the error body — surface it as
+            // its own state so the caller can see `failed to read error body`
+            // instead of an empty string alongside the status code.
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
             return Err(AnthropicError::Api(format!(
                 "HTTP {}: {}",
                 status, error_text
@@ -542,6 +648,9 @@ impl AnthropicChat {
         Pin<Box<dyn Stream<Item = Result<AnthropicStreamToken, AnthropicError>> + Send>>,
         AnthropicError,
     > {
+        // §4: fail fast on an empty key, mirroring the non-streaming path.
+        crate::provider_http::ensure_provider_api_key(self.config.api_key.expose_secret(), "ANTHROPIC_API_KEY")
+            .map_err(AnthropicError::from)?;
         let url = format!("{}/messages", self.config.base_url);
         // B7: same media resolution as the non-streaming path.
         let mut messages = messages;
@@ -553,7 +662,7 @@ impl AnthropicChat {
         let response = self
             .client
             .post(&url)
-            .header("x-api-key", &self.config.api_key)
+            .header("x-api-key", self.config.api_key.expose_secret())
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&body)
@@ -563,7 +672,11 @@ impl AnthropicChat {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+            // T1: surface a body-read failure as its own state, not a silent empty.
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
             return Err(AnthropicError::Api(format!(
                 "HTTP {}: {}",
                 status, error_text
@@ -594,7 +707,28 @@ impl AnthropicChat {
             // server error, timeout), the text streamed so far is a truncated prefix;
             // track the marker and error after the loop instead of completing silently.
             let mut saw_message_stop = false;
-            while let Some(chunk_result) = byte_stream.next().await {
+            loop {
+                // 0.26.0 review 3.3: bare `bytes_stream()` has no idle guard. A
+                // peer that stops sending without closing would hang forever —
+                // wrap each read in PROVIDER_SSE_IDLE_TIMEOUT (resets per chunk)
+                // and surface the freeze as a StreamInterrupted, not a park.
+                let chunk = tokio::time::timeout(
+                    crate::provider_http::PROVIDER_SSE_IDLE_TIMEOUT,
+                    byte_stream.next(),
+                )
+                .await;
+                let chunk_result = match chunk {
+                    Ok(Some(cr)) => cr,
+                    Ok(None) => break,
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(AnthropicError::StreamInterrupted(
+                                "stream idle timeout (no data for 60s)".to_string(),
+                            )))
+                            .await;
+                        return;
+                    }
+                };
                 if let Ok(bytes) = chunk_result {
                     // Extract complete SSE events from the byte-level framer
                     let mut overflow: Option<String> = None;

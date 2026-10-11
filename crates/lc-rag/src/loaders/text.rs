@@ -62,8 +62,11 @@ impl DocumentLoader for TextLoader {
             )));
         }
 
-        // Read the file content
-        let content = std::fs::read_to_string(&self.path)?;
+        // Read the file content. 0.26.0 (MEDIUM): was an unbounded sync
+        // `read_to_string` — a huge text file was loaded whole into memory with
+        // no limit. Use the shared bounded read so all plain-text loaders respect
+        // one consistent 256 MiB cap (matches json/docx/pdf policy).
+        let content = super::bounded_read_utf8(&self.path, super::MAX_LOCAL_FILE_BYTES).await?;
 
         if self.split_by_line {
             // Split by line

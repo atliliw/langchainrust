@@ -30,16 +30,20 @@
 //! let _router = RouterLLM::new(RoutingStrategy::Fallback);
 //! ```
 //!
-//! Operational controls on a populated router:
+//! Operational controls needing no network (rate limit and budget wiring):
 //!
-//! ```ignore
-//! // paid primary limited to 30 starts/min and 4 concurrent, free local
-//! // fallback, whole router trips at a 5 USD cumulative spend:
+//! ```no_run
+//! // Rate limits and a shared spend/token budget attach to the router without a
+//! // live model, so they are shown here as an offline example; `with_priced_model`
+//! // / `with_model` add the real chat models. Requires a Tokio runtime.
+//! use lc_core::router_llm::{ModelRateLimit, RouterBudget, RouterLLM, RoutingStrategy};
+//!
 //! let router = RouterLLM::new(RoutingStrategy::Fallback)
-//!     .with_priced_model(paid_model, ModelPrice::new(2.5, 10.0))
+//!     // a paid primary limited to 30 starts/min and 4 concurrent
 //!     .with_last_rate_limit(ModelRateLimit::per_minute(30).with_max_concurrent(4))
-//!     .with_model(local_model)
+//!     // whole router trips at a 5 USD cumulative spend
 //!     .with_budget(RouterBudget::with_cost_and_token_limits(5.0, 1_000_000));
+//! let _router = router;
 //! ```
 //!
 //! Each provider declares its own error type (`OpenAIError`, `AnthropicError`,

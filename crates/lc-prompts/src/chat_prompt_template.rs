@@ -3,12 +3,24 @@
 
 use crate::error::PromptsError;
 use crate::template_parser::{
-    format_template, parse_template, template_variables, TemplateSegment,
+    format_template_vars, parse_template, template_variables, validate_template, TemplateSegment,
+    TemplateVars,
 };
+use crate::validation::{dedup_in_order, diff_variables, VariableDiff};
 use async_trait::async_trait;
 use lc_core::runnables::{LcelError, Runnable, RunnableConfig};
-use lc_schema::Message;
+use lc_schema::{Message, MessageType};
 use std::collections::HashMap;
+
+/// Role name used in error messages and `Display`, so the two cannot drift.
+fn role_name(message_type: &MessageType) -> &'static str {
+    match message_type {
+        MessageType::System => "System",
+        MessageType::Human => "Human",
+        MessageType::AI => "AI",
+        MessageType::Tool { .. } => "Tool",
+    }
+}
 
 /// Chat prompt template
 ///
@@ -56,13 +68,30 @@ impl ChatPromptTemplate {
     /// # Errors
     /// Returns an error if any message has a variable with no matching value in `variables`
     pub fn format(&self, variables: &HashMap<&str, &str>) -> Result<Vec<Message>, PromptsError> {
+        self.format_with(variables)
+    }
+
+    /// Formats from any [`TemplateVars`] source (borrowed or owned), so the
+    /// `Runnable::invoke` path — which holds an owned `HashMap<String, String>` —
+    /// need not build an intermediate `HashMap<&str, &str>` per call.
+    fn format_with<V: TemplateVars>(&self, variables: &V) -> Result<Vec<Message>, PromptsError> {
         self.messages
             .iter()
             .zip(&self.segments)
-            .map(|(msg, segments)| {
-                let content = format_template(&msg.content, segments, variables).map_err(|e| {
-                    PromptsError::MissingVariable(format!("{e} in message {msg:?}"))
-                })?;
+            .enumerate()
+            .map(|(index, (msg, segments))| {
+                // The cause is preserved as the error source, and the message's
+                // position as fields, instead of being flattened into a
+                // `MissingVariable` whose payload was a prose sentence rather
+                // than a variable name.
+                let content =
+                    format_template_vars(&msg.content, segments, variables).map_err(|source| {
+                        PromptsError::MessageFormat {
+                            index,
+                            role: role_name(&msg.message_type),
+                            source: Box::new(source),
+                        }
+                    })?;
                 let mut formatted = msg.clone();
                 formatted.content = content;
                 Ok(formatted)
@@ -73,20 +102,68 @@ impl ChatPromptTemplate {
     /// Returns all variable names the template needs
     ///
     /// # Returns
-    /// The variable-name list (deduplicated)
+    /// The variable-name list (deduplicated, in message-then-appearance order)
     pub fn variables(&self) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
+        let mut all = Vec::new();
         for segments in &self.segments {
-            for var in template_variables(segments) {
-                seen.insert(var);
-            }
+            all.extend(template_variables(segments));
         }
-        seen.into_iter().collect()
+        dedup_in_order(&all)
+    }
+
+    /// Compares the template's variables against the ones a caller would supply.
+    ///
+    /// Use this at construction time to check a caller's variable map before
+    /// formatting, and to see variables the template will ignore (see
+    /// [`VariableDiff`] for why that direction matters).
+    pub fn variable_diff<'a, I>(&self, supplied: I) -> VariableDiff
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        diff_variables(&self.variables(), supplied)
+    }
+
+    /// Formats the template, refusing malformed placeholders and unused
+    /// variables as well as missing ones.
+    ///
+    /// [`format`](Self::format) is lenient in two ways that hide mistakes: a
+    /// stray `{` is emitted as literal text, and a supplied variable no message
+    /// uses is ignored. This variant fails on both — use it where the template
+    /// and its callers are both under your control and a typo should fail fast.
+    /// A missing variable produces exactly the error `format` would, wrapped in
+    /// [`PromptsError::MessageFormat`] with the offending message's index.
+    ///
+    /// # Errors
+    /// Returns [`PromptsError::MalformedTemplate`] for a malformed placeholder,
+    /// [`PromptsError::MissingVariable`] for an unsupplied template variable, or
+    /// [`PromptsError::UnusedVariables`] when the caller supplied extras.
+    pub fn format_strict(
+        &self,
+        variables: &HashMap<&str, &str>,
+    ) -> Result<Vec<Message>, PromptsError> {
+        self.validate()?;
+        self.variable_diff(variables.keys().copied())
+            .require_exact(&self.to_string())?;
+        self.format(variables)
     }
 
     /// Returns the raw message templates
     pub fn messages(&self) -> &[Message] {
         &self.messages
+    }
+
+    /// Strictly validates that every message's placeholders are well-formed,
+    /// returning an error on the first malformed one. See
+    /// [`PromptTemplate::validate`](crate::PromptTemplate::validate) for the
+    /// lenient-vs-strict rationale.
+    ///
+    /// # Errors
+    /// Returns an error describing the first malformed placeholder, if any
+    pub fn validate(&self) -> Result<(), PromptsError> {
+        for msg in &self.messages {
+            validate_template(&msg.content)?;
+        }
+        Ok(())
     }
 
     /// Quickly creates a template from a message array
@@ -104,8 +181,8 @@ impl ChatPromptTemplate {
 }
 
 // Runnable form: lets the prompt join an LCEL chain, so `prompt.pipe(llm)` works.
-// Receives an owned variable map (HashMap<String, String>), converting to references and
-// delegating to `format`.
+// Receives an owned variable map (HashMap<String, String>) and formats straight from it
+// via `format_with`, avoiding a per-call ref-map allocation.
 #[async_trait]
 impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
     type Error = LcelError;
@@ -115,12 +192,7 @@ impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
         input: HashMap<String, String>,
         _config: Option<RunnableConfig>,
     ) -> Result<Vec<Message>, LcelError> {
-        // `format` takes &HashMap<&str, &str>; convert from the owned map to references here
-        let vars: HashMap<&str, &str> = input
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        self.format(&vars)
+        self.format_with(&input)
             .map_err(|e| LcelError::Chain(e.to_string()))
     }
 }
@@ -128,13 +200,7 @@ impl Runnable<HashMap<String, String>, Vec<Message>> for ChatPromptTemplate {
 impl std::fmt::Display for ChatPromptTemplate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for msg in &self.messages {
-            let role = match msg.message_type {
-                lc_schema::MessageType::System => "System",
-                lc_schema::MessageType::Human => "Human",
-                lc_schema::MessageType::AI => "AI",
-                lc_schema::MessageType::Tool { .. } => "Tool",
-            };
-            writeln!(f, "{}: {}", role, msg.content)?;
+            writeln!(f, "{}: {}", role_name(&msg.message_type), msg.content)?;
         }
         Ok(())
     }
@@ -231,5 +297,106 @@ mod tests {
         assert_eq!(messages[0].content, "看这张图");
         assert_eq!(messages[0].images.len(), 1);
         assert_eq!(messages[0].images[0].url, "https://example.com/i.png");
+    }
+
+    // ---- T2: error provenance, deterministic order, variable diff ----
+
+    #[test]
+    fn test_error_keeps_the_cause_and_locates_the_message() {
+        // `day` is missing from message 1. The error must say which message, and
+        // the underlying error must still be reachable as the source — before,
+        // both were flattened into a `MissingVariable` payload that was a prose
+        // sentence instead of a variable name.
+        let template = ChatPromptTemplate::new(vec![
+            Message::system("系统"),
+            Message::human("你好，{name}！今天是{day}。"),
+        ]);
+
+        let mut vars = HashMap::new();
+        vars.insert("name", "小明");
+
+        match template.format(&vars).unwrap_err() {
+            PromptsError::MessageFormat {
+                index,
+                role,
+                source,
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(role, "Human");
+                assert!(matches!(*source, PromptsError::MissingVariable(ref v) if v == "day"));
+            }
+            other => panic!("expected MessageFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_error_source_is_exposed_as_the_std_error_source() {
+        use std::error::Error;
+
+        let template = ChatPromptTemplate::new(vec![Message::human("{day}")]);
+        let err = template.format(&HashMap::new()).unwrap_err();
+
+        let source = err.source().expect("cause should be reachable");
+        assert!(source.to_string().contains("day"), "got: {source}");
+    }
+
+    #[test]
+    fn test_variables_are_in_message_then_appearance_order() {
+        // regression: a HashSet-backed implementation returned these in
+        // arbitrary order, which made the list unusable for a stable diff
+        let template = ChatPromptTemplate::new(vec![
+            Message::system("{role} {domain}"),
+            Message::human("{name} {role}"),
+        ]);
+
+        assert_eq!(template.variables(), ["role", "domain", "name"]);
+    }
+
+    #[test]
+    fn test_variable_diff_reports_both_directions() {
+        let template = ChatPromptTemplate::new(vec![Message::human("{name} {day}")]);
+        let diff = template.variable_diff(["name", "typo"]);
+
+        assert_eq!(diff.missing, vec!["day".to_string()]);
+        assert_eq!(diff.unused, vec!["typo".to_string()]);
+    }
+
+    #[test]
+    fn test_format_strict_accepts_an_exact_match() {
+        let template = ChatPromptTemplate::new(vec![Message::human("你好，{name}！")]);
+        let mut vars = HashMap::new();
+        vars.insert("name", "小明");
+
+        let messages = template.format_strict(&vars).unwrap();
+        assert_eq!(messages[0].content, "你好，小明！");
+    }
+
+    #[test]
+    fn test_format_strict_rejects_unused_variables() {
+        let template = ChatPromptTemplate::new(vec![Message::human("你好，{name}！")]);
+        let mut vars = HashMap::new();
+        vars.insert("name", "小明");
+        vars.insert("nmae", "小明");
+
+        // lenient format ignores the typo; strict mode names it
+        assert!(template.format(&vars).is_ok());
+        assert!(matches!(
+            template.format_strict(&vars).unwrap_err(),
+            PromptsError::UnusedVariables { .. }
+        ));
+    }
+
+    #[test]
+    fn test_format_strict_rejects_malformed_placeholders() {
+        // lenient format emits the stray `{`; strict mode refuses it
+        let template = ChatPromptTemplate::new(vec![Message::human("x {name")]);
+        let mut vars = HashMap::new();
+        vars.insert("name", "N");
+
+        assert!(template.format(&vars).is_ok());
+        assert!(matches!(
+            template.format_strict(&vars).unwrap_err(),
+            PromptsError::MalformedTemplate(_)
+        ));
     }
 }

@@ -229,6 +229,11 @@ impl PartialJsonParser {
     /// Repair a partial JSON string by closing unclosed structures and
     /// truncating incomplete values.
     ///
+    /// v0.27.0 (T2): delegates to the canonical streaming repairer in
+    /// [`lc_shared::json_repair::repair_partial_json`], so the two historical
+    /// "partial JSON repair" logic sets no longer drift (lc-shared owns the
+    /// one string-aware implementation of `remove_trailing_commas` too).
+    ///
     /// 0.21.0 BUG-1: closing order is a LIFO stack (last opened, first closed),
     /// not two independent counters. The old counter-based repair closed all
     /// braces first, then all brackets — independent of actual nesting — so a
@@ -236,110 +241,7 @@ impl PartialJsonParser {
     /// (`{"a": [1, 2` → `{"a": [1, 2}]` instead of `{"a": [1, 2]}`), failing
     /// the whole streaming structured-output path in that scenario.
     pub(crate) fn repair_partial_json(text: &str) -> String {
-        let mut repaired = text.trim().to_string();
-
-        // Scan the text tracking string state to correctly identify structure
-        // characters outside of strings (C20 + C21).
-        let mut in_string = false;
-        let mut escape_next = false;
-        // Expected closers for currently-open structures, in open order.
-        // LIFO order at the end reproduces the true nesting.
-        let mut expected_closers: Vec<u8> = Vec::new();
-        let mut unescaped_quote_count = 0usize;
-
-        for ch in repaired.chars() {
-            if escape_next {
-                escape_next = false;
-                continue;
-            }
-            if ch == '\\' && in_string {
-                escape_next = true;
-                continue;
-            }
-            if ch == '"' {
-                unescaped_quote_count += 1;
-                in_string = !in_string;
-                continue;
-            }
-            if !in_string {
-                match ch {
-                    '{' => expected_closers.push(b'}'),
-                    '[' => expected_closers.push(b']'),
-                    '}' | ']' => {
-                        // Ignore stray closers (more closes than opens);
-                        // pop is a no-op on an empty stack.
-                        expected_closers.pop();
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // If we are in the middle of a string value, close it.
-        // Heuristic: odd number of unescaped quotes means an unclosed string.
-        if unescaped_quote_count % 2 != 0 {
-            repaired.push('"');
-        }
-
-        // Close unclosed structures in reverse open order (LIFO) — before
-        // removing trailing commas, so that commas before the newly-added
-        // closers get removed.
-        for closer in expected_closers.iter().rev() {
-            repaired.push(*closer as char);
-        }
-
-        // Remove trailing commas before closing brackets/braces
-        // (must come after closing braces/brackets so we can detect them)
-        repaired = Self::remove_trailing_commas(&repaired);
-
-        repaired
-    }
-
-    /// Remove trailing commas before closing braces/brackets (invalid in strict JSON).
-    ///
-    /// 0.20.0 K1: the scan must track string state — a comma inside a string
-    /// literal (e.g. `{"a": "text, }"}`) is content, not a trailing comma.
-    /// Mirrors the in-string/escape state machine used by
-    /// [`Self::repair_partial_json`]; without it the old version corrupted
-    /// string values whose text ended with a comma followed by `}`/`]`.
-    pub(crate) fn remove_trailing_commas(s: &str) -> String {
-        let mut result = String::with_capacity(s.len());
-        let chars: Vec<char> = s.chars().collect();
-        let mut i = 0;
-        let mut in_string = false;
-        let mut escape_next = false;
-        while i < chars.len() {
-            let ch = chars[i];
-            if in_string {
-                result.push(ch);
-                if escape_next {
-                    escape_next = false;
-                } else if ch == '\\' {
-                    escape_next = true;
-                } else if ch == '"' {
-                    in_string = false;
-                }
-                i += 1;
-                continue;
-            }
-            if ch == '"' {
-                in_string = true;
-                result.push(ch);
-                i += 1;
-                continue;
-            }
-            if ch == ',' && i + 1 < chars.len() {
-                let next_non_ws = chars[i + 1..].iter().find(|c| !c.is_whitespace());
-                if next_non_ws == Some(&'}') || next_non_ws == Some(&']') {
-                    // Skip the trailing comma
-                    i += 1;
-                    continue;
-                }
-            }
-            result.push(ch);
-            i += 1;
-        }
-        result
+        lc_shared::json_repair::repair_partial_json(text)
     }
 }
 

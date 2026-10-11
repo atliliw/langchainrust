@@ -14,6 +14,7 @@
 mod card;
 mod message;
 mod model;
+mod part;
 mod task;
 
 pub use card::{A2ATransport, AgentCard, AgentInterface, AgentSkill, A2A_VERSION_V101};
@@ -22,6 +23,7 @@ pub use model::{
     metadata_keys, A2AErrorData, A2ARequest, A2AResponse, A2ATaskDetails, A2ATaskResult,
     A2AWorkflow, MessageEnvelope, TaskFilter, TaskPushNotification, TraceContext, WorkflowStep,
 };
+pub use part::{A2AArtifact, FilePart, Part};
 pub use task::{A2ATask, TaskStatus};
 
 #[cfg(test)]

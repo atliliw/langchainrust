@@ -145,3 +145,127 @@ async fn tool_macro_invoke_passes_through_tool_error() {
         err
     );
 }
+
+/// An `async fn` tool — the macro must `.await` the generated call.
+#[tool(description = "Computes a doubled value asynchronously")]
+async fn async_double(#[param(desc = "The value to double")] value: i64) -> Result<i64, ToolError> {
+    Ok(value * 2)
+}
+
+/// T2: the error type written through the `lc-tools` **re-export** path. The old
+/// "last segment is `ToolError`, previous one is `tools`" heuristic did not recognise
+/// `lc_tools::ToolError`, so a real `ToolError` was silently flattened into
+/// `ExecutionFailed`; the path allowlist recognises it, so the variant survives.
+#[tool(description = "Guards against 'bad' input, error written via the lc-tools re-export")]
+fn reexport_guard(
+    #[param(desc = "The value to check")] value: String,
+) -> Result<String, lc_tools::ToolError> {
+    if value == "bad" {
+        return Err(lc_tools::ToolError::InvalidInput("bad value".to_string()));
+    }
+    Ok(value)
+}
+
+#[tokio::test]
+async fn tool_macro_reexport_path_passes_through() {
+    let tool = ReexportGuardTool::new();
+    let err = tool
+        .run(r#"{"value":"bad"}"#.to_string())
+        .await
+        .expect_err("run should return the tool's error");
+    assert!(
+        matches!(err, ToolError::InvalidInput(_)),
+        "expected the re-exported ToolError to pass through, got: {err}"
+    );
+}
+
+/// T2: an error type reachable only through an alias is outside the name allowlist, so
+/// `auto` cannot know it. `#[tool(error = passthrough)]` states it explicitly instead of
+/// relying on path guessing.
+type AliasedError = ToolError;
+
+#[tool(
+    description = "Guards against 'bad' input via an aliased error path",
+    error = passthrough
+)]
+fn aliased_guard(
+    #[param(desc = "The value to check")] value: String,
+) -> Result<String, AliasedError> {
+    if value == "bad" {
+        return Err(ToolError::InvalidInput("bad value".to_string()));
+    }
+    Ok(value)
+}
+
+#[tokio::test]
+async fn tool_macro_error_passthrough_opt_in() {
+    let tool = AliasedGuardTool::new();
+    let err = tool
+        .run(r#"{"value":"bad"}"#.to_string())
+        .await
+        .expect_err("run should return the tool's error");
+    assert!(
+        matches!(err, ToolError::InvalidInput(_)),
+        "expected passthrough via the aliased path, got: {err}"
+    );
+}
+
+/// T2: the reverse escape hatch — `error = wrap` forces the flattening branch even though
+/// the written path is the library `ToolError`.
+#[tool(description = "Forces the wrapping error mode", error = wrap)]
+fn wrapped_guard(#[param(desc = "The value to check")] value: String) -> Result<String, ToolError> {
+    if value == "bad" {
+        return Err(ToolError::InvalidInput("bad value".to_string()));
+    }
+    Ok(value)
+}
+
+#[tokio::test]
+async fn tool_macro_error_wrap_opt_in() {
+    let tool = WrappedGuardTool::new();
+    let err = tool
+        .run(r#"{"value":"bad"}"#.to_string())
+        .await
+        .expect_err("run should return the tool's error");
+    assert!(
+        matches!(err, ToolError::ExecutionFailed(_)),
+        "expected the variant to be flattened, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn tool_macro_async_fn_supported() {
+    let tool = AsyncDoubleTool::new();
+    // `invoke` path
+    let input = AsyncDoubleInput { value: 21 };
+    let out = Tool::invoke(&tool, input).await.unwrap();
+    assert_eq!(out, 42);
+    // `run` (string) path
+    let out = tool.run(r#"{"value": 5}"#.to_string()).await.unwrap();
+    assert_eq!(out, "10");
+}
+
+/// `parameters()` must expose the OpenAI-style object schema.
+#[tokio::test]
+async fn tool_macro_parameters_json_schema() {
+    let tool = GreetTool::new();
+    let params = tool.parameters().expect("structures produce a schema");
+    assert_eq!(params["type"], "object");
+    assert!(params.get("properties").is_some());
+    assert!(params.get("required").is_some());
+}
+
+/// `describe()` returns the (name, description, args_schema) triple.
+#[tokio::test]
+async fn tool_macro_describe_triple() {
+    let tool = GreetTool::new();
+    let (name, desc, schema) = tool.describe();
+    assert_eq!(name, "greet");
+    assert_eq!(desc, "Greets a person by name");
+    assert!(schema.is_some());
+    // The triple's schema is the same source as `parameters()` and `BaseTool::args_schema`
+    // (`schemars::schema_for!(Input)`), so a registry can register a tool from any of them
+    // without the three drifting apart.
+    assert_eq!(schema, tool.parameters());
+    assert_eq!(schema, BaseTool::args_schema(&tool));
+}

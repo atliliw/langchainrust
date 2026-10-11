@@ -482,9 +482,13 @@ fn truncate_prompt(prompt: &str, max_tokens: Option<usize>) -> String {
                 return prompt.to_string();
             }
 
-            // Truncate from the end, keeping character boundaries
+            // Truncate from the end, keeping character boundaries.
             let ratio = budget as f64 / current_tokens as f64;
-            let target_chars = (prompt.len() as f64 * ratio) as usize;
+            // §3.2: derive the cap in *characters* from the char count, not from
+            // `len()` (bytes) — the old code fed a byte-derived number to
+            // `chars().take()`, so a CJK prompt (3 bytes/char) kept up to 3x the
+            // intended budget instead of truncating to it.
+            let target_chars = (prompt.chars().count() as f64 * ratio) as usize;
             // Find a safe char boundary
             let truncated: String = prompt.chars().take(target_chars).collect();
             format!("{}\n\n[Context truncated to fit token budget]", truncated)

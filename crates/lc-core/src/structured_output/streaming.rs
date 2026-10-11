@@ -7,7 +7,9 @@ use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::language_models::BaseChatModel;
 use lc_schema::Message;
@@ -55,6 +57,39 @@ pub trait StreamingStructuredOutputExt: BaseChatModel {
 /// Blanket implementation: every `BaseChatModel` automatically gets
 /// `StreamingStructuredOutputExt`.
 impl<M: BaseChatModel> StreamingStructuredOutputExt for M {}
+
+/// Callback type observed after each partial value is parsed (`StreamHooks`).
+pub type OnParseFn<T> = Arc<dyn Fn(&T) + Send + Sync>;
+/// Callback type observed when a configured stop word first appears (`StreamHooks`).
+pub type OnStopWordFn = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Streaming structured-output hooks (v0.27.0 L48: stop-word / parse callback
+/// events). Optional observers fired as the model streams tokens:
+///
+/// - `on_parse` fires after every successfully-parsed partial value is yielded.
+/// - `on_stop_word` fires the first time each configured `stop_words` entry
+///   appears anywhere in the accumulated text (deduplicated per stop word).
+///
+/// Hooks are **observers only** — they never alter the yielded stream. Callbacks
+/// must be `Send + Sync` because `poll_next` may run on any thread.
+pub struct StreamHooks<T> {
+    /// Stop words to scan for in the accumulated streamed text.
+    pub stop_words: Vec<String>,
+    /// Fired after each partial value is successfully parsed and yielded.
+    pub on_parse: Option<OnParseFn<T>>,
+    /// Fired the first time a configured stop word appears in the buffer.
+    pub on_stop_word: Option<OnStopWordFn>,
+}
+
+impl<T> Default for StreamHooks<T> {
+    fn default() -> Self {
+        Self {
+            stop_words: Vec::new(),
+            on_parse: None,
+            on_stop_word: None,
+        }
+    }
+}
 
 /// Stream structured output from a chat model.
 ///
@@ -124,6 +159,28 @@ where
     T: DeserializeOwned + Serialize + Clone + PartialEq + Unpin + Send + Sync + 'static,
     M: BaseChatModel + ?Sized,
 {
+    stream_structured_output_with_hooks(llm, schema, prompt, StreamHooks::default()).await
+}
+
+/// Same as [`stream_structured_output`], but accepts [`StreamHooks`] to observe
+/// partial-parse and stop-word events as the model streams (v0.27.0 L48).
+///
+/// Hooks never change the yielded values — they are notifications only.
+/// Pass [`StreamHooks::default`] for behavior identical to
+/// [`stream_structured_output`].
+pub async fn stream_structured_output_with_hooks<T, M>(
+    llm: &M,
+    schema: Value,
+    prompt: &str,
+    hooks: StreamHooks<T>,
+) -> Result<
+    Pin<Box<dyn Stream<Item = Result<T, StructuredOutputError>> + Send>>,
+    StructuredOutputError,
+>
+where
+    T: DeserializeOwned + Serialize + Clone + PartialEq + Unpin + Send + Sync + 'static,
+    M: BaseChatModel + ?Sized,
+{
     // Validate the schema is an object
     if !schema.is_object() {
         return Err(StructuredOutputError::SchemaError(format!(
@@ -156,7 +213,7 @@ where
     let boxed: Pin<Box<dyn Stream<Item = Result<String, StructuredOutputError>> + Send>> =
         Box::pin(mapped_stream);
 
-    let output_stream = StructuredStreamProcessor::<T>::new(boxed);
+    let output_stream = StructuredStreamProcessor::<T>::new(boxed, hooks);
 
     Ok(Box::pin(output_stream))
 }
@@ -171,12 +228,17 @@ struct StructuredStreamProcessor<T> {
     inner: Pin<Box<dyn Stream<Item = Result<String, StructuredOutputError>> + Send>>,
     parser: PartialJsonParser,
     last_value: Option<T>,
+    // v0.27.0 L48: stop-word / parse hook observers (see `StreamHooks`).
+    hooks: StreamHooks<T>,
+    /// Stop words already fired, so each fires at most once per stream.
+    fired_stop_words: HashSet<String>,
     done: bool,
 }
 
 // Safety: StructuredStreamProcessor is Unpin when T is Unpin because all fields
 // are Unpin: Pin<Box<dyn ..>> is Unpin, PartialJsonParser is Unpin,
-// Option<T> is Unpin when T is Unpin, and bool is Unpin.
+// Option<T> is Unpin when T is Unpin, StreamHooks<T> is Unpin, HashSet is Unpin,
+// and bool is Unpin.
 impl<T: Unpin> Unpin for StructuredStreamProcessor<T> {}
 
 impl<T> StructuredStreamProcessor<T>
@@ -185,12 +247,33 @@ where
 {
     fn new(
         inner: Pin<Box<dyn Stream<Item = Result<String, StructuredOutputError>> + Send>>,
+        hooks: StreamHooks<T>,
     ) -> Self {
+        let fired_stop_words = HashSet::with_capacity(hooks.stop_words.len());
         Self {
             inner,
             parser: PartialJsonParser::new(),
             last_value: None,
+            hooks,
+            fired_stop_words,
             done: false,
+        }
+    }
+
+    /// Fires the `on_stop_word` hook once per stop word when it first appears
+    /// in the accumulated buffer. Observer-only: never truncates the stream.
+    fn scan_stop_words(&mut self) {
+        let buffer = self.parser.buffer();
+        for word in &self.hooks.stop_words {
+            if self.fired_stop_words.contains(word) {
+                continue;
+            }
+            if buffer.contains(word.as_str()) {
+                if let Some(f) = &self.hooks.on_stop_word {
+                    f(word.as_str());
+                }
+                self.fired_stop_words.insert(word.clone());
+            }
         }
     }
 }
@@ -217,10 +300,17 @@ where
         loop {
             match this.inner.as_mut().poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(token))) => {
+                    // v0.27.0 L48: scan the grown buffer for configured stop words
+                    // before parse (the new token may complete one).
+                    this.scan_stop_words();
                     match this.parser.push_and_parse(&token) {
                         Ok(json_value) => match serde_json::from_value::<T>(json_value) {
                             Ok(value) => {
                                 this.last_value = Some(value.clone());
+                                // v0.27.0 L48: observe the freshly parsed partial.
+                                if let Some(f) = &this.hooks.on_parse {
+                                    f(&value);
+                                }
                                 return std::task::Poll::Ready(Some(Ok(value)));
                             }
                             Err(_) => {

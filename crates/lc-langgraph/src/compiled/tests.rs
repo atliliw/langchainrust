@@ -5,9 +5,10 @@ use crate::checkpointer::ThreadSafeMemoryCheckpointer;
 use crate::compiled::types::{DynamicInjection, DynamicPlanner, DynamicTask};
 use crate::errors::GraphError;
 use crate::graph::{GraphBuilder, END, START};
-use crate::node::NodeResult;
+use crate::node::{GraphNode, NodeConfig, NodeResult};
 use crate::state::{AgentState, StateUpdate};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -185,6 +186,48 @@ fn chain_of(n: usize) -> crate::compiled::CompiledGraph<AgentState> {
         builder = builder.add_edge(format!("n{}", i), format!("n{}", i + 1));
     }
     builder.compile().unwrap()
+}
+
+/// v0.27.0: the unified `visualize(format)` entry point — every format returns a
+/// String (JSON included), so Ascii/Mermaid/Json stay interchangeable behind a
+/// single method. Guards the shape of each rendering without being format-specific.
+#[tokio::test]
+async fn test_visualize_unified_entry_point_all_formats() {
+    use crate::compiled::GraphFormat;
+
+    let compiled = chain_of(3);
+
+    // Ascii: human-readable box drawing.
+    let ascii = compiled.visualize(GraphFormat::Ascii);
+    assert!(ascii.contains("LangGraph Structure"), "got: {ascii}");
+    assert!(ascii.contains("Entry Point"));
+
+    // Mermaid: a ```mermaid code fence + node rows.
+    let mermaid = compiled.visualize(GraphFormat::Mermaid);
+    assert!(mermaid.starts_with("```mermaid"), "got: {mermaid}");
+    assert!(mermaid.contains("START[\"START\"]"));
+    assert!(mermaid.contains("n1"));
+
+    // Json: a String that parse as the structural graph.
+    let json = compiled.visualize(GraphFormat::Json);
+    let value: serde_json::Value =
+        serde_json::from_str(&json).expect("Json format must serialize to a String");
+    assert_eq!(value["entry_point"], "n1");
+    assert_eq!(value["recursion_limit"], 25);
+}
+
+/// The legacy per-format methods remain for direct, non-interchangeable access;
+/// `visualize_json` still returns the raw `Value`.
+#[tokio::test]
+async fn test_visualize_legacy_methods_remain_in_place() {
+    let compiled = chain_of(3);
+    assert!(compiled.visualize_ascii().contains("LangGraph Structure"));
+    assert!(compiled.visualize_mermaid().contains("```mermaid"));
+    let value = compiled.visualize_json();
+    assert_eq!(value["entry_point"], "n1");
+    // `to_definition` still produces a portable GraphDefinition.
+    let def = compiled.to_definition();
+    assert_eq!(def.nodes.len(), 3);
 }
 
 #[tokio::test]
@@ -567,7 +610,11 @@ async fn test_from_node_after_interrupt_persists_before_return() {
             other => panic!("expected after_work interrupt, got {other:?}"),
         }
     }
-    assert_eq!(run_count.load(Ordering::SeqCst), 1, "node ran exactly once before crash");
+    assert_eq!(
+        run_count.load(Ordering::SeqCst),
+        1,
+        "node ran exactly once before crash"
+    );
 
     // Second "process": brand-new graph over the same checkpoint directory. Resuming
     // must pick up the persisted "after_work" state (node already folded) and
@@ -984,8 +1031,12 @@ async fn test_with_checkpoint_retention_bounds_history() {
 
     let build = |retention: Option<CheckpointRetention>| {
         let mut g = GraphBuilder::<AgentState>::new()
-            .add_node_fn("a", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
-            .add_node_fn("b", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+            .add_node_fn("a", |s| {
+                Ok(StateUpdate::full(AgentState::new(s.input.clone())))
+            })
+            .add_node_fn("b", |s| {
+                Ok(StateUpdate::full(AgentState::new(s.input.clone())))
+            })
             .add_node_fn("c", |s| {
                 let mut ns = s.clone();
                 ns.set_output("done".to_string());
@@ -1031,8 +1082,12 @@ async fn test_with_checkpoint_retention_bounds_history() {
 #[tokio::test]
 async fn test_get_state_history_page_windows() {
     let compiled = GraphBuilder::<AgentState>::new()
-        .add_node_fn("a", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
-        .add_node_fn("b", |s| Ok(StateUpdate::full(AgentState::new(s.input.clone()))))
+        .add_node_fn("a", |s| {
+            Ok(StateUpdate::full(AgentState::new(s.input.clone())))
+        })
+        .add_node_fn("b", |s| {
+            Ok(StateUpdate::full(AgentState::new(s.input.clone())))
+        })
         .add_node_fn("c", |s| {
             let mut ns = s.clone();
             ns.set_output("done".to_string());
@@ -1078,5 +1133,411 @@ async fn test_get_state_history_page_windows() {
         cursor = Some(page.last().unwrap().id.clone());
         rebuilt.extend(page.iter().map(|s| s.id.clone()));
     }
-    assert_eq!(rebuilt, all.iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+    assert_eq!(
+        rebuilt,
+        all.iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+    );
+}
+
+// ── T2: entry-point parity (checkpoint semantics), fan-out concurrency ──
+
+/// A node that records every `NodeConfig` it was executed with, so a test can
+/// assert exactly what a caller's config forwarded into the graph.
+struct ConfigSpy {
+    name: String,
+    seen: Arc<std::sync::Mutex<Vec<NodeConfig>>>,
+}
+
+#[async_trait]
+impl GraphNode<AgentState> for ConfigSpy {
+    async fn execute(
+        &self,
+        _state: &AgentState,
+        config: Option<NodeConfig>,
+    ) -> NodeResult<AgentState> {
+        self.seen.lock().unwrap().push(config.unwrap_or_default());
+        Ok(StateUpdate::unchanged())
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// `invoke_with_config` is `invoke` plus a caller context: the metadata and the
+/// debug flag must reach every node's `NodeConfig`.
+#[tokio::test]
+async fn test_invoke_with_config_forwards_metadata_and_debug() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let compiled = GraphBuilder::<AgentState>::new()
+        .add_node(ConfigSpy {
+            name: "spy".to_string(),
+            seen: seen.clone(),
+        })
+        .add_edge(START, "spy")
+        .add_edge("spy", END)
+        .compile()
+        .unwrap();
+
+    let mut metadata = HashMap::new();
+    metadata.insert("trace_id".to_string(), serde_json::json!("abc"));
+    compiled
+        .invoke_with_config(
+            AgentState::new("x"),
+            NodeConfig {
+                recursion_limit: 0,
+                debug: true,
+                metadata,
+            },
+        )
+        .await
+        .unwrap();
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the single node must have run once");
+    assert_eq!(
+        seen[0].metadata.get("trace_id"),
+        Some(&serde_json::json!("abc")),
+        "caller metadata must reach the node"
+    );
+    assert!(seen[0].debug, "caller debug flag must reach the node");
+}
+
+/// The recursion limit resolution rule: a caller's non-zero limit bounds the run,
+/// but never loosens the graph's own limit — the tighter of the two wins.
+#[tokio::test]
+async fn test_invoke_with_config_limit_never_loosens_graph_limit() {
+    let caller_limit = |n: usize| NodeConfig {
+        recursion_limit: n,
+        ..NodeConfig::default()
+    };
+
+    // A tighter caller limit bounds a graph that would otherwise fit.
+    let err = chain_of(3)
+        .with_recursion_limit(25)
+        .invoke_with_config(AgentState::new("x"), caller_limit(2))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, GraphError::RecursionLimitReached(2)),
+        "caller limit 2 must bound the run, got {err:?}"
+    );
+
+    // A looser caller limit does NOT raise the graph's own limit.
+    let err = chain_of(3)
+        .with_recursion_limit(2)
+        .invoke_with_config(AgentState::new("x"), caller_limit(100))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, GraphError::RecursionLimitReached(2)),
+        "graph limit 2 must still apply, got {err:?}"
+    );
+
+    // `0` means "the caller imposes no bound" → the graph's own limit is used.
+    let result = chain_of(3)
+        .with_recursion_limit(3)
+        .invoke_with_config(AgentState::new("x"), caller_limit(0))
+        .await
+        .unwrap();
+    assert_eq!(result.recursion_count, 3);
+}
+
+/// An interruptible graph used by the entry-point parity tests below.
+fn interruptible_graph() -> crate::compiled::CompiledGraph<AgentState> {
+    use crate::node::InterruptibleNode;
+    use std::pin::Pin;
+
+    GraphBuilder::<AgentState>::new()
+        .add_node(InterruptibleNode::new("ask", |_state, resume| {
+            let r = resume.cloned();
+            Box::pin(async move {
+                if let Some(d) = r.as_ref() {
+                    let mut ns = AgentState::new("resumed");
+                    ns.set_output(format!("approved={d}"));
+                    Ok(StateUpdate::full(ns))
+                } else {
+                    Err(GraphError::InterruptRequest {
+                        payload: serde_json::json!({ "kind": "human_approval" }),
+                    })
+                }
+            }) as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+        }))
+        .add_node_fn("finish", |s| {
+            let mut ns = s.clone();
+            ns.set_output(format!("final:{}", s.output.clone().unwrap_or_default()));
+            Ok(StateUpdate::full(ns))
+        })
+        .add_edge(START, "ask")
+        .add_edge("ask", "finish")
+        .add_edge("finish", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(10)
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new())
+}
+
+/// T2 parity: `invoke_dynamic` runs nodes through the shared `run_node`, so a
+/// node-requested interrupt surfaces as a `DynamicInterrupt` carrying
+/// `__checkpoint_id`, and the suspension point is persisted.
+///
+/// Before the fix this entry point called `node.execute` directly: the interrupt
+/// escaped as a bare `InterruptRequest` (the `DynamicInterrupt` match below
+/// panics), no checkpoint was written, and `resume_from_interrupt` had no stamped
+/// id to resolve — the run was unrecoverable.
+#[tokio::test]
+async fn test_invoke_dynamic_checkpoints_and_stamps_runtime_interrupt() {
+    let compiled = interruptible_graph();
+
+    let err = compiled
+        .invoke_dynamic(AgentState::new("x"), &NoopPlanner)
+        .await
+        .unwrap_err();
+    let (node, payload) = match err {
+        GraphError::DynamicInterrupt { node, payload } => (node, payload),
+        other => panic!("invoke_dynamic must surface a DynamicInterrupt, got {other:?}"),
+    };
+    assert_eq!(node, "ask");
+    assert_eq!(payload["kind"], "human_approval");
+    assert!(
+        payload["__checkpoint_id"].as_str().is_some(),
+        "the interrupt payload must stamp __checkpoint_id, got {payload}"
+    );
+
+    // Initial checkpoint + the one written at the suspension point.
+    let history = compiled.get_state_history().await.unwrap();
+    assert_eq!(
+        history.len(),
+        2,
+        "the suspension must be persisted, not just the pre-run snapshot"
+    );
+
+    // The stamped checkpoint is enough to drive a real resume.
+    let inv = compiled
+        .resume_from_interrupt(&node, &payload, serde_json::json!("yes"))
+        .await
+        .unwrap();
+    assert_eq!(
+        inv.final_state.output.as_deref(),
+        Some("final:approved=\"yes\"")
+    );
+}
+
+/// T2 parity: the same invariant holds on `invoke_parallel` — it previously used
+/// the same raw `node.execute` call as `invoke_dynamic`.
+#[tokio::test]
+async fn test_invoke_parallel_checkpoints_and_stamps_runtime_interrupt() {
+    let compiled = interruptible_graph();
+
+    let err = compiled
+        .invoke_parallel(AgentState::new("x"))
+        .await
+        .unwrap_err();
+    let (node, payload) = match err {
+        GraphError::DynamicInterrupt { node, payload } => (node, payload),
+        other => panic!("invoke_parallel must surface a DynamicInterrupt, got {other:?}"),
+    };
+    assert_eq!(node, "ask");
+    assert!(
+        payload["__checkpoint_id"].as_str().is_some(),
+        "the interrupt payload must stamp __checkpoint_id, got {payload}"
+    );
+    assert_eq!(
+        compiled.get_state_history().await.unwrap().len(),
+        2,
+        "the suspension must be persisted on the parallel entry point too"
+    );
+
+    let inv = compiled
+        .resume_from_interrupt(&node, &payload, serde_json::json!("yes"))
+        .await
+        .unwrap();
+    assert_eq!(
+        inv.final_state.output.as_deref(),
+        Some("final:approved=\"yes\"")
+    );
+}
+
+/// Tracks how many fan-out branches were executing simultaneously.
+#[derive(Default)]
+struct ConcurrencyProbe {
+    in_flight: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl ConcurrencyProbe {
+    fn enter(&self) {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+    }
+
+    fn exit(&self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A fan-out over `branch_count` async branches, each holding the probe for
+/// `hold_ms(index)` so overlap (and completion order) is observable.
+fn fan_out_with_probe(
+    probe: Arc<ConcurrencyProbe>,
+    branch_count: usize,
+    hold_ms: impl Fn(usize) -> u64 + Send + Sync + 'static,
+) -> crate::compiled::CompiledGraph<AgentState> {
+    let mut builder =
+        GraphBuilder::<AgentState>::new().add_node_fn("main", |s| Ok(StateUpdate::full(s.clone())));
+    let names: Vec<String> = (1..=branch_count).map(|i| format!("b{i}")).collect();
+    for (idx, name) in names.iter().enumerate() {
+        let probe = probe.clone();
+        let tag = name.clone();
+        let hold = hold_ms(idx);
+        builder = builder.add_async_node(name.clone(), move |state: &AgentState| {
+            let probe = probe.clone();
+            let mut out = state.clone();
+            let tag = tag.clone();
+            async move {
+                probe.enter();
+                tokio::time::sleep(std::time::Duration::from_millis(hold)).await;
+                probe.exit();
+                out.set_output(tag);
+                Ok(StateUpdate::full(out))
+            }
+        });
+    }
+    builder
+        .add_edge(START, "main")
+        .add_fan_out("main", names.clone())
+        .add_fan_in(names.clone(), "join")
+        .add_node_fn("join", |s| Ok(StateUpdate::full(s.clone())))
+        .add_edge("join", END)
+        .compile()
+        .unwrap()
+        .with_recursion_limit(50)
+}
+
+/// T2: `with_max_concurrency(n)` bounds how many FanOut branches run at once.
+/// Without it a wide fan-out polls every branch future at once (peak == branch
+/// count); with it the peak is exactly the configured bound.
+#[tokio::test]
+async fn test_parallel_max_concurrency_bounds_in_flight_branches() {
+    let run = |max_concurrency: Option<usize>| async move {
+        let probe = Arc::new(ConcurrencyProbe::default());
+        let graph = fan_out_with_probe(probe.clone(), 4, |_| 30);
+        let graph = match max_concurrency {
+            Some(n) => graph.with_max_concurrency(n),
+            None => graph,
+        };
+        let result = graph.invoke_parallel(AgentState::new("x")).await.unwrap();
+        assert_eq!(result.parallel_branches.len(), 4);
+        probe.peak.load(Ordering::SeqCst)
+    };
+
+    assert_eq!(
+        run(None).await,
+        4,
+        "unbounded (the default) must still run every branch at once"
+    );
+    assert_eq!(
+        run(Some(1)).await,
+        1,
+        "max_concurrency(1) is strictly serial"
+    );
+    assert_eq!(
+        run(Some(2)).await,
+        2,
+        "max_concurrency(2) allows two in flight"
+    );
+    // `0` is documented as "unbounded".
+    assert_eq!(run(Some(0)).await, 4, "0 clears the bound");
+}
+
+/// T2: the bound must not change the *result* — branches are folded in
+/// declaration order even though they complete out of order. `b1` sleeps the
+/// longest, so a completion-ordered collect would let it overwrite the later
+/// branches' writes; order-preserving collection keeps `b4` (the last declared)
+/// as the winner.
+#[tokio::test]
+async fn test_parallel_branch_results_keep_declaration_order_under_bound() {
+    let probe = Arc::new(ConcurrencyProbe::default());
+    // b1 holds 80ms, b2 60ms, b3 40ms, b4 20ms → completion order is b4,b3,b2,b1.
+    let graph = fan_out_with_probe(probe, 4, |idx| 80 - 20 * idx as u64).with_max_concurrency(2);
+
+    let result = graph.invoke_parallel(AgentState::new("x")).await.unwrap();
+
+    let names: Vec<&str> = result
+        .parallel_branches
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["b1", "b2", "b3", "b4"],
+        "branch results must be collected in declaration order, not completion order"
+    );
+    assert_eq!(
+        result.final_state.output.as_deref(),
+        Some("b4"),
+        "the field union must fold branches in declaration order"
+    );
+}
+
+// ------------------------------------------------------------------
+// 0.27.0 T3 (territorial subgraph): `with_territory` isolates a graph's
+// checkpoints so a territorial subgraph sharing the parent's back-end never
+// advances the parent's history.
+// ------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_territorial_subgraph_history_stays_isolated_from_parent() {
+    // Parent writes its own checkpoint into the shared back-end first.
+    let parent = GraphBuilder::<AgentState>::new()
+        .add_node_fn("p", |state| {
+            let mut s = state.clone();
+            s.set_output("parent-done".to_string());
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "p")
+        .add_edge("p", END)
+        .compile()
+        .unwrap()
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    parent
+        .invoke(AgentState::new("x"))
+        .await
+        .unwrap();
+    let parent_history = parent.get_state_history().await.unwrap();
+    assert!(!parent_history.is_empty(), "parent saved its own checkpoint");
+
+    // A sibling graph over its OWN back-end but with_territory("cart") set BEFORE
+    // with_checkpointer (order-independent wiring) must succeed and keep its
+    // history in its own namespaced thread, reading back correctly.
+    let cart = GraphBuilder::<AgentState>::new()
+        .add_node_fn("c", |state| {
+            let mut s = state.clone();
+            s.set_output("cart-done".to_string());
+            Ok(StateUpdate::full(s))
+        })
+        .add_edge(START, "c")
+        .add_edge("c", END)
+        .compile()
+        .unwrap()
+        // territory set BEFORE with_checkpointer, exercising the order-independent wiring
+        .with_territory("cart")
+        .with_checkpointer(ThreadSafeMemoryCheckpointer::<AgentState>::new());
+    let result = cart.invoke(AgentState::new("in")).await.unwrap();
+    assert_eq!(result.final_state.output.as_deref(), Some("cart-done"));
+
+    // The territorial graph's own history resolves (via the namespaced thread).
+    let cart_history = cart.get_state_history().await.unwrap();
+    assert!(
+        !cart_history.is_empty(),
+        "territorial graph must record its own checkpoint"
+    );
+
+    // The two graphs use SEPARATE raw back-ends here, so the strongest cross-
+    // isolation proof is at the checkpointer layer (test_territory_isolates_from_parent_default_thread,
+    // which runs two territories over ONE shared raw lock). This test pins the
+    // ORDER-INDEPENDENT wiring: territory set BEFORE with_checkpointer must still
+    // install a TerritoryCheckpointer (regression guard — previously the territory
+    // was silently dropped in this call order).
+    let _ = (parent_history, cart_history);
 }

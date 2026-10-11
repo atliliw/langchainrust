@@ -35,14 +35,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 use crate::protocol::{
     negotiate_protocol_version, JsonRpcId, MCPError, MCPRequest, ProtocolInfo, VersionPolicy,
     MCP_ERROR_REQUEST_TIMEOUT, MCP_VERSION,
 };
+use crate::subscriptions::NOTIFICATIONS_RESOURCES_LIST_CHANGED;
 use crate::transport::streamable_http::StreamableHttpTransport;
-use crate::types::{MCPToolDefinition, MCPToolResult};
+use crate::types::{ListToolsParams, ListToolsResult, MCPToolDefinition, MCPToolResult};
 
 /// Default per-request timeout for Streamable HTTP sessions.
 const STREAMABLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -244,6 +246,24 @@ impl StreamableMcpClient {
         Ok(tools)
     }
 
+    /// `tools/list` with cursor pagination (#79).
+    ///
+    /// Sends the opaque `cursor` param and returns the full envelope including
+    /// `nextCursor`, so a caller can page through a large tool set. `None` is
+    /// the first page.
+    pub async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        let params = ListToolsParams { cursor };
+        let params = serde_json::to_value(&params).map_err(|e| {
+            MCPError::new(-1, format!("failed to encode tools/list params: {e}"))
+        })?;
+        let result = self.send("tools/list", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|e| MCPError::new(-1, format!("failed to parse tool list: {e}")))
+    }
+
     /// `tools/call` (emits a `tools/call {name}` OTel client span when
     /// instrumentation is attached — T10).
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
@@ -282,12 +302,43 @@ impl StreamableMcpClient {
     pub async fn close(&self) -> Result<(), MCPError> {
         Ok(())
     }
+
+    /// T3 §5 resource push loop: opens a long-lived server→client SSE push
+    /// channel on this endpoint and feeds every `notifications/resources/
+    /// list_changed` frame to `handler` until the server closes the stream.
+    ///
+    /// Pair this with `resources/subscribe` (via [`crate::McpCapabilityClient`])
+    /// to learn about changes to subscribed resources in near-real time instead
+    /// of polling. `handler` is called on a best-effort basis; a `#[derive(Clone)]`
+    /// concern is that this method drives the loop synchronously, so run it on a
+    /// dedicated task when it must keep the process's main loop unconsumed.
+    pub async fn push_resource_changes<F>(&self, mut handler: F) -> Result<(), MCPError>
+    where
+        F: FnMut(Value) + Send + 'static,
+    {
+        let mut stream = self.transport.open_push_stream().await?;
+        while let Some(frame) = stream.next().await {
+            let frame = frame?;
+            if frame.get("method").and_then(Value::as_str) == Some(NOTIFICATIONS_RESOURCES_LIST_CHANGED)
+            {
+                handler(frame);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl crate::tool_client::McpToolClient for StreamableMcpClient {
     async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError> {
         StreamableMcpClient::list_tools(self).await
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        StreamableMcpClient::list_tools_page(self, cursor).await
     }
 
     async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {

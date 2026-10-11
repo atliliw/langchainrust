@@ -98,7 +98,7 @@ impl DocumentLoader for MarkdownLoader {
             )));
         }
 
-        let content = std::fs::read_to_string(&self.path)?;
+        let content = super::bounded_read_utf8(&self.path, super::MAX_LOCAL_FILE_BYTES).await?;
 
         if self.split_by_heading {
             self.split_by_headings(&content)

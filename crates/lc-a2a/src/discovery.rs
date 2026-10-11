@@ -9,6 +9,16 @@
 //! DNS-SD / mDNS is a possible future transport for the same directory; the
 //! catalog shape (a `Vec<AgentCard>`) is transport-agnostic so a DNS-SD-backed
 //! provider could slot in behind the same lookup helpers.
+//!
+//! # Residual by design (not dead code)
+//!
+//! Like [`crate::gateway`], these are **deployment-time library components**:
+//! an operator building a hub consumes [`RegistryClient`]/[`AgentRegistry`] to
+//! enumerate partner agents, but the crate ships no hub server mode (C-A2A-2,
+//! 0.25.0 — "document residual, don't build hub"). The `A2AServer` leaf-agent
+//! host is the only in-crate server mode, so there is deliberately no internal
+//! call site; the triage flag "死契约层 … 未接线" is resolved by documenting
+//! this intent rather than removing the working public components.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

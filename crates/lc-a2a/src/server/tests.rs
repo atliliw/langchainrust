@@ -423,6 +423,80 @@ async fn handle_tasks_list_returns_tasks() {
 }
 
 #[tokio::test]
+async fn handle_tasks_list_paginates_with_limit_and_cursor() {
+    let server = echo_server();
+    // Create several tasks; ids are UUIDs, so id-order is arbitrary-but-stable.
+    let mut ids = std::collections::BTreeSet::new();
+    for i in 0..3 {
+        let resp = server
+            .handle_a2a_request(A2ARequest::send_task(
+                (i + 1) as u64,
+                &A2AMessage::user("hi"),
+            ))
+            .await;
+        let id = resp.result.unwrap()["task"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        ids.insert(id);
+    }
+    let ids: Vec<String> = ids.into_iter().collect();
+
+    // First page: limit=2 -> 2 tasks, hasMore, and a nextCursor.
+    let p1 = server
+        .handle_a2a_request(A2ARequest::new(
+            10,
+            "tasks/list",
+            Some(json!({ "limit": 2 })),
+        ))
+        .await;
+    assert!(!p1.is_error());
+    let r1 = p1.result.unwrap();
+    let tasks1 = r1["tasks"].as_array().unwrap();
+    assert_eq!(tasks1.len(), 2);
+    assert_eq!(
+        r1["hasMore"].as_bool(),
+        Some(true),
+        "must report another page"
+    );
+    let next = r1["nextCursor"].as_str().expect("must expose a nextCursor");
+    assert!(
+        ids[..2].iter().any(|id| id == next),
+        "cursor = last page task id"
+    );
+
+    // Second page: continue from the cursor -> the final task, hasMore=false.
+    let p2 = server
+        .handle_a2a_request(A2ARequest::new(
+            11,
+            "tasks/list",
+            Some(json!({ "limit": 2, "cursor": next })),
+        ))
+        .await;
+    assert!(!p2.is_error());
+    let r2 = p2.result.unwrap();
+    let tasks2 = r2["tasks"].as_array().unwrap();
+    assert_eq!(tasks2.len(), 1);
+    assert_eq!(r2["hasMore"].as_bool(), Some(false));
+    assert_eq!(tasks2[0]["id"].as_str(), Some(ids[2].as_str()));
+    assert!(
+        r2.get("nextCursor").is_none() || r2["nextCursor"].is_null(),
+        "no nextCursor on the final page"
+    );
+
+    // Pages tile the full set exactly once, in id order.
+    let full: Vec<String> = tasks1
+        .iter()
+        .chain(tasks2.iter())
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        full, ids,
+        "pages must cover all tasks exactly once, in order"
+    );
+}
+
+#[tokio::test]
 async fn handle_unknown_method() {
     let server = echo_server();
     let req = A2ARequest::new(8, "foo/bar", None);
@@ -1083,6 +1157,53 @@ async fn without_streaming_no_subscriber() {
     assert!(server.subscribe().is_none());
 }
 
+// 0.27.0 T2: the in-process broadcast stream narrows to a single task, so
+// back-to-back tasks on the same bus surface independently (no cross-talk).
+#[tokio::test]
+async fn without_streaming_no_subscriber_or_task_stream() {
+    let server = echo_server();
+    assert!(server.subscribe().is_none());
+    #[cfg(feature = "axum")]
+    assert!(server.subscribe_task("t-a").is_none());
+}
+
+#[cfg(feature = "axum")]
+#[tokio::test]
+async fn task_scoped_stream_multiplexes_per_task() {
+    use tokio_stream::StreamExt;
+
+    let (tx, _sink) = broadcast::channel(64);
+    let mut a = task_scoped_stream(tx.subscribe(), "t-a".to_string());
+    let mut b = task_scoped_stream(tx.subscribe(), "t-b".to_string());
+
+    tx.send(TaskPushNotification::status("t-a", TaskStatus::Working))
+        .unwrap();
+    tx.send(TaskPushNotification::status("t-b", TaskStatus::Working))
+        .unwrap();
+    tx.send(TaskPushNotification::status("t-a", TaskStatus::Completed))
+        .unwrap();
+    // Close the channel so both streams terminate once drained.
+    drop(tx);
+
+    // Stream "a" sees only its own events (2), never t-b's.
+    let a1 = a.next().await.expect("first t-a event");
+    let a2 = a.next().await.expect("second t-a event");
+    assert_eq!(a1.id(), "t-a");
+    assert_eq!(a2.id(), "t-a");
+    assert!(
+        a.next().await.is_none(),
+        "t-a stream must not see t-b events"
+    );
+
+    // Stream "b" sees only its t-b event, never t-a's.
+    let b1 = b.next().await.expect("t-b event");
+    assert_eq!(b1.id(), "t-b");
+    assert!(
+        b.next().await.is_none(),
+        "t-b stream must not see t-a events"
+    );
+}
+
 #[tokio::test]
 async fn sweep_expired_tasks_cleans_terminal_and_expires_live() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::with_max_tasks(10));
@@ -1665,4 +1786,56 @@ fn canceled_single_l_spelling_accepted_on_receive() {
     assert_eq!(task.status, TaskStatus::Cancelled);
     let json = serde_json::to_value(&task).unwrap();
     assert_eq!(json["status"], "cancelled");
+}
+
+// ---- P2-9: tasks/sendSubscribe consent + push increments ----
+
+#[tokio::test]
+async fn send_subscribe_acknowledges_task_and_publishes_increments() {
+    let server = echo_server().with_streaming(16);
+    let mut rx = server.subscribe().expect("streaming enabled");
+
+    let req = A2ARequest::send_subscribe(1, &A2AMessage::user("hello"));
+    let resp = server.handle_a2a_request(req).await;
+    assert!(!resp.is_error(), "subscription ack must not error");
+    let result = resp.result.unwrap();
+    let task_id = result["task"]["id"].as_str().unwrap().to_string();
+    // The subscription confirmation returns the acknowledged (submitted) task.
+    assert_eq!(
+        result["task"]["status"].as_str(),
+        Some("submitted"),
+        "ack returns the acknowledged task"
+    );
+
+    // With the ack in hand, incremental pushes arrive over the SSE/broadcast
+    // bus: the background run emits `working` then `completed`.
+    let mut saw_working = false;
+    let mut saw_completed = false;
+    for _ in 0..8 {
+        match rx.recv().await {
+            Ok(event) => {
+                assert_eq!(event.id(), task_id);
+                match event.status_value() {
+                    Some(TaskStatus::Working) => saw_working = true,
+                    Some(TaskStatus::Completed) => saw_completed = true,
+                    _ => {}
+                }
+                if saw_working && saw_completed {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    assert!(saw_working, "expected a working increment");
+    assert!(saw_completed, "expected a completed increment");
+}
+
+#[tokio::test]
+async fn send_subscribe_missing_params_returns_error() {
+    let server = echo_server();
+    let req = A2ARequest::new(1, "tasks/sendSubscribe", None);
+    let resp = server.handle_a2a_request(req).await;
+    assert!(resp.is_error());
+    assert_eq!(resp.error.unwrap().code, -32602);
 }

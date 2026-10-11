@@ -408,6 +408,59 @@ fn aggregate(graph: &WeightedGraph, refined: &Partition, members: &[Vec<usize>])
     }
 }
 
+/// Expands aggregate-level community labels back to the original graph's nodes,
+/// so modularity of a coarser partition can be computed against the original
+/// graph (the cross-level termination metric).
+fn expand_labels(partition: &Partition, members: &[Vec<usize>], n: usize) -> Vec<i64> {
+    let mut out = vec![-1i64; n];
+    for (agg_node, originals) in members.iter().enumerate() {
+        let label = partition.labels[agg_node];
+        for &orig in originals {
+            out[orig] = label;
+        }
+    }
+    out
+}
+
+/// Weighted modularity of `labels` on `graph`, per the module-doc quality
+/// function, with `m` the total graph edge weight (undirected edges counted
+/// once, self loops once):
+///
+/// ```text
+/// Q = Σ_c ( E_c/m − γ (Σ_c / 2m)² )
+/// ```
+///
+/// `E_c` is the internal edge weight of community `c` (each undirected edge
+/// counted once), `Σ_c` the sum of member degrees. Used as the Leiden
+/// termination metric: a level whose partition no longer improves Q stops the
+/// outer loop (0.27.0 §4).
+fn modularity(graph: &WeightedGraph, labels: &[i64], resolution: f64, m: f64) -> f64 {
+    if m <= 0.0 {
+        return 0.0;
+    }
+    let k = labels.iter().copied().max().map(|x| x + 1).unwrap_or(0) as usize;
+    let mut internal = vec![0.0f64; k]; // E_c
+    let mut degree_sum = vec![0.0f64; k]; // Σ_c
+    for node in 0..graph.n {
+        let c = labels[node] as usize;
+        degree_sum[c] += graph.degree(node);
+        for &(nb, w) in &graph.adj[node] {
+            // count each undirected edge once (nb > node); self loops handled below
+            if nb > node && labels[nb] == labels[node] {
+                internal[c] += w;
+            }
+        }
+        if graph.loops[node] > 0.0 {
+            internal[c] += graph.loops[node];
+        }
+    }
+    let mut q = 0.0;
+    for c in 0..k {
+        q += internal[c] / m - resolution * (degree_sum[c] / (2.0 * m)).powi(2);
+    }
+    q
+}
+
 /// Runs Leiden community detection with the weighted-modularity quality
 /// function.
 ///
@@ -435,6 +488,22 @@ pub fn leiden_modularity(graph: &WeightedGraph, resolution: f64, seed: u64) -> V
     let mut current_graph = graph.clone();
     let mut current_members = members;
 
+    // Termination metric (0.27.0 §4): weigh each level's partition against the
+    // ORIGINAL graph's weighted modularity, and stop as soon as a newly merged
+    // level fails to improve it. The structural guards below (no subdivision /
+    // no coarse-graining progress) stop stalls, but the current-best modularity
+    // is the actual quality target — a level can shrink the graph without
+    // gaining modularity, and without this explicit metric the loop would keep
+    // coarse-graining. Track the current-best now (level 0) and require each
+    // candidate next level to strictly beat it.
+    let total_edge_weight: f64 = (0..n).map(|node| graph.degree(node)).sum::<f64>() / 2.0;
+    let mut best_modularity = modularity(
+        graph,
+        &expand_labels(&partition, &current_members, n),
+        resolution,
+        total_edge_weight,
+    );
+
     loop {
         // Every node its own community: nothing to refine or merge.
         if partition.num_communities() == current_graph.n {
@@ -451,6 +520,17 @@ pub fn leiden_modularity(graph: &WeightedGraph, resolution: f64, seed: u64) -> V
 
         let aggregated = aggregate(&current_graph, &refined, &current_members);
 
+        // 0.26.0 (MEDIUM): guard against coarse-graining making no progress. The
+        // `refined.num_communities()` check above only proves refinement
+        // subdivided something; if it renamed each aggregate vertex back to its
+        // own community, `aggregated.graph.n == current_graph.n` and the next
+        // round would repeat the same partition under a fresh seed — spinning
+        // the outer loop without ever shrinking the graph. Compare the actual
+        // graph size, not the community count, to detect this stall.
+        if aggregated.graph.n == current_graph.n {
+            break;
+        }
+
         // Initial partition on the aggregate graph: each refined subset
         // inherits the community its members had after local moving.
         let mut initial = vec![-1i64; aggregated.graph.n];
@@ -458,9 +538,28 @@ pub fn leiden_modularity(graph: &WeightedGraph, resolution: f64, seed: u64) -> V
             initial[refined.labels[node] as usize] = partition.labels[node];
         }
 
-        partition = local_moving(&aggregated.graph, &initial, resolution, &mut rng);
+        let next_partition = local_moving(&aggregated.graph, &initial, resolution, &mut rng);
+        let next_members = aggregated.members;
+
+        // Termination metric: expand the candidate merged level back to the
+        // original nodes and require its modularity to strictly beat the best
+        // so far (up to `EPS` float noise). If it does not, further
+        // coarse-graining cannot improve quality — keep the last best level,
+        // which is still held in `partition`/`current_members`.
+        let candidate_modularity = modularity(
+            graph,
+            &expand_labels(&next_partition, &next_members, n),
+            resolution,
+            total_edge_weight,
+        );
+        if candidate_modularity <= best_modularity + EPS {
+            break;
+        }
+        best_modularity = candidate_modularity;
+
+        partition = next_partition;
         current_graph = aggregated.graph;
-        current_members = aggregated.members;
+        current_members = next_members;
     }
 
     // Expand labels on the coarsest aggregate graph back to original nodes.
@@ -557,6 +656,54 @@ mod tests {
         assert_eq!(labels[1], labels[2]);
         assert_eq!(labels[3], labels[4]);
         assert_eq!(labels[4], labels[5]);
+    }
+
+    /// Two triangles joined by one bridge edge: the split into two communities must
+    /// carry higher weighted modularity than a single merged community, which is
+    /// exactly the metric the outer loop's termination check uses to decide it can
+    /// stop coarse-graining. `labels` are community ids per node (0 and 1).
+    #[test]
+    fn split_modularity_beats_merged_for_weak_bridge() {
+        let mut pairs = Vec::new();
+        push_clique(&mut pairs, 0, 3);
+        push_clique(&mut pairs, 3, 3);
+        pairs.push((2, 5)); // weak bridge
+        let g = graph_from(6, &pairs);
+        let total: f64 = (0..g.n).map(|node| g.degree(node)).sum::<f64>() / 2.0;
+
+        // One community for all six nodes.
+        let merged = vec![0i64; 6];
+        // Two triangles, each its own community.
+        let split = vec![0i64, 0, 0, 1, 1, 1];
+
+        let q_merged = modularity(&g, &merged, 1.0, total);
+        let q_split = modularity(&g, &split, 1.0, total);
+        assert!(
+            q_split > q_merged + EPS,
+            "split modularity {q_split} should beat merged {q_merged}"
+        );
+    }
+
+    /// Modularity is zero on an edgeless graph (no internal edge weight anywhere).
+    #[test]
+    fn modularity_is_zero_on_edgeless_graph() {
+        let g = WeightedGraph::new(4);
+        let labels = vec![0i64, 0, 1, 1];
+        assert_eq!(modularity(&g, &labels, 1.0, 0.0), 0.0);
+    }
+
+    /// Modularity of a single self-loop node (isolated-plus-loop shape).
+    #[test]
+    fn modularity_counts_self_loop_once() {
+        let g = WeightedGraph {
+            n: 1,
+            adj: vec![vec![]],
+            loops: vec![2.0],
+        };
+        // m = loops/1 = 2.0  (self loop counted once); E_c = 2.0; Σ_c = degree = 4.0.
+        let labels = vec![0i64];
+        let q = modularity(&g, &labels, 1.0, 2.0);
+        assert!((q - (2.0_f64 / 2.0 - 1.0 * (4.0_f64 / 4.0).powi(2))).abs() < EPS);
     }
 
     #[test]

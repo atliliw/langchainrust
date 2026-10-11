@@ -29,6 +29,19 @@ pub trait EventStore: Send + Sync {
         after: Option<u64>,
     ) -> Result<Vec<SessionEvent>, SessionError>;
 
+    /// Field-based range query (0.27.0 L252): returns the events on a branch
+    /// whose `turn_index` is within `[from, to]` (inclusive), id-ascending.
+    /// Unlike `read` (which walks by event id) this addresses the log *by turn*:
+    /// a caller slicing out a window of conversation history does not need to
+    /// know the event ids that delimit each turn.
+    async fn read_turns_range(
+        &self,
+        session_id: &str,
+        branch: &str,
+        from_turn: u64,
+        to_turn: u64,
+    ) -> Result<Vec<SessionEvent>, SessionError>;
+
     /// Copies all events of `src_branch` with `id <= until_id` (None = all)
     /// into `dst_branch`, preserving ids and order. Returns the count copied.
     async fn fork(
@@ -47,6 +60,20 @@ pub trait EventStore: Send + Sync {
     /// Used by session teardown; after this, a re-created session starts with
     /// an empty log rather than inheriting stale history.
     async fn clear_session(&self, session_id: &str) -> Result<(), SessionError>;
+
+    /// H-bounded: physically removes events of one branch with `id < before_id`
+    /// (a prefix pruned after compaction). This is what makes compaction
+    /// *reclaim* storage instead of only bounding the LLM context (§3.1):
+    /// a compacted `Snapshot` is the deterministic, durable replacement for the
+    /// turns it summarizes, so those old events can be dropped. Higher ids are
+    /// untouched, so `latest_id`/`next_id` stay monotonic and idempotent appends
+    /// hold. It is a no-op when `before_id == 0`.
+    async fn delete_before(
+        &self,
+        session_id: &str,
+        branch: &str,
+        before_id: u64,
+    ) -> Result<(), SessionError>;
 }
 
 /// In-memory [`EventStore`] — tests and single-process scenarios.
@@ -135,6 +162,26 @@ impl EventStore for MemoryEventStore {
             .collect())
     }
 
+    async fn read_turns_range(
+        &self,
+        session_id: &str,
+        branch: &str,
+        from_turn: u64,
+        to_turn: u64,
+    ) -> Result<Vec<SessionEvent>, SessionError> {
+        let events = self.events.lock().await;
+        Ok(events
+            .range(
+                (session_id.to_string(), branch.to_string(), 0)
+                    ..=(session_id.to_string(), branch.to_string(), u64::MAX),
+            )
+            .filter(|((s, b, _), _)| s == session_id && b == branch)
+            .map(|(_, e)| e)
+            .filter(|e| e.turn_index >= from_turn && e.turn_index <= to_turn)
+            .cloned()
+            .collect())
+    }
+
     async fn fork(
         &self,
         session_id: &str,
@@ -188,6 +235,34 @@ impl EventStore for MemoryEventStore {
             .keys()
             .filter(|(s, _, _)| s == session_id)
             .cloned()
+            .collect();
+        for k in keys {
+            events.remove(&k);
+        }
+        Ok(())
+    }
+
+    async fn delete_before(
+        &self,
+        session_id: &str,
+        branch: &str,
+        before_id: u64,
+    ) -> Result<(), SessionError> {
+        // Id 0 prunes nothing (no event has `id < 0`).
+        if before_id == 0 {
+            return Ok(());
+        }
+        let mut events = self.events.lock().await;
+        let upper = before_id - 1;
+        // Collect owned keys first: BTreeMap keys are borrowed during
+        // iteration, but removal needs an owned key.
+        let keys: Vec<(String, String, u64)> = events
+            .range(
+                (session_id.to_string(), branch.to_string(), 0)
+                    ..=(session_id.to_string(), branch.to_string(), upper),
+            )
+            .filter(|((s, b, _), _)| s == session_id && b == branch)
+            .map(|((s, b, id), _)| (s.clone(), b.clone(), *id))
             .collect();
         for k in keys {
             events.remove(&k);
@@ -390,6 +465,54 @@ mod tests {
         assert_eq!(store.read("s1", "b1", None).await.unwrap().len(), 3);
     }
 
+    /// H-bounded: delete_before physically removes a prefix; ids/latest_id stay
+    /// monotonic so idempotent appends keep holding (§3.1).
+    #[tokio::test]
+    async fn delete_before_prunes_prefix_keeps_latest() {
+        let store = MemoryEventStore::new();
+        for i in 1..=6 {
+            store
+                .append(&ev(
+                    i,
+                    0,
+                    EventPayload::UserMessage {
+                        content: format!("m{i}"),
+                    },
+                ))
+                .await
+                .unwrap();
+        }
+        store.delete_before("s1", "main", 4).await.unwrap();
+
+        let read = store.read("s1", "main", None).await.unwrap();
+        assert_eq!(read.len(), 3, "the prefix id<4 is gone");
+        assert_eq!(read[0].id, 4);
+        assert_eq!(
+            store.latest_id("s1", "main").await.unwrap(),
+            6,
+            "prefix pruning must not move latest_id"
+        );
+
+        // Id 0 is a no-op (nothing to prune below id 1).
+        store.delete_before("s1", "main", 0).await.unwrap();
+        assert_eq!(store.read("s1", "main", None).await.unwrap().len(), 3);
+
+        // A different session is untouched by prefix pruning on "s1".
+        store
+            .append(&SessionEvent::now(
+                1,
+                "s2",
+                0,
+                "main",
+                EventPayload::UserMessage {
+                    content: "s2 m1".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(store.read("s2", "main", None).await.unwrap().len(), 1);
+    }
+
     /// fork with until_id = None copies everything; forking into an existing
     /// branch is idempotent (no double copy).
     #[tokio::test]
@@ -410,5 +533,44 @@ mod tests {
         assert_eq!(store.fork("s1", "main", "b1", None).await.unwrap(), 3);
         assert_eq!(store.fork("s1", "main", "b1", None).await.unwrap(), 0);
         assert_eq!(store.read("s1", "b1", None).await.unwrap().len(), 3);
+    }
+
+    /// L252: read_turns_range slices the log by turn_index (inclusive), not by
+    /// event id — callers get a conversation window without knowing event ids.
+    #[tokio::test]
+    async fn read_turns_range_slices_by_turn_index() {
+        let store = MemoryEventStore::new();
+        // Turn 0: two events; turn 1: one; turn 2: three.
+        for (id, turn) in [(1, 0u64), (2, 0), (3, 1), (4, 2), (5, 2), (6, 2)] {
+            store
+                .append(&ev(
+                    id,
+                    turn,
+                    EventPayload::UserMessage {
+                        content: format!("t{turn}"),
+                    },
+                ))
+                .await
+                .unwrap();
+        }
+
+        let mid = store.read_turns_range("s1", "main", 1, 1).await.unwrap();
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].id, 3);
+
+        // Inclusive upper bound.
+        let multi = store.read_turns_range("s1", "main", 0, 2).await.unwrap();
+        assert_eq!(multi.len(), 6, "must span turns 0..=2 inclusive");
+
+        // Empty window.
+        let none = store.read_turns_range("s1", "main", 5, 9).await.unwrap();
+        assert!(none.is_empty());
+
+        // A different branch sees nothing (query scoped to the branch).
+        assert!(store
+            .read_turns_range("s1", "other", 0, 2)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

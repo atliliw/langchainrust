@@ -59,7 +59,8 @@ use tokio::net::TcpListener;
 fn real_llm() -> OpenAIChat {
     OpenAIChat::new(OpenAIConfig {
         api_key: std::env::var("A2A_API_KEY")
-            .unwrap_or_else(|_| "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string()),
+            .unwrap_or_else(|_| "sk-6eb65fcf5d17491ca10b984efe1f43e7".to_string())
+            .into(),
         base_url: std::env::var("A2A_BASE_URL").unwrap_or_else(|_| {
             "https://llm-8xo1b7o30z27y2xc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
                 .to_string()

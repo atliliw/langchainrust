@@ -6,15 +6,26 @@ use std::sync::Arc;
 use crate::language_models::{BaseLanguageModel, LLMResult, StreamChunk, TokenUsage};
 use crate::observability::{MetricsSink, ObsEvent};
 use crate::runnables::Runnable;
+use crate::runnables::{RUN_META_COST_SCOPE, RUN_META_TRACE_ID};
 use crate::tools::ToolDefinition;
 use crate::{BaseChatModel, RunnableConfig};
-use crate::runnables::RUN_META_COST_SCOPE;
 
 /// Reads the enclosing per-run cost-attribution scope from a [`RunnableConfig`]
 /// (P0-5). None when the config is absent or does not carry a scope.
 fn read_cost_scope(config: Option<&RunnableConfig>) -> Option<&str> {
     config
         .and_then(|c| c.metadata.get(RUN_META_COST_SCOPE))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// Reads the enclosing run's trace id from the config metadata (None when
+/// absent). Used to tag cost events with the owning run's `trace_id` so they
+/// join the run's `AgentMetrics`/`RunError` events across observability
+/// backends.
+fn read_trace_id(config: Option<&RunnableConfig>) -> Option<&str> {
+    config
+        .and_then(|c| c.metadata.get(RUN_META_TRACE_ID))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
 }
@@ -120,6 +131,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         // P0-5: read the per-run cost scope before `config` is moved into the
         // inner model, so we can still attribute the recorded call afterwards.
         let cost_scope = read_cost_scope(config.as_ref()).map(str::to_string);
+        let trace_id = read_trace_id(config.as_ref()).map(str::to_string);
         let result = self.llm.chat(messages, config).await?;
 
         // prefer the real usage returned by the LLM, otherwise use the estimate.
@@ -149,6 +161,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
             // spend into each other's incremental budget.
             tracker
                 .record_scoped(
+                    trace_id.as_deref(),
                     cost_scope.as_deref(),
                     self.provider.as_deref(),
                     &model,
@@ -317,6 +330,7 @@ where
         // inner model; the owned value is captured into the counting closure so
         // streaming usage is attributed to the enclosing run's bucket too.
         let cost_scope = read_cost_scope(config.as_ref()).map(str::to_string);
+        let trace_id = read_trace_id(config.as_ref()).map(str::to_string);
         let stream = self.llm.stream_chat(messages, config).await?;
         let usage = self.usage.clone();
         let sink = self.metrics_sink.clone();
@@ -324,6 +338,7 @@ where
         let provider = self.provider.clone();
         let stream = stream.then(move |item| {
             let cost_scope = cost_scope.clone();
+            let trace_id = trace_id.clone();
             let usage = usage.clone();
             let sink = sink.clone();
             let cost_tracker = cost_tracker.clone();
@@ -336,6 +351,7 @@ where
                         if let Some(tracker) = &cost_tracker {
                             tracker
                                 .record_scoped(
+                                    trace_id.as_deref(),
                                     cost_scope.as_deref(),
                                     provider.as_deref(),
                                     &model_name,
@@ -792,6 +808,7 @@ mod tests {
             }
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
+            ObsEvent::RunError(_) => panic!("unexpected event kind"),
         }
     }
 
@@ -827,6 +844,7 @@ mod tests {
             ObsEvent::TokenUsage(u) => assert_eq!(u.total_tokens, 65),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
+            ObsEvent::RunError(_) => panic!("unexpected event kind"),
         }
     }
 
@@ -871,6 +889,7 @@ mod tests {
             ObsEvent::TokenUsage(u) => assert_eq!(u.prompt_tokens, 100),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
+            ObsEvent::RunError(_) => panic!("unexpected event kind"),
         }
     }
 

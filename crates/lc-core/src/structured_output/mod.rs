@@ -46,12 +46,17 @@
 //! ```
 
 pub mod extract;
+pub mod json_schema;
 pub mod parser;
 pub mod streaming;
 
 pub use extract::{with_structured_output, StructuredOutputError, StructuredOutputExt};
+pub use json_schema::JsonSchemaOutput;
 pub use parser::{PartialJsonError, PartialJsonParser};
-pub use streaming::{stream_structured_output, StreamingStructuredOutputExt};
+pub use streaming::{
+    stream_structured_output, stream_structured_output_with_hooks, OnParseFn, OnStopWordFn,
+    StreamHooks, StreamingStructuredOutputExt,
+};
 
 #[cfg(test)]
 mod tests;

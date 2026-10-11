@@ -2,6 +2,7 @@
 //! Anthropic configuration types and constants.
 
 use lc_core::tools::ToolDefinition;
+use lc_core::{JsonSchemaOutput, PromptCache, SensitiveString};
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -77,7 +78,7 @@ impl Default for ThinkingConfig {
 #[derive(Clone)]
 pub struct AnthropicConfig {
     /// Anthropic API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Anthropic API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -107,6 +108,24 @@ pub struct AnthropicConfig {
     /// independently of the conversation tail. `None` (default) falls back to
     /// `prompt_caching`'s ephemeral marker.
     pub prompt_cache_ttl: Option<String>,
+    /// Provider-agnostic prompt-cache request (see [`lc_core::PromptCache`]).
+    ///
+    /// Maps onto Anthropic's `cache_control` breakpoints: the stable prefix
+    /// (system prompt + last tool definition) is always marked, and the last
+    /// message content block is marked when
+    /// [`last_message_breakpoint`](lc_core::PromptCache::with_last_message_breakpoint)
+    /// is set. [`ttl`](lc_core::PromptCache::with_ttl) selects the long-lived
+    /// `{"type":"ephemeral","ttl":…}` marker. `key` has no Anthropic equivalent
+    /// and is ignored. `None` (default) keeps the current behavior.
+    pub prompt_cache: Option<PromptCache>,
+    /// Provider-agnostic raw-JSON-Schema structured-output constraint (see
+    /// [`lc_core::JsonSchemaOutput`]).
+    ///
+    /// Mapped to Anthropic native structured outputs
+    /// (`output_config.format: {"type":"json_schema","schema":…}`). Anthropic
+    /// has no `name`/`strict` fields, so those are dropped. `None` (default)
+    /// sends no constraint.
+    pub json_schema: Option<JsonSchemaOutput>,
 }
 
 impl std::fmt::Debug for AnthropicConfig {
@@ -124,6 +143,8 @@ impl std::fmt::Debug for AnthropicConfig {
             .field("tool_choice", &self.tool_choice)
             .field("prompt_caching", &self.prompt_caching)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
+            .field("prompt_cache", &self.prompt_cache)
+            .field("json_schema", &self.json_schema)
             .finish()
     }
 }
@@ -131,7 +152,7 @@ impl std::fmt::Debug for AnthropicConfig {
 impl Default for AnthropicConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: ANTHROPIC_BASE_URL.to_string(),
             model: "claude-3-5-sonnet-20241022".to_string(),
             max_tokens: 4096,
@@ -142,6 +163,8 @@ impl Default for AnthropicConfig {
             tool_choice: None,
             prompt_caching: false,
             prompt_cache_ttl: None,
+            prompt_cache: None,
+            json_schema: None,
         }
     }
 }
@@ -150,7 +173,7 @@ impl AnthropicConfig {
     /// Creates a new AnthropicConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -179,7 +202,7 @@ impl AnthropicConfig {
             .unwrap_or(4096);
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             max_tokens,
@@ -245,6 +268,35 @@ impl AnthropicConfig {
     pub fn with_prompt_cache_ttl(mut self, ttl: impl Into<String>) -> Self {
         self.prompt_caching = true;
         self.prompt_cache_ttl = Some(ttl.into());
+        self
+    }
+
+    /// Sets the provider-agnostic prompt-cache request (see [`PromptCache`]).
+    ///
+    /// Emits `cache_control` breakpoints on the stable prefix (system prompt +
+    /// last tool definition), and — when
+    /// [`PromptCache::with_last_message_breakpoint`] is on — on the last
+    /// message content block too. [`PromptCache::ttl`] yields the long-lived
+    /// `{"type":"ephemeral","ttl":…}` marker; [`PromptCache::key`] is ignored
+    /// because Anthropic has no `prompt_cache_key`.
+    ///
+    /// This complements (and takes precedence over) the legacy
+    /// [`Self::with_prompt_caching`] / [`Self::with_prompt_cache_ttl`] knobs.
+    pub fn with_prompt_cache(mut self, cache: PromptCache) -> Self {
+        self.prompt_cache = Some(cache);
+        self
+    }
+
+    /// Sets a raw-JSON-Schema structured-output constraint from a
+    /// [`JsonSchemaOutput`].
+    ///
+    /// Mapped to Anthropic native structured outputs
+    /// (`output_config.format: {"type":"json_schema","schema":…}`). The parsed
+    /// JSON arrives in [`LLMResult::content`](lc_core::language_models::LLMResult)
+    /// and can be decoded with `serde_json::from_str`. Requires a model / API
+    /// version that supports structured outputs; unsupported ones return 4xx.
+    pub fn with_json_schema(mut self, output: JsonSchemaOutput) -> Self {
+        self.json_schema = Some(output);
         self
     }
 }

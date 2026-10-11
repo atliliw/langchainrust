@@ -18,6 +18,15 @@
 //! Requests carry a per-request timeout by default, and the builder can
 //! enforce HTTPS for production deployments.
 //!
+//! # Fleet routing (T3)
+//!
+//! Attach an [`AgentFleet`] with [`A2AClientBuilder::fleet`] and the routing
+//! policy decides the target agent: [`A2AClient::send_task_routed`] ranks the
+//! fleet by skill relevance, skips agents whose circuit breaker is open, and
+//! posts to the winner; [`A2AClient::send_task_routed_sticky`] additionally
+//! pins a conversation key to one agent, and [`A2AClient::delegate_task`] gates
+//! the hop on the fleet's hierarchy rule.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -32,8 +41,11 @@
 // checks (0.22.0 audit fix).
 pub(crate) mod signing;
 mod sse;
+#[cfg(feature = "ws")]
+pub mod ws;
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::protocol::{
@@ -45,8 +57,65 @@ pub use signing::{
     canonical_json, sign_agent_card, sign_card_jws, verify_card_jws, verify_card_signature,
 };
 pub use sse::A2ASseStream;
+use sse::SseReconnect;
+#[cfg(feature = "ws")]
+pub use ws::A2AWebSocketStream;
 
+use crate::protocol::TaskPushNotification;
+use crate::scale::{AgentFleet, ScaleError};
 use crate::security::{AccessRequest, SandboxConfig, TrustRegistry};
+
+/// A live A2A task subscription established via `tasks/sendSubscribe`.
+///
+/// Holds the task acknowledged by the server (the subscription confirmation)
+/// plus the open stream that carries incremental [`TaskPushNotification`]s for
+/// that task's lifecycle, so the caller consumes pushes instead of polling
+/// `tasks/get`.
+///
+/// Each subscription demultiplexes the shared stream to its **own** task (V0.27,
+/// #94): if several subscriptions are multiplexed over one connection, or the
+/// server broadcasts multiple owned tasks on the same stream, a subscription
+/// never surfaces another task's notifications — `next()` yields only pushes
+/// whose task id matches the acknowledged task.
+pub struct A2ASubscription {
+    task: A2ATask,
+    stream: A2ASseStream,
+}
+
+impl A2ASubscription {
+    fn new(task: A2ATask, stream: A2ASseStream) -> Self {
+        Self { task, stream }
+    }
+
+    /// The task as acknowledged by the server (initially `submitted`).
+    pub fn task(&self) -> &A2ATask {
+        &self.task
+    }
+
+    /// Consume the subscription into its acknowledged task.
+    pub fn into_task(self) -> A2ATask {
+        self.task
+    }
+
+    /// Wait for the next incremental push, or `None` when the stream ends.
+    ///
+    /// Surfaces the same errors as [`A2ASseStream::next`], and (V0.27, #94)
+    /// filters the stream down to this subscription's own task so a connection
+    /// shared by many subscriptions never leaks another task's notifications.
+    pub async fn next(&mut self) -> Option<Result<TaskPushNotification, A2AError>> {
+        let task_id = self.task.id.clone();
+        loop {
+            let item = self.stream.next().await;
+            match item {
+                // Skip notifications for other tasks on a shared stream, so a
+                // multiplexed connection does not leak a sibling subscription.
+                Some(Ok(notification)) if notification.id() != task_id => continue,
+                Some(_) => return item,
+                None => return None,
+            }
+        }
+    }
+}
 
 /// Errors that can occur during A2A client operations.
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +157,30 @@ pub enum A2AError {
         /// Prompt describing what additional input is needed.
         prompt: String,
     },
+
+    /// Fleet routing could not pick an agent: no fleet router is configured,
+    /// no agent is relevant to the query, or every candidate's circuit breaker
+    /// is open (T3 scale wiring).
+    #[error("No route: {0}")]
+    NoRoute(String),
+}
+
+impl From<ScaleError> for A2AError {
+    fn from(err: ScaleError) -> Self {
+        A2AError::NoRoute(err.to_string())
+    }
+}
+
+/// A task accepted by a fleet-routed agent (T3 scale wiring).
+///
+/// Returned by [`A2AClient::send_task_routed`] and friends so the caller can
+/// see *which* agent the routing policy selected, not just the task.
+#[derive(Debug, Clone)]
+pub struct RoutedTask {
+    /// URL of the agent that accepted the task.
+    pub agent_url: String,
+    /// The task as acknowledged by that agent.
+    pub task: A2ATask,
 }
 
 impl From<reqwest::Error> for A2AError {
@@ -134,6 +227,15 @@ pub struct A2AClient {
     /// Trust registry a fetched card must belong to and verify against
     /// (0.25.0: `TrustRegistry` used to have no production call site).
     trust_registry: Option<std::sync::Arc<TrustRegistry>>,
+    /// Opt-in SSE self-heal: max reconnect attempts per stream (0 = disabled,
+    /// the default). See [`A2AClientBuilder::sse_reconnect_max_attempts`].
+    sse_reconnect_max_attempts: usize,
+    /// Idle budget for a single SSE read (B3 default, tunable via
+    /// [`A2AClientBuilder::sse_idle_timeout`]).
+    sse_idle_timeout: std::time::Duration,
+    /// Optional fleet router (T3): when attached, `send_task_routed` and friends
+    /// let the fleet's policy pick the target agent.
+    fleet: Option<Arc<AgentFleet>>,
 }
 
 impl A2AClient {
@@ -186,6 +288,9 @@ impl A2AClient {
             card_secret: None,
             require_card_signature: false,
             trust_registry: None,
+            sse_reconnect_max_attempts: 0,
+            sse_idle_timeout: sse::DEFAULT_SSE_READ_IDLE_TIMEOUT,
+            fleet: None,
         }
     }
 
@@ -589,7 +694,7 @@ impl A2AClient {
         Ok(a2a_resp)
     }
 
-    /// Open an SSE stream from `sse_url`, yielding [`TaskPushNotification`](crate::protocol::TaskPushNotification)
+    /// Open an SSE stream from `sse_url`, yielding [`TaskPushNotification`]
     /// events as they arrive (P2-1).
     ///
     /// The stream is useful for observing task progress without polling
@@ -611,14 +716,23 @@ impl A2AClient {
                 status
             )));
         }
-        Ok(A2ASseStream::new(resp))
+        // 0.27.0 T3 #95: attach self-heal only when the caller opted in, so the
+        // default path is byte-for-byte the pre-0.27 behavior.
+        let reconnect = (self.sse_reconnect_max_attempts > 0).then(|| SseReconnect {
+            sse_url: sse_url.to_string(),
+            auth_token: self.auth_token.clone(),
+            trace_context: self.trace_context.clone(),
+            http: self.stream_http.clone(),
+            max_attempts: self.sse_reconnect_max_attempts,
+        });
+        Ok(A2ASseStream::new(resp, reconnect, self.sse_idle_timeout))
     }
 
     /// Send a task and stream its progress notifications over SSE (P2-1).
     ///
     /// Opens the SSE subscription at `sse_url` first (so no early events are
     /// missed), then sends the task via `tasks/send`. The returned stream
-    /// yields [`TaskPushNotification`](crate::protocol::TaskPushNotification) events for the task.
+    /// yields [`TaskPushNotification`] events for the task.
     pub async fn send_task_streaming(
         &self,
         sse_url: &str,
@@ -627,6 +741,230 @@ impl A2AClient {
         let stream = self.connect_sse(sse_url).await?;
         let _ = self.send_task(message).await?;
         Ok(stream)
+    }
+
+    /// Open a WebSocket subscription from `ws_url`, yielding
+    /// [`TaskPushNotification`] frames as they arrive (V0.27, #186).
+    ///
+    /// This is the WebSocket twin of [`A2AClient::connect_sse`]. The server
+    /// applies identical auth and task filtering on the `/ws` upgrade, so the
+    /// two transports carry the same notification semantics; pick whichever
+    /// fits the deployment (e.g. a long-lived connection that does not want
+    /// HTTP/SSE buffering).
+    #[cfg(feature = "ws")]
+    pub async fn connect_ws(&self, ws_url: &str) -> Result<A2AWebSocketStream, A2AError> {
+        A2AWebSocketStream::connect(
+            ws_url,
+            self.auth_token.as_deref(),
+            self.trace_context.as_ref().map(|t| t.to_traceparent()),
+        )
+        .await
+    }
+
+    /// Send a task and stream its progress notifications over WebSocket
+    /// (V0.27, #186).
+    ///
+    /// Opens the WS subscription at `ws_url` first (so no early frames are
+    /// missed), then sends the task via `tasks/send`. The returned stream
+    /// yields [`TaskPushNotification`] frames for the task.
+    #[cfg(feature = "ws")]
+    pub async fn send_task_streaming_ws(
+        &self,
+        ws_url: &str,
+        message: A2AMessage,
+    ) -> Result<A2AWebSocketStream, A2AError> {
+        let stream = self.connect_ws(ws_url).await?;
+        let _ = self.send_task(message).await?;
+        Ok(stream)
+    }
+
+    /// Subscribe to a task's lifecycle over `tasks/sendSubscribe` (P2-9).
+    ///
+    /// Subscribes in two steps: first the SSE stream at `sse_url` is opened
+    /// (so no early increments are missed), then `tasks/sendSubscribe` is
+    /// posted with `message`. The server's JSON-RPC result acknowledges the
+    /// task (initially `submitted`) — the subscription confirmation — and the
+    /// returned [`A2ASubscription`] then yields each incremental
+    /// [`TaskPushNotification`] over the stream, so the caller receives pushes
+    /// instead of polling `tasks/get`.
+    ///
+    /// > **Note**: a fully spec-faithful A2A sendSubscribe multiplexes the RPC
+    /// > ack and the update events over a single HTTP/2 stream. Here the ack is
+    /// > one POST and the updates are a separate SSE connection, matching this
+    /// > crate's existing streaming architecture.
+    pub async fn subscribe(
+        &self,
+        sse_url: &str,
+        message: A2AMessage,
+    ) -> Result<A2ASubscription, A2AError> {
+        self.subscribe_with_context(sse_url, message, None, None).await
+    }
+
+    /// Subscribe to a task's lifecycle over `tasks/sendSubscribe`, optionally
+    /// carrying a client-chosen `subscription_id` and `context_id` (V0.27, #94).
+    ///
+    /// The IDs are forwarded in the request params (`id` / `contextId`); a
+    /// server that honors them echoes the context on the pushes it sends for
+    /// this task, so a caller can demultiplex many subscriptions over one
+    /// stream. The returned [`A2ASubscription`] already filters its `next()`
+    /// down to its own task, so even without server cooperation a connection
+    /// shared across subscriptions stays leak-free.
+    pub async fn subscribe_with_context(
+        &self,
+        sse_url: &str,
+        message: A2AMessage,
+        subscription_id: Option<String>,
+        context_id: Option<String>,
+    ) -> Result<A2ASubscription, A2AError> {
+        let stream = self.connect_sse(sse_url).await?;
+        let id = self.alloc_id();
+        let req = self.with_context(A2ARequest::send_subscribe_with_context(
+            id,
+            &message,
+            subscription_id,
+            context_id,
+        ));
+        let resp = self.send_task_req(req).await?;
+        Ok(A2ASubscription::new(resp, stream))
+    }
+
+    // ---- T3: fleet routing (scale.rs wired into the send path) ----
+
+    /// The fleet router attached to this client, if any.
+    pub fn fleet(&self) -> Option<&Arc<AgentFleet>> {
+        self.fleet.as_ref()
+    }
+
+    /// The agent the routing policy would pick for `query`, without sending
+    /// anything.
+    ///
+    /// Errors with [`A2AError::NoRoute`] when no fleet is configured or no
+    /// agent is relevant/healthy.
+    pub fn route_task(&self, query: &str) -> Result<AgentCard, A2AError> {
+        let fleet = self.fleet.as_ref().ok_or_else(|| {
+            A2AError::NoRoute(
+                "no fleet router is configured on this client (use \
+                 A2AClientBuilder::fleet)"
+                    .to_string(),
+            )
+        })?;
+        Ok(fleet.route(query)?)
+    }
+
+    /// Send a task to the fleet agent the routing policy selects for `query`.
+    ///
+    /// The selected agent's circuit breaker records the outcome, so an agent
+    /// that starts failing is skipped by later routed sends.
+    pub async fn send_task_routed(
+        &self,
+        query: &str,
+        message: A2AMessage,
+    ) -> Result<RoutedTask, A2AError> {
+        let agent = self.route_task(query)?;
+        self.send_to_agent(&agent, message).await
+    }
+
+    /// Sticky variant of [`A2AClient::send_task_routed`]: `conversation_key`
+    /// (e.g. a session or user id) prefers the same agent for the life of the
+    /// conversation, so a stateful agent stays pinned.
+    pub async fn send_task_routed_sticky(
+        &self,
+        query: &str,
+        conversation_key: &str,
+        message: A2AMessage,
+    ) -> Result<RoutedTask, A2AError> {
+        let fleet = self.fleet.as_ref().ok_or_else(|| {
+            A2AError::NoRoute("no fleet router is configured on this client".to_string())
+        })?;
+        let agent = fleet.route_sticky(query, conversation_key)?;
+        self.send_to_agent(&agent, message).await
+    }
+
+    /// Task-stable variant of [`A2AClient::send_task_routed`]: the same
+    /// `task_id` prefers the same agent among the relevant ones, so the task's
+    /// state stays collocated.
+    pub async fn send_task_routed_for_task(
+        &self,
+        task_id: &str,
+        query: &str,
+        message: A2AMessage,
+    ) -> Result<RoutedTask, A2AError> {
+        let fleet = self.fleet.as_ref().ok_or_else(|| {
+            A2AError::NoRoute("no fleet router is configured on this client".to_string())
+        })?;
+        let agent = fleet.route_for_task(task_id, query)?;
+        self.send_to_agent(&agent, message).await
+    }
+
+    /// Delegate a sub-task from `from_agent`: the fleet enforces the
+    /// Orchestrator→Worker hierarchy rule and the hop budget before routing,
+    /// and records the resulting `parent_task_id -> child task id` edge in its
+    /// delegation graph (a cycle is logged, not fatal — the task has already
+    /// been accepted by then).
+    pub async fn delegate_task(
+        &self,
+        parent_task_id: &str,
+        from_agent: &str,
+        hops: usize,
+        query: &str,
+        message: A2AMessage,
+    ) -> Result<RoutedTask, A2AError> {
+        let fleet = self.fleet.as_ref().ok_or_else(|| {
+            A2AError::NoRoute("no fleet router is configured on this client".to_string())
+        })?;
+        let agent = fleet.route_from(from_agent, hops, query)?;
+        let routed = self.send_to_agent(&agent, message).await?;
+        if let Err(e) = fleet.link_delegation(parent_task_id, &routed.task.id) {
+            log::warn!(
+                "delegation {} -> {} was accepted but the delegation graph rejected the edge: {e}",
+                parent_task_id,
+                routed.task.id
+            );
+        }
+        Ok(routed)
+    }
+
+    /// POST a task to `agent` and feed the outcome back into the fleet's
+    /// circuit breaker.
+    async fn send_to_agent(
+        &self,
+        agent: &AgentCard,
+        message: A2AMessage,
+    ) -> Result<RoutedTask, A2AError> {
+        let client = self.client_for_url(&agent.url);
+        let outcome = client.send_task(message).await;
+        if let Some(fleet) = &self.fleet {
+            match &outcome {
+                Ok(_) => fleet.record_success(&agent.url),
+                Err(_) => fleet.record_failure(&agent.url),
+            }
+        }
+        Ok(RoutedTask {
+            agent_url: agent.url.clone(),
+            task: outcome?,
+        })
+    }
+
+    /// A client for `url` that shares this client's transport, auth and trace
+    /// configuration, used to reach a fleet-selected agent.
+    fn client_for_url(&self, url: &str) -> A2AClient {
+        A2AClient {
+            base_url: url.trim_end_matches('/').to_string(),
+            http: self.http.clone(),
+            stream_http: self.stream_http.clone(),
+            next_id: AtomicU64::new(1),
+            auth_token: self.auth_token.clone(),
+            trace_id: self.trace_id.clone(),
+            trace_context: self.trace_context.clone(),
+            card_secret: self.card_secret.clone(),
+            require_card_signature: self.require_card_signature,
+            trust_registry: self.trust_registry.clone(),
+            sse_reconnect_max_attempts: self.sse_reconnect_max_attempts,
+            sse_idle_timeout: self.sse_idle_timeout,
+            // A routed sub-client never routes again: the fleet already picked
+            // the target, so a nested `send_task_routed` cannot recurse.
+            fleet: None,
+        }
     }
 }
 
@@ -644,6 +982,11 @@ pub struct A2AClientBuilder {
     require_card_signature: bool,
     trust_registry: Option<std::sync::Arc<TrustRegistry>>,
     sandbox: Option<std::sync::Arc<SandboxConfig>>,
+    sse_reconnect_max_attempts: usize,
+    /// Idle budget for a single SSE read (default 120s, the B3 value).
+    sse_idle_timeout: Duration,
+    /// Optional fleet router (T3).
+    fleet: Option<Arc<AgentFleet>>,
 }
 
 impl A2AClientBuilder {
@@ -662,6 +1005,9 @@ impl A2AClientBuilder {
             require_card_signature: false,
             trust_registry: None,
             sandbox: None,
+            sse_reconnect_max_attempts: 0,
+            sse_idle_timeout: sse::DEFAULT_SSE_READ_IDLE_TIMEOUT,
+            fleet: None,
         }
     }
 
@@ -746,6 +1092,44 @@ impl A2AClientBuilder {
         self
     }
 
+    /// Enable SSE self-heal (0.27.0 T3 #95): a transport break or idle timeout
+    /// on a task stream is retried up to `max_attempts` times, re-issuing the
+    /// SSE `GET` against the same URL (same bearer token and `traceparent`)
+    /// with exponential backoff, before the error is surfaced.
+    ///
+    /// Default `0` = disabled (a break surfaces immediately, the pre-0.27
+    /// behavior). A clean server close is always terminal and never retried.
+    ///
+    /// The budget is per stream (not per break), and a reconnect does **not**
+    /// replay missed events — see the caveat on the reconnect config.
+    pub fn sse_reconnect_max_attempts(mut self, max_attempts: usize) -> Self {
+        self.sse_reconnect_max_attempts = max_attempts;
+        self
+    }
+
+    /// Sets the idle budget for a single SSE read (0.27.0, B3 default 120s).
+    ///
+    /// `A2ASseStream::next` turns a silent gap longer than this into
+    /// [`A2AError::Timeout`] (with self-heal enabled,
+    /// into a reconnect) instead of parking the caller forever. Raise it for a
+    /// task that legitimately goes quiet for long stretches; the timer resets on
+    /// every received chunk, so it bounds silence, not the stream's lifetime.
+    pub fn sse_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.sse_idle_timeout = idle_timeout;
+        self
+    }
+
+    /// Attach a fleet router (T3 scale wiring).
+    ///
+    /// With a fleet attached, [`A2AClient::send_task_routed`] and its sticky /
+    /// task-stable / delegated variants let the fleet's policy choose the target
+    /// agent; the plain `send_task` family keeps talking to this client's own
+    /// `base_url` and is unaffected.
+    pub fn fleet(mut self, fleet: Arc<AgentFleet>) -> Self {
+        self.fleet = Some(fleet);
+        self
+    }
+
     /// Build the client, enforcing HTTPS when configured.
     pub fn build(self) -> Result<A2AClient, A2AError> {
         if !self.base_url.starts_with("https://") {
@@ -798,6 +1182,9 @@ impl A2AClientBuilder {
             card_secret: self.card_secret,
             require_card_signature: self.require_card_signature,
             trust_registry: self.trust_registry,
+            sse_reconnect_max_attempts: self.sse_reconnect_max_attempts,
+            sse_idle_timeout: self.sse_idle_timeout,
+            fleet: self.fleet,
         })
     }
 }

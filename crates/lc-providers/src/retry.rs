@@ -58,6 +58,13 @@ pub(crate) enum TransportRetryMode {
     ///
     /// Availability-first (the historical default). A timeout can fire after
     /// the request was dispatched, so a retry may execute the generation twice.
+    ///
+    /// No current production provider constructs this mode — 0.26.0 P0-2 moved
+    /// every billed POST to [`TransportRetryMode::PreDispatchOnly`]. This
+    /// variant (and [`DEFAULT_RETRY`]) are preserved for the A14 historical-mode
+    /// regression tests and any future availability-first caller; they carry no
+    /// production call site by design.
+    #[cfg_attr(not(test), allow(dead_code))]
     AllTransportErrors,
     /// Retry only errors that provably occur during connection establishment
     /// ([`reqwest::Error::is_connect`]: DNS/TCP/TLS failure — including a
@@ -88,6 +95,11 @@ pub(crate) struct RetryConfig {
 ///
 /// Transport mode is [`TransportRetryMode::AllTransportErrors`] — the
 /// historical behavior, kept unchanged by A14 (timeouts are retried).
+/// Dead in production by design: 0.26.0 P0-2 moved every billed POST to
+/// [`SAFE_RETRY`], so nothing outside tests constructs this const. Preserved
+/// for the A14 historical-mode regression tests and any future
+/// availability-first callers (see [`TransportRetryMode::AllTransportErrors`]).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const DEFAULT_RETRY: RetryConfig = RetryConfig {
     max_attempts: 3,
     base_delay: Duration::from_millis(500),

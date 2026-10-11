@@ -33,7 +33,9 @@ type LlmStartFn = Arc<dyn Fn(&RunTree, &[Message]) + Send + Sync>;
 type LlmEndFn = Arc<dyn Fn(&RunTree, &str) + Send + Sync>;
 type TokenFn = Arc<dyn Fn(&RunTree, &str) + Send + Sync>;
 type ToolStartFn = Arc<dyn Fn(&RunTree, &str, &str) + Send + Sync>;
+type ToolEndFn = Arc<dyn Fn(&RunTree, &str) + Send + Sync>;
 type RetrieverStartFn = Arc<dyn Fn(&RunTree, &str) + Send + Sync>;
+type RetrieverEndFn = Arc<dyn Fn(&RunTree, &[serde_json::Value]) + Send + Sync>;
 
 /// Closure-based [`CallbackHandler`] for ad-hoc observability hooks.
 ///
@@ -50,7 +52,9 @@ pub struct GenericHandler {
     on_llm_new_token: Option<TokenFn>,
     on_llm_thinking: Option<TokenFn>,
     on_tool_start: Option<ToolStartFn>,
+    on_tool_end: Option<ToolEndFn>,
     on_retriever_start: Option<RetrieverStartFn>,
+    on_retriever_end: Option<RetrieverEndFn>,
 }
 
 impl GenericHandler {
@@ -124,6 +128,23 @@ impl GenericHandler {
         self.on_retriever_start = Some(Arc::new(f));
         self
     }
+
+    /// Set the tool end hook (falls back to the run-end hook when unset).
+    /// Receives the tool's text output (T2 §5 end hooks with payload).
+    pub fn with_tool_end(mut self, f: impl Fn(&RunTree, &str) + Send + Sync + 'static) -> Self {
+        self.on_tool_end = Some(Arc::new(f));
+        self
+    }
+
+    /// Set the retriever end hook (falls back to the run-end hook when unset).
+    /// Receives the retrieved documents (T2 §5 end hooks with payload).
+    pub fn with_retriever_end(
+        mut self,
+        f: impl Fn(&RunTree, &[serde_json::Value]) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_retriever_end = Some(Arc::new(f));
+        self
+    }
 }
 
 #[async_trait]
@@ -187,6 +208,22 @@ impl CallbackHandler for GenericHandler {
             f(run, query);
         } else {
             self.on_run_start(run).await;
+        }
+    }
+
+    async fn on_tool_end(&self, run: &RunTree, output: &str) {
+        if let Some(f) = &self.on_tool_end {
+            f(run, output);
+        } else {
+            self.on_run_end(run).await;
+        }
+    }
+
+    async fn on_retriever_end(&self, run: &RunTree, documents: &[serde_json::Value]) {
+        if let Some(f) = &self.on_retriever_end {
+            f(run, documents);
+        } else {
+            self.on_run_end(run).await;
         }
     }
 }
@@ -323,5 +360,60 @@ mod tests {
             got,
             vec!["tool:search:rust".to_string(), "retriever:doc".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn test_tool_end_and_retriever_end_hooks_carry_payload() {
+        // T2 §5: end hooks must deliver the typed payload, not just a lifecycle ping.
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let ev_tool = Arc::clone(&events);
+        let ev_retriever = Arc::clone(&events);
+
+        let handler = GenericHandler::new()
+            .with_tool_end(move |_r, output| {
+                ev_tool
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("tool_end:{output}"))
+            })
+            .with_retriever_end(move |_r, docs| {
+                ev_retriever
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("retriever_end:{}", docs.len()))
+            });
+
+        let h = run("t1");
+        handler.on_tool_end(&h, "42").await;
+        handler
+            .on_retriever_end(&h, &[serde_json::json!({"doc": 1})])
+            .await;
+
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(
+            got,
+            vec!["tool_end:42".to_string(), "retriever_end:1".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_hooks_delegate_to_run_end_when_unset() {
+        // An unset typed end hook must still close the run through the generic layer.
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let events2 = Arc::clone(&events);
+
+        let handler = GenericHandler::new().with_run_end(move |r| {
+            events2
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("end:{}", r.name))
+        });
+
+        let h = run("tool1");
+        handler.on_tool_end(&h, "out").await;
+        handler.on_retriever_end(&h, &[]).await;
+
+        let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(got, vec!["end:tool1".to_string(), "end:tool1".to_string()]);
     }
 }

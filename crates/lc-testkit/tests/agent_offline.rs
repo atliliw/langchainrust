@@ -42,7 +42,7 @@ async fn agent_offline_replays_tool_call_loop() {
                 .build()]),
             ..Default::default()
         },
-        tools: None,
+        tools: Vec::new(),
     };
     let exchanges = vec![
         tool_call_round(),
@@ -54,7 +54,7 @@ async fn agent_offline_replays_tool_call_loop() {
                 model: "replay".to_string(),
                 ..Default::default()
             },
-            tools: None,
+            tools: Vec::new(),
         },
     ];
     let replay = ReplayProvider::from_exchanges(exchanges);

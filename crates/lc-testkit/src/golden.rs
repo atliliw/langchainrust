@@ -104,6 +104,10 @@ fn convert_one(index: usize, exchange: &RecordedExchange) -> Result<Example, Gol
 ///
 /// Fails fast on the first unscorable exchange (no human prompt / empty reference);
 /// filter with [`is_scoring_candidate`] first when mixing in agent-loop traces.
+///
+/// This is the **strict** caliber — it errors, with an indexed [`GoldenError`], on any
+/// unscorable exchange, leaving indexing exact. For the lenient (skip) caliber that quietly
+/// drops pure tool-call exchanges, use [`golden_dataset_filtered`].
 pub fn golden_dataset(exchanges: &[RecordedExchange]) -> Result<Dataset, GoldenError> {
     exchanges
         .iter()
@@ -111,6 +115,17 @@ pub fn golden_dataset(exchanges: &[RecordedExchange]) -> Result<Dataset, GoldenE
         .map(|(i, ex)| convert_one(i, ex))
         .collect::<Result<Vec<_>, _>>()
         .map(Dataset::new)
+}
+
+/// Leniently converts recorded exchanges into a golden dataset, **skipping** exchanges that
+/// are not scoring candidates (no human prompt / empty reference — typically the intermediate
+/// pure-tool-call model calls in an agent-loop trace).
+///
+/// This is the lenient sibling of [`golden_dataset`] (which is strict and errors on the same
+/// inputs). It applies the same filter `scoring_exchanges` uses, so the two builders share one
+/// caliber — prefer this when converting real agent-loop recordings.
+pub fn golden_dataset_filtered(exchanges: &[RecordedExchange]) -> Result<Dataset, GoldenError> {
+    golden_dataset(&scoring_exchanges(exchanges))
 }
 
 /// Filters an exchange list down to the scoring candidates (has a human prompt
@@ -130,11 +145,10 @@ fn scoring_exchanges(exchanges: &[RecordedExchange]) -> Vec<RecordedExchange> {
 }
 
 /// Reads a recording file and builds the golden dataset from it, skipping pure
-/// tool-call exchanges (see `scoring_exchanges`).
+/// tool-call exchanges (the lenient caliber — see [`golden_dataset_filtered`]).
 pub fn golden_dataset_from_file(path: impl AsRef<Path>) -> Result<Dataset, TestkitError> {
     let exchanges = read_exchanges(path)?;
-    let exchanges = scoring_exchanges(&exchanges);
-    Ok(golden_dataset(&exchanges)?)
+    Ok(golden_dataset_filtered(&exchanges)?)
 }
 
 /// Writes the golden dataset as evaluation JSONL (`{input, reference, contexts}` per
@@ -198,6 +212,13 @@ pub fn replay_golden_from_file(
     path: impl AsRef<Path>,
     strategy: ReplayStrategy,
 ) -> Result<(Dataset, ReplayPredictor), TestkitError> {
+    // [`ReplayPredictor::predict`](ReplayPredictor) sends a fresh single human message per eval
+    // input, so the golden-replay path is only meaningful under FIFO (example N ↔ recording N).
+    // `Exact` could never match a single human message against multi-turn recorded histories
+    // (guaranteed ReplayNoMatch), and `ByToolName` just silently degrades to FIFO — reject both.
+    if strategy != ReplayStrategy::Fifo {
+        return Err(TestkitError::GoldenReplayStrategyMismatch { strategy });
+    }
     let exchanges = read_exchanges(path)?;
     // I4: drop pure tool-call exchanges here instead of failing as EmptyReference,
     // and feed the SAME filtered set to both the dataset and the predictor so FIFO

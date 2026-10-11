@@ -10,7 +10,9 @@
 //! - `EvalRunner` and the `Report` (with original text + stddev + failure list)
 //! - built-in evaluators: `ExactMatch` / `StringDistance` / `EmbeddingSimilarity` / `LLMAsJudge`
 //! - other evaluators: `Bleu` / `Faithfulness` / `PairwiseJudge` / `ContainsKeyword` / `RegexMatch`
-//! - N2 (v0.25.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates
+//! - N2 (v0.25.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates;
+//!   `compare_reports_with` / `CompareOptions` — drop-aware gating (`gate_on_dropped`) plus a
+//!   paired sign-test (`paired_significance` / `PairedSignificance`) so CI can tell noise from change
 //!
 //! # Example
 //! ```ignore
@@ -38,7 +40,10 @@ pub use price::{OverallCost, Price, PriceBook, TokenUsage};
 mod test_support;
 
 pub use bleu::Bleu;
-pub use compare::{compare_reports, MetricDelta, Regression, ReportComparison};
+pub use compare::{
+    compare_reports, compare_reports_with, paired_significance, CompareOptions, MetricDelta,
+    PairedSignificance, Regression, ReportComparison,
+};
 pub use criteria::{
     Dataset, EvalError, Evaluator, Example, PairwiseEvaluator, Predictor, RagEvaluator, Score,
 };
@@ -47,7 +52,7 @@ pub use pairwise::{PairwiseJudge, Verdict};
 pub use ragas::{AnswerRelevancy, ContextPrecision, ContextRecall};
 pub use results::{EmbeddingSimilarity, ExactMatch, LLMAsJudge, StringDistance};
 pub use rules::{ContainsKeyword, LengthCheck, RegexMatch};
-pub use runner::{EvalRunner, ExampleReport, FailureRecord, Report, ScoreSummary};
+pub use runner::{percentile, EvalRunner, ExampleReport, FailureRecord, Report, ScoreSummary};
 
 #[cfg(test)]
 mod integration_tests;

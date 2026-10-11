@@ -15,7 +15,6 @@
 //! the sandbox ([`crate::sandbox`]). The blacklist only reduces noise reaching it.
 
 use async_trait::async_trait;
-use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -44,104 +43,11 @@ pub struct PythonREPLOutput {
     pub exit_code: i32,
 }
 
-/// Dangerous Python modules that are blocked for security.
-const BLOCKED_IMPORTS: &[&str] = &[
-    "os",
-    "subprocess",
-    "sys",
-    "shutil",
-    "signal",
-    "ctypes",
-    "multiprocessing",
-    "socket",
-    "http.server",
-    "xmlrpc",
-    "pickle",
-    "shelve",
-    "importlib",
-    "code",
-    "codeop",
-    "compileall",
-    "pty",
-    "commands",
-    "pdb",
-    "webbrowser",
-    "antigravity",
-];
-
-/// Common dangerous builtin calls that bypass the import blacklist (word boundary + function-call form).
-///
-/// `open` / `breakpoint` / `input` are added because they are file/interactive escape
-/// vectors that no import statement is required for: `open('/etc/shadow').read()` reads
-/// any file a data-processing run in practice relies on `open` for, so enabling this
-/// check trades a few legitimate `open(...)` file reads (work around them with
-/// `with_skip_dangerous_imports_check(true)` or a sandbox) for closing the file-access
-/// hole entirely.
-const DANGEROUS_BUILTIN_CALLS: &[&str] = &[
-    "__import__",
-    "import_module",
-    "eval",
-    "exec",
-    "execfile",
-    "compile",
-    "open",
-    "breakpoint",
-    "input",
-];
-
-/// Matches dangerous calls like `__import__(` / `import_module(` / `eval(` / `exec(` / `compile(` /
-/// `open(` / `breakpoint(` / `input(`.
-///
-/// `\b` prevents false positives on ordinary words that contain these as substrings, such as
-/// `evaluate(` / `execute(` / `length(`; however it still matches the literal text `"eval(...)"`
-/// inside string literals — an inherent limitation of string-level interception,
-/// see the security-positioning note on [`contains_dangerous_code`].
-static DANGEROUS_CALL_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    // INVARIANT: DANGEROUS_BUILTIN_CALLS 全是字母/下划线常量标识符,join("|")
-    // 不可能引入正则元字符,模板其余部分是静态字面量,编译必然成功。
-    Regex::new(&format!(
-        r"\b(?:{})\s*\(",
-        DANGEROUS_BUILTIN_CALLS.join("|")
-    ))
-    .expect("pattern built from word-only const list must compile")
-});
-
-/// Check if Python code contains dangerous imports or builtin calls.
-///
-/// **Security positioning**: this is a noise-filter layer, **not a security boundary**.
-/// Line-by-line substring/regex matching can always be bypassed by unicode obfuscation,
-/// `"o"+"s"` concatenation, `().__class__` reflection, etc., and it also has false
-/// positives on string literals. Untrusted code must go through the sandbox ([`crate::sandbox`]).
-fn contains_dangerous_code(code: &str) -> Option<String> {
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        // Strip the inline comment (the part after `#`) so comment content does not cause false positives.
-        let code_part = trimmed.split('#').next().unwrap_or(trimmed);
-
-        // 1) Dangerous import check (BLOCKED_IMPORTS)
-        if code_part.contains("import") {
-            for blocked in BLOCKED_IMPORTS {
-                if code_part.contains(&format!("import {}", blocked))
-                    || code_part.contains(&format!("from {} ", blocked))
-                    || code_part.contains(&format!("from {}.", blocked))
-                    || code_part.contains(&format!("from {}import", blocked))
-                {
-                    return Some(blocked.to_string());
-                }
-            }
-        }
-
-        // 2) Dangerous builtin-call check (common bypasses like __import__ / import_module / eval /
-        //    exec / compile / open / breakpoint / input)
-        if let Some(call) = DANGEROUS_CALL_REGEX.find(code_part) {
-            return Some(call.as_str().to_string());
-        }
-    }
-    None
-}
+/// Dangerous Python code (imports + builtin calls) is filtered by the shared
+/// [`crate::python_filter`] (T2 §5): this REPL and [`crate::sandbox::LocalSandbox`] previously
+/// duplicated import/call blacklists that had drifted apart. Now both delegate to the same
+/// consts/functions, so a module or call is blocked in both or neither.
+use crate::python_filter::contains_dangerous_python as contains_dangerous_code;
 
 /// Python code execution tool
 ///

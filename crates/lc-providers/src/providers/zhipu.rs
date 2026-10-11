@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -30,7 +31,7 @@ pub const ZHIPU_MODELS: [&str; 4] = [
 #[derive(Clone)]
 pub struct ZhipuConfig {
     /// Zhipu API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Zhipu (BigModel) API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -57,7 +58,7 @@ impl std::fmt::Debug for ZhipuConfig {
 impl Default for ZhipuConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: ZHIPU_BASE_URL.to_string(),
             model: "glm-4-flash".to_string(),
             temperature: None,
@@ -70,7 +71,7 @@ impl ZhipuConfig {
     /// Creates a new ZhipuConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -91,7 +92,7 @@ impl ZhipuConfig {
         let model = env::var("ZHIPU_MODEL").unwrap_or_else(|_| "glm-4-flash".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -130,6 +131,7 @@ impl ZhipuConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -138,6 +140,7 @@ impl ZhipuConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
         }

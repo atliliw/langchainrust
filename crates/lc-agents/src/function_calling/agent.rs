@@ -33,7 +33,19 @@ pub struct FunctionCallingAgent {
     system_prompt: Option<String>,
 
     /// Token usage from the most recent `plan()` call (P1-5).
-    last_token_usage: std::sync::Mutex<Option<TokenUsage>>,
+    ///
+    /// A reader–writer lock (锁细化): written once per `plan()` in async context
+    /// and read (as a snapshot) many times, so concurrent readers don't
+    /// serialize on a `Mutex`. The guard is never held across an `await`, so the
+    /// async `plan` future stays `Send` even when the lock is taken.
+    last_token_usage: std::sync::RwLock<Option<TokenUsage>>,
+
+    /// Iteration cap surfaced to `AgentExecutor` via [`BaseAgent::max_iterations`]
+    /// (§8.2.2 fix: `AgentBuilder::max_iterations` was a silent no-op). Defaults
+    /// to 10, matching the executor default; the executor's own
+    /// `with_max_iterations` override still wins because it is applied after
+    /// this value is read during construction.
+    max_iterations: usize,
 }
 
 impl FunctionCallingAgent {
@@ -73,7 +85,8 @@ impl FunctionCallingAgent {
             llm: llm_with_tools,
             tools,
             system_prompt,
-            last_token_usage: std::sync::Mutex::new(None),
+            last_token_usage: std::sync::RwLock::new(None),
+            max_iterations: 10,
         }
     }
 
@@ -101,13 +114,22 @@ impl FunctionCallingAgent {
             llm: llm_with_tools,
             tools,
             system_prompt,
-            last_token_usage: std::sync::Mutex::new(None),
+            last_token_usage: std::sync::RwLock::new(None),
+            max_iterations: 10,
         }
     }
 
     /// Returns the number of tools
     pub fn tools_count(&self) -> usize {
         self.tools.len()
+    }
+
+    /// Sets the iteration cap surfaced to the executor through
+    /// [`BaseAgent::max_iterations`], clamped to `[1, 100]` (mirrors the
+    /// executor and builder clamps so a 0 or runaway limit stays impossible).
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations.clamp(1, 100);
+        self
     }
 
     /// Returns the system prompt
@@ -222,6 +244,12 @@ fn resolve_tool_call_id(action: &AgentAction) -> String {
 
 #[async_trait]
 impl BaseAgent for FunctionCallingAgent {
+    /// §8.2.2: surface the agent's configured cap so `AgentExecutor::new` can
+    /// pick it up when the caller never overrides the executor default.
+    fn max_iterations(&self) -> Option<usize> {
+        Some(self.max_iterations)
+    }
+
     async fn plan(
         &self,
         intermediate_steps: &[AgentStep],
@@ -242,7 +270,7 @@ impl BaseAgent for FunctionCallingAgent {
         .map_err(|e| AgentError::Other(format!("LLM call failed: {}", e)))?;
 
         // P1-5: record token usage for the executor's metrics.
-        if let Ok(mut guard) = self.last_token_usage.lock() {
+        if let Ok(mut guard) = self.last_token_usage.write() {
             *guard = result.token_usage.clone();
         }
 
@@ -323,7 +351,7 @@ impl BaseAgent for FunctionCallingAgent {
                 }
             }
         }
-        if let Ok(mut guard) = self.last_token_usage.lock() {
+        if let Ok(mut guard) = self.last_token_usage.write() {
             *guard = usage;
         }
 
@@ -359,7 +387,7 @@ impl BaseAgent for FunctionCallingAgent {
 
     /// Reports the token usage from the most recent `plan()` call (P1-5).
     fn last_token_usage(&self) -> Option<TokenUsage> {
-        self.last_token_usage.lock().ok().and_then(|g| g.clone())
+        self.last_token_usage.read().ok().and_then(|g| g.clone())
     }
 }
 
@@ -370,7 +398,7 @@ impl std::fmt::Debug for FunctionCallingAgent {
             .field("system_prompt", &self.system_prompt)
             .field(
                 "has_token_usage",
-                &self.last_token_usage.lock().ok().is_some(),
+                &self.last_token_usage.read().ok().is_some(),
             )
             .finish()
     }

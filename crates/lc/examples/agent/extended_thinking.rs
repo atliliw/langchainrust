@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("please set the ANTHROPIC_API_KEY environment variable");
 
     let llm = AnthropicChat::new(AnthropicConfig {
-        api_key,
+        api_key: api_key.into(),
         model: "claude-sonnet-5-20250514".to_string(),
         thinking: ThinkingConfig::enabled(10000), // think at most 10000 tokens
         ..Default::default()

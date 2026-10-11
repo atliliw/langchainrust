@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = std::env::var("TEST_CHAT_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let llm = OpenAIChat::new(OpenAIConfig {
-        api_key,
+        api_key: api_key.into(),
         base_url,
         model,
         ..Default::default()

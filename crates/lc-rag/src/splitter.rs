@@ -6,7 +6,7 @@
 //! a re-export is kept here for backward compatibility.
 
 // Re-export shared splitter types from lc-shared
-pub use lc_shared::splitter::{RecursiveCharacterSplitter, TextSplitter};
+pub use lc_shared::splitter::{ChunkSpan, RecursiveCharacterSplitter, TextSplitter};
 
 #[cfg(test)]
 mod tests {

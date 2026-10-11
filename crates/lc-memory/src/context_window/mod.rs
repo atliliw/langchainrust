@@ -28,7 +28,7 @@
 pub mod manager;
 pub mod trimmer;
 
-pub use manager::ContextWindow;
+pub use manager::{ContextWindow, DEFAULT_SUMMARY_RESERVE_RATIO};
 pub use trimmer::Strategy;
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ Cargo.lock
 # AI Tools
 .claude/
 .sisyphus/
+/CLAUDE.md
 
 # OS
 .DS_Store

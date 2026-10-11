@@ -176,37 +176,14 @@ impl HyDERetriever {
 
     /// Retrieves documents via the HyDE flow: generates a hypothetical document first, then retrieves and merges deduped results
     pub async fn retrieve(&self, query: &str) -> Result<Vec<Document>, HyDEError> {
-        let hyde_doc = self.generate_hypothetical_document(query).await?;
-
-        let mut all_docs = Vec::new();
-        let mut seen_content: HashSet<String> = HashSet::new();
-
-        let hyde_results = self
-            .base_retriever
-            .retrieve(&hyde_doc, self.config.k)
-            .await
-            .map_err(|e| HyDEError::RetrieverError(e.to_string()))?;
-
-        for doc in &hyde_results {
-            seen_content.insert(doc.content.clone());
-        }
-        all_docs.extend(hyde_results);
-
-        if self.config.include_original_query {
-            let query_results = self
-                .base_retriever
-                .retrieve(query, self.config.k)
-                .await
-                .map_err(|e| HyDEError::RetrieverError(e.to_string()))?;
-
-            for doc in query_results {
-                if seen_content.insert(doc.content.clone()) {
-                    all_docs.push(doc);
-                }
-            }
-        }
-
-        Ok(all_docs)
+        // §3.2 consistency: reuse `retrieve_with_scores`' score-sorted, deduped
+        // merge so both API shapes return the same relevance order and magnitude.
+        // The bare variant previously returned the hyde-list-then-query-list
+        // (unsorted) union while the scored variant sorted by score — two shapes
+        // of the same query disagreed. No extra LLM call: the hypothetical
+        // document is generated once inside `retrieve_with_scores`.
+        let scored = self.retrieve_with_scores(query).await?;
+        Ok(scored.into_iter().map(|r| r.document).collect())
     }
 
     /// Retrieves documents with scores (HyDE flow)

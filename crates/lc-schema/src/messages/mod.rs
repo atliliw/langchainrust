@@ -12,5 +12,5 @@ mod video;
 pub use audio::AudioContent;
 pub use file::FileContent;
 pub use image::ImageContent;
-pub use message::{MediaPart, Message, MessageType, Modality};
+pub use message::{MediaPart, Message, MessageError, MessageType, Modality};
 pub use video::VideoContent;

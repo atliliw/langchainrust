@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -53,7 +54,7 @@ pub const MISTRAL_MODELS: [&str; 6] = [
 #[derive(Clone)]
 pub struct MistralConfig {
     /// Mistral API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Mistral API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -80,7 +81,7 @@ impl std::fmt::Debug for MistralConfig {
 impl Default for MistralConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: MISTRAL_BASE_URL.to_string(),
             model: "mistral-large-latest".to_string(),
             temperature: None,
@@ -93,7 +94,7 @@ impl MistralConfig {
     /// Creates a new MistralConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -116,7 +117,7 @@ impl MistralConfig {
             env::var("MISTRAL_MODEL").unwrap_or_else(|_| "mistral-large-latest".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -155,6 +156,7 @@ impl MistralConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -163,6 +165,7 @@ impl MistralConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
         }
@@ -358,7 +361,7 @@ mod tests {
     #[test]
     fn test_config_new() {
         let config = MistralConfig::new("test-key");
-        assert_eq!(config.api_key, "test-key");
+        assert_eq!(config.api_key.expose_secret(), "test-key");
         assert_eq!(config.base_url, MISTRAL_BASE_URL);
         assert_eq!(config.model, "mistral-large-latest");
     }
@@ -382,7 +385,7 @@ mod tests {
         let old = save_and_set("MISTRAL_API_KEY", "env-key");
         let result = MistralConfig::from_env_result();
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().api_key, "env-key");
+        assert_eq!(result.unwrap().api_key.expose_secret(), "env-key");
         restore("MISTRAL_API_KEY", old);
     }
 
@@ -401,7 +404,7 @@ mod tests {
     fn test_into_openai_config() {
         let config = MistralConfig::new("key").with_model("codestral-latest");
         let openai_config = config.into_openai_config();
-        assert_eq!(openai_config.api_key, "key");
+        assert_eq!(openai_config.api_key.expose_secret(), "key");
         assert_eq!(openai_config.base_url, MISTRAL_BASE_URL);
         assert_eq!(openai_config.model, "codestral-latest");
     }

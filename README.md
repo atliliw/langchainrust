@@ -25,7 +25,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Production hardening first** | Tool execution has timeouts, LLM calls retry with exponential backoff, agent loops are capped (`max_iterations` clamped to `[1, 100]`), parallel actions are concurrency-limited, and `CancellationToken` propagates through every runnable. Eliminate the deterministic failure paths before adding features. |
 | **Type system enforces safety** | Security properties live in types, not comments. Guardrails split `InputGuardrailResult` / `OutputGuardrailResult` so "Modify only applies to output" is enforced at compile time. |
 | **Composition first** | Everything can be `pipe`d. Since v0.16.0, prompts, memory, native providers, parsers and RAG are all `Runnable` — `prompt.pipe(llm).pipe(parser)` compiles and runs. |
-| **Honest implementations** | No fake backends. Empty-shell sandboxes (Wasm/E2B) were deleted; unsupported operations (e.g. Pinecone fetch-by-ID) return explicit `StorageError`s instead of pretending to work. |
+| **Honest implementations** | No fake backends. Empty-shell sandboxes (Wasm/E2B) were deleted; the WASM backend only came back in v0.27.0 as real code (a wasmi interpreter with its own WASI host), never as a stub. Unsupported operations (e.g. Pinecone fetch-by-ID) return explicit `StorageError`s instead of pretending to work. |
 
 ---
 
@@ -101,6 +101,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Durable checkpoints (v0.22.4)** | LangGraph persistence gains three production backends behind `checkpoint-sqlite` (rusqlite bundled, WAL) / `checkpoint-postgres` (tokio-postgres) / `checkpoint-redis` (Lua CAS) features. Optimistic concurrency: stale writes return `GraphError::CheckpointVersionConflict` instead of last-write-wins. |
 | **Two-layer semantic memory (v0.22.4)** | Episodic layer (raw per-turn observations, vector-retrieved) + semantic layer (LLM-consolidated, deduped facts) with an async background extractor — the agent accumulates durable knowledge across sessions instead of only replaying recent chat. |
 | **Dynamic interrupt/resume + time travel (v0.24.0)** | `InterruptibleNode` suspends *inside* a node — its closure runs with `resume: None`, raises an `InterruptRequest` payload into the checkpoint, then re-enters with `resume: Some(decision)` via `CompiledGraph::resume_with_value` (even from a fresh process over a durable checkpointer; `NodeInterrupt`/`Resumed` stream events). Agent approvals converge on this one path: `ApprovalGate` + `ApprovalDecision` (Allow / Deny / Modify), so the gated tool executes exactly once and Deny performs no side effect; the non-graph `ResumeStore` remains for the plain executor. `get_state_history()` lists `CheckpointInfo`s and `fork_from(checkpoint, node, override_state)` branches a new forward-only lineage off any past state. |
+| **Territorial subgraph (v0.27.0)** | `TerritoryCheckpointer` + `CompiledGraph::with_territory(ns)` isolate a subgraph's checkpoints under a `"<ns>::"` thread namespace — a child graph no longer advances the parent's history when it shares the parent's checkpointer. |
 | **Tool Policies** | `ToolPolicy` / `ToolRisk` risk classification for tool access control. |
 
 ### Retrieval & RAG
@@ -119,6 +120,9 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Late-chunk dual-leg injection (v0.24.0)** | `UnifiedHybridIndex::add_late_chunked_document(doc, &[LateChunk])` writes token-pooled chunks to BOTH the vector index and the BM25/parent store in one call, with deterministic `{parent}::{segment}` ids (re-registering a parent idempotently replaces its chunk set). |
 | **Query Transformations** | `MultiQueryRetriever` (decompose into multiple queries), `HyDERetriever` (hypothetical document), `RerankingExecutor` + `KeywordReranker` / `BM25Reranker`. |
 | **Agentic retrieval (v0.26.0)** | `IterativeRetriever` / `IterativeRetrieval` — multi-round retrieval: when the first pass comes back thin it reformulates its own query (`refine_query`) and re-queries, merging deduplicated hits across rounds (`merge_dedup`), bounded by `with_max_rounds`. |
+| **Self-query (v0.27.0)** | `self-query` turns a natural-language question into a structured query (with filters) before hitting the store — no handcrafted query construction. |
+| **Context editing (v0.27.0)** | Package retrieved material before the model sees it: dedup across turns/sources, compress duplicated spans, prune by relevance, and trim to a token/segment budget. |
+| **Local ColBERT training (v0.27.0)** | `train_epoch` real training loop — sweeps a `TripletDataset`, embeds each batch through a real `TokenLevelEmbeddings`, computes margin loss, invokes per-batch callbacks, returns `EpochResult`; the `token_level` trait stays read-only (gradients ride an external `on_batch` callback). |
 | **SelfQueryRetriever (v0.18)** | LLM splits a natural-language query into `{query, filter}` via structured call, with an `allowed_attributes` whitelist; retrieves through `similarity_search_with_filter`. Composes in LCEL as a `RetrieverRunnable`. |
 | **GraphRAG** | Knowledge-graph RAG with Global / Local / Hybrid modes, entity extraction, community detection. Community detection is **Leiden** (v0.22.4: configurable `leiden_resolution` / `leiden_seed` / `max_community_levels`). |
 | **Multimodal RAG (v0.22.4)** | `MultimodalChunker` splits mixed text/image documents and embeds both modalities through `VisionEmbeddings`; `MultimodalRetriever` returns cross-modal hits so image content is answerable, not just text. |
@@ -143,12 +147,19 @@ The framework is engineered around a few hard rules that come out of its own des
 |-----------|-------------|
 | **Official MCP transports (v0.22.4)** | Spec-faithful clients `StdioMcpClient` (subprocess stdio) and `StreamableMcpClient` (Streamable HTTP, stateless + `Mcp-Session-Id` modes), and server side `MCPServer::serve_streamable_http` — interoperability-verified against the official TypeScript SDK 1.30.0 and Python SDK (4/4 scenarios). Includes OAuth 2.1 authorization flow (authorization server metadata, PKCE, token refresh) for remote servers requiring login. |
 | **MCP stateless track (v0.22.0)** | 2026-07-28 single-track model: every request is a self-contained JSON-RPC HTTP POST — no handshake, no session. `StatelessMcpClient` carries `_meta` (protocol version + client identity + optional `requestState`), tagged with `Mcp-Method` / `Mcp-Name` routing headers so gateways route and throttle without parsing the body. The legacy handshake client (`MCPClient`, SSE/old-HTTP transports, streaming push) was **removed in 0.22.0**. |
-| **MCP MRTR** | Multi-round tool requests: on `input_required { requestState, questions }` the client collects answers (`MrtrAnswerProvider`) and resends with the continuation token, bounded by `max_round_trips` (`-32003` on exceed). Server-initiated interaction without a push channel. |
+| **MCP MRTR** | Multi-round tool requests: on `input_required { requestState, questions }` the client collects answers (`MrtrAnswerProvider`) and resends with the continuation token, bounded by `max_round_trips` (`-32003` on exceed). Server-initiated interaction without a push channel. v0.27.0 wires a `MrtrRoundTrip` state machine into the real `send()` loop. |
+| **MCP Tasks 扩展 (v0.27.0)** | `TaskProvider` trait — server registers `with_task_provider` to make `tasks/get` / `tasks/cancel` live (unregistered stays `method_not_found`, honest boundary), with `TaskState` (queued/running/completed/failed/cancelled), `TaskStatus` and `TaskResponse` (`shipping_label` / `restorable`); `server/discover` advertises `tasks:{}`. |
+| **MCP cursor 分页 (v0.27.0)** | `tools/list` / `resources/list` / `prompts/list` paginate end-to-end on `nextCursor` — `*Provider::list_*_page` returns a full envelope with `nextCursor`, and the stateless / stdio / streamable clients actually send the cursor. |
+| **MCP logging + subscriptions + ACL (v0.27.0)** | `LogSink` + `logging/setLevel` + `notifications/message` (threshold-filtered); `ResourcePushSink` with `notify_resource_changed` / `notify_resource_updated` push (list-changed vs content-updated); `ServerSandbox::ToolAcl` fine-grained per-tool ACL (deny-first, allow-list implies fail-closed, empty = unchanged). |
 | **MCP auth** | OAuth 2.1-style: `TokenValidator` + `StaticBearerValidator` / `JwtIssValidator` (iss + exp) server-side; per-request bearer auth client-side (`connect_with_auth`); 401 → `-32001`. |
 | **MCP server** | `MCPServer` exposes local `BaseTool`s — in-process (`handle_request`), as a **deployable stateless HTTP service** (`serve_http`, example `mcp_http_server`), or over stdio line framing for hosts like Claude Desktop / Cursor (`serve_stdio`). `server/discover` for capability queries. |
 | **MCP at scale** | Connection management, tool namespaces + conflict policy, static+dynamic tool discovery, per-tool timeout with hard cap, health checks + circuit breaker, per-server sandbox, sampling recursion guard, **MCP Gateway** (registry / pool / rate-limit / audit), multi-tenant isolation, per-method client rate limiting. |
 | **MCP tool adapter** | `MCPToolAdapter` implements `BaseTool` — MCP tools mix seamlessly with local tools in any agent; structured errors keep `{code, data}`; multi-type content (image/resource) preserved. |
 | **A2A v1.0.1** | Agent-to-Agent protocol: `AgentCard` with `supportedInterfaces[]` — one card declares multiple `(protocolVersion, transport, url)` bindings (JsonRpc / HttpJson / Grpc), tenant-tagged, with client-side `negotiate()`. Card **signing** (RFC 8785-lite canonicalization + JWS HS256) protects discovery from tampering. `send_task` / `get_task` / `cancel_task` over HTTP. |
+| **A2A push + SSE 自愈 + replay (v0.27.0)** | `sendSubscribe` → HTTP `/events` SSE → client `subscribe()` push is closed end-to-end; `A2ASseStream` gains opt-in reconnect (`sse_reconnect_max_attempts`, exponential backoff 250ms→5s, reconnects carry bearer + traceparent) and `Last-Event-ID` replay continuation; `/events` filters by authenticated principal + `?taskId=`. |
+| **A2A WebSocket transport (v0.27.0)** | The `ws` feature adds `GET /ws` beside `/events`, sharing its bearer auth, B7 cross-tenant `notification_visible` guard and `?taskId=` restriction; one filtered `TaskPushNotification` per text frame. Client `connect_ws` / `send_task_streaming_ws` mirror the SSE pair, and `A2AWebSocketStream::next()` answers protocol pings to keep an idle subscription alive. |
+| **A2A subscription context (v0.27.0)** | `A2ARequest::send_subscribe_with_context` / `A2AClient::subscribe_with_context` put a client-chosen `id` and `contextId` on `tasks/sendSubscribe`; `TaskPushNotification::StatusUpdate` / `ArtifactUpdate` carry an optional `context_id` (`skip_serializing_if`, wire-compatible when absent) for demultiplexing several subscriptions on one stream. The bundled server does not echo it yet — the client-side `A2ASubscription` already filters on task id, so a shared connection stays leak-free. |
+| **A2A scale (v0.27.0)** | `AgentFleet` / `SkillIndex` (`skill_affinity` semantic routing) + `DelegationGuard` / `TaskSharder` / `CircuitBreaker`; `A2AClientBuilder::fleet(Arc<AgentFleet>)` wires skill-affinity routing into `send_task` (no fleet → direct). |
 | **A2A vs MCP** | A2A orchestrates **agent ↔ agent**; MCP lets an **agent call tools**. They compose: A2A between agents, MCP below them. |
 
 ### Quality: Guardrails, Evaluation, Observability
@@ -167,6 +178,7 @@ The framework is engineered around a few hard rules that come out of its own des
 | **Trace → golden → compare (v0.24.0)** | The `lc-testkit` record/replay harness now feeds evaluation: recordings sink into a golden `Dataset` (last user message → input, response → reference, tool results → RAG `contexts`) with a zero-network `ReplayPredictor`, and `lc-evaluation::compare_reports(&baseline, &candidate, tolerance)` gates any mean dropping by more than the tolerance (boundary inclusive), listing per-metric deltas and added/dropped evaluators. |
 | **LLM judge** | `StructuredJudge` shared with guardrails — prefers structured output, tolerant score parsing. |
 | **Callbacks** | `CallbackHandler` (3 lifecycle methods minimum) + `CallbackManager` dispatcher. Built-in: `StdOutHandler`, `FileCallbackHandler`, `LangSmithHandler`, `OtelHandler`. |
+| **Batched export + Edge buffer (v0.27.0)** | `BatchExporter` / `BatchSink` flush completed traces in batches with bounded retry/backoff and an on-disk park for undeliverables; a `LangfuseSink` (Ingestion API + HMAC-SHA256 signature) sits beside the existing LangSmith handler. |
 | **Tracing** | `Tracer` + `SpanGuard` (RAII), `InMemory` / `Console` / `OTel` backends, parent-child span tree, GenAI Semantic Conventions. OTel spans carry `gen_ai.*` attributes aligned with the OpenTelemetry GenAI semconv (v0.21): `gen_ai.system` / `gen_ai.request.model` / `gen_ai.response.finish_reason` / token usage incl. cache-read and reasoning extensions, plus `gen_ai.operation.name = "retrieve"` for retrieval spans. |
 | **OTLP metrics export (v0.26.0)** | `OtlpSink` implements `MetricsSink` — emits each event out over OpenTelemetry (feature `otlp`), reading `OTEL_EXPORTER_OTLP_*` / `OTEL_SERVICE_NAME`: token usage → `gen_ai.usage.input_tokens/output_tokens`, cost → `gen_ai.provider.name` + `langchainrust.cost_usd`, agent runs → `gen_ai.operation.name = "invoke_agent"`. |
 
@@ -175,11 +187,14 @@ The framework is engineered around a few hard rules that come out of its own des
 | Component | Description |
 |-----------|-------------|
 | **Built-in tools** | `Calculator`, `SimpleMathTool`, `DateTimeTool`, `URLFetchTool`, `WikipediaTool`, `DuckDuckGoSearchTool`, `PythonREPLTool`. |
-| **Hosted search & browser (v0.22.4)** | `HostedSearchTool` with Tavily / Serper / Exa backends (API key from env, one uniform tool interface — no scraping fragility). `CdpBrowserTool` drives a real Chrome over the DevTools Protocol (navigate/click/fill/extract) behind the `browser-cdp` feature for pages that require JavaScript execution. |
+| **Hosted search & browser (v0.22.4)** | `HostedSearchTool` with Tavily / Serper / Exa backends (API key from env, one uniform tool interface — no scraping fragility). `CdpBrowserTool` drives a real Chrome over the DevTools Protocol (`navigate` / `extract_text` / `extract_links` / `metadata`) behind the `browser-cdp` feature for pages that require JavaScript execution, with hop-by-hop SSRF interception since v0.27.0. |
 | **`#[tool]` macro** | Define a tool from a plain function — auto-converted to `BaseTool`; `StructuredTool` gives typed in/out with automatic JSON. |
 | **Sandbox** | `SandboxTool` + `LocalSandbox` (subprocess + timeout). Tool-code execution is isolated — the Python blacklist is documented as *noise filtering, not a security boundary*. |
+| **WASM sandbox (v0.27.0)** | The `sandbox-wasm` feature adds `WasmSandbox`: a real WASI preview1 backend on the **wasmi** interpreter (no JIT, offline) with a self-contained host (stdio / exit / args / environ / random / clock). Only buffered stdout/stderr crosses the host boundary — OS isolation holds by construction — and the budget is enforced with deterministic wasm **fuel** metering (`timeout_ms × 1000` instructions) rather than a racy wall-clock thread. Takes WAT text or compiled wasm; `Language::Wasm` is rejected by `LocalSandbox`. |
 | **Extended tools** | `HTTPTool`, `FileTool` (sandboxed), `SQLTool` (read-only, `sqlite-storage` feature), `ComputerUseTool` (screen interaction). |
+| **Computer use native (v0.27.0)** | `computer-native` feature drives the real desktop via enigo + xcap — screenshot / click / type / scroll / key-press — with an observe-act-observe feedback loop (each action re-captures a fresh frame into the same output), behind explicit opt-in + a double safety gate. |
 | **Security** | SSRF protection (`is_private_ip`) on URL/HTTP tools with per-hop DNS resolution, all-answers validation, and IP pinning that closes the DNS-rebinding TOCTOU window (v0.22.4); path sandboxing; risk classification via `ToolPolicy`. |
+| **Per-hop browser SSRF (v0.27.0)** | `CdpBrowserTool` arms the CDP `Fetch` domain before navigating, so **every** request is paused and validated before it leaves: private hops get `Fetch.failRequest { errorReason: "BlockedByClient" }`, public ones `Fetch.continueRequest`. A redirect, DNS rebinding or subresource request toward an internal host is stopped before it goes out, not after the page lands. |
 
 ### Vector Stores
 
@@ -252,36 +267,36 @@ langchainrust is a **23-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.24.0"
+langchainrust = "0.27.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features — vector stores & storage
-langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
-langchainrust = { version = "0.24.0", features = ["redis-storage"] }         # Redis vector store
-langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
-langchainrust = { version = "0.24.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
+langchainrust = { version = "0.27.0", features = ["redis-storage"] }         # Redis vector store
+langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
+langchainrust = { version = "0.27.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
 
 # Durable LangGraph checkpointers (v0.22.4)
-langchainrust = { version = "0.24.0", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
-langchainrust = { version = "0.24.0", features = ["checkpoint-postgres"] }   # tokio-postgres
-langchainrust = { version = "0.24.0", features = ["checkpoint-redis"] }      # Redis with Lua CAS
+langchainrust = { version = "0.27.0", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
+langchainrust = { version = "0.27.0", features = ["checkpoint-postgres"] }   # tokio-postgres
+langchainrust = { version = "0.27.0", features = ["checkpoint-redis"] }      # Redis with Lua CAS
 
 # Local embeddings (vision/Cohere/Qwen multimodal embeddings need no feature)
-langchainrust = { version = "0.24.0", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
-langchainrust = { version = "0.24.0", features = ["fastembed"] }             # FastEmbed ONNX models
-langchainrust = { version = "0.24.0", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
+langchainrust = { version = "0.27.0", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
+langchainrust = { version = "0.27.0", features = ["fastembed"] }             # FastEmbed ONNX models
+langchainrust = { version = "0.27.0", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
 
 # Observability
-langchainrust = { version = "0.24.0", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
-langchainrust = { version = "0.24.0", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
-langchainrust = { version = "0.24.0", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
-langchainrust = { version = "0.24.0", features = ["observability-mongodb"] } # MongoDB observation sink
+langchainrust = { version = "0.27.0", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
+langchainrust = { version = "0.27.0", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
+langchainrust = { version = "0.27.0", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
+langchainrust = { version = "0.27.0", features = ["observability-mongodb"] } # MongoDB observation sink
 
 # Tools & memory
-langchainrust = { version = "0.24.0", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
-langchainrust = { version = "0.24.0", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.24.0", features = ["experimental"] }          # Experimental features
+langchainrust = { version = "0.27.0", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
+langchainrust = { version = "0.27.0", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.27.0", features = ["experimental"] }          # Experimental features
 # PineconeStore / FileVectorStore / hosted search (Tavily, Serper, Exa) require no feature flag.
 # The axum SSE agent endpoint is gated by lc-agents' own `sse-server` feature (see examples/agent_sse_server.rs).
 ```

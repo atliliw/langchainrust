@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use lc_core::runnables::Runnable;
+use lc_core::SensitiveString;
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
@@ -35,7 +36,7 @@ pub const QWEN_MODELS: [&str; 6] = [
 #[derive(Clone)]
 pub struct QwenConfig {
     /// Qwen API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Qwen (DashScope) API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -62,7 +63,7 @@ impl std::fmt::Debug for QwenConfig {
 impl Default for QwenConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: QWEN_BASE_URL.to_string(),
             model: "qwen-plus".to_string(),
             temperature: None,
@@ -75,7 +76,7 @@ impl QwenConfig {
     /// Creates a new QwenConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -96,7 +97,7 @@ impl QwenConfig {
         let model = env::var("QWEN_MODEL").unwrap_or_else(|_| "qwen-plus".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -135,6 +136,7 @@ impl QwenConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -143,6 +145,7 @@ impl QwenConfig {
             tools: None,
             tool_choice: None,
             response_format: None,
+            prompt_cache: None,
             extra_headers: Vec::new(),
             send_auth: true,
         }

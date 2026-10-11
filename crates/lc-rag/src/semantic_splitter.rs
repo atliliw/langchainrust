@@ -151,7 +151,10 @@ mod tests {
         }
         async fn embed_documents(&self, text: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
             // Drop the last vector: embeddings.len() < text.len().
-            Ok(text[..text.len().saturating_sub(1)].iter().map(|_| vec![0.5; 4]).collect())
+            Ok(text[..text.len().saturating_sub(1)]
+                .iter()
+                .map(|_| vec![0.5; 4])
+                .collect())
         }
         fn dimension(&self) -> usize {
             4

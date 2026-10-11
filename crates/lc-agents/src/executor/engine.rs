@@ -5,7 +5,7 @@ use super::budget::BudgetConfig;
 use super::compaction::CompactionConfig;
 use super::hooks::{run_after_completion_hooks, run_before_completion_hooks};
 use super::semantic_memory::{SemanticMemoryHook, SEMANTIC_MEMORY_INPUT_KEY};
-use super::tools::index_tools;
+use super::tools::{index_tools, is_non_execution_observation};
 use super::{
     AgentError, BaseAgent, CACHE_NS, DEFAULT_MAX_CONCURRENCY, MAX_MAX_ITERATIONS,
     MIN_MAX_ITERATIONS,
@@ -18,8 +18,8 @@ use crate::policy::ToolPolicy;
 use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{semconv::GEN_AI_OPERATION_NAME, CallbackManager, RunTree, RunType};
-use lc_core::cost::CostTracker;
-use lc_core::observability::{MetricsSink, ObsEvent};
+use lc_core::cost::{CostTracker, CostType};
+use lc_core::observability::{MetricsSink, ObsEvent, RunEvent};
 use lc_core::runnables::{RunnableConfig, RUN_META_COST_SCOPE, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
 use lc_core::tools::BaseTool;
 use lc_memory::{BaseMemory, MemoryExtractor, TwoTierMemory};
@@ -183,11 +183,14 @@ impl AgentExecutor {
     pub fn new(agent: Arc<dyn BaseAgent>, tools: Vec<Arc<dyn BaseTool>>) -> Self {
         // A11: build the name index before `tools` is moved into the struct.
         let tools_by_name = index_tools(&tools);
+        // §8.2.2: default from the agent when it declares one, else 10. Read
+        // before `agent` is moved into the struct.
+        let max_iterations = agent.max_iterations().unwrap_or(10);
         Self {
             agent,
             tools,
             tools_by_name,
-            max_iterations: 10,
+            max_iterations,
             verbose: false,
             memory: None,
             callbacks: None,
@@ -239,6 +242,11 @@ impl AgentExecutor {
     pub fn with_on_max_iterations(mut self, policy: MaxIterationsPolicy) -> Self {
         self.on_max_iterations = policy;
         self
+    }
+
+    /// Returns the effective iteration cap (agent-declared, else executor default 10).
+    pub fn max_iterations(&self) -> usize {
+        self.max_iterations
     }
 
     /// A2 Rule of Two (v0.22.1 §S8): when enabled, a tool whose declared risk profile arms
@@ -411,6 +419,48 @@ impl AgentExecutor {
         self
     }
 
+    /// Records caller-priced **tool-invocation** spend into the executor's shared
+    /// cost tracker under `scope`, so it joins the LLM spend the `max_cost_usd`
+    /// budget gate reads for that run (成本门纳入工具成本). No-op when the
+    /// executor carries no cost tracker; a failure is never propagated
+    /// (measurement must not break the agent flow).
+    ///
+    /// The caller prices the call (`cost_usd` is taken as-given, no pricing-table
+    /// lookup) and supplies the run's scope label — typically `root_run.id` from
+    /// the enclosing `invoke`/`resume` — so the record lands in the same bucket
+    /// `run_cost_usd`/`budget_cost_gate` read.
+    pub async fn record_tool_cost(
+        &self,
+        scope: &str,
+        provider: Option<&str>,
+        model: &str,
+        cost_usd: f64,
+    ) {
+        if let Some(tracker) = &self.cost_tracker {
+            tracker
+                .record_cost_scoped(None, Some(scope), CostType::Tool, provider, model, cost_usd)
+                .await;
+        }
+    }
+
+    /// Records caller-priced **embedding** spend into the executor's shared cost
+    /// tracker under `scope` (成本门纳入嵌入成本). Same semantics as
+    /// [`Self::record_tool_cost`], bucketed as `CostType::Embedding` so layered
+    /// aggregation (`run_cost_usd_by_type`) can separate it from LLM/tool spend.
+    pub async fn record_embedding_cost(
+        &self,
+        scope: &str,
+        provider: Option<&str>,
+        model: &str,
+        cost_usd: f64,
+    ) {
+        if let Some(tracker) = &self.cost_tracker {
+            tracker
+                .record_cost_scoped(None, Some(scope), CostType::Embedding, provider, model, cost_usd)
+                .await;
+        }
+    }
+
     /// Context compaction (0.21.0 S6.1): drop the oldest intermediate steps
     /// (whole steps — action + observation stay paired) when the trigger fires.
     ///
@@ -559,6 +609,24 @@ impl AgentExecutor {
         }
     }
 
+    /// Exports a failed run as an error event (v0.27). Carries the same run
+    /// `trace_id` join key as the metrics/cost events so the failure rolls up
+    /// with the run's other observability records. Fire-and-forget: failures are
+    /// only `warn`ed, never propagated into the agent flow.
+    async fn export_run_error(&self, run: &RunTree, error: &str) {
+        if let Some(sink) = &self.metrics_sink {
+            let evt = ObsEvent::RunError(RunEvent {
+                trace_id: run.trace_id.map(|u| u.to_string()),
+                provider: None,
+                model: None,
+                error: error.to_string(),
+            });
+            if let Err(e) = sink.export(&evt).await {
+                log::warn!(target: "lc_agents::metrics", "run error export failed: {e}");
+            }
+        }
+    }
+
     /// Reads the currently pending approval checkpoint (cross-process resume).
     ///
     /// Returns `Ok(None)` when no [`ResumeStore`] is configured or the store is empty.
@@ -640,6 +708,10 @@ impl AgentExecutor {
         let started = std::time::Instant::now();
         let mut metrics = AgentMetrics {
             trace_id: root_run.trace_id.map(|id| id.to_string()),
+            // H2 / §4.2: the checkpoint carries the executed-only count. The
+            // resumed tool's consumption is decided below against its actual
+            // outcome, so a `Deny` (or not-found / skip / rule-of-two block) no
+            // longer reserves a blind `+1` that would over-count `max_tool_calls`.
             tool_calls: pending.tool_calls_consumed,
             total_tokens: pending.tokens_consumed,
             ..Default::default()
@@ -650,6 +722,16 @@ impl AgentExecutor {
         let observation = self
             .execute_tool_inner(&action, &root_run, None, Some(decision))
             .await?;
+
+        // Align the resumed tool against actual execution, mirroring the loop's
+        // `is_non_execution_observation` check (agent_loop.rs): a request that was
+        // never run (Deny / ToolNotFound / hook skip / rule-of-two) must not consume
+        // `max_tool_calls`, so the count stays at the checkpoint's executed-only
+        // value; a tool that *did* run counts as one more.
+        if !is_non_execution_observation(&observation) {
+            metrics.tool_calls += 1;
+        }
+
         let mut steps = pending.steps;
         steps.push(AgentStep::new(action, observation));
 
@@ -943,6 +1025,9 @@ impl AgentExecutor {
                         handler.on_chain_error(&root_run, &e.to_string()).await;
                     }
                 }
+                // P0-6: surface the failed run as an error event so it joins the
+                // run's other observability records (never interrupts the flow).
+                self.export_run_error(&root_run, &e.to_string()).await;
 
                 // Hooks: on_error (P1-6)
                 for hook in &self.hooks {

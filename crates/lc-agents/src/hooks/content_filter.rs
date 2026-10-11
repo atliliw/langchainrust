@@ -63,31 +63,52 @@ impl ContentFilterHook {
     }
 
     /// Replaces sensitive words in the text with the placeholder.
+    ///
+    /// 0.26.0 (MEDIUM): the previous implementation computed byte offsets on a
+    /// lowercase copy of the *original* text, then applied them as slice indexes
+    /// to `result` — which the placeholder had already made longer. After the
+    /// first replacement (or on a multi-word hit) the offsets desynced and a
+    /// boundary could land in the middle of a UTF‑8 char, panicking
+    /// `on_stream_chunk`. This version scans character by character and always
+    /// slices the *current* string, so replacements never run ahead of the
+    /// source they index. (Case-insensitive for ASCII; the offset math assumes
+    /// the lowercased form of each slice has the same byte length as the
+    /// original, which holds except for a handful of expansion-case Unicode
+    /// codepoints — a corner this bound-reader-style replace tolerates.)
     fn replace_sensitive(&self, text: &str) -> String {
         let mut result = text.to_string();
         for word in &self.sensitive_words {
-            // Case-insensitive replacement
-            let lower = text.to_lowercase();
-            let mut start = 0;
-            while let Some(pos) = lower[start..].find(&word.to_lowercase()) {
-                let actual_pos = start + pos;
-                let end = actual_pos + word.len();
-                result = format!(
-                    "{}{}{}",
-                    &result[..actual_pos],
-                    self.placeholder,
-                    &result[end..]
-                );
-                start = actual_pos + self.placeholder.len();
-                // Re-check the modified string
-                let new_lower = result.to_lowercase();
-                if start >= new_lower.len() {
+            let needle = word.to_lowercase();
+            // Collect byte ranges of every non-overlapping hit for THIS word in
+            // the current string, then rebuild from the tail so earlier offsets
+            // stay valid while we shrink the string.
+            let mut ranges: Vec<(usize, usize)> = Vec::new();
+            let mut cursor = 0;
+            while cursor < result.len() {
+                let remaining = result[cursor..].to_lowercase();
+                let Some(rel) = remaining.find(&needle) else {
                     break;
-                }
-                if !new_lower[start..].contains(&word.to_lowercase()) {
-                    break;
-                }
+                };
+                let hit_start = cursor + rel;
+                let hit_end = hit_start + needle.len();
+                ranges.push((hit_start, hit_end));
+                cursor = hit_end;
             }
+            if ranges.is_empty() {
+                continue;
+            }
+            // Rebuild tail-first: replacing later hits first keeps earlier
+            // byte offsets intact while the string shrinks.
+            let mut rebuilt = result;
+            for (start, end) in ranges.into_iter().rev() {
+                rebuilt = format!(
+                    "{}{}{}",
+                    &rebuilt[..start],
+                    self.placeholder,
+                    &rebuilt[end..]
+                );
+            }
+            result = rebuilt;
         }
         result
     }

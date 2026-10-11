@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use super::OllamaConfig;
 use crate::openai::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
+use crate::sampling::SamplingOverride;
 use crate::ProviderError;
 use lc_callbacks::RunType;
 use lc_core::language_models::{
@@ -44,6 +45,17 @@ use lc_schema::Message;
 pub struct OllamaChat {
     config: OllamaConfig,
     client: reqwest::Client,
+}
+
+impl SamplingOverride for OllamaChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            self.config.max_tokens = Some(m);
+        }
+    }
 }
 
 impl OllamaChat {
@@ -131,7 +143,17 @@ impl OllamaChat {
         }
 
         if let Some(max) = self.config.max_tokens {
-            body["max_tokens"] = json!(max);
+            // T1: mirror the OpenAI/Azure dialect routing (0.26.0) — the o-series
+            // reasoning family rejects `max_tokens` and only accepts
+            // `max_completion_tokens`. Ollama serves OpenAI-compatible endpoints
+            // (incl. via OpenWebUI), so a reasoning-capable model name routes the
+            // budget to the newer key instead of 400ing.
+            let key = if crate::openai::is_openai_reasoning_model(&self.config.model) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            body[key] = json!(max);
         }
 
         if let Some(top_p) = self.config.top_p {
@@ -220,7 +242,7 @@ impl OllamaChat {
                     .header("Content-Type", "application/json")
                     .json(&body)
             },
-            &crate::retry::DEFAULT_RETRY,
+            &crate::retry::SAFE_RETRY,
         )
         .await
         .map_err(|e| OllamaError::Http(e.to_string()))?;
@@ -303,12 +325,32 @@ impl OllamaChat {
             // stream ended. (OpenAI/Azure/Anthropic already guard this; before
             // this fix Ollama silently returned truncated output as if complete.)
             let mut saw_terminal = false;
-            while let Some(chunk_result) = byte_stream.next().await {
+            loop {
+                // 0.26.0 review 3.5: bare `bytes_stream()` has no idle guard. A
+                // peer that stops sending without closing would hang forever —
+                // wrap each read in PROVIDER_SSE_IDLE_TIMEOUT (resets per chunk)
+                // and surface the freeze as a StreamInterrupted, not a park.
+                let chunk = tokio::time::timeout(
+                    crate::provider_http::PROVIDER_SSE_IDLE_TIMEOUT,
+                    byte_stream.next(),
+                )
+                .await;
                 // H2 fix: propagate network errors outside the mutex scope
-                let chunk_bytes = match chunk_result {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let _ = tx.send(Err(OllamaError::Http(e.to_string()))).await;
+                let chunk_bytes = match chunk {
+                    Ok(Some(cr)) => match cr {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            let _ = tx.send(Err(OllamaError::Http(e.to_string()))).await;
+                            return;
+                        }
+                    },
+                    Ok(None) => break,
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(OllamaError::StreamInterrupted(
+                                "stream idle timeout (no data for 60s)".to_string(),
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -510,14 +552,7 @@ impl Runnable<Vec<Message>, LLMResult> for OllamaChat {
         use futures_util::StreamExt;
 
         let model = self.config.model.clone();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         // H4: True streaming — emit one LLMResult per token
@@ -600,14 +635,7 @@ impl BaseChatModel for OllamaChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let result = effective.chat_internal(messages.clone()).await;
 
         match result {
@@ -675,14 +703,7 @@ impl BaseChatModel for OllamaChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);
@@ -909,5 +930,22 @@ mod null_content_tests {
         let msg: OllamaMessage =
             serde_json::from_str(r#"{"role":"assistant","tool_calls":[]}"#).unwrap();
         assert!(msg.content.is_none());
+    }
+
+    /// T1: the o-series reasoning family must route the token budget to
+    /// `max_completion_tokens` (it rejects `max_tokens`), mirroring the
+    /// OpenAI/Azure dialect routing.
+    #[test]
+    fn build_request_body_routes_reasoning_model_to_max_completion() {
+        let chat = OllamaChat::with_config(OllamaConfig::new("o3-mini").with_max_tokens(500));
+        let body = chat.build_request_body(vec![], false);
+        assert_eq!(body["max_completion_tokens"], 500);
+        assert!(body.get("max_tokens").is_none());
+
+        // A regular (non-reasoning) model keeps the legacy key.
+        let plain = OllamaChat::with_config(OllamaConfig::new("llama3.2").with_max_tokens(300));
+        let body = plain.build_request_body(vec![], false);
+        assert_eq!(body["max_tokens"], 300);
+        assert!(body.get("max_completion_tokens").is_none());
     }
 }

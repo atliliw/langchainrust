@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use uuid::Uuid;
 
-use crate::tracing::span::{make_span, SpanId, SpanKind, SpanStatus, TraceSpan};
+use crate::tracing::sampler::Sampler;
+use crate::tracing::span::{
+    estimate_span_cost, make_span, SpanId, SpanKind, SpanStatus, TraceSpan,
+};
 use crate::tracing::TracingBackend;
 
 /// Type alias for the span stack stored in thread-local and task-local storage.
@@ -97,16 +100,36 @@ pub fn clear_span_stack() {
 /// The main tracer that manages span lifecycle.
 pub struct Tracer {
     backend: Arc<dyn TracingBackend>,
+    sampler: Mutex<Sampler>,
 }
 
 impl Tracer {
     /// Create a new tracer backed by the given backend.
     pub fn new(backend: Arc<dyn TracingBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            sampler: Mutex::new(Sampler::default()),
+        }
+    }
+
+    /// Set the span sampler (rate / per-kind thinning) used by every
+    /// [`start`](Self::start) / [`start_child`](Self::start_child). Sampled-out
+    /// spans become no-op guards that never reach the backend (T2 §5).
+    pub fn with_sampler(self, sampler: Sampler) -> Self {
+        *self.sampler.lock().unwrap_or_else(|p| p.into_inner()) = sampler;
+        self
     }
 
     /// Start a new root span.
     pub fn start(&self, name: &str, kind: SpanKind) -> SpanGuard {
+        if !self
+            .sampler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .should_sample(&kind, name)
+        {
+            return SpanGuard::noop();
+        }
         let id = Uuid::now_v7().to_string();
         let span = make_span(id.clone(), None, name, kind);
 
@@ -127,6 +150,14 @@ impl Tracer {
     ///
     /// If no span is active, starts a root span instead.
     pub fn start_child(&self, name: &str, kind: SpanKind) -> SpanGuard {
+        if !self
+            .sampler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .should_sample(&kind, name)
+        {
+            return SpanGuard::noop();
+        }
         let parent_id = get_current_span_id();
         let id = Uuid::now_v7().to_string();
         let span = make_span(id.clone(), parent_id, name, kind);
@@ -151,6 +182,14 @@ impl Tracer {
         kind: SpanKind,
         parent_id: SpanId,
     ) -> SpanGuard {
+        if !self
+            .sampler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .should_sample(&kind, name)
+        {
+            return SpanGuard::noop();
+        }
         let id = Uuid::now_v7().to_string();
         let span = make_span(id.clone(), Some(parent_id), name, kind);
 
@@ -186,8 +225,16 @@ impl Tracer {
 
 impl Clone for Tracer {
     fn clone(&self) -> Self {
+        // Each clone gets an independent RNG stream over the same sampling config,
+        // so already-drawn decisions are not replayed across threads.
         Self {
             backend: Arc::clone(&self.backend),
+            sampler: Mutex::new(
+                self.sampler
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
         }
     }
 }
@@ -196,9 +243,29 @@ impl Clone for Tracer {
 // SpanGuard — RAII guard that ends the span when dropped
 // ---------------------------------------------------------------------------
 
+/// A backend that discards everything. Used only to give a sampled-out
+/// [`SpanGuard`] a concrete backend; because such a guard is already `dropped`,
+/// its backend is never called.
+struct DiscardingBackend;
+
+impl TracingBackend for DiscardingBackend {
+    fn start_span(&self, _span: &TraceSpan) {}
+    fn end_span(&self, _span: &TraceSpan) {}
+    fn flush(&self) {}
+}
+
 /// RAII guard that ends the span when dropped.
 ///
 /// Use builder-style methods to attach data before the span completes.
+///
+/// # ⚠️ Builder-chain pitfall (`with_*` consume `self`)
+///
+/// The `with_*` builders **consume** the guard and return a new `Self`. If the returned
+/// value is **not bound** — e.g. `tracer.start("x", Llm).with_tokens(usage);` as a bare
+/// statement — the temporary guard is dropped at the semicolon, so the span is finalized
+/// and closed immediately and popped off the stack, and the matching `end` / Drop becomes
+/// a no-op (and any cost already recorded is kept). **Always bind the chain to a
+/// long-lived binding:** `let guard = tracer.start("x", Llm).with_tokens(usage); ... guard.end();`.
 pub struct SpanGuard {
     span: TraceSpan,
     backend: Arc<dyn TracingBackend>,
@@ -208,6 +275,24 @@ pub struct SpanGuard {
 }
 
 impl SpanGuard {
+    /// A guard for a span that the [`Sampler`] excluded: pre-ended, so both
+    /// [`end`](Self::end) and [`Drop`] are no-ops and the span never reaches the
+    /// backend or the span stack. Produced by `Tracer::start*` when a span is
+    /// sampled out.
+    pub(crate) fn noop() -> Self {
+        Self {
+            span: make_span(
+                String::new(),
+                None,
+                "",
+                SpanKind::Custom("noop".to_string()),
+            ),
+            backend: Arc::new(DiscardingBackend),
+            start_instant: Instant::now(),
+            dropped: true,
+        }
+    }
+
     /// Get the span ID.
     pub fn id(&self) -> &str {
         &self.span.id
@@ -259,28 +344,14 @@ impl SpanGuard {
     }
 
     /// Fill `cost` with an estimate when it isn't set but token usage + a gen_ai model are.
+    ///
+    /// §4 lc-callbacks: this converges on the single `estimate_span_cost` path —
+    /// the SpanGuard no longer re-derives tokens + model selection itself.
     fn finalize_cost(&mut self) {
         if self.span.cost.is_some() {
             return;
         }
-        let tokens = match &self.span.tokens {
-            Some(t) => t.clone(),
-            None => return,
-        };
-        let model = match self
-            .span
-            .gen_ai_request_model
-            .as_deref()
-            .or(self.span.gen_ai_response_model.as_deref())
-        {
-            Some(m) => m.to_string(),
-            None => return,
-        };
-        self.span.cost = crate::pricing::estimate_cost_usd(
-            tokens.prompt_tokens,
-            tokens.completion_tokens,
-            &model,
-        );
+        self.span.cost = estimate_span_cost(&self.span);
     }
 
     /// Manually end the span now instead of waiting for Drop.

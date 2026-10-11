@@ -233,6 +233,17 @@ impl QdrantVectorStore {
     }
 }
 
+/// Converts a Qdrant payload [`Value`] to a [`serde_json::Value`].
+///
+/// Qdrant's high-level payload `Value` and serde's `JsonValue` are distinct types;
+/// `Document` metadata is `serde_json::Value`, so retrieval must transcode rather
+/// than clone. `Value`'s `Serialize` impl is total over its well-formed `Kind`s, so
+/// conversion only fails in practice on a malformed value, which we drop (and the
+/// caller's `Option` makes explicit) instead of failing the whole search.
+fn payload_value_to_json(value: &qdrant_client::qdrant::Value) -> Option<serde_json::Value> {
+    serde_json::to_value(value.clone()).ok()
+}
+
 /// Maps a Qdrant `ScoredPoint` to a [`SearchResult`].
 ///
 /// Pure (0.21.0 S4.3): extracted from the inline map so the native-hybrid path
@@ -259,7 +270,9 @@ pub(crate) fn scored_point_to_result(scored_point: ScoredPoint) -> SearchResult 
             // M-21: preserve the original value (number / bool / object), not just
             // strings — previously numeric/bool metadata was silently dropped on
             // round-trip (server-side filtering matched, but the returned type was lost).
-            metadata.insert(key.clone(), value.clone());
+            if let Some(json) = payload_value_to_json(value) {
+                metadata.insert(key.clone(), json);
+            }
         }
     }
 
@@ -510,7 +523,9 @@ impl VectorStore for QdrantVectorStore {
             for (key, value) in &payload_map {
                 if key != "content" && key != "doc_id" {
                     // M-21: preserve original number/bool/object values, not only strings.
-                    metadata.insert(key.clone(), value.clone());
+                    if let Some(json) = payload_value_to_json(value) {
+                        metadata.insert(key.clone(), json);
+                    }
                 }
             }
 

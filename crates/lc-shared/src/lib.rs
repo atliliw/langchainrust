@@ -19,9 +19,9 @@ pub mod document {
     pub use crate::document_types::{ChunkDocument, Document, SearchResult, VectorDocument};
 }
 
-/// Splitter types: `TextSplitter`, `RecursiveCharacterSplitter`.
+/// Splitter types: `TextSplitter`, `RecursiveCharacterSplitter`, `ChunkSpan`.
 pub mod splitter {
-    pub use crate::splitter_types::{RecursiveCharacterSplitter, TextSplitter};
+    pub use crate::splitter_types::{ChunkSpan, RecursiveCharacterSplitter, TextSplitter};
 }
 
 /// Tool types: `ToolCall`, `FunctionCall`, `ToolCallResult`.
@@ -36,8 +36,11 @@ pub mod json_repair;
 
 // Flat re-exports for convenience
 pub use document_types::{ChunkDocument, Document, SearchResult, VectorDocument};
-pub use json_repair::{parse_tolerant_json, repair_json, JsonRepairError};
-pub use splitter_types::{RecursiveCharacterSplitter, TextSplitter};
+pub use json_repair::{
+    parse_tolerant_json, repair_json, repair_partial_json, JsonRepairError, JsonRepairPipeline,
+    JsonRepairStep,
+};
+pub use splitter_types::{ChunkSpan, RecursiveCharacterSplitter, TextSplitter};
 pub use tool_types::{FunctionCall, ToolCall, ToolCallBuilder, ToolCallResult};
 
 mod document_types;

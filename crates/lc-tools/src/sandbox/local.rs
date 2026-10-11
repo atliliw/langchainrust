@@ -10,86 +10,17 @@ use tokio::process::Command;
 
 use super::{CodeSandbox, Language, RunResult, SandboxError};
 
-/// Dangerous Python modules matched by a noise-filter substring blacklist.
+/// The Python dangerous-code noise filter is the shared source of truth in
+/// [`crate::python_filter`] (T2 §5): `LocalSandbox` and `PythonREPLTool` previously carried
+/// duplicated import/call blacklists that had drifted (the REPL added `antigravity`, this
+/// module added `__builtins__`). Gone; both now read the same consts/functions, so a module or
+/// call is blocked in both or neither.
 ///
-/// Note: this is a *noise filter*, **not a security boundary** — a substring scan is
-/// trivially bypassed (`__import__("o" + "s")`, `import os;` variants, exec, ...).
-/// Untrusted code must not be run through [`LocalSandbox`] at all unless the process
-/// itself sits inside a real sandbox (container / VM / WASM).
-///
-/// The JS branch carries an equivalent noise filter ([`BLOCKED_JS_MODULES`] +
+/// The JS branch below carries an equivalent JS-only noise filter ([`BLOCKED_JS_MODULES`] +
 /// [`BLOCKED_JS_CALL_REGEX`], H1) so it is not left completely open where Python has a guard.
-const BLOCKED_PYTHON_IMPORTS: &[&str] = &[
-    "os",
-    "subprocess",
-    "sys",
-    "shutil",
-    "signal",
-    "ctypes",
-    "multiprocessing",
-    "socket",
-    "http.server",
-    "xmlrpc",
-    "pickle",
-    "shelve",
-    "importlib",
-    "code",
-    "codeop",
-    "compileall",
-    "pty",
-    "commands",
-    "pdb",
-    "webbrowser",
-];
-
-/// Check if Python code contains dangerous imports.
-fn contains_dangerous_python_import(code: &str) -> Option<String> {
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        let code_part = trimmed.split('#').next().unwrap_or(trimmed);
-        if code_part.contains("import") {
-            for blocked in BLOCKED_PYTHON_IMPORTS {
-                if code_part.contains(&format!("import {}", blocked))
-                    || code_part.contains(&format!("from {} ", blocked))
-                    || code_part.contains(&format!("from {}.", blocked))
-                    || code_part.contains(&format!("from {}import", blocked))
-                {
-                    return Some(blocked.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Dangerous Python **calls** not gated by a top-level `import` statement — the explicit
-/// bypass routes the substring blacklist above leaves open (H4): dynamic import via
-/// `__import__(...)` / `importlib.import_module(...)`, and the exec/eval/compile family.
-/// Word-boundary guarded so ordinary identifiers (`evaluate(`/`exectest(`) do not
-/// false-positive. Still a *noise filter*, not a security boundary (see below).
-static BLOCKED_PYTHON_CALL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:__import__\s*\(|importlib\b|exec\s*\(|eval\s*\(|compile\s*\(|__builtins__)")
-        .expect("static Python call regex literal must compile")
-});
-
-/// Check if Python code reaches dangerous builtins/calls bypassing a plain import
-/// (noise-filter, see [`BLOCKED_PYTHON_CALL_REGEX`]).
-fn contains_dangerous_python_call(code: &str) -> Option<String> {
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        let code_part = trimmed.split('#').next().unwrap_or(trimmed);
-        if let Some(m) = BLOCKED_PYTHON_CALL_REGEX.find(code_part) {
-            return Some(m.as_str().to_string());
-        }
-    }
-    None
-}
+/// Backward-compatible names for this module's own call sites and tests.
+use crate::python_filter::dangerous_python_call as contains_dangerous_python_call;
+use crate::python_filter::dangerous_python_import as contains_dangerous_python_import;
 
 /// Dangerous Node.js modules for the JS branch, mirroring [`BLOCKED_PYTHON_IMPORTS`].
 ///
@@ -116,36 +47,87 @@ const BLOCKED_JS_MODULES: &[&str] = &[
     "os",
 ];
 
+/// `require('<blocked>')` with optional whitespace anywhere the JS grammar allows a token gap
+/// (`require ( 'fs' )`, `require\n('fs')`), so space/tab/newline padding can't hide a blocked
+/// module (T2: the old literal-only `require('fs')` scan missed `require( 'fs' )`).
+///
+/// Concatenation obfuscation (`require('f'+'s')`, `globalThis['fs']`) is *not* covered — this is
+/// a noise filter, not a security boundary (see [`BLOCKED_JS_MODULES`]).
+static BLOCKED_JS_REQUIRE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    let mods = BLOCKED_JS_MODULES.join("|");
+    Regex::new(&format!(r#"\brequire\s*\(\s*['"](?:{})['"]\s*\)"#, mods))
+        .expect("static JS require regex literal must compile")
+});
+
 /// Common dangerous Node.js **calls** not gated by an import: `process.env`/`process.exit`, the
 /// `eval`/`Function` constructors, `globalThis` dynamic reach, and `spawn`/`exec` (which a
 /// `node -e` one-liner can also reach via `child_process`, already blocked above). These are the
 /// JS analogues of [`BLOCKED_PYTHON_IMPORTS`]/builtin calls — word-boundary guarded so ordinary
 /// identifiers like `evaluate(`/`spawner(` do not false-positive.
+///
+/// T2: `process\.` became `process\s*\.` (member access tolerates whitespace in JS) and
+/// `globalThis` got a trailing `\b`, closing the space/comment-split bypasses.
 static BLOCKED_JS_CALL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:process\.|eval\s*\(|Function\s*\(|globalThis|spawn\s*\(|exec\s*\()")
+    Regex::new(r"\b(?:process\s*\.|eval\s*\(|Function\s*\(|globalThis\b|spawn\s*\(|exec\s*\()")
         .expect("static JS regex literal must compile")
 });
 
-/// Check if JavaScript code reaches dangerous Node.js APIs (noise-filter, see above).
-fn contains_dangerous_javascript(code: &str) -> Option<String> {
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        let code_part = trimmed.split("//").next().unwrap_or(trimmed);
-        // require('<module>') / require("<module>") for the blocked modules.
-        for m in BLOCKED_JS_MODULES {
-            if code_part.contains(&format!("require('{}')", m))
-                || code_part.contains(&format!("require(\"{}\")", m))
-            {
-                return Some(format!("require('{}')", m));
+/// Remove `//` line and `/* */` block comments from JS source (noise-filter helper).
+///
+/// Both comment forms are stripped first so a block comment can neither hide a real match
+/// reasonably reachable without it (T2: previously only `//` was removed and `/* */` was left
+/// opaque) nor produce a false positive for commented-out detector hits. A tokenizer-precise
+/// scan is unnecessary here — string-literal `"//"`/`"/*"` inside the payload are out of scope
+/// for a filter that is explicitly not a security boundary.
+fn strip_js_comments(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut rest = code;
+    // Earliest of the two comment openers; `Option::min` treats `None` as "smaller" and would
+    // suppress a real match, so fold the pair here instead.
+    let earliest = |rest: &str| match (rest.find("//"), rest.find("/*")) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+    while let Some(i) = earliest(rest) {
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        if tail.starts_with("//") {
+            // Line comment: drop through end of line, keep the newline so `stmt // note\nnext`
+            // still scans `next` on its own line.
+            match tail.find('\n') {
+                Some(nl) => {
+                    out.push('\n');
+                    rest = &tail[nl + 1..];
+                }
+                None => rest = "",
+            }
+        } else {
+            // Block comment: drop through the closing `*/`.
+            match tail.find("*/") {
+                Some(end) => rest = &tail[end + 2..],
+                None => rest = "",
             }
         }
-        // statement-level dangerous access: process.* / eval( / Function( / globalThis / spawn / exec.
-        if let Some(m) = BLOCKED_JS_CALL_REGEX.find(code_part) {
-            return Some(m.as_str().to_string());
-        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Check if JavaScript code reaches dangerous Node.js APIs (noise-filter, see above).
+fn contains_dangerous_javascript(code: &str) -> Option<String> {
+    // Strip `//` and `/* */` comments *before* scanning (T2): comment-padding around a blocked
+    // token then can't shadow a real match, and commented-out occurrences are no match either.
+    let stripped = strip_js_comments(code);
+    // Scan the whole (comment-free) text, not line-by-line: `\s*` in the regexes then spans
+    // newlines, so `require\n('fs')` and a `eval\n(` split across lines are caught as such
+    // instead of being hidden because `require` and its `(...)` land on different lines.
+    if let Some(m) = BLOCKED_JS_REQUIRE_REGEX.find(&stripped) {
+        return Some(m.as_str().to_string());
+    }
+    // statement-level dangerous access: process.* / eval( / Function( / globalThis / spawn / exec.
+    if let Some(m) = BLOCKED_JS_CALL_REGEX.find(&stripped) {
+        return Some(m.as_str().to_string());
     }
     None
 }
@@ -254,6 +236,12 @@ impl LocalSandbox {
             Language::Rust => Err(SandboxError::UnsupportedLanguage(
                 "Rust compilation is not supported by LocalSandbox".to_string(),
             )),
+            // WASI modules are stripped to a single program counter *inside* the wasmi
+            // interpreter; a subprocess has nothing to hand to `python`/`node`. This is the
+            // `WasmSandbox`'s job (feature `sandbox-wasm`).
+            Language::Wasm => Err(SandboxError::UnsupportedLanguage(
+                "WASM execution is not supported by LocalSandbox; use WasmSandbox".to_string(),
+            )),
         }
     }
 }
@@ -335,6 +323,20 @@ mod tests {
     }
 
     #[test]
+    fn test_wasm_unsupported() {
+        // #201: a subprocess sandbox has nothing to hand wasm to; `WasmSandbox` owns it.
+        let sandbox = LocalSandbox::new();
+        let result = sandbox.build_command("(module)", Language::Wasm);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SandboxError::UnsupportedLanguage(msg) => {
+                assert!(msg.contains("WasmSandbox"), "unexpected msg: {msg}");
+            }
+            other => panic!("expected UnsupportedLanguage, got: {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_dangerous_python_import_detection() {
         assert!(contains_dangerous_python_import("import os").is_some());
         assert!(contains_dangerous_python_import("from sys import path").is_some());
@@ -362,7 +364,9 @@ mod tests {
     #[test]
     fn test_dangerous_javascript_detection() {
         // module requires (H1)
-        assert!(contains_dangerous_javascript("require('fs').readFileSync('/etc/passwd')").is_some());
+        assert!(
+            contains_dangerous_javascript("require('fs').readFileSync('/etc/passwd')").is_some()
+        );
         assert!(contains_dangerous_javascript("require(\"child_process\")").is_some());
         assert!(contains_dangerous_javascript("const net = require('net')").is_some());
         // statement-level dangerous calls
@@ -374,7 +378,27 @@ mod tests {
         assert!(contains_dangerous_javascript("console.log(1 + 2)").is_none());
         assert!(contains_dangerous_javascript("JSON.parse(x).map(v => v * 2)").is_none());
         assert!(contains_dangerous_javascript("// require('fs')").is_none());
+        assert!(contains_dangerous_javascript("/* blocked? no: require('fs') */").is_none());
         assert!(contains_dangerous_javascript("evaluate(fn).execute()").is_none());
+    }
+
+    /// T2: whitespace padding and comment-splits must not hide a blocked module / call.
+    #[test]
+    fn test_dangerous_javascript_bypass_attempts_blocked() {
+        // require(...) with whitespace between tokens.
+        assert!(contains_dangerous_javascript("require( 'fs' )").is_some());
+        assert!(contains_dangerous_javascript("require\n('child_process')").is_some());
+        assert!(contains_dangerous_javascript("const x = require('net')\n;doNothing()").is_some());
+        // member-access whitespace (`process . env`) and call splitting.
+        assert!(contains_dangerous_javascript("process .env").is_some());
+        assert!(contains_dangerous_javascript("eval (\"1\")").is_some());
+        // block-comment padding around a real call is still caught.
+        assert!(contains_dangerous_javascript("/* note */ eval('1')").is_some());
+        // line + block comments are fully stripped before scanning.
+        assert!(
+            contains_dangerous_javascript("const a = 1; // require('fs')\nprocess.exit()")
+                .is_some()
+        );
     }
 
     #[tokio::test]

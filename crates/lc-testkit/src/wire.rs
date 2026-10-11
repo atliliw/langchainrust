@@ -53,11 +53,22 @@ impl WireResponse {
     }
 }
 
-/// How a path serves repeated requests. `pub` only because it appears in the
-/// public [`WireRoutes`] alias; it is not part of the supported surface.
+/// The served pattern behind one path in [`WireRoutes`].
+///
+/// Opaque by design: it is held (and cloned/served) by the server but is never constructible or
+/// inspectable by consumers — [`fixed`] / [`seq`] are the only way to build routes, so the
+/// fixed-response / one-shot-queue shape is not part of the supported surface. `pub` only because
+/// [`WireRoutes`] references it in its public type; `#[doc(hidden)]` plus private fields keep it
+/// unnameable in practice.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-pub enum Pattern {
+pub struct Pattern {
+    kind: PatternKind,
+}
+
+/// The actual serve variant, private so the shape stays opaque outside the crate.
+#[derive(Clone, Debug)]
+enum PatternKind {
     Fixed(WireResponse),
     Seq(VecDeque<WireResponse>),
 }
@@ -67,26 +78,37 @@ pub type WireRoutes = Arc<Mutex<HashMap<String, Pattern>>>;
 
 /// Mirrors `lc_providers::tests::common::routes`.
 pub fn fixed(pairs: Vec<(String, WireResponse)>) -> WireRoutes {
-    Arc::new(Mutex::new(HashMap::from_iter(
-        pairs.into_iter().map(|(p, r)| (p, Pattern::Fixed(r))),
-    )))
+    Arc::new(Mutex::new(HashMap::from_iter(pairs.into_iter().map(
+        |(p, r)| {
+            (
+                p,
+                Pattern {
+                    kind: PatternKind::Fixed(r),
+                },
+            )
+        },
+    ))))
 }
 
 /// Builds a map where one path serves a one-shot retry sequence.
 pub fn seq(path: impl Into<String>, responses: Vec<WireResponse>) -> WireRoutes {
     Arc::new(Mutex::new(HashMap::from([(
         path.into(),
-        Pattern::Seq(responses.into()),
+        Pattern {
+            kind: PatternKind::Seq(responses.into()),
+        },
     )])))
 }
 
 fn dispatch(routes: &WireRoutes, path: &str) -> WireResponse {
     let mut map = routes.lock().unwrap_or_else(|e| e.into_inner());
     match map.get_mut(path) {
-        Some(Pattern::Fixed(r)) => r.clone(),
-        Some(Pattern::Seq(q)) => q
-            .pop_front()
-            .unwrap_or_else(|| WireResponse::json(501, r#"{"error":"no fixture"}"#)),
+        Some(Pattern { kind }) => match kind {
+            PatternKind::Fixed(r) => r.clone(),
+            PatternKind::Seq(q) => q
+                .pop_front()
+                .unwrap_or_else(|| WireResponse::json(501, r#"{"error":"no fixture"}"#)),
+        },
         None => WireResponse::json(501, r#"{"error":"no fixture"}"#),
     }
 }
@@ -103,7 +125,8 @@ pub async fn spawn_server(routes: WireRoutes) -> std::net::SocketAddr {
     tokio::spawn(async move {
         loop {
             let Ok((mut sock, _)) = listener.accept().await else {
-                return;
+                // A single failed accept must not kill the whole server; keep serving later connections.
+                continue;
             };
             let routes = routes.clone();
             tokio::spawn(async move {
@@ -148,7 +171,8 @@ async fn serve_conn(sock: &mut tokio::net::TcpStream, routes: &WireRoutes) -> st
         500 => "Internal Server Error",
         501 => "Not Implemented",
         503 => "Service Unavailable",
-        _ => "OK",
+        // Unknown status: use a neutral reason rather than claiming "OK".
+        _ => "Unknown",
     };
     let mut head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\n",

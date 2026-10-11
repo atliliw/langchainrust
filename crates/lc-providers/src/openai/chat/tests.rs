@@ -513,7 +513,13 @@ mod tests_response_format {
                 "{model} should be treated as reasoning"
             );
         }
-        for model in ["gpt-5", "gpt-4o", "gpt-4o-mini", "my-finetune", "text-embedding-3"] {
+        for model in [
+            "gpt-5",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "my-finetune",
+            "text-embedding-3",
+        ] {
             assert!(
                 !is_openai_reasoning_model(model),
                 "{model} should NOT be treated as reasoning"
@@ -549,6 +555,30 @@ mod tests_response_format {
         assert_eq!(body["max_tokens"], 512);
         assert!(body.get("max_completion_tokens").is_none());
     }
+
+    /// 0.27.0 T2: `reasoning_effort` is forwarded verbatim into the body when
+    /// configured (o-series / gpt-5 sampling knob).
+    #[test]
+    fn build_request_body_includes_reasoning_effort_when_set() {
+        let body = OpenAIChat::new(
+            OpenAIConfig::new("k")
+                .with_model("gpt-5")
+                .with_reasoning_effort("high"),
+        )
+        .build_request_body(sample_messages(), false);
+
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    /// 0.27.0 T2: `reasoning_effort` is omitted entirely when not set, so the
+    /// provider's default applies.
+    #[test]
+    fn build_request_body_omits_reasoning_effort_by_default() {
+        let body = OpenAIChat::new(OpenAIConfig::new("k").with_model("gpt-5"))
+            .build_request_body(sample_messages(), false);
+
+        assert!(body.get("reasoning_effort").is_none());
+    }
 }
 
 /// 0.26.0 T4-3: Structured Output 前移 provider 端。取含(design tradeoff):OpenAI chat
@@ -558,8 +588,8 @@ mod tests_response_format {
 /// 建在请求体层(build_request_body),离线可控,不触网。
 mod tests_t43_structured_output_forward {
     use super::*;
-    use crate::openai::response_format::ResponseFormat;
     use crate::openai::make_strict_schema;
+    use crate::openai::response_format::ResponseFormat;
     use schemars::JsonSchema;
     use serde::Deserialize;
 
@@ -602,8 +632,7 @@ mod tests_t43_structured_output_forward {
         assert_eq!(format["json_schema"]["strict"], true);
         let schema_value = &format["json_schema"]["schema"];
         assert_eq!(
-            schema_value["additionalProperties"],
-            false,
+            schema_value["additionalProperties"], false,
             "strict mode requires additionalProperties: false"
         );
         let required: Vec<&str> = schema_value["required"]
@@ -620,7 +649,9 @@ mod tests_t43_structured_output_forward {
     #[test]
     fn no_schema_gpt_call_has_no_response_format() {
         let body = OpenAIChat::new(
-            OpenAIConfig::new("k").with_model("gpt-4o").with_max_tokens(512),
+            OpenAIConfig::new("k")
+                .with_model("gpt-4o")
+                .with_max_tokens(512),
         )
         .build_request_body(messages(), false);
 
@@ -743,7 +774,7 @@ mod tests_b5_headers {
     async fn default_config_still_sends_bearer() {
         let (base_url, captured) = spawn_json_server().await;
         let config = OpenAIConfig {
-            api_key: "sk-secret".to_string(),
+            api_key: lc_core::SensitiveString::new("sk-secret"),
             base_url: format!("{base_url}/v1"),
             ..Default::default()
         };
@@ -820,5 +851,74 @@ mod tests_b7_multimodal {
         let blocks = value["content"].as_array().unwrap();
         assert_eq!(blocks[1]["type"], "input_audio");
         assert_eq!(blocks[1]["input_audio"]["format"], "mp3");
+    }
+}
+
+/// T3 (task B): provider-agnostic prompt-cache + raw-JSON-Schema passthrough
+/// are asserted at the request-body layer — offline, no network.
+mod tests_prompt_cache_and_raw_schema {
+    use super::*;
+
+    fn messages() -> Vec<Message> {
+        vec![Message::human("hello")]
+    }
+
+    /// Without a configured key the body carries no `prompt_cache_key` — the
+    /// un-cached request stays byte-identical.
+    #[test]
+    fn no_prompt_cache_key_by_default() {
+        let body = OpenAIChat::new(OpenAIConfig::new("k")).build_request_body(messages(), false);
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    /// A `PromptCache` with a key emits `prompt_cache_key` verbatim.
+    #[test]
+    fn prompt_cache_key_is_emitted_in_the_request_body() {
+        let config = OpenAIConfig::new("k")
+            .with_prompt_cache(lc_core::PromptCache::new().with_key("tenant-42"));
+        let body = OpenAIChat::new(config).build_request_body(messages(), false);
+        assert_eq!(body["prompt_cache_key"], "tenant-42");
+    }
+
+    /// A `PromptCache` with no key (Anthropic-only knobs set) adds nothing to
+    /// the OpenAI body: unsupported parts are silently ignored.
+    #[test]
+    fn prompt_cache_without_key_is_a_no_op_for_openai() {
+        let config = OpenAIConfig::new("k").with_prompt_cache(
+            lc_core::PromptCache::new()
+                .with_ttl("1h")
+                .with_last_message_breakpoint(true),
+        );
+        let body = OpenAIChat::new(config).build_request_body(messages(), false);
+        assert!(body.get("prompt_cache_key").is_none());
+        assert!(body.get("cache_control").is_none());
+    }
+
+    /// `with_json_schema_output_raw` sends the caller's raw schema as a strict
+    /// `response_format.json_schema` — no Rust type involved.
+    #[test]
+    fn raw_json_schema_is_sent_as_response_format() {
+        let output = lc_core::JsonSchemaOutput::new(
+            "sales_report",
+            serde_json::json!({
+                "type": "object",
+                "properties": {"units": {"type": "integer"}}
+            }),
+        );
+        let chat = OpenAIChat::new(OpenAIConfig::new("k")).with_json_schema_output_raw(output);
+        let body = chat.build_request_body(messages(), false);
+
+        let format = &body["response_format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["name"], "sales_report");
+        assert_eq!(format["json_schema"]["strict"], true);
+        assert_eq!(
+            format["json_schema"]["schema"]["properties"]["units"]["type"],
+            "integer"
+        );
+        assert_eq!(
+            format["json_schema"]["schema"]["additionalProperties"], false,
+            "strict normalization must run on the raw schema"
+        );
     }
 }

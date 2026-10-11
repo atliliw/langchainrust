@@ -1,21 +1,33 @@
 // lc-embeddings/src/retry.rs
 //! Exponential backoff retry for embedding HTTP calls (P2-5).
 //!
-//! Providers currently error on the first transient failure (429 rate limiting, 5xx server
-//! errors), turning a single network blip into a hard failure. This module provides a unified
-//! [`post_json_with_retry`]: 429 / 5xx are retried with exponential backoff, while other 4xx
-//! (auth, invalid parameters — permanent failures) return immediately without masking config
-//! errors.
+//! This module provides a unified [`post_json_with_retry`] with exponential backoff + bounded
+//! jitter and an at-most-once replay policy for the **non-idempotent** embedding POSTs
+//! (replaying one after the provider has already embedded can double-bill the text).
 //!
-//! 0.21.0 S3.3 alignment with current retry practice:
-//! - **bounded jitter**: each backoff adds 0-25% pseudo-random slack (entropy from the wall
-//!   clock) so concurrent clients do not re-collide on the same schedule;
-//! - **`Retry-After` honored**: a server-provided `Retry-After` (seconds form) raises the
-//!   delay when larger than the computed backoff, still capped at `max_delay`;
-//! - delay computation is a pure function ([`next_backoff`]) so the policy is unit-testable.
+//! 0.21.0 S3.3 backoff alignment: each backoff adds 0-25% pseudo-random slack (wall-clock
+//! entropy) so concurrent clients do not re-collide; a server `Retry-After` (seconds form)
+//! raises the delay when larger than the computed backoff, still capped at `max_delay`;
+//! delay computation is a pure function ([`next_backoff`]) so the policy is unit-testable.
+//! The backoff shape matches `retry.rs` in lc-agents / lc-providers
+//! (`base_delay * 2^attempt`, capped at `max_delay`).
 //!
-//! The backoff pattern matches `retry.rs` in lc-agents (`base_delay * 2^attempt`,
-//! capped at `max_delay`).
+//! # At-most-once replay boundary (§3.3 / lc-providers SAFE_RETRY, A14)
+//!
+//! A POST that has already reached the provider may have been embedded and billed, so it must
+//! not be blindly replayed. Only three outcomes are provably pre-dispatch and safe to replay:
+//! - a **429** (rate limit) — the provider rejected the request *before* processing it;
+//! - a **connect-phase transport failure** ([`reqwest::Error::is_connect`]) — the DNS/TCP/TLS
+//!   handshake never completed, so the request could not have reached the application.
+//!
+//! Everything else is returned as-is and not replayed:
+//! - **5xx** is ambiguous — it can be returned *after* the provider embedded and billed the
+//!   request, so replaying risks double-billing (in reqwest 0.12,
+//!   [`reqwest::Error::is_timeout`]/[`reqwest::Error::is_request`] can likewise fire after
+//!   dispatch, so timeouts are not replayed either);
+//! - other 4xx (auth, invalid parameters) are permanent failures.
+//!
+//! This mirrors lc-providers' `SAFE_RETRY` / `TransportRetryMode::PreDispatchOnly` decision.
 
 use std::time::Duration;
 
@@ -37,12 +49,17 @@ pub(crate) const DEFAULT_RETRY: RetryConfig = RetryConfig {
     max_delay: Duration::from_secs(30),
 };
 
-/// Retries a POST JSON request with exponential backoff, returning the first non-transient response.
+/// Retries a POST JSON request with exponential backoff under the at-most-once policy.
 ///
-/// - 429 / 5xx: retry (exponential backoff with bounded jitter, capped at `max_delay`,
-///   `Retry-After` honored when larger);
+/// - **429 only** among HTTP statuses: retry (exponential backoff with bounded jitter, capped
+///   at `max_delay`, `Retry-After` honored when larger). A 429 is provably pre-dispatch
+///   (rate-limited before processing), so replaying a non-idempotent embedding POST is safe.
+/// - **5xx**: return immediately — a 5xx can arrive *after* the provider embedded and billed
+///   the request, so it is not blindly replayed (avoids double-billing; see module docs §3.3).
 /// - other 4xx: return immediately (permanent failure, retrying is pointless);
-/// - transport errors: return as-is (outside HTTP status semantics, left to the caller).
+/// - transport errors: retry only a **connect-phase** failure ([`reqwest::Error::is_connect`],
+///   provably pre-dispatch); timeouts/request-phase errors are returned as-is (ambiguous —
+///   may have already been processed).
 ///
 /// The caller handles the status code and body after receiving the response (P1-4: error body not swallowed).
 pub(crate) async fn post_json_with_retry(
@@ -54,16 +71,41 @@ pub(crate) async fn post_json_with_retry(
 ) -> Result<reqwest::Response, reqwest::Error> {
     let mut attempt = 0usize;
     loop {
-        let response = client
+        let response = match client
             .post(url)
             .header("Authorization", format!("Bearer {bearer_token}"))
             .header("Content-Type", "application/json")
             .json(body)
             .send()
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                // §3.3: only a connect-phase failure is provably pre-dispatch (the handshake
+                // never completed, so nothing was embedded/billed) and safe to replay. A
+                // timeout / request-phase error in reqwest 0.12 can fire *after* the provider
+                // accepted and billed the request, so it is returned immediately.
+                if attempt < retry.max_retries && err.is_connect() {
+                    let delay = next_backoff(attempt, None, retry, entropy());
+                    log::warn!(
+                        "embedding connect failure (attempt {}), retrying in {:?}",
+                        attempt + 1,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(err);
+            }
+        };
 
         let status = response.status();
-        if is_transient(&status) && attempt < retry.max_retries {
+        // §3.3: among HTTP statuses only 429 (rate limit, provably pre-dispatch) is replayed
+        // for a non-idempotent embedding POST. `is_transient` also classifies 5xx, but the
+        // replay *decision* deliberately narrows to 429 — a 5xx may be a post-dispatch / already
+        // billed failure and must not be blindly replayed.
+        if is_transient(&status) && status.as_u16() == 429 && attempt < retry.max_retries {
             // `Retry-After` (seconds form) is honored when larger than the computed backoff.
             let retry_after_secs = response
                 .headers()
@@ -117,7 +159,13 @@ fn entropy() -> u64 {
         .unwrap_or(0)
 }
 
-/// Whether the status is a transient failure (retryable): 429 rate limit or 5xx server error.
+/// Whether the status belongs to the *transient* failure class: 429 rate limit or 5xx server error.
+///
+/// This is a **classification** predicate, not the replay decision. For a non-idempotent
+/// embedding POST the actual replay decision in [`post_json_with_retry`] deliberately narrows
+/// this to the provably pre-dispatch 429 (a 5xx may already have billed the request; see
+/// module docs §3.3). Kept as a class predicate so callers/tests can reason about transient
+/// statuses without implying they are all safe to replay.
 fn is_transient(status: &reqwest::StatusCode) -> bool {
     status.as_u16() == 429 || status.as_u16() >= 500
 }
@@ -139,7 +187,9 @@ pub(crate) fn embedding_client() -> reqwest::Client {
         .timeout(REQUEST_TIMEOUT)
         .build()
         .unwrap_or_else(|e| {
-            log::warn!("failed to build embedding HTTP client with timeout, falling back to default: {e}");
+            log::warn!(
+                "failed to build embedding HTTP client with timeout, falling back to default: {e}"
+            );
             reqwest::Client::new()
         })
 }
@@ -175,14 +225,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_succeeds_after_transient_5xx() {
-        let (base_url, _requests) = spawn_status_stub(503, 1, 200, "{\"ok\":true}").await;
+    async fn does_not_replay_transient_5xx() {
+        // §3.3: a 5xx may be a post-dispatch / already-billed failure, so a
+        // non-idempotent embedding POST is NOT blindly replayed here — the
+        // single 503 is returned as-is even though retry attempts remain.
+        let (base_url, requests) = spawn_status_stub(503, 1, 200, "{\"ok\":true}").await;
         let client = reqwest::Client::new();
         let body = serde_json::json!({"model": "m", "input": ["a"]});
 
         let resp = post_json_with_retry(&client, &base_url, "test-key", &body, &cfg()).await;
         assert!(resp.is_ok());
-        assert_eq!(resp.unwrap().status().as_u16(), 200);
+        assert_eq!(resp.unwrap().status().as_u16(), 503);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "5xx must not be replayed"
+        );
     }
 
     #[tokio::test]

@@ -238,7 +238,11 @@ impl QwenVisionEmbeddings {
         // Providers may reorder entries; restore request order via `index`.
         let mut indexed = output.embeddings;
         indexed.sort_by_key(|e| e.index);
-        Ok(indexed.into_iter().map(|e| e.embedding).collect())
+        let vectors: Vec<Vec<f32>> = indexed.into_iter().map(|e| e.embedding).collect();
+        // §3.1: reject any vector whose width disagrees with the declared dimension
+        // (server model change / truncation) instead of propagating wrong-width vectors.
+        crate::ensure_all_dimensions(&vectors, self.dimension)?;
+        Ok(vectors)
     }
 }
 
@@ -331,8 +335,8 @@ mod tests {
             "output": {
                 "embeddings": [
                     // Deliberately reversed indices to verify reordering.
-                    {"embedding": [0.8, -0.6], "index": 1, "type": 0},
-                    {"embedding": [0.6, 0.8], "index": 0, "type": 1}
+                    {"embedding": crate::test_support::embedding_json(QWEN_VISION_DIMENSION, 0.8, -0.6), "index": 1, "type": 0},
+                    {"embedding": crate::test_support::embedding_json(QWEN_VISION_DIMENSION, 0.6, 0.8), "index": 0, "type": 1}
                 ]
             },
             "request_id": "abc"
@@ -372,9 +376,11 @@ mod tests {
         ];
         let vectors = embeddings.embed_images(&images).await.unwrap();
         assert_eq!(vectors.len(), 2);
-        // Reordered to request order via `index`.
-        assert_eq!(vectors[0], vec![0.6, 0.8]);
-        assert_eq!(vectors[1], vec![0.8, -0.6]);
+        // Reordered to request order via `index`; units are padded to the
+        // declared 1024 dimension (and already unit vectors, so coords hold).
+        assert_eq!(vectors[0].len(), QWEN_VISION_DIMENSION);
+        assert_eq!(&vectors[0][..2], &[0.6, 0.8]);
+        assert_eq!(&vectors[1][..2], &[0.8, -0.6]);
 
         let recorded = bodies.lock().unwrap();
         assert_eq!(recorded.len(), 1);
@@ -390,12 +396,14 @@ mod tests {
 
     #[tokio::test]
     async fn text_request_uses_text_content() {
-        let response = json!({"output": {"embeddings": [{"embedding": [0.6, 0.8], "index": 0}]}});
+        let response = json!({"output": {"embeddings": [
+            {"embedding": crate::test_support::embedding_json(QWEN_VISION_DIMENSION, 0.6, 0.8), "index": 0}
+        ]}});
         let (base_url, bodies) = spawn_json_recording_stub(response).await;
         let embeddings = QwenVisionEmbeddings::new(config_with(base_url)).unwrap();
 
         let v = embeddings.embed_text("一只猫").await.unwrap();
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), QWEN_VISION_DIMENSION);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
 
@@ -419,7 +427,14 @@ mod tests {
             json!({
                 "output": {
                     "embeddings": (0..n)
-                        .map(|i| json!({"embedding": [i as f32, 0.0], "index": i}))
+                        .map(|i| json!({
+                            "embedding": crate::test_support::embedding_json(
+                                QWEN_VISION_DIMENSION,
+                                i as f32 + 1.0,
+                                1.0
+                            ),
+                            "index": i
+                        }))
                         .collect::<Vec<_>>()
                 }
             })
@@ -457,15 +472,17 @@ mod tests {
 
     #[tokio::test]
     async fn retries_on_429_and_enforces_empty_contract() {
-        let success_body = r#"{"output":{"embeddings":[{"embedding":[0.6,0.8],"index":0}]}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let one = crate::test_support::embedding_json(QWEN_VISION_DIMENSION, 0.6, 0.8).to_string();
+        let success_body =
+            format!(r#"{{"output":{{"embeddings":[{{"embedding":{one},"index":0}}]}}}}"#);
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let embeddings = QwenVisionEmbeddings::new(config_with(base_url)).unwrap();
 
         let v = embeddings
             .embed_text("hello")
             .await
             .expect("should retry after two 429s");
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), QWEN_VISION_DIMENSION);
         assert_eq!(requests.load(Ordering::SeqCst), 3, "1 initial + 2 retries");
 
         assert!(matches!(

@@ -3,7 +3,8 @@
 
 use super::types::{DynamicTask, GraphExecution, GraphInvocation, PendingInterrupt};
 use crate::checkpointer::{
-    CheckpointInfo, CheckpointRetention, Checkpointer, RetainingCheckpointer, DEFAULT_THREAD,
+    CheckpointInfo, CheckpointRetention, Checkpointer, RetainingCheckpointer,
+    TerritoryCheckpointer, DEFAULT_THREAD,
 };
 use crate::edge::{ConditionalEdge, GraphEdge};
 use crate::errors::{GraphError, GraphResult};
@@ -39,8 +40,20 @@ pub struct CompiledGraph<S: StateSchema> {
     pub(super) field_reducers: Vec<(String, Arc<dyn Reducer<S>>)>,
     pub(super) conditional_routers: HashMap<String, Arc<dyn ConditionalEdge<S>>>,
     pub(super) checkpointer: Option<Arc<Mutex<dyn Checkpointer<S> + Send>>>,
+    // 0.27.0 T3 (territorial subgraph): when set, any attached checkpointer is
+    // wrapped in a `TerritoryCheckpointer` namespaced by this key, so this
+    // graph's checkpoints never collide with / advance a parent or sibling graph
+    // sharing the same back-end. Kept as a field (not a one-shot re-wrap) so
+    // `with_territory` and `with_checkpointer` compose regardless of call order.
+    territory: Option<String>,
     pub(super) retention: CheckpointRetention,
     pub(super) recursion_limit: usize,
+    /// Upper bound on how many FanOut branches run concurrently. `None` (the
+    /// default) means unbounded — every branch is polled at once, the previous
+    /// behaviour. `Some(n)` keeps at most `n` branch futures in flight; the
+    /// results are still folded in branch declaration order, so the merge stays
+    /// deterministic regardless of completion order.
+    pub(super) max_concurrency: Option<usize>,
     pub(super) interrupt_before: Vec<String>,
     pub(super) interrupt_after: Vec<String>,
 
@@ -58,6 +71,8 @@ impl<S: StateSchema> std::fmt::Debug for CompiledGraph<S> {
             .field("edges", &self.edges)
             .field("entry_point", &self.entry_point)
             .field("recursion_limit", &self.recursion_limit)
+            .field("max_concurrency", &self.max_concurrency)
+            .field("territory", &self.territory)
             .field("interrupt_before", &self.interrupt_before)
             .field("interrupt_after", &self.interrupt_after)
             .finish()
@@ -80,8 +95,10 @@ impl<S: StateSchema> CompiledGraph<S> {
             field_reducers,
             conditional_routers: HashMap::new(),
             checkpointer: None,
+            territory: None,
             retention: CheckpointRetention::default(),
             recursion_limit: 25,
+            max_concurrency: None,
             interrupt_before: Vec::new(),
             interrupt_after: Vec::new(),
             runtime_nodes: Arc::new(RwLock::new(HashMap::new())),
@@ -100,10 +117,46 @@ impl<S: StateSchema> CompiledGraph<S> {
     /// If a retention policy is set (via [`with_checkpoint_retention`](Self::with_checkpoint_retention),
     /// before or after this call), the checkpointer is transparently wrapped in a
     /// [`RetainingCheckpointer`] so each save keeps its history within the policy.
+    ///
+    /// If a territory was set (via [`with_territory`](Self::with_territory) before
+    /// this call), the checkpointer is additionally wrapped in a
+    /// [`TerritoryCheckpointer`] so this graph's checkpoints live in an isolated
+    /// namespaced thread.
     pub fn with_checkpointer<C: Checkpointer<S> + 'static>(mut self, checkpointer: C) -> Self {
         let retention = self.retention;
         let inner: Arc<Mutex<dyn Checkpointer<S> + Send>> = Arc::new(Mutex::new(checkpointer));
-        self.checkpointer = Some(Arc::new(Mutex::new(RetainingCheckpointer::new(inner, retention))));
+        let mut wrapped: Arc<Mutex<dyn Checkpointer<S> + Send>> = Arc::new(Mutex::new(
+            RetainingCheckpointer::new(inner, retention),
+        ));
+        // Territorial isolation composes regardless of whether `with_territory` was
+        // called before or after this: a previously-set namespace is re-applied here
+        // so `.with_territory(ns).with_checkpointer(cp)` does not silently drop it.
+        if let Some(ns) = self.territory.clone() {
+            wrapped = Arc::new(Mutex::new(TerritoryCheckpointer::new(wrapped, ns)));
+        }
+        self.checkpointer = Some(wrapped);
+        self
+    }
+
+    /// Isolate this graph's checkpoints into a named namespace ("territory") so
+    /// they never collide with — or advance — the checkpoint key space of a
+    /// parent or sibling graph sharing the same checkpointer back-end.
+    ///
+    /// This is the "territorial subgraph" isolation primitive: it works whether
+    /// called before or after [`with_checkpointer`](Self::with_checkpointer).
+    /// With no checkpointer attached it is a no-op (territory only matters once
+    /// there is a shared back-end to isolate against). Internally it wraps the
+    /// attached checkpointer in a [`TerritoryCheckpointer`] namespaced by
+    /// `namespace`; see that type for the exact thread mapping.
+    pub fn with_territory(mut self, namespace: impl Into<String>) -> Self {
+        let namespace = namespace.into();
+        self.territory = Some(namespace.clone());
+        if let Some(cp) = self.checkpointer.take() {
+            self.checkpointer = Some(Arc::new(Mutex::new(TerritoryCheckpointer::new(
+                cp,
+                namespace,
+            ))));
+        }
         self
     }
 
@@ -119,7 +172,9 @@ impl<S: StateSchema> CompiledGraph<S> {
     pub fn with_checkpoint_retention(mut self, retention: CheckpointRetention) -> Self {
         self.retention = retention;
         if let Some(cp) = self.checkpointer.take() {
-            self.checkpointer = Some(Arc::new(Mutex::new(RetainingCheckpointer::new(cp, retention))));
+            self.checkpointer = Some(Arc::new(Mutex::new(RetainingCheckpointer::new(
+                cp, retention,
+            ))));
         }
         self
     }
@@ -128,6 +183,28 @@ impl<S: StateSchema> CompiledGraph<S> {
     pub fn with_recursion_limit(mut self, limit: usize) -> Self {
         self.recursion_limit = limit;
         self
+    }
+
+    /// Bound how many FanOut branches execute concurrently.
+    ///
+    /// Without this, a fan-out polls every branch future at once: a wide fan-out
+    /// over rate-limited backends (LLM providers, HTTP APIs) issues all of its
+    /// requests simultaneously and gets throttled. `Some(n)` keeps at most `n`
+    /// branches in flight and starts the next as soon as one finishes.
+    ///
+    /// Results are still collected in branch declaration order, so the merge and
+    /// the recorded steps do not depend on completion order.
+    ///
+    /// `0` is treated as "unbounded" and clears any previously set bound.
+    pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.max_concurrency = (max_concurrency > 0).then_some(max_concurrency);
+        self
+    }
+
+    /// Return the configured fan-out concurrency bound, or `None` when branches
+    /// are unbounded (the default).
+    pub fn max_concurrency(&self) -> Option<usize> {
+        self.max_concurrency
     }
 
     /// Set the node names before which execution should be interrupted.

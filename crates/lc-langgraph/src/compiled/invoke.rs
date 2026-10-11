@@ -10,27 +10,62 @@ use crate::END;
 use std::collections::HashMap;
 
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Resolve the recursion budget a run should use from an optional caller
+    /// [`NodeConfig`].
+    ///
+    /// `0` (what [`NodeConfig::default`] carries) means "the caller imposes no
+    /// bound", so the graph's own [`with_recursion_limit`](Self::with_recursion_limit)
+    /// applies. A non-zero caller limit is honoured but never *loosens* this
+    /// graph's own limit — the tighter of the two wins. This is what makes a
+    /// subgraph inherit its parent's budget instead of silently running with its
+    /// own, larger one.
+    pub(super) fn effective_limit(&self, config: &NodeConfig) -> usize {
+        match config.recursion_limit {
+            0 => self.recursion_limit,
+            caller => caller.min(self.recursion_limit),
+        }
+    }
+
+    /// Build the [`NodeConfig`] handed to a single node: the caller's `debug`
+    /// flag and metadata are forwarded, the resume decision (when resuming) is
+    /// layered on top under [`INTERRUPT_RESUME_KEY`], and `limit` is the
+    /// effective recursion budget for this run.
+    pub(super) fn node_config(
+        &self,
+        limit: usize,
+        base: &NodeConfig,
+        resume: Option<&serde_json::Value>,
+    ) -> NodeConfig {
+        let mut metadata = base.metadata.clone();
+        if let Some(value) = resume {
+            metadata.insert(INTERRUPT_RESUME_KEY.to_string(), value.clone());
+        }
+        NodeConfig {
+            recursion_limit: limit,
+            debug: base.debug,
+            metadata,
+        }
+    }
+
     /// Run a single node, translating a runtime [`GraphError::InterruptRequest`]
     /// into a producer-facing [`GraphError::DynamicInterrupt`]. Before surfacing
     /// the interrupt the current state is persisted (when a checkpointer is
     /// attached) so a crash between interrupt and resume cannot lose the run.
-    async fn run_node(
+    ///
+    /// Every execution entry point (`invoke`, `invoke_with_execution`,
+    /// `invoke_from_node_with_count`, `invoke_parallel`, `invoke_dynamic`) runs
+    /// its nodes through here, so the interrupt contract documented on
+    /// [`GraphError::InterruptRequest`] — "the compiled graph converts it into a
+    /// `DynamicInterrupt` after persisting a checkpoint" — holds on all of them,
+    /// not just the main path.
+    pub(super) async fn run_node(
         &self,
         state: &S,
         current_node: &str,
         recursion_count: usize,
-        resume: Option<&serde_json::Value>,
+        config: NodeConfig,
     ) -> GraphResult<StateUpdate<S>> {
         let node = self.get_node(current_node).await?;
-        let mut metadata = HashMap::new();
-        if let Some(value) = resume {
-            metadata.insert(INTERRUPT_RESUME_KEY.to_string(), value.clone());
-        }
-        let config = NodeConfig {
-            recursion_limit: self.recursion_limit,
-            debug: false,
-            metadata,
-        };
         match node.execute(state, Some(config)).await {
             Err(GraphError::InterruptRequest { ref payload }) => {
                 if let Some(ref cp) = self.checkpointer {
@@ -72,6 +107,27 @@ impl<S: StateSchema> CompiledGraph<S> {
     }
     /// Run the graph from its entry point with the given input state.
     pub async fn invoke(&self, input: S) -> GraphResult<GraphInvocation<S>> {
+        self.invoke_with_config(input, NodeConfig::default()).await
+    }
+
+    /// Run the graph from its entry point, seeding every node's [`NodeConfig`]
+    /// from `config`.
+    ///
+    /// This is [`invoke`](Self::invoke) with a caller-supplied context:
+    /// `config.metadata` and `config.debug` are forwarded to every node, and a
+    /// non-zero `config.recursion_limit` bounds the run — never above this
+    /// graph's own limit (see `effective_limit`).
+    ///
+    /// It is the entry point [`SubgraphNode`](crate::subgraph::SubgraphNode)
+    /// uses to hand its parent's context down, so a nested graph sees the same
+    /// metadata (including an injected interrupt-resume decision) and cannot
+    /// outrun the caller's depth budget.
+    pub async fn invoke_with_config(
+        &self,
+        input: S,
+        config: NodeConfig,
+    ) -> GraphResult<GraphInvocation<S>> {
+        let limit = self.effective_limit(&config);
         let mut state = input;
         let mut current_node = self.entry_point.clone();
         let mut steps: Vec<ExecutionStep> = Vec::new();
@@ -94,8 +150,8 @@ impl<S: StateSchema> CompiledGraph<S> {
             // guard means a graph that legitimately uses exactly `limit` steps
             // and then reaches END is NOT misreported as exceeding the limit
             // (the old `count >= limit` post-check fired at `count == limit`).
-            if recursion_count >= self.recursion_limit {
-                return Err(GraphError::RecursionLimitReached(self.recursion_limit));
+            if recursion_count >= limit {
+                return Err(GraphError::RecursionLimitReached(limit));
             }
 
             if self.interrupt_before.contains(&current_node) {
@@ -109,7 +165,12 @@ impl<S: StateSchema> CompiledGraph<S> {
                 recursion_count += 1;
 
                 let update = self
-                    .run_node(&state, &current_node, recursion_count, None)
+                    .run_node(
+                        &state,
+                        &current_node,
+                        recursion_count,
+                        self.node_config(limit, &config, None),
+                    )
                     .await?;
 
                 if let Some(new_state) = update.update {
@@ -293,7 +354,16 @@ impl<S: StateSchema> CompiledGraph<S> {
             // Only the resume target node receives the injected decision.
             let inject = resume_value.take();
             let update = self
-                .run_node(&state, &current_node, recursion_count, inject.as_ref())
+                .run_node(
+                    &state,
+                    &current_node,
+                    recursion_count,
+                    self.node_config(
+                        self.recursion_limit,
+                        &NodeConfig::default(),
+                        inject.as_ref(),
+                    ),
+                )
                 .await?;
 
             if let Some(new_state) = update.update {
@@ -438,7 +508,12 @@ impl<S: StateSchema> CompiledGraph<S> {
             recursion_count += 1;
 
             let update = self
-                .run_node(&state, &current_node, recursion_count, None)
+                .run_node(
+                    &state,
+                    &current_node,
+                    recursion_count,
+                    self.node_config(self.recursion_limit, &NodeConfig::default(), None),
+                )
                 .await?;
 
             if let Some(new_state) = update.update {

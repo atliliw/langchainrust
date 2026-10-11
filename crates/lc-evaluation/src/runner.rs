@@ -43,6 +43,26 @@ pub struct ScoreSummary {
     pub count: usize,
 }
 
+/// Nearest-rank percentile of a set of scores: the smallest value at or above fraction `p` of the
+/// data. `p` is clamped to `[0, 1]`; an empty slice returns `None`. Handles `NaN` by treating it
+/// as ordering-equal, so the presence of one bad value cannot poison a percentile.
+///
+/// Tail metrics are what CI traffic usually wants: `p=0.05` is the worst-decile quality tail
+/// (the failures that drag the mean down), `p=0.95`/`p=0.99` the best case, and for latency-style
+/// scores `p=0.95` is the latency tail. Use it via [`Report::percentile`] to get one evaluator's
+/// tail out of a finished report.
+pub fn percentile(values: &[f64], p: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let p = p.clamp(0.0, 1.0);
+    let mut sorted: Vec<f64> = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // nearest-rank: 1-based rank = ceil(p * N), mapped to a 0-based index
+    let rank = ((p * sorted.len() as f64).ceil() as usize).max(1) - 1;
+    Some(sorted[rank.min(sorted.len() - 1)])
+}
+
 /// Failure record: a predict or an evaluator score failed for the example at a given index.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FailureRecord {
@@ -74,6 +94,20 @@ pub struct Report {
     /// executor propagates to callback/OTel spans). Old reports deserialize to an empty id.
     #[serde(default)]
     pub run_id: String,
+}
+
+impl Report {
+    /// Tail metric: the `p`-th percentile of one evaluator's per-example scores (see
+    /// [`percentile`]). `p=0.05` = worst-decile quality tail, `p=0.95` = best-case tail.
+    /// Returns `None` if the evaluator scored no examples in this run.
+    pub fn percentile(&self, evaluator: &str, p: f64) -> Option<f64> {
+        let scores: Vec<f64> = self
+            .per_example
+            .iter()
+            .filter_map(|e| e.scores.get(evaluator).map(|s| s.value))
+            .collect();
+        percentile(&scores, p)
+    }
 }
 
 /// Batch runner: holds pointwise, pairwise, and RAG evaluators.
@@ -541,5 +575,20 @@ mod tests {
             (usd - expected).abs() < 1e-12,
             "got {usd}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn nearest_rank_percentile_is_invariant_to_input_order() {
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(percentile(&v, 0.0).unwrap(), 1.0);
+        assert_eq!(percentile(&v, 0.5).unwrap(), 3.0);
+        assert_eq!(percentile(&v, 1.0).unwrap(), 5.0);
+        // sorted vs shuffled give the identical percentile
+        let shuffled = vec![5.0, 1.0, 4.0, 2.0, 3.0];
+        assert_eq!(percentile(&shuffled, 0.5).unwrap(), 3.0);
+        // p outside [0,1] is clamped, empty and NaN inputs do not panic
+        assert_eq!(percentile(&v, 2.0).unwrap(), 5.0);
+        assert_eq!(percentile(&[1.0, 3.0, f64::NAN], 0.0).unwrap(), 1.0);
+        assert!(percentile(&[], 0.5).is_none());
     }
 }

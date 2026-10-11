@@ -205,8 +205,13 @@ impl<S: StateSchema + 'static> StateGraph<S> {
         // graph so `merge_parallel_states` can union parallel branches field-by-
         // field instead of letting the last branch's whole-state replace clobber
         // the fields only earlier branches wrote.
-        let mut compiled =
-            CompiledGraph::new(self.nodes.clone(), self.edges.clone(), entry, merge_reducer, self.reducers.clone());
+        let mut compiled = CompiledGraph::new(
+            self.nodes.clone(),
+            self.edges.clone(),
+            entry,
+            merge_reducer,
+            self.reducers.clone(),
+        );
 
         for (name, router) in &self.conditional_routers {
             compiled.add_router(name.clone(), router.clone());

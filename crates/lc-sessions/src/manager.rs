@@ -236,8 +236,29 @@ impl SessionManager {
                 .map_err(|e| SessionError::Memory(format!("failed to save memory: {}", e)))?;
         }
 
+        // H-bounded (§3.4): when a context window is configured, trim the
+        // *stored* history to that window before persisting, so a long-lived
+        // session's store does not grow without limit (mirrors the events API's
+        // compaction, which is likewise only bounded when configured).
+        self.trim_to_window(&mut session);
         self.store.update(&session).await?;
         Ok(content)
+    }
+
+    /// Bounded stored history (§3.4): with `Some(n)` as the configured context
+    /// window, keeps only the most recent `n` messages in the session so the
+    /// store does not grow unbounded on a chat-forever session. Without a
+    /// configured window the full history is retained (default contract) —
+    /// users who need bounded storage should set `with_max_context_messages`
+    /// or migrate to the events API.
+    fn trim_to_window(&self, session: &mut Session) {
+        if let Some(n) = self.max_context_messages {
+            let len = session.messages.len();
+            if len > n {
+                session.messages.drain(..len - n);
+                session.updated_at = chrono::Utc::now();
+            }
+        }
     }
 
     /// Gets the session history
@@ -620,6 +641,49 @@ mod tests {
         assert_eq!(received[2].len(), 2);
         assert_eq!(received[2][0].content, "回复");
         assert_eq!(received[2][1].content, "第三句");
+    }
+
+    /// H-bounded (§3.4): with a context window configured, chat() trims the stored
+    /// history to that window so the store does not grow unbounded — only the
+    /// most recent `n` messages survive persistence.
+    #[tokio::test]
+    async fn test_chat_trims_stored_history_to_window() {
+        let llm = MockSessionLlm::new("回复");
+        let store = Arc::new(MemorySessionStore::new());
+        let mgr = SessionManager::new(store.clone()).with_max_context_messages(2);
+        let id = mgr.create_session().await.unwrap();
+
+        for turn in 0..5 {
+            mgr.chat(&id, &llm, format!("问题{turn}")).await.unwrap();
+        }
+
+        // Raw storage would be 10 messages; a window=2 store caps at 2.
+        let session = mgr.get_session(&id).await.unwrap().unwrap();
+        assert_eq!(
+            session.messages.len(),
+            2,
+            "stored history is trimmed to the window"
+        );
+        assert_eq!(session.messages[0].content, "问题4");
+        assert_eq!(session.messages[1].content, "回复");
+
+        // Without a configured window, full history is retained (default).
+        let full = manager();
+        let full_id = full.create_session().await.unwrap();
+        for turn in 0..3 {
+            full.chat(&full_id, &llm, format!("问题{turn}"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            full.get_session(&full_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            6
+        );
     }
 
     /// Q4: after soft-deleting a session its status is Deleted; the record is kept but no longer appears in the user's list.

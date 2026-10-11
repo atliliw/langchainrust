@@ -77,11 +77,16 @@ impl RetrievalQA {
             println!("Retrieval count (k): {}", self.k);
         }
 
-        let documents = self
+        let mut documents = self
             .retriever
             .retrieve(question, self.k)
             .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
+
+        // L59: enforce the k-limit at the chain boundary even if a retriever
+        // returns more than asked (or ignores the cap), so the prompt context
+        // is never unbound.
+        documents.truncate(self.k);
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
@@ -252,11 +257,16 @@ impl RetrievalQA {
             println!("\n--- Step 1: Retrieve relevant documents ---");
         }
 
-        let documents = self
+        let mut documents = self
             .retriever
             .retrieve(question, self.k)
             .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
+
+        // L59: enforce the k-limit at the chain boundary even if a retriever
+        // returns more than asked (or ignores the cap), so the prompt context
+        // is never unbound.
+        documents.truncate(self.k);
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());

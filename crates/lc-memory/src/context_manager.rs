@@ -45,6 +45,7 @@ use async_trait::async_trait;
 use lc_core::token_counter::{CharRatioCounter, TokenCounter};
 use lc_schema::{Message, MessageType};
 use std::collections::HashMap;
+use std::hash::Hasher;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -303,10 +304,18 @@ impl WriteStrategy for SemanticWriteStrategy {
             MemoryError::SaveError(format!("Missing output key '{}'", self.output_key))
         })?;
 
-        let item = MemoryItem::new(
-            format!("turn-{}", input.len()),
-            format!("Human: {}\n AI: {}", input, output),
-        );
+        let content = format!("Human: {input}\n AI: {output}");
+        // 0.26.0 §3.1: the previous key `turn-<input.len()>` made any two turns
+        // whose inputs shared a byte length collide — the older turn was
+        // silently dropped from the semantic store (semantic context went
+        // missing). Key by a content hash of the whole turn instead: different
+        // turns (differing input or output) map to distinct keys and are all
+        // kept; only an identical repeated turn dedupes onto one entry. Retrieval
+        // is embedding-based, so the key value itself is irrelevant to reads.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&content, &mut hasher);
+        let key = format!("turn-{:016x}", hasher.finish());
+        let item = MemoryItem::new(key, content);
         self.store.put(&self.namespace, item).await
     }
 }
@@ -716,6 +725,41 @@ mod tests {
         assert!(
             joined.contains("swimming"),
             "saved knowledge must be retrievable, got: {joined}"
+        );
+    }
+
+    /// 0.26.0 §3.1 — two turns whose inputs share a byte length must both
+    /// persist. The old `turn-<len>` key collided and the earlier turn was
+    /// silently dropped (semantic context went missing); a content-hash key
+    /// gives each distinct turn its own entry.
+    #[tokio::test]
+    async fn semantic_write_same_length_different_content_keeps_both() {
+        let store: Arc<dyn MemoryStore> = Arc::new(LongTermMemory::new());
+        let strategy = SemanticWriteStrategy::new(store.clone(), "ns");
+
+        // Two equal-byte-length but different inputs: "abcd" and "wxyp" are
+        // both 4 bytes. Under the old key both collided on `turn-4`.
+        let (i1, o1) = turn("abcd", "first answer");
+        let (i2, o2) = turn("wxyp", "second answer");
+        strategy.save(&i1, &o1).await.unwrap();
+        strategy.save(&i2, &o2).await.unwrap();
+
+        assert_eq!(
+            store.len_namespace("ns").await.unwrap(),
+            2,
+            "same-length different-content turns must both be stored, not overwritten"
+        );
+
+        // Both turns are retrievable — neither was dropped.
+        let hits = store.search(&MemoryQuery::new("ns", "abcd")).await.unwrap();
+        let joined: String = hits
+            .iter()
+            .map(|h| h.text.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            joined.contains("abcd") && joined.contains("wxyp"),
+            "both turns must be retrievable, got: {joined}"
         );
     }
 

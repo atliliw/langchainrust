@@ -208,7 +208,7 @@ impl ChunkedDocumentStoreTrait for MongoChunkedDocumentStore {
         let mut chunk_ids = Vec::new();
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
-            let chunk_id = format!("{}_{}", parent_id, segment);
+            let chunk_id = crate::chunk_id(parent_id, segment);
 
             let mongo_chunk = MongoChunkDoc {
                 chunk_id: chunk_id.clone(),

@@ -10,6 +10,7 @@
 
 use crate::error::ProviderError;
 use crate::openai::OpenAIConfig;
+use lc_core::{PromptCache, SensitiveString};
 use std::env;
 
 /// Generic endpoint label used when no preset is selected.
@@ -65,7 +66,7 @@ pub const XAI_MODELS: [&str; 4] = [
 pub struct OpenAICompatibleConfig {
     /// Bearer token. `None` sends no `Authorization` header at all
     /// (keyless local servers).
-    pub api_key: Option<String>,
+    pub api_key: Option<SensitiveString>,
     /// Base URL ending at the `/v1`-style root; `/chat/completions` is appended.
     pub base_url: String,
     /// Free-form model id served by the endpoint.
@@ -80,6 +81,10 @@ pub struct OpenAICompatibleConfig {
     pub extra_headers: Vec<(String, String)>,
     /// Endpoint label surfaced in errors (preset name, generic by default).
     pub(crate) provider: &'static str,
+    /// Provider-agnostic prompt-cache request, forwarded to the underlying
+    /// [`OpenAIConfig`] (only the cache key is meaningful on an
+    /// OpenAI-compatible wire).
+    pub(crate) prompt_cache: Option<PromptCache>,
 }
 
 impl std::fmt::Debug for OpenAICompatibleConfig {
@@ -94,6 +99,7 @@ impl std::fmt::Debug for OpenAICompatibleConfig {
             .field("top_p", &self.top_p)
             .field("extra_headers", &self.extra_headers)
             .field("provider", &self.provider)
+            .field("prompt_cache", &self.prompt_cache)
             .finish()
     }
 }
@@ -114,6 +120,7 @@ impl OpenAICompatibleConfig {
             top_p: None,
             extra_headers: Vec::new(),
             provider: LABEL_GENERIC,
+            prompt_cache: None,
         }
     }
 
@@ -190,7 +197,7 @@ impl OpenAICompatibleConfig {
 
     /// Sets the bearer token (enables the `Authorization` header).
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
+        self.api_key = Some(SensitiveString::new(api_key));
         self
     }
 
@@ -264,6 +271,16 @@ impl OpenAICompatibleConfig {
         self
     }
 
+    /// Sets the provider-agnostic prompt-cache request.
+    ///
+    /// Forwarded to the underlying [`OpenAIConfig`]: speaking the OpenAI
+    /// protocol, only [`PromptCache::key`] is emitted (`prompt_cache_key`);
+    /// unknown fields are ignored by compatible endpoints.
+    pub fn with_prompt_cache(mut self, cache: PromptCache) -> Self {
+        self.prompt_cache = Some(cache);
+        self
+    }
+
     pub(crate) fn into_openai_config(self) -> OpenAIConfig {
         // Keyless endpoints must not receive a bare `Bearer ` header.
         let send_auth = self.api_key.is_some();
@@ -273,6 +290,7 @@ impl OpenAICompatibleConfig {
             model: self.model,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            reasoning_effort: None,
             top_p: self.top_p,
             frequency_penalty: None,
             presence_penalty: None,
@@ -283,6 +301,7 @@ impl OpenAICompatibleConfig {
             response_format: None,
             extra_headers: self.extra_headers,
             send_auth,
+            prompt_cache: self.prompt_cache,
         }
     }
 }
@@ -357,7 +376,7 @@ mod tests {
             .with_extra_header("X-Tenant", "acme");
         let converted = config.into_openai_config();
         assert!(converted.send_auth);
-        assert_eq!(converted.api_key, "sk-x");
+        assert_eq!(converted.api_key.expose_secret(), "sk-x");
         assert_eq!(
             converted.extra_headers,
             vec![("X-Tenant".to_string(), "acme".to_string())]

@@ -225,14 +225,17 @@ impl<I: Clone + Send + Sync + 'static> Runnable<I, HashMap<String, Value>> for R
             let mut out = Vec::with_capacity(handles.len());
             for res in join_all(handles).await {
                 // Outer = JoinError (task panicked/cancelled), inner = LcelError.
-                let inner = res
-                    .map_err(|e| LcelError::Other(format!("parallel task join error: {e}")))?;
+                let inner =
+                    res.map_err(|e| LcelError::Other(format!("parallel task join error: {e}")))?;
                 out.push(inner?);
             }
             out
         } else {
             // No tokio runtime: same steps, cooperative scheduling, no spawn.
-            join_all(futures).await.into_iter().collect::<Result<_, _>>()?
+            join_all(futures)
+                .await
+                .into_iter()
+                .collect::<Result<_, _>>()?
         };
 
         let mut map = HashMap::with_capacity(results.len());
@@ -495,13 +498,18 @@ mod tests {
             );
 
         // Execute on an executor with no tokio runtime present.
-        let result = futures_executor::block_on(async {
-            parallel.invoke("hello".to_string(), None).await
-        })
-        .unwrap();
+        let result =
+            futures_executor::block_on(async { parallel.invoke("hello".to_string(), None).await })
+                .unwrap();
 
-        assert_eq!(result.get("len").unwrap(), &Value::Number(serde_json::Number::from(5)));
-        assert_eq!(result.get("upper").unwrap(), &Value::String("HELLO".to_string()));
+        assert_eq!(
+            result.get("len").unwrap(),
+            &Value::Number(serde_json::Number::from(5))
+        );
+        assert_eq!(
+            result.get("upper").unwrap(),
+            &Value::String("HELLO".to_string())
+        );
         // Result is a fresh owned value (not a poisoned shared cell).
         let still_ok = Arc::new(AtomicUsize::new(0));
         assert_eq!(still_ok.load(Ordering::SeqCst), 0);
@@ -531,7 +539,8 @@ mod tests {
             .with("c", mk(in_flight.clone(), peak.clone()))
             .with("d", mk(in_flight.clone(), peak.clone()));
         let config = RunnableConfig::new().with_max_concurrency(2);
-        let out = futures_executor::block_on(limited.invoke("x".to_string(), Some(config))).unwrap();
+        let out =
+            futures_executor::block_on(limited.invoke("x".to_string(), Some(config))).unwrap();
         assert_eq!(out.len(), 4);
         assert!(
             peak.load(Ordering::SeqCst) <= 2,

@@ -83,6 +83,14 @@ impl A2AServer {
             task = task.with_owner(owner);
         }
         let mut stored = StoredTask::new(task.clone());
+        // B1 (0.26.0): persist the `skillId` so a later `tasks/send {taskId,
+        // message}` continuation resolves the *same* skill route this task
+        // started on (previously a multi-turn skill task silently switched to
+        // the default chain on resume).
+        let skill_id = params.get("skillId").and_then(Value::as_str);
+        if let Some(sid) = skill_id {
+            stored = stored.with_skill_id(Some(sid));
+        }
         // P1-5: carry the request's trace id onto the task so the trace can be
         // correlated after creation.
         if let Some(trace_id) = req.trace_id() {
@@ -106,8 +114,8 @@ impl A2AServer {
             }
         }
 
-        // P2-4: route by skill if a router is configured.
-        let skill_id = params.get("skillId").and_then(Value::as_str);
+        // P2-4: route by skill if a router is configured. `skill_id` was already
+        // resolved above (and persisted onto the StoredTask for B1).
         let chain = self.resolve_chain(skill_id);
 
         let store = self.store.clone();
@@ -128,6 +136,27 @@ impl A2AServer {
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))
+    }
+
+    /// Handle `tasks/sendSubscribe`: create a task and acknowledge a streaming
+    /// subscription (P2-9 subscribe flow).
+    ///
+    /// The request params are identical to `tasks/send` (a `message`). The task
+    /// is created and acknowledged in the JSON-RPC result — that ack is the
+    /// subscription confirmation — and the chain runs in the background the
+    /// same way. Each subsequent status transition (and the final artifact) is
+    /// then pushed as a [`TaskPushNotification`](crate::protocol::TaskPushNotification)
+    /// over the SSE/broadcast bus ([`A2AServer::with_streaming`] +
+    /// [`A2AServer::subscribe`]) instead of being polled by the client.
+    ///
+    /// Ownership (P1-4), idempotency (P1-6) and continuation (P2-2/P2-3)
+    /// semantics are shared with `tasks/send`.
+    pub(crate) async fn handle_tasks_send_subscribe(
+        &self,
+        req: A2ARequest,
+        owner: Option<&str>,
+    ) -> A2AResponse {
+        self.handle_tasks_send(req, owner).await
     }
 
     /// Append a message to an existing task and re-run it (P2-2/P2-3).
@@ -174,8 +203,14 @@ impl A2AServer {
             return forbidden(req.id, "caller does not own this task");
         }
 
-        // P2-3: only an input-required task can be resumed with new input.
-        if stored.task.status != TaskStatus::InputRequired {
+        // P2-3: an input-required or auth-required task can be resumed with new
+        // input. B4 adds the `AuthRequired → Working` edge; supplying the missing
+        // input / in-band credentials is the natural trigger, and
+        // `can_transition_to(&Working)` below accepts it.
+        if !matches!(
+            stored.task.status,
+            TaskStatus::InputRequired | TaskStatus::AuthRequired
+        ) {
             self.release_resume_id(&message_id).await;
             return A2AResponse::from_error_data(
                 req.id,
@@ -186,6 +221,9 @@ impl A2AServer {
             );
         }
 
+        // B1: capture the originating skill route before `stored` is moved into
+        // the upsert below so the resumed worker resolves the same chain.
+        let stored_skill = stored.skill_id.clone();
         stored.task.push_message(message);
         if stored.task.status.can_transition_to(&TaskStatus::Working) {
             stored.task.status = TaskStatus::Working;
@@ -207,7 +245,12 @@ impl A2AServer {
         }
 
         let store = self.store.clone();
-        let chain = self.resolve_chain(None);
+        // B1 (0.26.0): a continuation must return to the *same* skill route the
+        // task started on. `handle_tasks_send` persists the `skillId` onto the
+        // StoredTask; resolve from it instead of blindly falling back to the
+        // default chain (which is what the previous `resolve_chain(None)` did, so
+        // a multi-turn skill task silently switched models/chains mid-conversation).
+        let chain = self.resolve_chain(stored_skill.as_deref());
         let bus = self.event_bus.clone();
         let history = task.message_history().into_owned();
         let spawned_id = task_id.clone();
@@ -382,18 +425,56 @@ impl A2AServer {
             }
         }
 
+        // L101: tasks/list pagination. `limit` clamps the page size; `cursor`
+        // is the id of the last task on the previous page, so the next page
+        // continues after it in the same stable (id-sorted) order.
+        let limit = parse_pagination_limit(req.params.as_ref().and_then(|p| p.get("limit")));
+        let cursor = req
+            .params
+            .as_ref()
+            .and_then(|p| p.get("cursor"))
+            .and_then(Value::as_str);
+
         match self.store.list(&filter).await {
             Ok(stored) => {
                 // P1-4 ownership is enforced per task: `tasks/list` has no
                 // single task to check against, so filter the result set.
                 // Tasks without an owner remain open to any caller; owned
                 // tasks are only visible to a matching owner identity.
-                let tasks: Vec<&A2ATask> = stored
+                //
+                // Pagination requires a deterministic order across calls, so
+                // the candidates are sorted by task id (a monotonic, unique
+                // key) and the cursor addresses position within that order.
+                let mut visible: Vec<&A2ATask> = stored
                     .iter()
                     .filter(|s| self.caller_owns(owner, &s.task))
                     .map(|s| &s.task)
                     .collect();
-                A2AResponse::ok(req.id, json!({ "tasks": tasks }))
+                visible.sort_by(|a, b| a.id.cmp(&b.id));
+
+                let start = cursor
+                    .map(|c| {
+                        visible
+                            .iter()
+                            .position(|t| t.id.as_str() == c)
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+                let end = (start + limit).min(visible.len());
+                let page = &visible[start..end];
+                let has_more = end < visible.len();
+                let next_cursor = page.last().map(|t| t.id.as_str());
+
+                let mut body = serde_json::Map::new();
+                body.insert("tasks".into(), json!(page));
+                body.insert("hasMore".into(), json!(has_more));
+                if has_more {
+                    if let Some(nc) = next_cursor {
+                        body.insert("nextCursor".into(), json!(nc));
+                    }
+                }
+                A2AResponse::ok(req.id, Value::Object(body))
             }
             Err(_) => A2AResponse::from_error_data(
                 req.id,
@@ -521,4 +602,18 @@ impl A2AServer {
 
         A2AResponse::ok(req.id, json!({ "task": task }))
     }
+}
+
+/// Parses the `limit` param for `tasks/list` pagination (L101).
+///
+/// Absent or unparseable values fall back to the default page size; everything
+/// is clamped to `[1, MAX_PAGE_SIZE]` so a caller cannot force the store to
+/// materialize an unbounded result set in one response.
+fn parse_pagination_limit(value: Option<&Value>) -> usize {
+    const DEFAULT_PAGE_SIZE: usize = 50;
+    const MAX_PAGE_SIZE: usize = 1000;
+    value
+        .and_then(|v| v.as_u64())
+        .map(|n| (n as usize).clamp(1, MAX_PAGE_SIZE))
+        .unwrap_or(DEFAULT_PAGE_SIZE)
 }

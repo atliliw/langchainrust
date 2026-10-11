@@ -21,8 +21,10 @@ pub mod math;
 pub mod model_registry;
 pub mod observability;
 pub mod output_parsers;
+pub mod prompt_cache;
 pub mod router_llm;
 pub mod runnables;
+pub mod sensitive;
 pub mod ssrf;
 pub mod structured_output;
 pub mod text;
@@ -31,7 +33,8 @@ pub mod tools;
 
 // Re-export key types at crate root for convenience
 pub use cost::{
-    CostError, CostRecord, CostReport, CostTracker, ModelPrice, ModelSpend, PricingTable,
+    CostError, CostRecord, CostReport, CostTracker, CostType, ModelPrice, ModelSpend, PricingTable,
+    ScopeCosts,
 };
 pub use json_parse::{parse_llm_json, parse_llm_json_with_retry, LlmJsonParseError};
 pub use model_registry::{ModelCapabilities, ModelInfo, ModelRegistry};
@@ -58,9 +61,11 @@ pub use runnables::{
     RunnableParallel, RunnablePassthrough, RunnablePick, RunnableRetry, RunnableSequence,
     RunnableWithFallbacks,
 };
+pub use prompt_cache::PromptCache;
+pub use sensitive::SensitiveString;
 pub use structured_output::{
-    stream_structured_output, with_structured_output, PartialJsonError, PartialJsonParser,
-    StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
+    stream_structured_output, with_structured_output, JsonSchemaOutput, PartialJsonError,
+    PartialJsonParser, StreamingStructuredOutputExt, StructuredOutputError, StructuredOutputExt,
 };
 pub use tools::{
     BaseTool, FunctionCall, FunctionDefinition, StructuredOutput, Tool, ToolCall, ToolCallBuilder,

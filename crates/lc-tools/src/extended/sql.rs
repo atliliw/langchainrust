@@ -160,11 +160,11 @@ impl SQLTool {
             .query_map(rusqlite::params_from_iter(params.iter()), |row| {
                 let mut m = HashMap::new();
                 for (i, col) in col_names.iter().enumerate() {
-                    let val: String = row
-                        .get::<_, Option<String>>(i)
-                        .unwrap_or(None)
-                        .unwrap_or_default();
-                    m.insert(col.clone(), val);
+                    // Read the native SQLite value, then render it losslessly to a
+                    // string. Fetching `Option<String>` silently turned INTEGER / REAL
+                    // / BLOB columns into an empty string (numeric data vanished).
+                    let value: rusqlite::types::Value = row.get(i)?;
+                    m.insert(col.clone(), value_to_string(&value));
                 }
                 Ok(m)
             })
@@ -191,6 +191,23 @@ impl BaseTool for SQLTool {
         let (sql, params) = parse_sql_input(&input)?;
         let rows = self.execute_parameterized(&sql, &params)?;
         serde_json::to_string(&rows).map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+    }
+}
+
+/// Renders a native SQLite [`rusqlite::types::Value`] into a string without
+/// data loss. This is what the tool previously failed to do for non-text
+/// columns (see B1 in the framework code review): fetching as `Option<String>`
+/// turned every INTEGER / REAL / BLOB cell into an empty string, silently
+/// dropping numeric result data. Blobs are shown as a lossy UTF-8 attempt so
+/// the caller still sees *something* rather than a blank cell; the raw bytes
+/// are intentionally not base64-encoded here to keep the JSON output compact.
+fn value_to_string(value: &rusqlite::types::Value) -> String {
+    match value {
+        rusqlite::types::Value::Null => String::new(),
+        rusqlite::types::Value::Integer(i) => i.to_string(),
+        rusqlite::types::Value::Real(f) => f.to_string(),
+        rusqlite::types::Value::Text(s) => s.clone(),
+        rusqlite::types::Value::Blob(b) => String::from_utf8_lossy(b).into_owned(),
     }
 }
 

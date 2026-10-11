@@ -378,6 +378,16 @@ impl MultimodalRetriever {
                 .embed_images(&image_inputs)
                 .await
                 .map_err(|e| RetrieverError::EmbeddingError(e.to_string()))?;
+            // §3.2 (LOW): `zip` would silently truncate to the shorter list and
+            // leave `None` slots behind, panicking the final `unwrap`. Require an
+            // exact count: one vector per image slot.
+            if image_vectors.len() != image_slots.len() {
+                return Err(RetrieverError::EmbeddingError(format!(
+                    "vision embed_images returned {} vectors for {} image slots",
+                    image_vectors.len(),
+                    image_slots.len()
+                )));
+            }
             for (slot, vector) in image_slots.into_iter().zip(image_vectors) {
                 vectors[slot] = Some(vector);
             }

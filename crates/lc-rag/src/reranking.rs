@@ -200,6 +200,7 @@ impl RerankingExecutor {
 
         let documents: Vec<Document> = results.iter().map(|r| r.document.clone()).collect();
         let scores = self.reranker.score(query, &documents)?;
+        Self::ensure_score_count(documents.len(), scores.len())?;
 
         // Normalize scores to [0, 1] range before combining (H51)
         let max_original = results
@@ -250,6 +251,19 @@ impl RerankingExecutor {
         Ok(reranked)
     }
 
+    /// §3.2 (LOW): a custom [`Reranker`] must return exactly one score per
+    /// input document; anything else made `scores[idx]` panic on out-of-range.
+    /// Fail with a diagnostic instead of an indexing panic.
+    fn ensure_score_count(documents: usize, scores: usize) -> Result<(), RerankingError> {
+        if documents == scores {
+            Ok(())
+        } else {
+            Err(RerankingError::InvalidInput(format!(
+                "reranker returned {scores} scores for {documents} documents"
+            )))
+        }
+    }
+
     /// Scores and re-ranks a document list directly, returning scored results
     pub fn rerank_documents(
         &self,
@@ -261,6 +275,7 @@ impl RerankingExecutor {
         }
 
         let scores = self.reranker.score(query, &documents)?;
+        Self::ensure_score_count(documents.len(), scores.len())?;
 
         let mut results: Vec<SearchResult> = documents
             .iter()
@@ -498,11 +513,7 @@ mod tests {
     #[test]
     fn test_bm25_all_empty_content_no_nan() {
         let reranker = BM25Reranker::new();
-        let docs: Vec<Document> = vec![
-            Document::new(""),
-            Document::new(""),
-            Document::new("   "),
-        ];
+        let docs: Vec<Document> = vec![Document::new(""), Document::new(""), Document::new("   ")];
         let scores = reranker.score("query", &docs).unwrap();
         assert_eq!(scores.len(), 3);
         for s in scores {

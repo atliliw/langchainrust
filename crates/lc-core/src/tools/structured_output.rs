@@ -17,7 +17,12 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
     /// Creates a new StructuredOutput from an LLM result.
     pub fn new(result: LLMResult) -> Self {
         use schemars::schema_for;
-        let schema = serde_json::to_value(schema_for!(T)).unwrap_or(serde_json::Value::Null);
+        // 0.26.0 §3.3: unify with `BaseTool::args_schema` (J9) — a `JsonSchema`
+        // deserializing schema cannot legitimately fail to serialize, so any
+        // failure is an internal error and must panic, not silently degrade to
+        // `Value::Null` (which would hand the LLM a broken/empty schema).
+        let schema = serde_json::to_value(schema_for!(T))
+            .expect("[lc-core] StructuredOutput::new: input schema failed to serialize");
         Self {
             result,
             schema,

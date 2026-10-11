@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::message::A2AMessage;
+use super::part::A2AArtifact;
 use super::task::{A2ATask, TaskStatus};
 
 pub(crate) fn default_protocol_version() -> String {
@@ -232,6 +233,43 @@ impl A2ARequest {
         )
     }
 
+    /// Create a `tasks/sendSubscribe` request (P2-9 subscribe flow).
+    ///
+    /// The server creates the task (like `tasks/send`), acknowledges it in the
+    /// JSON-RPC result (the subscription confirmation), and then pushes
+    /// incremental [`TaskPushNotification`](TaskPushNotification) events over
+    /// the SSE/broadcast stream instead of requiring the client to poll.
+    pub fn send_subscribe(id: u64, message: &A2AMessage) -> Self {
+        Self::send_subscribe_with_context(id, message, None, None)
+    }
+
+    /// Create a `tasks/sendSubscribe` request carrying the optional subscription
+    /// `id` and `context_id` (V0.27, #94).
+    ///
+    /// `subscription_id` is a client-chosen handle for this subscription;
+    /// `context_id`, when set, is the context the server should echo on the
+    /// pushes it sends for this task so a client handling many subscriptions on
+    /// one stream can route each push to the right subscription. Both are
+    /// optional: the pre-0.27 server ignores them and the wire stays compatible.
+    pub fn send_subscribe_with_context(
+        id: u64,
+        message: &A2AMessage,
+        subscription_id: Option<String>,
+        context_id: Option<String>,
+    ) -> Self {
+        let message = serde_json::to_value(message)
+            .ok()
+            .unwrap_or(serde_json::Value::Null);
+        let mut params = serde_json::json!({ "message": message });
+        if let Some(subscription_id) = subscription_id {
+            params["id"] = serde_json::Value::String(subscription_id);
+        }
+        if let Some(context_id) = context_id {
+            params["contextId"] = serde_json::Value::String(context_id);
+        }
+        Self::new(id, "tasks/sendSubscribe", Some(params))
+    }
+
     /// Create a `tasks/runWorkflow` request (P2-8).
     ///
     /// The server executes the workflow's steps in order and returns the
@@ -449,14 +487,24 @@ pub enum TaskPushNotification {
         /// Optional error message (present when status is `failed`).
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Client-chosen subscription context (V0.27, #94). Echoed by the server
+        /// so a single-stream client can demultiplex pushes across several
+        /// subscriptions on one connection. Absent rows keep the pre-0.27 wire.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_id: Option<String>,
     },
-    /// A chunk of partial output while the task is still `working`.
+    /// A chunk of partial (or final) output while the task is `working` or
+    /// just completed (A2A v0.3 `TaskArtifactUpdateEvent`).
     #[serde(rename_all = "camelCase")]
     ArtifactUpdate {
         /// Task id.
         id: String,
-        /// Partial (or final) output.
-        artifact: A2ATaskResult,
+        /// Partial (or final) output, expressed as a multi-part artifact.
+        artifact: A2AArtifact,
+        /// Client-chosen subscription context (V0.27, #94); see the
+        /// `StatusUpdate` field of the same name.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_id: Option<String>,
     },
 }
 
@@ -467,6 +515,7 @@ impl TaskPushNotification {
             id: id.into(),
             status,
             error: None,
+            context_id: None,
         }
     }
 
@@ -480,14 +529,38 @@ impl TaskPushNotification {
             id: id.into(),
             status,
             error: Some(error.into()),
+            context_id: None,
         }
     }
 
     /// Create an artifact-update notification.
-    pub fn artifact(id: impl Into<String>, artifact: A2ATaskResult) -> Self {
+    pub fn artifact(id: impl Into<String>, artifact: A2AArtifact) -> Self {
         TaskPushNotification::ArtifactUpdate {
             id: id.into(),
             artifact,
+            context_id: None,
+        }
+    }
+
+    /// Attach a client-chosen subscription context, letting a single-stream
+    /// client route this push to the matching subscription (V0.27, #94).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn with_context_id(mut self, context_id: impl Into<String>) -> Self {
+        let context_id = context_id.into();
+        match &mut self {
+            TaskPushNotification::StatusUpdate { context_id: slot, .. }
+            | TaskPushNotification::ArtifactUpdate { context_id: slot, .. } => {
+                *slot = Some(context_id);
+            }
+        }
+        self
+    }
+
+    /// The client-chosen subscription context on this push (V0.27, #94), if any.
+    pub fn context_id(&self) -> Option<&str> {
+        match self {
+            TaskPushNotification::StatusUpdate { context_id, .. }
+            | TaskPushNotification::ArtifactUpdate { context_id, .. } => context_id.as_deref(),
         }
     }
 

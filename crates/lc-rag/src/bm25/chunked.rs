@@ -176,6 +176,11 @@ pub struct ChunkedBM25Index<S: ChunkedDocumentStoreTrait = lc_vector_stores::Chu
     /// of appending a duplicate that inflates `n_docs`, skews avgdl/IDF and
     /// makes the same parent surface multiple times in results.
     chunk_id_slots: HashMap<String, usize>,
+    /// 0.27.0 L278: reverse index — chunk slot → its owning `parent_id`.
+    /// Derived from the authoritative `parent_to_leaves` map so single-chunk
+    /// parent lookups are O(1) instead of scanning every parent's leaf list.
+    /// Not serialized (rebuilt on load) so the persisted format is unchanged.
+    chunk_to_parent: HashMap<usize, String>,
 }
 
 impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
@@ -200,6 +205,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
             tokenizer: Tokenizer::new(),
             config,
             chunk_id_slots: HashMap::new(),
+            chunk_to_parent: HashMap::new(),
         }
     }
 
@@ -251,6 +257,34 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
                     .or_default()
                     .push((slot, *freq));
             }
+            // §3.1 fix: keep parent linkage consistent on overwrite. Re-adding a
+            // known `chunk_id` with a *different* `parent_id` must migrate the
+            // slot from its old parent's leaf list to the new one. Previously
+            // the chunk silently stayed under its old parent while the new
+            // parent got an extra leaf — a merged bucket re-parented through a
+            // direct `add_chunk_index` could never detach from its prior parent.
+            // Same-parent re-ingest is a no-op here. Single pass so no double
+            // mutable borrow of `parent_to_leaves`.
+            {
+                let mut emptied: Vec<String> = Vec::new();
+                for (pid, leaves) in self.parent_to_leaves.iter_mut() {
+                    if pid.as_str() == parent_id.as_str() {
+                        continue;
+                    }
+                    leaves.retain(|&s| s != slot);
+                    if leaves.is_empty() {
+                        emptied.push(pid.clone());
+                    }
+                }
+                for pid in emptied {
+                    self.parent_to_leaves.remove(&pid);
+                }
+            }
+            let new_leaves = self.parent_to_leaves.entry(parent_id.clone()).or_default();
+            if !new_leaves.contains(&slot) {
+                new_leaves.push(slot);
+            }
+            self.rebuild_chunk_to_parent();
             self.update_avgdl();
             self.idf_cache.clear();
             return;
@@ -279,6 +313,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
 
         self.doc_lengths.push(doc_length);
         self.n_docs += 1;
+        self.rebuild_chunk_to_parent();
         self.update_avgdl();
         self.idf_cache.clear();
     }
@@ -351,9 +386,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
             .filter_map(|(pid, ls)| {
                 let mapped: Vec<usize> = ls
                     .into_iter()
-                    .filter_map(|s| {
-                        old_to_new.get(s).filter(|&&n| n != usize::MAX).copied()
-                    })
+                    .filter_map(|s| old_to_new.get(s).filter(|&&n| n != usize::MAX).copied())
                     .collect();
                 if mapped.is_empty() {
                     None
@@ -376,6 +409,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         self.parent_to_leaves = parent_to_leaves;
         self.chunk_id_slots = chunk_id_slots;
         self.n_docs = self.chunk_id_list.len();
+        self.rebuild_chunk_to_parent();
         self.update_avgdl();
         self.idf_cache.clear();
     }
@@ -397,6 +431,18 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         }
     }
 
+    /// Rebuilds the reverse index from the authoritative `parent_to_leaves`.
+    /// Call after any mutation that adds, migrates, remaps or removes parent
+    /// linkages so `chunk_to_parent` never goes stale.
+    fn rebuild_chunk_to_parent(&mut self) {
+        self.chunk_to_parent.clear();
+        for (parent_id, leaves) in &self.parent_to_leaves {
+            for &slot in leaves {
+                self.chunk_to_parent.insert(slot, parent_id.clone());
+            }
+        }
+    }
+
     fn compute_idf_for_term(&mut self, term: &str) -> f64 {
         if let Some(idf) = self.idf_cache.get(term) {
             return *idf;
@@ -411,6 +457,27 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
     /// Gets the chunk id by chunk index
     pub fn get_chunk_id(&self, chunk_idx: usize) -> Option<&String> {
         self.chunk_id_list.get(chunk_idx)
+    }
+
+    /// Reverse index: the `parent_id` owning the given chunk slot (O(1)).
+    ///
+    /// This is the chunk→parent back-link introduced in 0.27.0 (L278). The
+    /// forward `parent_to_leaves` map answers "which chunks belong to P", while
+    /// this answers "which parent does chunk C report to" without scanning
+    /// every parent's leaf list.
+    pub fn parent_of_chunk(&self, chunk_idx: usize) -> Option<&String> {
+        self.chunk_to_parent.get(&chunk_idx)
+    }
+
+    /// Reverse index by chunk id (O(1)).
+    pub fn parent_of_chunk_id(&self, chunk_id: &str) -> Option<&String> {
+        let slot = *self.chunk_id_slots.get(chunk_id)?;
+        self.chunk_to_parent.get(&slot)
+    }
+
+    /// All parent_ids currently owning at least one chunk.
+    pub fn parent_ids(&self) -> impl Iterator<Item = &String> {
+        self.chunk_to_parent.values()
     }
 
     /// Gets all chunk ids under the given Parent
@@ -452,6 +519,7 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
         self.n_docs = 0;
         self.idf_cache.clear();
         self.chunk_id_slots.clear();
+        self.chunk_to_parent.clear();
     }
 }
 
@@ -996,23 +1064,25 @@ impl ChunkedBM25Retriever<lc_vector_stores::ChunkedDocumentStore> {
             .map(|(idx, id)| (id.clone(), idx))
             .collect();
 
-        Ok(Self {
-            index: ChunkedBM25Index {
-                store,
-                chunk_id_list: data.chunk_id_list,
-                chunk_term_freqs: data.chunk_term_freqs,
-                term_index: data.term_index,
-                parent_to_leaves: data.parent_to_leaves,
-                doc_lengths: data.doc_lengths,
-                avgdl: data.avgdl,
-                n_docs: data.n_docs,
-                idf_cache: HashMap::new(),
-                params,
-                tokenizer: Tokenizer::new(),
-                config: data.config,
-                chunk_id_slots,
-            },
-        })
+        let mut index = ChunkedBM25Index {
+            store,
+            chunk_id_list: data.chunk_id_list,
+            chunk_term_freqs: data.chunk_term_freqs,
+            term_index: data.term_index,
+            parent_to_leaves: data.parent_to_leaves,
+            doc_lengths: data.doc_lengths,
+            avgdl: data.avgdl,
+            n_docs: data.n_docs,
+            idf_cache: HashMap::new(),
+            params,
+            tokenizer: Tokenizer::new(),
+            config: data.config,
+            chunk_id_slots,
+            chunk_to_parent: HashMap::new(),
+        };
+        // The reverse index is derived, not persisted — rebuild it on load.
+        index.rebuild_chunk_to_parent();
+        Ok(Self { index })
     }
 }
 
@@ -1030,9 +1100,8 @@ mod tests {
     /// index slots behind (inflated `n_docs` / stale `parent_to_leaves` / ghost hits).
     #[test]
     fn reingest_shrunk_parent_drops_phantom_slots() {
-        let mut retriever = ChunkedBM25Retriever::new(Arc::new(
-            lc_vector_stores::ChunkedDocumentStore::new(),
-        ));
+        let mut retriever =
+            ChunkedBM25Retriever::new(Arc::new(lc_vector_stores::ChunkedDocumentStore::new()));
         let pid = "parent-a";
 
         // Multi-segment parent with a distinctive trailing word.
@@ -1049,8 +1118,15 @@ mod tests {
             .blocking_get_chunks_for_parent(pid)
             .unwrap()
             .len();
-        assert!(big_count > 1, "expected a multi-segment parent, got {big_count}");
-        assert_eq!(retriever.len(), big_count, "index must hold exactly the parent's chunks");
+        assert!(
+            big_count > 1,
+            "expected a multi-segment parent, got {big_count}"
+        );
+        assert_eq!(
+            retriever.len(),
+            big_count,
+            "index must hold exactly the parent's chunks"
+        );
 
         // Re-ingest the same parent with a single-segment content.
         retriever
@@ -1086,9 +1162,8 @@ mod tests {
     /// and the old terms' postings are gone.
     #[test]
     fn overwrite_chunk_reindexes_new_tokens() {
-        let mut r = ChunkedBM25Retriever::new(Arc::new(
-            lc_vector_stores::ChunkedDocumentStore::new(),
-        ));
+        let mut r =
+            ChunkedBM25Retriever::new(Arc::new(lc_vector_stores::ChunkedDocumentStore::new()));
         r.add_chunk_index("c::0", "p", "alpha beta");
         r.add_chunk_index("c::0", "p", "gamma delta");
 
@@ -1110,5 +1185,123 @@ mod tests {
             "stale 'alpha' postings must be gone after overwrite"
         );
         assert!(!index.term_index.contains_key("beta"));
+    }
+
+    /// §3.1: re-adding a known `chunk_id` with a *different* parent must migrate
+    /// the slot from its old parent's leaf list to the new parent (the chunk was
+    /// previously stuck under its old parent, so a re-parented chunk could never
+    /// detach).
+    #[test]
+    fn overwrite_chunk_migrates_parent_link() {
+        let mut r =
+            ChunkedBM25Retriever::new(Arc::new(lc_vector_stores::ChunkedDocumentStore::new()));
+        r.add_chunk_index("c0", "parent-a", "alpha beta");
+        let slot = *r.index.chunk_id_slots.get("c0").unwrap();
+
+        // Re-adding the SAME parent keeps it in place (no spurious drift).
+        r.add_chunk_index("c0", "parent-a", "alpha beta");
+        assert!(
+            r.index
+                .parent_to_leaves
+                .get("parent-a")
+                .map(|v| v.contains(&slot))
+                .unwrap_or(false),
+            "same-parent re-ingest must keep the slot under parent-a"
+        );
+
+        // Re-adding under a DIFFERENT parent migrates the slot.
+        r.add_chunk_index("c0", "parent-b", "gamma delta");
+        let old_still_holds = r
+            .index
+            .parent_to_leaves
+            .get("parent-a")
+            .map(|v| v.contains(&slot))
+            .unwrap_or(false);
+        assert!(
+            !old_still_holds,
+            "§3.1: slot must be detached from the old parent after re-parenting"
+        );
+        assert!(
+            r.index
+                .parent_to_leaves
+                .get("parent-b")
+                .map(|v| v.contains(&slot))
+                .unwrap_or(false),
+            "§3.1: slot must attach to the new parent after re-parenting"
+        );
+        assert_eq!(
+            r.index
+                .parent_to_leaves
+                .values()
+                .filter(|v| v.contains(&slot))
+                .count(),
+            1,
+            "§3.1: a slot must belong to exactly one parent"
+        );
+    }
+
+    /// L278: the chunk→parent reverse index answers single-chunk parent lookups
+    /// and stays consistent across add, re-parent migrate and parent removal.
+    #[test]
+    fn reverse_chunk_to_parent_index() {
+        let mut r =
+            ChunkedBM25Retriever::new(Arc::new(lc_vector_stores::ChunkedDocumentStore::new()));
+
+        r.add_chunk_index("a0", "doc-a", "alpha beta");
+        r.add_chunk_index("a1", "doc-a", "gamma delta");
+        r.add_chunk_index("b0", "doc-b", "epsilon zeta");
+
+        // Reverse lookup by chunk id resolves the owning parent (O(1)).
+        assert_eq!(
+            r.index.parent_of_chunk_id("a0").map(String::as_str),
+            Some("doc-a")
+        );
+        assert_eq!(
+            r.index.parent_of_chunk_id("a1").map(String::as_str),
+            Some("doc-a")
+        );
+        assert_eq!(
+            r.index.parent_of_chunk_id("b0").map(String::as_str),
+            Some("doc-b")
+        );
+        assert_eq!(r.index.parent_of_chunk_id("missing"), None);
+
+        // Reverse lookup by slot agrees with the forward map's slots.
+        for (pid, leaves) in &r.index.parent_to_leaves {
+            for &slot in leaves {
+                assert_eq!(
+                    r.index.parent_of_chunk(slot).map(String::as_str),
+                    Some(pid.as_str()),
+                    "slot {slot} must reverse-map to {pid}"
+                );
+            }
+        }
+
+        // Re-parenting a chunk migrates the reverse entry too.
+        let a0_slot = *r.index.chunk_id_slots.get("a0").unwrap();
+        r.add_chunk_index("a0", "doc-b", "alpha beta");
+        assert_eq!(
+            r.index.parent_of_chunk(a0_slot).map(String::as_str),
+            Some("doc-b"),
+            "migrated chunk must reverse-map to its new parent"
+        );
+
+        // parent_ids exposes every distinct owning parent.
+        let mut pid_set: std::collections::HashSet<String> =
+            r.index.parent_ids().cloned().collect();
+        pid_set.insert("doc-b".to_string());
+        assert_eq!(
+            pid_set.len(),
+            2,
+            "expected exactly doc-a and doc-b among parents"
+        );
+
+        // Removing a parent drops its slots from the reverse index.
+        r.index.remove_parent_from_index("doc-a");
+        for slot in 0..r.index.n_docs() {
+            let pid = r.index.parent_of_chunk(slot);
+            // Only doc-b's slot survived removal.
+            assert_eq!(pid.map(String::as_str), Some("doc-b"));
+        }
     }
 }

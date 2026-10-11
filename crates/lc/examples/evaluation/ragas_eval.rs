@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("EVAL_EMBED_MODEL").unwrap_or_else(|_| "text-embedding-ada-002".into());
 
     let chat_config = OpenAIConfig {
-        api_key: api_key.clone(),
+        api_key: api_key.clone().into(),
         base_url: base_url.clone(),
         model: judge_model,
         ..Default::default()

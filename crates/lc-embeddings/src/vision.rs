@@ -16,6 +16,7 @@
 //! concrete backends so cosine/dot-product results stay comparable across
 //! providers.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -70,15 +71,25 @@ impl ImageInput {
     /// would route caller-supplied URLs through embedding hosts without the
     /// SSRF guard. Callers that need URL ingestion should resolve the image
     /// themselves (or use a backend with a reference field, like DashScope).
-    pub(crate) fn inline_parts(&self) -> Result<(String, String), EmbeddingError> {
+    ///
+    /// Returns [`Cow`]s: a caller-supplied `Base64`/`Url`/`DataUri` payload is
+    /// **borrowed**, not copied. Base64 image payloads are megabyte-scale and
+    /// every caller only serializes them into a request body, so the old
+    /// `String` return was a full copy of the image per embed call (v0.27.0 T3
+    /// zero-copy). Only a data URI that has to be *split* into its two parts
+    /// allocates.
+    pub(crate) fn inline_parts(&self) -> Result<(Cow<'_, str>, Cow<'_, str>), EmbeddingError> {
         match self {
             ImageInput::Base64 { data, mime_type } => {
                 Self::validate_inline(data, mime_type)?;
-                Ok((data.clone(), mime_type.clone()))
+                Ok((
+                    Cow::Borrowed(data.as_str()),
+                    Cow::Borrowed(mime_type.as_str()),
+                ))
             }
             ImageInput::DataUri(uri) => {
                 let (mime, data) = parse_data_uri(uri)?;
-                Ok((data.to_string(), mime.to_string()))
+                Ok((Cow::Owned(data.to_string()), Cow::Owned(mime.to_string())))
             }
             ImageInput::Url(url) => Err(EmbeddingError::Config(format!(
                 "this vision embedding backend requires inline image bytes, got a URL: {url}"
@@ -88,21 +99,24 @@ impl ImageInput {
 
     /// Returns the reference string for a backend `image` field (DashScope):
     /// URLs pass through, base64 inputs are rendered as data URIs.
-    pub(crate) fn reference(&self) -> Result<String, EmbeddingError> {
+    ///
+    /// Borrows the stored URL / data URI instead of copying it (a data URI can
+    /// be megabytes); only the base64 → data-URI rendering allocates.
+    pub(crate) fn reference(&self) -> Result<Cow<'_, str>, EmbeddingError> {
         match self {
             ImageInput::Url(url) => {
                 if url.trim().is_empty() {
                     return Err(EmbeddingError::EmptyInput);
                 }
-                Ok(url.clone())
+                Ok(Cow::Borrowed(url.as_str()))
             }
             ImageInput::DataUri(uri) => {
                 let _ = parse_data_uri(uri)?;
-                Ok(uri.clone())
+                Ok(Cow::Borrowed(uri.as_str()))
             }
             ImageInput::Base64 { data, mime_type } => {
                 Self::validate_inline(data, mime_type)?;
-                Ok(format!("data:{mime_type};base64,{data}"))
+                Ok(Cow::Owned(format!("data:{mime_type};base64,{data}")))
             }
         }
     }
@@ -334,25 +348,45 @@ mod tests {
         assert!(ImageInput::from_url("https://example.com/a.png")
             .inline_parts()
             .is_err());
-        let (data, mime) = ImageInput::from_base64("aW1n", "image/png")
-            .inline_parts()
-            .unwrap();
+        let base64 = ImageInput::from_base64("aW1n", "image/png");
+        let (data, mime) = base64.inline_parts().unwrap();
+        assert_eq!(data, "aW1n");
+        assert_eq!(mime, "image/png");
+    }
+
+    /// v0.27.0 T3 (zero-copy): a caller-supplied base64 payload is *borrowed* —
+    /// the multi-megabyte image is not copied per embed call — while a data URI
+    /// (which must be split) is materialized.
+    #[test]
+    fn inline_parts_borrows_caller_payloads() {
+        let base64 = ImageInput::from_base64("aW1n", "image/png");
+        let (data, mime) = base64.inline_parts().unwrap();
+        assert!(
+            matches!(data, Cow::Borrowed(_)),
+            "base64 payload must not be copied"
+        );
+        assert!(matches!(mime, Cow::Borrowed(_)), "mime must not be copied");
+
+        let uri = ImageInput::from_data_uri("data:image/png;base64,aW1n");
+        let (data, mime) = uri.inline_parts().unwrap();
+        assert!(matches!(data, Cow::Owned(_)));
+        assert!(matches!(mime, Cow::Owned(_)));
         assert_eq!(data, "aW1n");
         assert_eq!(mime, "image/png");
     }
 
     #[test]
     fn reference_renders_base64_as_data_uri() {
-        let reference = ImageInput::from_base64("aW1n", "image/png")
-            .reference()
-            .unwrap();
-        assert_eq!(reference, "data:image/png;base64,aW1n");
-        assert_eq!(
-            ImageInput::from_url("https://example.com/a.png")
-                .reference()
-                .unwrap(),
-            "https://example.com/a.png"
-        );
+        let base64 = ImageInput::from_base64("aW1n", "image/png");
+        assert_eq!(base64.reference().unwrap(), "data:image/png;base64,aW1n");
+
+        let url = ImageInput::from_url("https://example.com/a.png");
+        assert_eq!(url.reference().unwrap(), "https://example.com/a.png");
+
+        // URLs / data URIs are handed over by reference, not copied.
+        assert!(matches!(url.reference().unwrap(), Cow::Borrowed(_)));
+        let uri = ImageInput::from_data_uri("data:image/png;base64,aW1n");
+        assert!(matches!(uri.reference().unwrap(), Cow::Borrowed(_)));
     }
 
     #[tokio::test]

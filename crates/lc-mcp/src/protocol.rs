@@ -132,6 +132,126 @@ pub struct MrtrAnswer {
     pub value: String,
 }
 
+/// Lifecycle state of one message round trip that may need several
+/// server→client→server hops before a final answer (the stateless `_meta`
+/// `requestState` continuation).
+///
+/// Mirrors the A2A task-status machine: illegal transitions are rejected up
+/// front via [`MrtrRoundTripState::can_transition_to`], so a caller cannot
+/// strand a half-answered MRTR exchange (resume/restart after completion,
+/// double-resend, etc.) in an invalid state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrtrRoundTripState {
+    /// Request sent / in flight; awaiting the server's first response.
+    Pending,
+    /// The server answered `input_required`; the client must supply answers
+    /// (carried back via [`RequestMeta::request_state`]) and resend before the
+    /// exchange can finish.
+    AwaitingInput,
+    /// A final response was received (success or terminal error); the round
+    /// trip is over and cannot be resumed or restarted.
+    Resolved,
+}
+
+impl MrtrRoundTripState {
+    /// Whether a transition from `self` to `next` is legal.
+    ///
+    /// Legal transitions are only forward hops that a real MRTR exchange takes:
+    /// - `Pending` → `AwaitingInput` (the server asked for input) or `Resolved` (the server answered)
+    /// - `AwaitingInput` → `Pending` (resent with answers) or `Resolved` (terminal / client stopped)
+    ///
+    /// Everything else — self-loops, any `Resolved` outgoing edge, and jumping
+    /// straight to `AwaitingInput` from `AwaitingInput` — is illegal.
+    pub fn can_transition_to(&self, next: MrtrRoundTripState) -> bool {
+        use MrtrRoundTripState::{AwaitingInput, Pending, Resolved};
+        matches!(
+            (self, next),
+            (Pending, AwaitingInput)
+                | (Pending, Resolved)
+                | (AwaitingInput, Pending)
+                | (AwaitingInput, Resolved)
+        )
+    }
+}
+
+/// A concrete MRTR exchange being tracked: its current [`MrtrRoundTripState`]
+/// plus the opaque continuation token the client must echo on a resent request.
+///
+/// State changes go through the transition methods, which first check
+/// [`MrtrRoundTripState::can_transition_to`] and leave the tracker untouched on
+/// an illegal transition (returning `false`), so callers cannot accidentally
+/// advance a finished round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MrtrRoundTrip {
+    /// Current phase of the exchange.
+    state: MrtrRoundTripState,
+    /// Opaque continuation token (`requestState`); present while
+    /// [`MrtrRoundTripState::AwaitingInput`], and kept through resends so the
+    /// server can tie the resent request to this exchange.
+    request_state: Option<String>,
+}
+
+impl MrtrRoundTrip {
+    /// Starts a new round trip in [`MrtrRoundTripState::Pending`] with no token.
+    pub fn new() -> Self {
+        Self {
+            state: MrtrRoundTripState::Pending,
+            request_state: None,
+        }
+    }
+
+    /// The current phase.
+    pub fn state(&self) -> MrtrRoundTripState {
+        self.state
+    }
+
+    /// The opaque continuation token, if one has been issued.
+    pub fn request_state(&self) -> Option<&str> {
+        self.request_state.as_deref()
+    }
+
+    /// `Pending` → `AwaitingInput`, recording the `requestState` the server issued.
+    /// Returns `false` (state unchanged) when the exchange is not `Pending`.
+    pub fn required_input(&mut self, request_state: impl Into<String>) -> bool {
+        if !self
+            .state
+            .can_transition_to(MrtrRoundTripState::AwaitingInput)
+        {
+            return false;
+        }
+        self.state = MrtrRoundTripState::AwaitingInput;
+        self.request_state = Some(request_state.into());
+        true
+    }
+
+    /// `AwaitingInput` → `Pending`: the request is resent with the client's
+    /// answers (the token stays set for the server to correlate).
+    /// Returns `false` (state unchanged) when the exchange is not `AwaitingInput`.
+    pub fn resend(&mut self) -> bool {
+        if !self.state.can_transition_to(MrtrRoundTripState::Pending) {
+            return false;
+        }
+        self.state = MrtrRoundTripState::Pending;
+        true
+    }
+
+    /// `Pending` or `AwaitingInput` → `Resolved`: a final response arrived and
+    /// the round trip is over. Returns `false` (state unchanged) if already resolved.
+    pub fn resolve(&mut self) -> bool {
+        if !self.state.can_transition_to(MrtrRoundTripState::Resolved) {
+            return false;
+        }
+        self.state = MrtrRoundTripState::Resolved;
+        true
+    }
+}
+
+impl Default for MrtrRoundTrip {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Protocol version negotiation policy (P2-10): what to do when a server declares a version outside the support list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VersionPolicy {
@@ -540,6 +660,113 @@ mod tests {
     fn session_lost_error_class() {
         assert!(MCPError::session_lost().is_session_lost());
         assert!(!MCPError::connection_lost().is_session_lost());
+    }
+
+    // ------------------------------------------------------------------
+    // MRTR round-trip state machine (2026-07-28 stateless track) — the A2A
+    // `can_transition_to` table test: every ordered pair is asserted explicitly.
+    // ------------------------------------------------------------------
+
+    use MrtrRoundTripState::{AwaitingInput, Pending, Resolved};
+
+    #[test]
+    fn mrtr_transition_table_is_exhaustive() {
+        let all = [Pending, AwaitingInput, Resolved];
+        // Exactly the legal forward hops a real MRTR exchange takes:
+        // Pending→AwaitingInput, Pending→Resolved,
+        // AwaitingInput→Pending, AwaitingInput→Resolved.
+        let legal: &[(MrtrRoundTripState, MrtrRoundTripState)] = &[
+            (Pending, AwaitingInput),
+            (Pending, Resolved),
+            (AwaitingInput, Pending),
+            (AwaitingInput, Resolved),
+        ];
+        for from in all {
+            for to in all {
+                let expect = legal.contains(&(from, to));
+                assert_eq!(
+                    from.can_transition_to(to),
+                    expect,
+                    "transition {from:?} -> {to:?} should be {}",
+                    if expect { "legal" } else { "illegal" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mrtr_no_self_loops_or_resumed_resolved() {
+        // Self-loops are illegal…
+        for s in [Pending, AwaitingInput, Resolved] {
+            assert!(!s.can_transition_to(s), "{s:?} -> {s:?} must be illegal");
+        }
+        // …and a resolved round trip is terminal (no outgoing edges at all).
+        assert!(!Resolved.can_transition_to(Pending));
+        assert!(!Resolved.can_transition_to(AwaitingInput));
+    }
+
+    #[test]
+    fn mrtr_round_trip_lifecycle() {
+        let mut rt = MrtrRoundTrip::new();
+        assert_eq!(rt.state(), Pending);
+        assert!(rt.request_state().is_none());
+
+        // Server asks for input: Pending -> AwaitingInput, token recorded.
+        assert!(rt.required_input("tok-abc"));
+        assert_eq!(rt.state(), AwaitingInput);
+        assert_eq!(rt.request_state(), Some("tok-abc"));
+
+        // Resend with answers: AwaitingInput -> Pending; token is kept for the
+        // server to correlate the resent request.
+        assert!(rt.resend());
+        assert_eq!(rt.state(), Pending);
+        assert_eq!(rt.request_state(), Some("tok-abc"));
+
+        // Final response: Pending -> Resolved; the exchange is over.
+        assert!(rt.resolve());
+        assert_eq!(rt.state(), Resolved);
+    }
+
+    #[test]
+    fn mrtr_illegal_transitions_leave_state_untouched() {
+        // required_input is only legal from Pending.
+        let mut rt = MrtrRoundTrip::new();
+        rt.required_input("tok");
+        assert!(
+            !rt.required_input("tok2"),
+            "AwaitingInput -> AwaitingInput illegal"
+        );
+        assert_eq!(rt.state(), AwaitingInput);
+        assert_eq!(
+            rt.request_state(),
+            Some("tok"),
+            "token must not be overwritten"
+        );
+
+        // resend is only legal from AwaitingInput.
+        let mut fresh = MrtrRoundTrip::new();
+        assert!(!fresh.resend(), "Pending -> Pending illegal");
+        assert_eq!(fresh.state(), Pending);
+
+        // resolve is terminal: nothing advances a resolved round trip, and the
+        // token survives a completed exchange for diagnostics.
+        let mut done = MrtrRoundTrip::new();
+        done.required_input("tok");
+        done.resolve();
+        assert_eq!(done.state(), Resolved);
+        assert!(!done.required_input("tok2"));
+        assert!(!done.resend());
+        assert!(!done.resolve());
+        assert_eq!(done.request_state(), Some("tok"));
+    }
+
+    #[test]
+    fn mrtr_required_input_then_resolve() {
+        // AwaitingInput -> Resolved (client stops / terminal) is a legal hop.
+        let mut rt = MrtrRoundTrip::new();
+        rt.required_input("tok");
+        assert!(rt.resolve());
+        assert_eq!(rt.state(), Resolved);
     }
 
     #[test]

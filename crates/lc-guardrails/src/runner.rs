@@ -62,7 +62,11 @@ impl GuardrailRunner {
     }
 
     /// Records a violation: writes to the bounded shared log + (optional) async audit persistence (P1-2/P1-7).
-    pub(crate) async fn record_violation(&mut self, violation: GuardrailViolation) {
+    ///
+    /// Takes `&self` (not `&mut self`): the mutable endpoint is the `Arc<Mutex>` violation log,
+    /// not the runner itself. That lets the validation loops borrow `self.config.<list>`
+    /// immutably while recording — no per-list `.clone()` workaround is needed.
+    pub(crate) async fn record_violation(&self, violation: GuardrailViolation) {
         {
             let mut violations = self.violations.lock().unwrap_or_else(|e| e.into_inner());
             violations.push(violation.clone());
@@ -81,9 +85,7 @@ impl GuardrailRunner {
     /// On blocking, returns [`GuardrailError::Blocked`] (the input side has no partial/suggestion).
     pub async fn validate_input(&mut self, input: &str) -> Result<(), GuardrailError> {
         let mut first_block: Option<String> = None;
-        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
-        let guardrails = self.config.input_guardrails.clone();
-        for g in &guardrails {
+        for g in &self.config.input_guardrails {
             // the input-side result type has no `Modify`, so a rewritten result cannot be silently dropped here.
             if let InputGuardrailResult::Block { reason } = g.validate(input).await {
                 self.record_violation(GuardrailViolation {
@@ -118,9 +120,7 @@ impl GuardrailRunner {
     pub async fn validate_output(&mut self, output: &str) -> OutputValidation {
         let mut current = output.to_string();
         let mut first_block: Option<String> = None;
-        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
-        let guardrails = self.config.output_guardrails.clone();
-        for g in &guardrails {
+        for g in &self.config.output_guardrails {
             match g.validate(&current).await {
                 OutputGuardrailResult::Pass => {}
                 OutputGuardrailResult::Block { reason } => {
@@ -166,11 +166,18 @@ impl GuardrailRunner {
     /// accumulates the true output regardless of whether an earlier rail rewrote the chunk. The
     /// rewritten form is this chain's *return value*, not another view the next rail should see.
     /// The second re-check of the full output is handled by [`GuardrailRunner::validate_output`] (P1-4).
+    ///
+    /// # Detect, then rewrite
+    ///
+    /// A rail's [`ChunkAction::Block`] is a *detection*, not necessarily the end of the chunk:
+    /// before the block is returned, the chain is offered a phase-two rewrite
+    /// ([`StreamingOutputGuardrail::rewrite`](crate::guardrail::StreamingOutputGuardrail::rewrite))
+    /// with the detection in hand. If a rail produces replacement text, that text is emitted,
+    /// the intervention is audited with the detection's reason, and the remaining rails keep
+    /// running; otherwise the block stands, carrying the reason the detecting rail gave.
     pub async fn validate_stream_chunk(&mut self, ctx: &ChunkContext<'_>) -> ChunkAction {
         let mut rewritten: Option<String> = None;
-        // clone the list: avoid calling `&mut self` methods while holding a `&self.config` borrow.
-        let guardrails = self.config.streaming_guardrails.clone();
-        for g in &guardrails {
+        for g in &self.config.streaming_guardrails {
             let probe = ChunkContext {
                 token: ctx.token,
                 window: ctx.window,
@@ -193,14 +200,29 @@ impl GuardrailRunner {
                     }
                     rewritten = Some(new_value);
                 }
-                ChunkAction::Block => {
-                    self.record_violation(GuardrailViolation {
-                        guardrail_name: g.name().to_string(),
-                        stage: "stream".to_string(),
-                        reason: "chunk blocked".to_string(),
-                    })
-                    .await;
-                    return ChunkAction::Block;
+                ChunkAction::Block { reason } => {
+                    match self.rewrite_blocked(ctx, g.name(), &reason).await {
+                        Some(new_value) => {
+                            // Detection + repair, both audited: the reason is what makes the
+                            // intervention reviewable after the fact.
+                            self.record_violation(GuardrailViolation {
+                                guardrail_name: g.name().to_string(),
+                                stage: "stream".to_string(),
+                                reason: format!("chunk rewritten after detection: {reason}"),
+                            })
+                            .await;
+                            rewritten = Some(new_value);
+                        }
+                        None => {
+                            self.record_violation(GuardrailViolation {
+                                guardrail_name: g.name().to_string(),
+                                stage: "stream".to_string(),
+                                reason: reason.clone(),
+                            })
+                            .await;
+                            return ChunkAction::Block { reason };
+                        }
+                    }
                 }
             }
         }
@@ -208,6 +230,33 @@ impl GuardrailRunner {
             Some(new_value) => ChunkAction::Replace(new_value),
             None => ChunkAction::Pass,
         }
+    }
+
+    /// Phase two of the streaming detect-then-rewrite protocol: offers a blocked chunk to every
+    /// rail in the chain and returns the first replacement text produced.
+    ///
+    /// The whole chain is asked, not just the detecting rail, so a dedicated rewriter can repair
+    /// what a detector found. `detector` names the rail whose phase-one check blocked the chunk —
+    /// it is what a rewriter keys on when it only handles certain violations, and it is *not* the
+    /// rail being asked (which may be a different rail entirely).
+    async fn rewrite_blocked(
+        &self,
+        ctx: &ChunkContext<'_>,
+        detector: &str,
+        reason: &str,
+    ) -> Option<String> {
+        for g in &self.config.streaming_guardrails {
+            let req = crate::guardrail::RewriteRequest {
+                guardrail: detector,
+                reason,
+                token: ctx.token,
+                full: ctx.full,
+            };
+            if let Some(text) = g.rewrite(&req).await {
+                return Some(text);
+            }
+        }
+        None
     }
 
     /// Drains stateful streaming rails at end of stream: hold-back buffers (e.g. PII redaction
@@ -218,9 +267,8 @@ impl GuardrailRunner {
     /// ([`FlushOutput::Rewritten`](crate::guardrail::FlushOutput::Rewritten)) is also recorded
     /// as an intervention.
     pub async fn flush_stream(&mut self) -> Vec<String> {
-        let guardrails = self.config.streaming_guardrails.clone();
         let mut released = Vec::new();
-        for g in &guardrails {
+        for g in &self.config.streaming_guardrails {
             let output = g.flush().await;
             if output.is_rewrite() {
                 self.record_violation(GuardrailViolation {
@@ -244,8 +292,7 @@ impl GuardrailRunner {
     /// streams. Stateful rails (hold-back redaction) must not carry one stream's buffer into the
     /// next; call this once per `GuardedAgent::invoke_stream`.
     pub fn reset_streaming(&self) {
-        let guardrails = self.config.streaming_guardrails.clone();
-        for g in &guardrails {
+        for g in &self.config.streaming_guardrails {
             g.reset();
         }
     }
@@ -273,7 +320,9 @@ impl GuardrailRunner {
 mod tests {
     use super::*;
     use crate::audit::AuditSink;
-    use crate::guardrail::{InputGuardrail, OutputGuardrail, StreamingOutputGuardrail};
+    use crate::guardrail::{
+        InputGuardrail, OutputGuardrail, RewriteRequest, StreamingOutputGuardrail,
+    };
     use async_trait::async_trait;
     use std::sync::Arc;
 
@@ -343,9 +392,49 @@ mod tests {
         }
         async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
             if ctx.window.contains("SECRET") {
-                ChunkAction::Block
+                ChunkAction::Block {
+                    reason: "window matched the blocked keyword `SECRET`".to_string(),
+                }
             } else {
                 ChunkAction::Pass
+            }
+        }
+    }
+
+    /// Detector-only rail: reports a violation and leaves the repair to a phase-two rail.
+    struct DetectorOnly;
+    #[async_trait]
+    impl StreamingOutputGuardrail for DetectorOnly {
+        fn name(&self) -> &str {
+            "DetectorOnly"
+        }
+        async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
+            if ctx.window.contains("SECRET") {
+                ChunkAction::Block {
+                    reason: "detected a secret".to_string(),
+                }
+            } else {
+                ChunkAction::Pass
+            }
+        }
+    }
+
+    /// Phase-two rewriter: repairs only what `DetectorOnly` reports, keyed on the detector's
+    /// name so the request's provenance fields are exercised.
+    struct SecretRewriter;
+    #[async_trait]
+    impl StreamingOutputGuardrail for SecretRewriter {
+        fn name(&self) -> &str {
+            "SecretRewriter"
+        }
+        async fn validate_chunk(&self, _ctx: &ChunkContext<'_>) -> ChunkAction {
+            ChunkAction::Pass
+        }
+        async fn rewrite(&self, req: &RewriteRequest<'_>) -> Option<String> {
+            if req.guardrail == "DetectorOnly" && req.reason.contains("secret") {
+                Some(req.token.replace("SECRET", "[REDACTED]"))
+            } else {
+                None
             }
         }
     }
@@ -478,8 +567,78 @@ mod tests {
             window: "x SECRET y",
             full: "x SECRET y",
         };
-        assert_eq!(runner.validate_stream_chunk(&ctx).await, ChunkAction::Block);
-        assert_eq!(runner.violations().len(), 1);
+        match runner.validate_stream_chunk(&ctx).await {
+            // the detecting rail's reason is carried, not replaced by a generic string
+            ChunkAction::Block { reason } => assert!(reason.contains("SECRET"), "got: {reason}"),
+            other => panic!("应为 Block, 实际: {other:?}"),
+        }
+        let violations = runner.violations();
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].reason.contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn test_runner_stream_block_is_rewritten_by_phase_two_rail() {
+        // detect-then-rewrite: a detector-only rail blocks, and a separate rail repairs it.
+        let config = GuardrailsConfig::new()
+            .with_streaming(Arc::new(DetectorOnly))
+            .with_streaming(Arc::new(SecretRewriter));
+        let mut runner = GuardrailRunner::new(config);
+        let ctx = ChunkContext {
+            token: "a SECRET b",
+            window: "a SECRET b",
+            full: "a SECRET b",
+        };
+        match runner.validate_stream_chunk(&ctx).await {
+            ChunkAction::Replace(v) => assert_eq!(v, "a [REDACTED] b"),
+            other => panic!("应为 Replace, 实际: {other:?}"),
+        }
+        // the intervention is auditable with the detection that triggered it
+        let violations = runner.violations();
+        assert_eq!(violations.len(), 1);
+        assert!(
+            violations[0].reason.contains("rewritten after detection")
+                && violations[0].reason.contains("detected a secret"),
+            "got: {:?}",
+            violations[0].reason
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runner_stream_block_stands_when_no_rail_rewrites() {
+        // A detector whose name the rewriter does not recognise: no rail claims the rewrite, so
+        // the block must stand rather than be silently repaired by an unrelated rail.
+        struct OtherDetector;
+        #[async_trait]
+        impl StreamingOutputGuardrail for OtherDetector {
+            fn name(&self) -> &str {
+                "OtherDetector"
+            }
+            async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction {
+                if ctx.window.contains("SECRET") {
+                    ChunkAction::Block {
+                        reason: "other detector fired".to_string(),
+                    }
+                } else {
+                    ChunkAction::Pass
+                }
+            }
+        }
+
+        let config = GuardrailsConfig::new()
+            .with_streaming(Arc::new(OtherDetector))
+            .with_streaming(Arc::new(SecretRewriter));
+        let mut runner = GuardrailRunner::new(config);
+        let ctx = ChunkContext {
+            token: "a SECRET b",
+            window: "a SECRET b",
+            full: "a SECRET b",
+        };
+        match runner.validate_stream_chunk(&ctx).await {
+            ChunkAction::Block { reason } => assert_eq!(reason, "other detector fired"),
+            other => panic!("应为 Block, 实际: {other:?}"),
+        }
+        assert_eq!(runner.violations()[0].reason, "other detector fired");
     }
 
     #[tokio::test]
@@ -502,7 +661,7 @@ mod tests {
     async fn test_runner_violations_bounded() {
         // beyond MAX_VIOLATIONS the oldest is dropped, keeping it bounded (P1-2).
         let config = GuardrailsConfig::new();
-        let mut runner = GuardrailRunner::new(config);
+        let runner = GuardrailRunner::new(config);
         for i in 0..(MAX_VIOLATIONS + 5) {
             runner
                 .record_violation(GuardrailViolation {

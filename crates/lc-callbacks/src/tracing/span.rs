@@ -143,10 +143,33 @@ pub struct TraceNode {
     pub children: Vec<TraceNode>,
 }
 
+impl TraceNode {
+    /// Flatten the tree into a depth-first pre-order list of spans (root first).
+    ///
+    /// Feeds batch export: one [`TraceNode`] becomes an ordered span list that a
+    /// sink can replay as a whole trace or index per span. The order is the
+    /// operation order — a parent always precedes its descendants.
+    pub fn flatten(&self) -> Vec<TraceSpan> {
+        let mut out = Vec::with_capacity(1 + self.children.len());
+        self.flatten_into(&mut out);
+        out
+    }
+
+    fn flatten_into(&self, out: &mut Vec<TraceSpan>) {
+        out.push(self.span.clone());
+        for child in &self.children {
+            child.flatten_into(out);
+        }
+    }
+}
+
 /// Estimates the USD cost of a single span from its token usage and gen_ai model.
 ///
-/// Returns `None` when the span has no tokens or no recognizable model.
-fn estimate_span_cost(span: &TraceSpan) -> Option<f64> {
+/// Returns `None` when the span has no tokens or no recognizable model. Single
+/// cost-estimation path (§4 lc-callbacks): [`aggregate_cost`] and
+/// [`crate::tracing::tracer::SpanGuard`] both delegate here instead of re-deriving
+/// tokens + model selection.
+pub(crate) fn estimate_span_cost(span: &TraceSpan) -> Option<f64> {
     let tokens = span.tokens.as_ref()?;
     let model = span
         .gen_ai_request_model

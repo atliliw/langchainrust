@@ -12,8 +12,11 @@
 //! Multimodal (image+text shared space) backends live behind
 //! [`VisionEmbeddings`]: Cohere Embed v4 and DashScope `multimodal-embedding-v1`.
 
+pub mod cached;
+pub mod catalog;
 mod cohere;
 mod deepseek;
+mod limiter;
 mod local;
 mod mock;
 mod openai;
@@ -34,11 +37,18 @@ mod fastembed_emb;
 #[cfg(feature = "local-candle")]
 mod candle_emb;
 
+pub use cached::CachingEmbeddings;
+// v0.27.0 T3: persistent local model catalog (pre-download / offline staging).
+pub use catalog::{
+    file_checksum, LocalOnlyFetcher, ModelCatalog, ModelEntry, ModelFetcher, ModelLayout,
+    ModelSource, ModelSpec, PrefetchReport, CATALOG_PATH_ENV,
+};
 pub use cohere::{
     CohereEmbedInputType, CohereEmbeddings, CohereEmbeddingsConfig, COHERE_EMBED_BASE_URL,
     COHERE_EMBED_MODEL,
 };
 pub use deepseek::{DeepSeekEmbeddings, DeepSeekEmbeddingsConfig, DEEPSEEK_EMBED_MODEL};
+pub use limiter::TokenBucket;
 pub use local::BagOfWordsEmbeddings;
 // As of 1.0, `LocalEmbeddings` is not available without the `local-embeddings` feature (the
 // old fallback alias was removed); users must explicitly choose — `BagOfWordsEmbeddings` or
@@ -126,6 +136,26 @@ pub enum EmbeddingError {
     /// P0-1: reject silently empty vectors — a missing vector is an explicit error, not a zero vector.
     #[error("Embedding batch contains an empty vector (provider returned fewer embeddings than requested)")]
     EmptyVectorInBatch,
+
+    /// A model name is not registered in the [`catalog::ModelCatalog`].
+    ///
+    /// v0.27.0 T3: an unknown name is a configuration bug, never a cue to fall
+    /// back to a different model silently.
+    #[error("model '{name}' is not registered in the model catalog")]
+    ModelNotFound {
+        /// The name that was looked up.
+        name: String,
+    },
+
+    /// A model is registered in the [`catalog::ModelCatalog`] but its files are
+    /// not all present on disk.
+    #[error("model '{name}' is registered but not ready: missing {missing:?}")]
+    ModelNotReady {
+        /// The name that was looked up.
+        name: String,
+        /// Paths declared by the entry's layout that do not exist.
+        missing: Vec<String>,
+    },
 }
 
 /// Embedding model trait
@@ -203,6 +233,34 @@ pub fn l2_normalize(vec: &mut [f32]) {
             *v /= norm;
         }
     }
+}
+
+/// Rejects a single embedding whose width differs from the provider's declared dimension.
+///
+/// §3.1: every returned vector is validated against the declared `expected` width
+/// before it propagates. A mismatch (server model change, matryoshka `dimensions`
+/// truncation, an empty/narrow single-text response) is an explicit `ParseError`
+/// instead of a silently-accepted wrong-width vector that downstream retrieval
+/// distances / vector-DB indexers trust.
+pub(crate) fn ensure_dimension(vector: &[f32], expected: usize) -> Result<(), EmbeddingError> {
+    if vector.len() != expected {
+        return Err(EmbeddingError::ParseError(format!(
+            "embedding has {} dimensions, but the model's declared dimension is {expected}",
+            vector.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Validates every vector in a batch against the declared dimension (§3.1).
+pub(crate) fn ensure_all_dimensions(
+    vectors: &[Vec<f32>],
+    expected: usize,
+) -> Result<(), EmbeddingError> {
+    for vector in vectors {
+        ensure_dimension(vector, expected)?;
+    }
+    Ok(())
 }
 
 /// Mutex for synchronizing environment-variable mutations in tests.

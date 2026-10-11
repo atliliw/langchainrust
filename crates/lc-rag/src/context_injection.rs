@@ -144,8 +144,7 @@ impl ContextInjector {
                 if Self::is_injected(chunk) {
                     return chunk.clone(); // idempotent skip
                 }
-                let context =
-                    self.build_block(title, chunks, i);
+                let context = self.build_block(title, chunks, i);
                 let mut out = Document::new(context);
                 // Preserve id and carry the parent title + marker through.
                 if let Some(id) = &chunk.id {
@@ -154,8 +153,10 @@ impl ContextInjector {
                 for (k, v) in &chunk.metadata {
                     out.metadata.insert(k.clone(), v.clone());
                 }
-                out.metadata
-                    .insert(CONTEXT_INJECTED_KEY.to_string(), serde_json::Value::Bool(true));
+                out.metadata.insert(
+                    CONTEXT_INJECTED_KEY.to_string(),
+                    serde_json::Value::Bool(true),
+                );
                 out.metadata.insert(
                     PARENT_TITLE_KEY.to_string(),
                     serde_json::Value::String(title.to_string()),
@@ -203,7 +204,10 @@ impl ContextInjector {
             } else {
                 truncate_neighbor(&chunk.content, self.config.max_ctx_chars)
             };
-            parts.push(format!("<!--Chunk {} begins-->{body}<!--Chunk {} ends-->", i, i));
+            parts.push(format!(
+                "<!--Chunk {} begins-->{body}<!--Chunk {} ends-->",
+                i, i
+            ));
         }
         parts.push("</document_chunk_context>".to_string());
         parts.join("")
@@ -242,7 +246,10 @@ mod tests {
     fn doc(text: &str, id: &str, title: &str) -> Document {
         Document::new(text.to_string())
             .with_id(id.to_string())
-            .with_metadata(DEFAULT_TITLE_KEY, serde_json::Value::String(title.to_string()))
+            .with_metadata(
+                DEFAULT_TITLE_KEY,
+                serde_json::Value::String(title.to_string()),
+            )
     }
 
     /// Title is present in every injected chunk, and the current chunk text survives intact.
@@ -347,7 +354,10 @@ mod tests {
 
         assert_eq!(out[0].id.as_deref(), Some("id-123"));
         assert_eq!(
-            out[0].metadata.get(PARENT_TITLE_KEY).and_then(|v| v.as_str()),
+            out[0]
+                .metadata
+                .get(PARENT_TITLE_KEY)
+                .and_then(|v| v.as_str()),
             Some("The Title")
         );
         assert!(out[0].metadata.contains_key(CONTEXT_INJECTED_KEY));

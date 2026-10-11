@@ -4,6 +4,7 @@
 //! Contains configuration, error types, API response structures,
 //! and streaming event types used by the Responses API model.
 
+use lc_core::SensitiveString;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -67,7 +68,7 @@ impl BuiltinTool {
 #[derive(Debug, Clone)]
 pub struct ResponsesConfig {
     /// API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Model name (e.g. "gpt-4o").
     pub model: String,
     /// Base URL (defaults to `https://api.openai.com/v1`).
@@ -85,7 +86,7 @@ pub struct ResponsesConfig {
 impl Default for ResponsesConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
             temperature: None,
@@ -100,7 +101,7 @@ impl ResponsesConfig {
     /// Create a new config with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -117,7 +118,7 @@ impl ResponsesConfig {
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()

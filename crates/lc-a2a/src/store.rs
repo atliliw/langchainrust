@@ -35,6 +35,13 @@ pub struct StoredTask {
     /// Server-only bookkeeping so a distributed trace can be correlated with a
     /// task after creation; the protocol-visible task itself does not expose it.
     pub trace_id: Option<String>,
+    /// The `skillId` this task was routed by on creation (P2-4 / B1 0.26.0).
+    ///
+    /// Server-only bookkeeping so a `tasks/send {taskId, message}` continuation
+    /// returns to the *same* skill route the task started on, instead of
+    /// silently falling back to the default chain. The protocol-visible task
+    /// does not expose it.
+    pub skill_id: Option<String>,
     /// When the task was created.
     pub created_at: Instant,
     /// When the task was last modified.
@@ -50,6 +57,7 @@ impl StoredTask {
             result: None,
             error: None,
             trace_id: None,
+            skill_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -58,6 +66,12 @@ impl StoredTask {
     /// Attach the trace id that created this task (P1-5).
     pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
         self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    /// Attach the `skillId` this task was routed by on creation (B1).
+    pub fn with_skill_id(mut self, skill_id: Option<impl Into<String>>) -> Self {
+        self.skill_id = skill_id.map(Into::into);
         self
     }
 
@@ -108,11 +122,7 @@ pub trait TaskStore: Send + Sync {
     /// that can must override it with a truly atomic compare-and-set so the
     /// cross-tenant overwrite window is closed (a caller whose ownership was
     /// checked can no longer clobber a competing writer's task in between).
-    async fn upsert_claimed(
-        &self,
-        task_id: &str,
-        update: StoredTask,
-    ) -> Result<bool, StoreError> {
+    async fn upsert_claimed(&self, task_id: &str, update: StoredTask) -> Result<bool, StoreError> {
         match self.get(task_id).await? {
             Some(current) => {
                 let claimable = match &current.task.owner {
@@ -238,11 +248,7 @@ impl TaskStore for InMemoryTaskStore {
         Ok(())
     }
 
-    async fn upsert_claimed(
-        &self,
-        task_id: &str,
-        update: StoredTask,
-    ) -> Result<bool, StoreError> {
+    async fn upsert_claimed(&self, task_id: &str, update: StoredTask) -> Result<bool, StoreError> {
         // Single write lock over the ownership check and the insert: a
         // concurrent cross-tenant writer can no longer slip a task in between
         // our `get` and our `upsert` (F4 TOCTOU close — mirrors `caller_owns`).
@@ -513,14 +519,26 @@ mod tests {
         let store = InMemoryTaskStore::new();
         let update = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a"));
         assert!(store.upsert_claimed("t1", update).await.unwrap());
-        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("a"));
+        assert_eq!(
+            store
+                .get("t1")
+                .await
+                .unwrap()
+                .unwrap()
+                .task
+                .owner
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[tokio::test]
     async fn upsert_claimed_allows_same_owner_rerun() {
         let store = InMemoryTaskStore::new();
         store
-            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a")))
+            .upsert(StoredTask::new(
+                sample_task("t1", TaskStatus::Working).with_owner("a"),
+            ))
             .await
             .unwrap();
         let rerun = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a"));
@@ -532,13 +550,25 @@ mod tests {
         // F4 TOCTOU: a competing tenant must not clobber the existing task.
         let store = InMemoryTaskStore::new();
         store
-            .upsert(StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("a")))
+            .upsert(StoredTask::new(
+                sample_task("t1", TaskStatus::Working).with_owner("a"),
+            ))
             .await
             .unwrap();
         let b = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("b"));
         assert!(!store.upsert_claimed("t1", b).await.unwrap());
         // The existing owner's task is untouched.
-        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("a"));
+        assert_eq!(
+            store
+                .get("t1")
+                .await
+                .unwrap()
+                .unwrap()
+                .task
+                .owner
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[tokio::test]
@@ -551,6 +581,16 @@ mod tests {
             .unwrap();
         let c = StoredTask::new(sample_task("t1", TaskStatus::Working).with_owner("c"));
         assert!(store.upsert_claimed("t1", c).await.unwrap());
-        assert_eq!(store.get("t1").await.unwrap().unwrap().task.owner.as_deref(), Some("c"));
+        assert_eq!(
+            store
+                .get("t1")
+                .await
+                .unwrap()
+                .unwrap()
+                .task
+                .owner
+                .as_deref(),
+            Some("c")
+        );
     }
 }

@@ -33,6 +33,48 @@ use std::time::Duration;
 /// misconfigured target cannot exhaust memory by streaming an unbounded body.
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
 
+/// Unified on-disk file-size budget shared by *every* local-file loader (0.27.0 §4):
+/// text/markdown/csv/json enforce it through this module's [`bounded_read_utf8`],
+/// PDF and DOCX through an up-front `metadata` stat. One policy, one value — no
+/// loader lives on its own budget (the previous PDF/DOCX/JSON constants drifted).
+const MAX_LOCAL_FILE_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+
+/// Unified cap on the *produced* in-memory document text (bytes) for loaders whose
+/// on-disk input can expand during extraction (PDF text, decompressed DOCX
+/// `word/document.xml`). A compressed/obfuscated source can decompress far beyond
+/// its on-disk size, so this is a separate budget from the on-disk file cap above.
+const MAX_EXTRACTED_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+
+/// Asynchronously reads a file as UTF-8, aborting with a `LoaderError` if it
+/// exceeds `max_bytes` (bounded read: read-and-check per chunk, so a file that
+/// grows between an up-front `metadata` stat and the read is still caught).
+///
+/// Shared by the text/markdown/csv/json loaders — a single bounded-read
+/// implementation keeps the whole loader family consistent.
+pub(crate) async fn bounded_read_utf8(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> Result<String, LoaderError> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = file.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > max_bytes {
+            return Err(LoaderError::Other(format!(
+                "file exceeds size bound of {max_bytes} bytes: {}",
+                path.display()
+            )));
+        }
+    }
+    String::from_utf8(buf).map_err(|e| LoaderError::Other(format!("file is not valid UTF-8: {e}")))
+}
+
 /// A5: shared SSRF-hardened HTTP fetch used by the URL-based loaders
 /// (`HTMLLoader`, `WebScraperLoader`, `SitemapLoader`).
 ///

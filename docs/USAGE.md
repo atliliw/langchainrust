@@ -174,7 +174,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.24.0"
+langchainrust = "0.27.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2786,7 +2786,9 @@ let result = guarded.invoke("Summarize this".to_string()).await?;
 
 ### 流式护栏 ✨ v0.15.0
 
-`StreamingOutputGuardrail` trait 的 `validate_chunk(&ChunkContext) -> ChunkAction::{Pass, Replace, Block}`(v0.22.4 起入参收敛为携带分块与上下文的 `ChunkContext`)配合 `GuardedAgent::invoke_stream` 做两阶段检查:增量关键词检查 + 24 字符滑动窗口(防止跨块切断)+ 完整输出复查。有状态护栏(如扣留式脱敏)还可通过流末 flush 钩子吐出缓冲的尾部,避免尾段被丢弃。
+`StreamingOutputGuardrail` trait 的 `validate_chunk(&ChunkContext) -> ChunkAction::{Pass, Replace, Block { reason }}`(v0.22.4 起入参收敛为携带分块与上下文的 `ChunkContext`)配合 `GuardedAgent::invoke_stream` 做两阶段检查:增量关键词检查 + 24 字符滑动窗口(防止跨块切断)+ 完整输出复查。有状态护栏(如扣留式脱敏)还可通过流末 flush 钩子吐出缓冲的尾部,避免尾段被丢弃。
+
+**拦截带原因,改写是独立一步。** `ChunkAction::Block { reason }` 里的 `reason` 会进入审计记录,并原样透传到 `GuardrailError::Blocked { reason }`,不再被一句通用的"blocked by a guardrail"盖掉。拦截之后、真正丢弃之前,链上每个护栏都会被问一次 `rewrite(&RewriteRequest { guardrail, reason, token, full })`:谁先返回 `Some(text)` 就用谁的改写继续往下发(审计记 `chunk rewritten after detection: <原检测原因>`),全部返回 `None` 则拦截成立。于是"检测"和"修复"可以由两个不同护栏承担——检测方只报 `Block { reason }`,`rewrite` 默认返回 `None`;专门的修复方按 `req.guardrail` 认领自己处理的那类违规。
 
 ```rust
 use futures_util::StreamExt;
@@ -2864,6 +2866,10 @@ let config = GuardrailsConfig::new()
 // schemars 默认不输出 additionalProperties:false,护栏默认仍拒绝未声明字段;
 // 想放开:SchemaOutputGuardrail::for_type::<Person>().allow_additional_properties()
 ```
+
+**"未声明字段"是按整份组合判断的。** 合成出来的 `additionalProperties:false`(schema 没写这个关键字、`strict_properties` 开着)不会只看当前这一层 `properties`,而是把 `allOf`/`anyOf`/`oneOf` 分支和它们的 `$ref` 目标一起算进来——schemars 给 `#[serde(flatten)]` 生成的形状正是"外层 `properties` + 一个 `allOf` 分支装着被展平的字段",只按当前层判断会把合法字段当成多余字段拒掉。两点边界:`additionalProperties: false` 是显式写下的,按 JSON Schema 语义只对本 schema 对象生效,仍按字面执行;schema 里有 `patternProperties` 时不做这个合成判断(本护栏不求值正则,判不了就闭嘴,不误伤)。
+
+**每次拦截都附"期望形状"。** 阻断原因末尾会拼上一份由 schema 派生的可填充 JSON 骨架(`; expected shape: {...}`,如 `{"name":"","age":0}`),`const`/`enum` 取第一个取值,联合类型取第一个分支,`allOf` 合并各分支的对象字段。只有"哪儿错了"不够用,"该长什么样"才是调用方(或把消息回灌给模型的重试循环)能直接动手的部分。
 
 **两阶段各自拦什么(刻意不同的严格度):**
 
@@ -3712,10 +3718,14 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 // 交给 Agent 后,模型按 {"query": "...", "top_k": 5, "include_answer": true} 调用
 ```
 
-**`CdpBrowserTool`——CDP 驱动本地 Chrome（`browser-cdp` feature）**：DuckDuckGo/`URLFetchTool` 只能拿静态 HTML，对 JS 渲染页面无能为力。`connect()` 收的是 Chrome **HTTP 调试基址**（`http://127.0.0.1:9222`，必须以 `http://`/`https://` 开头，传 `ws://` 直接 `InvalidInput`）：工具先 `PUT /json/new`（旧版 Chrome 回退 `GET /json` 附着现有页）拿到该标签页的 `webSocketDebuggerUrl`，再用 WebSocket（本机场景即明文 `ws://`）走 Chrome DevTools Protocol 执行四种操作：`navigate` / `extract_text`（渲染后正文）/ `extract_links` / `metadata`，输入 `BrowserInput { operation, url, wait_ms: Option（load 事件后额外等待，上限 10s）}`。SSRF 姿态与网络工具一致：**默认禁止内网/回环目标**，`with_allow_private_urls(true)` 显式放行。它是 opt-in feature（拉入 tokio-tungstenite）：
+**`CdpBrowserTool`——CDP 驱动本地 Chrome（`browser-cdp` feature）**：DuckDuckGo/`URLFetchTool` 只能拿静态 HTML，对 JS 渲染页面无能为力。`connect()` 收的是 Chrome **HTTP 调试基址**（`http://127.0.0.1:9222`，必须以 `http://`/`https://` 开头，传 `ws://` 直接 `InvalidInput`）：工具先 `PUT /json/new`（旧版 Chrome 回退 `GET /json` 附着现有页）拿到该标签页的 `webSocketDebuggerUrl`，再用 WebSocket（本机场景即明文 `ws://`）走 Chrome DevTools Protocol 执行四种操作：`navigate` / `extract_text`（渲染后正文）/ `extract_links` / `metadata`，输入 `BrowserInput { operation, url, wait_ms: Option（load 事件后额外等待，上限 10s）}`。SSRF 姿态与网络工具一致：**默认禁止内网/回环目标**，`with_allow_private_urls(true)` 显式放行。
+
+**0.27.0 起导航改为逐跳拦截（#200）**：`goto` 在 `Page.navigate` 之前先开 CDP `Fetch` 域（`patterns: [{"urlPattern": "*"}]`），浏览器于是把**每一个**请求在出网前用 `Fetch.requestPaused` 停住；工具逐条取 `params.request.url` 判定该跳——私网即回 `Fetch.failRequest { errorReason: "BlockedByClient" }`，公网才 `Fetch.continueRequest` 放行。页面 load 完成（或任一失败）立刻 `Fetch.disable`，不会把后续的 `Runtime.evaluate` 吊在无人应答的 pause 上。这样顶层 URL 校验通过之后，重定向、DNS rebinding、子资源请求再指向内网，也会在**发出前**被拦下；原来的顶层 `validate_navigation_url` 与落地后的二次复查保留，作为第二道防线。
+
+它是 opt-in feature（拉入 tokio-tungstenite）：
 
 ```toml
-langchainrust = { version = "0.24", features = ["browser-cdp"] }
+langchainrust = { version = "0.27.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3932,7 +3942,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.24.0", features = ["local-candle"] }
+langchainrust = { version = "0.27.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4144,7 +4154,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["chromadb"] }
+langchainrust = { version = "0.27.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4530,7 +4540,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.24.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5386,7 +5396,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.27.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5404,7 +5414,7 @@ let manager = CallbackManager::new()
 **OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
 
 ```toml
-langchainrust = { version = "0.24.0", features = ["otlp"] }
+langchainrust = { version = "0.27.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5431,7 +5441,7 @@ let _otlp = langchainrust::callbacks::otlp::install_otlp_pipeline()?;
 | 字面匹配 | `ExactMatch` / `StringDistance` | 精确相等 / 归一化 Levenshtein 距离 |
 | 语义 | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | 余弦相似度 / LLM 评判 / 成对比较（交换 A/B 以消除位置偏差） |
 | 规则 | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | 关键词 / 正则 / 长度 |
-| 经典 NLP | `Bleu` | n-gram 精确率（字符级 + 平滑） |
+| 经典 NLP | `Bleu` | n-gram 精确率（字符级 + 平滑 + 有效阶） |
 | RAG | `Faithfulness` | 拆分声明，逐一验证，检测幻觉 |
 | RAG（RAGAS 三指标）✨ v0.22.4 | `ContextPrecision` / `ContextRecall` / `AnswerRelevancy` | 上下文精确率 / 上下文召回率 / 答案相关性,见下方专节 |
 
@@ -5593,11 +5603,20 @@ assert!(!cmp.is_regressed(), "检测到指标回归:\n{}", cmp.to_table());
 
 | 字段 | 内容 |
 |---|---|
-| `deltas: Vec<MetricDelta>` | 每个共有评估器的 `baseline_mean` / `candidate_mean` / `delta` / 双方计分数 |
+| `metrics: HashMap<String, MetricDelta>` | 每个共有评估器的 `baseline_mean` / `candidate_mean` / `delta` / 双方计分数 |
 | `regressions: Vec<Regression>` | 仅含 `delta < -tolerance`(严格不等式,边界值不算回归)的指标 |
 | `added: Vec<String>` / `dropped: Vec<String>` | 候选比基线**新增 / 丢失**的评估器名——候选偷偷少跑了一个评估器在同一张表里可见 |
+| `count_mismatches: Vec<String>` | 共有评估器在两次运行的样本数不一致(跑分集漂移),默认也拦门禁 |
+| `significance: HashMap<String, PairedSignificance>` | 每个共有评估器的配对符号检验(候选逐例胜/负/平 + p 值) |
+| `gate_on_dropped: bool` | 是否把「候选丢了评估器」当作门禁失败(默认开启) |
 
-`cmp.to_table()` 输出可直接贴进 CI 日志的对比表。基线怎么来:首次在已知良好版本上跑一遍,把 `Report` 序列化入库即可。
+`cmp.to_table()` 输出可直接贴进 CI 日志的对比表,并带一列 `p`(配对符号检验 p 值,显著处标 `*`)。基线怎么来:首次在已知良好版本上跑一遍,把 `Report` 序列化入库即可。
+
+**「丢评估器/跑分集漂移也红」的分层门禁**:`is_gate_failing()` 在四类情况红:①任一指标回归;②`count_mismatches` 非空(跑分集漂移);③`dropped` 非空——候选**悄悄少跑了一个评估器**(默认 `gate_on_dropped: true`,fail-closed,且对无该字段的旧 artifact 也默认关);④没有任何共有评估器可比(跑分集为空/跑歪了)。若候选确实可以合法去掉某个评估器,用 `compare_reports_with(&base, &cand, CompareOptions { gate_on_dropped: false, ..Default::default() })` 显式放行。
+
+**均值之外,还有配对符号检验**:均值会被个别样本带偏。`paired_significance(&base, &cand, "evaluator")`(或 `ReportComparison.significance`)对两次运行的**逐例得分**做符号检验,给出 `wins`(候选逐例更高)/ `losses` / `ties` / `n` / `p_value`(以 `n = wins+losses` 为口径的双侧精确二项检验)。p 值大 = 均值波动很可能是逐例噪声;`is_significant("evaluator")` 判断是否 `< significance_level`(默认 0.05,可用 `CompareOptions.significance_level` 调整)。回归只在显著时才有意义——波动 vs 真变化,判决交给 CI。
+
+**尾部指标**:`report.percentile("evaluator", 0.05)` 是某评估器逐例得分的 P5(最差一端的质量尾,拖低均值的就是它),`0.95` / `0.99` 是最佳尾;对延迟类指标 `0.95` 即延迟尾。底层 `percentile` 是 nearest-rank 实现,处理 `NaN` 不 panic(见 `runner::percentile`)。
 
 ---
 
@@ -5628,7 +5647,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -5702,14 +5721,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["redis-storage"] }
+langchainrust = { version = "0.27.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.24.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5971,8 +5990,8 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.25"
-lc-a2a = { version = "0.25.0", features = ["axum"] }
+langchainrust = "0.27.0"
+lc-a2a = { version = "0.27.0", features = ["axum"] }
 ```
 
 ```rust
@@ -6032,6 +6051,29 @@ while let Some(event) = stream.next().await {
 }
 // 已有任务只想订阅:client.connect_sse(url).await?
 ```
+
+**WebSocket 传输（`ws` feature，0.27.0 #186）**：SSE 之外新增一条等价传输。服务端开 `ws` feature 后暴露 `GET /ws`，与 `/events` **共用同一套鉴权与逐连接过滤**——bearer 认证、B7 跨租户 `notification_visible`、`?taskId=` 限定全部一致，每条过滤后的 `TaskPushNotification` 序列化成**一个文本帧**发给该连接。客户端 `connect_ws` / `send_task_streaming_ws` 与 `connect_sse` / `send_task_streaming` 一一对应，`A2AWebSocketStream::next()` 自动回协议 ping 保活、跳过 pong/二进制帧。两条传输语义相同，按部署挑（不想被 HTTP/SSE 缓冲的场景选 WS）：
+
+```toml
+lc-a2a = { version = "0.27.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
+```
+
+```rust
+use langchainrust::a2a::{A2AClient, A2AMessage, TaskPushNotification};
+
+// 先订阅再派活,不丢早期事件
+let mut stream = client
+    .send_task_streaming_ws("ws://remote-agent:8080/ws", A2AMessage::user("做个季度汇总"))
+    .await?;
+while let Some(event) = stream.next().await {
+    let note: TaskPushNotification = event?;
+}
+// 已有任务只想订阅:client.connect_ws("ws://remote-agent:8080/ws").await?
+```
+
+**sendSubscribe 的订阅上下文（0.27.0 #94）**：`tasks/sendSubscribe` 现在可以带客户端自选的订阅号与上下文。请求侧用 `A2ARequest::send_subscribe_with_context(id, &message, subscription_id, context_id)`——`subscription_id` 写进 params 的 `"id"`，`context_id` 写进 `"contextId"`；客户端侧对应 `client.subscribe_with_context(sse_url, message, subscription_id, context_id)`（`subscribe` / `send_subscribe` 是不带上下文的便捷形式）。响应侧 `TaskPushNotification::StatusUpdate` / `ArtifactUpdate` 各多一个可选 `context_id` 字段（`skip_serializing_if`，不带时线上格式与 0.27 之前完全一致），供服务端回显该任务属于哪个订阅，从而让一条连接上挂多个订阅的调用方按 `context_id` 把每帧派回对的订阅。
+
+> 现状说明：本版**内置服务端尚未回显** `context_id`（`handle_tasks_send_subscribe` 与 `tasks/send` 同体，只建任务并 ack），因此这一版落地的是**协议与客户端侧**——字段与入口就绪、线上兼容；跨订阅不串流由 `A2ASubscription::next()` 按 task id 过滤保证，不依赖服务端配合。
 
 **工作流**：`tasks/runWorkflow` 一次提交有序步骤，服务端后台执行、步骤数硬上限 50：
 
@@ -6646,7 +6688,7 @@ MCP 规范定义了 6 类原语。LangChainRust 中 **已实现调用逻辑** �
 
 ### 代码解释器沙箱
 
-> **安全前提（务必先读）**：`SandboxTool` 默认**禁用**——不调用 `.with_dangerously_allow(true)`，任何执行请求都直接返回错误（0.20.0 安全加固）。内置的 `LocalSandbox` 只是"子进程 + 超时"，**没有任何 OS 级隔离**；Python 那个危险导入黑名单在源码注释里明确写着是 *noise filter*（`__import__("o"+"s")` 之类的写法即可绕过），**不是安全边界**。不可信代码必须放进容器 / VM / WASM 后再经自定义 `CodeSandbox` 实现接入。曾经存在的 `WasmSandbox` / `E2BSandbox` 只有接口、函数体永远 "not implemented"，0.20.0 审查时连同 `sandbox-wasm` / `sandbox-e2b` feature 一起删除——承诺但不能交付的后端比没有更糟。
+> **安全前提（务必先读）**：`SandboxTool` 默认**禁用**——不调用 `.with_dangerously_allow(true)`，任何执行请求都直接返回错误（0.20.0 安全加固）。内置的 `LocalSandbox` 只是"子进程 + 超时"，**没有任何 OS 级隔离**；Python 那个危险导入黑名单在源码注释里明确写着是 *noise filter*（`__import__("o"+"s")` 之类的写法即可绕过），**不是安全边界**。不可信代码要真隔离，用 **0.27.0 起真实现的 `WasmSandbox`**（见下节），或放进容器 / VM 后经自定义 `CodeSandbox` 实现接入。（`WasmSandbox` / `E2BSandbox` 曾在 0.20.0 因"只有接口、函数体永远 not implemented"连同 `sandbox-wasm` / `sandbox-e2b` feature 一起删除——承诺但不能交付的后端比没有更糟；0.27.0 里 `WasmSandbox` 以**真实现**回归，`E2BSandbox` 仍不回来。）
 
 ```rust
 use langchainrust::tools::sandbox::{LocalSandbox, CodeSandbox, SandboxTool, Language};
@@ -6671,7 +6713,54 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
 - **Python**：`python -c` 子进程执行；运行前做危险导入子串检查（os/subprocess/sys/socket/pickle 等 20 个模块，命中即报错），再次强调可绕过，仅用于挡住随手写出的危险代码
 - **JavaScript**：`node -e` 子进程执行，无任何额外检查
 - **Rust**：`Language::Rust` 枚举存在（序列化/模式匹配完整），但 `LocalSandbox` 直接返回 `SandboxError::UnsupportedLanguage`——需要编译工具链，刻意未实现
+- **WASM**：`Language::Wasm` 由 `WasmSandbox` 执行（见下节）；`LocalSandbox` 收到它同样返回 `SandboxError::UnsupportedLanguage`
 - 自定义后端：实现 `async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError>` 的 `CodeSandbox` trait，即可塞进同一个 `SandboxTool<S>`
+
+#### WASM 后端（`sandbox-wasm` feature，0.27.0 #201）
+
+`WasmSandbox` 执行 WASI preview1 模块，解释器是 **wasmi**（纯解释器：无 cranelift/JIT、离线、MSRV 轻）。宿主侧自带一组 WASI 导入——`fd_write`（stdout/stderr）、`fd_close`、`proc_exit`、`args_sizes_get`/`args_get`、`environ_sizes_get`/`environ_get`、`random_get`、`clock_time_get`/`clock_res_get`——**只有缓冲的 stdout/stderr 能跨出宿主边界**，没有文件系统、没有网络、没有进程：OS 隔离是构造出来的，不是靠子进程沙箱兜底。
+
+执行预算用 **wasm fuel 计量**（`timeout_ms × 1000` 条指令，至少 1000）而不是墙上时钟线程，超限**确定性**地映射成 `SandboxError::Timeout`；`Language::Wasm` 之外的语言一律 `SandboxError::UnsupportedLanguage`。
+
+```toml
+lc-tools = { version = "0.27.0", features = ["sandbox-wasm"] }
+# 门面 langchainrust 目前未转发该 feature,所以要在 lc-tools 上开;
+# cargo 特性合并后,类型照旧从门面取:langchainrust::tools::sandbox::WasmSandbox
+```
+
+```rust
+use langchainrust::tools::sandbox::{WasmSandbox, CodeSandbox, SandboxTool, Language};
+
+// 输入可以是 .wat 文本(WasmSandbox 用 `wat` crate 解析)或编译好的 wasm 字节
+let wat = r#"
+    (module
+        (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+        (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+        (memory 1)
+        (data (i32.const 16) "Hello from WASM!\n")
+        (export "memory" (memory 0))
+        (func $_start
+            (i32.store (i32.const 0) (i32.const 16))   ;; iovec.buf
+            (i32.store (i32.const 4) (i32.const 17))   ;; iovec.len(含换行)
+            (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 32))
+            (drop)
+            (call $proc_exit (i32.const 0)))
+        (export "_start" (func $_start)))
+"#;
+
+let sandbox = WasmSandbox::new();
+let result = sandbox.run(wat, Language::Wasm, 5_000).await?;
+assert_eq!(result.stdout, "Hello from WASM!\n");
+assert_eq!(result.exit_code, 0);
+
+// 同样能包成 BaseTool(照例要先 with_dangerously_allow(true))
+let tool = SandboxTool::new(WasmSandbox::new(), Language::Wasm)
+    .with_timeout(5_000)
+    .with_dangerously_allow(true);
+```
+
+范围诚实说明：支持**小而自包含的 WASI 模块**（WAT 文本或 wasm 字节）。**不支持**"把 Rust / Python / JS 源码直接编成 wasm 再跑"——那要整条编译工具链，`WasmSandbox` 只接**已编译好的模块**；源语言走 `Language::Python` 等交给别的后端。
 
 ---
 
@@ -6921,7 +7010,7 @@ let agent = CorrectiveRAGAgent::new(llm.clone(), retriever)
 
 ### 其他 v0.5.2 变更
 
-- **Feature gate 声明**：`sandbox-e2b` 和 `sandbox-wasm` feature 在代码中被引用但未在 `Cargo.toml` `[features]` 中声明——当时补声明；**但这两个后端始终只有接口、函数体永远 "not implemented"，已在 v0.20.0 连同 feature 一起删除**（见上文[代码解释器沙箱](#代码解释器沙箱)），v0.22.4 里只剩 `LocalSandbox`
+- **Feature gate 声明**：`sandbox-e2b` 和 `sandbox-wasm` feature 在代码中被引用但未在 `Cargo.toml` `[features]` 中声明——当时补声明；**但这两个后端当时只有接口、函数体永远 "not implemented"，已在 v0.20.0 连同 feature 一起删除**（见上文[代码解释器沙箱](#代码解释器沙箱)）。**0.27.0 更新**：`sandbox-wasm` feature 与 `WasmSandbox` 以**真实现**回归（wasmi 解释器 + 自带 WASI preview1 宿主 + fuel 计量超时），`sandbox-e2b` 不再回来
 - **Clippy 零警告**：所有 clippy 警告已解决
 
 ---

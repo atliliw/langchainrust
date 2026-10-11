@@ -29,6 +29,8 @@
 
 /// Backend implementations for persisting/processing trace spans.
 pub mod backend;
+/// Span sampling / rate limiting.
+pub mod sampler;
 /// Span types and the span tree.
 pub mod span;
 /// The tracer, span guards, and span-stack helpers.
@@ -41,6 +43,7 @@ mod tests;
 #[cfg(feature = "opentelemetry")]
 pub use backend::OtelTracingBackend;
 pub use backend::{ConsoleTracingBackend, InMemoryTracingBackend};
+pub use sampler::Sampler;
 pub use span::{
     aggregate_cost, SpanId, SpanKind, SpanStatus, SpanTokenUsage, TraceNode, TraceSpan,
 };

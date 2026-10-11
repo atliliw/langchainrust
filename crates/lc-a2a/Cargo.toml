@@ -1,6 +1,6 @@
 [package]
 name = "lc-a2a"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A2A (Agent-to-Agent) protocol support for langchainrust — client, server, and protocol types."
@@ -8,10 +8,11 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version.workspace = true
 
 [dependencies]
-lc-chains = { path = "../lc-chains", version = "0.26.0" }
-lc-agents = { path = "../lc-agents", version = "0.26.0" }
+lc-chains = { path = "../lc-chains", version = "0.27.0" }
+lc-agents = { path = "../lc-agents", version = "0.27.0" }
 async-trait = "0.1"
 log = "0.4"
+tracing = { version = "0.1", features = ["attributes"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
@@ -25,12 +26,22 @@ hmac = "0.12"
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+# V0.27 (#186): WebSocket transport for streaming task notifications. The
+# client side reuses the same `tokio-tungstenite` version already locked by
+# lc-tools' `browser-cdp` feature to avoid a second tungstenite in the graph.
+tokio-tungstenite = { version = "0.26", optional = true, default-features = false, features = ["connect", "handshake"] }
+# Driving the client WebSocket stream (`A2AWebSocketStream::next`) needs the
+# `Stream` impl that lives in futures-util; gated alongside tungstenite.
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
-lc-core = { path = "../lc-core", version = "0.26.0" }
+lc-core = { path = "../lc-core", version = "0.27.0" }
 
 [features]
 default = []
 # Out-of-the-box axum HTTP serving (P1-7): `A2AServer::serve`.
 axum = ["dep:axum", "dep:tower-http", "dep:tokio-stream"]
+# V0.27 (#186): WebSocket transport (server `/ws` via axum + client `connect_ws`
+# via tokio-tungstenite). Enables axum's ws capability for the upgrade handshake.
+ws = ["dep:tokio-tungstenite", "dep:futures-util", "axum?/ws"]
 

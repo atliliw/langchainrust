@@ -77,6 +77,13 @@ impl TaskStatus {
                 | (InputRequired, Cancelled)
                 | (InputRequired, Expired)
                 | (AuthRequired, Submitted)
+                // B4 (0.26.0): the state-machine diagram above shows
+                // `auth-required ──→ working`, but `can_transition_to` lacked
+                // that edge — an agent/hook that set a task to `auth-required`
+                // (e.g. after supplying missing credentials in-band) could then
+                // never legally resume, dead-locking until TTL. Align the code
+                // with the documented diagram.
+                | (AuthRequired, Working)
                 | (AuthRequired, Expired)
         )
     }

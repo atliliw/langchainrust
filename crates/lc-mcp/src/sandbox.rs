@@ -198,13 +198,103 @@ impl std::fmt::Display for SandboxError {
 
 impl std::error::Error for SandboxError {}
 
-/// per-Server security sandbox (P2-6): parameter least privilege + egress allowlist + full audit.
+/// Tool-level ACL (0.27.0 T3 #185): which tools of one server may be called at all.
+///
+/// Evaluation order: **deny always wins**, then — when an allow list has been
+/// declared — a tool absent from it is blocked (fail-closed). With no allow list
+/// declared, every tool not explicitly denied is allowed, which is the pre-0.27
+/// behavior.
+///
+/// The allow list is tracked as `Option<Vec<String>>` rather than a plain `Vec`
+/// on purpose: "no allow list declared" (allow everything) and "an allow list
+/// declared, and it is empty" (allow **nothing**) are different policies, and
+/// collapsing them would make an operator config that arrives empty — unset,
+/// misparsed, filtered to nothing — silently fail **open** on a gate documented
+/// as fail-closed.
+///
+/// This is the coarsest gate, complementing [`ParamRule`] (argument-level) and
+/// [`EgressPolicy`] (network-level): a server may expose twenty tools while only
+/// two are meant to be reachable by an agent.
+#[derive(Debug, Clone, Default)]
+pub struct ToolAcl {
+    /// `None` = no allow list declared (allow all but the deny list);
+    /// `Some(vec![])` = declared and empty (deny all).
+    allow: Option<Vec<String>>,
+    deny: Vec<String>,
+}
+
+impl ToolAcl {
+    /// Empty ACL (no allow list, no deny list): every tool is permitted.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether nothing is configured (used to skip the check entirely).
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_none() && self.deny.is_empty()
+    }
+
+    /// Adds an allowed tool name (additive; declares the allow list if absent).
+    pub fn allow(mut self, tool: impl Into<String>) -> Self {
+        self.allow.get_or_insert_with(Vec::new).push(tool.into());
+        self
+    }
+
+    /// Adds a denied tool name (takes precedence over the allow list).
+    pub fn deny(mut self, tool: impl Into<String>) -> Self {
+        self.deny.push(tool.into());
+        self
+    }
+
+    /// Declares the whole allow list (overwrite semantics).
+    ///
+    /// An empty `tools` is meaningful: it declares "allow nothing".
+    pub fn allow_only<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allow = Some(tools.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Declares the whole deny list (overwrite semantics).
+    pub fn deny_only<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.deny = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Whether `tool` may be called.
+    pub fn check(&self, tool: &str) -> Result<(), SandboxError> {
+        if self.deny.iter().any(|t| t == tool) {
+            return Err(SandboxError::new(format!(
+                "tool '{tool}' is denied by the server ACL"
+            )));
+        }
+        if let Some(allow) = &self.allow {
+            if !allow.iter().any(|t| t == tool) {
+                return Err(SandboxError::new(format!(
+                    "tool '{tool}' is not in the server ACL allowlist (fail-closed)"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// per-Server security sandbox (P2-6): tool ACL + parameter least privilege + egress allowlist + full audit.
 ///
 /// Fields are all `Arc`/`Mutex`, cheaply `Clone`able for distribution to multiple tool adapters of the same
 /// server, sharing the same rules and audit log.
 #[derive(Debug, Clone)]
 pub struct ServerSandbox {
     server: String,
+    /// Tool-level ACL (0.27.0 T3 #185): per-tool allow/deny.
+    tool_acl: Arc<ToolAcl>,
     /// Parameter-level least-privilege rules.
     param_rules: Arc<Vec<ParamRule>>,
     /// Network-layer egress allowlist.
@@ -216,15 +306,60 @@ pub struct ServerSandbox {
 }
 
 impl ServerSandbox {
-    /// Creates a per-Server security sandbox (no parameter rules by default: allow; all egress blocked).
+    /// Creates a per-Server security sandbox (no tool ACL, no parameter rules: allow; all egress blocked).
     pub fn new(server: impl Into<String>) -> Self {
         Self {
             server: server.into(),
+            tool_acl: Arc::new(ToolAcl::new()),
             param_rules: Arc::new(Vec::new()),
             egress: Arc::new(EgressPolicy::new()),
             audit: Arc::new(Mutex::new(VecDeque::new())),
             max_audit: 1000,
         }
+    }
+
+    /// Sets the tool-level ACL (0.27.0 T3 #185): only the tools it permits may be
+    /// called on this server.
+    ///
+    /// Replaces the whole ACL, so it also discards any allow/deny list set by an
+    /// earlier [`Self::with_allowed_tools`] / [`Self::with_denied_tools`] call.
+    pub fn with_tool_acl(mut self, acl: ToolAcl) -> Self {
+        self.tool_acl = Arc::new(acl);
+        self
+    }
+
+    /// Declares the allowed tools (overwrite semantics, matching
+    /// `lc_agents::AgentTask::with_allowed_tools`): only these may be called,
+    /// everything else is blocked (fail-closed).
+    ///
+    /// An **empty** iterator is meaningful and does *not* disable the gate: it
+    /// declares "allow nothing", so every call is blocked. Omitting the call
+    /// entirely is what leaves the server unrestricted.
+    pub fn with_allowed_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let acl = (*self.tool_acl).clone().allow_only(tools);
+        self.tool_acl = Arc::new(acl);
+        self
+    }
+
+    /// Declares the denied tools (overwrite semantics; takes precedence over any
+    /// allow list).
+    pub fn with_denied_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let acl = (*self.tool_acl).clone().deny_only(tools);
+        self.tool_acl = Arc::new(acl);
+        self
+    }
+
+    /// The configured tool-level ACL.
+    pub fn tool_acl(&self) -> &ToolAcl {
+        &self.tool_acl
     }
 
     /// Adds a parameter-level least-privilege rule.
@@ -253,8 +388,17 @@ impl ServerSandbox {
         self
     }
 
-    /// Validates one tool call (parameter-level least privilege), recording Allowed on pass and Blocked on intercept.
+    /// Validates one tool call (tool ACL, then parameter-level least privilege), recording Allowed on pass
+    /// and Blocked on intercept.
+    ///
+    /// The tool ACL is evaluated first: it is the coarsest gate, so a tool the
+    /// server never exposes is rejected without inspecting its arguments
+    /// (0.27.0 T3 #185).
     pub fn check_call(&self, tool: &str, arguments: &Value) -> Result<(), SandboxError> {
+        if let Err(e) = self.tool_acl.check(tool) {
+            self.record(tool, arguments.clone(), false, Some(e.reason.clone()));
+            return Err(e);
+        }
         for rule in self.param_rules.iter() {
             if let Err(e) = rule.check(arguments) {
                 let reason = e.to_string();
@@ -267,7 +411,17 @@ impl ServerSandbox {
     }
 
     /// Validates whether the egress target is in the allowlist (network layer).
+    ///
+    /// The tool ACL is re-checked here as well, so a caller that drives this
+    /// method directly (the tool transport has its own tool-less egress check)
+    /// cannot route a denied tool to a reachable host. Note that the enforced
+    /// path in production is [`Self::check_call`] via the tool adapter's
+    /// authorization step; this second gate is a guard for direct callers.
     pub fn check_egress(&self, tool: &str, host: &str) -> Result<(), SandboxError> {
+        if let Err(e) = self.tool_acl.check(tool) {
+            self.record(tool, Value::Null, false, Some(e.reason.clone()));
+            return Err(e);
+        }
         if !self.egress.allows(host) {
             let reason = format!("egress target '{host}' is not in the allowlist");
             self.record(tool, Value::Null, false, Some(reason.clone()));
@@ -296,13 +450,8 @@ impl ServerSandbox {
         // M-7: never retain secret-like argument values in the audit ring, even in
         // memory — credentials (token/password/api_key/…) are redacted before storing.
         fn redact(v: &mut Value) {
-            const SUBSTR: [&str; 5] = [
-                "password",
-                "secret",
-                "credential",
-                "authorization",
-                "token",
-            ];
+            const SUBSTR: [&str; 5] =
+                ["password", "secret", "credential", "authorization", "token"];
             const EXACT: [&str; 6] = [
                 "auth",
                 "apikey",
@@ -315,8 +464,7 @@ impl ServerSandbox {
                 Value::Object(map) => {
                     for (k, val) in map.iter_mut() {
                         let low = k.to_ascii_lowercase();
-                        if EXACT.iter().any(|s| low == *s)
-                            || SUBSTR.iter().any(|s| low.contains(s))
+                        if EXACT.iter().any(|s| low == *s) || SUBSTR.iter().any(|s| low.contains(s))
                         {
                             *val = Value::String("[REDACTED]".to_string());
                         } else {
@@ -388,7 +536,8 @@ mod tests {
             "api_key": "AKIA-realsecret",
             "meta": { "password": "hunter2", "file": "ok.txt" }
         });
-        sb.check_call("write_file", &args).expect("no rules -> allow");
+        sb.check_call("write_file", &args)
+            .expect("no rules -> allow");
 
         let recs = sb.audit_log();
         assert_eq!(recs.len(), 1, "one audit record");
@@ -495,6 +644,110 @@ mod tests {
         assert!(log[1].reason.as_deref().unwrap().contains("allowlist"));
         assert_eq!(log[1].server, "fetch");
         assert_eq!(log[1].tool, "http_get");
+    }
+
+    /// Tool ACL (0.27.0 T3 #185): an allowlist is fail-closed — only the named
+    /// tools pass, and the block is audited.
+    #[test]
+    fn test_tool_acl_allowlist_is_fail_closed() {
+        let sandbox = ServerSandbox::new("fs").with_allowed_tools(["read_file", "list_dir"]);
+
+        sandbox
+            .check_call("read_file", &json!({ "path": "a.txt" }))
+            .expect("allowlisted tool should pass");
+        let err = sandbox
+            .check_call("delete_file", &json!({ "path": "a.txt" }))
+            .unwrap_err();
+        assert!(err.to_string().contains("allowlist"), "{}", err);
+
+        let log = sandbox.audit_log();
+        assert_eq!(log.len(), 2, "both the allow and the block are recorded");
+        assert!(log[0].allowed);
+        assert!(!log[1].allowed, "the unlisted tool is blocked");
+        assert_eq!(log[1].tool, "delete_file");
+    }
+
+    /// Tool ACL: a deny entry beats the allow list for the same tool.
+    #[test]
+    fn test_tool_acl_deny_wins_over_allow() {
+        let sandbox = ServerSandbox::new("fs")
+            .with_allowed_tools(["read_file", "write_file"])
+            .with_denied_tools(["write_file"]);
+
+        sandbox
+            .check_call("read_file", &json!({}))
+            .expect("read_file is allowed");
+        let err = sandbox.check_call("write_file", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("denied"), "{}", err);
+    }
+
+    /// Tool ACL: an unconfigured ACL keeps the pre-0.27 behavior (allow).
+    #[test]
+    fn test_tool_acl_empty_allows_everything() {
+        let sandbox = ServerSandbox::new("fs");
+        assert!(sandbox.tool_acl().is_empty());
+        sandbox
+            .check_call("anything_at_all", &json!({}))
+            .expect("an empty ACL must not block");
+    }
+
+    /// Tool ACL: an *explicitly empty* allow list denies everything — an
+    /// operator config that arrives empty must not fail open.
+    #[test]
+    fn test_tool_acl_explicitly_empty_allowlist_denies_all() {
+        let sandbox = ServerSandbox::new("fs").with_allowed_tools(Vec::<String>::new());
+        assert!(
+            !sandbox.tool_acl().is_empty(),
+            "a declared allow list counts as configured even when empty"
+        );
+        let err = sandbox.check_call("read_file", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("allowlist"), "{}", err);
+    }
+
+    /// Tool ACL: `with_allowed_tools` overwrites (matching
+    /// `AgentTask::with_allowed_tools`), so a reconfiguration cannot leave a
+    /// previously granted tool reachable.
+    #[test]
+    fn test_tool_acl_allowed_tools_overwrites() {
+        let sandbox = ServerSandbox::new("fs")
+            .with_allowed_tools(["read_file", "write_file"])
+            .with_allowed_tools(["read_file"]);
+        sandbox
+            .check_call("read_file", &json!({}))
+            .expect("read_file is in the new list");
+        let err = sandbox.check_call("write_file", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("allowlist"), "{}", err);
+    }
+
+    /// Tool ACL is evaluated before the parameter rules: a denied tool is
+    /// rejected on its identity, not on its arguments.
+    #[test]
+    fn test_tool_acl_checked_before_param_rules() {
+        let sandbox = ServerSandbox::new("fs")
+            .with_denied_tools(["read_file"])
+            .with_param_rule(ParamRule::Prefix {
+                field: "path".to_string(),
+                prefix: "file:///tmp/".to_string(),
+            });
+        // Arguments that would pass the param rule, blocked by the ACL.
+        let err = sandbox
+            .check_call("read_file", &json!({ "path": "file:///tmp/a.txt" }))
+            .unwrap_err();
+        assert!(err.to_string().contains("denied"), "{}", err);
+    }
+
+    /// Tool ACL: a denied tool is refused on the egress path too (defense in depth).
+    #[test]
+    fn test_tool_acl_blocks_egress_check() {
+        let sandbox = ServerSandbox::new("fetch")
+            .with_denied_tools(["http_get"])
+            .allow_host("example.com");
+        let err = sandbox.check_egress("http_get", "example.com").unwrap_err();
+        assert!(err.to_string().contains("denied"), "{}", err);
+        // A tool outside the deny list still reaches the egress allowlist.
+        sandbox
+            .check_egress("http_post", "example.com")
+            .expect("non-denied tool with an allowed host should pass");
     }
 
     /// Full audit: both allow and block are recorded, with the reason on block.

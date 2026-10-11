@@ -7,6 +7,7 @@
 use crate::language_models::LLMResult;
 use lc_schema::Message;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -98,6 +99,11 @@ impl CacheConfig {
 pub struct LLMCache {
     config: CacheConfig,
     store: RwLock<HashMap<String, CachedLLMResult>>,
+    /// Total cache hits (v0.27.0 T2: hit metrics, so callers can observe how
+    /// effective the memoization is without instrumenting the call site).
+    hits: AtomicU64,
+    /// Total cache misses.
+    misses: AtomicU64,
 }
 
 impl LLMCache {
@@ -111,6 +117,8 @@ impl LLMCache {
         Self {
             config,
             store: RwLock::new(HashMap::new()),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
     }
 
@@ -128,15 +136,19 @@ impl LLMCache {
     ///
     /// An expired entry is removed immediately (H36). A hit refreshes `cached_at`,
     /// keeping the cache in true LRU semantics (Q7: a hit makes the entry the most-recently used).
+    /// Each call updates the `hits`/`misses` counters (v0.27.0 T2).
     pub async fn get(&self, key: &str) -> Option<CachedLLMResult> {
         if !self.config.enabled {
             return None;
         }
 
         let store = self.store.read().await;
-        let entry = store.get(key)?;
+        let Some(entry) = store.get(key) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
 
-        // check TTL
+        // check TTL: an entry present but expired is a miss (it yielded no result)
         if let Some(ttl) = self.config.ttl {
             if entry.cached_at.elapsed() > ttl {
                 // H36: expired entries must be removed; drop the read lock first, then take the write lock
@@ -148,11 +160,13 @@ impl LLMCache {
                         store.remove(key);
                     }
                 }
+                self.misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
         }
 
         let result = entry.clone();
+        self.hits.fetch_add(1, Ordering::Relaxed);
 
         // Q7: refresh the LRU timestamp on a hit. Drop the read lock, then take the write lock to update.
         drop(store);
@@ -220,6 +234,34 @@ impl LLMCache {
         } else {
             0
         }
+    }
+
+    /// Returns the number of cache hits (v0.27.0 T2).
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of cache misses (v0.27.0 T2).
+    pub fn misses(&self) -> u64 {
+        self.misses.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cache hit rate in `[0, 1]`, or `None` before any lookup.
+    pub fn hit_rate(&self) -> Option<f64> {
+        let hits = self.hits();
+        let misses = self.misses();
+        let total = hits + misses;
+        if total == 0 {
+            None
+        } else {
+            Some(hits as f64 / total as f64)
+        }
+    }
+
+    /// Resets the hit/miss counters to zero.
+    pub fn reset_stats(&self) {
+        self.hits.store(0, Ordering::Relaxed);
+        self.misses.store(0, Ordering::Relaxed);
     }
 }
 
@@ -380,5 +422,35 @@ mod tests {
 
         cache.put("key".to_string(), make_result("test")).await;
         assert!(!cache.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit_miss_metrics() {
+        let cache = LLMCache::new();
+        assert_eq!(cache.hit_rate(), None);
+
+        // miss
+        assert!(cache.get("absent").await.is_none());
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.misses(), 1);
+
+        // put + hit
+        cache.put("k".to_string(), make_result("v")).await;
+        assert!(cache.get("k").await.is_some());
+        assert_eq!(cache.hits(), 1);
+        assert_eq!(cache.misses(), 1);
+        assert_eq!(cache.hit_rate(), Some(0.5));
+
+        // another hit → 2/3
+        assert!(cache.get("k").await.is_some());
+        assert_eq!(cache.hits(), 2);
+        assert_eq!(cache.misses(), 1);
+        assert!((cache.hit_rate().unwrap() - 2.0 / 3.0).abs() < 1e-9);
+
+        // reset
+        cache.reset_stats();
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.misses(), 0);
+        assert_eq!(cache.hit_rate(), None);
     }
 }

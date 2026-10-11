@@ -28,6 +28,7 @@
 
 pub mod adapter;
 pub mod base;
+pub mod combinators;
 pub mod conversation_chain;
 pub mod conversation_retrieval;
 pub mod document_chains;
@@ -35,9 +36,11 @@ pub mod llm_chain;
 pub mod retrieval_qa;
 pub mod router_chain;
 pub mod sequential_chain;
+pub mod structured_output;
 
 pub use adapter::ChainRunnable;
 pub use base::{BaseChain, ChainError, ChainResult, ChainStream, StreamToken};
+pub use combinators::{batch, map, parallel, Batch, Map, Parallel};
 pub use conversation_chain::{ConversationChain, ConversationChainBuilder};
 pub use conversation_retrieval::ConversationRetrievalChain;
 pub use document_chains::{
@@ -47,6 +50,7 @@ pub use llm_chain::{LLMChain, LLMChainBuilder};
 pub use retrieval_qa::RetrievalQA;
 pub use router_chain::{LLMRouterChain, RouteDestination, RouterChain};
 pub use sequential_chain::SequentialChain;
+pub use structured_output::StructuredOutputChain;
 
 use lc_core::BaseChatModel;
 use lc_providers::ProviderError;

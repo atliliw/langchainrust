@@ -63,6 +63,51 @@ const PRICE_TABLE: &[(&str, ModelPrice)] = &[
             output_usd_per_1m: 1.25,
         },
     ),
+    // Newer Claude generations made explicit (§3.5) so the match is self-documenting
+    // instead of silently landing on the generic "claude" fallback. Values match the
+    // "claude" family rate (Sonnet-tier 3/15) the report verified as approximately correct.
+    (
+        "claude-4",
+        ModelPrice {
+            input_usd_per_1m: 15.0,
+            output_usd_per_1m: 75.0,
+        },
+    ),
+    (
+        "claude-opus",
+        ModelPrice {
+            input_usd_per_1m: 15.0,
+            output_usd_per_1m: 75.0,
+        },
+    ),
+    (
+        "claude-sonnet-4-5",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "claude-sonnet-4",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "claude-3-7-sonnet",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
+    (
+        "claude-3-5",
+        ModelPrice {
+            input_usd_per_1m: 3.0,
+            output_usd_per_1m: 15.0,
+        },
+    ),
     // generic claude fallback last among claude entries
     (
         "claude",
@@ -83,6 +128,16 @@ const PRICE_TABLE: &[(&str, ModelPrice)] = &[
         ModelPrice {
             input_usd_per_1m: 2.50,
             output_usd_per_1m: 10.0,
+        },
+    ),
+    // §3.5: gpt-4.1 must match its own rate (2/8), not fall through to the "gpt-4" generic
+    // (30/60) via substring — that was a ~15x over-estimate. Ordered before the gpt-4
+    // catch so the most-specific prefix wins.
+    (
+        "gpt-4.1",
+        ModelPrice {
+            input_usd_per_1m: 2.0,
+            output_usd_per_1m: 8.0,
         },
     ),
     (
@@ -175,6 +230,28 @@ mod tests {
         assert_eq!(mini.input_usd_per_1m, 0.15);
         let full = price_for("gpt-4o").unwrap();
         assert_eq!(full.input_usd_per_1m, 2.50);
+    }
+
+    #[test]
+    fn gpt_4_1_must_not_fall_back_to_gpt_4() {
+        // §3.5: gpt-4.1 previously substring-matched the gpt-4 generic (30/60);
+        // it must resolve to its own 2/8 rate.
+        let p = price_for("gpt-4.1").unwrap();
+        assert_eq!(p.input_usd_per_1m, 2.0);
+        assert_eq!(p.output_usd_per_1m, 8.0);
+    }
+
+    #[test]
+    fn claude_generations_resolve_explicitly() {
+        // §3.5: newer Claude generations must not silently fall to the generic fallback.
+        assert_eq!(
+            price_for("claude-sonnet-4-5").unwrap().output_usd_per_1m,
+            15.0
+        );
+        assert_eq!(
+            price_for("claude-3-7-sonnet").unwrap().output_usd_per_1m,
+            15.0
+        );
     }
 
     #[test]

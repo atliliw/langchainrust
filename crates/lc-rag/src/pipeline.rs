@@ -113,7 +113,7 @@ impl RAGPipeline {
             .llm
             .chat(messages, None)
             .await
-            .map_err(|e| RetrieverError::EmbeddingError(format!("LLM call failed: {}", e)))?;
+            .map_err(|e| RetrieverError::LlmError(format!("LLM call failed: {}", e)))?;
 
         Ok(RAGQueryResult {
             answer: llm_result.content,
@@ -246,7 +246,9 @@ impl RAGPipelineBuilder {
     /// Returns an error if the LLM, Embeddings, or VectorStore is missing.
     pub fn build(self) -> Result<RAGPipeline, RetrieverError> {
         let llm = self.llm.ok_or_else(|| {
-            RetrieverError::EmbeddingError(
+            // 0.27.x: a missing LLM is a configuration gap on the LLM, not an
+            // embedding problem (matches the runtime `LlmError` at pipeline.rs:116).
+            RetrieverError::LlmError(
                 "RAGPipelineBuilder: LLM is required. Call .llm() first.".into(),
             )
         })?;

@@ -5,16 +5,18 @@
 //! through `candle` — pure Rust, no ONNX Runtime. CPU-only here (CUDA / Metal
 //! backends are candle capabilities this version does not wire).
 //!
-//! Quantized inference (v0.26.0 T8.1): weights can be FP16-quantized
-//! ([`Quantization::F16`]) or routed through candle's 8-bit GGML backend
-//! ([`Quantization::Int8`], `Q8_0`). candle 0.11 ships no quantized BERT module
-//! (`QuantizedBertModel`/`QLinear` were removed upstream) and its `BertModel`
-//! cannot run a clean FP16 forward on CPU, so both modes quantize the weights
-//! then dequantize to FP32 for the standard model build — output stays `Vec<f32>`
-//! and near-identical to FP32. The default ([`Quantization::None`]) is unchanged
-//! FP32 behavior. (True footprint reduction is deferred until candle restores a
-//! native quantized BERT forward; these knobs wire and verify candle 0.11's
-//! scaling/`Q8_0` backends today.)
+//! Quantized inference (v0.26.0 T8.1; **FP8 added v0.27.0 T3**): weights can be
+//! FP16-quantized ([`Quantization::F16`]), routed through candle's 8-bit GGML
+//! backend ([`Quantization::Int8`], `Q8_0`), or rounded through candle's native
+//! 8-bit float dtype ([`Quantization::Fp8`], `DType::F8E4M3`). candle 0.11 ships
+//! no quantized BERT module (`QuantizedBertModel`/`QLinear` were removed
+//! upstream) and its `BertModel` cannot run a clean FP16 forward on CPU, so all
+//! three quantize the weights then dequantize to FP32 for the standard model
+//! build — output stays `Vec<f32>` and near-identical to FP32. The default
+//! ([`Quantization::None`]) is unchanged FP32 behavior. (True footprint
+//! reduction is deferred until candle restores a native quantized BERT forward;
+//! these knobs wire and verify candle 0.11's scaling/`Q8_0`/`F8E4M3` backends
+//! today.)
 //!
 //! Two loading paths, mirroring the ONNX backend's local-file contract:
 //! - [`CandleEmbeddings::from_dir`]: local `config.json` + `tokenizer.json`
@@ -30,6 +32,7 @@
 //! not a replacement — CI-gated like `local-embeddings`; real-model tests are
 //! `#[ignore]`d.
 
+use crate::catalog::{ModelCatalog, ModelFetcher, ModelSource, ModelSpec};
 use crate::{EmbeddingError, Embeddings};
 use async_trait::async_trait;
 use candle_core::quantized::{GgmlDType, QTensor};
@@ -74,6 +77,9 @@ pub enum Quantization {
     F16,
     /// Route weights through candle's 8-bit GGML backend (`Q8_0`) at load.
     Int8,
+    /// FP8-quantized weights (candle's `DType::F8E4M3`: 8-bit float, 4-bit
+    /// exponent / 3-bit mantissa, saturating at ±448), dequantized to FP32.
+    Fp8,
 }
 
 /// Deferred (not-yet-loaded) constructor for the candle backend.
@@ -178,13 +184,55 @@ impl CandleEmbeddings {
 
     /// Like [`from_hf_hub`](CandleEmbeddings::from_hf_hub), with an explicit
     /// weight mode.
-    pub fn from_hf_hub_with(
-        repo_id: &str,
-        quant: Quantization,
-    ) -> Result<Self, EmbeddingError> {
+    pub fn from_hf_hub_with(repo_id: &str, quant: Quantization) -> Result<Self, EmbeddingError> {
         CandleEmbeddingsBuilder::from_hf_hub(repo_id)?
             .with_quantization(quant)
             .build()
+    }
+
+    /// Loads the model registered under `name` in a [`ModelCatalog`].
+    ///
+    /// This is the catalog's load-side hook: the entry supplies the directory,
+    /// the load is the same `from_dir` path. A name that is not registered
+    /// ([`EmbeddingError::ModelNotFound`]), an entry whose files are missing
+    /// ([`EmbeddingError::ModelNotReady`]), an entry using the ONNX layout, or a
+    /// recorded checksum that no longer matches the weights file are all
+    /// explicit errors — there is no fallback model.
+    pub fn from_catalog(catalog: &ModelCatalog, name: &str) -> Result<Self, EmbeddingError> {
+        Self::from_catalog_with(catalog, name, Quantization::None)
+    }
+
+    /// Like [`from_catalog`](CandleEmbeddings::from_catalog), with an explicit
+    /// weight mode.
+    pub fn from_catalog_with(
+        catalog: &ModelCatalog,
+        name: &str,
+        quant: Quantization,
+    ) -> Result<Self, EmbeddingError> {
+        let entry = catalog.resolve_ready(name)?;
+        let config_path = entry.config_path().ok_or_else(|| {
+            EmbeddingError::Config(format!(
+                "model '{}' is registered with the {:?} layout; the candle backend needs \
+                 config.json + model.safetensors + tokenizer.json",
+                entry.name, entry.layout
+            ))
+        })?;
+        // Integrity gate: only pays for the read when the entry recorded one.
+        if entry.verify_checksum()? == Some(false) {
+            return Err(EmbeddingError::Config(format!(
+                "model '{}' at '{}' does not match the checksum recorded in the catalog \
+                 (re-register it after replacing the weights)",
+                entry.name,
+                entry.dir.display()
+            )));
+        }
+        Self::load(
+            &config_path,
+            &entry.tokenizer_path(),
+            &entry.model_path(),
+            entry.name.clone(),
+            quant,
+        )
     }
 
     fn load(
@@ -236,6 +284,11 @@ impl CandleEmbeddings {
                 let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
                 BertModel::load(vb, &config)
             }
+            Quantization::Fp8 => {
+                let tensors = quantize_fp8(tensors)?;
+                let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+                BertModel::load(vb, &config)
+            }
         }
         .map_err(|e| EmbeddingError::Config(format!("failed to build BERT model: {e}")))?;
 
@@ -251,6 +304,63 @@ impl CandleEmbeddings {
 
 fn hf_err(e: hf_hub::api::sync::ApiError) -> EmbeddingError {
     EmbeddingError::Config(format!("hf-hub download failed: {e}"))
+}
+
+/// `hf-hub`-backed [`ModelFetcher`] for [`ModelCatalog::prefetch`].
+///
+/// Downloads the files of the spec's layout from its HuggingFace repo into
+/// `base_dir/<name>` — the real pre-download path for a deployment that can
+/// reach the network. Air-gapped hosts use
+/// [`crate::catalog::LocalOnlyFetcher`] over directories that were staged in
+/// by a provisioning step.
+pub struct HfHubFetcher {
+    base_dir: PathBuf,
+}
+
+impl HfHubFetcher {
+    /// Downloads into `<base_dir>/<spec name>`.
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            base_dir: base_dir.into(),
+        }
+    }
+}
+
+impl ModelFetcher for HfHubFetcher {
+    fn fetch(&self, spec: &ModelSpec) -> Result<PathBuf, EmbeddingError> {
+        let repo_id = match &spec.source {
+            ModelSource::HuggingFace { repo_id } => repo_id.clone(),
+            ModelSource::Local => {
+                return Err(EmbeddingError::Config(format!(
+                    "HfHubFetcher needs a HuggingFace source, but '{}' is declared as local",
+                    spec.name
+                )));
+            }
+        };
+        let api = hf_hub::api::sync::Api::new().map_err(|e| {
+            EmbeddingError::Config(format!("failed to initialize hf-hub client: {e}"))
+        })?;
+        let repo = api.model(repo_id);
+        let dir = self.base_dir.join(&spec.name);
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            EmbeddingError::Config(format!(
+                "failed to create model directory '{}': {e}",
+                dir.display()
+            ))
+        })?;
+        for file in spec.layout.required_files() {
+            let downloaded = repo.get(*file).map_err(hf_err)?;
+            let target = dir.join(file);
+            std::fs::copy(&downloaded, &target).map_err(|e| {
+                EmbeddingError::Config(format!(
+                    "failed to copy '{}' to '{}': {e}",
+                    downloaded.display(),
+                    target.display()
+                ))
+            })?;
+        }
+        Ok(dir)
+    }
 }
 
 fn tensor_err(e: candle_core::Error) -> EmbeddingError {
@@ -308,18 +418,59 @@ fn quantize_int8(
     Ok(out)
 }
 
-/// Mask-weighted mean pooling over the sequence axis.
+/// FP8 weight pre-pass for [`Quantization::Fp8`].
+///
+/// Rounds every weight through candle's 8-bit float dtype
+/// (`DType::F8E4M3` — 4-bit exponent, 3-bit mantissa, largest magnitude 448)
+/// and back to FP32: the same load-time shape as the FP16 and `Q8_0`
+/// pre-passes, because candle 0.11's CPU backend implements the
+/// `F32 ↔ F8E4M3` conversions (`candle-core-0.11.0/src/cpu_backend/mod.rs`,
+/// the `(F32, F8E4M3)` and `(F8E4M3, F32)` arms) but ships no FP8 compute
+/// kernel for `BertModel::forward`. The rounded weights therefore feed the
+/// standard FP32 model and the output stays a near-identical `Vec<f32>`
+/// (FP8 keeps ~3 mantissa bits, so this is a coarser rounding than FP16 —
+/// use it to model FP8 weight error, not to shrink memory).
+///
+/// `float8`'s conversion (which candle calls) saturates with
+/// `SaturationType::SatFinite`, so an out-of-range weight clamps to ±448
+/// rather than becoming NaN/Inf.
+fn quantize_fp8(
+    tensors: HashMap<String, Tensor>,
+) -> Result<HashMap<String, Tensor>, EmbeddingError> {
+    let mut out = HashMap::with_capacity(tensors.len());
+    for (name, t) in tensors {
+        let restored = t.to_dtype(DType::F8E4M3).and_then(|h| h.to_dtype(DType::F32));
+        let r = match restored {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("failed to FP8-cast weight `{}`: {e}", name);
+                return Err(EmbeddingError::Config(msg));
+            }
+        };
+        out.insert(name, r);
+    }
+    Ok(out)
+}
+
+/// Mask-weighted mean pooling over the sequence axis, from a **flat** mask.
 ///
 /// Pure (0.21.0 S5.3): `hidden` is a flattened `[batch, seq, hidden]` tensor;
-/// each row averages the positions where `mask == 1` and is returned
+/// each row averages the positions where the mask is non-zero and is returned
 /// un-normalized (the caller L2-normalizes uniformly, P2-8). Positions beyond
 /// a row's actual length are excluded by the mask, so pad rows never leak in.
-pub(crate) fn mean_pool_rows(
+///
+/// `masks` is the row-major `[batch, seq_len]` attention mask (`row b` lives at
+/// `masks[b * seq_len .. (b + 1) * seq_len]`). v0.27.0 T3 zero-copy: the caller
+/// already holds the padded mask as one `Vec<i64>`, so pooling reads it
+/// directly instead of first copying each row into its own `Vec<i64>` — that
+/// per-row copy cost `batch` allocations plus a full copy of the mask on every
+/// forward pass.
+pub(crate) fn mean_pool_rows_flat(
     hidden: &[f32],
     batch: usize,
     seq_len: usize,
     hidden_size: usize,
-    masks: &[Vec<i64>],
+    masks: &[i64],
 ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     let expected = batch * seq_len * hidden_size;
     if hidden.len() < expected {
@@ -328,14 +479,19 @@ pub(crate) fn mean_pool_rows(
             hidden.len()
         )));
     }
+    let mask_len = batch * seq_len;
+    if masks.len() < mask_len {
+        return Err(EmbeddingError::ParseError(format!(
+            "attention mask too short: need {mask_len} entries, got {}",
+            masks.len()
+        )));
+    }
     let mut out = vec![vec![0.0f32; hidden_size]; batch];
     for (b, out_row) in out.iter_mut().enumerate() {
-        let mask = masks
-            .get(b)
-            .ok_or_else(|| EmbeddingError::ParseError("missing attention mask row".to_string()))?;
+        let mask = &masks[b * seq_len..(b + 1) * seq_len];
         let mut count = 0usize;
-        for s in 0..seq_len {
-            if mask.get(s).copied().unwrap_or(0) == 0 {
+        for (s, m) in mask.iter().enumerate() {
+            if *m == 0 {
                 continue;
             }
             count += 1;
@@ -351,6 +507,32 @@ pub(crate) fn mean_pool_rows(
         }
     }
     Ok(out)
+}
+
+/// Row-vector form of [`mean_pool_rows_flat`], for callers that already hold
+/// per-row masks. Flattens once and delegates, so both entry points share one
+/// implementation of the pooling math.
+pub(crate) fn mean_pool_rows(
+    hidden: &[f32],
+    batch: usize,
+    seq_len: usize,
+    hidden_size: usize,
+    masks: &[Vec<i64>],
+) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    let mut flat: Vec<i64> = Vec::with_capacity(batch * seq_len);
+    for b in 0..batch {
+        let row = masks
+            .get(b)
+            .ok_or_else(|| EmbeddingError::ParseError("missing attention mask row".to_string()))?;
+        if row.len() < seq_len {
+            return Err(EmbeddingError::ParseError(format!(
+                "attention mask row {b} too short: need {seq_len} entries, got {}",
+                row.len()
+            )));
+        }
+        flat.extend_from_slice(&row[..seq_len]);
+    }
+    mean_pool_rows_flat(hidden, batch, seq_len, hidden_size, &flat)
 }
 
 #[async_trait]
@@ -374,6 +556,12 @@ impl Embeddings for CandleEmbeddings {
             let model = self.model.clone();
             let tokenizer = self.tokenizer.clone();
             let dim = self.dim;
+            let max_len = self.max_len;
+            // One owned copy of the chunk: `spawn_blocking` needs `'static`, so
+            // the texts must be owned here. Nothing downstream copies them again
+            // — `BlockingEmbedder::embed` hands this `Vec<String>` straight to
+            // the tokenizer (v0.27.0 T3; it used to rebuild `Vec<&str>` twice
+            // per chunk).
             let chunk: Vec<String> = chunk.iter().map(|s| s.to_string()).collect();
 
             // Rebuild a blocking embedder view: model + tokenizer are shared
@@ -382,14 +570,11 @@ impl Embeddings for CandleEmbeddings {
                 model,
                 tokenizer,
                 dim,
-                max_len: self.max_len,
+                max_len,
             };
-            let rows = tokio::task::spawn_blocking(move || {
-                let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
-                blocking.embed(&refs)
-            })
-            .await
-            .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {e}")))??;
+            let rows = tokio::task::spawn_blocking(move || blocking.embed(chunk))
+                .await
+                .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {e}")))??;
             all.extend(rows);
         }
         Ok(all)
@@ -414,7 +599,13 @@ struct BlockingEmbedder {
 }
 
 impl BlockingEmbedder {
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    /// Embeds an owned batch.
+    ///
+    /// Takes the `Vec<String>` by value so `encode_batch` (which is generic over
+    /// `T: AsRef<str>` and consumes its input) receives it directly: the old
+    /// `&[&str]` signature forced a `Vec<&str>` rebuild inside this call on top
+    /// of the one the caller already built (v0.27.0 T3 zero-copy).
+    fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -423,7 +614,7 @@ impl BlockingEmbedder {
         }
         let encodings = self
             .tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch(texts, true)
             .map_err(|e| EmbeddingError::ApiError(format!("tokenizer failed: {e}")))?;
 
         let batch = encodings.len();
@@ -478,10 +669,9 @@ impl BlockingEmbedder {
             .to_vec1::<f32>()
             .map_err(tensor_err)?;
 
-        let masks: Vec<Vec<i64>> = (0..batch)
-            .map(|b| attention[b * max_len..(b + 1) * max_len].to_vec())
-            .collect();
-        let mut rows = mean_pool_rows(&hidden_data, batch, max_len, self.dim, &masks)?;
+        // v0.27.0 T3 zero-copy: `attention` is already the flat [batch, max_len]
+        // mask, so pooling reads it in place — no per-row `Vec<i64>` copies.
+        let mut rows = mean_pool_rows_flat(&hidden_data, batch, max_len, self.dim, &attention)?;
         for row in &mut rows {
             crate::l2_normalize(row);
         }
@@ -524,7 +714,12 @@ mod tests {
     fn tiny_bert_weights(device: &Device) -> HashMap<String, Tensor> {
         let h = TINY_HIDDEN;
         let mut w = HashMap::new();
-        fn add(w: &mut HashMap<String, Tensor>, path: &str, shape: (usize, usize), device: &Device) {
+        fn add(
+            w: &mut HashMap<String, Tensor>,
+            path: &str,
+            shape: (usize, usize),
+            device: &Device,
+        ) {
             w.insert(
                 path.to_string(),
                 Tensor::randn(0f32, 0.01f32, shape, device).unwrap(),
@@ -537,25 +732,100 @@ mod tests {
             );
         }
         // embeddings
-        add(&mut w, "embeddings.word_embeddings.weight", (TINY_VOCAB, h), device);
-        add(&mut w, "embeddings.position_embeddings.weight", (16, h), device);
-        add(&mut w, "embeddings.token_type_embeddings.weight", (2, h), device);
+        add(
+            &mut w,
+            "embeddings.word_embeddings.weight",
+            (TINY_VOCAB, h),
+            device,
+        );
+        add(
+            &mut w,
+            "embeddings.position_embeddings.weight",
+            (16, h),
+            device,
+        );
+        add(
+            &mut w,
+            "embeddings.token_type_embeddings.weight",
+            (2, h),
+            device,
+        );
         add1(&mut w, "embeddings.LayerNorm.weight", h, device);
         add1(&mut w, "embeddings.LayerNorm.bias", h, device);
         // single encoder layer
-        add(&mut w, "encoder.layer.0.attention.self.query.weight", (h, h), device);
-        add1(&mut w, "encoder.layer.0.attention.self.query.bias", h, device);
-        add(&mut w, "encoder.layer.0.attention.self.key.weight", (h, h), device);
+        add(
+            &mut w,
+            "encoder.layer.0.attention.self.query.weight",
+            (h, h),
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.attention.self.query.bias",
+            h,
+            device,
+        );
+        add(
+            &mut w,
+            "encoder.layer.0.attention.self.key.weight",
+            (h, h),
+            device,
+        );
         add1(&mut w, "encoder.layer.0.attention.self.key.bias", h, device);
-        add(&mut w, "encoder.layer.0.attention.self.value.weight", (h, h), device);
-        add1(&mut w, "encoder.layer.0.attention.self.value.bias", h, device);
-        add(&mut w, "encoder.layer.0.attention.output.dense.weight", (h, h), device);
-        add1(&mut w, "encoder.layer.0.attention.output.dense.bias", h, device);
-        add1(&mut w, "encoder.layer.0.attention.output.LayerNorm.weight", h, device);
-        add1(&mut w, "encoder.layer.0.attention.output.LayerNorm.bias", h, device);
-        add(&mut w, "encoder.layer.0.intermediate.dense.weight", (TINY_INTER, h), device);
-        add1(&mut w, "encoder.layer.0.intermediate.dense.bias", TINY_INTER, device);
-        add(&mut w, "encoder.layer.0.output.dense.weight", (h, TINY_INTER), device);
+        add(
+            &mut w,
+            "encoder.layer.0.attention.self.value.weight",
+            (h, h),
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.attention.self.value.bias",
+            h,
+            device,
+        );
+        add(
+            &mut w,
+            "encoder.layer.0.attention.output.dense.weight",
+            (h, h),
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.attention.output.dense.bias",
+            h,
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.attention.output.LayerNorm.weight",
+            h,
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.attention.output.LayerNorm.bias",
+            h,
+            device,
+        );
+        add(
+            &mut w,
+            "encoder.layer.0.intermediate.dense.weight",
+            (TINY_INTER, h),
+            device,
+        );
+        add1(
+            &mut w,
+            "encoder.layer.0.intermediate.dense.bias",
+            TINY_INTER,
+            device,
+        );
+        add(
+            &mut w,
+            "encoder.layer.0.output.dense.weight",
+            (h, TINY_INTER),
+            device,
+        );
         add1(&mut w, "encoder.layer.0.output.dense.bias", h, device);
         add1(&mut w, "encoder.layer.0.output.LayerNorm.weight", h, device);
         add1(&mut w, "encoder.layer.0.output.LayerNorm.bias", h, device);
@@ -598,7 +868,8 @@ mod tests {
     #[test]
     fn quantization_default_is_none() {
         assert_eq!(Quantization::default(), Quantization::None);
-        let q = CandleEmbeddingsBuilder::from_dir(std::env::temp_dir()).with_quantization(Quantization::F16);
+        let q = CandleEmbeddingsBuilder::from_dir(std::env::temp_dir())
+            .with_quantization(Quantization::F16);
         assert_eq!(q.quantization, Quantization::F16);
     }
 
@@ -668,11 +939,53 @@ mod tests {
         assert!(max_err < 5e-2, "Q8_0 round-trip max error {max_err}");
     }
 
+    /// v0.27.0 T3: the FP8 (`F8E4M3`) round-trip preserves shape, stays finite
+    /// and is coarser than FP16 (3 mantissa bits → up to ~6% relative error at
+    /// N(0,1) scale; an element near 4 can be off by ~0.25).
+    #[test]
+    fn fp8_quantize_roundtrip_keeps_shape_and_values() {
+        let device = Device::Cpu;
+        let src = Tensor::randn(0f32, 1f32, (768usize, 384usize), &device).unwrap();
+        let dq = src.to_dtype(DType::F8E4M3).unwrap().to_dtype(DType::F32).unwrap();
+        assert_eq!(dq.shape(), src.shape());
+        let a = src.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let b = dq.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert_eq!(a.len(), b.len());
+        let max_err = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(b.iter().all(|v| v.is_finite()), "no NaN/Inf (SatFinite)");
+        // Bound on the maximum relative+absolute error for N(0,1) inputs: the
+        // half-ULP rounding step of a 3-mantissa-bit format is 2^5 = 32× FP16's,
+        // so a value near 4 has a step of 2^2 × 2^-3 = 0.5 → ≤0.25 error.
+        assert!(max_err < 0.5, "FP8 round-trip max error {max_err}");
+    }
+
+    /// v0.27.0 T3: the flat-mask pooling reads the same numbers as the
+    /// row-vector form — the zero-copy refactor changes nothing about the
+    /// result.
+    #[test]
+    fn mean_pool_rows_flat_matches_rowwise() {
+        let hidden = vec![
+            1.0, 1.0, 3.0, 3.0, // row0: [1,1] and [3,3] → mean [2,2]
+            5.0, 7.0, 100.0, 100.0, // row1: [5,7] only (second masked) → [5,7]
+        ];
+        let row_masks = vec![vec![1, 1], vec![1, 0]];
+        let flat_masks: Vec<i64> = row_masks.iter().flatten().copied().collect();
+        let by_rows = mean_pool_rows(&hidden, 2, 2, 2, &row_masks).unwrap();
+        let by_flat = mean_pool_rows_flat(&hidden, 2, 2, 2, &flat_masks).unwrap();
+        assert_eq!(by_rows, by_flat);
+        assert_eq!(by_flat[0], vec![2.0, 2.0]);
+        assert_eq!(by_flat[1], vec![5.0, 7.0], "pad position excluded");
+    }
+
     /// The quantized constructors thread the knob and fail fast on missing files.
     #[test]
     fn quantization_knob_fails_fast_on_missing_dir() {
         let dir = std::env::temp_dir().join("lc-candle-quant-nonexistent");
-        for quant in [Quantization::F16, Quantization::Int8] {
+        for quant in [Quantization::F16, Quantization::Int8, Quantization::Fp8] {
             let err = CandleEmbeddings::from_dir_with(&dir, quant).unwrap_err();
             assert!(matches!(err, EmbeddingError::Config(_)));
         }

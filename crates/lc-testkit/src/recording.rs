@@ -31,13 +31,49 @@ pub struct RecordedExchange {
     pub response: LLMResult,
     /// Tool definitions bound on the request side (non-empty after `bind_tools`).
     ///
-    /// `#[serde(default)]` lets old fixtures (without a `tools` field) read as `None`, compatible
-    /// with zero changes; `skip_serializing_if` keeps recordings without bound tools in the old format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolDefinition>>,
+    /// `#[serde(default)]` lets old fixtures (without a `tools` field) read as empty, compatible
+    /// with zero changes; `skip_serializing_if` keeps recordings without bound tools in the old
+    /// format (no `tools` key emitted). A plain `Vec` collapses the redundant `None`/empty
+    /// distinction — "no tools bound" and "an empty tool list" are the same state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDefinition>,
 }
 
-/// Reads every JSONL exchange from a recording file into memory (blank lines skipped).
+/// Minimal replay-qualification check: the invariants replay *relies* on that plain JSON
+/// deserialization does not guarantee. Replay routes by tool name (`ByToolName`) and
+/// Exact-matches on whole messages, so a tool call with an empty `id`/`name` is not a valid
+/// recording (it could never be routed/matched faithfully). Returns the first problem, or
+/// `None` when the exchange is replay-qualified.
+fn validate_exchange(exchange: &RecordedExchange) -> Option<String> {
+    let check_calls = |calls: &[ToolCall], ctx: &str| -> Option<String> {
+        for (j, c) in calls.iter().enumerate() {
+            if c.id.is_empty() {
+                return Some(format!("{ctx}[{j}] has an empty id"));
+            }
+            if c.name().is_empty() {
+                return Some(format!("{ctx}[{j}] has an empty name"));
+            }
+        }
+        None
+    };
+    for (i, m) in exchange.messages.iter().enumerate() {
+        if let Some(calls) = &m.tool_calls {
+            if let Some(detail) = check_calls(calls, &format!("message[{i}].tool_calls")) {
+                return Some(detail);
+            }
+        }
+    }
+    if let Some(calls) = &exchange.response.tool_calls {
+        if let Some(detail) = check_calls(calls, "response.tool_calls") {
+            return Some(detail);
+        }
+    }
+    None
+}
+
+/// Reads every JSONL exchange from a recording file into memory (blank lines skipped),
+/// validating each line against the minimal replay schema (`read_exchanges` is the single
+/// parse site for the recording format).
 ///
 /// Shared by [`ReplayProvider::from_file`](crate::ReplayProvider::from_file) and the
 /// golden-dataset builder (N2) so the file format is parsed in exactly one place.
@@ -57,14 +93,28 @@ pub fn read_exchanges(path: impl AsRef<Path>) -> Result<Vec<RecordedExchange>, T
                 format!("invalid recording line: {e}"),
             ))
         })?;
+        if let Some(detail) = validate_exchange(&exchange) {
+            return Err(TestkitError::InvalidRecording {
+                index: exchanges.len(),
+                detail,
+            });
+        }
         exchanges.push(exchange);
     }
     Ok(exchanges)
 }
 
 /// Shared handle for append-mode writing to the recording file (protected by a std Mutex).
+///
+/// 0.27.0 L316: the raw `File` is wrapped in a `BufWriter` so sequential
+/// appends coalesce into one underlying write instead of one `write(2)` syscall
+/// per exchange (recording paths run on network-synced dirs where per-call sync
+/// is the actual cost). Data is therefore **buffered** until an explicit
+/// [`Recorder::flush`], a completed stream, or the recorder is dropped — so
+/// callers that want a line durable *now* (e.g. after a stream finishes) must
+/// flush, mirroring the buffered-writer contract `write_golden_jsonl` already uses.
 pub struct Recorder {
-    file: Mutex<std::fs::File>,
+    file: Mutex<std::io::BufWriter<std::fs::File>>,
 }
 
 impl Recorder {
@@ -75,11 +125,14 @@ impl Recorder {
             .append(true)
             .open(path)?;
         Ok(Self {
-            file: Mutex::new(file),
+            file: Mutex::new(std::io::BufWriter::new(file)),
         })
     }
 
     /// Best-effort append of one recording: failure only `log::warn!`s and never propagates up.
+    ///
+    /// The line is written into the internal buffer; it is not necessarily on
+    /// disk until [`flush`](Self::flush) or drop (L316 write buffering).
     pub fn record(&self, exchange: &RecordedExchange) {
         let line = match serde_json::to_string(exchange) {
             Ok(line) => line,
@@ -88,12 +141,34 @@ impl Recorder {
                 return;
             }
         };
-        let Ok(mut file) = self.file.lock() else {
+        let Ok(mut writer) = self.file.lock() else {
             log::warn!("lc-testkit: recording lock poisoned");
             return;
         };
-        if let Err(e) = writeln!(file, "{line}") {
+        if let Err(e) = writeln!(writer, "{line}") {
             log::warn!("lc-testkit: failed to append recording: {e}");
+        }
+    }
+
+    /// Forces any buffered recording lines to disk. Idempotent.
+    ///
+    /// A recorded-but-unflushed exchange can still be lost on a crash; call this
+    /// at a boundary where durability matters (end of a test, after a stream).
+    pub fn flush(&self) -> std::io::Result<()> {
+        let mut writer = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        writer.flush()
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        // Runs only when the last `Arc<Recorder>` is dropped, so no other thread
+        // can hold the lock. Guarantees buffered lines are not silently lost when
+        // a recording provider ends scope without an explicit flush.
+        if let Ok(writer) = self.file.get_mut() {
+            if let Err(e) = writer.flush() {
+                log::warn!("lc-testkit: failed to flush recording on drop: {e}");
+            }
         }
     }
 }
@@ -109,7 +184,7 @@ pub struct RecordingProvider<M> {
     recorder: Arc<Recorder>,
     model_name: String,
     /// Currently bound tool definitions (set by `bind_tools`, recorded into the exchange on chat).
-    tools: Option<Vec<ToolDefinition>>,
+    tools: Vec<ToolDefinition>,
 }
 
 impl<M> RecordingProvider<M>
@@ -125,13 +200,20 @@ where
             inner,
             recorder,
             model_name,
-            tools: None,
+            tools: Vec::new(),
         })
     }
 
     /// Accesses the inner model.
     pub fn inner(&self) -> &M {
         &self.inner
+    }
+
+    /// Forces the buffered recording to disk (L316). Use at a test boundary where
+    /// durability matters — a completed exchange buffered by [`Recorder::record`]
+    /// can otherwise be lost on a crash before the recorder is dropped.
+    pub fn flush(&self) -> std::io::Result<()> {
+        self.recorder.flush()
     }
 
     /// Binds tools: returns a new instance that records that tool set.
@@ -146,7 +228,7 @@ where
             inner: self.inner.clone(),
             recorder: self.recorder.clone(),
             model_name: self.model_name.clone(),
-            tools: Some(tools),
+            tools,
         }
     }
 }
@@ -221,6 +303,13 @@ where
             response: response.clone(),
             tools: self.tools.clone(),
         });
+        // L316: the recording closed-loop guarantee — once the call returns,
+        // the exchange must be durable on disk (replay reads it back without a
+        // separate flush). Flush the buffered line so a completed turn never
+        // waits on drop or an explicit flush.
+        if let Err(e) = self.recorder.flush() {
+            log::warn!("lc-testkit: failed to flush recording after chat: {e}");
+        }
         Ok(response)
     }
 
@@ -253,15 +342,22 @@ where
             None::<TokenUsage>,
             None::<Vec<ToolCall>>,
             String::new(),
+            false, // `errored`: a mid-stream error already forwarded → suppress recording.
         );
         let stream = futures_util::stream::unfold(
             seed,
-            move |(mut inner, mut full, mut usage, mut tcs, mut thinking)| {
+            move |(mut inner, mut full, mut usage, mut tcs, mut thinking, errored)| {
                 let recorder = recorder.clone();
                 let model_name = model_name.clone();
                 let tools = tools.clone();
                 let record_request = record_request.clone();
                 async move {
+                    if errored {
+                        // A mid-stream error ended the stream last iteration; terminate
+                        // without recording the truncated partial response (matches the
+                        // failure contract of the non-streaming `chat`).
+                        return None;
+                    }
                     match inner.next().await {
                         Some(Ok(chunk)) => {
                             full.push_str(&chunk.text);
@@ -274,10 +370,15 @@ where
                             if let Some(t) = &chunk.thinking_content {
                                 thinking.push_str(t);
                             }
-                            Some((Ok(chunk), (inner, full, usage, tcs, thinking)))
+                            Some((Ok(chunk), (inner, full, usage, tcs, thinking, errored)))
                         }
                         Some(Err(e)) => {
-                            Some((Err(to_testkit(e)), (inner, full, usage, tcs, thinking)))
+                            // Forward the error and mark the stream errored, so the next
+                            // iteration terminates without recording anything.
+                            Some((
+                                Err(to_testkit(e)),
+                                (inner, full, usage, tcs, thinking, true),
+                            ))
                         }
                         None => {
                             let response = LLMResult {
@@ -296,6 +397,14 @@ where
                                 response,
                                 tools,
                             });
+                            // L316: a completed stream is a natural durable
+                            // boundary — flush so the assembled exchange is
+                            // actually on disk rather than left in the buffer.
+                            if let Err(e) = recorder.flush() {
+                                log::warn!(
+                                    "lc-testkit: failed to flush recording after stream: {e}"
+                                );
+                            }
                             None
                         }
                     }
@@ -311,5 +420,61 @@ where
     ) -> Option<Box<dyn BaseChatModel<Error = Self::Error> + Send + Sync>> {
         // Delegate to the inherent `bind_tools`: clone the inner model, record the tool set, return a new instance.
         Some(Box::new(self.bind_tools(tools)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_exchange() -> RecordedExchange {
+        RecordedExchange {
+            messages: vec![Message::human("hi")],
+            response: LLMResult {
+                content: "world".into(),
+                model: "test-be".into(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            },
+            tools: Vec::new(),
+        }
+    }
+
+    fn scratch_dir(nonce: &str) -> (std::path::PathBuf, String) {
+        let tag = format!("lc-testkit-rec-{nonce}-{}", std::process::id());
+        let dir = std::env::temp_dir().join(&tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rec.jsonl");
+        (path, tag)
+    }
+
+    #[test]
+    fn records_stay_buffered_until_flush() {
+        let (path, tag) = scratch_dir("buf");
+        let recorder = Recorder::new(&path).unwrap();
+        recorder.record(&sample_exchange());
+
+        // L316 write buffering: a small recorded line sits in the BufWriter and
+        // is not yet on disk until flush (deterministic under the 8 KiB default).
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+
+        recorder.flush().unwrap();
+        assert_eq!(read_exchanges(&path).unwrap().len(), 1);
+        std::fs::remove_dir_all(std::env::temp_dir().join(tag)).ok();
+    }
+
+    #[test]
+    fn drop_flushes_remaining_lines() {
+        let (path, tag) = scratch_dir("drop");
+        {
+            let recorder = Recorder::new(&path).unwrap();
+            recorder.record(&sample_exchange());
+            recorder.record(&sample_exchange());
+            // No explicit flush: buffered lines must land when the last Arc
+            // drops, so an unconsumed recording provider is not silently lost.
+        }
+        assert_eq!(read_exchanges(&path).unwrap().len(), 2);
+        std::fs::remove_dir_all(std::env::temp_dir().join(tag)).ok();
     }
 }

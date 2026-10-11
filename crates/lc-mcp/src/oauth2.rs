@@ -742,14 +742,8 @@ impl OAuthTokenClient {
                 redact_token_body_error(status.as_u16(), &body),
             ));
         }
-        serde_json::from_str::<OAuthTokenResponse>(&body).map_err(|e| {
-            MCPError::new(
-                -32700,
-                format!(
-                    "invalid token response: {e}",
-                ),
-            )
-        })
+        serde_json::from_str::<OAuthTokenResponse>(&body)
+            .map_err(|e| MCPError::new(-32700, format!("invalid token response: {e}",)))
     }
 }
 

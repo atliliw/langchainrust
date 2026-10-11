@@ -4,8 +4,9 @@
 //! Two APIs coexist in 0.22.0:
 //!
 //! - **`events` (recommended)**: an append-only event log with deterministic
-//!   replay, forks, turn-granular compaction, and a checkpoint placeholder.
-//!   Start with [`EventSessionManager`] + [`MemoryEventStore`].
+//!   replay, forks, turn-granular compaction, idle-session GC, and durable
+//!   checkpoints. Start with [`EventSessionManager`] + [`MemoryEventStore`],
+//!   then add [`FileCheckpoint`] for restart-surviving recovery.
 //! - **Legacy mutable sessions** (below): kept functional, marked deprecated,
 //!   removal in 0.23.0. See `docs/internal/v0.22.0/MIGRATION.md`.
 //!
@@ -35,8 +36,8 @@ pub mod session_runnable;
 pub mod store;
 
 pub use events::{
-    AutoCompaction, EventPayload, EventSessionManager, EventStore, MemoryEventStore,
-    NoopCheckpoint, ProjectedSession, SessionCheckpoint, SessionEvent, Turn,
+    AutoCompaction, EventPayload, EventSessionManager, EventStore, FileCheckpoint,
+    MemoryEventStore, NoopCheckpoint, ProjectedSession, SessionCheckpoint, SessionEvent, Turn,
 };
 #[allow(deprecated)]
 pub use manager::SessionManager;

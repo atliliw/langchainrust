@@ -49,15 +49,37 @@ static KW_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         .expect("static regex literal must compile")
 });
 
-/// Extracts links from HTML and dedups them (preserving first-occurrence order).
+/// Resolve a (possibly relative) `href`/`src` against the page's request URL.
+///
+/// Returns `None` for empty/anchor-only links and for non-HTTP(S) schemes (`mailto:`, `tel:`,
+/// `data:`, `javascript:`) — those aren't fetchable page links and shouldn't be surfaced as if
+/// they were. T2: previously raw `href`/`src` values were returned verbatim, so relative links
+/// (`/about`, `./x`, `//cdn.example.com/lib.js`) came out unusable.
+fn resolve_absolute(base: &str, link: &str) -> Option<String> {
+    let trimmed = link.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let base_url = url::Url::parse(base).ok()?;
+    let joined = base_url.join(trimmed).ok()?;
+    match joined.scheme() {
+        "http" | "https" => Some(joined.to_string()),
+        _ => None, // mailto: / tel: / data: / javascript: / ...
+    }
+}
+
+/// Extracts links from HTML, resolves each against `base`, and dedups them
+/// (preserving first-occurrence order).
 ///
 /// Returns `(deduped links, raw count)`. The raw count is used by details to show
 /// "before/after dedup". Q4: the old implementation only renamed the Vec to
-/// `unique_links` without actually deduplicating.
-fn extract_unique_links(html: &str) -> (Vec<String>, usize) {
+/// `unique_links` without actually deduplicating. T2: links are now absolutized
+/// against `base` first, so relative URLs aren't leaked raw and `/about` and
+/// `https://host/about` dedup to a single entry.
+fn extract_unique_links(base: &str, html: &str) -> (Vec<String>, usize) {
     let raw: Vec<String> = LINK_REGEX
         .captures_iter(html)
-        .map(|cap| cap[1].to_string())
+        .filter_map(|cap| resolve_absolute(base, &cap[1]))
         .collect();
     let raw_count = raw.len();
     let mut seen = std::collections::HashSet::new();
@@ -242,7 +264,7 @@ impl URLFetchTool {
         let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
 
-        let (unique_links, raw_count) = extract_unique_links(html);
+        let (unique_links, raw_count) = extract_unique_links(url, html);
         let result = unique_links.join("\n");
 
         Ok(URLFetchOutput {
@@ -263,9 +285,10 @@ impl URLFetchTool {
         let fetch_result = self.fetch_url(url, Some(100000), None).await?;
         let html = &fetch_result.result;
 
+        // T2: resolve relative `src` values against the page URL, dropping non-HTTP schemes.
         let images: Vec<String> = IMG_REGEX
             .captures_iter(html)
-            .map(|cap| cap[1].to_string())
+            .filter_map(|cap| resolve_absolute(url, &cap[1]))
             .collect();
 
         let result = images.join("\n");
@@ -430,21 +453,55 @@ mod tests {
     }
 
     /// Q4: extract_links truly dedups and preserves first-occurrence order; content_length is the body length.
+    /// T2: relative links are resolved against the base URL, so `/about` and `https://a.com/about` merge.
     #[test]
     fn test_extract_unique_links_dedups() {
         let html = r#"
             <a href="https://a.com/1">first</a>
             <a href="https://a.com/1">dup</a>
-            <a href="https://a.com/2">second</a>
-            <a href="https://a.com/1">dup2</a>
+            <a href="/about">relative</a>
+            <a href="https://a.com/about">absolute-same</a>
         "#;
-        let (unique, raw) = extract_unique_links(html);
+        let (unique, raw) = extract_unique_links("https://a.com/page", html);
         assert_eq!(raw, 4, "原始链接数应为 4");
         assert_eq!(
             unique,
-            vec!["https://a.com/1".to_string(), "https://a.com/2".to_string()],
-            "应去重且保持首次出现顺序"
+            vec![
+                "https://a.com/1".to_string(),
+                "https://a.com/about".to_string()
+            ],
+            "应去重(含相对链接解析后合并)且保持首次出现顺序"
         );
+    }
+
+    /// T2: resolve_absolute absolutizes relative hrefs against the base page URL.
+    #[test]
+    fn test_resolve_absolute_handles_relative_links() {
+        let base = "https://a.com/dir/page";
+        // relative path → resolved against the enclosing directory
+        assert_eq!(
+            resolve_absolute(base, "/about"),
+            Some("https://a.com/about".into())
+        );
+        // dot-relative
+        assert_eq!(
+            resolve_absolute(base, "./x"),
+            Some("https://a.com/dir/x".into())
+        );
+        assert_eq!(
+            resolve_absolute(base, "../y"),
+            Some("https://a.com/y".into())
+        );
+        // protocol-relative (scheme inherits from base)
+        assert_eq!(
+            resolve_absolute(base, "//cdn.example.com/lib.js"),
+            Some("https://cdn.example.com/lib.js".into())
+        );
+        // non-HTTP schemes and anchors are not fetchable page links
+        assert_eq!(resolve_absolute(base, "mailto:a@b.com"), None);
+        assert_eq!(resolve_absolute(base, "javascript:alert(1)"), None);
+        assert_eq!(resolve_absolute(base, "#section"), None);
+        assert_eq!(resolve_absolute(base, ""), None);
     }
 
     /// Q1: after SSRF was extracted into a shared module, URLFetch still blocks intranet addresses by default.

@@ -26,11 +26,36 @@ pub enum ObsEvent {
     AgentMetrics(AgentMetrics),
     /// Priced USD cost of one LLM call (B3; exported as it happens).
     Cost(CostEvent),
+    /// A failed run, exported as an error span so failures stay visible in every
+    /// roll-up (jsonl / mongo / otlp). Carries the same run `trace_id` join key as
+    /// [`AgentMetrics`]/[`CostEvent`] so the failure joins the run's other events.
+    RunError(RunEvent),
+}
+
+/// A failed run (emitted by `AgentExecutor`/run executors on error).
+#[derive(Debug, Clone, Serialize)]
+pub struct RunEvent {
+    /// trace_id of the failed run (`None` if absent). Joins this failure to the
+    /// run's other events (`AgentMetrics`/`CostEvent`) for cross-backend roll-up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Provider slug (`"openai"`, ...); `None` when undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model id as reported by the model (`None` when the failing stage has no model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The run's terminating error message.
+    pub error: String,
 }
 
 /// Priced cost of one LLM call (emitted by `CostTracker`).
 #[derive(Debug, Clone, Serialize)]
 pub struct CostEvent {
+    /// trace_id of the owning run (`None` when absent). Joins this cost to the
+    /// run's `AgentMetrics`/`RunError` events so llm spend rolls up per trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     /// Run/session label when the tracker was scoped with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -101,6 +126,7 @@ mod tests {
     #[test]
     fn obs_event_cost_serializes_with_kind_tag() {
         let json = serde_json::to_string(&ObsEvent::Cost(CostEvent {
+            trace_id: Some("trace-x".to_string()),
             scope: Some("run-7".to_string()),
             provider: Some("openai".to_string()),
             model: "gpt-4o-mini".to_string(),
@@ -115,5 +141,39 @@ mod tests {
         assert_eq!(v["provider"], "openai");
         assert_eq!(v["model"], "gpt-4o-mini");
         assert_eq!(v["cost_usd"], 0.75);
+    }
+
+    #[test]
+    fn obs_event_run_error_serializes_with_trace_and_error() {
+        let json = serde_json::to_string(&ObsEvent::RunError(RunEvent {
+            trace_id: Some("trace-x".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            error: "tool failed".to_string(),
+        }))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "run_error");
+        assert_eq!(v["trace_id"], "trace-x");
+        assert_eq!(v["provider"], "openai");
+        assert_eq!(v["model"], "gpt-4o-mini");
+        assert_eq!(v["error"], "tool failed");
+    }
+
+    #[test]
+    fn obs_event_cost_serializes_trace_id_when_present() {
+        let json = serde_json::to_string(&ObsEvent::Cost(CostEvent {
+            trace_id: Some("trace-x".to_string()),
+            scope: None,
+            provider: Some("openai".to_string()),
+            model: "gpt-4o-mini".to_string(),
+            prompt_tokens: 1000,
+            completion_tokens: 1000,
+            cost_usd: 0.75,
+        }))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "cost");
+        assert_eq!(v["trace_id"], "trace-x");
     }
 }

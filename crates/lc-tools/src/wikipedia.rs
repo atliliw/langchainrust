@@ -174,6 +174,30 @@ fn urlencoding(s: &str) -> String {
     urlencoding::encode(s).to_string()
 }
 
+/// Length-free, host-label-safe validation for a Wikipedia language subdomain.
+///
+/// `lang` is interpolated verbatim into the request host (`https://{lang}.wikipedia.org/…`),
+/// so an unvalidated value lets a caller inject an arbitrary host/path (e.g. `evil.com/../`,
+/// `zh?x=`. Anything other than a lowercase `[a-z]` + `[a-z0-9-]` label is rejected as
+/// `InvalidInput` — blocking path/host/query injection while still accepting real
+/// Wikipedia codes (`zh`, `en`, `simple`, `zh-min-nan`, …). The value is normalized to
+/// lowercase since Wikipedia subdomains are case-insensitive but conventionally lowercase.
+fn validate_lang(lang: &str) -> Result<&str, ToolError> {
+    let ok = (2..=20).contains(&lang.len())
+        && lang.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !lang.starts_with('-')
+        && !lang.ends_with('-');
+    if ok {
+        Ok(lang)
+    } else {
+        Err(ToolError::InvalidInput(format!(
+            "invalid wikipedia lang: {lang:?} (expected a language code like zh/en/ja, \
+             letters and hyphens only, no leading/trailing hyphen)"
+        )))
+    }
+}
+
 #[async_trait]
 impl Tool for WikipediaTool {
     type Input = WikipediaInput;
@@ -182,6 +206,7 @@ impl Tool for WikipediaTool {
     async fn invoke(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
         let top_k = input.top_k.unwrap_or(3);
         let lang = input.lang.as_deref().unwrap_or("zh");
+        let lang = validate_lang(lang)?.to_string();
         let full = input.full_content.unwrap_or(false);
 
         if input.query.trim().is_empty() {
@@ -190,11 +215,11 @@ impl Tool for WikipediaTool {
             ));
         }
 
-        let mut output = self.search(&input.query, top_k, lang).await?;
+        let mut output = self.search(&input.query, top_k, &lang).await?;
 
         if full {
             for result in &mut output.results {
-                if let Ok(content) = self.get_full_content(&result.title, lang).await {
+                if let Ok(content) = self.get_full_content(&result.title, &lang).await {
                     result.snippet = content;
                 }
             }
@@ -278,5 +303,58 @@ mod tests {
         assert_eq!(encoded, "Rust%20programming");
         assert!(urlencoding("a&b=c#d?e").contains("%26"));
         assert!(urlencoding("a&b=c#d?e").contains("%3D"));
+    }
+
+    #[test]
+    fn validate_lang_accepts_real_wiki_codes() {
+        for lang in ["zh", "en", "ja", "simple", "zh-min-nan", "pt-br"] {
+            assert_eq!(
+                validate_lang(lang).unwrap(),
+                lang,
+                "code {lang} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_lang_rejects_injection_candidates() {
+        // Host/path/query injection and malformed labels must be rejected, not interpolated
+        // into the request host.
+        for lang in [
+            "",
+            "x",
+            "a",
+            "zh..en",
+            "zh/en",
+            "../../evil.com",
+            "zh?x=1",
+            "zh#frag",
+            "zh:443",
+            "zh%2e%2e",
+            "-zh",
+            "zh-",
+            "z h",
+        ] {
+            assert!(
+                validate_lang(lang).is_err(),
+                "lang {lang:?} should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_rejects_injected_lang() {
+        let tool = WikipediaTool::new();
+        let input = WikipediaInput {
+            query: "Rust".to_string(),
+            top_k: None,
+            lang: Some("../../../evil.example.com".to_string()),
+            full_content: None,
+        };
+        let err = tool.invoke(input).await.unwrap_err();
+        assert!(
+            err.to_string().contains("lang"),
+            "expected an invalid-lang error, got: {err}"
+        );
     }
 }

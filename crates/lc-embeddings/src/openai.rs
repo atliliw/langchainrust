@@ -3,10 +3,11 @@
 //!
 //! Uses OpenAI's text-embedding-ada-002 or other embedding models.
 
-use crate::{EmbeddingError, Embeddings};
+use crate::{EmbeddingError, Embeddings, TokenBucket};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// P2-6: concurrency cap after batch chunking — avoids blowing past provider rate limits at once.
 const MAX_CONCURRENT_CHUNKS: usize = 8;
@@ -25,6 +26,12 @@ pub struct OpenAIEmbeddingsConfig {
 
     /// Batch size (default: 2048)
     pub batch_size: usize,
+
+    /// Optional concurrent token-bucket rate limiter (v0.27.0 T2). When set, every
+    /// embedding HTTP request passes [`TokenBucket::acquire`] before dispatch,
+    /// pacing the client-side request rate so bursts stay within the configured
+    /// budget instead of tripping provider 429s. `None` (default) disables liming.
+    pub rate_limiter: Option<Arc<TokenBucket>>,
 }
 
 /// M-12: `api_key` is redacted in [`std::fmt::Debug`] output so the key never leaks into logs.
@@ -35,6 +42,7 @@ impl std::fmt::Debug for OpenAIEmbeddingsConfig {
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("batch_size", &self.batch_size)
+            .field("rate_limiter", &self.rate_limiter)
             .finish()
     }
 }
@@ -46,6 +54,7 @@ impl Default for OpenAIEmbeddingsConfig {
             base_url: "https://api.openai.com/v1".to_string(),
             model: "text-embedding-ada-002".to_string(),
             batch_size: 2048,
+            rate_limiter: None,
         }
     }
 }
@@ -68,6 +77,14 @@ impl OpenAIEmbeddingsConfig {
     /// Set the base URL
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
+        self
+    }
+
+    /// Attach a concurrent token-bucket rate limiter (v0.27.0 T2). Every HTTP
+    /// request then passes [`TokenBucket::acquire`] before dispatch, capping
+    /// both burst concurrency and sustained request rate.
+    pub fn with_rate_limiter(mut self, limiter: Arc<TokenBucket>) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 }
@@ -133,6 +150,7 @@ impl OpenAIEmbeddings {
             base_url,
             model,
             batch_size: 2048,
+            rate_limiter: None,
         })
     }
 }
@@ -145,6 +163,11 @@ impl Embeddings for OpenAIEmbeddings {
         }
 
         let url = format!("{}/embeddings", self.config.base_url);
+
+        // v0.27.0 T2: pace the request through the optional token-bucket limiter.
+        if let Some(l) = &self.config.rate_limiter {
+            l.acquire().await;
+        }
 
         let body = serde_json::json!({
             "model": self.config.model,
@@ -185,6 +208,9 @@ impl Embeddings for OpenAIEmbeddings {
             .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
             .embedding
             .clone();
+        // §3.1: the returned width must equal the declared dimension, or it is
+        // rejected instead of silently propagating a wrong-width vector.
+        crate::ensure_dimension(&embedding, self.dimension)?;
         // P2-8: uniform L2 normalization, guaranteeing unit length and removing provider drift.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
@@ -222,49 +248,63 @@ impl Embeddings for OpenAIEmbeddings {
         let api_key = self.config.api_key.as_str();
         let model = self.config.model.as_str();
         let url = url.as_str();
+        // v0.27.0 T2: an optional token-bucket limiter paces each chunk dispatch
+        // before it can hit the provider's rate limit.
+        let limiter = self.config.rate_limiter.clone();
         let mut all_results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
         let mut stream = futures_util::stream::iter(chunks)
-            .map(|(chunk_idx, chunk)| async move {
-                let body = serde_json::json!({
-                    "model": model,
-                    "input": chunk,
-                });
-                // P2-5: exponential backoff retry on 429/5xx.
-                let response = crate::retry::post_json_with_retry(
-                    client,
-                    url,
-                    api_key,
-                    &body,
-                    &crate::retry::DEFAULT_RETRY,
-                )
-                .await
-                .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
-
-                let status = response.status();
-                if !status.is_success() {
-                    // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
-                    let error_text = response.text().await.map_err(|e| {
-                        EmbeddingError::HttpError(format!(
-                            "failed to read error response body: {e}"
-                        ))
-                    })?;
-                    return Err(EmbeddingError::ApiError(format!(
-                        "HTTP {}: {}",
-                        status, error_text
-                    )));
-                }
-
-                let embedding_response: OpenAIEmbeddingResponse = response
-                    .json()
+            .map(|(chunk_idx, chunk)| {
+                let limiter = limiter.clone();
+                async move {
+                    if let Some(l) = &limiter {
+                        l.acquire().await;
+                    }
+                    let body = serde_json::json!({
+                        "model": model,
+                        "input": chunk,
+                    });
+                    // P2-5: exponential backoff retry on 429/5xx.
+                    let response = crate::retry::post_json_with_retry(
+                        client,
+                        url,
+                        api_key,
+                        &body,
+                        &crate::retry::DEFAULT_RETRY,
+                    )
                     .await
-                    .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
+                    .map_err(|e| EmbeddingError::HttpError(e.to_string()))?;
 
-                Ok::<_, EmbeddingError>((chunk_idx, embedding_response.data))
+                    let status = response.status();
+                    if !status.is_success() {
+                        // P1-4: the error body must also error if reading fails; do not swallow it with unwrap_or_default().
+                        let error_text = response.text().await.map_err(|e| {
+                            EmbeddingError::HttpError(format!(
+                                "failed to read error response body: {e}"
+                            ))
+                        })?;
+                        return Err(EmbeddingError::ApiError(format!(
+                            "HTTP {}: {}",
+                            status, error_text
+                        )));
+                    }
+
+                    let embedding_response: OpenAIEmbeddingResponse = response
+                        .json()
+                        .await
+                        .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
+
+                    Ok::<_, EmbeddingError>((chunk_idx, embedding_response.data))
+                }
             })
             .buffer_unordered(concurrency);
         while let Some(result) = stream.next().await {
             let (chunk_idx, data) = result?;
             let base = chunk_idx * batch_size;
+            // §3.2: this chunk must return exactly the requested count at indices
+            // 0..chunk_len — strictly increasing, in-range. A duplicate / out-of-order /
+            // overfull index is reportable misalignment, never a silent overwrite.
+            let chunk_len = batch_size.min(texts.len().saturating_sub(base));
+            let mut prev: Option<usize> = None;
             for item in data {
                 // P0-2/negative index: `index` is i32; an `as usize` cast would wrap a
                 // negative provider index to a huge offset. Convert with `try_from` and
@@ -275,15 +315,27 @@ impl Embeddings for OpenAIEmbeddings {
                         item.index
                     ))
                 })?;
-                let global_index = base + rel;
-                if global_index >= all_results.len() {
-                    // Provider index beyond the requested range = batch misalignment; error out.
+                // §3.2: indices must be strictly increasing within the chunk — this
+                // catches a duplicate (e.g. `[0,1,1]`) or an out-of-order index, which
+                // would otherwise overwrite / leave a slot silently misaligned.
+                if let Some(prev_idx) = prev {
+                    if rel <= prev_idx {
+                        return Err(EmbeddingError::BatchMismatch {
+                            expected: chunk_len,
+                            actual: rel + 1,
+                        });
+                    }
+                }
+                prev = Some(rel);
+                // §3.2: index beyond this chunk's range = "more than requested"; the
+                // extra entries would otherwise spill into — and mask — a filled slot.
+                if rel >= chunk_len {
                     return Err(EmbeddingError::BatchMismatch {
-                        expected: all_results.len(),
-                        actual: global_index + 1,
+                        expected: chunk_len,
+                        actual: rel + 1,
                     });
                 }
-                all_results[global_index] = Some(item.embedding);
+                all_results[base + rel] = Some(item.embedding);
             }
         }
 
@@ -292,6 +344,8 @@ impl Embeddings for OpenAIEmbeddings {
             .into_iter()
             .map(|opt| {
                 let mut v = opt.ok_or(EmbeddingError::EmptyVectorInBatch)?;
+                // §3.1: reject a vector whose width disagrees with the declared dimension.
+                crate::ensure_dimension(&v, self.dimension)?;
                 crate::l2_normalize(&mut v);
                 Ok(v)
             })
@@ -414,6 +468,30 @@ mod tests {
     use crate::test_support::{spawn_embeddings_stub, spawn_status_stub};
     use std::sync::Arc;
 
+    /// v0.27.0 T2: a configured token-bucket limiter is harnessed before dispatch
+    /// without changing the embed result (default stays unlimited).
+    #[tokio::test]
+    async fn test_embed_documents_with_rate_limiter() {
+        let base_url = spawn_embeddings_stub(Arc::new(|n| n)).await;
+        let config = OpenAIEmbeddingsConfig {
+            api_key: "test-key".into(),
+            base_url,
+            model: "text-embedding-ada-002".into(),
+            batch_size: 2,
+            rate_limiter: Some(Arc::new(TokenBucket::new(4, 100.0))),
+        };
+        let embeddings = OpenAIEmbeddings::new(config).unwrap();
+
+        let texts = ["a", "b", "c"];
+        let results = embeddings
+            .embed_documents(&texts)
+            .await
+            .expect("limited batch embedding should succeed");
+        assert_eq!(results.len(), 3, "limiter must not change the result count");
+        // The default config is unlimited (`None`).
+        assert!(OpenAIEmbeddingsConfig::default().rate_limiter.is_none());
+    }
+
     /// P0-1: batch alignment across chunk boundaries — order matches input, no empty vectors, no misalignment.
     #[tokio::test]
     async fn test_embed_documents_batch_alignment() {
@@ -423,6 +501,7 @@ mod tests {
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 2,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
@@ -440,7 +519,9 @@ mod tests {
             // per-item normalized expectation, and each vector stays distinct, verifying
             // cross-chunk order alignment.
             let raw = text.bytes().map(|b| b as f32).sum::<f32>();
-            let mut expected = vec![raw, 1.0];
+            let mut expected = vec![0.0f32; 1536];
+            expected[0] = raw;
+            expected[1] = 1.0;
             crate::l2_normalize(&mut expected);
             assert_eq!(results[i], expected, "text #{} out of alignment", i);
         }
@@ -455,6 +536,7 @@ mod tests {
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 2,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
@@ -475,6 +557,7 @@ mod tests {
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 2,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
@@ -530,6 +613,7 @@ mod tests {
             base_url: format!("http://{}", addr),
             model: "text-embedding-ada-002".into(),
             batch_size: 8,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
         let result = embeddings.embed_documents(&["a"]).await;
@@ -548,13 +632,14 @@ mod tests {
             base_url: "https://api.example.com/v1".into(),
             model: "text-embedding-ada-002".into(),
             batch_size: 2,
+            rate_limiter: None,
         };
         let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("super-secret"), "Debug leaked api_key: {dbg}");
         assert!(
-            !dbg.contains("super-secret"),
-            "Debug leaked api_key: {dbg}"
+            dbg.contains("[REDACTED]"),
+            "Debug should redact api_key: {dbg}"
         );
-        assert!(dbg.contains("[REDACTED]"), "Debug should redact api_key: {dbg}");
         assert!(
             dbg.contains("https://api.example.com"),
             "non-secret fields must stay intact: {dbg}"
@@ -568,13 +653,17 @@ mod tests {
     async fn test_embed_query_retries_on_429() {
         use std::sync::atomic::Ordering;
 
-        let success_body = r#"{"data":[{"object":"embedding","index":0,"embedding":[0.6,0.8]}],"model":"stub","usage":{"prompt_tokens":0,"total_tokens":0}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let one = crate::test_support::embedding_json(1536, 0.6, 0.8).to_string();
+        let success_body = format!(
+            r#"{{"data":[{{"object":"embedding","index":0,"embedding":{one}}}],"model":"stub","usage":{{"prompt_tokens":0,"total_tokens":0}}}}"#
+        );
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let config = OpenAIEmbeddingsConfig {
             api_key: "test-key".into(),
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 2048,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
@@ -582,7 +671,7 @@ mod tests {
             .embed_query("hello")
             .await
             .expect("should retry successfully after two 429s");
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), 1536, "declared ada-002 dimension");
         // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
@@ -594,13 +683,18 @@ mod tests {
     async fn test_embed_documents_retries_on_429() {
         use std::sync::atomic::Ordering;
 
-        let success_body = r#"{"data":[{"object":"embedding","index":0,"embedding":[1.0,0.0]},{"object":"embedding","index":1,"embedding":[0.0,1.0]}],"model":"stub","usage":{"prompt_tokens":0,"total_tokens":0}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let e0 = crate::test_support::embedding_json(1536, 1.0, 0.0).to_string();
+        let e1 = crate::test_support::embedding_json(1536, 0.0, 1.0).to_string();
+        let success_body = format!(
+            r#"{{"data":[{{"object":"embedding","index":0,"embedding":{e0}}},{{"object":"embedding","index":1,"embedding":{e1}}}],"model":"stub","usage":{{"prompt_tokens":0,"total_tokens":0}}}}"#
+        );
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let config = OpenAIEmbeddingsConfig {
             api_key: "test-key".into(),
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 2,
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 
@@ -684,7 +778,9 @@ mod tests {
                         .enumerate()
                         .map(|(i, s)| {
                             let raw = s.bytes().map(|b| b as f32).sum::<f32>();
-                            let mut v = vec![raw, 1.0];
+                            let mut v = vec![0.0f32; 1536];
+                            v[0] = raw;
+                            v[1] = 1.0;
                             crate::l2_normalize(&mut v);
                             serde_json::json!({
                                 "object": "embedding",
@@ -715,6 +811,7 @@ mod tests {
             base_url,
             model: "text-embedding-ada-002".into(),
             batch_size: 1, // one chunk per text → 5 concurrent futures
+            rate_limiter: None,
         };
         let embeddings = OpenAIEmbeddings::new(config).unwrap();
 

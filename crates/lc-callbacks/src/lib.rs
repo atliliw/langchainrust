@@ -29,6 +29,12 @@
 //! - `LANGSMITH_WORKSPACE_ID`: Workspace ID (required for org accounts)
 
 mod base;
+pub mod circuit_breaker;
+// Batched export + local Edge buffer (lc-callbacks T3): sink-agnostic batch
+// delivery (LangSmith / Langfuse / …) with bounded retry and an on-disk park
+// for undeliverable batches. Fed by the per-trace flush callback on
+// [`InMemoryTracingBackend`].
+pub mod export;
 pub mod handlers;
 mod langsmith_client;
 #[cfg(feature = "otlp")]
@@ -43,6 +49,12 @@ pub mod semconv;
 pub mod tracing;
 
 pub use base::{CallbackHandler, CallbackManager};
+pub use circuit_breaker::{BreakerStatus, CircuitBreaker};
+pub use export::{
+    hmac_sha256_hex, sha256_hex, sign_payload, BatchExporter, BatchSink, EdgeBuffer, ExportError,
+    ExportEvent, FlushOutcome, LangfuseConfig, LangfuseError, LangfuseSignature, LangfuseSink,
+    RetryPolicy, DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_ENTRIES, TRACE_EVENT_KIND, trace_event,
+};
 #[cfg(feature = "opentelemetry")]
 pub use handlers::OtelHandler;
 pub use handlers::{

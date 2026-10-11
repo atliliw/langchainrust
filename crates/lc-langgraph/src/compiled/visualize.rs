@@ -1,13 +1,38 @@
 // crates/lc-langgraph/src/compiled/visualize.rs
 //! CompiledGraph visualization and serialization methods:
-//! visualize_ascii, visualize_mermaid, visualize_json, to_definition
+//! `visualize(format)` and the per-format `visualize_ascii` / `visualize_mermaid` /
+//! `visualize_json`, plus `to_definition`.
 
 use super::graph::CompiledGraph;
 use crate::edge::GraphEdge;
 use crate::persistence::{EdgeDefinition, GraphDefinition, NodeDefinition, NodeType};
 use crate::state::StateSchema;
 
+/// The rendering format for [`CompiledGraph::visualize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphFormat {
+    /// Terminal-friendly ASCII box drawing.
+    Ascii,
+    /// Mermaid Down (editable in editors / rendered by GitHub, Notion…).
+    Mermaid,
+    /// The structural graph as serialized JSON.
+    Json,
+}
+
 impl<S: StateSchema> CompiledGraph<S> {
+    /// Renders the graph structure in the requested [`GraphFormat`].
+    ///
+    /// The single entry point for drawing a graph: unlike the per-format methods it always
+    /// returns a `String`, so `Ascii`/`Mermaid`/`Json` stay interchangeable (the JSON variant
+    /// serializes [`Self::visualize_json`]). See the per-format methods for the raw shapes.
+    pub fn visualize(&self, format: GraphFormat) -> String {
+        match format {
+            GraphFormat::Ascii => self.visualize_ascii(),
+            GraphFormat::Mermaid => self.visualize_mermaid(),
+            GraphFormat::Json => self.visualize_json().to_string(),
+        }
+    }
+
     /// Visualize the graph structure in ASCII format
     pub fn visualize_ascii(&self) -> String {
         let mut output = String::new();

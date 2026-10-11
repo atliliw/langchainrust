@@ -4,10 +4,13 @@
 //! Execute multiple chains sequentially.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use lc_core::runnables::RunnableConfig;
+use lc_memory::BaseMemory;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::base::{
     run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
@@ -24,6 +27,11 @@ pub struct SequentialChain {
 
     /// Chain name.
     name: String,
+
+    /// Optional pluggable memory (L65: generic `.with_memory<M>` accepts any
+    /// `BaseMemory`). When present, its variables are injected into the chain
+    /// input state before execution and context is saved after each step.
+    memory: Option<Arc<Mutex<dyn BaseMemory>>>,
 }
 
 /// Chain step.
@@ -44,6 +52,7 @@ impl SequentialChain {
         Self {
             chains: Vec::new(),
             name: "sequential_chain".to_string(),
+            memory: None,
         }
     }
 
@@ -51,6 +60,26 @@ impl SequentialChain {
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
+    }
+
+    /// L65: inject a memory generically — any `BaseMemory` implementation
+    /// (buffer, window, summary, persistent, vector-store, …) is accepted, not
+    /// just one concrete type. Loaded memory variables are merged into the
+    /// chain input state (so any step whose `input_mapping` references a
+    /// memory variable, e.g. `history`, can consume it), and context is saved
+    /// after execution.
+    ///
+    /// `save_context` operates on string payloads keyed by the memory's own
+    /// contract — to be saved, the chain's `input`/`output`-mapped keys must
+    /// appear as string values in the inputs / final output.
+    pub fn with_memory<M: BaseMemory + 'static>(mut self, memory: M) -> Self {
+        self.memory = Some(Arc::new(Mutex::new(memory)));
+        self
+    }
+
+    /// Access the injected memory, if any.
+    pub fn injected_memory(&self) -> Option<&Arc<Mutex<dyn BaseMemory>>> {
+        self.memory.as_ref()
     }
 
     /// Add a Chain.
@@ -105,6 +134,54 @@ impl SequentialChain {
         self
     }
 
+    /// Reduce a value map to its string-valued entries — the `BaseMemory`
+    /// trait is `String`-based (`load_memory_variables`/`save_context` operate
+    /// on `HashMap<String, String>`), so non-string state (nested arrays,
+    /// documents, …) cannot be passed to memory.
+    fn string_pairs(map: &HashMap<String, Value>) -> HashMap<String, String> {
+        map.iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect()
+    }
+
+    /// L65: load memory variables and merge them into the chain input `state`
+    /// so any step whose `input_mapping` references a memory variable (e.g.
+    /// `history`) can consume it. Memory-agnostic: every `BaseMemory`
+    /// publishes its own variables.
+    async fn inject_memory(
+        &self,
+        state: &mut HashMap<String, Value>,
+        inputs: &HashMap<String, Value>,
+    ) -> Result<(), ChainError> {
+        if let Some(memory) = &self.memory {
+            let mem = memory.lock().await;
+            let vars = mem
+                .load_memory_variables(&Self::string_pairs(inputs))
+                .await
+                .map_err(|e| ChainError::ExecutionError(format!("Failed to load memory: {e}")))?;
+            drop(mem);
+            for (k, v) in vars {
+                state.insert(k, v);
+            }
+        }
+        Ok(())
+    }
+
+    /// L65: persist the executed turn into the injected memory, if any.
+    async fn save_memory(
+        &self,
+        inputs: &HashMap<String, Value>,
+        outputs: &HashMap<String, Value>,
+    ) -> Result<(), ChainError> {
+        if let Some(memory) = &self.memory {
+            let mut mem = memory.lock().await;
+            mem.save_context(&Self::string_pairs(inputs), &Self::string_pairs(outputs))
+                .await
+                .map_err(|e| ChainError::ExecutionError(format!("Failed to save context: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Run every step in order, threading `config` into each sub-chain via
     /// `invoke_with_config` (never silently dropping it at the composition
     /// boundary).
@@ -114,6 +191,7 @@ impl SequentialChain {
         config: Option<RunnableConfig>,
     ) -> Result<ChainResult, ChainError> {
         let mut current_state = inputs.clone();
+        self.inject_memory(&mut current_state, &inputs).await?;
         let mut final_output = HashMap::new();
 
         for (step_index, step) in self.chains.iter().enumerate() {
@@ -158,12 +236,22 @@ impl SequentialChain {
             }
         }
 
+        self.save_memory(&inputs, &final_output).await?;
+
         Ok(final_output)
     }
 
-    /// Stream body: run all chains except the last via `invoke_with_config`
-    /// (so callbacks flow through), stream the last chain via
-    /// `stream_with_config`.
+    /// Stream body.
+    ///
+    /// L64 全正向流式: every step's *own* stream is driven forward — a
+    /// single-output intermediate step is streamed (so its LLM callbacks/
+    /// tokens fire per token instead of a blocking `invoke`) and its streamed
+    /// text is accumulated back into `current_state` to feed the next step.
+    /// Steps with multiple mapped outputs or non-text output fall back to
+    /// `invoke_with_config` (a token stream can only represent one text value).
+    ///
+    /// The last chain's stream is passed through to the caller; when memory is
+    /// injected, the stream is wrapped so the turn is saved on completion.
     async fn stream_steps(
         &self,
         inputs: HashMap<String, Value>,
@@ -176,8 +264,10 @@ impl SequentialChain {
         }
 
         let mut current_state = inputs.clone();
+        self.inject_memory(&mut current_state, &inputs).await?;
 
-        // Run all chains except the last via invoke
+        // L64: stream intermediate steps forward; fall back to invoke when a
+        // step cannot be represented as a single text stream.
         let last_idx = self.chains.len() - 1;
         for (step_index, step) in self.chains[..last_idx].iter().enumerate() {
             let mut chain_inputs = HashMap::new();
@@ -192,29 +282,58 @@ impl SequentialChain {
                 }
             }
 
-            let chain_output = step
-                .chain
-                .invoke_with_config(chain_inputs, config.clone())
-                .await
-                .map_err(|e| ChainError::Nested {
-                    context: format!(
-                        "Step {} ({}) execution failed",
-                        step_index,
-                        step.chain.name()
-                    ),
-                    source: Box::new(e),
-                })?;
+            let wrapped = |e: ChainError| ChainError::Nested {
+                context: format!(
+                    "Step {} ({}) execution failed",
+                    step_index,
+                    step.chain.name()
+                ),
+                source: Box::new(e),
+            };
 
-            for (chain_key, global_key) in &step.output_mapping {
-                if let Some(value) = chain_output.get(chain_key) {
-                    current_state.insert(global_key.clone(), value.clone());
-                } else {
-                    return Err(ChainError::OutputError(format!(
-                        "Step {} ({}) did not produce expected output key '{}'",
-                        step_index,
-                        step.chain.name(),
-                        chain_key,
-                    )));
+            // A single-output-mapping step whose sole mapped output key is one
+            // of the chain's declared outputs can be forward-streamed: its
+            // token text is that output.
+            let streamable = match step.output_mapping.iter().next() {
+                Some((chain_key, _)) if step.output_mapping.len() == 1 => step
+                    .chain
+                    .output_keys()
+                    .iter()
+                    .any(|k| k == &chain_key.as_str()),
+                _ => false,
+            };
+
+            if streamable {
+                let global_key = step.output_mapping.iter().next().unwrap().1;
+                let mut s = step
+                    .chain
+                    .stream_with_config(chain_inputs, config.clone())
+                    .await
+                    .map_err(wrapped)?;
+                let mut text = String::new();
+                while let Some(token) = s.next().await {
+                    let token = token.map_err(wrapped)?;
+                    text.push_str(&token.token);
+                }
+                current_state.insert((*global_key).clone(), Value::String(text));
+            } else {
+                let chain_output = step
+                    .chain
+                    .invoke_with_config(chain_inputs, config.clone())
+                    .await
+                    .map_err(wrapped)?;
+
+                for (chain_key, global_key) in &step.output_mapping {
+                    if let Some(value) = chain_output.get(chain_key) {
+                        current_state.insert(global_key.clone(), value.clone());
+                    } else {
+                        return Err(ChainError::OutputError(format!(
+                            "Step {} ({}) did not produce expected output key '{}'",
+                            step_index,
+                            step.chain.name(),
+                            chain_key,
+                        )));
+                    }
                 }
             }
         }
@@ -253,10 +372,57 @@ impl SequentialChain {
             }
         }
 
-        last_step
+        let last_stream = last_step
             .chain
             .stream_with_config(chain_inputs, config.clone())
-            .await
+            .await?;
+
+        // L65: when memory is injected, wrap the last stream so the completed
+        // turn is saved once the token stream ends. A save failure at this
+        // point cannot fail the already-streamed run, so it is logged rather
+        // than silently dropped.
+        if self.memory.is_some() {
+            let memory = self.memory.clone();
+            let out_key = self
+                .output_keys()
+                .first()
+                .map(|k| (*k).to_string())
+                .unwrap_or_else(|| "output".to_string());
+            let wrapped = futures_util::stream::unfold(
+                (last_stream, memory, inputs, out_key, String::new()),
+                |(mut inner, memory, save_inputs, out_key, mut acc)| async move {
+                    match inner.next().await {
+                        Some(Ok(token)) => {
+                            acc.push_str(&token.token);
+                            Some((Ok(token), (inner, memory, save_inputs, out_key, acc)))
+                        }
+                        Some(Err(e)) => Some((Err(e), (inner, memory, save_inputs, out_key, acc))),
+                        None => {
+                            if let Some(memory) = memory {
+                                let mut mem = memory.lock().await;
+                                let mut outputs = HashMap::new();
+                                outputs.insert(out_key, Value::String(acc));
+                                if let Err(e) = mem
+                                    .save_context(
+                                        &Self::string_pairs(&save_inputs),
+                                        &Self::string_pairs(&outputs),
+                                    )
+                                    .await
+                                {
+                                    log::warn!(
+                                        "SequentialChain: failed to save context on stream end: {e}"
+                                    );
+                                }
+                            }
+                            None
+                        }
+                    }
+                },
+            );
+            return Ok(Box::pin(wrapped));
+        }
+
+        Ok(last_stream)
     }
 }
 
@@ -322,10 +488,13 @@ impl BaseChain for SequentialChain {
 
     /// Stream execution for SequentialChain.
     ///
-    /// Runs all chains except the last via invoke (since their output feeds
-    /// into subsequent chains). The last chain's output is streamed token
-    /// by token by delegating to its `stream()` method; its `output_mapping`
-    /// names the global output keys that stream stands for (validated in
+    /// L64 全正向流式: single-output intermediate steps are driven through
+    /// their own `stream_with_config` (tokens/callbacks fire per token instead
+    /// of a blocking `invoke`) and the accumulated text feeds the next step;
+    /// steps with multiple mapped outputs or non-text output fall back to
+    /// `invoke_with_config`. The last chain's output is streamed token by token
+    /// by delegating to its `stream()` method; its `output_mapping` names the
+    /// global output keys that stream stands for (validated in
     /// `Self::stream_steps` so a broken mapping fails loudly, P2-3).
     async fn stream(&self, inputs: HashMap<String, Value>) -> Result<ChainStream, ChainError> {
         self.stream_steps(inputs, None).await
@@ -334,8 +503,8 @@ impl BaseChain for SequentialChain {
     /// Stream execute the Chain with config propagation.
     ///
     /// Dispatches this chain's `on_chain_start`/`on_chain_end` and threads
-    /// `config` into every sub-chain (invoke for intermediate steps,
-    /// stream for the last step).
+    /// `config` into every sub-chain (single-output intermediates via stream,
+    /// multi-output/non-text intermediates via invoke, last step via stream).
     async fn stream_with_config(
         &self,
         inputs: HashMap<String, Value>,
@@ -362,6 +531,7 @@ impl std::fmt::Debug for SequentialChain {
         f.debug_struct("SequentialChain")
             .field("steps", &self.chains.len())
             .field("name", &self.name)
+            .field("memory", &self.memory.is_some())
             .finish()
     }
 }
@@ -650,5 +820,87 @@ mod tests {
             vec!["answer"],
         );
         assert_eq!(chain.output_keys(), vec!["answer"]);
+    }
+
+    /// Minimal in-memory `BaseMemory` returning a fixed variable so L65's
+    /// generic injection is observable without a concrete memory crate.
+    struct StubMemory(HashMap<String, Value>);
+
+    #[async_trait]
+    impl BaseMemory for StubMemory {
+        fn memory_variables(&self) -> Vec<&str> {
+            self.0.keys().map(String::as_str).collect()
+        }
+        async fn load_memory_variables(
+            &self,
+            _inputs: &HashMap<String, String>,
+        ) -> Result<HashMap<String, Value>, lc_memory::MemoryError> {
+            Ok(self.0.clone())
+        }
+        async fn save_context(
+            &mut self,
+            _inputs: &HashMap<String, String>,
+            _outputs: &HashMap<String, String>,
+        ) -> Result<(), lc_memory::MemoryError> {
+            Ok(())
+        }
+        async fn clear(&mut self) -> Result<(), lc_memory::MemoryError> {
+            self.0.clear();
+            Ok(())
+        }
+    }
+
+    /// L65: `.with_memory<M>` accepts ANY `BaseMemory`, and its loaded variables
+    /// are injected into the input state so a step's `input_mapping` can
+    /// consume them — here the step consumes the injected `history` variable.
+    #[tokio::test]
+    async fn test_sequential_chain_with_memory_generic_injection() {
+        let memory = StubMemory(HashMap::from([("history".to_string(), json!("HIST"))]));
+        let chain = SequentialChain::new()
+            .with_memory(memory)
+            .add_chain_with_mapping(
+                Arc::new(EchoChain::new("history", "seen")),
+                HashMap::from([("history".to_string(), "history".to_string())]),
+                HashMap::from([("seen".to_string(), "seen".to_string())]),
+            );
+        assert!(chain.injected_memory().is_some());
+        assert!(format!("{chain:?}").contains("memory: true"));
+
+        let inputs = HashMap::from([("unused".to_string(), json!("x"))]);
+        let result = chain.invoke(inputs).await.unwrap();
+        assert_eq!(result.get("seen").unwrap(), &json!("HIST"));
+    }
+
+    /// L64 全正向流式: an intermediate step is driven through its own stream
+    /// (not a blocking invoke) and its accumulated text feeds the final step —
+    /// the piped result must equal the sum of both transformations.
+    #[tokio::test]
+    async fn test_sequential_chain_stream_forward_streams_intermediates() {
+        let chain = SequentialChain::new()
+            .add_chain_with_mapping(
+                Arc::new(EchoChain::new("text", "intermediate")),
+                HashMap::from([("text".to_string(), "text".to_string())]),
+                HashMap::from([("intermediate".to_string(), "intermediate".to_string())]),
+            )
+            .add_chain_with_mapping(
+                Arc::new(UppercaseChain {
+                    input_key: "intermediate".to_string(),
+                    output_key: "answer".to_string(),
+                }),
+                HashMap::from([("intermediate".to_string(), "intermediate".to_string())]),
+                HashMap::from([("answer".to_string(), "final_result".to_string())]),
+            );
+
+        let mut inputs = HashMap::new();
+        inputs.insert("text".to_string(), json!("hello"));
+
+        let mut stream = chain.stream(inputs).await.unwrap();
+        let mut tokens = Vec::new();
+        while let Some(item) = stream.next().await {
+            tokens.push(item.unwrap());
+        }
+        let text: String = tokens.iter().map(|t| t.token.as_str()).collect();
+        assert_eq!(text, "HELLO");
+        assert!(tokens.last().unwrap().is_final);
     }
 }

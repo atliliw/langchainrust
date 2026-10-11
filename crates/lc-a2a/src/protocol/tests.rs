@@ -437,10 +437,12 @@ fn push_notification_status_serialization() {
 
 #[test]
 fn push_notification_artifact_serialization() {
-    let n = TaskPushNotification::artifact("t1", A2ATaskResult::new("partial"));
+    let n = TaskPushNotification::artifact("t1", A2AArtifact::text("a1", "partial"));
     let json = serde_json::to_string(&n).unwrap();
     assert!(json.contains("\"kind\":\"artifact-update\""));
-    assert!(json.contains("\"output\":\"partial\""));
+    assert!(json.contains("\"parts\""));
+    assert!(json.contains("\"type\":\"text\""));
+    assert!(json.contains("\"text\":\"partial\""));
     assert_eq!(n.status_value(), None);
 }
 
@@ -448,7 +450,7 @@ fn push_notification_artifact_serialization() {
 fn push_notification_roundtrip() {
     for original in [
         TaskPushNotification::status_with_error("t1", TaskStatus::Failed, "boom"),
-        TaskPushNotification::artifact("t2", A2ATaskResult::new("chunk")),
+        TaskPushNotification::artifact("t2", A2AArtifact::text("a2", "chunk")),
         TaskPushNotification::status("t3", TaskStatus::Completed),
     ] {
         let json = serde_json::to_string(&original).unwrap();
@@ -573,4 +575,145 @@ fn send_envelope_propagates_owner_and_trace() {
     assert_eq!(req.method, "tasks/send");
     assert_eq!(req.owner(), Some("alice"));
     assert_eq!(req.trace_id(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
+}
+
+// ---- A2A v0.3: parts model (Part / FilePart / A2AArtifact) ----
+
+#[test]
+fn part_text_serialization() {
+    let part = Part::text("hello");
+    let json = serde_json::to_string(&part).unwrap();
+    assert!(json.contains("\"type\":\"text\""));
+    assert!(json.contains("\"text\":\"hello\""));
+    assert_eq!(part.kind(), "text");
+    assert_eq!(part.as_text(), Some("hello"));
+    assert!(part.as_file().is_none());
+}
+
+#[test]
+fn part_text_with_metadata_serializes_metadata() {
+    let part = Part::text_with_metadata("hi", serde_json::json!({"lang": "en"}));
+    let json = serde_json::to_string(&part).unwrap();
+    assert!(json.contains("\"metadata\":{\"lang\":\"en\"}"));
+    // A plain text part must omit the metadata key entirely.
+    let plain = serde_json::to_string(&Part::text("hi")).unwrap();
+    assert!(!plain.contains("metadata"));
+}
+
+#[test]
+fn part_file_serialization() {
+    let file = FilePart::new("a.txt", "text/plain")
+        .with_uri("https://e/a.txt")
+        .with_size(7);
+    let part = Part::file(file);
+    let json = serde_json::to_string(&part).unwrap();
+    assert!(json.contains("\"type\":\"file\""));
+    assert!(json.contains("\"name\":\"a.txt\""));
+    assert!(json.contains("\"mimeType\":\"text/plain\""));
+    assert!(json.contains("\"uri\":\"https://e/a.txt\""));
+    assert!(json.contains("\"size\":7"));
+    // bytes absent by default and never emitted.
+    assert!(!json.contains("\"bytes\""));
+    assert_eq!(part.kind(), "file");
+    let f = part.as_file().expect("file part");
+    assert_eq!(f.name, "a.txt");
+    assert_eq!(f.mime_type, "text/plain");
+    assert_eq!(f.uri.as_deref(), Some("https://e/a.txt"));
+    assert_eq!(f.size, Some(7));
+}
+
+#[test]
+fn part_file_minimal_omits_optionals() {
+    let part = Part::file(FilePart::new("f", "application/octet-stream"));
+    let json = serde_json::to_string(&part).unwrap();
+    assert!(!json.contains("\"uri\""));
+    assert!(!json.contains("\"size\""));
+    assert!(!json.contains("\"bytes\""));
+    assert!(!json.contains("\"metadata\""));
+}
+
+#[test]
+fn part_data_serialization() {
+    let part = Part::data(serde_json::json!({ "count": 3, "tags": ["a"] }));
+    let json = serde_json::to_string(&part).unwrap();
+    assert!(json.contains("\"type\":\"data\""));
+    assert!(json.contains("\"count\":3"));
+    assert_eq!(part.kind(), "data");
+    assert_eq!(
+        part.as_data(),
+        Some(&serde_json::json!({ "count": 3, "tags": ["a"] }))
+    );
+}
+
+#[test]
+fn part_roundtrip_all_kinds() {
+    let parts = vec![
+        Part::text("hello"),
+        Part::file(
+            FilePart::new("a.txt", "text/plain")
+                .with_uri("u")
+                .with_size(1),
+        ),
+        Part::data(serde_json::json!({ "k": "v" })),
+    ];
+    for p in &parts {
+        let json = serde_json::to_string(p).unwrap();
+        let back: Part = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, p);
+    }
+}
+
+#[test]
+fn part_deserialize_known_wire_shapes() {
+    let text: Part = serde_json::from_str(r#"{"type":"text","text":"hi"}"#).unwrap();
+    assert_eq!(text.as_text(), Some("hi"));
+    let file: Part =
+        serde_json::from_str(r#"{"type":"file","file":{"name":"f","mimeType":"text/plain"}}"#)
+            .unwrap();
+    assert_eq!(file.as_file().unwrap().mime_type, "text/plain");
+    let data: Part = serde_json::from_str(r#"{"type":"data","data":{"a":1}}"#).unwrap();
+    assert_eq!(data.as_data(), Some(&serde_json::json!({ "a": 1 })));
+}
+
+#[test]
+fn artifact_serialization_and_text_content() {
+    let artifact =
+        A2AArtifact::new(vec![Part::text("alpha"), Part::text("beta")]).with_artifact_id("art-1");
+    let json = serde_json::to_string(&artifact).unwrap();
+    assert!(json.contains("\"artifactId\":\"art-1\""));
+    assert!(json.contains("\"parts\""));
+    assert!(json.contains("\"type\":\"text\""));
+    assert_eq!(artifact.artifact_id(), "art-1");
+    assert_eq!(artifact.parts().len(), 2);
+    assert_eq!(artifact.text_content().as_deref(), Some("alpha\nbeta"));
+}
+
+#[test]
+fn artifact_text_accessor_and_roundtrip() {
+    let a = A2AArtifact::text("art-9", "done").with_metadata(serde_json::json!({ "final": true }));
+    assert_eq!(a.artifact_id(), "art-9");
+    assert_eq!(a.text_content().as_deref(), Some("done"));
+    let json = serde_json::to_string(&a).unwrap();
+    let back: A2AArtifact = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, a);
+    // A data-only artifact has no text content.
+    let data_only = A2AArtifact::new(vec![Part::data(serde_json::json!({ "x": 1 }))]);
+    assert_eq!(data_only.text_content(), None);
+}
+
+#[test]
+fn artifact_default_id_empty() {
+    let a = A2AArtifact::new(vec![Part::text("x")]);
+    assert_eq!(a.artifact_id(), "");
+}
+
+// ---- P2-9: tasks/sendSubscribe ----
+
+#[test]
+fn a2a_request_send_subscribe() {
+    let msg = A2AMessage::user("hello");
+    let req = A2ARequest::send_subscribe(9, &msg);
+    assert_eq!(req.method, "tasks/sendSubscribe");
+    let params = req.params.unwrap();
+    assert_eq!(params["message"]["content"], "hello");
 }

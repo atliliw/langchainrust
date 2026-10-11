@@ -101,6 +101,28 @@ use execution::{run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX
 use handlers::{forbidden, publish_status, task_details_response, task_not_found};
 use message::extract_message;
 
+/// Wraps a raw broadcast receiver as a stream narrowed to one task id
+/// (0.27.0 T2: multi-way concurrency protection).
+///
+/// The process-global bus delivers every task's [`TaskPushNotification`] to
+/// every subscriber; this drops any event whose task id does not match
+/// `task_id`, so back-to-back tasks on the same bus surface to their own
+/// consumers independently (backpressure / lag are handled by dropping, with
+/// a lagged broadcast surfacing as an ended stream rather than cross-talk).
+#[cfg(feature = "axum")]
+fn task_scoped_stream(
+    rx: broadcast::Receiver<TaskPushNotification>,
+    task_id: String,
+) -> std::pin::Pin<Box<dyn tokio_stream::Stream<Item = TaskPushNotification> + Send>> {
+    use tokio_stream::StreamExt;
+    Box::pin(
+        tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |item| {
+            let notification = item.ok()?;
+            (notification.id() == task_id.as_str()).then_some(notification)
+        }),
+    )
+}
+
 /// Default task time-to-live before expiry cleanup (24 hours).
 const DEFAULT_TASK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -133,7 +155,19 @@ impl MessageIdTable {
             // entries that were already aborted.
             while self.map.len() >= MAX_MESSAGE_IDS {
                 match self.order.pop_front() {
-                    Some(oldest) if self.map.remove(&oldest).is_some() => break,
+                    Some(oldest) if self.map.remove(&oldest).is_some() => {
+                        // B5 (0.26.0): an evicted message_id can no longer
+                        // dedupe a re-sent retry, so the same request could
+                        // claim and re-run the chain a second time. This is the
+                        // documented cost of the bounded table (not an error),
+                        // but leave a diagnostic trail so callers aren't blind
+                        // to the weakened idempotency window.
+                        log::debug!(
+                            "message_id table at capacity: evicted `{oldest}`; \
+                             idempotent re-sends of it will no longer dedupe"
+                        );
+                        break;
+                    }
                     Some(_) => continue,
                     None => break,
                 }
@@ -320,8 +354,39 @@ impl A2AServer {
     ///
     /// Returns `None` when the server was not built with
     /// [`A2AServer::with_streaming`].
+    ///
+    /// The returned receiver is the **raw process-global broadcast**: every
+    /// subscriber receives every task's status/artifact events, with no
+    /// per-task (or per-owner) isolation — the consuming layer must filter
+    /// downstream (the HTTP `GET /events` endpoint does; this method alone
+    /// does not). When you follow a single task, prefer
+    /// `A2AServer::subscribe_task` (an `axum`-feature method), which narrows the
+    /// bus at this boundary.
     pub fn subscribe(&self) -> Option<broadcast::Receiver<TaskPushNotification>> {
         self.event_bus.as_ref().map(|tx| tx.subscribe())
+    }
+
+    /// Subscribe to task push notifications for **one** task (0.27.0 T2:
+    /// multi-way concurrency protection at the in-process boundary).
+    ///
+    /// [`A2AServer::subscribe`] leaks every task's events to every subscriber;
+    /// this narrows the broadcast to `task_id` so an in-process consumer
+    /// following one task never sees another's transitions — the same task
+    /// isolation the HTTP `GET /events?taskId=` endpoint applies on the wire,
+    /// multiplexed per subscriber here instead of shipping the whole bus to
+    /// each connection. Ownership checks remain the caller's concern (the
+    /// HTTP layer enforces them via [`A2AServer`]'s principal filter).
+    ///
+    /// Returns `None` when streaming was not enabled with `with_streaming`.
+    #[cfg(feature = "axum")]
+    pub fn subscribe_task(
+        &self,
+        task_id: impl Into<String>,
+    ) -> Option<std::pin::Pin<Box<dyn tokio_stream::Stream<Item = TaskPushNotification> + Send>>>
+    {
+        self.event_bus
+            .as_ref()
+            .map(|tx| task_scoped_stream(tx.subscribe(), task_id.into()))
     }
 
     /// Require a bearer token on every request.
@@ -555,7 +620,7 @@ impl A2AServer {
         req: A2ARequest,
         bearer: Option<&str>,
     ) -> A2AResponse {
-        let principal = match self.check_auth(bearer) {
+        let principal = match self.check_auth(req.id, bearer) {
             Ok(principal) => principal,
             Err(resp) => return *resp,
         };
@@ -586,6 +651,7 @@ impl A2AServer {
     /// [`A2AServer::with_auth_token`] token or an auth-disabled server.
     pub(crate) fn check_auth(
         &self,
+        req_id: u64,
         bearer: Option<&str>,
     ) -> Result<Option<String>, Box<A2AResponse>> {
         // A custom authenticator is the sole authority when installed (B7).
@@ -598,7 +664,9 @@ impl A2AServer {
         match authenticator.authenticate(bearer) {
             Ok(Some(principal)) => Ok(Some(principal.0)),
             Ok(None) => Ok(None),
-            Err(e) => Err(Box::new(A2AResponse::error(0, 401, e.to_string()))),
+            // 0.27.x: echo the request id so a JSON-RPC caller gets a 401 whose id
+            // matches its request (JSON-RPC requires the response id to mirror it).
+            Err(e) => Err(Box::new(A2AResponse::error(req_id, 401, e.to_string()))),
         }
     }
 
@@ -673,6 +741,9 @@ impl A2AServer {
         }
         match req.method.as_str() {
             "tasks/send" => self.handle_tasks_send(req, owner).await,
+            // P2-9: streaming subscribe — acknowledged like `tasks/send`, then
+            // increments are pushed over the SSE/broadcast bus.
+            "tasks/sendSubscribe" => self.handle_tasks_send_subscribe(req, owner).await,
             "tasks/get" => self.handle_tasks_get(req, owner).await,
             "tasks/cancel" => self.handle_tasks_cancel(req, owner).await,
             "tasks/list" => self.handle_tasks_list(req, owner).await,
@@ -758,7 +829,16 @@ impl A2AServer {
                 return match self.store.get(&task_id).await {
                     Ok(Some(_)) => Ok(Some(task_id)),
                     // Referenced task evicted/expired: reclaim the id.
-                    _ => self.claim_message_id(mid).await,
+                    _ => {
+                        // 0.27.x: surface the silent eviction-path reclaim (the
+                        // referenced task was LRU-evicted or expired) instead of
+                        // silently re-binding the message id.
+                        log::warn!(
+                            "message id {mid} referenced task {task_id} that is no longer \
+                             stored (evicted/expired); reclaiming the id"
+                        );
+                        self.claim_message_id(mid).await
+                    }
                 };
             }
             // In-flight reservation by another request.

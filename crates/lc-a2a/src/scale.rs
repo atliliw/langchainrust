@@ -15,11 +15,35 @@
 //!   conversation key.
 //! - [`TaskGraph`] — global parent/child task graph with cycle detection, so a
 //!   delegation loop cannot grow unboundedly.
+//! - [`AgentFleet`] — the runtime that composes all of the above into one
+//!   routing decision.
+//!
+//! # Wiring status
+//!
+//! The building blocks above are wired through [`AgentFleet`], which is held by
+//! [`crate::A2AClient`] (attach it with
+//! [`A2AClientBuilder::fleet`](crate::A2AClientBuilder::fleet)). The client's
+//! `send_task_routed` / `send_task_routed_sticky` / `delegate_task` methods ask
+//! the fleet which agent a request goes to, so the policy — not the caller — is
+//! what selects the target:
+//!
+//! ```text
+//! send_task_routed(query, msg)
+//!   -> AgentFleet::route(query)
+//!        -> SkillIndex::search(query)      relevance ranking
+//!        -> CircuitBreaker::allow_request  skip tripped agents
+//!   -> POST to the selected AgentCard::url
+//!   -> AgentFleet::record_success/_failure   feed the breaker back
+//! ```
+//!
+//! [`crate::SkillAffinityRouter`] covers the server-side counterpart: choosing
+//! the chain that serves a task by skill affinity.
 //!
 //! Task TTL already exists (P1-2), so the scale story is: TTL + hop limit + ring
 //! detection + sharding + per-agent circuit breaking + sticky routing.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::protocol::{AgentCard, AgentSkill};
@@ -46,6 +70,13 @@ pub enum ScaleError {
         parent: String,
         /// The child task that would create the cycle.
         child: String,
+    },
+    /// No fleet agent could serve the request: every candidate was irrelevant
+    /// to the query, or its circuit breaker refused the call.
+    #[error("no fleet agent available for query `{query}`")]
+    NoAgentAvailable {
+        /// The query that could not be routed.
+        query: String,
     },
 }
 
@@ -158,6 +189,41 @@ fn cosine(a: &[String], b: &[String]) -> f64 {
         return 0.0;
     }
     dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+/// Affinity between a task's required skill and a declared [`AgentSkill`]
+/// (T3 skill-affinity routing, used by [`crate::SkillAffinityRouter`]).
+///
+/// The score is ordered so an exact match always dominates a fuzzy one:
+///
+/// | match                                          | score          |
+/// |------------------------------------------------|----------------|
+/// | skill `id`, case-insensitive                    | `1.0`          |
+/// | skill `name`, case-insensitive                  | `0.8`          |
+/// | one of `id` / `required` contains the other     | `0.7`          |
+/// | bag-of-words cosine over id + name + description| `0.6 * cosine` |
+/// | no overlap / empty `required`                   | `0.0`          |
+///
+/// The token branch tops out below `0.6`, so a threshold above that accepts
+/// only id/name/substring matches — the "exact match first" rule stays true at
+/// every threshold.
+pub fn skill_affinity(required: &str, skill: &AgentSkill) -> f64 {
+    let required = required.trim().to_lowercase();
+    if required.is_empty() {
+        return 0.0;
+    }
+    let id = skill.id.trim().to_lowercase();
+    if required == id {
+        return 1.0;
+    }
+    if required == skill.name.trim().to_lowercase() {
+        return 0.8;
+    }
+    if !id.is_empty() && (id.contains(&required) || required.contains(&id)) {
+        return 0.7;
+    }
+    let haystack = format!("{} {} {}", skill.id, skill.name, skill.description);
+    0.6 * cosine(&tokens(&required), &tokens(&haystack))
 }
 
 /// Role of an agent in a delegation hierarchy (P2-9).
@@ -344,6 +410,7 @@ impl Default for CircuitBreakerConfig {
 /// admitted (`HalfOpen`); a success resets to `Closed`, another failure trips
 /// it straight back `Open`. Shared via the interior lock, so a fleet of
 /// concurrent callers is throttled collectively.
+#[derive(Debug)]
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
     inner: std::sync::Mutex<BreakerInner>,
@@ -563,6 +630,356 @@ impl TaskGraph {
         }
         processed == nodes.len()
     }
+}
+
+/// A fleet of candidate agents plus the composed policy that picks one (T3
+/// wiring of this module into the client send path).
+///
+/// `AgentFleet` is the runtime counterpart of the building blocks above. It
+/// composes:
+///
+/// - [`SkillIndex`] — relevance-rank candidates for a free-text query;
+/// - [`CircuitBreaker`] — skip agents whose breaker is open;
+/// - [`StickyRouter`] — pin a conversation key to one agent;
+/// - [`TaskSharder`] — pin a task id to one agent among the relevant ones;
+/// - [`HierarchyPolicy`] / [`DelegationGuard`] / [`TaskGraph`] — gate delegated
+///   routing and record the delegation graph.
+///
+/// [`crate::A2AClient::send_task_routed`] (and its sticky/delegated variants)
+/// call [`AgentFleet::route`] and friends, so the policy — not the caller — is
+/// what decides which agent a task is sent to.
+///
+/// ```ignore
+/// let mut fleet = AgentFleet::new();
+/// fleet.register(retriever_card);
+/// fleet.register(summarizer_card);
+///
+/// let client = A2AClient::builder("http://gateway").fleet(Arc::new(fleet)).build()?;
+/// let routed = client.send_task_routed("retrieve documents", msg).await?;
+/// assert_eq!(routed.agent_url, "http://retriever");
+/// ```
+#[derive(Debug)]
+pub struct AgentFleet {
+    index: SkillIndex,
+    cards: HashMap<String, AgentCard>,
+    /// Registration order — the stable slot space for [`StickyRouter`] and the
+    /// deterministic iteration order for [`AgentFleet::agents`].
+    order: Vec<String>,
+    policy: HierarchyPolicy,
+    guard: DelegationGuard,
+    breaker_config: CircuitBreakerConfig,
+    breakers: Mutex<HashMap<String, Arc<CircuitBreaker>>>,
+    graph: Mutex<TaskGraph>,
+}
+
+impl Default for AgentFleet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AgentFleet {
+    /// An empty fleet.
+    pub fn new() -> Self {
+        Self {
+            index: SkillIndex::new(),
+            cards: HashMap::new(),
+            order: Vec::new(),
+            policy: HierarchyPolicy::new(),
+            guard: DelegationGuard::default(),
+            breaker_config: CircuitBreakerConfig::default(),
+            breakers: Mutex::new(HashMap::new()),
+            graph: Mutex::new(TaskGraph::new()),
+        }
+    }
+
+    /// Configure the per-agent circuit breakers (default:
+    /// [`CircuitBreakerConfig::default`]). Applies to agents registered after
+    /// this call.
+    pub fn with_breaker_config(mut self, config: CircuitBreakerConfig) -> Self {
+        self.breaker_config = config;
+        self
+    }
+
+    /// Set the delegation hop budget (default 10).
+    pub fn with_max_hops(mut self, max_hops: usize) -> Self {
+        self.guard = DelegationGuard::new(max_hops);
+        self
+    }
+
+    /// Mark an agent URL as an orchestrator (may delegate down).
+    pub fn with_orchestrator(mut self, url: impl Into<String>) -> Self {
+        self.policy = self.policy.with_orchestrator(url);
+        self
+    }
+
+    /// Mark an agent URL as a worker (may not delegate).
+    pub fn with_worker(mut self, url: impl Into<String>) -> Self {
+        self.policy = self.policy.with_worker(url);
+        self
+    }
+
+    /// Register an agent card: index its skills, give it a circuit breaker and
+    /// add it to the sticky slot space.
+    ///
+    /// Registering the same URL again replaces the card (its previous skills
+    /// stop being indexed) and keeps its breaker and slot.
+    pub fn register(&mut self, card: AgentCard) {
+        let url = card.url.clone();
+        if !self.cards.contains_key(&url) {
+            self.order.push(url.clone());
+            self.breakers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(url.clone(), Arc::new(CircuitBreaker::new(self.breaker_config)));
+        }
+        self.cards.insert(url, card);
+        self.rebuild_index();
+    }
+
+    /// Rebuild the skill index from the registered cards in registration order,
+    /// so a re-registration cannot leave stale skills behind.
+    fn rebuild_index(&mut self) {
+        let mut index = SkillIndex::new();
+        for url in &self.order {
+            if let Some(card) = self.cards.get(url) {
+                index.index_card(card);
+            }
+        }
+        self.index = index;
+    }
+
+    /// Every registered agent card, in registration order.
+    pub fn agents(&self) -> Vec<AgentCard> {
+        self.order
+            .iter()
+            .filter_map(|url| self.cards.get(url).cloned())
+            .collect()
+    }
+
+    /// The card registered for `url`, if any.
+    pub fn card(&self, url: &str) -> Option<AgentCard> {
+        self.cards.get(url).cloned()
+    }
+
+    /// How many agents are registered.
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Whether the fleet has no agents.
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// Agents whose declared skills are relevant to `query`, best first.
+    ///
+    /// At most one entry per agent: the card's best-scoring skill wins. The
+    /// order is deterministic (relevance, then registration order for ties).
+    pub fn candidates(&self, query: &str) -> Vec<AgentCard> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for entry in self.index.search(query, usize::MAX) {
+            if !seen.insert(entry.agent_url.clone()) {
+                continue;
+            }
+            if let Some(card) = self.cards.get(&entry.agent_url) {
+                out.push(card.clone());
+            }
+        }
+        out
+    }
+
+    /// The best healthy agent for a free-text `query`.
+    ///
+    /// Candidates are ranked by skill relevance and the first one whose circuit
+    /// breaker admits a call wins. Returns [`ScaleError::NoAgentAvailable`] when
+    /// nothing is relevant or every candidate is tripped.
+    pub fn route(&self, query: &str) -> Result<AgentCard, ScaleError> {
+        let candidates = self.candidates(query);
+        self.first_admitting(&candidates)
+            .ok_or_else(|| ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            })
+    }
+
+    /// Sticky routing: the same `conversation_key` prefers the same agent.
+    ///
+    /// The key hashes to a slot in the fleet's registration order; that agent
+    /// is tried first when it is relevant to `query`. A pinned agent that is
+    /// irrelevant (or whose breaker is open) is skipped so the conversation can
+    /// still proceed — availability over pinning — and the caller can compare
+    /// the returned card with the pinned one.
+    pub fn route_sticky(
+        &self,
+        query: &str,
+        conversation_key: &str,
+    ) -> Result<AgentCard, ScaleError> {
+        let candidates = self.candidates(query);
+        if candidates.is_empty() {
+            return Err(ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            });
+        }
+        let slot = StickyRouter::new(self.order.len().max(1)).route(conversation_key);
+        let pinned = self.order.get(slot).cloned();
+        let ordered = prefer_first(candidates, pinned.as_deref());
+        self.first_admitting(&ordered)
+            .ok_or_else(|| ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            })
+    }
+
+    /// Task-stable routing: the same `task_id` prefers the same agent among the
+    /// relevance-ranked candidates, so a task's state stays collocated.
+    pub fn route_for_task(&self, task_id: &str, query: &str) -> Result<AgentCard, ScaleError> {
+        let candidates = self.candidates(query);
+        if candidates.is_empty() {
+            return Err(ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            });
+        }
+        let shard = TaskSharder::new(candidates.len()).shard(task_id);
+        let pinned = candidates.get(shard).map(|card| card.url.clone());
+        let ordered = prefer_first(candidates, pinned.as_deref());
+        self.first_admitting(&ordered)
+            .ok_or_else(|| ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            })
+    }
+
+    /// Delegation-checked routing: `from` must be allowed to delegate to the
+    /// target (hierarchy rule) and `hops` must be inside the hop budget.
+    ///
+    /// Returns [`ScaleError::HopLimitExceeded`] when the budget is spent and
+    /// [`ScaleError::WorkerToWorker`] when the query had candidates but none may
+    /// be delegated to.
+    pub fn route_from(
+        &self,
+        from: &str,
+        hops: usize,
+        query: &str,
+    ) -> Result<AgentCard, ScaleError> {
+        self.guard.check(hops)?;
+        let candidates = self.candidates(query);
+        if candidates.is_empty() {
+            return Err(ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            });
+        }
+        let allowed: Vec<AgentCard> = candidates
+            .into_iter()
+            .filter(|card| self.policy.check_delegation(from, &card.url).is_ok())
+            .collect();
+        if allowed.is_empty() {
+            return Err(ScaleError::WorkerToWorker);
+        }
+        self.first_admitting(&allowed)
+            .ok_or_else(|| ScaleError::NoAgentAvailable {
+                query: query.to_string(),
+            })
+    }
+
+    /// The first candidate whose circuit breaker admits a call.
+    ///
+    /// [`CircuitBreaker::allow_request`] only mutates state when it returns
+    /// `true`, so probing candidates in order cannot leak a half-open probe:
+    /// the first admitted candidate is the one returned.
+    fn first_admitting(&self, candidates: &[AgentCard]) -> Option<AgentCard> {
+        for card in candidates {
+            match self.breaker(&card.url) {
+                Some(breaker) if !breaker.allow_request() => continue,
+                _ => return Some(card.clone()),
+            }
+        }
+        None
+    }
+
+    /// The circuit breaker for `url`, if the agent is registered.
+    pub fn breaker(&self, url: &str) -> Option<Arc<CircuitBreaker>> {
+        self.breakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(url)
+            .cloned()
+    }
+
+    /// The breaker state for `url`, if the agent is registered.
+    pub fn breaker_state(&self, url: &str) -> Option<BreakerState> {
+        self.breaker(url).map(|breaker| breaker.state())
+    }
+
+    /// Record a successful call to `url` (resets its breaker to `Closed`).
+    pub fn record_success(&self, url: &str) {
+        if let Some(breaker) = self.breaker(url) {
+            breaker.record_success();
+        }
+    }
+
+    /// Record a failed call to `url` (trips its breaker once the threshold is
+    /// reached, so later routed sends skip it).
+    pub fn record_failure(&self, url: &str) {
+        if let Some(breaker) = self.breaker(url) {
+            breaker.record_failure();
+        }
+    }
+
+    /// Check that `from` may delegate to `to` under the hierarchy rule.
+    pub fn check_delegation(&self, from: &str, to: &str) -> Result<(), ScaleError> {
+        self.policy.check_delegation(from, to)
+    }
+
+    /// Check a delegation chain depth of `hops` against the hop budget.
+    pub fn check_hops(&self, hops: usize) -> Result<(), ScaleError> {
+        self.guard.check(hops)
+    }
+
+    /// The configured hop ceiling.
+    pub fn max_hops(&self) -> usize {
+        self.guard.max_hops()
+    }
+
+    /// Record a `parent_task -> child_task` delegation edge, refusing any edge
+    /// that would close a cycle in the fleet's delegation graph.
+    pub fn link_delegation(&self, parent: &str, child: &str) -> Result<(), ScaleError> {
+        self.graph
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .link(parent, child)
+    }
+
+    /// Whether the recorded delegation graph is acyclic.
+    pub fn is_delegation_acyclic(&self) -> bool {
+        self.graph
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_acyclic()
+    }
+}
+
+/// Move the card whose URL is `preferred` to the front of `candidates`.
+///
+/// A preferred agent that is not among the candidates leaves the order
+/// unchanged (logged at debug level so a missed pin is diagnosable).
+fn prefer_first(candidates: Vec<AgentCard>, preferred: Option<&str>) -> Vec<AgentCard> {
+    let Some(preferred) = preferred else {
+        return candidates;
+    };
+    let mut first = Vec::with_capacity(1);
+    let mut rest = Vec::with_capacity(candidates.len());
+    for card in candidates {
+        if card.url == preferred {
+            first.push(card);
+        } else {
+            rest.push(card);
+        }
+    }
+    if first.is_empty() {
+        log::debug!("preferred agent {preferred} is not a candidate for the query; using the ranked order");
+        return rest;
+    }
+    first.extend(rest);
+    first
 }
 
 #[cfg(test)]
@@ -815,5 +1232,278 @@ mod tests {
             policy.check_delegation("http://unknown", "http://worker"),
             Err(ScaleError::WorkerToWorker)
         ));
+    }
+
+    // ---- T3: skill affinity scoring ----
+
+    #[test]
+    fn affinity_ranks_exact_id_above_name_and_description() {
+        let skill = AgentSkill::new(
+            "translate",
+            "Translation",
+            "translate text between languages",
+        );
+        assert_eq!(skill_affinity("translate", &skill), 1.0);
+        assert_eq!(skill_affinity("TRANSLATE", &skill), 1.0);
+        assert_eq!(skill_affinity("translation", &skill), 0.8);
+        // Substring of the id (not equal) still beats a description overlap.
+        assert_eq!(skill_affinity("trans", &skill), 0.7);
+        let fuzzy = skill_affinity("language text", &skill);
+        assert!(
+            fuzzy > 0.0 && fuzzy < 0.6,
+            "token overlap must stay below the substring band, got {fuzzy}"
+        );
+    }
+
+    #[test]
+    fn affinity_is_zero_for_unrelated_or_empty_requests() {
+        let skill = AgentSkill::new("translate", "Translation", "translate text");
+        assert_eq!(skill_affinity("orbit physics", &skill), 0.0);
+        assert_eq!(skill_affinity("", &skill), 0.0);
+        assert_eq!(skill_affinity("   ", &skill), 0.0);
+    }
+
+    // ---- T3: AgentFleet routing ----
+
+    fn fleet_card(name: &str, skill_id: &str, description: &str) -> AgentCard {
+        AgentCard::new(name, description, format!("http://{name}")).with_skill(AgentSkill::new(
+            skill_id,
+            skill_id,
+            description,
+        ))
+    }
+
+    fn fleet() -> AgentFleet {
+        let mut fleet = AgentFleet::new();
+        fleet.register(fleet_card(
+            "retriever",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ));
+        fleet.register(fleet_card(
+            "summarizer",
+            "summarize",
+            "condense long documents into a short summary",
+        ));
+        fleet.register(fleet_card(
+            "translator",
+            "translate",
+            "translate text between languages",
+        ));
+        fleet
+    }
+
+    #[test]
+    fn fleet_routes_to_the_relevant_agent() {
+        let fleet = fleet();
+        assert_eq!(fleet.len(), 3);
+        assert_eq!(fleet.route("retrieve documents").unwrap().url, "http://retriever");
+        assert_eq!(
+            fleet.route("condense documents summary").unwrap().url,
+            "http://summarizer"
+        );
+        assert_eq!(
+            fleet.route("translate languages").unwrap().url,
+            "http://translator"
+        );
+        // An unrelated query has no candidate at all.
+        assert!(matches!(
+            fleet.route("orbit physics"),
+            Err(ScaleError::NoAgentAvailable { .. })
+        ));
+    }
+
+    #[test]
+    fn fleet_skips_agents_whose_breaker_is_open() {
+        let mut fleet = AgentFleet::new().with_breaker_config(CircuitBreakerConfig {
+            failure_threshold: 1,
+            open_duration: Duration::from_secs(30),
+        });
+        // Both agents answer "retrieve documents"; the first registered wins.
+        fleet.register(fleet_card(
+            "primary",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ));
+        fleet.register(fleet_card(
+            "secondary",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ));
+
+        assert_eq!(
+            fleet.route("retrieve documents").unwrap().url,
+            "http://primary"
+        );
+        assert_eq!(
+            fleet.breaker_state("http://primary"),
+            Some(BreakerState::Closed)
+        );
+
+        fleet.record_failure("http://primary");
+        assert_eq!(
+            fleet.breaker_state("http://primary"),
+            Some(BreakerState::Open)
+        );
+        assert_eq!(
+            fleet.route("retrieve documents").unwrap().url,
+            "http://secondary",
+            "a tripped agent must be skipped in favor of the next candidate"
+        );
+
+        fleet.record_failure("http://secondary");
+        assert!(matches!(
+            fleet.route("retrieve documents"),
+            Err(ScaleError::NoAgentAvailable { .. })
+        ));
+
+        // A success resets the breaker and the agent becomes routable again.
+        fleet.record_success("http://primary");
+        assert_eq!(
+            fleet.route("retrieve documents").unwrap().url,
+            "http://primary"
+        );
+    }
+
+    #[test]
+    fn fleet_sticky_routing_pins_among_equally_relevant_agents() {
+        // Two agents advertising the *same* skill: relevance cannot separate
+        // them, so only the sticky slot can — and it must be stable per key.
+        let mut fleet = AgentFleet::new();
+        for name in ["a", "b"] {
+            fleet.register(fleet_card(
+                name,
+                "retrieve",
+                "retrieve relevant documents from the corpus",
+            ));
+        }
+
+        let first = fleet.route_sticky("retrieve documents", "conv-42").unwrap();
+        let again = fleet.route_sticky("retrieve documents", "conv-42").unwrap();
+        assert_eq!(first.url, again.url, "the same key must pin the same agent");
+
+        // Across many keys both agents get pinned, so the slot — not the
+        // registration order — drives the choice.
+        let mut urls: Vec<String> = (0..64)
+            .map(|i| {
+                fleet
+                    .route_sticky("retrieve documents", &format!("conv-{i}"))
+                    .unwrap()
+                    .url
+            })
+            .collect();
+        urls.sort();
+        urls.dedup();
+        assert_eq!(
+            urls,
+            vec!["http://a".to_string(), "http://b".to_string()],
+            "sticky routing must spread keys over the fleet"
+        );
+    }
+
+    #[test]
+    fn fleet_sticky_falls_back_when_the_pinned_agent_is_irrelevant() {
+        let fleet = fleet();
+        // "translate" only has one relevant agent; every key must land on it
+        // even when the key hashes to another agent's slot.
+        for i in 0..32 {
+            let card = fleet
+                .route_sticky("translate text between languages", &format!("key-{i}"))
+                .unwrap();
+            assert_eq!(card.url, "http://translator");
+        }
+    }
+
+    #[test]
+    fn fleet_task_routing_is_stable_and_relevance_bounded() {
+        let fleet = fleet();
+        let first = fleet.route_for_task("task-abc", "retrieve documents").unwrap();
+        assert_eq!(
+            first.url,
+            fleet.route_for_task("task-abc", "retrieve documents").unwrap().url,
+            "the same task id must pin to the same agent (sticky routing)"
+        );
+        // Sticky routing deliberately prefers a fixed slot; it may over-run a
+        // higher-relevance candidate. The contract is that the chosen agent is
+        // one of the relevance-ranked candidates, not necessarily the top one.
+        let relevant = ["http://retriever", "http://summarizer"];
+        assert!(
+            relevant.contains(&first.url.as_str()),
+            "task pinned to an unrelated agent, got: {first:?}"
+        );
+    }
+
+    #[test]
+    fn fleet_delegation_checks_hierarchy_and_hops() {
+        let mut fleet = AgentFleet::new()
+            .with_orchestrator("http://orch")
+            .with_worker("http://retriever")
+            .with_max_hops(2);
+        fleet.register(fleet_card(
+            "retriever",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ));
+
+        assert_eq!(fleet.max_hops(), 2);
+        fleet.check_hops(2).unwrap();
+        assert!(matches!(
+            fleet.check_hops(3),
+            Err(ScaleError::HopLimitExceeded { hops: 3, max: 2 })
+        ));
+
+        // An orchestrator may delegate to the worker.
+        assert_eq!(
+            fleet
+                .route_from("http://orch", 1, "retrieve documents")
+                .unwrap()
+                .url,
+            "http://retriever"
+        );
+        // A worker may not delegate at all.
+        assert!(matches!(
+            fleet.route_from("http://retriever", 1, "retrieve documents"),
+            Err(ScaleError::WorkerToWorker)
+        ));
+        // The hop budget is checked before any routing happens.
+        assert!(matches!(
+            fleet.route_from("http://orch", 3, "retrieve documents"),
+            Err(ScaleError::HopLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn fleet_records_the_delegation_graph() {
+        let fleet = AgentFleet::new();
+        fleet.link_delegation("task-root", "task-child").unwrap();
+        fleet.link_delegation("task-child", "task-grandchild").unwrap();
+        assert!(fleet.is_delegation_acyclic());
+
+        let err = fleet.link_delegation("task-grandchild", "task-root").unwrap_err();
+        assert!(matches!(err, ScaleError::CycleDetected { .. }));
+        assert!(fleet.is_delegation_acyclic());
+    }
+
+    #[test]
+    fn fleet_reregistration_replaces_skills_and_keeps_the_breaker() {
+        let mut fleet = AgentFleet::new();
+        fleet.register(fleet_card("agent", "translate", "translate text"));
+        fleet.record_failure("http://agent");
+        // Re-register with a skill whose vocabulary shares no token with the
+        // old skill, so the bag-of-words index can prove the old skill is gone.
+        fleet.register(fleet_card("agent", "summarize", "summarize concise documents"));
+
+        assert_eq!(fleet.len(), 1);
+        // The old skill is gone from the index, so the old query no longer routes.
+        assert!(matches!(
+            fleet.route("translate text"),
+            Err(ScaleError::NoAgentAvailable { .. })
+        ));
+        assert_eq!(
+            fleet.route("summarize concise documents").unwrap().url,
+            "http://agent"
+        );
+        // The breaker survived the re-registration.
+        assert_eq!(fleet.breaker_state("http://agent"), Some(BreakerState::Closed));
     }
 }

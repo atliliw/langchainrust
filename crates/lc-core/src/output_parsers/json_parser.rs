@@ -115,162 +115,19 @@ impl JsonOutputParser {
             return Ok(value);
         }
 
-        // try to repair common incomplete JSON patterns
-        let repaired = self.repair_partial_json(text);
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&repaired) {
-            return Ok(value);
-        }
-
-        Err(OutputParserError::JsonError(format!(
-            "partial JSON parse failed: {}",
-            preview_slice(text, 200)
-        )))
-    }
-
-    /// Repairs an incomplete JSON string
-    ///
-    /// Handles common incomplete JSON forms, such as:
-    /// - a trailing extra comma
-    /// - an incomplete string
-    /// - an incomplete object/array
-    fn repair_partial_json(&self, text: &str) -> String {
-        let mut repaired = text.trim().to_string();
-
-        // handle an unclosed string ending in `"` (drop the last incomplete token)
-        if let Some(stripped) = Self::strip_incomplete_token(&repaired) {
-            repaired = stripped;
-        }
-
-        // Scan tracking string state to correctly count braces/brackets
-        let mut in_string = false;
-        let mut escape_next = false;
-        let mut open_braces = 0usize;
-        let mut close_braces = 0usize;
-        let mut open_brackets = 0usize;
-        let mut close_brackets = 0usize;
-
-        for ch in repaired.chars() {
-            if escape_next {
-                escape_next = false;
-                continue;
-            }
-            if ch == '\\' && in_string {
-                escape_next = true;
-                continue;
-            }
-            if ch == '"' {
-                in_string = !in_string;
-                continue;
-            }
-            if !in_string {
-                match ch {
-                    '{' => open_braces += 1,
-                    '}' => close_braces += 1,
-                    '[' => open_brackets += 1,
-                    ']' => close_brackets += 1,
-                    _ => {}
-                }
-            }
-        }
-
-        // close the unclosed braces
-        for _ in close_braces..open_braces {
-            repaired.push('}');
-        }
-
-        for _ in close_brackets..open_brackets {
-            repaired.push(']');
-        }
-
-        // ensure the string ends with a quote (if a string was opened)
-        // Scan forward (not backward) to find unclosed strings (M31)
-        let mut in_string = false;
-        let mut escape_next = false;
-        let mut last_open_quote_pos: Option<usize> = None;
-
-        for (i, ch) in repaired.char_indices() {
-            if escape_next {
-                escape_next = false;
-                continue;
-            }
-            if ch == '\\' && in_string {
-                escape_next = true;
-                continue;
-            }
-            if ch == '"' {
-                if in_string {
-                    in_string = false;
-                    last_open_quote_pos = None;
-                } else {
-                    in_string = true;
-                    last_open_quote_pos = Some(i);
-                }
-                continue;
-            }
-        }
-
-        // If we're still in a string at the end, truncate at the opening quote
-        // and close it, or just close it if the string value is partially complete
-        if in_string {
-            // Check if the unclosed string contains a newline (invalid in JSON strings)
-            if let Some(open_pos) = last_open_quote_pos {
-                let after_quote = &repaired[open_pos + 1..];
-                if after_quote.contains('\n') {
-                    // Truncate at the newline and close the string
-                    if let Some(pos) = repaired[open_pos + 1..].find('\n') {
-                        let newline_pos = pos + open_pos + 1;
-                        repaired.truncate(newline_pos);
-                        repaired.push('"');
-                    }
-                }
-            }
-        }
-
-        repaired
-    }
-
-    /// Drops an incomplete trailing token
-    fn strip_incomplete_token(s: &str) -> Option<String> {
-        let trimmed = s.trim_end();
-
-        // If the string ends with an incomplete key or value token,
-        // try to find the last complete token boundary.
-        // Look for the last structural character (: , { [ }) and truncate after it.
-        let chars: Vec<char> = trimmed.chars().collect();
-        if chars.is_empty() {
-            return None;
-        }
-
-        // Scan backwards to find the last structural boundary
-        let mut i = chars.len();
-        while i > 0 {
-            i -= 1;
-            match chars[i] {
-                ',' | ':' | '{' | '[' | '}' | ']' => {
-                    // Found a structural character; truncate after it
-                    let truncate_at: usize = trimmed
-                        .char_indices()
-                        .nth(i + 1)
-                        .map(|(pos, _)| pos)
-                        .unwrap_or(trimmed.len());
-                    if truncate_at < s.len() {
-                        let result = trimmed[..truncate_at].to_string();
-                        if result != s.trim_end() {
-                            return Some(result);
-                        }
-                    }
-                    return None;
-                }
-                '"' => {
-                    // Check if this is a closing quote (even number of quotes before it)
-                    // If so, the JSON might be complete at this point
-                    return None;
-                }
-                _ => {}
-            }
-        }
-
-        None
+        // Repair via the canonical LIFO implementation shared with structured
+        // output (`PartialJsonParser::repair_partial_json`) — not a local,
+        // counter-based one. 0.26.0 §3.1/§3.4: the two previously drifted; the
+        // counter-based closer produced illegal JSON for nested truncation
+        // (`{"a": [1, 2` → `{"a": [1, 2}]` instead of `{"a": [1, 2]}`). A single
+        // source of truth now.
+        let repaired = PartialJsonParser::repair_partial_json(text);
+        serde_json::from_str::<serde_json::Value>(&repaired).map_err(|_| {
+            OutputParserError::JsonError(format!(
+                "partial JSON parse failed: {}",
+                preview_slice(text, 200)
+            ))
+        })
     }
 }
 
@@ -386,6 +243,18 @@ mod tests {
         // complete JSON: partial mode must also parse it
         let result = parser.parse(r#"{"a": 1}"#).await.unwrap();
         assert_eq!(result["a"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_json_parser_partial_nested_closes_in_lifo_order() {
+        // 0.26.0 §3.1: nested structures must close LIFO (inner array first),
+        // not "all braces then all brackets". `{"a": [1, 2` with the counter
+        // repair became `{"a": [1, 2}]` (illegal); the shared LIFO repair gives
+        // `{"a": [1, 2]}` which parses to {"a":[1,2]}.
+        let parser = JsonOutputParser::new_partial();
+        let result = parser.parse(r#"{"a": [1, 2"#).await.unwrap();
+        assert_eq!(result.get("a").unwrap()[1], 2);
+        assert_eq!(result["a"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

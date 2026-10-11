@@ -125,10 +125,15 @@ impl ToolNamespace {
             .map(|(s, t)| (s.as_str(), t.as_str()))
     }
 
-    /// Enumerates all registered external full names (order not stable). Used by the Gateway (P2-8) unified
-    /// registry traversal.
+    /// Enumerates all registered external full names, sorted lexicographically.
+    ///
+    /// The underlying `HashMap` iteration order is unpredictable across runs, which would make any
+    /// positional or wire traversal of the Gateway (P2-8) unified registry non-deterministic; sorting
+    /// gives every consumer a stable, reproducible ordering.
     pub fn names(&self) -> Vec<String> {
-        self.index.keys().cloned().collect()
+        let mut keys: Vec<String> = self.index.keys().cloned().collect();
+        keys.sort();
+        keys
     }
 
     /// Number of registered tools.
@@ -165,6 +170,31 @@ mod tests {
         assert_eq!(full, "fs:read_file");
         assert_eq!(ToolNamespace::parse(&full), Some(("fs", "read_file")));
         assert_eq!(ToolNamespace::parse("no_separator"), None);
+    }
+
+    /// `names()` must be sorted so registry traversal is deterministic despite the HashMap's
+    /// unpredictable iteration order (wire order determinism, P2-8 gateway).
+    #[test]
+    fn names_are_sorted_deterministically() {
+        let mut ns = ToolNamespace::new();
+        // Register out of order across mixed servers.
+        ns.register("zoo", [tool("aaa"), tool("ccc")], ToolConflict::Prefix)
+            .unwrap();
+        ns.register("alpha", [tool("bbb")], ToolConflict::Prefix)
+            .unwrap();
+
+        let names = ns.names();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "names must be lexicographically sorted: {names:?}"
+        );
+        assert_eq!(
+            names,
+            vec!["alpha:bbb", "zoo:aaa", "zoo:ccc"],
+            "expected the three full names in sorted order"
+        );
     }
 
     /// Prefix policy: same-named tools from different Servers are all exposed, each unique with its own prefix.

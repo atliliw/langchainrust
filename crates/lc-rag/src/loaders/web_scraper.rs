@@ -22,6 +22,13 @@ static HREF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static DOMAIN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"https?://([^/]+)").expect("static regex literal must compile")
 });
+// 0.27.x: strip inline script/style blocks (and template strings inside them)
+// before scanning for `href` so dead URLs living in JS/CSS — e.g. fake
+// `href`s inside <script> templates — are never harvested as links.
+static SCRIPT_STYLE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"<\s*(?:script|style)\b[\s\S]*?</\s*(?:script|style)\s*>")
+        .expect("static regex literal must compile")
+});
 static DOMAIN_PREFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"https?://[^/]+").expect("static regex literal must compile")
 });
@@ -86,8 +93,12 @@ impl WebScraperLoader {
     /// Extracts links from HTML
     fn extract_links(html: &str, base_url: &str) -> Vec<String> {
         let base_domain = Self::extract_domain(base_url);
+        // Strip script/style before scanning: their contents often carry
+        // non-navigable `href`s (JS templates, JSON-LD strings, CSS url(...))
+        // that pollute the harvested link set.
+        let scanned = SCRIPT_STYLE_RE.replace_all(html, "");
         HREF_RE
-            .captures_iter(html)
+            .captures_iter(&scanned)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .filter(|link| !link.starts_with('#') && !link.starts_with("javascript:"))
             .filter_map(|link| Self::resolve_url(base_url, &link))

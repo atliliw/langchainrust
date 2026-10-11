@@ -1,4 +1,15 @@
-// ---- P1-3: Agent Card HMAC signatures ----
+// ---- P1-3 / v1.0.1: Agent card signing, unified on compact JWS (HS256) ----
+//
+// 0.27.0 L88: the crate used to carry *two* card-signing schemes — a legacy
+// HMAC stored hex-encoded in `card.signature` (over **unsorted** card JSON) and
+// a newer RFC 7515 compact JWS (HS256) returned out-of-band. They canonicalized
+// differently, so a card signed by one was unverifiable by the other. Today
+// there is one scheme: every form signs/verifies a **compact JWS (HS256)** over
+// the same RFC 8785-sorted, `signature`-stripped payload. The in-field form
+// (`sign_agent_card` / `verify_card_signature`) just stores that JWS in
+// `card.signature`; the out-of-band form (`sign_card_jws` / `verify_card_jws`)
+// returns it as a string. Common canonicalization + one HMAC + one
+// constant-time compare — no drift.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -7,80 +18,9 @@ use crate::protocol::AgentCard;
 
 use super::A2AError;
 
-/// Sign an agent card with a shared HMAC-SHA256 secret (P1-3).
-///
-/// The signature is computed over the canonical JSON of the card with the
-/// `signature` field stripped, and stored hex-encoded in `card.signature`.
-/// Verify with [`verify_card_signature`].
-pub fn sign_agent_card(card: &mut AgentCard, secret: &[u8]) -> Result<(), A2AError> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|_| A2AError::Signature("invalid signing secret length".to_string()))?;
-    mac.update(&canonical_card_bytes(card)?);
-    let tag = mac.finalize().into_bytes();
-    card.signature = Some(hex_encode(&tag));
-    Ok(())
-}
-
-/// Verify an agent card's HMAC-SHA256 signature (P1-3).
-///
-/// Returns `Ok(())` for unsigned cards (nothing to verify). A card whose
-/// signature does not match `secret` (or is malformed) yields a
-/// [`A2AError::Signature`].
-pub fn verify_card_signature(card: &AgentCard, secret: &[u8]) -> Result<(), A2AError> {
-    let sig = match card.signature.as_deref() {
-        Some(s) if !s.is_empty() => s,
-        _ => return Ok(()),
-    };
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|_| A2AError::Signature("invalid verification secret length".to_string()))?;
-    mac.update(&canonical_card_bytes(card)?);
-    let expected = hex_encode(&mac.finalize().into_bytes());
-    if constant_time_eq(sig, &expected) {
-        Ok(())
-    } else {
-        Err(A2AError::Signature(
-            "agent card signature verification failed".to_string(),
-        ))
-    }
-}
-
-/// Canonical bytes of a card for signing: the card JSON with `signature`
-/// removed so signatures don't cover themselves.
-fn canonical_card_bytes(card: &AgentCard) -> Result<Vec<u8>, A2AError> {
-    let mut value = serde_json::to_value(card)
-        .map_err(|e| A2AError::Parse(format!("Failed to serialize agent card: {}", e)))?;
-    if let Some(obj) = value.as_object_mut() {
-        obj.remove("signature");
-    }
-    serde_json::to_vec(&value)
-        .map_err(|e| A2AError::Parse(format!("Failed to serialize agent card: {}", e)))
-}
-
-/// Lowercase hex encoding.
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(s, "{:02x}", b).expect("writing to a String cannot fail");
-    }
-    s
-}
-
-/// Constant-time string comparison (avoids leaking the expected signature).
-pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let a = a.as_bytes();
-    let b = b.as_bytes();
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-// ---- v1.0.1: JWS (compact, HS256) over RFC 8785-canonical card JSON ----
+/// Fixed compact-JWS header; the only algorithm wired is HS256 (verify enforces
+/// it, so a forged `alg:none` / `alg:RS256` header is refused).
+const JWS_HEADER: &[u8] = br#"{"alg":"HS256","typ":"JWS"}"#;
 
 /// RFC 8785-style canonical JSON (approximation): object keys sorted
 /// recursively, no insignificant whitespace. Sufficient for deterministic
@@ -100,6 +40,143 @@ pub fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
         V::Array(items) => V::Array(items.iter().map(canonical_json).collect()),
         other => other.clone(),
     }
+}
+
+/// Canonical payload bytes for a card: RFC 8785-sorted JSON with the top-level
+/// `signature` field stripped so a signature never covers itself. Shared by the
+/// in-field (`card.signature`) and out-of-band (returned JWS) forms, so both
+/// produce and consume the same HS256 compact JWS.
+fn canonical_card_payload(card: &AgentCard) -> Result<Vec<u8>, A2AError> {
+    let mut value = serde_json::to_value(card)
+        .map_err(|e| A2AError::Parse(format!("Failed to serialize agent card: {e}")))?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("signature");
+    }
+    serde_json::to_vec(&canonical_json(&value))
+        .map_err(|e| A2AError::Parse(format!("Failed to canonicalize agent card: {e}")))
+}
+
+fn hmac_new(secret: &[u8]) -> Result<Hmac<Sha256>, A2AError> {
+    Hmac::<Sha256>::new_from_slice(secret)
+        .map_err(|_| A2AError::Signature("invalid signing secret length".to_string()))
+}
+
+/// Builds a compact JWS (HS256): `header.payload.signature` (all base64url).
+/// The card is not modified; store the returned string wherever the card is
+/// served (e.g. alongside `/.well-known/agent-card.json`).
+fn build_jws(payload: &[u8], secret: &[u8]) -> Result<String, A2AError> {
+    let signing_input = format!(
+        "{}.{}",
+        base64url_encode(JWS_HEADER),
+        base64url_encode(payload)
+    );
+    let mut mac = hmac_new(secret)?;
+    mac.update(signing_input.as_bytes());
+    let signature = base64url_encode(&mac.finalize().into_bytes());
+    Ok(format!("{signing_input}.{signature}"))
+}
+
+/// Verifies a compact JWS (HS256) against the canonical payload bytes.
+/// Tampering with the payload, the signature, or swapping in a non-HS256 header
+/// all fail.
+fn verify_jws(payload: &[u8], jws: &str, secret: &[u8]) -> Result<(), A2AError> {
+    let mut parts = jws.split('.');
+    let h = parts
+        .next()
+        .ok_or_else(|| A2AError::Signature("malformed JWS: no header".into()))?;
+    let p = parts
+        .next()
+        .ok_or_else(|| A2AError::Signature("malformed JWS: no payload".into()))?;
+    let s = parts
+        .next()
+        .ok_or_else(|| A2AError::Signature("malformed JWS: no signature".into()))?;
+    if parts.next().is_some() {
+        return Err(A2AError::Signature("malformed JWS: extra segments".into()));
+    }
+    // Header must declare HS256 (no alg-confusion).
+    let header_json: serde_json::Value = serde_json::from_slice(
+        &base64url_decode(h)
+            .ok_or_else(|| A2AError::Signature("JWS header not base64url".into()))?,
+    )
+    .map_err(|e| A2AError::Signature(format!("JWS header not JSON: {e}")))?;
+    if header_json.get("alg").and_then(|a| a.as_str()) != Some("HS256") {
+        return Err(A2AError::Signature(
+            "JWS alg mismatch: expected HS256".into(),
+        ));
+    }
+    let expected_payload = base64url_encode(payload);
+    if p != expected_payload {
+        return Err(A2AError::Signature(
+            "JWS payload does not match the card".into(),
+        ));
+    }
+    let mut mac = hmac_new(secret)?;
+    mac.update(format!("{h}.{p}").as_bytes());
+    let expected_signature = base64url_encode(&mac.finalize().into_bytes());
+    if constant_time_eq(s, &expected_signature) {
+        Ok(())
+    } else {
+        Err(A2AError::Signature(
+            "JWS signature verification failed".into(),
+        ))
+    }
+}
+
+/// Signs an agent card in place, storing a compact JWS (HS256) in
+/// `card.signature` (P1-3). Verify with [`verify_card_signature`].
+///
+/// The JWS covers the RFC 8785-canonical card JSON with the `signature` field
+/// stripped — the same payload the out-of-band [`sign_card_jws`] signs, so the
+/// two forms are interchangeable (0.27.0 L88 unification).
+pub fn sign_agent_card(card: &mut AgentCard, secret: &[u8]) -> Result<(), A2AError> {
+    card.signature = Some(build_jws(&canonical_card_payload(card)?, secret)?);
+    Ok(())
+}
+
+/// Verifies the compact JWS stored in an agent card's `signature` field (P1-3).
+///
+/// Returns `Ok(())` for unsigned cards (nothing to verify). A card whose
+/// signature does not match `secret` (or is malformed) yields a
+/// [`A2AError::Signature`].
+pub fn verify_card_signature(card: &AgentCard, secret: &[u8]) -> Result<(), A2AError> {
+    let sig = match card.signature.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(()),
+    };
+    verify_jws(&canonical_card_payload(card)?, sig, secret)
+}
+
+/// Signs an agent card as a **compact JWS (HS256)** returned out-of-band
+/// (v1.0.1: JWS per RFC 7515; the signing secret travels out-of-band —
+/// configured, never hardcoded).
+///
+/// Returns the compact JWS `header.payload.signature` (all base64url). The
+/// card itself is not modified; store the returned string wherever the card is
+/// served. Equivalent to the in-field [`sign_agent_card`] for the same card and
+/// secret (0.27.0 L88 unification).
+pub fn sign_card_jws(card: &AgentCard, secret: &[u8]) -> Result<String, A2AError> {
+    build_jws(&canonical_card_payload(card)?, secret)
+}
+
+/// Verifies a compact JWS (HS256) produced by [`sign_card_jws`] against the
+/// card's canonical form. Tampering with either the card or the JWS fails.
+pub fn verify_card_jws(card: &AgentCard, jws: &str, secret: &[u8]) -> Result<(), A2AError> {
+    verify_jws(&canonical_card_payload(card)?, jws, secret)
+}
+
+/// Constant-time string comparison (avoids leaking the expected value). Also
+/// reused by `server/auth.rs` for bearer-token checks.
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn base64url_encode(bytes: &[u8]) -> String {
@@ -138,92 +215,6 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
         }
     }
     Some(buf)
-}
-
-/// Signs an agent card as a **compact JWS (HS256)** over the canonical card
-/// JSON (v1.0.1: JWS per RFC 7515; the signing secret travels out-of-band —
-/// configured, never hardcoded).
-///
-/// Returns the compact JWS `header.payload.signature` (all base64url). The
-/// card itself is not modified; store the returned string wherever the card
-/// is served (e.g. alongside `/.well-known/agent-card.json`).
-pub fn sign_card_jws(card: &AgentCard, secret: &[u8]) -> Result<String, A2AError> {
-    let value = canonical_json(
-        &serde_json::to_value(card)
-            .map_err(|e| A2AError::Parse(format!("Failed to serialize agent card: {e}")))?,
-    );
-    let payload = serde_json::to_vec(&value)
-        .map_err(|e| A2AError::Parse(format!("Failed to canonicalize agent card: {e}")))?;
-    let header = br#"{"alg":"HS256","typ":"JWS"}"#;
-    let signing_input = format!(
-        "{}.{}",
-        base64url_encode(header),
-        base64url_encode(&payload)
-    );
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|_| A2AError::Signature("invalid JWS secret length".to_string()))?;
-    mac.update(signing_input.as_bytes());
-    let sig = base64url_encode(&mac.finalize().into_bytes());
-    Ok(format!("{signing_input}.{sig}"))
-}
-
-/// Verifies a compact JWS (HS256) produced by [`sign_card_jws`] against the
-/// card's canonical form. Tampering with either the card or the JWS fails.
-pub fn verify_card_jws(card: &AgentCard, jws: &str, secret: &[u8]) -> Result<(), A2AError> {
-    let value = canonical_json(
-        &serde_json::to_value(card)
-            .map_err(|e| A2AError::Parse(format!("Failed to serialize agent card: {e}")))?,
-    );
-    let payload = serde_json::to_vec(&value)
-        .map_err(|e| A2AError::Parse(format!("Failed to canonicalize agent card: {e}")))?;
-    let header = br#"{"alg":"HS256","typ":"JWS"}"#;
-    let signing_input = format!(
-        "{}.{}",
-        base64url_encode(header),
-        base64url_encode(&payload)
-    );
-
-    let mut parts = jws.split('.');
-    let h = parts
-        .next()
-        .ok_or_else(|| A2AError::Signature("malformed JWS: no header".into()))?;
-    let p = parts
-        .next()
-        .ok_or_else(|| A2AError::Signature("malformed JWS: no payload".into()))?;
-    let s = parts
-        .next()
-        .ok_or_else(|| A2AError::Signature("malformed JWS: no signature".into()))?;
-    if parts.next().is_some() {
-        return Err(A2AError::Signature("malformed JWS: extra segments".into()));
-    }
-    // Header must declare HS256 (no alg-confusion).
-    let header_json: serde_json::Value = serde_json::from_slice(
-        &base64url_decode(h)
-            .ok_or_else(|| A2AError::Signature("JWS header not base64url".into()))?,
-    )
-    .map_err(|e| A2AError::Signature(format!("JWS header not JSON: {e}")))?;
-    if header_json.get("alg").and_then(|a| a.as_str()) != Some("HS256") {
-        return Err(A2AError::Signature(
-            "JWS alg mismatch: expected HS256".into(),
-        ));
-    }
-    let expected_payload = base64url_encode(&payload);
-    if p != expected_payload {
-        return Err(A2AError::Signature(
-            "JWS payload does not match the card".into(),
-        ));
-    }
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|_| A2AError::Signature("invalid JWS secret length".to_string()))?;
-    mac.update(signing_input.as_bytes());
-    let expected_sig = base64url_encode(&mac.finalize().into_bytes());
-    if constant_time_eq(s, &expected_sig) {
-        Ok(())
-    } else {
-        Err(A2AError::Signature(
-            "JWS signature verification failed".into(),
-        ))
-    }
 }
 
 #[cfg(test)]
@@ -289,6 +280,40 @@ mod jws_tests {
         let c = canonical_json(&v);
         let s = serde_json::to_string(&c).unwrap();
         assert_eq!(s, r#"{"a":{"x":3,"y":2},"b":1}"#);
+    }
+
+    /// 0.27.0 L88: in-field and out-of-band forms interoperate — the JWS stored
+    /// in `card.signature` by `sign_agent_card` verifies via the out-of-band
+    /// verifier too, because they share one canonical payload.
+    #[test]
+    fn in_field_and_out_of_band_forms_interoperate() {
+        let mut card = card();
+        sign_agent_card(&mut card, b"secret-1").unwrap();
+        let jws = card
+            .signature
+            .as_deref()
+            .expect("signed card carries a JWS");
+        assert_eq!(
+            jws.split('.').count(),
+            3,
+            "in-field signature is a compact JWS"
+        );
+        // Both verifiers accept the same JWS.
+        verify_card_signature(&card, b"secret-1").unwrap();
+        verify_card_jws(&card, jws, b"secret-1").unwrap();
+        // The in-field JWS is exactly what out-of-band signing would produce.
+        assert_eq!(sign_card_jws(&card, b"secret-1").unwrap(), jws);
+    }
+
+    /// 0.27.0 L88: the in-field signature covers the *unsigned* card, so a
+    /// tampered card is caught even though `signature` is a card field.
+    #[test]
+    fn in_field_signature_detects_card_tamper() {
+        let mut card = card();
+        sign_agent_card(&mut card, b"secret-1").unwrap();
+        let mut tampered = card.clone();
+        tampered.name = "HACKED".into();
+        assert!(verify_card_signature(&tampered, b"secret-1").is_err());
     }
 
     /// v1.0.1 negotiation: matching transport+version picked; miss errors.

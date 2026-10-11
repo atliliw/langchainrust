@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[cfg(feature = "opentelemetry")]
@@ -6,16 +7,36 @@ use std::collections::HashMap;
 #[cfg(feature = "opentelemetry")]
 use crate::semconv;
 
-use super::span::{build_tree, TraceSpan};
+use crate::export::ExportError;
+use super::span::{build_tree, TraceNode, TraceSpan};
 use super::TracingBackend;
 
 // ---------------------------------------------------------------------------
 // In-memory backend
 // ---------------------------------------------------------------------------
 
+/// Invoked once per completed trace with the trace tree, letting a sink
+/// (LangSmith / Langfuse / OTLP / a local file) batch-export a whole trace off a
+/// single span event instead of one call per span.
+///
+/// The callback is **synchronous and best-effort**: it must not block span
+/// teardown, and an `Err` is logged and ignored (observability never fails the
+/// run it observes). See [`BatchExporter::trace_flush_callback`] for the bridge
+/// that feeds a batch exporter from this hook.
+///
+/// [`BatchExporter::trace_flush_callback`]: crate::export::BatchExporter::trace_flush_callback
+pub type TraceFlushCallback = Arc<dyn Fn(&TraceNode) -> Result<(), ExportError> + Send + Sync>;
+
 /// In-memory tracing backend for development and testing.
+///
+/// Records [`TraceSpan`]s as they start/end and serves snapshots. As a local
+/// "Edge buffer" it also accepts per-trace flush callbacks: the moment a **root**
+/// span (one with no parent) is ended, the completed trace tree is handed to the
+/// registered callbacks for batch export, while the spans stay available for
+/// [`spans`](InMemoryTracingBackend::spans)/[`trace_tree`](InMemoryTracingBackend::trace_tree).
 pub struct InMemoryTracingBackend {
     spans: Mutex<Vec<TraceSpan>>,
+    flush_callbacks: Mutex<Vec<TraceFlushCallback>>,
 }
 
 impl InMemoryTracingBackend {
@@ -23,7 +44,33 @@ impl InMemoryTracingBackend {
     pub fn new() -> Self {
         Self {
             spans: Mutex::new(Vec::new()),
+            flush_callbacks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register a per-trace flush callback.
+    ///
+    /// The callback fires once for every completed trace: when a **root** span
+    /// (one with no parent) is ended. At that point all descendant spans have
+    /// ended (children close before their parent), so the tree handed to the
+    /// callback is complete. See [`TraceFlushCallback`] for the callback shape.
+    ///
+    /// Callbacks are invoked **outside** the spans lock, so a callback may safely
+    /// call back into [`spans`](InMemoryTracingBackend::spans) without deadlocking.
+    /// A callback returning `Err` is logged and ignored.
+    pub fn add_trace_flush_callback(&self, callback: TraceFlushCallback) {
+        self.flush_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(callback);
+    }
+
+    /// Number of registered trace-flush callbacks.
+    pub fn trace_flush_callback_count(&self) -> usize {
+        self.flush_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
     }
 
     /// Return a snapshot of all recorded spans.
@@ -61,9 +108,29 @@ impl TracingBackend for InMemoryTracingBackend {
     }
 
     fn end_span(&self, span: &TraceSpan) {
-        let mut spans = self.spans.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = spans.iter_mut().find(|s| s.id == span.id) {
-            *existing = span.clone();
+        {
+            let mut spans = self.spans.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = spans.iter_mut().find(|s| s.id == span.id) {
+                *existing = span.clone();
+            }
+        }
+        // A root span (no parent) ends → the whole trace is complete. Hand the
+        // finished tree to the registered flush callbacks for batch export. The
+        // spans lock is released before the callbacks run, so a callback may
+        // re-read the backend without deadlocking; an Err is logged and ignored.
+        if span.parent_id.is_none() {
+            if let Some(node) = self.trace_tree(&span.id) {
+                let callbacks = self
+                    .flush_callbacks
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                for callback in callbacks {
+                    if let Err(err) = callback(&node) {
+                        log::warn!("trace flush callback failed: {err}");
+                    }
+                }
+            }
         }
     }
 
@@ -146,6 +213,10 @@ impl TracingBackend for OtelTracingBackend {
             span.parent_id
                 .as_ref()
                 .and_then(|pid| spans.get(pid))
+                // §3.6 (verified non-issue): `with_remote_span_context` does `span_context.into()` and
+                // preserves the input `SpanContext` verbatim (including its `is_remote` flag).
+                // An in-process parent carries `is_remote == false`, so this is a correct
+                // local parent; the name reflects propagator usage, not forced semantics.
                 .map(|parent| {
                     Context::new().with_remote_span_context(parent.span_context().clone())
                 })
@@ -487,5 +558,67 @@ mod otel_backend_tests {
         let child_data = spans.iter().find(|s| s.name == "chat mini").unwrap();
         assert_eq!(child_data.parent_span_id, root_ctx.span_id());
         assert_eq!(child_data.span_context.trace_id(), root_ctx.trace_id());
+    }
+}
+
+#[cfg(test)]
+mod in_memory_tests {
+    use super::*;
+    use crate::tracing::span::make_span;
+
+    #[test]
+    fn trace_flush_callback_fires_once_per_completed_trace() {
+        let backend = InMemoryTracingBackend::new();
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        backend.add_trace_flush_callback(Arc::new(move |node: &TraceNode| {
+            let ids: Vec<String> = node.flatten().iter().map(|s| s.id.clone()).collect();
+            sink.lock().unwrap_or_else(|p| p.into_inner())
+                .push(ids.join(","));
+            Ok(())
+        }));
+        assert_eq!(backend.trace_flush_callback_count(), 1);
+
+        let root = make_span("root".into(), None, "agent", crate::SpanKind::Agent);
+        let child = make_span("child".into(), Some("root".into()), "llm", crate::SpanKind::Llm);
+        let gchild = make_span(
+            "gchild".into(),
+            Some("child".into()),
+            "llm",
+            crate::SpanKind::Llm,
+        );
+
+        // Children close before their parent; only the root end completes a trace.
+        backend.start_span(&root);
+        backend.start_span(&child);
+        backend.start_span(&gchild);
+        backend.end_span(&gchild);
+        backend.end_span(&child);
+        assert_eq!(
+            fired.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            0,
+            "child ends must not fire the trace callback"
+        );
+        backend.end_span(&root);
+
+        let traces = fired.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(traces.len(), 1, "exactly one completed trace");
+        // flatten() yields a depth-first pre-order: root first, then descendants.
+        assert_eq!(traces[0], "root,child,gchild");
+        // The spans remain queryable on the Edge buffer after export.
+        assert_eq!(backend.trace_tree("root").unwrap().flatten().len(), 3);
+    }
+
+    #[test]
+    fn trace_flush_callback_err_is_logged_and_does_not_panic() {
+        let backend = InMemoryTracingBackend::new();
+        backend.add_trace_flush_callback(Arc::new(|_node: &TraceNode| {
+            Err(ExportError::Retryable("boom".into()))
+        }));
+
+        let root = make_span("root".into(), None, "agent", crate::SpanKind::Agent);
+        backend.start_span(&root);
+        // Must not panic on a failing callback.
+        backend.end_span(&root);
     }
 }

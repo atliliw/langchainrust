@@ -492,3 +492,68 @@ fn aggregate_sums_explicit_and_estimated_costs() {
     let total = aggregate_cost(&spans);
     assert!((total - 18.01).abs() < 1e-9, "got {total}");
 }
+
+// ---------------------------------------------------------------------------
+// T2 §5: span sampling (rate / per-kind)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rate_zero_tracer_publishes_no_spans() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone()).with_sampler(super::Sampler::with_rate(0.0));
+
+    {
+        let _root = tracer.start("kept", SpanKind::Chain);
+        let _child = tracer.start_child("child", SpanKind::Tool);
+    }
+
+    assert!(
+        backend.spans().is_empty(),
+        "sampling everything out must publish nothing"
+    );
+}
+
+#[test]
+fn rate_one_tracer_publishes_every_span() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone()).with_sampler(super::Sampler::with_rate(1.0));
+
+    {
+        let _root = tracer.start("kept", SpanKind::Chain);
+        let _child = tracer.start_child("child", SpanKind::Tool);
+    }
+
+    assert_eq!(backend.spans().len(), 2);
+}
+
+#[test]
+fn kind_rate_thins_one_kind_only() {
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    // Retriever sampled out entirely; LLM stays full.
+    let sampler = super::Sampler::with_rate(1.0).with_kind_rate(SpanKind::Retriever, 0.0);
+    let tracer = Tracer::new(backend.clone()).with_sampler(sampler);
+
+    {
+        let _r = tracer.start("ret1", SpanKind::Retriever);
+        let _l = tracer.start("llm1", SpanKind::Llm);
+    }
+
+    let spans = backend.spans();
+    assert_eq!(spans.len(), 1, "only the LLM span survives");
+    assert_eq!(spans[0].name, "llm1");
+}
+
+#[test]
+fn sampled_out_guard_never_touches_span_stack() {
+    clear_span_stack();
+    let backend = Arc::new(InMemoryTracingBackend::new());
+    let tracer = Tracer::new(backend.clone()).with_sampler(super::Sampler::with_rate(0.0));
+
+    assert!(tracer.current_span_id().is_none());
+    {
+        let _sampled = tracer.start_child("ghost", SpanKind::Tool);
+        // A sampled-out guard must not become the current span.
+        assert!(tracer.current_span_id().is_none());
+    }
+    assert!(tracer.current_span_id().is_none());
+}

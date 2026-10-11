@@ -171,8 +171,14 @@ impl ConversationRetrievalChain {
     }
 
     fn format_context(&self, documents: &[Document]) -> String {
+        // T1: deduplicate repeated documents so a retrieval that returns the same
+        // chunk more than once (e.g. overlapping windows / naive duplicates) is not
+        // concatenated into the prompt multiple times. Order is preserved; only the
+        // first occurrence of each distinct content survives.
+        let mut seen = std::collections::HashSet::new();
         documents
             .iter()
+            .filter(|doc| seen.insert(&doc.content))
             .map(|doc| doc.content.clone())
             .collect::<Vec<_>>()
             .join("\n\n---\n\n")
@@ -282,11 +288,16 @@ impl ConversationRetrievalChain {
             println!("\n--- Step 2: Retrieve relevant documents ---");
         }
 
-        let documents = self
+        let mut documents = self
             .retriever
             .retrieve(question, self.k)
             .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
+
+        // L59: enforce the k-limit at the chain boundary even if a retriever
+        // returns more than asked (or ignores the cap), so the prompt / memory
+        // context is never unbound.
+        documents.truncate(self.k);
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
@@ -372,11 +383,16 @@ impl ConversationRetrievalChain {
         let history_messages = self.load_history(question).await?;
 
         // Step 2: Retrieve relevant documents
-        let documents = self
+        let mut documents = self
             .retriever
             .retrieve(question, self.k)
             .await
             .map_err(|e| ChainError::ExecutionError(format!("Retrieval failed: {}", e)))?;
+
+        // L59: enforce the k-limit at the chain boundary even if a retriever
+        // returns more than asked (or ignores the cap), so the prompt / memory
+        // context is never unbound.
+        documents.truncate(self.k);
 
         if self.verbose {
             println!("Retrieved {} documents", documents.len());
@@ -649,5 +665,26 @@ mod tests {
             Err(e) => e,
         };
         assert!(matches!(err, ChainError::MissingInput(_)));
+    }
+
+    /// T1: `format_context` drops duplicate document contents, keeping only the
+    /// first occurrence of each distinct chunk in retrieval order.
+    #[test]
+    fn test_format_context_dedups_repeated_documents() {
+        let chain = ConversationRetrievalChain::new(
+            MockLLM,
+            Arc::new(MockRetriever(vec![])),
+            ConversationBufferMemory::new(),
+        );
+        let docs = [doc("a"), doc("b"), doc("a"), doc("c"), doc("b")];
+        let ctx = chain.format_context(&docs);
+        assert!(ctx.contains("a"), "keeps first 'a': {ctx}");
+        assert!(ctx.contains("b"), "keeps first 'b': {ctx}");
+        assert!(ctx.contains("c"), "keeps first 'c': {ctx}");
+        // "a" must appear exactly once (not the repeated second/third occurrences).
+        let count_a = ctx.matches("a").count();
+        let count_b = ctx.matches("b").count();
+        assert_eq!(count_a, 1, "duplicate 'a' dropped: {ctx}");
+        assert_eq!(count_b, 1, "duplicate 'b' dropped: {ctx}");
     }
 }

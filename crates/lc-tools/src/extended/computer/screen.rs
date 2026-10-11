@@ -53,6 +53,24 @@ impl ComputerUseTool {
         }
     }
 
+    /// Create a tool in `Native` mode that drives the *real* local desktop.
+    ///
+    /// This is the explicit **opt-in** entry point for v0.27 Track 3 (computer
+    /// use local execution): it requires the caller to say "yes, run actions on
+    /// this machine". Requires the `computer-native` cargo feature to be on;
+    /// without it the native executor (and these deps) are not even compiled.
+    #[cfg(feature = "computer-native")]
+    pub fn new_native(display_width: u32, display_height: u32) -> Self {
+        Self {
+            mode: ComputerMode::Native,
+            api_key: String::new(),
+            base_url: String::new(),
+            display_width,
+            display_height,
+            client: reqwest::Client::new(),
+        }
+    }
+
     /// Create with a custom Anthropic-compatible base URL.
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
@@ -130,6 +148,21 @@ impl ComputerUseTool {
     ) -> Result<ComputerUseOutput, ToolError> {
         match self.mode {
             ComputerMode::AnthropicApi => self.execute_anthropic(input).await,
+            // V0.27 (Track 3): real local execution, feature-gated. Reaching
+            // this branch requires an explicit `new_native()` construction.
+            #[cfg(feature = "computer-native")]
+            ComputerMode::Native => {
+                super::native::NativeComputer {
+                    width: self.display_width,
+                    height: self.display_height,
+                }
+                .execute(input)
+                .await
+            }
+            #[cfg(not(feature = "computer-native"))]
+            ComputerMode::Native => Err(ToolError::InvalidInput(
+                "native computer-use requires the `computer-native` feature".to_string(),
+            )),
         }
     }
 }

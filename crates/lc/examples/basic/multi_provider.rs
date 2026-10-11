@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let base_url = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
             let llm = OpenAIChat::new(OpenAIConfig {
-                api_key,
+                api_key: api_key.into(),
                 base_url,
                 model: "gpt-4o-mini".to_string(),
                 ..Default::default()
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "deepseek" => {
             let api_key = std::env::var("DEEPSEEK_API_KEY").expect("please set DEEPSEEK_API_KEY");
             let llm = DeepSeekChat::new(DeepSeekConfig {
-                api_key,
+                api_key: api_key.into(),
                 model: "deepseek-chat".to_string(),
                 ..Default::default()
             });

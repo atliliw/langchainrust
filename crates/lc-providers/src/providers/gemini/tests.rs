@@ -363,7 +363,10 @@ data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done\"}]}}],\"usageM
                 tool_calls.extend(calls);
             }
         }
-        assert_eq!(text, "Done", "thought text must not leak into visible content");
+        assert_eq!(
+            text, "Done",
+            "thought text must not leak into visible content"
+        );
         assert_eq!(thinking, "Let me check");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].function.name, "get_weather");

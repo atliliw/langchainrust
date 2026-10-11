@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-10-09
+
+"协议追平 + 本地执行 + 检索再进化" release:把 0.26 只打了地基、明确推给本版的**协议级大件**(MCP 新 spec 的 stateless 全轨、A2A parts/TaskStatus/push)真正做全,同时落地 computer use 本地真实执行回路,并收口 RAG 现代化剩余两块与一批 T3 缺口。Baseline 是已发布的 v0.26.0;本版为**增量修复 + 能力补齐**,详见 `docs/internal/v0.27.0/EXECUTION_PLAN.md`。
+
+### Added
+
+- **MCP stateless 全轨做全(`lc-mcp` Track 1)**:`server/discover`(免 initialize 暴露 capabilities+工具清单)、sessionless 自包含请求(`RequestMeta._meta`)、MRTR 状态机接入真实 `send()` 循环(`required_input → resend → resolve`,`max_round_trips` 默认 3);客户端 `StatelessMcpClient::discover()`。A/B 两轨(stateless 新轨 + stateful 老轨)均就位且带测试。
+- **MCP `subscriptions` / `listen` 推送(`lc-mcp`)**:`ResourcePushSink` trait + `with_push_sink`,`notify_resource_changed` / `notify_resource_updated` 真把 `list_changed` / `resources/updated` 推给每个订阅者(区分「资源列表变」与「资源内容变」);`RESOURCES_SUBSCRIBE/UNSUBSCRIBE` 服务端分派。
+- **MCP Tasks 扩展(`lc-mcp`)**:`tasks.rs` 从占位升级为完整扩展——`TaskState`(queued/running/completed/failed/cancelled)、`TaskStatus`、`TaskResponse`(含 `shipping_label`/`restorable`)、`TaskProvider` trait(server 注册 `with_task_provider` 后 `tasks/get`/`tasks/cancel` 可用,未注册仍 `method_not_found` 诚实边界),`server/discover` capabilities 显式 `tasks:{}`,客户端 `McpCapabilityClient::get_task`/`cancel_task`。
+- **MCP streamable HTTP 资源 push 循环(`lc-mcp`)**:`StreamableHttpTransport::open_push_stream` 开长连接 GET(带 SSE Accept + `Mcp-Session-Id` + Bearer,401 → 解析 OAuth challenge),返回 `PushFrameStream` 逐 SSE 块解析、只吐 notification;`StreamableMcpClient::push_resource_changes(handler)` 喂每条 `notifications/resources/list_changed`。
+- **MCP pagination `nextCursor`(`lc-mcp`)**:`tools/list`/`resources/list`/`prompts/list` 全链 cursor 分页——`*Params` 带 `cursor`,`*Provider::list_*_page` 返回含 `nextCursor` 的完整信封,三种客户端与三种能力方法真正发 cursor。
+- **MCP 细粒度 ACL(`lc-mcp`)**:`ServerSandbox::ToolAcl`(`with_tool_acl` / `with_allowed_tools` / `with_denied_tools`,deny 优先、有 allow 列表即 fail-closed、空 ACL 行为不变),在 `check_call` 与 `check_egress` 两处设卡(纵深防御)。
+- **MCP `logging` 能力(`lc-mcp`)**:`LogLevel`(0..8,syslog 式)、`LogSink` trait、`logging/setLevel` 客户端/服务端(`notifications/message` 由 `MCPServer::emit_log` 按阈值滤帧),`initialize`/`server/discover` 声明 `logging`。
+- **A2A push 推送闭环(`lc-a2a` Track 2)**:框架层 bus → HTTP `/events` SSE → 客户端 `subscribe()`(`sendSubscribe`)真推送闭环;真实 `serve_on` + `sendSubscribe` e2e 测试断言线上流推 (working→completed);`/events` SSE 按认证 principal + `?taskId=` 过滤订阅。
+- **A2A 客户端 SSE 自愈(`lc-a2a`)**:`A2ASseStream` opt-in 断线重连(`A2AClientBuilder::sse_reconnect_max_attempts`,默认 0 = 行为不变),传输断裂/idle 超时按指数退避(250ms→5s)重连同一 URL;`send_task_streaming`/`subscribe` 一并覆盖。
+- **A2A event replay(`lc-a2a`)**:`A2ASseParser` 记录最新 SSE `id:`,`try_reconnect` 重接时带 `Last-Event-ID`(与 bearer/traceparent 一并),seed 新 parser 保留偏移;诚实边界写在 doc(自愈恢复活性、回放不到时 `tasks/get` 兜底)。
+- **computer use 本地执行回路(`lc-tools` Track 3,`computer-native` feature)**:`enigo`(键盘/鼠标)+ `xcap`(截屏)+ `image`(png)真实驱动桌面——截图/点击/打字/滚动/等待,双重安全门 + 显式 opt-in;动作后自动补拍一帧新截图附进同一输出(observe-act-observe,`close_feedback` 可离线单测,刷新失败优雅降级)。真实桌面 `#[ignore]` 冒烟测试通过,默认不跑、CI 不污染。
+- **ColBERT 训练闭环(`lc-rag`/`lc-embeddings` Track 4)**:`train_epoch` 真实训练回路——遍历 `TripletDataset`、经真实 `TokenLevelEmbeddings` 嵌入每 batch、算 margin loss、按序回调 + `EpochResult`;`token_level` trait 保持只读,梯度更新由外部 `on_batch` 回调接(文档明示)。
+- **上下文精简与自定查询(`lc-rag` Track 5)**:agentic retrieval / `self_query` / `context editing`(去重、跨源去冗余、按相关性裁剪、动态 token 预算)/ late-chunking 成文件并接入 pipeline。
+- **批导出 + 本地 Edge 缓冲 + LangSmith/Langfuse(`lc-callbacks`)**:`src/export/`(batch.rs + edge_buffer.rs)整体接通(此前是未连 lib.rs 的死代码)——`InMemoryTracingBackend` 新增 `add_trace_flush_callback`,`TraceNode::flatten()` 补齐,`BatchExporter` 的有界重试/退避/磁盘 park;新增 `LangfuseSink`(Ingestion API + HMAC-SHA256 签名,secret 不进 URL/明文 header,4xx→Fatal、5xx/429→Retryable;`base_url` 无默认值、必须显式传入,`from_env()` 同样强制 `LANGFUSE_BASE_URL`,杜绝静默误发云端);LangSmith 复用既有 handler+client。
+- **SensitiveString 零化(`lc-core` T3)**:`SensitiveString`(`Drop` 零化、`Debug`/`Display` 只显 `***`、无 Serialize),`batch/client.rs` 的 `api_key` 改用它。
+- **prompt cache / JSON-Schema 直透(`lc-core` T3)**:`PromptCache`(OpenAI `prompt_cache_key` 直透 + Anthropic cache breakpoint)+ `JsonSchemaOutput`(`response_format:json_schema` / Anthropic `output_config.format`)。
+- **map_reduce 两阶段 reduce + LCEL 组合原语 + 免 schema 结构化链(`lc-chains` T3)**:`with_reduce_batch_size`/`with_max_reduce_levels`/`with_combine_prompt` 分层降维;`combinators.rs` `Map`/`Batch`/`Parallel` + 自由函数;`StructuredOutputChain` 免 schema 自推导。
+- **多 provider failover(`lc-core`)**:`RouterLLM::with_fallbacks`(主备顺序回退)+ 熔断器(breaker 触发后仅剩 fallback 可达)。
+- **持久化模型目录 + 零拷贝/FP8(`lc-embeddings` T3)**:`ModelCatalog`/`ModelFetcher` + `prefetch`,`CandleEmbeddings::from_catalog`(校验和核验);`cached.rs` 零拷贝 batch(`Arc<Vec<f32>>`)+ `Quantization::{Fp8,F16,Int8}`。
+- **spotlight 主动检测与逃逸检测(`lc-guardrails` T3)**:`SpotScanner` + `SpotlightVerdict`(Clean/EscapeAttempt/Injection,复用 `PromptInjectionHook` 默认模式);`is_airtight`/`has_unescaped_marker`/`has_breakout_marker` 逃逸判据 + 奇偶反斜杠规则。
+- **territorial subgraph + 中断/时间旅行核对(`lc-langgraph` T3)**:`TerritoryCheckpointer` 装饰器 + `CompiledGraph::with_territory(ns)`(子图 checkpoint 写入 `"<ns>::"` 命名空间线程,与父图隔离);核对确认真实可用——`interrupt_before`/`interrupt_after` + `resume_from_interrupt`、`resume_with_value`/`resume_from_interrupt`、`get_state_history(_page)` 时间旅行。
+- **模板 diff / 影响面分析(`lc-prompts` T3)**:`diff_templates(old,new)` → `TemplateDiff{added,removed,reordered}` + `is_breaking()`/`is_empty()`(两个模板版本间的发布影响面,与单调用方 `diff_variables` 区分)。
+- **引擎级 hybrid 融合核对(`lc-vector-stores` T3)**:`NativeHybridSearch` 走 Qdrant Query API 服务端融合(默认 `FusionMethod::Rrf`,可切 `Dbsf`),一次往返、无客户端 merge。
+- **A2A WebSocket 传输(`lc-a2a`,T3 缺口 #186,`ws` feature)**:服务端新增 `GET /ws`,与 `/events` **共用同一套鉴权与逐连接过滤**(bearer 认证、B7 跨租户 `notification_visible`、`?taskId=` 限定),每条过滤后的 `TaskPushNotification` 序列化为**一个文本帧**;客户端 `A2AClient::connect_ws` / `send_task_streaming_ws` 与 SSE 两方法一一对应,`A2AWebSocketStream::next()` 自动回协议 ping 保活、跳过 pong/二进制帧。SSE 与 WS 语义等价,按部署择一。
+- **A2A sendSubscribe 订阅上下文(`lc-a2a`,T3 缺口 #94)**:`A2ARequest::send_subscribe_with_context(id, &message, subscription_id, context_id)` 把客户端自选的 `id` / `contextId` 写进 `tasks/sendSubscribe` 参数(客户端侧对应 `A2AClient::subscribe_with_context`);`TaskPushNotification::StatusUpdate` / `ArtifactUpdate` 各增可选 `context_id`(`skip_serializing_if`,不带时线上格式与 0.27 前一致),供服务端回显订阅归属,使一条连接上的多个订阅可按上下文派发。**诚实边界**:内置服务端本版尚未回显该字段(`handle_tasks_send_subscribe` 与 `tasks/send` 同体),落地的是协议与客户端侧;跨订阅不串流由 `A2ASubscription::next()` 按 task id 过滤保证。
+- **浏览器逐跳 SSRF 拦截(`lc-tools`,T3 缺口 #200,`browser-cdp` feature)**:`CdpBrowserTool::goto` 在 `Page.navigate` 前先开 CDP `Fetch` 域(`patterns:[{"urlPattern":"*"}]`),浏览器把**每一个**请求在出网前 `Fetch.requestPaused` 停住,工具逐跳判定——私网回 `Fetch.failRequest { errorReason:"BlockedByClient" }`,公网 `Fetch.continueRequest`;页面 load 完成或任一失败即 `Fetch.disable`。顶层 URL 校验通过后,重定向 / DNS rebinding / 子资源再指向内网也会在**发出前**被拦下;顶层校验与落地复查保留作第二道防线。
+- **真 WASM 沙箱后端(`lc-tools`,T3 缺口 #201,`sandbox-wasm` feature)**:`WasmSandbox` 实现既有 `CodeSandbox` trait——**wasmi 纯解释器**(无 JIT、离线、MSRV 轻)执行 WASI preview1 模块,宿主自带 stdio / exit / args / environ / random / clock 导入,**只有缓冲 stdout/stderr 跨出宿主边界**,OS 隔离由构造保证;执行预算用确定性 **wasm fuel 计量**(`timeout_ms × 1000` 条指令,下限 1000)而非墙上时钟线程,超限映射 `SandboxError::Timeout`;`Language` 增 `Wasm` 变体,`LocalSandbox` 对 `Language::Wasm` 返回 `UnsupportedLanguage`。接受 WAT 文本(经 `wat` crate 解析)或编译好的 wasm 字节;不代编译源语言。曾在 0.20.0 因"只有接口、函数体永远 not implemented"被删,本版以**真实现**回归。
+
+### Changed
+
+- **MCP 结构化内容与搜索全轨语义核对(`lc-mcp`)**:本次做全过程中核对确认 A 轨(sessionless/discover)与 B 轨(subscriptions/listen、MRTR)均已就位并带测试,非"未开工";`lc-mcp` 全 299 测试通过。
+
+### Fixed
+
+- **`BatchExporter::flush` 语义修正(`lc-callbacks`)**:未满批次保持 pending、满才发出(原实现 force-deliver,与其自身测试矛盾;改实现并重写该测试)。
+- **MCP 客户端 prompts/resources/completion/roots 全量入口补齐(`lc-mcp`)**:与 `logging`/`discover` 一并打通。
+
+Source of record for the five tracks and the T3 close-out: `docs/internal/v0.27.0/EXECUTION_PLAN.md`。L4 engineering debt(edition 2024 + `async_trait` 移除、cargo-deny、moka、secrecy 全量)与 A2A hub 编排仍按前期决策后置。
+
 ## [0.26.0] - 2026-09-27
 
 "Debt closure + modernization" release: the last BLOCK/HIGH defects from the 2026-09 full-framework audit are closed at the source (MCP server hangs and storage DoS, Anthropic double-billing on retried POSTs, LangGraph checkpoint gaps on the non-main paths, parallel fan-in field loss, per-run cost pollution), and five capability tracks land to keep the year's trends in reachable shape — durable execution with time travel, MCP scaling, reasoning/Responses/structured alignment, OTel `gen_ai.*` observability, and retrieval modernization. **Additive minor** — the one behavior flip gates behind its own opt-out (see `Changed`); no breaking API mapping required. Stock covers, L4 engineering debt and the MCP/A2A 0.27 rewrites are explicitly deferred per `docs/internal/v0.26.0/EXECUTION_PLAN.md`.

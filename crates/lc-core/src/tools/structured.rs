@@ -90,8 +90,10 @@ impl<T: Tool> BaseTool for StructuredTool<T> {
         false
     }
 
-    async fn handle_error(&self, error: ToolError) -> String {
-        format!("Tool '{}' execution failed: {}", self.name, error)
+    async fn handle_error(&self, error: ToolError) -> ToolError {
+        // Preserve the typed source error (variant, MCP code, ...) rather than
+        // flattening it to a String; the caller formats via Display as needed.
+        error
     }
 }
 

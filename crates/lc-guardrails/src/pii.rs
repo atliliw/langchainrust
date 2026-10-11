@@ -532,7 +532,7 @@ mod tests {
             match rail.validate_chunk(&ctx).await {
                 ChunkAction::Pass => emitted.push_str(token),
                 ChunkAction::Replace(delta) => emitted.push_str(&delta),
-                ChunkAction::Block => panic!("unexpected block"),
+                ChunkAction::Block { .. } => panic!("unexpected block"),
             }
         }
         let flushed = rail.flush().await;
@@ -563,7 +563,7 @@ mod tests {
             match rail.validate_chunk(&ctx).await {
                 ChunkAction::Pass => emitted.push_str(token),
                 ChunkAction::Replace(delta) => emitted.push_str(&delta),
-                ChunkAction::Block => panic!("unexpected block"),
+                ChunkAction::Block { .. } => panic!("unexpected block"),
             }
         }
         // a clean stream releases its buffered tail verbatim, flagged as no intervention
@@ -592,7 +592,7 @@ mod tests {
             match rail.validate_chunk(&ctx).await {
                 ChunkAction::Pass => emitted.push_str(token),
                 ChunkAction::Replace(delta) => emitted.push_str(&delta),
-                ChunkAction::Block => panic!("unexpected block"),
+                ChunkAction::Block { .. } => panic!("unexpected block"),
             }
             assert!(
                 !emitted.contains("138"),
@@ -623,7 +623,7 @@ mod tests {
             match rail.validate_chunk(&ctx).await {
                 ChunkAction::Pass => out1.push_str(token),
                 ChunkAction::Replace(d) => out1.push_str(&d),
-                ChunkAction::Block => panic!("unexpected block"),
+                ChunkAction::Block { .. } => panic!("unexpected block"),
             }
         }
         // without reset, stream 2 would inherit stream 1's raw bytes and release cursor.
@@ -638,7 +638,7 @@ mod tests {
             match rail.validate_chunk(&ctx).await {
                 ChunkAction::Pass => out2.push_str(token),
                 ChunkAction::Replace(d) => out2.push_str(&d),
-                ChunkAction::Block => panic!("unexpected block"),
+                ChunkAction::Block { .. } => panic!("unexpected block"),
             }
         }
         let flushed = rail.flush().await;

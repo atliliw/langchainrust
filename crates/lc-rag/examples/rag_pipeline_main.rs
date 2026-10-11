@@ -145,10 +145,8 @@ impl BaseChatModel for MockChat {
         &self,
         _messages: Vec<Message>,
         _config: Option<RunnableConfig>,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>,
-        Self::Error,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+    {
         Err(MockChatError("no stream".to_string()))
     }
 }
@@ -177,10 +175,7 @@ impl Reranker for MockReranker {
             .iter()
             .map(|d| {
                 let lower = d.content.to_lowercase();
-                terms
-                    .iter()
-                    .filter(|t| lower.contains(t.as_str()))
-                    .count() as f32
+                terms.iter().filter(|t| lower.contains(t.as_str())).count() as f32
             })
             .collect())
     }
@@ -242,7 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("\n== GraphRAG global leg (skeleton only, see doc header) ==");
-    println!("GraphRAG::new(llm) -> add_documents -> build_communities -> query(q, QueryMode::Global)");
+    println!(
+        "GraphRAG::new(llm) -> add_documents -> build_communities -> query(q, QueryMode::Global)"
+    );
     println!("skipped offline: needs a real LLM. Pipeline demo done.");
 
     Ok(())

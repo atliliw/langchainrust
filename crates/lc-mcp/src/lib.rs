@@ -32,6 +32,7 @@
 //! ```
 
 pub mod auth;
+pub mod client_capabilities;
 pub mod client_stateless;
 pub mod client_stdio;
 pub mod client_streamable;
@@ -43,6 +44,7 @@ pub mod gateway;
 pub mod health;
 #[cfg(feature = "opentelemetry")]
 pub mod instrument;
+pub mod logging;
 pub mod oauth2;
 pub mod orchestrate;
 pub mod prompts;
@@ -52,6 +54,7 @@ pub mod roots;
 pub mod sampling;
 pub mod sandbox;
 pub mod server;
+pub mod subscriptions;
 pub mod tasks;
 pub mod tenant;
 pub mod tool_adapter;
@@ -73,6 +76,7 @@ pub use auth::{
     AuthScheme, Claims, JwtIssValidator, JwtSignatureVerifier, StaticBearerValidator,
     TokenValidator,
 };
+pub use client_capabilities::McpCapabilityClient;
 pub use client_stateless::{
     CannedAnswerProvider, MrtrAnswerProvider, MrtrConfig, StatelessMcpClient,
 };
@@ -93,6 +97,9 @@ pub use gateway::{
 pub use health::{probe_health, BreakerState, CircuitBreaker, HealthStatus, ServerHealth};
 #[cfg(feature = "opentelemetry")]
 pub use instrument::McpInstrumentation;
+pub use logging::{
+    LogLevel, LogSink, SetLevelParams, LOGGING_SETLEVEL, NOTIFICATIONS_MESSAGE,
+};
 pub use oauth2::{
     discover_authorization_server, discover_authorization_server_config,
     discover_authorization_server_with, discover_protected_resource,
@@ -108,10 +115,10 @@ pub use prompts::{
 };
 pub use protocol::{
     negotiate_protocol_version, notification_message, ClientIdentity, InputRequired, JsonRpcId,
-    MCPError, MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion, ProtocolInfo, RequestMeta,
-    VersionPolicy, MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST, MCP_ERROR_UNAUTHORIZED,
-    MCP_ERROR_VERSION_UNSUPPORTED, MCP_METHOD_HEADER, MCP_NAME_HEADER, MCP_VERSION,
-    MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
+    MCPError, MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion, MrtrRoundTrip, MrtrRoundTripState,
+    ProtocolInfo, RequestMeta, VersionPolicy, MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST,
+    MCP_ERROR_UNAUTHORIZED, MCP_ERROR_VERSION_UNSUPPORTED, MCP_METHOD_HEADER, MCP_NAME_HEADER,
+    MCP_VERSION, MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
 };
 pub use resources::{
     ListResourcesResult, ReadResourceParams, ReadResourceResult, Resource, ResourceContent,
@@ -122,10 +129,18 @@ pub use sampling::{
     SamplingHandler, SamplingLease, SamplingMessage, SamplingRequest, SamplingResult, SamplingRole,
 };
 pub use sandbox::{
-    AuditRecord, EgressPolicy, ParamRule, ParamRuleError, SandboxError, ServerSandbox,
+    AuditRecord, EgressPolicy, ParamRule, ParamRuleError, SandboxError, ServerSandbox, ToolAcl,
 };
 pub use server::MCPServer;
-pub use tasks::McpTaskHandle;
+pub use subscriptions::{
+    ResourcePushSink, ResourceSubscribeParams, ResourceSubscriptions,
+    NOTIFICATIONS_RESOURCES_LIST_CHANGED, NOTIFICATIONS_RESOURCES_UPDATED, RESOURCES_SUBSCRIBE,
+    RESOURCES_UNSUBSCRIBE,
+};
+pub use tasks::{
+    CancelTaskParams, GetTaskParams, ShippingLabel, TaskProvider, TaskResponse, TaskState,
+    TaskStatus,
+};
 pub use tenant::TenantGateway;
 pub use tool_adapter::MCPToolAdapter;
 pub use tool_client::McpToolClient;

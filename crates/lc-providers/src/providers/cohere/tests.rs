@@ -19,7 +19,7 @@ fn restore(key: &str, old: Option<String>) {
 #[test]
 fn test_config_new() {
     let config = CohereConfig::new("test-key");
-    assert_eq!(config.api_key, "test-key");
+    assert_eq!(config.api_key.expose_secret(), "test-key");
     assert_eq!(config.base_url, COHERE_BASE_URL);
     assert_eq!(config.model, "command-r-plus");
 }
@@ -48,7 +48,7 @@ fn test_config_from_env_result_ok() {
     let old = save_and_set("COHERE_API_KEY", "env-key");
     let result = CohereConfig::from_env_result();
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().api_key, "env-key");
+    assert_eq!(result.unwrap().api_key.expose_secret(), "env-key");
     restore("COHERE_API_KEY", old);
 }
 

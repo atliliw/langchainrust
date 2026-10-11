@@ -2047,7 +2047,7 @@ graph.validate()?;
                     <div class="feature-card"><h3>深度研究</h3><p>多轮深度研究 + 引用报告</p></div>
                     <div class="feature-card"><h3>模型路由</h3><p>5 种策略：Fallback/RoundRobin/Latency/Cost/Input</p></div>
                     <div class="feature-card"><h3>MCP 原语</h3><p>initialize / tools/list / tools/call + resources / prompts / completion 注册制接线；sampling / elicitation 发起方法（见 v0.18 能力补全）</p></div>
-                    <div class="feature-card" id="sandbox"><h3>代码沙箱</h3><p>LocalSandbox（子进程 + 超时 + 资源限制）</p></div>
+                    <div class="feature-card" id="sandbox"><h3>代码沙箱</h3><p>LocalSandbox（子进程 + 超时）；v0.27.0 起另有 WasmSandbox（WASI preview1，wasmi 解释器）</p></div>
                     <div class="feature-card" id="responses-api"><h3>Responses API</h3><p>/v1/responses，内置 web_search/file_search/code/computer</p></div>
                     <div class="feature-card" id="extended-thinking"><h3>扩展思考</h3><p>with_thinking(budget_tokens) + thinking_content 思考链</p></div>
                     <div class="feature-card" id="streaming-structured"><h3>流式结构化</h3><p>PartialJsonParser + stream_structured_output&lt;T&gt;</p></div>
@@ -2272,7 +2272,7 @@ println!(<span class="str">"{}"</span>, report.summary);
                 </div>
 
                 <div class="card">
-                    <p><strong>MCP</strong>（Model Context Protocol）把任意 MCP Server 的工具接入 Agent。0.22.0 起为无状态单轨：`StatelessMcpClient` 走自包含 HTTP POST（带 `Mcp-Method`/`Mcp-Name` 路由头与 `_meta`），自动把工具适配为 <code>BaseTool</code>；`MCPServer` 把本地工具暴露给宿主（serve_http / serve_stdio）。</p>
+                    <p><strong>MCP</strong>（Model Context Protocol）把任意 MCP Server 的工具接入 Agent。0.27.0 起双轨可用：无状态自包含 HTTP POST（<code>StatelessMcpClient</code>，带 <code>Mcp-Method</code>/<code>Mcp-Name</code> 路由头与 <code>_meta</code>）与 Streamable HTTP / stdio 客户端并列；<code>server/discover</code> 免握手暴露 capabilities 与工具清单，<code>MRTR</code>（<code>input_required</code> → <code>resend</code> → <code>resolve</code>）状态机接入真实 <code>send()</code> 循环，<code>tools/list</code>/<code>resources/list</code>/<code>prompts/list</code> 全链 <code>nextCursor</code> 分页；<code>MCPServer</code> 把本地工具暴露给宿主（serve_http / serve_stdio），并支持 Tasks 扩展（<code>tasks/get</code>/<code>tasks/cancel</code>）、<code>ResourcePushSink</code> 资源订阅推送、<code>logging/setLevel</code> 日志、<code>ServerSandbox::ToolAcl</code> 细粒度 ACL。</p>
                 </div>
 
                 <div class="card-grid">
@@ -2336,6 +2336,27 @@ println!(<span class="str">"{}"</span>, report.summary);
                     <div class="feature-card"><h3>function-calling 逐字流</h3><p>FunctionCallingAgent 最终答案逐 token 流出，打字机效果</p></div>
                     <div class="feature-card"><h3>MCP 原语接线</h3><p>resources / prompts / completion 注册制 handler + sampling / elicitation 发起方法</p></div>
                     <div class="feature-card"><h3>严格签名回放</h3><p>ReplayStrategy::Exact 按 messages 完整签名匹配，并行乱序精确对应</p></div>
+                </div>
+
+                <hr class="divider">
+            </section>
+
+            <!-- v0.27.0 Gap Close-out -->
+            <section class="module" id="v027-new" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🧩</span>
+                    <h2>v0.27.0 缺口补齐 <span class="badge new">v0.27.0</span></h2>
+                </div>
+
+                <div class="card">
+                    <p>v0.27.0 把审计确认为"真缺口、此前有意未落"的四项一次补齐：A2A 的 WebSocket 传输与 sendSubscribe 订阅上下文、CDP 浏览器的逐跳 SSRF 拦截、以及真正实现的 WASM 沙箱后端。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>A2A WebSocket 传输</h3><p><code>ws</code> feature：服务端 <code>GET /ws</code>，与 <code>/events</code> 共用同一套鉴权与逐连接过滤；客户端 <code>connect_ws</code> / <code>send_task_streaming_ws</code></p></div>
+                    <div class="feature-card"><h3>sendSubscribe 订阅上下文</h3><p>请求可带 <code>id</code> / <code>contextId</code>，推送帧带可选 <code>context_id</code>，供一条连接上的多个订阅按上下文派发</p></div>
+                    <div class="feature-card"><h3>浏览器逐跳 SSRF</h3><p>CDP <code>Fetch</code> 域在出网前拦下每一跳：私网 <code>failRequest</code>、公网 <code>continueRequest</code>，重定向 / DNS rebinding / 子资源一并覆盖</p></div>
+                    <div class="feature-card" id="wasm-sandbox"><h3>WASM 沙箱后端</h3><p><code>sandbox-wasm</code> feature：<code>WasmSandbox</code> 跑 WASI preview1（wasmi 纯解释器 + 自带宿主 + fuel 计量超时），OS 隔离由构造保证</p></div>
                 </div>
 
                 <hr class="divider">

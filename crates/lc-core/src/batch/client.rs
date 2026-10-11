@@ -16,9 +16,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// Client for submitting, polling, and retrieving batch results.
 pub struct BatchClient {
     pub(crate) http: reqwest::Client,
-    // M35: API key stored as String — could leak via debug/display.
-    // Consider using a Zeroize wrapper or secret type in a future refactor.
-    pub(crate) api_key: String,
+    // M35 (fixed): the API key is held in a `SensitiveString` so it can never be
+    // rendered by `Debug`/`Display` and its bytes are wiped on drop. The only
+    // plaintext access is `expose_secret()` in `auth_headers`.
+    pub(crate) api_key: crate::sensitive::SensitiveString,
     pub(crate) provider: BatchProvider,
     pub(crate) base_url: String,
 }
@@ -42,7 +43,7 @@ impl BatchClient {
                     );
                     reqwest::Client::new()
                 }),
-            api_key: api_key.into(),
+            api_key: crate::sensitive::SensitiveString::new(api_key),
             provider,
             base_url,
         }
@@ -60,16 +61,17 @@ impl BatchClient {
         let mut headers = reqwest::header::HeaderMap::new();
         match self.provider {
             BatchProvider::OpenAI => {
-                let value = format!("Bearer {}", self.api_key);
+                let value = format!("Bearer {}", self.api_key.expose_secret());
                 let v = reqwest::header::HeaderValue::from_str(&value).map_err(|e| {
                     BatchError::Api(format!("invalid API key for Authorization header: {}", e))
                 })?;
                 headers.insert("Authorization", v);
             }
             BatchProvider::Anthropic => {
-                let v = reqwest::header::HeaderValue::from_str(&self.api_key).map_err(|e| {
-                    BatchError::Api(format!("invalid API key for x-api-key header: {}", e))
-                })?;
+                let v = reqwest::header::HeaderValue::from_str(self.api_key.expose_secret())
+                    .map_err(|e| {
+                        BatchError::Api(format!("invalid API key for x-api-key header: {}", e))
+                    })?;
                 headers.insert("x-api-key", v);
                 headers.insert(
                     "anthropic-version",

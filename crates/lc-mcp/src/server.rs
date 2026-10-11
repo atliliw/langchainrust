@@ -18,13 +18,18 @@ use tokio::sync::{Mutex, Notify, Semaphore};
 use super::auth::TokenValidator;
 use super::completion::{CompletionProvider, CompletionRequest};
 use super::elicitation::{ElicitationHandler, ElicitationRequest, ElicitationResponse};
-use super::prompts::{ListPromptsResult, PromptProvider};
+use super::prompts::PromptProvider;
 use super::protocol::{
     JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_VERSION, MCP_VERSION_STATELESS,
     SUPPORTED_PROTOCOL_VERSIONS,
 };
-use super::resources::{ListResourcesResult, ReadResourceResult, ResourceProvider};
+use super::resources::{ReadResourceResult, ResourceProvider};
+use super::tasks::TaskProvider;
 use super::sampling::{SamplingHandler, SamplingRequest, SamplingResult};
+use super::logging::{message_envelope, LogLevel, LogSink, LOGGING_SETLEVEL};
+use super::subscriptions::{
+    ResourcePushSink, ResourceSubscriptions, RESOURCES_SUBSCRIBE, RESOURCES_UNSUBSCRIBE,
+};
 use super::types::{MCPContent, MCPToolDefinition, MCPToolResult};
 use lc_core::BaseTool;
 
@@ -83,6 +88,36 @@ pub struct MCPServer {
     prompts: Option<Arc<dyn PromptProvider>>,
     /// Optional completion provider (S10): once registered, enables `completion/complete`.
     completion: Option<Arc<dyn CompletionProvider>>,
+    /// Optional task provider (T3 Tasks extension): once registered, enables
+    /// `tasks/get` / `tasks/cancel` for durable long-running operations.
+    tasks: Option<Arc<dyn TaskProvider>>,
+    /// 0.27.0 T1: optional resource-subscription registry. Once attached via
+    /// [`Self::with_subscription_registry`], it enables `resources/subscribe` /
+    /// `resources/unsubscribe` and lets the server push
+    /// `notifications/resources/list_changed` to interested subscribers via
+    /// [`Self::notify_resource_changed`]. When unregistered, both subscribe
+    /// methods still return `method_not_found` (an honest boundary, matching the
+    /// other optional primitives).
+    subscriptions: Option<Arc<ResourceSubscriptions>>,
+    /// 0.27.0 T1: optional delivery sink for resource-change notifications.
+    /// When attached (via [`Self::with_push_sink`]), a subscribed-resource
+    /// change flows envelope→sink instead of dying at registry boundary: the
+    /// sink physically delivers `notifications/resources/list_changed` to each
+    /// interested subscriber. Without a sink, [`Self::notify_resource_changed`]
+    /// still returns the envelope but delivery stops there (transport layer
+    /// must pick it up itself).
+    push_sink: Option<Arc<dyn ResourcePushSink>>,
+    /// 0.27.0 #79 item ④: optional MCP `logging` sink. Once attached via
+    /// [`Self::with_log_sink`], `logging/setLevel` is served and [`Self::emit_log`]
+    /// delivers `notifications/message` frames to the sink (below the configured
+    /// threshold). When absent, `logging/setLevel` returns `method_not_found`
+    /// (honest boundary, matching the other optional primitives).
+    log_sink: Option<Arc<dyn LogSink>>,
+    /// 0.27.0 #79 item ④: the `logging/setLevel` threshold set by the client
+    /// (`None` = no filtering — every [`Self::emit_log`] frame passes). Guarded
+    /// by a `Mutex` because `setLevel` mutates it while concurrent requests
+    /// read it; the lock is never held across an `await`.
+    log_level: std::sync::Mutex<Option<LogLevel>>,
     /// Optional sampling callback (S10, server→host direction): once injected, `create_message` can fire.
     sampling_handler: Option<Arc<dyn SamplingHandler>>,
     /// Optional elicitation callback (S10, server→host direction): once injected, `create_elicitation` can fire.
@@ -109,6 +144,10 @@ pub struct MCPServer {
     tool_timeout: Option<Duration>,
 }
 
+/// Default page size for cursor-paginated `tools/list` (#79). A server exposes
+/// every tool across pages; clients that ignore `nextCursor` simply page again.
+const TOOL_PAGE_SIZE: usize = 100;
+
 impl MCPServer {
     /// Creates an empty server
     pub fn new() -> Self {
@@ -119,9 +158,14 @@ impl MCPServer {
             auth_validator: None,
             resources: None,
             prompts: None,
+            tasks: None,
             completion: None,
             sampling_handler: None,
             elicitation_handler: None,
+            subscriptions: None,
+            push_sink: None,
+            log_sink: None,
+            log_level: std::sync::Mutex::new(None),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             // 0.26.0 P0-1: bound every `tools/call` by default so a lone hung
             // tool cannot exhaust the concurrency surface (BLOCK). Users with
@@ -187,9 +231,101 @@ impl MCPServer {
     /// Registers a completion provider, enabling `completion/complete` (S10).
     ///
     /// When unregistered, the primitive still returns `method_not_found` (an honest boundary).
+    /// Registers a task provider, enabling `tasks/get` / `tasks/cancel` (T3 Tasks
+    /// extension) for durable long-running operations. When unregistered, both
+    /// primitives still return `method_not_found` (an honest boundary).
+    pub fn with_task_provider(mut self, provider: Arc<dyn TaskProvider>) -> Self {
+        self.tasks = Some(provider);
+        self
+    }
+
+    /// Registers a completion provider, enabling `completion/complete` (S10).
+    ///
+    /// When unregistered, the primitive still returns `method_not_found` (an honest boundary).
     pub fn with_completion_provider(mut self, provider: Arc<dyn CompletionProvider>) -> Self {
         self.completion = Some(provider);
         self
+    }
+
+    /// 0.27.0 T1: attaches a resource-subscription registry, enabling
+    /// `resources/subscribe` / `resources/unsubscribe` and
+    /// [`Self::notify_resource_changed`] push. When unregistered, the subscribe
+    /// methods still return `method_not_found` (an honest boundary).
+    pub fn with_subscription_registry(mut self, subscriptions: Arc<ResourceSubscriptions>) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+
+    /// 0.27.0 T1: attaches a delivery sink so a subscribed-resource change is
+    /// physically pushed to each interested subscriber (SSE write, WebSocket
+    /// frame, channel send, …). Without a sink the change still produces the
+    /// envelope via [`Self::notify_resource_changed`], but the transport must
+    /// deliver it itself.
+    pub fn with_push_sink(mut self, sink: Arc<dyn ResourcePushSink>) -> Self {
+        self.push_sink = Some(sink);
+        self
+    }
+
+    /// 0.27.0 #79 item ④: attaches an MCP `logging` sink. Once attached,
+    /// `logging/setLevel` is served (setting the [`LogLevel`] threshold) and
+    /// [`Self::emit_log`] delivers `notifications/message` frames at or above
+    /// that threshold to the sink. Without a sink, both the method and the emit
+    /// are honest no-ops/boundaries.
+    pub fn with_log_sink(mut self, sink: Arc<dyn LogSink>) -> Self {
+        self.log_sink = Some(sink);
+        self
+    }
+
+    /// 0.27.0 T1: emits `notifications/resources/list_changed` for `uri` when
+    /// at least one subscriber is watching it, returning the JSON-RPC
+    /// notification envelope. When a [`ResourcePushSink`] is attached, the
+    /// envelope is also delivered to every interested subscriber via the sink —
+    /// the change is physically pushed, not just materialized. Returns `None`
+    /// when nothing is subscribed or no registry is attached — an honest no-op,
+    /// never traffic to an unwatched resource.
+    pub fn notify_resource_changed(&self, uri: &str) -> Option<Value> {
+        let subs = self.subscriptions.as_ref()?;
+        let envelope = subs.emit_list_changed(uri)?;
+        if let Some(sink) = &self.push_sink {
+            for subscriber in subs.subscribers_of(uri) {
+                sink.deliver(&subscriber, &envelope);
+            }
+        }
+        Some(envelope)
+    }
+
+    /// 0.27.0 #79 item ④: emits `notifications/resources/updated` for `uri` when
+    /// at least one subscriber is watching it — the *content of a subscribed
+    /// resource* changed (distinct from [`Self::notify_resource_changed`], which
+    /// is about the resource *list*). Same registry/sink flow: returns the
+    /// envelope, and delivers it to every interested subscriber when a
+    /// [`ResourcePushSink`] is attached. Returns `None` when unwatched.
+    pub fn notify_resource_updated(&self, uri: &str) -> Option<Value> {
+        let subs = self.subscriptions.as_ref()?;
+        let envelope = subs.emit_updated(uri)?;
+        if let Some(sink) = &self.push_sink {
+            for subscriber in subs.subscribers_of(uri) {
+                sink.deliver(&subscriber, &envelope);
+            }
+        }
+        Some(envelope)
+    }
+
+    /// 0.27.0 #79 item ④: emits one `notifications/message` frame at `level`
+    /// when a sink is attached and the frame clears the configured
+    /// `logging/setLevel` threshold. `logger` is an optional namespace for the
+    /// sink to route on; `data` is the free-form payload. Returns the envelope
+    /// (for tests/inspection) or `None` when it was filtered out or no sink is
+    /// attached — an honest no-op, never fabricated traffic.
+    pub fn emit_log(&self, level: LogLevel, logger: Option<&str>, data: Value) -> Option<Value> {
+        let sink = self.log_sink.as_ref()?;
+        let threshold = self.log_level.lock().unwrap_or_else(|e| e.into_inner());
+        if !level.passes(*threshold) {
+            return None;
+        }
+        let envelope = message_envelope(level, logger, data);
+        sink.emit(&envelope);
+        Some(envelope)
     }
 
     /// Injects a sampling callback (server→host direction), enabling [`Self::create_message`].
@@ -236,7 +372,11 @@ impl MCPServer {
     /// the `Mcp-Session-Id` here so the B8 cancellation table is keyed by
     /// `(session, request id)`: two concurrent sessions that reuse the same
     /// JSON-RPC id cannot cancel each other's in-flight tool call.
-    pub async fn handle_request_scoped(&self, session: Option<&str>, req: MCPRequest) -> MCPResponse {
+    pub async fn handle_request_scoped(
+        &self,
+        session: Option<&str>,
+        req: MCPRequest,
+    ) -> MCPResponse {
         match req.method.as_str() {
             // P2-10 version negotiation: echo the requested version when it is in the support list, otherwise
             // degrade to this implementation's version (a Server only ever replies with a version it supports).
@@ -262,6 +402,12 @@ impl MCPServer {
                 if self.completion.is_some() {
                     capabilities["completion"] = json!({});
                 }
+                if self.tasks.is_some() {
+                    capabilities["tasks"] = json!({});
+                }
+                if self.log_sink.is_some() {
+                    capabilities["logging"] = json!({});
+                }
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
@@ -283,26 +429,48 @@ impl MCPServer {
                 error: None,
             },
             "tools/list" => {
+                // Cursor-paginated (#79): the `cursor` param is an opaque
+                // continuation token; when more tools remain the result carries
+                // a `nextCursor` the client passes back to continue. A client
+                // that ignores `nextCursor` still gets every tool via repeated
+                // pages, so non-paginated peers keep working.
+                let params = req.params.clone().unwrap_or(Value::Null);
+                let cursor = params.get("cursor").and_then(Value::as_str);
+                let offset = cursor
+                    .and_then(|c| c.parse::<usize>().ok())
+                    .unwrap_or(0);
                 let tools: Vec<MCPToolDefinition> = self
                     .tools
                     .iter()
                     .map(|t| Self::tool_definition(t.as_ref()))
                     .collect();
-                let tools_val =
-                    serde_json::to_value(&tools).unwrap_or_else(|_| Value::Array(vec![]));
+                let end = (offset + TOOL_PAGE_SIZE).min(tools.len());
+                let page: Vec<_> = tools[offset.min(tools.len())..end].to_vec();
+                let mut result = json!({ "tools": page });
+                if end < tools.len() {
+                    result["nextCursor"] = Value::String(end.to_string());
+                }
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
-                    result: Some(json!({ "tools": tools_val })),
+                    result: Some(result),
                     error: None,
                 }
             }
-            "tools/call" => self
-                .handle_tools_call(session.map(str::to_string), req)
-                .await,
+            "tools/call" => {
+                self.handle_tools_call(session.map(str::to_string), req)
+                    .await
+            }
+            // 0.27.0 #79 item ④ logging: with a sink, accepts the level and
+            // remembers it as the emit threshold; without a sink,
+            // method_not_found (honest boundary).
+            LOGGING_SETLEVEL => self.handle_logging_set_level(req),
             // 2026-07-28 stateless track: on-demand capability discovery —
             // self-contained requests ask what the server can do without a
-            // prior initialize handshake.
+            // prior initialize handshake. 0.27.0 T1 pulls the tool manifest
+            // into the result so a single discover both reveals capabilities
+            // and names every exposed tool (the "capability + tool listing"
+            // shape of the new spec), even before any initialize.
             "server/discover" => {
                 let mut capabilities = json!({ "tools": {} });
                 if self.resources.is_some() {
@@ -314,38 +482,69 @@ impl MCPServer {
                 if self.completion.is_some() {
                     capabilities["completion"] = json!({});
                 }
+                if self.tasks.is_some() {
+                    capabilities["tasks"] = json!({});
+                }
+                if self.log_sink.is_some() {
+                    capabilities["logging"] = json!({});
+                }
+                let tools: Vec<MCPToolDefinition> = self
+                    .tools
+                    .iter()
+                    .map(|t| Self::tool_definition(t.as_ref()))
+                    .collect();
+                let tools_val =
+                    serde_json::to_value(&tools).unwrap_or_else(|_| Value::Array(vec![]));
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
                     result: Some(json!({
                         "protocolVersion": MCP_VERSION_STATELESS,
                         "capabilities": capabilities,
-                        "serverInfo": { "name": self.server_name, "version": self.server_version }
+                        "serverInfo": { "name": self.server_name, "version": self.server_version },
+                        "tools": tools_val
                     })),
                     error: None,
                 }
             }
+            // 0.27.0 T1: resource subscriptions — registered registry → correct
+            // structure, unregistered → method_not_found. The subscriber is the
+            // session scope (Streamable HTTP) or a per-connection token; unscoped
+            // callers (stdio / direct) share the "default" subscriber.
+            RESOURCES_SUBSCRIBE => self.handle_resource_subscription(session, req, true),
+            RESOURCES_UNSUBSCRIBE => self.handle_resource_subscription(session, req, false),
             // S10 five client→server primitives: registered → correct structure, unregistered → method_not_found.
             "resources/list" => self.handle_resources_list(req).await,
             "resources/read" => self.handle_resources_read(req).await,
             "prompts/list" => self.handle_prompts_list(req).await,
             "prompts/get" => self.handle_prompts_get(req).await,
             "completion/complete" => self.handle_completion_complete(req).await,
+            "tasks/get" => self.handle_tasks_get(req).await,
+            "tasks/cancel" => self.handle_tasks_cancel(req).await,
             _ => Self::method_not_found_response(req.id),
         }
     }
 
-    /// `resources/list`: lists the registered resources.
+    /// `resources/list`: lists the registered resources (cursor-paginated).
     async fn handle_resources_list(&self, req: MCPRequest) -> MCPResponse {
         match &self.resources {
-            Some(provider) => match provider.list_resources().await {
-                Ok(resources) => {
-                    let result = serde_json::to_value(ListResourcesResult { resources })
-                        .unwrap_or(Value::Null);
-                    Self::ok_response(req.id, result)
+            Some(provider) => {
+                // Read the optional `cursor` param so a client paging through
+                // results can continue from its previous `nextCursor` (#79).
+                let params = req.params.clone().unwrap_or(Value::Null);
+                let cursor = params
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                match provider.list_resources_page(cursor).await {
+                    Ok(result) => {
+                        let result =
+                            serde_json::to_value(result).unwrap_or(Value::Null);
+                        Self::ok_response(req.id, result)
+                    }
+                    Err(e) => Self::error_response(req.id, e),
                 }
-                Err(e) => Self::error_response(req.id, e),
-            },
+            }
             None => Self::method_not_found_response(req.id),
         }
     }
@@ -373,17 +572,25 @@ impl MCPServer {
         }
     }
 
-    /// `prompts/list`: lists the registered prompts.
+    /// `prompts/list`: lists the registered prompts (cursor-paginated).
     async fn handle_prompts_list(&self, req: MCPRequest) -> MCPResponse {
         match &self.prompts {
-            Some(provider) => match provider.list_prompts().await {
-                Ok(prompts) => {
-                    let result =
-                        serde_json::to_value(ListPromptsResult { prompts }).unwrap_or(Value::Null);
-                    Self::ok_response(req.id, result)
+            Some(provider) => {
+                // Read the optional `cursor` param so a client paging through
+                // results can continue from its previous `nextCursor` (#79).
+                let params = req.params.clone().unwrap_or(Value::Null);
+                let cursor = params
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                match provider.list_prompts_page(cursor).await {
+                    Ok(result) => {
+                        let result = serde_json::to_value(result).unwrap_or(Value::Null);
+                        Self::ok_response(req.id, result)
+                    }
+                    Err(e) => Self::error_response(req.id, e),
                 }
-                Err(e) => Self::error_response(req.id, e),
-            },
+            }
             None => Self::method_not_found_response(req.id),
         }
     }
@@ -434,6 +641,102 @@ impl MCPServer {
             }
             Err(e) => Self::error_response(req.id, e),
         }
+    }
+
+    /// `tasks/get` (T3 Tasks extension): polls a durable task handle by id.
+    async fn handle_tasks_get(&self, req: MCPRequest) -> MCPResponse {
+        let provider = match &self.tasks {
+            Some(p) => p,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let id = match params.get("id").and_then(Value::as_str) {
+            Some(i) => i.to_string(),
+            None => return Self::invalid_params_response(req.id, "missing id parameter"),
+        };
+        match provider.get_task(&id).await {
+            Ok(result) => {
+                let result = serde_json::to_value(result).unwrap_or(Value::Null);
+                Self::ok_response(req.id, result)
+            }
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// `tasks/cancel` (T3 Tasks extension): cancels a running/queued task.
+    async fn handle_tasks_cancel(&self, req: MCPRequest) -> MCPResponse {
+        let provider = match &self.tasks {
+            Some(p) => p,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let id = match params.get("id").and_then(Value::as_str) {
+            Some(i) => i.to_string(),
+            None => return Self::invalid_params_response(req.id, "missing id parameter"),
+        };
+        match provider.cancel_task(&id).await {
+            Ok(cancelled) => Self::ok_response(req.id, json!({ "cancelled": cancelled })),
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// `resources/subscribe` / `resources/unsubscribe` (0.27.0 T1): registers /
+    /// clears the caller's interest in a resource URI so a later
+    /// [`Self::notify_resource_changed`] can reach them.
+    ///
+    /// Unregistered registry → `method_not_found` (honest boundary). Missing
+    /// `uri` param → `invalid_params`. A successful subscribe/unsubscribe
+    /// answers `{}` per the MCP shape.
+    fn handle_resource_subscription(
+        &self,
+        session: Option<&str>,
+        req: MCPRequest,
+        subscribe: bool,
+    ) -> MCPResponse {
+        let subs = match &self.subscriptions {
+            Some(s) => s,
+            None => return Self::method_not_found_response(req.id),
+        };
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let uri = match params.get("uri").and_then(Value::as_str) {
+            Some(u) => u.to_string(),
+            None => {
+                return Self::invalid_params_response(req.id, "missing uri parameter");
+            }
+        };
+        // The subscriber id is the session scope when present (Streamable HTTP
+        // threads the Mcp-Session-Id here); single-connection transports and
+        // direct callers collapse to one "default" subscriber.
+        let subscriber = session.unwrap_or("default").to_string();
+        let result = if subscribe {
+            subs.subscribe(&uri, subscriber)
+        } else {
+            subs.unsubscribe(&uri, subscriber)
+        };
+        match result {
+            Ok(()) => Self::ok_response(req.id, json!({})),
+            Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// `logging/setLevel` (0.27.0 #79 item ④): reads the `level` param (a name
+    /// or an integer), stores it as the [`Self::emit_log`] threshold, and answers
+    /// `{}`. A missing/invalid `level` → `invalid_params`; no sink registered →
+    /// `method_not_found` (honest boundary).
+    fn handle_logging_set_level(&self, req: MCPRequest) -> MCPResponse {
+        if self.log_sink.is_none() {
+            return Self::method_not_found_response(req.id);
+        }
+        let params = req.params.clone().unwrap_or(Value::Null);
+        let level = match params.get("level") {
+            Some(v) => match crate::logging::parse_level(v) {
+                Ok(l) => l,
+                Err(e) => return Self::error_response(req.id, e),
+            },
+            None => return Self::invalid_params_response(req.id, "missing level parameter"),
+        };
+        *self.log_level.lock().unwrap_or_else(|e| e.into_inner()) = Some(level);
+        Self::ok_response(req.id, json!({}))
     }
 
     /// Fires one sampling request (server→host direction, S10).
@@ -587,7 +890,10 @@ impl MCPServer {
                         },
                     },
                 };
-                self.cancellations.lock().await.remove(&(session, req.id.clone()));
+                self.cancellations
+                    .lock()
+                    .await
+                    .remove(&(session, req.id.clone()));
                 let result_val = serde_json::to_value(&mcp_result).unwrap_or(Value::Null);
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
@@ -802,10 +1108,7 @@ impl MCPServer {
                                     jsonrpc: "2.0".to_string(),
                                     id: None,
                                     result: None,
-                                    error: Some(MCPError::new(
-                                        -32700,
-                                        format!("parse error: {e}"),
-                                    )),
+                                    error: Some(MCPError::new(-32700, format!("parse error: {e}"))),
                                 };
                                 let payload = serde_json::to_string(&resp)
                                     .unwrap_or_else(|_| "{}".to_string());
@@ -826,9 +1129,7 @@ impl MCPServer {
                             // with 202 Accepted, empty body.
                             server.handle_notification(&msg.method, msg.params).await;
                             if sock
-                                .write_all(
-                                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n",
-                                )
+                                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
                                 .await
                                 .is_err()
                             {
@@ -1064,9 +1365,12 @@ mod tests {
     use super::*;
     use crate::completion::{CompletionResult, CompletionValue};
     use crate::elicitation::ElicitationAction;
-    use crate::prompts::{GetPromptResult, Prompt, PromptContent, PromptMessage};
-    use crate::resources::{Resource, ResourceContent};
+    use crate::prompts::{
+        GetPromptResult, ListPromptsResult, Prompt, PromptContent, PromptMessage,
+    };
+    use crate::resources::{ListResourcesResult, Resource, ResourceContent};
     use crate::sampling::{SamplingContent, SamplingMessage, SamplingRole};
+    use crate::tasks::{ShippingLabel, TaskResponse, TaskState, TaskStatus};
     use lc_core::tools::ToolError;
 
     /// A test tool that echoes its input
@@ -1156,6 +1460,38 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "echo");
         assert_eq!(tools[0]["inputSchema"]["type"], "object");
+    }
+
+    /// #79: `tools/list` paginates — every tool is reachable across pages and
+    /// `nextCursor` only appears while more results remain.
+    #[tokio::test]
+    async fn test_tools_list_paginates() {
+        let server = server_with_echo();
+        let mut server = server;
+        for _ in 0..(TOOL_PAGE_SIZE + 5) {
+            server = server.with_tool(Arc::new(EchoTool));
+        }
+
+        let mut collected = 0usize;
+        let mut cursor: Option<Value> = None;
+        loop {
+            let params = cursor
+                .map(|c| json!({ "cursor": c }))
+                .unwrap_or_else(|| json!({}));
+            let resp = server
+                .handle_request(MCPRequest::new(1, "tools/list", Some(params)))
+                .await;
+            assert!(!resp.is_error());
+            let result = resp.result.unwrap();
+            let page = result.get("tools").unwrap().as_array().unwrap();
+            assert!(!page.is_empty(), "page must not be empty");
+            collected += page.len();
+            match result.get("nextCursor").cloned() {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(collected, TOOL_PAGE_SIZE + 6);
     }
 
     #[tokio::test]
@@ -1263,6 +1599,41 @@ mod tests {
         }
     }
 
+    struct MockTasks;
+    #[async_trait::async_trait]
+    impl TaskProvider for MockTasks {
+        async fn get_task(&self, id: &str) -> Result<TaskResponse, MCPError> {
+            if id != "t-1" {
+                return Err(MCPError::invalid_params(format!("unknown task: {id}")));
+            }
+            Ok(TaskResponse {
+                id: "t-1".to_string(),
+                title: "synthesize report".to_string(),
+                status: TaskStatus {
+                    state: TaskState::Completed,
+                    reason: None,
+                    extensions: None,
+                },
+                kind: "task".to_string(),
+                shipping_label: ShippingLabel {
+                    method: "tasks/get".to_string(),
+                    protocol_version: MCP_VERSION.to_string(),
+                },
+                last_updated: None,
+                restorable: false,
+                runner_choice: None,
+                scheduled_for_time: None,
+                extensions: None,
+            })
+        }
+        async fn cancel_task(&self, id: &str) -> Result<bool, MCPError> {
+            if id != "t-1" {
+                return Err(MCPError::invalid_params(format!("unknown task: {id}")));
+            }
+            Ok(true)
+        }
+    }
+
     struct MockCompletion;
     #[async_trait::async_trait]
     impl CompletionProvider for MockCompletion {
@@ -1341,6 +1712,55 @@ mod tests {
         let server = MCPServer::new().with_resource_provider(Arc::new(MockResources));
         let resp = server
             .handle_request(MCPRequest::new(13, "resources/read", None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn test_tasks_get_registered() {
+        let server = MCPServer::new().with_task_provider(Arc::new(MockTasks));
+        let params = json!({"id": "t-1"});
+        let resp = server
+            .handle_request(MCPRequest::new(90, "tasks/get", Some(params)))
+            .await;
+        assert!(
+            !resp.is_error(),
+            "tasks/get 注册后应成功: {:?}",
+            resp.error
+        );
+        let result: TaskResponse = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.id, "t-1");
+        assert_eq!(result.status.state, TaskState::Completed);
+        assert_eq!(result.shipping_label.method, "tasks/get");
+    }
+
+    #[tokio::test]
+    async fn test_tasks_get_not_registered() {
+        let server = MCPServer::new();
+        let resp = server
+            .handle_request(MCPRequest::new(91, "tasks/get", Some(json!({"id": "t-1"}))))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_tasks_cancel_registered() {
+        let server = MCPServer::new().with_task_provider(Arc::new(MockTasks));
+        let resp = server
+            .handle_request(MCPRequest::new(92, "tasks/cancel", Some(json!({"id": "t-1"}))))
+            .await;
+        assert!(!resp.is_error(), "tasks/cancel 注册后应成功");
+        let result = resp.result.unwrap();
+        assert_eq!(result["cancelled"], true);
+    }
+
+    #[tokio::test]
+    async fn test_tasks_cancel_missing_id() {
+        let server = MCPServer::new().with_task_provider(Arc::new(MockTasks));
+        let resp = server
+            .handle_request(MCPRequest::new(93, "tasks/cancel", None))
             .await;
         assert!(resp.is_error());
         assert_eq!(resp.error.unwrap().code, -32602);
@@ -1472,6 +1892,327 @@ mod tests {
         assert!(caps.get("resources").is_none(), "未注册不声明 resources");
         assert!(caps.get("prompts").is_none(), "未注册不声明 prompts");
         assert!(caps.get("completion").is_none(), "未注册不声明 completion");
+    }
+
+    // ============================================================================
+    // 0.27.0 T1: server/discover (tool manifest) and resources subscribe/unsubscribe
+    // ============================================================================
+
+    /// server/discover is self-contained (no handshake): it reveals the
+    /// stateless protocol version, the declared capabilities, and — with the
+    /// T1 tool manifest — every exposed tool.
+    #[tokio::test]
+    async fn test_server_discover_returns_tool_manifest() {
+        let server = server_with_echo();
+        let resp = server
+            .handle_request(MCPRequest::new(7, "server/discover", None))
+            .await;
+        assert!(!resp.is_error(), "{:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert_eq!(
+            result["protocolVersion"], MCP_VERSION_STATELESS,
+            "discover speaks the stateless version"
+        );
+        assert!(result["capabilities"]["tools"].is_object(), "{result}");
+        // T1: the tool manifest is present and names the registered tool.
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "echo");
+        assert_eq!(tools[0]["inputSchema"]["type"], "object");
+    }
+
+    /// server/discover is usable without any prior initialize — the stateless
+    /// premise (a self-contained discovery of an anonymous server).
+    #[tokio::test]
+    async fn test_server_discover_works_without_initialize() {
+        // No test here needs an initialize handshake; discover must succeed on a
+        // fresh server that has never seen a request.
+        let server = MCPServer::new().with_tool(Arc::new(EchoTool));
+        let resp = server
+            .handle_request(MCPRequest::new(8, "server/discover", None))
+            .await;
+        assert!(!resp.is_error());
+    }
+
+    /// resources/subscribe on a registered registry succeeds and a later
+    /// notify_resource_changed emits the list_changed notification envelope.
+    #[tokio::test]
+    async fn test_resources_subscribe_then_notify() {
+        let subs = Arc::new(ResourceSubscriptions::new());
+        let server = MCPServer::new()
+            .with_resource_provider(Arc::new(MockResources))
+            .with_subscription_registry(subs.clone());
+        let params = json!({"uri": "file:///a.txt"});
+        let resp = server
+            .handle_request(MCPRequest::new(30, RESOURCES_SUBSCRIBE, Some(params)))
+            .await;
+        assert!(!resp.is_error(), "{:?}", resp.error);
+        // Subscribe answers the MCP empty object.
+        assert!(subs.is_subscribed("file:///a.txt", "default"));
+
+        // A change to the watched resource yields the notification envelope.
+        let envelope = server
+            .notify_resource_changed("file:///a.txt")
+            .expect("watched uri must emit");
+        assert_eq!(
+            envelope["method"],
+            crate::NOTIFICATIONS_RESOURCES_LIST_CHANGED
+        );
+        assert_eq!(envelope["params"]["uri"], "file:///a.txt");
+    }
+
+    /// notify_resource_updated is the per-resource content-change notification —
+    /// distinct envelope (method) from list_changed, delivered to the same sink.
+    #[test]
+    fn test_notify_resource_updated_uses_updated_method() {
+        let subs = Arc::new(ResourceSubscriptions::new());
+        subs.subscribe("file:///a.txt", "default").unwrap();
+        let server = MCPServer::new().with_subscription_registry(subs.clone());
+
+        let list_changed = server
+            .notify_resource_changed("file:///a.txt")
+            .expect("watched uri emits list_changed");
+        assert_eq!(list_changed["method"], crate::NOTIFICATIONS_RESOURCES_LIST_CHANGED);
+
+        let updated = server
+            .notify_resource_updated("file:///a.txt")
+            .expect("watched uri emits updated");
+        assert_eq!(updated["method"], crate::NOTIFICATIONS_RESOURCES_UPDATED);
+        assert_eq!(updated["params"]["uri"], "file:///a.txt");
+        assert!(updated.get("id").is_none(), "notifications carry no id");
+
+        // An unwatched resource never emits (honest, no fabricated traffic).
+        assert!(server.notify_resource_updated("file:///other.txt").is_none());
+    }
+
+    // ============================================================================
+    // 0.27.0 #79 item ④: MCP `logging` (setLevel + notifications/message)
+    // ============================================================================
+
+    /// logging/setLevel stores the threshold and emit_log honors it; the sink
+    /// sees only frames at/above the threshold. A registered sink makes the
+    /// server advertise the `logging` capability on initialize.
+    #[tokio::test]
+    async fn test_logging_set_level_threshold_and_emit() {
+        use std::sync::Mutex as StdMutex;
+        struct RecordingLogSink {
+            frames: StdMutex<Vec<Value>>,
+        }
+        impl LogSink for RecordingLogSink {
+            fn emit(&self, message: &Value) {
+                self.frames.lock().unwrap().push(message.clone());
+            }
+        }
+        let sink = Arc::new(RecordingLogSink {
+            frames: StdMutex::new(Vec::new()),
+        });
+        let server = MCPServer::new().with_log_sink(sink.clone());
+
+        // No threshold yet → every level passes.
+        let env = server
+            .emit_log(LogLevel::Trace, None, json!("boot"))
+            .expect("no threshold means always pass");
+        assert_eq!(env["method"], crate::NOTIFICATIONS_MESSAGE);
+        assert_eq!(sink.frames.lock().unwrap().len(), 1);
+
+        // setLevel(warning) → info filtered, error passes.
+        let resp = server
+            .handle_request(MCPRequest::new(
+                40,
+                LOGGING_SETLEVEL,
+                Some(json!({"level": "warning"})),
+            ))
+            .await;
+        assert!(!resp.is_error(), "{:?}", resp.error);
+        assert!(resp.result.unwrap() == json!({}));
+        assert!(
+            server.emit_log(LogLevel::Info, Some("tools"), json!(1)).is_none(),
+            "below threshold must be filtered"
+        );
+        let env2 = server
+            .emit_log(LogLevel::Error, Some("tools"), json!({"detail": 2}))
+            .expect("at/above threshold passes");
+        assert_eq!(env2["params"]["level"], 5);
+        assert_eq!(env2["params"]["logger"], "tools");
+        // Exactly the two passing frames reached the sink.
+        assert_eq!(sink.frames.lock().unwrap().len(), 2);
+
+        // Advertises `logging` when a sink is registered.
+        let init = server
+            .handle_request(MCPRequest::new(41, "initialize", None))
+            .await;
+        let caps = init.result.unwrap()["capabilities"].clone();
+        assert!(caps.get("logging").is_some(), "{caps}");
+    }
+
+    /// logging/setLevel on a server without a sink is method_not_found (honest
+    /// boundary), emit_log is a no-op, and initialize does not advertise logging.
+    #[tokio::test]
+    async fn test_logging_unregistered_boundary() {
+        let server = MCPServer::new(); // no sink
+        let resp = server
+            .handle_request(MCPRequest::new(
+                42,
+                LOGGING_SETLEVEL,
+                Some(json!({"level": "info"})),
+            ))
+            .await;
+        assert_eq!(resp.error.as_ref().map(|e| e.code), Some(-32601));
+
+        assert!(
+            server.emit_log(LogLevel::Error, None, json!(1)).is_none(),
+            "no sink → emit is an honest no-op"
+        );
+
+        let init = server
+            .handle_request(MCPRequest::new(43, "initialize", None))
+            .await;
+        assert!(init.result.unwrap()["capabilities"]
+            .get("logging")
+            .is_none());
+    }
+
+    /// A missing/invalid level param is invalid_params, not a silent accept.
+    #[tokio::test]
+    async fn test_logging_set_level_invalid_param() {
+        struct Sink;
+        impl LogSink for Sink {
+            fn emit(&self, _message: &Value) {}
+        }
+        let server = MCPServer::new().with_log_sink(Arc::new(Sink));
+        let resp = server
+            .handle_request(MCPRequest::new(
+                44,
+                LOGGING_SETLEVEL,
+                Some(json!({"level": "bogus"})),
+            ))
+            .await;
+        assert_eq!(resp.error.as_ref().map(|e| e.code), Some(-32602));
+    }
+
+    /// A delivery sink is invoked for each interested subscriber when a watched
+    /// resource changes: the envelope is physically pushed, not just returned.
+    #[tokio::test]
+    async fn test_notify_with_push_sink_delivers_to_each_subscriber() {
+        use std::sync::Mutex as StdMutex;
+        struct RecordingSink {
+            deliveries: StdMutex<Vec<(String, Value)>>,
+        }
+        impl ResourcePushSink for RecordingSink {
+            fn deliver(&self, subscriber: &str, envelope: &Value) {
+                self.deliveries
+                    .lock()
+                    .unwrap()
+                    .push((subscriber.to_string(), envelope.clone()));
+            }
+        }
+        let sink = Arc::new(RecordingSink {
+            deliveries: StdMutex::new(Vec::new()),
+        });
+        let subs = Arc::new(ResourceSubscriptions::new());
+        let server = Arc::new(
+            MCPServer::new()
+                .with_subscription_registry(subs.clone())
+                .with_push_sink(sink.clone()),
+        );
+        // Two subscribers in two sessions.
+        for (id, sess) in [(40usize, "sess-1"), (41, "sess-2")] {
+            let resp = server
+                .handle_request_scoped(
+                    Some(sess),
+                    MCPRequest::new(
+                        id,
+                        RESOURCES_SUBSCRIBE,
+                        Some(json!({"uri": "file:///a.txt"})),
+                    ),
+                )
+                .await;
+            assert!(!resp.is_error(), "{:?}", resp.error);
+        }
+        let envelope = server
+            .notify_resource_changed("file:///a.txt")
+            .expect("watched uri must emit");
+        let deliveries = sink.deliveries.lock().unwrap();
+        // Both subscribers received the envelope.
+        assert_eq!(deliveries.len(), 2, "each subscriber must be pushed");
+        let subs_seen: Vec<&str> = deliveries.iter().map(|(s, _)| s.as_str()).collect();
+        assert!(subs_seen.contains(&"sess-1"), "{deliveries:?}");
+        assert!(subs_seen.contains(&"sess-2"), "{deliveries:?}");
+        for (_, e) in deliveries.iter() {
+            assert_eq!(*e, envelope, "every subscriber gets the same envelope");
+        }
+    }
+
+    /// subscriptions are scoped by session: a subscribe from one session does
+    /// not make another session a subscriber.
+    #[tokio::test]
+    async fn test_resources_subscribe_is_session_scoped() {
+        let subs = Arc::new(ResourceSubscriptions::new());
+        let server = Arc::new(MCPServer::new().with_subscription_registry(subs.clone()));
+        let params = json!({"uri": "file:///a.txt"});
+        let resp = server
+            .handle_request_scoped(
+                Some("sess-1"),
+                MCPRequest::new(31, RESOURCES_SUBSCRIBE, Some(params)),
+            )
+            .await;
+        assert!(!resp.is_error());
+        assert!(subs.is_subscribed("file:///a.txt", "sess-1"));
+        assert!(!subs.is_subscribed("file:///a.txt", "default"));
+        assert!(!subs.is_subscribed("file:///a.txt", "sess-2"));
+    }
+
+    /// resources/unsubscribe clears the interest; after the last subscriber
+    /// leaves, a change no longer emits a notification.
+    #[tokio::test]
+    async fn test_resources_unsubscribe_stops_notifications() {
+        let subs = Arc::new(ResourceSubscriptions::new());
+        let server = Arc::new(MCPServer::new().with_subscription_registry(subs.clone()));
+        let uri = json!({"uri": "file:///a.txt"});
+        server
+            .handle_request_scoped(
+                Some("sess-1"),
+                MCPRequest::new(32, RESOURCES_SUBSCRIBE, Some(uri.clone())),
+            )
+            .await;
+        assert!(server.notify_resource_changed("file:///a.txt").is_some());
+
+        let resp = server
+            .handle_request_scoped(
+                Some("sess-1"),
+                MCPRequest::new(33, RESOURCES_UNSUBSCRIBE, Some(uri)),
+            )
+            .await;
+        assert!(!resp.is_error(), "{:?}", resp.error);
+        assert!(!subs.is_watched("file:///a.txt"));
+        assert!(
+            server.notify_resource_changed("file:///a.txt").is_none(),
+            "unwatched resource must not emit traffic"
+        );
+    }
+
+    /// resources/subscribe without a `uri` param → invalid_params.
+    #[tokio::test]
+    async fn test_resources_subscribe_missing_uri() {
+        let server =
+            MCPServer::new().with_subscription_registry(Arc::new(ResourceSubscriptions::new()));
+        let resp = server
+            .handle_request(MCPRequest::new(34, RESOURCES_SUBSCRIBE, None))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    /// resources/subscribe without a registry → method_not_found (honest boundary).
+    #[tokio::test]
+    async fn test_resources_subscribe_not_registered() {
+        let server = MCPServer::new();
+        let params = json!({"uri": "file:///a.txt"});
+        let resp = server
+            .handle_request(MCPRequest::new(35, RESOURCES_SUBSCRIBE, Some(params)))
+            .await;
+        assert!(resp.is_error());
+        assert_eq!(resp.error.unwrap().code, -32601);
     }
 
     // ============================================================================
@@ -1665,10 +2406,7 @@ mod tests {
 
         // The abandoned id must be removed from the cancellation table.
         let map = server.cancellations.lock().await;
-        assert!(
-            !map.contains_key(&(None, JsonRpcId::Number(42))),
-            "{map:?}"
-        );
+        assert!(!map.contains_key(&(None, JsonRpcId::Number(42))), "{map:?}");
     }
 
     /// F1/H3: cancellation is scoped by session. Two concurrent sessions that
@@ -1699,7 +2437,11 @@ mod tests {
 
         // Let both register their Notify under their (session, id) keys.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(server.cancellations.lock().await.len(), 2, "both registered");
+        assert_eq!(
+            server.cancellations.lock().await.len(),
+            2,
+            "both registered"
+        );
 
         // Cancelling session B's id 7 must not fire session A's request.
         server
@@ -1757,7 +2499,10 @@ mod tests {
             ))
             .await;
 
-        assert!(!resp.is_error(), "timeout surfaces as a tool-result, not a transport error");
+        assert!(
+            !resp.is_error(),
+            "timeout surfaces as a tool-result, not a transport error"
+        );
         let result = resp.result.expect("has result");
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
         assert!(
@@ -1917,7 +2662,10 @@ mod tests {
         let body = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
         let (status, resp_body) = post_raw(&addr, None, body).await;
         // Per JSON-RPC, notifications get no response — ACK with 202, empty body.
-        assert!(status.contains("202 Accepted"), "notification ACK expected, got: {status}");
+        assert!(
+            status.contains("202 Accepted"),
+            "notification ACK expected, got: {status}"
+        );
         assert!(
             resp_body.is_empty(),
             "notification must get no JSON payload, got: {resp_body}"

@@ -45,6 +45,7 @@ use std::pin::Pin;
 use self::types::*;
 use crate::openai::sse::{SSEParser, SseByteFramer, StreamToolCallAccumulator};
 use crate::provider_http::{provider_api_client, provider_sse_client};
+use crate::sampling::SamplingOverride;
 use crate::ProviderError;
 use lc_callbacks::RunType;
 use lc_core::http::{HttpClient, RequestOptions};
@@ -81,6 +82,17 @@ impl std::fmt::Debug for AzureOpenAIChat {
     }
 }
 
+impl SamplingOverride for AzureOpenAIChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            self.config.max_tokens = Some(m);
+        }
+    }
+}
+
 impl AzureOpenAIChat {
     /// Creates a new AzureOpenAIChat with the given configuration.
     pub fn new(config: AzureOpenAIConfig) -> Self {
@@ -99,7 +111,7 @@ impl AzureOpenAIChat {
     fn request_options(&self) -> RequestOptions {
         let mut opts = RequestOptions::new();
         if !self.config.api_key.is_empty() {
-            if let Ok(value) = HeaderValue::from_str(&self.config.api_key) {
+            if let Ok(value) = HeaderValue::from_str(self.config.api_key.expose_secret()) {
                 opts = opts.header(HeaderName::from_static("api-key"), value);
             }
         }
@@ -145,7 +157,9 @@ impl AzureOpenAIChat {
                 });
                 if let Some(tool_calls) = &message.tool_calls {
                     msg["tool_calls"] = serde_json::to_value(tool_calls).unwrap_or_else(|e| {
-                        log::warn!("Azure OpenAI: failed to serialize tool_calls, omitting them: {e}");
+                        log::warn!(
+                            "Azure OpenAI: failed to serialize tool_calls, omitting them: {e}"
+                        );
                         serde_json::Value::Null
                     });
                 }
@@ -186,7 +200,16 @@ impl AzureOpenAIChat {
         }
 
         if let Some(max) = self.config.max_tokens {
-            body["max_tokens"] = json!(max);
+            // 0.26.0 review (Azure B1): the o-series reasoning family rejects
+            // `max_tokens` and only accepts `max_completion_tokens` — same
+            // dialect gap OpenAI fixed in 0.26.0 M6. Pick the field by model
+            // family so Azure-hosted o1/o3/o4 deployments don't 400.
+            let key = if crate::openai::is_openai_reasoning_model(self.config.effective_model()) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            body[key] = json!(max);
         }
 
         if let Some(top_p) = self.config.top_p {
@@ -509,14 +532,7 @@ impl Runnable<Vec<Message>, LLMResult> for AzureOpenAIChat {
         use futures_util::StreamExt;
 
         let model = self.config.effective_model().to_string();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         // 0.25.0: pass the accumulated terminal tool_calls, usage and
@@ -566,14 +582,7 @@ impl BaseChatModel for AzureOpenAIChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let result = effective.chat_internal(messages.clone()).await;
 
         match result {
@@ -641,14 +650,7 @@ impl BaseChatModel for AzureOpenAIChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);

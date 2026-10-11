@@ -88,12 +88,30 @@ impl<S: StateSchema + Clone> SubgraphNode<S, S> {
 
 #[async_trait]
 impl<S: StateSchema + 'static, SubS: StateSchema + 'static> GraphNode<S> for SubgraphNode<S, SubS> {
-    async fn execute(&self, state: &S, _config: Option<NodeConfig>) -> NodeResult<S> {
+    async fn execute(&self, state: &S, config: Option<NodeConfig>) -> NodeResult<S> {
         // Map parent state to subgraph input
         let sub_input = (self.input_mapper)(state);
 
+        // T2: hand the parent's node config DOWN into the subgraph instead of
+        // dropping it on the floor. Two things cross the boundary as a result:
+        //
+        // * `recursion_limit` — the parent's budget bounds the nested run, so a
+        //   subgraph cannot escape the caller's depth limit by carrying a larger
+        //   limit of its own (the tighter of the two wins; see
+        //   `CompiledGraph::effective_limit`).
+        // * `metadata` / `debug` — user context, and above all the interrupt-resume
+        //   decision the parent injected under `INTERRUPT_RESUME_KEY`. Without it
+        //   the subgraph's `InterruptibleNode` re-suspends on every parent resume
+        //   instead of continuing past its own suspension (the H3 pass-through
+        //   only carried the decision in one direction).
+        let sub_config = config.unwrap_or_default();
+
         // Execute subgraph
-        let sub_result = match self.subgraph.invoke(sub_input).await {
+        let sub_result = match self
+            .subgraph
+            .invoke_with_config(sub_input, sub_config)
+            .await
+        {
             Ok(r) => r,
             // H3: a runtime interrupt inside the subgraph is a *control-flow signal*,
             // not a failure — pass it through unchanged so the parent graph (and its
@@ -201,8 +219,33 @@ impl<S: StateSchema, SubS: StateSchema> SubgraphBuilder<S, SubS> {
 mod tests {
     use super::*;
     use crate::graph::GraphBuilder;
+    use crate::node::INTERRUPT_RESUME_KEY;
     use crate::state::AgentState;
     use crate::{END, START};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Records every `NodeConfig` a node was executed with, so the tests can
+    /// assert exactly what the parent handed down across the subgraph boundary.
+    struct ConfigSpy {
+        seen: Arc<Mutex<Vec<NodeConfig>>>,
+    }
+
+    #[async_trait]
+    impl GraphNode<AgentState> for ConfigSpy {
+        async fn execute(
+            &self,
+            _state: &AgentState,
+            config: Option<NodeConfig>,
+        ) -> NodeResult<AgentState> {
+            self.seen.lock().unwrap().push(config.unwrap_or_default());
+            Ok(StateUpdate::unchanged())
+        }
+
+        fn name(&self) -> &str {
+            "spy"
+        }
+    }
 
     #[tokio::test]
     async fn test_subgraph_same_state() {
@@ -282,5 +325,156 @@ mod tests {
         assert!(result.final_state.input.contains("outer"));
         assert!(result.final_state.input.contains("middle"));
         assert!(result.final_state.input.contains("inner"));
+    }
+
+    /// T2: the parent's recursion budget must bound the nested run.
+    ///
+    /// The subgraph is compiled with the default limit (25) and its four nodes
+    /// would run happily under it; the parent's limit of 2 has to cut the nested
+    /// run short. Before the config was forwarded the subgraph always ran under
+    /// its own limit, so a small parent budget could be escaped by nesting.
+    #[tokio::test]
+    async fn test_subgraph_inherits_parent_recursion_limit() {
+        let subgraph = GraphBuilder::<AgentState>::new()
+            .add_node_fn("s1", |s| Ok(StateUpdate::full(s.clone())))
+            .add_node_fn("s2", |s| Ok(StateUpdate::full(s.clone())))
+            .add_node_fn("s3", |s| Ok(StateUpdate::full(s.clone())))
+            .add_node_fn("s4", |s| Ok(StateUpdate::full(s.clone())))
+            .add_edge(START, "s1")
+            .add_edge("s1", "s2")
+            .add_edge("s2", "s3")
+            .add_edge("s3", "s4")
+            .add_edge("s4", END)
+            .compile()
+            .unwrap();
+
+        let parent = GraphBuilder::<AgentState>::new()
+            .add_subgraph_same_state("sub", subgraph)
+            .add_edge(START, "sub")
+            .add_edge("sub", END)
+            .compile()
+            .unwrap()
+            .with_recursion_limit(2);
+
+        let err = parent
+            .invoke(AgentState::new("x".to_string()))
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Recursion limit reached: 2"),
+            "the nested run must be bounded by the parent's limit, got: {msg}"
+        );
+    }
+
+    /// T2: the parent's `NodeConfig` must reach the subgraph's nodes instead of
+    /// being dropped at the boundary. Covers metadata, debug and the
+    /// tighter-of-the-two recursion limit.
+    #[tokio::test]
+    async fn test_subgraph_forwards_config_metadata() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subgraph = GraphBuilder::<AgentState>::new()
+            .add_node(ConfigSpy { seen: seen.clone() })
+            .add_edge(START, "spy")
+            .add_edge("spy", END)
+            .compile()
+            .unwrap();
+
+        let node = SubgraphNode::same_state("sub", subgraph);
+        let mut metadata = HashMap::new();
+        metadata.insert("trace_id".to_string(), serde_json::json!("abc"));
+        node.execute(
+            &AgentState::new("x".to_string()),
+            Some(NodeConfig {
+                recursion_limit: 7,
+                debug: true,
+                metadata,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the spy node must run exactly once");
+        assert_eq!(
+            seen[0].metadata.get("trace_id"),
+            Some(&serde_json::json!("abc")),
+            "user metadata must cross the subgraph boundary"
+        );
+        assert!(seen[0].debug, "the debug flag must cross the boundary");
+        assert_eq!(
+            seen[0].recursion_limit, 7,
+            "the subgraph must run under the parent's tighter limit"
+        );
+    }
+
+    /// T2: the resume decision the parent injects under `INTERRUPT_RESUME_KEY`
+    /// must cross into the subgraph. Without it the subgraph's interruptible
+    /// node re-suspends on every parent resume instead of continuing past its
+    /// own suspension — the H3 pass-through only carried the decision one way.
+    #[tokio::test]
+    async fn test_subgraph_forwards_interrupt_resume_value() {
+        use crate::node::InterruptibleNode;
+        use std::future::Future;
+        use std::pin::Pin;
+
+        let subgraph = GraphBuilder::<AgentState>::new()
+            .add_node(InterruptibleNode::new(
+                "ask",
+                |_state: &AgentState, resume: Option<&serde_json::Value>| {
+                    let decision = resume.cloned();
+                    Box::pin(async move {
+                        match decision {
+                            Some(d) => {
+                                let mut s = AgentState::new("resumed".to_string());
+                                s.set_output(format!("approved={d}"));
+                                Ok(StateUpdate::full(s))
+                            }
+                            None => Err(GraphError::InterruptRequest {
+                                payload: serde_json::json!({ "q": "go?" }),
+                            }),
+                        }
+                    })
+                        as Pin<Box<dyn Future<Output = NodeResult<AgentState>> + Send>>
+                },
+            ))
+            .add_edge(START, "ask")
+            .add_edge("ask", END)
+            .compile()
+            .unwrap();
+
+        let node = SubgraphNode::same_state("sub", subgraph);
+
+        // Control: with no forwarded decision the subgraph suspends and the
+        // suspension passes through unchanged (H3).
+        let err = node
+            .execute(&AgentState::new("x".to_string()), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, GraphError::DynamicInterrupt { .. }),
+            "expected the subgraph's suspension to pass through, got {err:?}"
+        );
+
+        // With the parent's resume decision in the config, the inner node sees it
+        // and completes instead of suspending again.
+        let mut metadata = HashMap::new();
+        metadata.insert(INTERRUPT_RESUME_KEY.to_string(), serde_json::json!("yes"));
+        let update = node
+            .execute(
+                &AgentState::new("x".to_string()),
+                Some(NodeConfig {
+                    recursion_limit: 0,
+                    debug: false,
+                    metadata,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            update.update.unwrap().output.as_deref(),
+            Some("approved=\"yes\""),
+            "the resume decision must reach the nested node"
+        );
     }
 }

@@ -1237,9 +1237,10 @@ async fn test_cross_process_resume_recovers_after_crash() {
 }
 
 /// S6: the budget gate continues from the accumulated count after resume — the
-/// checkpoint records 1 tool call already consumed (including the pending tool); with
-/// `max_tool_calls = 1`, resume hard-stops before the next plan round without re-running
-/// the tool.
+/// checkpoint records 0 tool calls consumed before the pending tool (executed-only
+/// semantics — §4.2: the pending tool is *not* pre-counted); with `max_tool_calls = 1`,
+/// resume runs the pending tool (count → 1) and then hard-stops before the next plan
+/// round without running a second tool.
 #[tokio::test]
 async fn test_resume_budget_continues_from_consumed() {
     let dir = tempfile::tempdir().unwrap();
@@ -1248,8 +1249,9 @@ async fn test_resume_budget_continues_from_consumed() {
         calls: Arc::new(AtomicUsize::new(0)),
     });
 
-    // Hand-craft the checkpoint: 1 tool call already consumed (including this pending
-    // one), budget cap 1.
+    // Hand-craft the checkpoint: 0 tool calls consumed before this pending one (the
+    // pending tool's consumption is added on resume only if it actually executes),
+    // budget cap 1.
     let mut inputs = HashMap::new();
     inputs.insert("input".to_string(), "compute".to_string());
     store
@@ -1260,7 +1262,7 @@ async fn test_resume_budget_continues_from_consumed() {
             inputs,
             steps: Vec::new(),
             iteration: 0,
-            tool_calls_consumed: 1,
+            tool_calls_consumed: 0,
             tokens_consumed: None,
             trace_id: None,
         })
@@ -1293,6 +1295,78 @@ async fn test_resume_budget_continues_from_consumed() {
 
     // The checkpoint has been claimed (cleared).
     assert!(exec.pending_approval().await.unwrap().is_none());
+}
+
+/// §4.2 / H2 regression: a `Deny` on resume must NOT consume `max_tool_calls`.
+///
+/// The checkpoint is written by the real loop before the in-flight tool runs, so it
+/// stores the *executed-only* count (`tool_calls_consumed = 0` — the pending tool is not
+/// pre-counted). A denied resumed tool yields a non-execution observation and must not
+/// budget-reserve a slot; the relayed agent is then free to run a real tool within the
+/// cap. Under the old blind `+1` checkpoint, the denied tool already consumed the only
+/// slot, so a legitimate follow-up tool was silently blocked (over-count).
+#[tokio::test]
+async fn test_resume_deny_does_not_consume_tool_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn ResumeStore> = Arc::new(FileResumeStore::new(dir.path()).unwrap());
+    let counter = Arc::new(CountingTool {
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+
+    // Process A: blocking approval persists the checkpoint before the tool runs.
+    let (persisted_tx, mut persisted_rx) = tokio::sync::mpsc::channel(1);
+    let exec_a = Arc::new(
+        AgentExecutor::new(Arc::new(RelentlessActionAgent), vec![counter.clone()])
+            .with_resume_store(store.clone())
+            .with_budget(BudgetConfig {
+                max_tool_calls: Some(1),
+                ..Default::default()
+            })
+            .with_approval(Arc::new(BlockingApproval { persisted_tx })),
+    );
+    let task = tokio::spawn({
+        let exec = exec_a.clone();
+        async move { exec.invoke("compute".to_string()).await }
+    });
+
+    // Approval entered → checkpoint persisted → simulate a crash (abort).
+    persisted_rx.recv().await.expect("approval should be entered");
+    task.abort();
+
+    let pending = store.load_pending().await.unwrap().expect("checkpoint on disk");
+    // The fix's assertion: no blind `+1` — the in-flight tool is not pre-counted.
+    assert_eq!(pending.tool_calls_consumed, 0);
+
+    // Process B: inject Deny. The pending tool is not executed (non-execution marker),
+    // so it must not consume the tool-call budget.
+    let exec_b = AgentExecutor::new(Arc::new(RelentlessActionAgent), vec![counter.clone()])
+        .with_resume_store(store.clone())
+        .with_budget(BudgetConfig {
+            max_tool_calls: Some(1),
+            ..Default::default()
+        });
+
+    // After the denied resume, the relayed agent re-plans and runs a real `counter`
+    // (allowed: 0 < 1), which consumes the single slot; the next plan round stops.
+    let err = exec_b
+        .resume(ApprovalDecision::Deny {
+            reason: "blocked".to_string(),
+        })
+        .await
+        .unwrap_err();
+    match &err {
+        AgentError::BudgetExceeded(BudgetExceeded::ToolCalls { limit, actual }) => {
+            assert_eq!(*limit, 1);
+            assert_eq!(*actual, 1);
+        }
+        other => panic!("expected BudgetExceeded::ToolCalls, got {other:?}"),
+    }
+
+    // Only the *executed* tool ran — the denied one did not, and did not reserve a slot.
+    assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
+
+    // Checkpoint claimed.
+    assert!(exec_b.pending_approval().await.unwrap().is_none());
 }
 
 // --- v0.20.2: observability sink --------------------------------------------
@@ -1357,6 +1431,7 @@ async fn invoke_exports_agent_metrics_once() {
         }
         ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
         ObsEvent::Cost(_) => panic!("unexpected event kind"),
+        ObsEvent::RunError(_) => panic!("unexpected event kind"),
     }
 }
 
@@ -1381,6 +1456,7 @@ async fn stream_exports_agent_metrics_once() {
         ObsEvent::AgentMetrics(_) => {}
         ObsEvent::TokenUsage(_) => panic!("unexpected event kind"),
         ObsEvent::Cost(_) => panic!("unexpected event kind"),
+        ObsEvent::RunError(_) => panic!("unexpected event kind"),
     }
 }
 

@@ -6,11 +6,16 @@ use super::extract::{
     StructuredOutputError,
 };
 use super::parser::{PartialJsonError, PartialJsonParser};
-use super::streaming::{stream_structured_output, try_deserialize_partial};
+use super::streaming::{
+    stream_structured_output, stream_structured_output_with_hooks, try_deserialize_partial,
+    StreamHooks,
+};
 use async_trait::async_trait;
 use futures_util::stream::StreamExt;
 use futures_util::Stream;
+use lc_shared::json_repair::remove_trailing_commas as lc_shared_remove_trailing_commas;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use crate::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
 use crate::runnables::Runnable;
@@ -620,14 +625,14 @@ fn test_push_and_parse_truncated_in_array() {
 
 #[test]
 fn test_remove_trailing_commas() {
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": 1,}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": 1,}"#);
     assert_eq!(result, r#"{"a": 1}"#);
 
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": [1, 2,]}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": [1, 2,]}"#);
     assert_eq!(result, r#"{"a": [1, 2]}"#);
 
     // Comma before non-closing token should be kept
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": 1, "b": 2}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": 1, "b": 2}"#);
     assert_eq!(result, r#"{"a": 1, "b": 2}"#);
 }
 
@@ -635,18 +640,18 @@ fn test_remove_trailing_commas() {
 #[test]
 fn test_remove_trailing_commas_preserves_string_literals() {
     // Comma + `}`/`]` inside a string must survive the scan.
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "text, } more"}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": "text, } more"}"#);
     assert_eq!(result, r#"{"a": "text, } more"}"#);
 
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "x,]", "b": 1}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": "x,]", "b": 1}"#);
     assert_eq!(result, r#"{"a": "x,]", "b": 1}"#);
 
     // Escaped quote inside the string must not end string state prematurely.
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "he said \"hi, \"", "b": 1,}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": "he said \"hi, \"", "b": 1,}"#);
     assert_eq!(result, r#"{"a": "he said \"hi, \"", "b": 1}"#);
 
     // A real trailing comma in the structure is still removed.
-    let result = PartialJsonParser::remove_trailing_commas(r#"{"a": "1, 2, 3", "b": [1,]}"#);
+    let result = lc_shared_remove_trailing_commas(r#"{"a": "1, 2, 3", "b": [1,]}"#);
     assert_eq!(result, r#"{"a": "1, 2, 3", "b": [1]}"#);
 }
 
@@ -957,6 +962,60 @@ async fn test_stream_structured_output_incremental_tokens() {
             age: 25
         }
     );
+}
+
+// v0.27.0 L48: stop-word / parse callback events fire during streaming.
+#[tokio::test]
+async fn test_stream_structured_output_hooks_fire() {
+    // "Alice" appears inside the JSON; use it as a stop word so it is detected
+    // in the raw accumulated buffer, and count every partial parse.
+    let llm =
+        StreamingMockChatModel::from_response_token_chunks(r#"{"name": "Alice", "age": 30}"#, 5);
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"}
+        },
+        "required": ["name", "age"]
+    });
+
+    let parse_count = Arc::new(Mutex::new(0usize));
+    let stop_words_fired = Arc::new(Mutex::new(Vec::new()));
+    let hooks = StreamHooks {
+        stop_words: vec!["Alice".to_string()],
+        on_parse: Some(Arc::new({
+            let count = parse_count.clone();
+            move |_: &PartialPerson| {
+                *count.lock().unwrap() += 1;
+            }
+        })),
+        on_stop_word: Some(Arc::new({
+            let fired = stop_words_fired.clone();
+            move |word: &str| {
+                fired.lock().unwrap().push(word.to_string());
+            }
+        })),
+    };
+
+    let mut stream = stream_structured_output_with_hooks::<PartialPerson, _>(
+        &llm,
+        schema,
+        "Tell me about Alice",
+        hooks,
+    )
+    .await
+    .unwrap();
+
+    let results: Vec<Result<PartialPerson, StructuredOutputError>> =
+        stream.as_mut().collect().await;
+    assert!(!results.is_empty());
+    assert!(results.iter().all(|r| r.is_ok()));
+
+    // At least one partial parse must have been observed.
+    assert!(*parse_count.lock().unwrap() >= 1);
+    // The stop word fires exactly once for "Alice".
+    assert_eq!(*stop_words_fired.lock().unwrap(), vec!["Alice".to_string()]);
 }
 
 #[tokio::test]

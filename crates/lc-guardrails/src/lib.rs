@@ -33,7 +33,8 @@ pub use disclosure::{disclose, disclose_to_file, DisclosureConfig, DEFAULT_DISCL
 pub use guarded_agent::{ChainGuardable, Guardable, GuardableChunk, GuardedAgent};
 pub use guardrail::{
     ChunkAction, ChunkContext, FlushOutput, GuardrailError, GuardrailsConfig, InputGuardrail,
-    InputGuardrailResult, OutputGuardrail, OutputGuardrailResult, StreamingOutputGuardrail,
+    InputGuardrailResult, OutputGuardrail, OutputGuardrailResult, RewriteRequest,
+    StreamingOutputGuardrail,
 };
 pub use judge::{LlmSensitiveJudge, SensitiveJudge};
 pub use pii::{PiiKind, PiiRedactionGuardrail};
@@ -42,7 +43,8 @@ pub use rule_of_two::{is_high_risk, triage, RuleOfTwoVerdict, RULE_OF_TWO_ARMED_
 pub use runner::{GuardrailRunner, GuardrailViolation, OutputValidation};
 pub use schema::SchemaOutputGuardrail;
 pub use spotlighting::{
-    escape, is_wrapped, spotlight, unwrap, wrap_tool_output, SpotlightedRetriever,
-    DEFAULT_CLOSE_MARKER, DEFAULT_OPEN_MARKER,
+    escape, has_breakout_marker, has_unescaped_marker, is_airtight, is_wrapped, spotlight,
+    unwrap, unescape, roundtrip, wrap_tool_output, SpotScanner, SpotlightVerdict,
+    SpotlightedRetriever, DEFAULT_CLOSE_MARKER, DEFAULT_OPEN_MARKER,
 };
 pub use validators::{ForbiddenWordsGuardrail, MaxLengthGuardrail, SensitiveInfoGuardrail};

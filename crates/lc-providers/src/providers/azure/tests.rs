@@ -25,7 +25,7 @@ fn test_config_new() {
     );
     assert_eq!(config.endpoint, "https://myresource.openai.azure.com");
     assert_eq!(config.deployment_name, "gpt-4-deployment");
-    assert_eq!(config.api_key, "test-key");
+    assert_eq!(config.api_key.expose_secret(), "test-key");
     assert_eq!(config.api_version, AZURE_DEFAULT_API_VERSION);
 }
 
@@ -55,7 +55,7 @@ fn test_config_from_env_result_ok() {
     let config = result.unwrap();
     assert_eq!(config.endpoint, "https://test.openai.azure.com");
     assert_eq!(config.deployment_name, "my-deploy");
-    assert_eq!(config.api_key, "azure-key-123");
+    assert_eq!(config.api_key.expose_secret(), "azure-key-123");
     restore("AZURE_OPENAI_ENDPOINT", old_ep);
     restore("AZURE_OPENAI_DEPLOYMENT_NAME", old_dn);
     restore("AZURE_OPENAI_API_KEY", old_key);

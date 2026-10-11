@@ -179,10 +179,11 @@ impl AgentExecutor {
                         inputs: inputs.clone(),
                         steps: intermediate_steps.clone(),
                         iteration,
-                        // H2: `metrics.tool_calls` is executed-only (no pre-increment),
-                        // so include the in-flight pending tool — on `Allow` (or crash
-                        // resume) it executes and counts as consumed.
-                        tool_calls_consumed: metrics.tool_calls + 1,
+                        // H2 / §4.2: the checkpoint stores the *executed-only* count
+                        // (no pre-increment, matching `metrics.tool_calls`). The in-flight
+                        // tool is neither executed nor counted yet; whether it consumes
+                        // `max_tool_calls` is decided on resume against the actual result.
+                        tool_calls_consumed: metrics.tool_calls,
                         tokens_consumed: metrics.total_tokens,
                         trace_id: root_run.trace_id.map(|id| id.to_string()),
                     };

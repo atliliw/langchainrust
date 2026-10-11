@@ -12,7 +12,7 @@ use lc_evaluation::{compare_reports, Dataset, EvalError, EvalRunner, ExactMatch,
 use lc_schema::Message;
 use lc_testkit::{
     golden_dataset, is_scoring_candidate, replay_golden_from_file, write_golden_jsonl, GoldenError,
-    RecordedExchange, ReplayStrategy,
+    RecordedExchange, ReplayStrategy, TestkitError,
 };
 
 fn exchange(messages: Vec<Message>, content: &str) -> RecordedExchange {
@@ -23,7 +23,7 @@ fn exchange(messages: Vec<Message>, content: &str) -> RecordedExchange {
             model: "fake".to_string(),
             ..Default::default()
         },
-        tools: None,
+        tools: Vec::new(),
     }
 }
 
@@ -155,6 +155,24 @@ async fn replay_golden_run_scores_every_recorded_reference_exactly() {
         0,
         "FIFO queue drains one pop per example"
     );
+}
+
+/// The exact-match predictor makes a single fresh human message, so non-Fifo strategies are a
+/// footgun (`Exact` → guaranteed ReplayNoMatch, `ByToolName` → silent FIFO) and must be rejected
+/// up front rather than surprise the caller mid-run.
+#[test]
+fn replay_golden_rejects_non_fifo_strategy() {
+    let dir = write_recording(&sample_exchanges());
+    for bad in [ReplayStrategy::Exact, ReplayStrategy::ByToolName] {
+        // Can't use `unwrap_err` (ReplayPredictor has no `Debug`), so match the result shape directly.
+        match replay_golden_from_file(dir.path().join("trace.jsonl"), bad) {
+            Err(TestkitError::GoldenReplayStrategyMismatch { strategy }) if strategy == bad => {}
+            other => panic!(
+                "非 Fifo 策略应在入口被拒绝, 实际: {:?}",
+                other.map(|_| ()).err().unwrap()
+            ),
+        }
+    }
 }
 
 #[tokio::test]

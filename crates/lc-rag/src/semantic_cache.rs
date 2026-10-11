@@ -163,7 +163,8 @@ impl SemanticCacheCore {
             .filter(|e| {
                 e.k == k
                     && !self.is_expired(&e.inserted_at, now)
-                    && lc_embeddings::cosine_similarity(query_vector, &e.query_vector).unwrap_or(0.0)
+                    && lc_embeddings::cosine_similarity(query_vector, &e.query_vector)
+                        .unwrap_or(0.0)
                         >= self.config.threshold
             })
             .max_by_key(|e| e.inserted_at)
@@ -189,19 +190,32 @@ impl SemanticCacheCore {
         }
         // FIFO eviction. Each map entry is one (query, k) pair; the recency
         // queue mirrors it one-to-one, so popping the front order slot and
-        // removing its matching map entry stays in lockstep.
+        // removing its matching map entry stays in lockstep. Defensive: if a
+        // slot is ever dangling (map and order desynced) eviction falls back
+        // to the oldest map entry, so the loop always makes progress and the
+        // cache stays bounded instead of silently stalling over-capacity.
         while inner.map.len() >= self.config.max_entries {
+            if inner.map.is_empty() {
+                break;
+            }
             match inner.order.pop_front() {
                 Some((oldest_q, oldest_k)) => {
-                    if let Some(pos) = inner
+                    match inner
                         .map
                         .iter()
                         .position(|e| e.query == oldest_q && e.k == oldest_k)
                     {
-                        inner.map.remove(pos);
+                        Some(pos) => {
+                            inner.map.remove(pos);
+                        }
+                        None => {
+                            inner.map.remove(0);
+                        }
                     }
                 }
-                None => break,
+                None => {
+                    inner.map.remove(0);
+                }
             }
         }
         inner.order.push_back((query.to_string(), k));

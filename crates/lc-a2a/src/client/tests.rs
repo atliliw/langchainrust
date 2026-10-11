@@ -93,6 +93,119 @@ async fn spawn_sse_server(events: &'static [&'static str]) -> String {
     format!("http://{}", addr)
 }
 
+/// Read a request head up to and including the blank line, returning its text.
+///
+/// Consuming the whole head matters: closing a socket with unread request bytes
+/// makes the OS send RST instead of FIN, and an RST makes the client discard
+/// already-buffered response bytes — which would lose the events the test is
+/// about to assert on.
+async fn read_request_head<S>(socket: &mut S) -> Option<String>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1024];
+    loop {
+        match socket.read(&mut tmp).await {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+        }
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            return Some(String::from_utf8_lossy(&buf[..pos + 4]).to_string());
+        }
+    }
+}
+
+/// Per-connection behaviour for [`spawn_sse_scripted_server`] (0.27.0 T3 #95).
+#[derive(Clone, Copy)]
+enum SseConn {
+    /// Deliver these events, then cut the connection mid-body: the response is
+    /// chunked and closed without the terminating `0\r\n\r\n`, so the client
+    /// sees a transport error rather than a clean close.
+    Break(&'static [&'static str]),
+    /// Deliver these events, then go silent while holding the socket open (the
+    /// client's idle guard is what must notice).
+    Silent(&'static [&'static str]),
+    /// Deliver these events, then close cleanly.
+    Clean(&'static [&'static str]),
+}
+
+/// Spawn a server that answers each accepted connection according to `script`,
+/// returning its base URL and the request head of every connection (so tests can
+/// assert on replayed auth/trace headers).
+async fn spawn_sse_scripted_server(
+    script: &'static [SseConn],
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = heads.clone();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        for step in script {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            // `step` is a `&SseConn` (Copy); deref it so match binding gets the
+            // value fields directly rather than double references to them.
+            let step = *step;
+            // Each connection is served on its own task: a `Silent` connection
+            // stays open while the client reconnects, so the accept loop must
+            // not be blocked behind it.
+            let captured = captured.clone();
+            tokio::spawn(async move {
+                let Some(head) = read_request_head(&mut socket).await else {
+                    return;
+                };
+                captured
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(head);
+
+                let chunked = |events: &'static [&'static str]| {
+                    let mut body = String::from(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                         Transfer-Encoding: chunked\r\n\r\n",
+                    );
+                    for ev in events {
+                        let payload = format!("{ev}\n\n");
+                        body.push_str(&format!("{:x}\r\n{}\r\n", payload.len(), payload));
+                    }
+                    body
+                };
+                match step {
+                    SseConn::Break(events) => {
+                        let _ = socket.write_all(chunked(events).as_bytes()).await;
+                        let _ = socket.flush().await;
+                        drop(socket); // abrupt: no `0\r\n\r\n` terminator
+                    }
+                    SseConn::Silent(events) => {
+                        let _ = socket.write_all(chunked(events).as_bytes()).await;
+                        let _ = socket.flush().await;
+                        // Hold the connection open and stay silent: the client
+                        // must give up on its own idle budget.
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let _ = socket.shutdown().await;
+                    }
+                    SseConn::Clean(events) => {
+                        let mut body = String::from(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                        );
+                        for ev in events {
+                            body.push_str(ev);
+                            body.push_str("\n\n");
+                        }
+                        let _ = socket.write_all(body.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://{}", addr), heads)
+}
+
 /// Spawn a server that answers JSON-RPC `POST /` requests and serves SSE
 /// events on `GET /sse` (used by `send_task_streaming` tests).
 async fn spawn_sse_rpc_server(events: &'static [&'static str]) -> String {
@@ -734,7 +847,7 @@ async fn connect_sse_parses_task_notifications() {
 async fn send_task_streaming_sends_then_streams() {
     let base = spawn_sse_rpc_server(&[
         "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}",
-        "event: artifact-update\ndata: {\"kind\":\"artifact-update\",\"id\":\"t1\",\"artifact\":{\"output\":\"hi\"}}",
+        "event: artifact-update\ndata: {\"kind\":\"artifact-update\",\"id\":\"t1\",\"artifact\":{\"artifactId\":\"a1\",\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}}",
     ])
     .await;
     let client = A2AClient::new(base.clone()).unwrap();
@@ -751,6 +864,196 @@ async fn send_task_streaming_sends_then_streams() {
     assert!(
         second.status_value().is_none(),
         "artifact events carry no status"
+    );
+}
+
+// ---- 0.27.0 T3 #95: opt-in SSE self-heal ----
+
+const STATUS_WORKING: &str =
+    "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}";
+const STATUS_COMPLETED: &str =
+    "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}";
+
+#[tokio::test]
+async fn sse_reconnects_after_transport_break_when_enabled() {
+    let (base, heads) = spawn_sse_scripted_server(&[
+        SseConn::Break(&[STATUS_WORKING]),
+        SseConn::Clean(&[STATUS_COMPLETED]),
+    ])
+    .await;
+    let client = A2AClient::builder("http://localhost:1".to_string())
+        .sse_reconnect_max_attempts(3)
+        .build()
+        .unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let first = stream.next().await.expect("first event").unwrap();
+    assert_eq!(first.status_value(), Some(TaskStatus::Working));
+
+    // The break is healed on a fresh connection rather than surfaced.
+    let second = stream.next().await.expect("reconnected event").unwrap();
+    assert_eq!(second.status_value(), Some(TaskStatus::Completed));
+
+    assert!(stream.next().await.is_none(), "clean close is terminal");
+    assert_eq!(
+        heads.lock().unwrap().len(),
+        2,
+        "one reconnect after the break"
+    );
+}
+
+#[tokio::test]
+async fn sse_transport_break_surfaces_when_self_heal_disabled() {
+    let (base, heads) = spawn_sse_scripted_server(&[
+        SseConn::Break(&[STATUS_WORKING]),
+        SseConn::Clean(&[STATUS_COMPLETED]),
+    ])
+    .await;
+    // Default: no self-heal, so the pre-0.27 behavior is preserved.
+    let client = A2AClient::new("http://localhost:1".to_string()).unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let first = stream.next().await.expect("first event").unwrap();
+    assert_eq!(first.status_value(), Some(TaskStatus::Working));
+
+    let second = stream.next().await.expect("break surfaces as an error");
+    assert!(second.is_err(), "default path must not reconnect");
+    assert_eq!(heads.lock().unwrap().len(), 1, "no reconnect when disabled");
+}
+
+#[tokio::test]
+async fn sse_reconnects_after_idle_timeout() {
+    let (base, heads) = spawn_sse_scripted_server(&[
+        SseConn::Silent(&[STATUS_WORKING]),
+        SseConn::Clean(&[STATUS_COMPLETED]),
+    ])
+    .await;
+    let client = A2AClient::builder("http://localhost:1".to_string())
+        // A short idle budget so the silent connection trips the guard quickly.
+        .sse_idle_timeout(std::time::Duration::from_millis(150))
+        .sse_reconnect_max_attempts(3)
+        .build()
+        .unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let first = stream.next().await.expect("first event").unwrap();
+    assert_eq!(first.status_value(), Some(TaskStatus::Working));
+
+    // The server goes silent; the idle guard treats it as a transport break
+    // and self-heals onto a fresh connection that completes the task.
+    let second = stream
+        .next()
+        .await
+        .expect("idle timeout is healed")
+        .unwrap();
+    assert_eq!(second.status_value(), Some(TaskStatus::Completed));
+
+    assert!(stream.next().await.is_none(), "clean close is terminal");
+    assert_eq!(
+        heads.lock().unwrap().len(),
+        2,
+        "one reconnect after the idle timeout"
+    );
+}
+
+#[tokio::test]
+async fn sse_reconnect_budget_exhaustion_surfaces_original_error() {
+    // Both connections break; a budget of 1 allows exactly one reconnect, after
+    // which the original transport error is surfaced.
+    let (base, heads) =
+        spawn_sse_scripted_server(&[SseConn::Break(&[STATUS_WORKING]), SseConn::Break(&[])]).await;
+    let client = A2AClient::builder("http://localhost:1".to_string())
+        .sse_reconnect_max_attempts(1)
+        .build()
+        .unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let first = stream.next().await.expect("first event").unwrap();
+    assert_eq!(first.status_value(), Some(TaskStatus::Working));
+
+    let second = stream
+        .next()
+        .await
+        .expect("budget exhaustion surfaces an error");
+    assert!(
+        second.is_err(),
+        "exhausted retry budget must surface the transport error"
+    );
+    assert_eq!(
+        heads.lock().unwrap().len(),
+        2,
+        "original connection + one reconnect"
+    );
+}
+
+#[tokio::test]
+async fn sse_reconnect_replays_bearer_and_traceparent() {
+    use crate::protocol::TraceContext;
+    let (base, heads) = spawn_sse_scripted_server(&[
+        SseConn::Break(&[STATUS_WORKING]),
+        SseConn::Clean(&[STATUS_COMPLETED]),
+    ])
+    .await;
+    let client = A2AClient::builder("http://localhost:1".to_string())
+        .bearer_token("tok-1".to_string())
+        .with_traceparent(TraceContext::new(
+            "11111111111111111111111111111111",
+            "2222222222222222",
+        ))
+        .sse_reconnect_max_attempts(3)
+        .build()
+        .unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let _ = stream.next().await.expect("first event").unwrap();
+    let _ = stream.next().await.expect("reconnected event").unwrap();
+
+    let heads = heads.lock().unwrap();
+    assert_eq!(heads.len(), 2, "original + reconnect");
+    // Header names could arrive in any casing on the wire; compare lowercase.
+    let reconnected = heads[1].to_lowercase();
+    assert!(
+        reconnected.contains("authorization: bearer tok-1"),
+        "bearer token must be replayed on reconnect, got: {reconnected}"
+    );
+    assert!(
+        reconnected
+            .contains("traceparent: 00-11111111111111111111111111111111-2222222222222222-00"),
+        "traceparent must be replayed on reconnect, got: {reconnected}"
+    );
+}
+
+/// T3 #100 event replay: when a frame carried an SSE `id:`, the reconnect GET
+/// sends `Last-Event-ID` set to the newest one, so a server with a replay
+/// buffer can resume the delivery gap instead of dropping it.
+#[tokio::test]
+async fn sse_reconnect_sends_last_event_id_for_replay() {
+    // Frame that carries an SSE `id:` (distinct from the JSON task id) so the
+    // parser has an event id to replay.
+    const WORKING_WITH_ID: &str = "id: 17\nevent: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}";
+    const COMPLETED_NO_ID: &str =
+        "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}";
+    let (base, heads) = spawn_sse_scripted_server(&[
+        SseConn::Break(&[WORKING_WITH_ID]),
+        SseConn::Clean(&[COMPLETED_NO_ID]),
+    ])
+    .await;
+
+    let client = A2AClient::builder("http://localhost:1".to_string())
+        .sse_reconnect_max_attempts(3)
+        .build()
+        .unwrap();
+    let mut stream = client.connect_sse(&base).await.unwrap();
+
+    let _ = stream.next().await.expect("first event").unwrap();
+    let _ = stream.next().await.expect("reconnected event").unwrap();
+
+    let heads = heads.lock().unwrap();
+    assert_eq!(heads.len(), 2, "original + reconnect");
+    let reconnected = heads[1].to_lowercase();
+    assert!(
+        reconnected.contains("last-event-id: 17"),
+        "reconnect must ask the server to replay from the last event id, got: {reconnected}"
     );
 }
 
@@ -907,5 +1210,224 @@ async fn get_agent_card_falls_back_to_agent_json() {
     assert_eq!(
         card.name, "fallback",
         "must recover the card from agent.json"
+    );
+}
+
+// ---- P2-9: tasks/sendSubscribe (subscribe) ----
+
+#[tokio::test]
+async fn subscribe_returns_task_and_streams_parts_artifact() {
+    // The RPC endpoint answers any POST with a submitted task ack; the SSE
+    // endpoint streams a status increment then a parts-based artifact update.
+    let base = spawn_sse_rpc_server(&[
+        "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}",
+        "event: artifact-update\ndata: {\"kind\":\"artifact-update\",\"id\":\"t1\",\"artifact\":{\"artifactId\":\"a1\",\"parts\":[{\"type\":\"text\",\"text\":\"hi\"}]}}",
+    ])
+    .await;
+    let client = A2AClient::new(base.clone()).unwrap();
+
+    let mut sub = client
+        .subscribe(&format!("{}/sse", base), A2AMessage::user("hello"))
+        .await
+        .expect("subscription established");
+    // The subscription confirmation carries the acknowledged task.
+    assert_eq!(sub.task().id, "t1");
+    assert_eq!(sub.task().status, TaskStatus::Submitted);
+
+    // Incremental push events flow over the stream without polling.
+    let first = sub.next().await.expect("first event").unwrap();
+    assert_eq!(first.id(), "t1");
+    assert_eq!(first.status_value(), Some(TaskStatus::Working));
+
+    let second = sub.next().await.expect("second event").unwrap();
+    assert_eq!(
+        second.status_value(),
+        None,
+        "artifact updates carry no status"
+    );
+    if let TaskPushNotification::ArtifactUpdate { artifact, .. } = second {
+        assert_eq!(artifact.parts().len(), 1);
+        assert_eq!(artifact.text_content().as_deref(), Some("hi"));
+    } else {
+        panic!("expected an artifact update");
+    }
+}
+
+// ---- T3: fleet routing wired into the send path ----
+
+/// A stub agent that records every request body it receives and acknowledges
+/// each `tasks/send` with a `submitted` task.
+async fn spawn_fleet_agent(hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    use crate::protocol::AgentSkill;
+    let base = spawn_http_server(move |_head, body| {
+        hits.lock().unwrap_or_else(|e| e.into_inner()).push(body.to_string());
+        serde_json::to_string(&A2AResponse::ok(
+            0,
+            json!({"task": {"id": "t1", "message": {"role": "user", "content": "hi"}, "status": "submitted"}}),
+        ))
+        .unwrap()
+    })
+    .await;
+    let _ = AgentSkill::new("unused", "unused", "unused");
+    base
+}
+
+#[tokio::test]
+async fn fleet_routes_send_task_to_the_relevant_agent() {
+    use crate::protocol::AgentSkill;
+
+    let hits_retriever = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hits_summarizer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let retriever_url = spawn_fleet_agent(hits_retriever.clone()).await;
+    let summarizer_url = spawn_fleet_agent(hits_summarizer.clone()).await;
+
+    let mut fleet = AgentFleet::new();
+    fleet.register(AgentCard::new("retriever", "doc search", retriever_url.clone()).with_skill(
+        AgentSkill::new(
+            "retrieve",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ),
+    ));
+    fleet.register(AgentCard::new("summarizer", "text", summarizer_url.clone()).with_skill(
+        AgentSkill::new(
+            "summarize",
+            "summarize",
+            "condense long documents into a short summary",
+        ),
+    ));
+
+    let client = A2AClient::builder("http://localhost:1")
+        .fleet(std::sync::Arc::new(fleet))
+        .build()
+        .unwrap();
+
+    // The routing policy picks the retriever for a retrieval query.
+    let routed = client
+        .send_task_routed("retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap();
+    assert_eq!(routed.agent_url, retriever_url);
+    assert_eq!(routed.task.id, "t1");
+    assert_eq!(hits_retriever.lock().unwrap().len(), 1);
+    assert_eq!(hits_summarizer.lock().unwrap().len(), 0);
+
+    // A summarization query goes to the other agent.
+    let routed = client
+        .send_task_routed("condense documents summary", A2AMessage::user("hi"))
+        .await
+        .unwrap();
+    assert_eq!(routed.agent_url, summarizer_url);
+    assert_eq!(hits_retriever.lock().unwrap().len(), 1);
+    assert_eq!(hits_summarizer.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn fleet_skips_a_tripped_agent_through_the_send_path() {
+    use crate::protocol::AgentSkill;
+
+    let hits_primary = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hits_secondary = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let primary = spawn_fleet_agent(hits_primary.clone()).await;
+    let secondary = spawn_fleet_agent(hits_secondary.clone()).await;
+
+    // Threshold 1: one recorded failure trips the breaker open.
+    let mut fleet = AgentFleet::new().with_breaker_config(crate::scale::CircuitBreakerConfig {
+        failure_threshold: 1,
+        open_duration: std::time::Duration::from_secs(30),
+    });
+    for (name, url) in [("a", &primary), ("b", &secondary)] {
+        fleet.register(AgentCard::new(name, "doc", url.clone()).with_skill(AgentSkill::new(
+            "retrieve",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        )));
+    }
+    let client = A2AClient::builder("http://localhost:1")
+        .fleet(std::sync::Arc::new(fleet))
+        .build()
+        .unwrap();
+
+    // First routed send goes to the primary (the higher-ranked candidate).
+    let first = client
+        .send_task_routed("retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap();
+    assert_eq!(first.agent_url, primary);
+
+    // Trip the primary; the next routed send must skip it for the secondary.
+    let fleet = client.fleet().unwrap();
+    fleet.record_failure(&primary);
+
+    let second = client
+        .send_task_routed("retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.agent_url, secondary,
+        "a tripped agent must be skipped on a real send"
+    );
+    assert_eq!(hits_primary.lock().unwrap().len(), 1);
+    assert_eq!(hits_secondary.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn fleet_requires_a_fleet_to_route() {
+    let client = A2AClient::new("http://localhost:1".to_string()).unwrap();
+    assert!(matches!(
+        client.route_task("anything"),
+        Err(A2AError::NoRoute(_))
+    ));
+    assert!(client.fleet().is_none());
+}
+
+#[tokio::test]
+async fn fleet_delegation_enforces_the_hierarchy_and_hops() {
+    use crate::protocol::AgentSkill;
+
+    let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let worker = spawn_fleet_agent(hits.clone()).await;
+
+    let mut fleet = AgentFleet::new()
+        .with_orchestrator("http://orch")
+        .with_worker(worker.clone())
+        .with_max_hops(2);
+    fleet.register(AgentCard::new("worker", "doc", worker.clone()).with_skill(
+        AgentSkill::new(
+            "retrieve",
+            "retrieve",
+            "retrieve relevant documents from the corpus",
+        ),
+    ));
+    let client = A2AClient::builder("http://localhost:1")
+        .fleet(std::sync::Arc::new(fleet))
+        .build()
+        .unwrap();
+
+    // An orchestrator may delegate within the hop budget.
+    let routed = client
+        .delegate_task("parent-task", "http://orch", 1, "retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap();
+    assert_eq!(routed.agent_url, worker);
+
+    // A worker may not delegate (hierarchy rule surfaces as NoRoute).
+    let err = client
+        .delegate_task("parent-task", &worker, 1, "retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, A2AError::NoRoute(msg) if msg.contains("may not delegate")),
+        "worker delegation must be refused, got: {err:?}"
+    );
+
+    // Exceeding the hop budget is refused before any routing.
+    let err = client
+        .delegate_task("parent-task", "http://orch", 3, "retrieve documents", A2AMessage::user("hi"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, A2AError::NoRoute(msg) if msg.contains("hop limit")),
+        "hop overflow must be refused, got: {err:?}"
     );
 }

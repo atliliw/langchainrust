@@ -16,6 +16,25 @@ pub struct MCPToolDefinition {
     pub input_schema: Value,
 }
 
+/// `tools/list` response (cursor-paginated, #79).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListToolsResult {
+    /// Tool definitions on this page
+    pub tools: Vec<MCPToolDefinition>,
+    /// Opaque pagination cursor; present when there are more results to fetch
+    /// (pass it back in the `cursor` param of `tools/list` to continue).
+    #[serde(rename = "nextCursor", default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// `tools/list` request parameters (cursor pagination, #79).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListToolsParams {
+    /// Opaque cursor returned by a previous `tools/list` call; `None` = first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
 /// MCP tool-call result (from `tools/call`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MCPToolResult {

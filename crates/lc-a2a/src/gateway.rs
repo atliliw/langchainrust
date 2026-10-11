@@ -15,6 +15,18 @@
 //!
 //! The gateway holds downstream [`A2AClient`]s keyed by route (typically the
 //! partner org's name) and forwards minimized requests over plain A2A.
+//!
+//! # Residual by design (not dead code)
+//!
+//! This is a **deployment-time library component** — like [`A2AClient`], it is
+//! consumed by operators who choose to stand up a federation hub, not wired
+//! into [`crate::A2AServer`] (a leaf-agent host, which is what this crate ships a
+//! server mode for). Per the project's federation decision (C-A2A-2,
+//! 0.25.0), the crate intentionally ships **no hub server mode**: the gateway
+//! is documented as a residual building block rather than removed, and the
+//! triage flag "死契约层 … 未接线" is resolved by *documenting intent*, not by
+//! deletion or forced in-crate wiring. Operators wiring a hub should refer to
+//! `docs/internal/v0.25.0/MIGRATION.md` §7.2.
 
 use std::collections::HashMap;
 

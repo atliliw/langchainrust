@@ -29,6 +29,9 @@ pub enum StatelessMode {
     /// Every request sleeps for the given duration before answering with the
     /// Normal behavior — used to exercise client-side timeouts.
     SlowCall(std::time::Duration),
+    /// Normal tools + prompts/list, prompts/get, resources/list, resources/read,
+    /// completion/complete, roots/list — exercises the full client capability surface.
+    Full,
 }
 
 /// A fake stateless MCP server handle.
@@ -167,6 +170,45 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
                         "server/discover" => serde_json::json!({
                             "capabilities": {"tools": {}},
                             "serverInfo": {"name": "fake-stateless", "version": "0.0.1"}
+                        }),
+                        "prompts/list" => serde_json::json!({
+                            "prompts": [{
+                                "name": "greet",
+                                "description": "greet someone",
+                                "arguments": [{"name": "language", "required": false}]
+                            }]
+                        }),
+                        "prompts/get" => serde_json::json!({
+                            "description": "greet",
+                            "messages": [{
+                                "role": "user",
+                                "content": {"type": "text", "text": "Hello"}
+                            }]
+                        }),
+                        "resources/list" => serde_json::json!({
+                            "resources": [{
+                                "uri": "file:///tmp/a.txt",
+                                "name": "a.txt",
+                                "mimeType": "text/plain"
+                            }]
+                        }),
+                        "resources/read" => serde_json::json!({
+                            "contents": [{
+                                "uri": "file:///tmp/a.txt",
+                                "mimeType": "text/plain",
+                                "text": "hello world"
+                            }]
+                        }),
+                        "completion/complete" => serde_json::json!({
+                            "values": [{"label": "rust"}],
+                            "total": 1,
+                            "hasMore": false
+                        }),
+                        "roots/list" => serde_json::json!({
+                            "roots": [{
+                                "uri": "file:///home/user/project",
+                                "name": "project"
+                            }]
                         }),
                         _ => serde_json::Value::Null,
                     };

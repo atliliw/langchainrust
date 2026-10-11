@@ -4,6 +4,8 @@
 //! Provides the ability to embed examples in a prompt, helping the LLM understand the expected output format.
 
 use crate::error::PromptsError;
+use crate::template_parser::{parse_template, template_variables, validate_template};
+use crate::validation::{dedup_in_order, diff_variables, VariableDiff};
 use crate::PromptTemplate;
 use std::collections::HashMap;
 
@@ -67,7 +69,7 @@ impl ExampleSelector for LengthBasedExampleSelector {
     fn select_examples(&self, input: &HashMap<String, String>) -> Vec<&HashMap<String, String>> {
         // Calculate input length to determine how many examples fit
         let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
-        let input_len = input_text.len();
+        let input_len = input_text.chars().count();
         // Use a simple heuristic: longer inputs leave less room for examples
         let available = self.max_length.saturating_sub(input_len);
 
@@ -76,7 +78,7 @@ impl ExampleSelector for LengthBasedExampleSelector {
 
         for example in &self.examples {
             // Estimate example length from its values
-            let ex_len: usize = example.values().map(|v| v.len()).sum();
+            let ex_len: usize = example.values().map(|v| v.chars().count()).sum();
             if used + ex_len <= available || selected.is_empty() {
                 selected.push(example);
                 used += ex_len;
@@ -97,7 +99,8 @@ impl ExampleSelector for LengthBasedExampleSelector {
     ) -> Vec<&HashMap<String, String>> {
         // compute the input length
         let input_text: String = input.values().cloned().collect::<Vec<_>>().join("");
-        let input_len = prefix.len() + suffix.len() + input_text.len();
+        let input_len =
+            prefix.chars().count() + suffix.chars().count() + input_text.chars().count();
         let available = self.max_length.saturating_sub(input_len);
 
         let mut selected = Vec::new();
@@ -111,7 +114,7 @@ impl ExampleSelector for LengthBasedExampleSelector {
                 .collect();
 
             if let Ok(formatted) = example_prompt.format(&example_vars) {
-                let ex_len = formatted.len() + 10; // plus slack for the separator
+                let ex_len = formatted.chars().count() + 10; // plus slack for the separator
                 if used + ex_len <= available || selected.is_empty() {
                     selected.push(example);
                     used += ex_len;
@@ -163,9 +166,10 @@ pub struct FewShotPromptTemplate {
     examples: Vec<HashMap<String, String>>,
     /// Prompt template for formatting a single example
     example_prompt: PromptTemplate,
-    /// Example prefix (placed before all examples)
+    /// Example prefix (placed before all examples, formatted with the caller's variables)
     prefix: String,
-    /// Example suffix (placed after all examples, usually the user input)
+    /// Example suffix (placed after all examples, usually the user input,
+    /// formatted with the caller's variables)
     suffix: String,
     /// Separator between examples
     example_separator: String,
@@ -261,20 +265,28 @@ impl FewShotPromptTemplate {
         let example_texts = example_texts?;
         let examples_str = example_texts.join(&self.example_separator);
 
-        // Format the suffix (user input).
-        // Validated through PromptTemplate; a missing variable errors out instead of silently
-        // keeping the literal `{var}` text.
-        let suffix_formatted = if self.suffix.is_empty() {
-            String::new()
-        } else {
-            PromptTemplate::new(self.suffix.clone()).format(variables)?
+        // Format the prefix and the suffix — the two parts that take the caller's
+        // variables — through PromptTemplate, so a missing variable errors out
+        // instead of silently keeping the literal `{var}` text.
+        //
+        // The prefix used to be emitted verbatim, which left `{var}` in the
+        // prompt with no error at all. Formatting it matches Python LangChain's
+        // `FewShotPromptTemplate`, which this type mirrors.
+        let format_part = |text: &str| -> Result<String, PromptsError> {
+            if text.is_empty() {
+                Ok(String::new())
+            } else {
+                PromptTemplate::new(text.to_string()).format(variables)
+            }
         };
+        let prefix_formatted = format_part(&self.prefix)?;
+        let suffix_formatted = format_part(&self.suffix)?;
 
         // compose the complete prompt
         let mut parts: Vec<String> = Vec::new();
 
-        if !self.prefix.is_empty() {
-            parts.push(self.prefix.clone());
+        if !prefix_formatted.is_empty() {
+            parts.push(prefix_formatted);
         }
 
         if !examples_str.is_empty() {
@@ -299,8 +311,104 @@ impl FewShotPromptTemplate {
     }
 
     /// Adds an example
+    ///
+    /// A template that passed [`validate`](Self::validate) can be invalidated by
+    /// this, so call `validate` again after mutating.
     pub fn add_example(&mut self, example: HashMap<String, String>) {
         self.examples.push(example);
+    }
+
+    /// Validates the template's construction: well-formed placeholders, a
+    /// declared-variable list that agrees with the prompt text, and examples that
+    /// can actually be rendered.
+    ///
+    /// Nothing checked any of this before, and each omission failed quietly:
+    ///
+    /// 1. **Malformed placeholders** in the prefix, suffix or example prompt
+    ///    (see [`PromptTemplate::validate`] for the lenient-vs-strict rationale).
+    /// 2. **Declared vs used variables.** `input_variables` is the contract
+    ///    `format` enforces, but nothing tied it to the prompt text: a suffix
+    ///    variable that was never declared could only fail at call time, and a
+    ///    declared variable the suffix never used made `format` demand a value it
+    ///    would then ignore.
+    /// 3. **Examples missing a variable the example prompt needs.** Without a
+    ///    selector such an example fails the whole `format`; with one it was
+    ///    silently *skipped* by
+    ///    [`LengthBasedExampleSelector`], quietly shrinking the example pool.
+    ///
+    /// Note that mutating builders ([`add_example`](Self::add_example),
+    /// [`with_prefix`](Self::with_prefix), [`with_suffix`](Self::with_suffix))
+    /// can invalidate the result; call this after the last mutation.
+    ///
+    /// # Errors
+    /// Returns [`PromptsError::MalformedTemplate`],
+    /// [`PromptsError::FewShotVariableMismatch`] (reporting both directions at
+    /// once), or [`PromptsError::ExampleMissingVariable`] for the first
+    /// unrenderable example.
+    pub fn validate(&self) -> Result<(), PromptsError> {
+        // 1. placeholders must be well-formed
+        validate_template(&self.prefix)?;
+        validate_template(&self.suffix)?;
+        self.example_prompt.validate()?;
+
+        // 2. declared input variables must match what the prompt text uses.
+        // Only the prefix and suffix take the caller's variables; the example
+        // prompt is formatted from each example's own keys.
+        let mut used = template_variables(&parse_template(&self.prefix));
+        used.extend(template_variables(&parse_template(&self.suffix)));
+        let used = dedup_in_order(&used);
+        let declared = dedup_in_order(&self.input_variables);
+
+        let undeclared: Vec<String> = used
+            .iter()
+            .filter(|var| !declared.contains(var))
+            .cloned()
+            .collect();
+        let unused: Vec<String> = declared
+            .iter()
+            .filter(|var| !used.contains(var))
+            .cloned()
+            .collect();
+        if !undeclared.is_empty() || !unused.is_empty() {
+            return Err(PromptsError::FewShotVariableMismatch { undeclared, unused });
+        }
+
+        // 3. every example must supply what the example prompt needs
+        let required = dedup_in_order(&self.example_prompt.variables());
+        for (index, example) in self.examples.iter().enumerate() {
+            if let Some(variable) = required.iter().find(|var| !example.contains_key(*var)) {
+                return Err(PromptsError::ExampleMissingVariable {
+                    index,
+                    variable: variable.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates the template and returns it, so construction can fail fast:
+    ///
+    /// ```ignore
+    /// let template = FewShotPromptTemplate::new(examples, example_prompt, prefix, suffix, vars)
+    ///     .validated()?;
+    /// ```
+    ///
+    /// # Errors
+    /// Returns whatever [`validate`](Self::validate) returns.
+    pub fn validated(self) -> Result<Self, PromptsError> {
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Compares the declared input variables against the ones a caller would
+    /// supply — the call-time half of what [`validate`](Self::validate) checks at
+    /// construction time.
+    pub fn variable_diff<'a, I>(&self, supplied: I) -> VariableDiff
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        diff_variables(&self.input_variables, supplied)
     }
 }
 
@@ -428,6 +536,20 @@ mod tests {
     }
 
     #[test]
+    fn test_length_based_selector_counts_chars_not_bytes() {
+        // CJK characters occupy 3 bytes each in UTF-8. `max_length` is documented as
+        // characters, so the selector must count characters (not bytes): under a 7-char
+        // budget (empty input) both examples fit when counted by char, but a byte count
+        // would fit only one.
+        let examples = vec![make_example("苹果", "水果"), make_example("玫瑰", "花")];
+        let selector = LengthBasedExampleSelector::new(examples).with_max_length(7);
+
+        let input_vars = HashMap::new();
+        let selected = selector.select_examples(&input_vars);
+        assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
     fn test_length_based_selector() {
         let examples = vec![make_example("long text here", "short")];
 
@@ -471,5 +593,180 @@ mod tests {
 
         let result = few_shot.format(&vars).unwrap();
         assert!(result.contains("Prefix"));
+    }
+
+    // ---- T2: construct-time variable validation ----
+
+    /// A consistent template, used as the positive case below.
+    fn valid_template() -> FewShotPromptTemplate {
+        FewShotPromptTemplate::new(
+            vec![make_example("苹果", "水果")],
+            PromptTemplate::new("{input} -> {output}"),
+            "请用{lang}回答：",
+            "输入: {input} ->",
+            vec!["input".to_string(), "lang".to_string()],
+        )
+    }
+
+    #[test]
+    fn prefix_is_formatted_with_the_callers_variables() {
+        // the prefix used to be emitted verbatim, leaving `{lang}` in the prompt
+        // with no error — Python LangChain's FewShotPromptTemplate formats it
+        let mut vars = HashMap::new();
+        vars.insert("input", "太阳");
+        vars.insert("lang", "中文");
+
+        let result = valid_template().format(&vars).unwrap();
+        assert!(result.contains("请用中文回答："), "got: {result}");
+        assert!(!result.contains("{lang}"));
+    }
+
+    #[test]
+    fn a_prefix_placeholder_with_no_value_errors() {
+        let mut vars = HashMap::new();
+        vars.insert("input", "太阳");
+        // `lang` deliberately omitted: format must fail rather than emit `{lang}`
+
+        let err = valid_template().format(&vars).unwrap_err();
+        assert!(err.to_string().contains("lang"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_accepts_a_consistent_template() {
+        assert!(valid_template().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_ignores_example_prompt_variables_in_the_declared_diff() {
+        // `output` is used by the example prompt but filled from each example's
+        // own keys, so it must not be reported as undeclared...
+        let template = FewShotPromptTemplate::new(
+            vec![make_example("a", "1")],
+            PromptTemplate::new("{input} -> {output}"),
+            "",
+            "{input}",
+            vec!["input".to_string()],
+        );
+
+        assert!(template.validate().is_ok());
+        // ...and it is not an input variable the caller has to supply either
+        assert_eq!(template.input_variables(), ["input"]);
+    }
+
+    #[test]
+    fn validate_reports_undeclared_and_unused_variables_together() {
+        // declared ["input", "spare"], but the prompt text only uses {topic}
+        let template = FewShotPromptTemplate::new(
+            vec![],
+            PromptTemplate::new("{input} -> {output}"),
+            "",
+            "{topic}",
+            vec!["input".to_string(), "spare".to_string()],
+        );
+
+        match template.validate().unwrap_err() {
+            PromptsError::FewShotVariableMismatch { undeclared, unused } => {
+                assert_eq!(undeclared, vec!["topic".to_string()]);
+                assert_eq!(unused, vec!["input".to_string(), "spare".to_string()]);
+            }
+            other => panic!("expected FewShotVariableMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_counts_prefix_and_suffix_variables_as_used() {
+        // `lang` is used only by the prefix; it must not be reported as unused
+        let template = valid_template();
+
+        assert!(template.validate().is_ok());
+        assert!(template.variable_diff(["input", "lang"]).is_empty());
+    }
+
+    #[test]
+    fn validate_reports_malformed_placeholders() {
+        let template = FewShotPromptTemplate::new(
+            vec![],
+            PromptTemplate::new("{input} -> {output}"),
+            "前缀 {lang",
+            "",
+            vec!["lang".to_string()],
+        );
+
+        let err = template.validate().unwrap_err();
+        assert!(
+            matches!(err, PromptsError::MalformedTemplate(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_reports_an_example_that_cannot_be_rendered() {
+        // the second example lacks `output`, so it cannot be formatted; with a
+        // selector it used to be skipped silently instead
+        let template = FewShotPromptTemplate::new(
+            vec![
+                make_example("a", "1"),
+                HashMap::from([("input".to_string(), "b".to_string())]),
+            ],
+            PromptTemplate::new("{input} -> {output}"),
+            "",
+            "{input}",
+            vec!["input".to_string()],
+        );
+
+        match template.validate().unwrap_err() {
+            PromptsError::ExampleMissingVariable { index, variable } => {
+                assert_eq!(index, 1);
+                assert_eq!(variable, "output");
+            }
+            other => panic!("expected ExampleMissingVariable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_catches_an_example_added_after_construction() {
+        let mut template = valid_template();
+        assert!(template.validate().is_ok());
+
+        template.add_example(HashMap::from([("input".to_string(), "b".to_string())]));
+
+        assert!(matches!(
+            template.validate().unwrap_err(),
+            PromptsError::ExampleMissingVariable { index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn validated_returns_the_template_when_consistent() {
+        let template = valid_template().validated().unwrap();
+        assert_eq!(template.input_variables(), ["input", "lang"]);
+    }
+
+    #[test]
+    fn validated_propagates_the_validation_error() {
+        let result = FewShotPromptTemplate::new(
+            vec![],
+            PromptTemplate::new("{input}"),
+            "",
+            "{input}",
+            vec![],
+        )
+        .validated();
+
+        // `.err()` rather than `.unwrap_err()`: the template holds a boxed
+        // selector and so is not `Debug`, which `unwrap_err` requires of the Ok
+        // side. Callers using `?` are unaffected.
+        assert!(matches!(
+            result.err().expect("validation should have failed"),
+            PromptsError::FewShotVariableMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn variable_diff_reports_both_directions_at_call_time() {
+        let diff = valid_template().variable_diff(["input", "typo"]);
+
+        assert_eq!(diff.missing, vec!["lang".to_string()]);
+        assert_eq!(diff.unused, vec!["typo".to_string()]);
     }
 }

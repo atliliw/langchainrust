@@ -36,6 +36,7 @@ use std::pin::Pin;
 
 use self::types::*;
 use crate::provider_http::{provider_api_client, provider_request_options, provider_sse_client};
+use crate::sampling::SamplingOverride;
 use crate::ProviderError;
 use lc_callbacks::RunType;
 use lc_core::http::HttpClient;
@@ -65,6 +66,17 @@ impl std::fmt::Debug for CohereChat {
     }
 }
 
+impl SamplingOverride for CohereChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            self.config.max_tokens = Some(m);
+        }
+    }
+}
+
 impl CohereChat {
     /// Creates a new CohereChat with the given configuration.
     pub fn new(config: CohereConfig) -> Self {
@@ -78,8 +90,12 @@ impl CohereChat {
     }
 
     /// Per-request auth/headers assembled from the provider config.
-    fn request_options(&self) -> lc_core::http::RequestOptions {
-        provider_request_options(true, &self.config.api_key, &[])
+    ///
+    /// # Errors
+    /// Returns an error when the configured API key is empty (fail-fast before
+    /// the wire instead of a silent 401).
+    fn request_options(&self) -> Result<lc_core::http::RequestOptions, CohereError> {
+        provider_request_options(true, self.config.api_key.expose_secret(), &[]).map_err(CohereError::from)
     }
 
     /// Maps a unified-layer error onto the Cohere error enum while keeping the
@@ -212,7 +228,7 @@ impl CohereChat {
         // POST pre-dispatch-only retry semantics live in lc_core::http.
         let response = self
             .http_api
-            .post_json_with(&url, &body, self.request_options())
+            .post_json_with(&url, &body, self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
 
@@ -281,7 +297,7 @@ impl CohereChat {
         // the response head arrives the stream runs without reconnecting.
         let byte_stream = self
             .http_sse
-            .open_sse(&url, Some(&body), self.request_options())
+            .open_sse(&url, Some(&body), self.request_options()?)
             .await
             .map_err(Self::map_http_error)?;
         let parser = Arc::new(Mutex::new((SSEParser::new(), SseByteFramer::new())));
@@ -612,14 +628,7 @@ impl Runnable<Vec<Message>, LLMResult> for CohereChat {
         use futures_util::StreamExt;
 
         let model = self.config.model.clone();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         let stream = token_stream.map(move |token_result| match token_result {
@@ -667,14 +676,7 @@ impl BaseChatModel for CohereChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let result = effective.chat_internal(messages.clone()).await;
 
         match result {
@@ -742,14 +744,7 @@ impl BaseChatModel for CohereChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);

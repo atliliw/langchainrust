@@ -139,9 +139,16 @@ impl DateTimeTool {
                 let total_zero_based = dt.month() as i32 - 1 + months;
                 let year = dt.year() + total_zero_based.div_euclid(12);
                 let month = (total_zero_based.rem_euclid(12) + 1) as u32;
-
-                dt.with_year(year)
-                    .and_then(|d| d.with_month(month))
+                // Clamp the day to the target month's actual length instead of letting
+                // `dt.with_month(month)` fail on a nonexistent day (Jan 31 + 1 month used to
+                // error "month calculation failed" because Feb 31 doesn't exist). Adding one
+                // month to a 31st-of-month date is a legitimate operation that should land on
+                // the target month's last day (Jan 31 + 1mo → Feb 28/29, the lethal "month
+                // out-of-range returns None" case from the triage).
+                let day = dt.day().min(last_day_of_month(year, month));
+                NaiveDate::from_ymd_opt(year, month, day)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+                    .and_then(|ndt| Local.from_local_datetime(&ndt).single())
                     .ok_or_else(|| ToolError::ExecutionFailed("month calculation failed".to_string()))?
             }
             "years" => dt
@@ -247,6 +254,21 @@ impl DateTimeTool {
         }
         .to_string()
     }
+}
+
+/// Number of days in the given `year`/`month` (the 1st of the following month minus one day).
+/// Used by month arithmetic to clamp an overflowing day (e.g. Jan 31 + 1 month → Feb 28/29)
+/// instead of failing on a nonexistent date. Falls back to 31 on any weird input.
+fn last_day_of_month(year: i32, month: u32) -> u32 {
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .and_then(|d| d.checked_sub_signed(Duration::days(1)))
+        .map(|d| d.day())
+        .unwrap_or(31)
 }
 
 impl Default for DateTimeTool {
@@ -499,6 +521,63 @@ mod tests {
         assert!(
             result.result.contains("1天 1小时 0分钟"),
             "expected 1天 1小时 0分钟, got: {}",
+            result.result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_datetime_add_months_clamps_overflow_day_to_leap_feb() {
+        // 2024-01-31 + 1 month -> Feb 31 does not exist; must clamp to Feb 29 (2024 is a leap year).
+        let tool = DateTimeTool::new();
+        let input = DateTimeInput {
+            operation: "add".to_string(),
+            datetime: Some("2024-01-31".to_string()),
+            unit: Some("months".to_string()),
+            value: Some(1),
+            target: None,
+        };
+        let result = tool.invoke(input).await.unwrap();
+        assert!(
+            result.result.contains("2024-02-29"),
+            "expected clamped Feb 29, got: {}",
+            result.result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_datetime_add_months_clamps_overflow_day_to_short_feb() {
+        // Non-leap year: 2023-01-31 + 1 month -> Feb 28.
+        let tool = DateTimeTool::new();
+        let input = DateTimeInput {
+            operation: "add".to_string(),
+            datetime: Some("2023-01-31".to_string()),
+            unit: Some("months".to_string()),
+            value: Some(1),
+            target: None,
+        };
+        let result = tool.invoke(input).await.unwrap();
+        assert!(
+            result.result.contains("2023-02-28"),
+            "expected clamped Feb 28, got: {}",
+            result.result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_datetime_add_months_clamps_to_short_month() {
+        // 2024-03-31 + 1 month -> Apr 31 does not exist -> clamp to Apr 30.
+        let tool = DateTimeTool::new();
+        let input = DateTimeInput {
+            operation: "add".to_string(),
+            datetime: Some("2024-03-31".to_string()),
+            unit: Some("months".to_string()),
+            value: Some(1),
+            target: None,
+        };
+        let result = tool.invoke(input).await.unwrap();
+        assert!(
+            result.result.contains("2024-04-30"),
+            "expected clamped Apr 30, got: {}",
             result.result
         );
     }

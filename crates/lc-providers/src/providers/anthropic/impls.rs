@@ -18,6 +18,19 @@ use lc_schema::Message;
 use super::chat::AnthropicChat;
 use super::error::AnthropicError;
 use super::types::AnthropicStreamToken;
+use crate::sampling::SamplingOverride;
+
+impl SamplingOverride for AnthropicChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            // AnthropicConfig.max_tokens is a non-optional usize.
+            self.config.max_tokens = m;
+        }
+    }
+}
 
 #[async_trait]
 impl Runnable<Vec<Message>, LLMResult> for AnthropicChat {
@@ -40,14 +53,7 @@ impl Runnable<Vec<Message>, LLMResult> for AnthropicChat {
         use futures_util::StreamExt;
 
         let model = self.config.model.clone();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = m;
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         // H4: True streaming — emit one LLMResult per token
@@ -155,14 +161,7 @@ impl BaseChatModel for AnthropicChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = m;
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let result = effective.chat_internal(messages.clone()).await;
 
         match result {
@@ -229,14 +228,7 @@ impl BaseChatModel for AnthropicChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_tokens = m;
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);

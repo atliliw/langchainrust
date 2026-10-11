@@ -279,6 +279,9 @@ impl CohereEmbeddings {
                 actual: vectors.len(),
             });
         }
+        // §3.1: reject any vector whose width disagrees with the declared dimension
+        // (server model change / truncation) instead of propagating wrong-width vectors.
+        crate::ensure_all_dimensions(&vectors, self.dimension)?;
         Ok(vectors)
     }
 }
@@ -345,8 +348,9 @@ mod tests {
     /// P2-5: Cohere also wires in 429 retry.
     #[tokio::test]
     async fn test_embed_query_retries_on_429() {
-        let success_body = r#"{"embeddings":{"float":[[0.6,0.8]]}}"#;
-        let (base_url, requests) = spawn_status_stub(429, 2, 200, success_body).await;
+        let one = crate::test_support::embedding_json(1024, 0.6, 0.8).to_string();
+        let success_body = format!(r#"{{"embeddings":{{"float":[{one}]}}}}"#);
+        let (base_url, requests) = spawn_status_stub(429, 2, 200, &success_body).await;
         let config = CohereEmbeddingsConfig {
             api_key: "test-key".into(),
             base_url,
@@ -359,7 +363,7 @@ mod tests {
             .embed_query("hello")
             .await
             .expect("should retry successfully after two 429s");
-        assert_eq!(v.len(), 2);
+        assert_eq!(v.len(), 1024, "declared cohere dimension");
         // P2-8: the returned vector should be normalized.
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
@@ -378,8 +382,9 @@ mod tests {
                 .map(|a| a.len())
                 .unwrap_or(0);
             let n = wanted.saturating_sub(1);
-            let vectors: Vec<serde_json::Value> =
-                (0..n).map(|_| serde_json::json!([0.1, 0.2])).collect();
+            let vectors: Vec<serde_json::Value> = (0..n)
+                .map(|_| crate::test_support::embedding_json(1024, 0.1, 0.2))
+                .collect();
             serde_json::json!({ "embeddings": { "float": vectors } })
         }))
         .await
@@ -425,7 +430,9 @@ mod tests {
                 let vectors: Vec<serde_json::Value> = (0..wanted)
                     .map(|_| {
                         let global = handler_index.fetch_add(1, Ordering::SeqCst) as f32;
-                        serde_json::json!([global, 1.0])
+                        // pad to the cohere declared dimension (1024) so the §4
+                        // return-width assertion passes
+                        crate::test_support::embedding_json(1024, global, 1.0)
                     })
                     .collect();
                 serde_json::json!({ "embeddings": { "float": vectors } })
@@ -472,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn test_embed_documents_honors_configured_input_type() {
         let (base_url, bodies) = spawn_json_recording_stub(serde_json::json!({
-            "embeddings": { "float": [[0.6, 0.8]] }
+            "embeddings": { "float": [crate::test_support::embedding_json(1024, 0.6, 0.8)] }
         }))
         .await;
         let config = CohereEmbeddingsConfig {

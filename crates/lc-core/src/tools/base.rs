@@ -66,9 +66,18 @@ pub trait BaseTool: Send + Sync {
 
     /// Handle execution error.
     ///
-    /// Returns a friendly error message when tool execution fails.
-    async fn handle_error(&self, error: ToolError) -> String {
-        format!("Tool '{}' execution failed: {}", self.name(), error)
+    /// Returns the structured `ToolError` so callers keep the typed source
+    /// (variant, MCP `code`, etc.) instead of parsing a flattened string; format
+    /// via `Display` when a human/LLM-facing message is wanted.
+    ///
+    /// 0.26.0 §3.6 (security boundary): the default passes the raw `ToolError`
+    /// (which may embed internal paths, argv, or implementation detail) through
+    /// verbatim. That is a reasonable default, but **any tool whose errors can
+    /// carry sensitive information should override this** to return a sanitized
+    /// error (e.g. [`ToolError::ExecutionFailed`] with a generic "failed" plus a
+    /// redacted reason) so secrets do not reach the LLM.
+    async fn handle_error(&self, error: ToolError) -> ToolError {
+        error
     }
 }
 
@@ -182,6 +191,12 @@ use super::{ToolDefinition, ToolRiskProfile};
 /// let tool_def = to_tool_definition(&calculator);
 /// ```
 pub fn to_tool_definition(tool: &dyn BaseTool) -> ToolDefinition {
+    // 0.26.0 §3.3: `args_schema()` never returns `None` on a *serialization*
+    // failure — it panics (J9). This fallback therefore only mirrors a tool
+    // that intentionally exposes no parameter schema, which is described by an
+    // empty object (matches LangChain tools without named args). Internal
+    // failures and intentional absence are two distinct cases with two distinct
+    // outcomes: panic vs empty object.
     ToolDefinition::new(tool.name(), tool.description()).with_parameters(
         tool.args_schema()
             .unwrap_or(serde_json::json!({"type": "object"})),

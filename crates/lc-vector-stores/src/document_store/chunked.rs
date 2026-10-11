@@ -91,7 +91,7 @@ impl InMemoryChunkedDocumentStore {
         }
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
-            let chunk_id = format!("{}::{}", parent_id, segment);
+            let chunk_id = crate::chunk_id(parent_id, segment);
 
             let chunk = ChunkDocument::new(
                 chunk_id.clone(),
@@ -151,7 +151,7 @@ impl InMemoryChunkedDocumentStore {
         }
 
         for (segment, chunk_content) in chunks.into_iter().enumerate() {
-            let chunk_id = format!("{}::{}", parent_id, segment);
+            let chunk_id = crate::chunk_id(parent_id, segment);
 
             let chunk = ChunkDocument::new(
                 chunk_id.clone(),
@@ -205,7 +205,7 @@ impl InMemoryChunkedDocumentStore {
 
         let mut chunk_ids = Vec::new();
         for (segment, chunk_content) in chunk_texts.into_iter().enumerate() {
-            let chunk_id = format!("{parent_id}::{segment}");
+            let chunk_id = crate::chunk_id(&parent_id, segment);
             let chunk =
                 ChunkDocument::new(chunk_id.clone(), parent_id.clone(), chunk_content, segment)
                     .with_metadata_map(document.metadata.clone());

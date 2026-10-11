@@ -26,12 +26,14 @@ use std::sync::{Arc, Mutex};
 
 use self::types::*;
 use crate::openai::sse::SseByteFramer;
+use crate::sampling::SamplingOverride;
 use crate::ProviderError;
 use lc_callbacks::RunType;
 use lc_core::language_models::{
     BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk, TokenUsage,
 };
 use lc_core::runnables::{run_tree_from_config, Runnable};
+use lc_core::SensitiveString;
 use lc_core::text::truncate_at_char_boundary;
 use lc_core::tools::{StructuredOutput, ToolDefinition};
 use lc_core::RunnableConfig;
@@ -61,7 +63,7 @@ pub const GEMINI_MODELS: [&str; 6] = [
 #[derive(Clone)]
 pub struct GeminiConfig {
     /// Gemini API key.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// Base URL of the Gemini API endpoint.
     pub base_url: String,
     /// Model name to use.
@@ -100,7 +102,7 @@ impl std::fmt::Debug for GeminiConfig {
 impl Default for GeminiConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            api_key: SensitiveString::default(),
             base_url: GEMINI_BASE_URL.to_string(),
             model: "gemini-1.5-flash".to_string(),
             temperature: None,
@@ -117,7 +119,7 @@ impl GeminiConfig {
     /// Creates a new GeminiConfig with the given API key.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             ..Default::default()
         }
     }
@@ -142,7 +144,7 @@ impl GeminiConfig {
         let model = env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string());
 
         Ok(Self {
-            api_key,
+            api_key: SensitiveString::new(api_key),
             base_url,
             model,
             ..Default::default()
@@ -184,6 +186,18 @@ impl GeminiConfig {
 pub struct GeminiChat {
     config: GeminiConfig,
     client: reqwest::Client,
+}
+
+impl SamplingOverride for GeminiChat {
+    fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
+        if let Some(t) = temperature {
+            self.config.temperature = Some(t);
+        }
+        if let Some(m) = max_tokens {
+            // GeminiConfig names this `max_output_tokens`.
+            self.config.max_output_tokens = Some(m);
+        }
+    }
 }
 
 impl GeminiChat {
@@ -561,6 +575,12 @@ impl GeminiChat {
 
     /// Internal call: sends the request to the Gemini API
     async fn chat_internal(&self, messages: Vec<Message>) -> Result<LLMResult, GeminiError> {
+        // §4: fail fast on an empty key (covers manual `Config::new("")` /
+        // post-construction mutation) instead of shipping a keyless
+        // `x-goog-api-key` header that 401s over the wire — mirrors the
+        // OpenAI-family fail-fast in `provider_request_options`.
+        crate::provider_http::ensure_provider_api_key(self.config.api_key.expose_secret(), "GEMINI_API_KEY")
+            .map_err(GeminiError::from)?;
         let url = format!(
             "{}/models/{}:generateContent",
             self.config.base_url, self.config.model
@@ -581,7 +601,7 @@ impl GeminiChat {
             || {
                 self.client
                     .post(&url)
-                    .header("x-goog-api-key", &self.config.api_key)
+                    .header("x-goog-api-key", self.config.api_key.expose_secret())
                     .header("Content-Type", "application/json")
                     .json(&request_body)
             },
@@ -622,6 +642,9 @@ impl GeminiChat {
         messages: Vec<Message>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, GeminiError>> + Send>>, GeminiError>
     {
+        // §4: fail fast on an empty key, mirroring the non-streaming path.
+        crate::provider_http::ensure_provider_api_key(self.config.api_key.expose_secret(), "GEMINI_API_KEY")
+            .map_err(GeminiError::from)?;
         // 0.25.0: the documented SSE media selector is `alt=sse`. The older
         // `alt=event-stream` value is not the public contract and some Gemini
         // endpoints answer it with the non-SSE JSON array framing, which the
@@ -641,7 +664,7 @@ impl GeminiChat {
         let response = self
             .client
             .post(&url)
-            .header("x-goog-api-key", &self.config.api_key)
+            .header("x-goog-api-key", self.config.api_key.expose_secret())
             .header("Content-Type", "application/json")
             .json(&request_body)
             .send()
@@ -675,7 +698,28 @@ impl GeminiChat {
             // the streamed text is a truncated prefix — report it as an error
             // rather than silently returning a partial answer as complete.
             let mut saw_terminal = false;
-            while let Some(chunk_result) = byte_stream.next().await {
+            loop {
+                // 0.26.0 review 3.2: bare `bytes_stream()` has no idle guard. A
+                // peer that stops sending without closing would hang forever —
+                // wrap each read in PROVIDER_SSE_IDLE_TIMEOUT (resets per chunk)
+                // and surface the freeze as a StreamInterrupted, not a park.
+                let chunk = tokio::time::timeout(
+                    crate::provider_http::PROVIDER_SSE_IDLE_TIMEOUT,
+                    byte_stream.next(),
+                )
+                .await;
+                let chunk_result = match chunk {
+                    Ok(Some(cr)) => cr,
+                    Ok(None) => break,
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(GeminiError::StreamInterrupted(
+                                "stream idle timeout (no data for 60s)".to_string(),
+                            )))
+                            .await;
+                        return;
+                    }
+                };
                 if let Ok(bytes) = chunk_result {
                     // Extract complete events from the byte-level framer
                     let mut overflow: Option<String> = None;
@@ -732,12 +776,13 @@ impl GeminiChat {
                                                             .args
                                                             .unwrap_or(serde_json::json!({}))
                                                             .to_string();
-                                                        let call = lc_core::tools::ToolCall::builder(
-                                                            format!("call_{}", fc.name),
-                                                        )
-                                                        .name(fc.name)
-                                                        .arguments(args_str)
-                                                        .build();
+                                                        let call =
+                                                            lc_core::tools::ToolCall::builder(
+                                                                format!("call_{}", fc.name),
+                                                            )
+                                                            .name(fc.name)
+                                                            .arguments(args_str)
+                                                            .build();
                                                         if tx
                                                             .send(Ok(StreamChunk {
                                                                 text: String::new(),
@@ -859,14 +904,7 @@ impl Runnable<Vec<Message>, LLMResult> for GeminiChat {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Self::Error>> + Send>>, Self::Error>
     {
         let model = self.config.model.clone();
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_output_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let token_stream = effective.stream_chat_internal(input).await?;
 
         // C1 fix: true streaming — emit one LLMResult per token,
@@ -951,14 +989,7 @@ impl BaseChatModel for GeminiChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_output_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let result = effective.chat_internal(messages.clone()).await;
 
         match result {
@@ -1024,14 +1055,7 @@ impl BaseChatModel for GeminiChat {
             }
         }
 
-        let (temp, max) = crate::sampling::sampling_overrides(&config);
-        let mut effective = self.clone();
-        if let Some(t) = temp {
-            effective.config.temperature = Some(t);
-        }
-        if let Some(m) = max {
-            effective.config.max_output_tokens = Some(m);
-        }
+        let effective = crate::sampling::with_sampling_overrides(self, &config);
         let stream = effective.stream_chat_internal(messages).await?;
 
         let callbacks = config.and_then(|c| c.callbacks);

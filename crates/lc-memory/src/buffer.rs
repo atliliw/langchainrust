@@ -170,15 +170,18 @@ impl BaseMemory for ConversationBufferMemory {
         inputs: &HashMap<String, String>,
         outputs: &HashMap<String, String>,
     ) -> Result<(), MemoryError> {
-        // M76: Return error when required keys are missing instead of silently skipping
+        // M76: Return error when required keys are missing instead of silently skipping.
+        // Validate BOTH keys before touching the history so a failure is atomic — the old order
+        // added the user message first and only then checked the output key, leaving a partial
+        // (user-only) record behind whenever the caller omitted the output.
         let input = inputs.get(&self.input_key).ok_or_else(|| {
             MemoryError::SaveError(format!("Missing input key '{}'", self.input_key))
         })?;
-        self.chat_memory.add_user_message(input);
-
         let output = outputs.get(&self.output_key).ok_or_else(|| {
             MemoryError::SaveError(format!("Missing output key '{}'", self.output_key))
         })?;
+
+        self.chat_memory.add_user_message(input);
         self.chat_memory.add_ai_message(output);
 
         Ok(())
@@ -237,6 +240,45 @@ mod tests {
 
         assert!(history.contains("Zhang San"));
         assert!(memory.chat_memory().len() == 4); // 2 rounds * 2 messages
+    }
+
+    /// M76: a missing required key must be rejected, not silently skipped — one turn must never
+    /// be recorded as a bare Human or AI message because the caller forgot the output (or input).
+    #[tokio::test]
+    async fn save_context_rejects_missing_input_or_output_key() {
+        let mut memory = ConversationBufferMemory::new();
+
+        // Missing input key → SaveError, and nothing is recorded.
+        let only_output = HashMap::from([("output".to_string(), "Hi".to_string())]);
+        let err = memory
+            .save_context(&HashMap::new(), &only_output)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("input"),
+            "expected a missing-input error, got: {err}"
+        );
+        assert_eq!(
+            memory.chat_memory().len(),
+            0,
+            "nothing should be recorded on error"
+        );
+
+        // Missing output key → SaveError, and nothing is recorded.
+        let only_input = HashMap::from([("input".to_string(), "Hello".to_string())]);
+        let err = memory
+            .save_context(&only_input, &HashMap::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("output"),
+            "expected a missing-output error, got: {err}"
+        );
+        assert_eq!(
+            memory.chat_memory().len(),
+            0,
+            "nothing should be recorded on error"
+        );
     }
 
     #[tokio::test]

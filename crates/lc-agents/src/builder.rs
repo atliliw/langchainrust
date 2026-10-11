@@ -128,7 +128,8 @@ impl AgentBuilder {
             llm,
             self.tools,
             self.system_prompt,
-        ))
+        )
+        .with_max_iterations(self.max_iterations))
     }
 
     /// Builds and wraps as `Arc<dyn BaseAgent>` for direct use with `AgentExecutor`
@@ -156,6 +157,7 @@ impl Default for AgentBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AgentExecutor;
     use lc_providers::{OpenAIChat, OpenAIConfig};
     use lc_tools::Calculator;
 
@@ -245,5 +247,38 @@ mod tests {
         let builder = AgentBuilder::default();
         assert_eq!(builder.get_max_iterations(), 10);
         assert!(builder.llm.is_none());
+    }
+
+    /// §8.2.2 regression: `AgentBuilder::max_iterations` must actually reach the
+    /// executor (previously a silent no-op — the value was stored but never
+    /// passed to `FunctionCallingAgent`/`AgentExecutor`).
+    #[test]
+    fn test_builder_max_iterations_reaches_executor() {
+        let config = OpenAIConfig::new("test_key").with_base_url("http://localhost:8080/v1");
+        let agent = AgentBuilder::new()
+            .llm(OpenAIChat::new(config))
+            .max_iterations(5)
+            .build()
+            .unwrap();
+        // The configured cap must surface on the agent...
+        assert_eq!(BaseAgent::max_iterations(&agent), Some(5));
+        // ...and the executor must pick it up by default.
+        let executor = AgentExecutor::new(Arc::new(agent), Vec::new());
+        assert_eq!(executor.max_iterations(), 5);
+    }
+
+    /// §8.2.2 companion: an explicit executor override must still win over the
+    /// agent-declared cap.
+    #[test]
+    fn test_executor_with_max_iterations_overrides_agent() {
+        let config = OpenAIConfig::new("test_key").with_base_url("http://localhost:8080/v1");
+        let agent = AgentBuilder::new()
+            .llm(OpenAIChat::new(config))
+            .max_iterations(5)
+            .build()
+            .unwrap();
+        let executor = AgentExecutor::new(Arc::new(agent), Vec::new())
+            .with_max_iterations(20);
+        assert_eq!(executor.max_iterations(), 20);
     }
 }

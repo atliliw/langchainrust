@@ -33,7 +33,7 @@ fn exchange(content: &str) -> RecordedExchange {
             model: "replay".to_string(),
             ..Default::default()
         },
-        tools: None,
+        tools: Vec::new(),
     }
 }
 

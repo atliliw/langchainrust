@@ -95,8 +95,17 @@ pub enum ChunkAction {
     Pass,
     /// Passed after rewriting
     Replace(String),
-    /// Blocked and dropped
-    Block,
+    /// Blocked and dropped, carrying the detecting rail's reason.
+    ///
+    /// The reason used to be dropped on the floor: `Block` carried nothing, the runner logged
+    /// the fixed string `"chunk blocked"`, and `GuardedAgent` reported a generic message — so
+    /// neither the caller nor a rewrite step could learn what was actually wrong. It is the
+    /// phase-one *detection* that phase two consumes (see
+    /// [`StreamingOutputGuardrail::rewrite`]).
+    Block {
+        /// Why the chunk was blocked, as reported by the rail that blocked it.
+        reason: String,
+    },
 }
 
 /// Context handed to a streaming guardrail for each token.
@@ -146,6 +155,22 @@ impl FlushOutput {
     }
 }
 
+/// Phase-two rewrite request: what phase one detected, and the text to rewrite.
+///
+/// Passed to [`StreamingOutputGuardrail::rewrite`] after a rail in the same chain returned
+/// [`ChunkAction::Block`].
+#[derive(Debug, Clone, Copy)]
+pub struct RewriteRequest<'a> {
+    /// Name of the rail whose phase-one detection triggered the rewrite.
+    pub guardrail: &'a str,
+    /// The detection reason that rail reported.
+    pub reason: &'a str,
+    /// The chunk that was blocked — the text to rewrite.
+    pub token: &'a str,
+    /// The full raw candidate output, so a rewrite can consider context beyond the chunk.
+    pub full: &'a str,
+}
+
 /// Streaming output guardrail trait (P1-4)
 ///
 /// Phase one: quickly check each incremental chunk, blocking sensitive information before it is
@@ -161,6 +186,20 @@ impl FlushOutput {
 /// intervention (it happens on every early chunk even when the output is clean), whereas the
 /// buffered tail released by [`flush`](Self::flush) is audited once.
 ///
+/// # Detect, then rewrite
+///
+/// A rail has two ways to correct a chunk, and they are separate steps on purpose:
+///
+/// 1. **In one shot** — return [`ChunkAction::Replace`] from
+///    [`validate_chunk`](Self::validate_chunk). Right for a rail that always knows the fix
+///    (redaction: replace the match with `***`).
+/// 2. **In two phases** — return [`ChunkAction::Block`] with a reason, and implement
+///    [`rewrite`](Self::rewrite) to turn that detection into replacement text. Right when
+///    detection and repair are genuinely different concerns: the block is recorded with its
+///    reason (auditable feedback), and the rewrite is asked for only once the violation is
+///    established. A rail that only *detects* leaves `rewrite` at its default and the block
+///    stands.
+///
 /// The second re-check after the full output is handled by [`OutputGuardrail`]
 /// (`GuardrailRunner::validate_output`).
 #[async_trait]
@@ -169,6 +208,16 @@ pub trait StreamingOutputGuardrail: Send + Sync {
     fn name(&self) -> &str;
     /// Incrementally checks one streaming token.
     async fn validate_chunk(&self, ctx: &ChunkContext<'_>) -> ChunkAction;
+    /// Phase two of detect-then-rewrite: given a phase-one detection, returns the text to emit
+    /// for the blocked chunk.
+    ///
+    /// `None` (the default) leaves the block standing — a rail that only detects cannot
+    /// rewrite, and the runner must not invent a fix on its behalf. Consulted for every rail in
+    /// the chain (so a dedicated rewriter can repair what a detector found) and at most once per
+    /// blocked chunk; the first rail to return `Some` wins.
+    async fn rewrite(&self, _req: &RewriteRequest<'_>) -> Option<String> {
+        None
+    }
     /// End-of-stream hook: stateful rails that buffer output (hold-back redaction) return the
     /// buffered remainder so it is not dropped. [`FlushOutput::Release`] passes the tail
     /// through without an audit record; [`FlushOutput::Rewritten`] additionally records a

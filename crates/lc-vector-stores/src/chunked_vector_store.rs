@@ -37,6 +37,31 @@ impl ChunkedVectorStore {
         }
     }
 
+    /// Fetches the chunk content document for `chunk_id`, logging (not aborting) on
+    /// a read failure or a missing chunk. Shared by the plain top-k and the
+    /// metadata-filter paths so both skip a bad chunk identically instead of
+    /// duplicating the log-and-continue handling.
+    async fn fetch_chunk_document(&self, chunk_id: &str) -> Option<Document> {
+        match self.document_store.get_chunk_document(chunk_id).await {
+            Ok(Some(doc)) => Some(doc),
+            Ok(None) => {
+                log::error!(
+                    "document for chunk `{}` is missing while retrieving (chunk skipped)",
+                    chunk_id
+                );
+                None
+            }
+            Err(e) => {
+                log::error!(
+                    "failed to read document for chunk `{}` while retrieving (chunk skipped): {}",
+                    chunk_id,
+                    e
+                );
+                None
+            }
+        }
+    }
+
     /// Adds a chunk vector (chunk_id + embedding)
     pub async fn add_chunk_vector(
         &self,
@@ -191,29 +216,23 @@ impl VectorStore for ChunkedVectorStore {
 
         let top_k_ids: Vec<(String, f32)> = results.into_iter().take(k).collect();
 
-        let search_results: Vec<SearchResult> =
-            future::join_all(top_k_ids.iter().map(|(chunk_id, score)| async move {
-                let doc = match self.document_store.get_chunk_document(chunk_id).await {
-                    Ok(doc) => doc,
-                    Err(e) => {
-                        // stop silently swallowing errors: log read failures; the chunk is missing from the top-k results
-                        log::error!(
-                            "failed to read document for chunk `{}` while retrieving (chunk dropped from results): {}",
-                            chunk_id,
-                            e
-                        );
-                        None
-                    }
-                };
-                doc.map(|d| SearchResult {
-                    document: d,
-                    score: *score,
-                })
-            }))
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
+        // Batch-prefetch (map step): fetch the top-k chunk documents in parallel —
+        // one latency turn instead of O(top-k) serial round trips.
+        let search_results: Vec<SearchResult> = future::join_all(
+            top_k_ids
+                .iter()
+                .map(|(chunk_id, score)| async move {
+                    let doc = self.fetch_chunk_document(chunk_id).await;
+                    doc.map(|d| SearchResult {
+                        document: d,
+                        score: *score,
+                    })
+                }),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
 
         Ok(search_results)
     }
@@ -224,6 +243,11 @@ impl VectorStore for ChunkedVectorStore {
     /// document store by chunk_id. The semantics are "score everything → scan descending,
     /// filtering each item by metadata → stop once k items are collected", guaranteeing the
     /// top-k by similarity after filtering (rather than truncating first and filtering later).
+    ///
+    /// §4 (map-reduce): the per-candidate document fetches no longer happen one serial
+    /// round-trip at a time. All candidates are batch-prefetched in parallel (map step),
+    /// then reduced in descending-score order with the metadata filter and early-stop —
+    /// identical results, a single latency turn instead of O(candidates) awaits.
     async fn similarity_search_with_filter(
         &self,
         query_embedding: &[f32],
@@ -248,38 +272,35 @@ impl VectorStore for ChunkedVectorStore {
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // 2. scan descending, fetch each document and filter by metadata, stopping once k items
-        //    are collected. Missing documents / read failures are logged and the candidate is
-        //    skipped (consistent with the with_min_score handling).
+        // 2. map: batch-prefetch every candidate's document in parallel (one latency
+        //    turn instead of O(candidates) serial round trips). Missing documents / read
+        //    failures are logged and dropped, as before.
+        let fetched: HashMap<String, Document> = future::join_all(scored.iter().map(
+            |(chunk_id, _score)| async move {
+                let doc = self.fetch_chunk_document(chunk_id).await;
+                doc.map(|d| (chunk_id.clone(), d))
+            },
+        ))
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
+        // 3. reduce: scan descending, filter by metadata, stop once k items are
+        //    collected — preserves the top-k-by-similarity-after-filter guarantee.
         let mut results: Vec<SearchResult> = Vec::new();
         for (chunk_id, score) in scored {
-            // read failures are handled like with_min_score: log, skip the candidate, do not abort the whole retrieval.
-            let doc = match self.document_store.get_chunk_document(&chunk_id).await {
-                Ok(doc) => doc,
-                Err(e) => {
-                    log::error!(
-                        "failed to read document for chunk `{}` while filtering (chunk skipped): {}",
-                        chunk_id,
-                        e
-                    );
-                    continue;
-                }
-            };
-            let Some(doc) = doc else {
-                log::error!(
-                    "document for chunk `{}` is missing while filtering (chunk skipped)",
-                    chunk_id
-                );
+            if results.len() >= k {
+                break;
+            }
+            let Some(doc) = fetched.get(&chunk_id) else {
                 continue;
             };
             if filter.matches(&doc.metadata) {
                 results.push(SearchResult {
-                    document: doc,
+                    document: doc.clone(),
                     score,
                 });
-                if results.len() >= k {
-                    break;
-                }
             }
         }
 
@@ -392,6 +413,38 @@ mod tests {
         assert_eq!(parent_id, "parent_001");
         assert!(chunk_ids.len() > 1);
         assert_eq!(vector_store.vector_count().await, chunk_ids.len());
+    }
+
+    /// Cross-backend chunk-id contract (§4): every chunking backend must yield the
+    /// same deterministic `{parent}::{segment}` id via `crate::chunk_id`. The four
+    /// backends originally drifted between `_` (mongo), `:chunk:` (redis / sqlite)
+    /// and `::` (in-memory); they are now unified on `::`. This test pins the
+    /// canonical shape and proves the in-memory auto-split honors the shared
+    /// helper, so the other backends (which route through the same helper) inherit
+    /// the identical contract.
+    #[tokio::test]
+    async fn test_chunk_id_contract_shared_separator() {
+        // 1. Pin the canonical shape for the whole crate.
+        assert_eq!(crate::CHUNK_ID_SEPARATOR, "::");
+        assert_eq!(crate::chunk_id("doc-7", 0), "doc-7::0");
+        assert_eq!(crate::chunk_id("doc-7", 3), "doc-7::3");
+
+        // 2. The in-memory chunked store must emit `crate::chunk_id`-shaped ids for
+        //    every chunk of an auto-split parent (a regression against any
+        //    parallel `_` / `:chunk:` construction).
+        let doc_store = Arc::new(ChunkedDocumentStore::new());
+        let doc = Document::new(
+            "这是一段很长的测试文本，用于验证跨后端 chunk id 契约。它必须被自动切分成多个片段，\
+             以便逐一断言每个片段都由统一的 `::` 分隔符生成，而不是各自后端私自的 `_` 或 `:chunk:`。",
+        )
+        .with_id("parent-9");
+
+        let (parent_id, chunk_ids) = doc_store.add_parent_document(doc, 15).await.unwrap();
+        assert_eq!(parent_id, "parent-9");
+        assert!(chunk_ids.len() > 1, "expected auto-split into multiple chunks");
+        for (i, cid) in chunk_ids.iter().enumerate() {
+            assert_eq!(*cid, crate::chunk_id(&parent_id, i), "chunk #{i} id");
+        }
     }
 
     /// Q2: similarity_search still returns top-k for an all-non-positive corpus (no longer emptied

@@ -387,7 +387,11 @@ pub async fn summarize_rollup<M: BaseChatModel>(
             .join("\n");
         let relations_str = relations.join("\n");
         let level_str = community.level.to_string();
-        let child_level_str = (community.level - 1).to_string();
+        // 0.26.0 (MEDIUM): `community.level - 1` underflowed to panic in debug
+        // builds when `summarize_rollup` was called directly on a level-0
+        // community. Saturate so the prompt still renders a coherent child-level
+        // label ("0") instead of panicking or wrapping to a huge number.
+        let child_level_str = community.level.saturating_sub(1).to_string();
         let mut vars: HashMap<&str, &str> = HashMap::new();
         vars.insert("children", &children_str);
         vars.insert("relations", &relations_str);

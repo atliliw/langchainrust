@@ -298,20 +298,34 @@ impl OpenAIAssistant {
             match status {
                 "completed" => break,
                 "requires_action" => {
-                    self.handle_requires_action(base, thread_id, run_id, &run_state, request_timeout)
-                        .await?;
+                    self.handle_requires_action(
+                        base,
+                        thread_id,
+                        run_id,
+                        &run_state,
+                        request_timeout,
+                    )
+                    .await?;
                 }
                 s if is_terminal_status(s) => return Err(AssistantError::RunFailed(s.to_string())),
                 _ => tokio::time::sleep(self.poll_config.interval).await,
             }
         }
 
-        // 5. Fetch the final assistant message (data[0] is the newest)
+        // 5. Fetch the final assistant message (data[0] is the newest).
+        // 0.26.0 review 3.7: this previously used the full REQUEST_TIMEOUT after
+        // the poll loop had already consumed most of `poll_config.timeout`, which
+        // could drag the whole call past its budget. Use the remaining budget
+        // (floored, same as the poll requests above) so this last request never
+        // overshoots.
+        let final_remaining = self.poll_config.timeout.saturating_sub(start.elapsed());
         let messages = Self::get(
             &self.client,
             &self.config,
             &format!("{}/threads/{}/messages", base, thread_id),
-            REQUEST_TIMEOUT,
+            final_remaining
+                .min(REQUEST_TIMEOUT)
+                .max(Duration::from_secs(1)),
         )
         .await?;
         let data = messages
@@ -419,7 +433,7 @@ impl OpenAIAssistant {
         let resp = client
             .post(url)
             .timeout(request_timeout)
-            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Authorization", format!("Bearer {}", config.api_key.expose_secret()))
             .header("OpenAI-Beta", "assistants=v2")
             .json(&body)
             .send()
@@ -437,7 +451,7 @@ impl OpenAIAssistant {
         let resp = client
             .get(url)
             .timeout(request_timeout)
-            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Authorization", format!("Bearer {}", config.api_key.expose_secret()))
             .header("OpenAI-Beta", "assistants=v2")
             .send()
             .await

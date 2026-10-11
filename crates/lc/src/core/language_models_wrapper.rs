@@ -7,11 +7,18 @@
 use crate::error::Error;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
-use lc_core::language_models::{BaseChatModel, BaseLanguageModel, LLMResult, StreamChunk};
+use lc_core::language_models::{
+    predict_tools, BaseChatModel, BaseLanguageModel, LLMResult, PredictToolsError, StreamChunk,
+};
 use lc_core::runnables::Runnable;
+use lc_core::structured_output::{stream_structured_output, StructuredOutputError};
 use lc_core::tools::ToolDefinition;
 use lc_core::RunnableConfig;
 use lc_schema::Message;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -159,29 +166,107 @@ where
     ) -> Option<Box<dyn BaseChatModel<Error = Error> + Send + Sync>> {
         self.inner.bind_tools(tools).map(
             |boxed| -> Box<dyn BaseChatModel<Error = Error> + Send + Sync> {
-                Box::new(BoxedModelWrapper { inner: boxed })
+                Box::new(BoxedModelWrapper::new(boxed))
             },
         )
     }
 }
 
-// ---------------------------------------------------------------------------
-// BoxedModelWrapper — wraps a Box<dyn BaseChatModel<Error = E>>
-// where E: Into<Error>, converting it to BaseChatModel<Error = Error>.
-// ---------------------------------------------------------------------------
+// T2-4 (0.27.0): convenience passthroughs to `lc_core`'s *free* helper
+// functions, so a caller that holds the concrete [`ChatModelWrapper`] (rather
+// than an erased `dyn BaseChatModel`) does not have to thread the free
+// function's `&M`/`M::Error` through the wrapper's erased error type. Because
+// the wrapper itself implements `BaseChatModel<Error = Error>`, `M` is the
+// wrapper and `M::Error = Error` — the streamed error stays `StructuredOutputError`
+// and the tool-call error stays within `PredictToolsError<Error>`.
+impl<L> ChatModelWrapper<L>
+where
+    L: BaseChatModel + Send + Sync,
+    L::Error: Into<Error>,
+{
+    /// Stream a structured-typed output, delegating to
+    /// [`lc_core::structured_output::stream_structured_output`] on the wrapped model.
+    ///
+    /// This is the streaming counterpart of the blanket `StructuredOutputExt`'s
+    /// `with_structured_output`; `T` is the typed JSON value being parsed from
+    /// the streamed response. Errors surface as [`StructuredOutputError`].
+    pub async fn stream_structured_output<T>(
+        &self,
+        schema: Value,
+        prompt: &str,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<T, StructuredOutputError>> + Send>>,
+        StructuredOutputError,
+    >
+    where
+        T: DeserializeOwned + Serialize + Clone + PartialEq + Unpin + Send + Sync + 'static,
+    {
+        stream_structured_output(self, schema, prompt).await
+    }
 
-/// Wraps a `Box<dyn BaseChatModel<Error = E>>` and converts errors to `crate::error::Error`.
-///
-/// This is needed because `ChatModelWrapper<L>` requires `L: Sized`, but
-/// `Box<dyn BaseChatModel<Error = E>>` is unsized. We solve this by
-/// wrapping the boxed trait object in a new struct that implements
-/// `BaseChatModel<Error = Error>` directly.
-struct BoxedModelWrapper<E: std::error::Error + Send + Sync + Into<Error> + 'static> {
-    inner: Box<dyn BaseChatModel<Error = E> + Send + Sync>,
+    /// Predict tool calls for a single turn, delegating to
+    /// [`lc_core::language_models::predict_tools`] on the wrapped model.
+    ///
+    /// Does **not** run an agent loop — it returns one `LLMResult` whose
+    /// `tool_calls` the caller is expected to execute. Because the wrapper
+    /// erases the inner error to `crate::error::Error`, the returned
+    /// [`PredictToolsError`] is `PredictToolsError<Error>`.
+    pub async fn predict_tools(
+        &self,
+        prompt: impl Into<String>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<LLMResult, PredictToolsError<Error>> {
+        predict_tools(self, prompt, tools).await
+    }
 }
 
-impl<E> BaseLanguageModel<Vec<Message>, LLMResult> for BoxedModelWrapper<E>
+// ---------------------------------------------------------------------------
+// PtrModelWrapper — wraps a boxed/arc'd `dyn BaseChatModel<Error = E>`
+// where `E: Into<Error>`, converting it to `BaseChatModel<Error = Error>`.
+// ---------------------------------------------------------------------------
+
+/// One pointer-holding wrapper that normalizes any `Box<dyn ...>` or `Arc<dyn ...>`
+/// chat model to `BaseChatModel<Error = crate::error::Error>`.
+///
+/// `BoxedModelWrapper` and `ArcModelWrapper` differ only in the deref pointer
+/// type, so a single generic struct hosts both (`P` is the pointer; the aliases
+/// below pin it to `Box` / `Arc`). Because `BaseLanguageModel::with_temperature`
+/// is `where Self: Sized`, the value cannot be applied through a trait object,
+/// so the setter captures it as an override surfaced by `temperature()` /
+/// `max_tokens()` — the previous silent no-op is gone.
+struct PtrModelWrapper<P, E>
 where
+    P: Deref<Target = dyn BaseChatModel<Error = E> + Send + Sync>,
+    E: std::error::Error + Send + Sync + Into<Error> + 'static,
+{
+    inner: P,
+    temperature_override: Option<f32>,
+    max_tokens_override: Option<usize>,
+}
+
+/// Boxed-pointer instantiation of [`PtrModelWrapper`].
+type BoxedModelWrapper<E> = PtrModelWrapper<Box<dyn BaseChatModel<Error = E> + Send + Sync>, E>;
+
+/// Arc-pointer instantiation of [`PtrModelWrapper`].
+type ArcModelWrapper<E> = PtrModelWrapper<Arc<dyn BaseChatModel<Error = E> + Send + Sync>, E>;
+
+impl<P, E> PtrModelWrapper<P, E>
+where
+    P: Deref<Target = dyn BaseChatModel<Error = E> + Send + Sync> + Send + Sync,
+    E: std::error::Error + Send + Sync + Into<Error> + 'static,
+{
+    fn new(inner: P) -> Self {
+        Self {
+            inner,
+            temperature_override: None,
+            max_tokens_override: None,
+        }
+    }
+}
+
+impl<P, E> BaseLanguageModel<Vec<Message>, LLMResult> for PtrModelWrapper<P, E>
+where
+    P: Deref<Target = dyn BaseChatModel<Error = E> + Send + Sync> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + Into<Error> + 'static,
 {
     fn model_name(&self) -> &str {
@@ -193,34 +278,41 @@ where
     }
 
     fn temperature(&self) -> Option<f32> {
-        self.inner.temperature()
+        self.temperature_override
+            .or_else(|| self.inner.temperature())
     }
 
     fn max_tokens(&self) -> Option<usize> {
-        self.inner.max_tokens()
+        self.max_tokens_override.or_else(|| self.inner.max_tokens())
     }
 
-    fn with_temperature(self, _temp: f32) -> Self
+    fn with_temperature(self, temp: f32) -> Self
     where
         Self: Sized,
     {
-        // Cannot modify a boxed trait object's temperature.
-        // This is a no-op since the boxed model is already configured.
-        self
+        Self {
+            inner: self.inner,
+            temperature_override: Some(temp),
+            max_tokens_override: self.max_tokens_override,
+        }
     }
 
-    fn with_max_tokens(self, _max: usize) -> Self
+    fn with_max_tokens(self, max: usize) -> Self
     where
         Self: Sized,
     {
-        // Cannot modify a boxed trait object's max_tokens.
-        self
+        Self {
+            inner: self.inner,
+            temperature_override: self.temperature_override,
+            max_tokens_override: Some(max),
+        }
     }
 }
 
 #[async_trait]
-impl<E> Runnable<Vec<Message>, LLMResult> for BoxedModelWrapper<E>
+impl<P, E> Runnable<Vec<Message>, LLMResult> for PtrModelWrapper<P, E>
 where
+    P: Deref<Target = dyn BaseChatModel<Error = E> + Send + Sync> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + Into<Error> + 'static,
 {
     type Error = Error;
@@ -256,8 +348,9 @@ where
 }
 
 #[async_trait]
-impl<E> BaseChatModel for BoxedModelWrapper<E>
+impl<P, E> BaseChatModel for PtrModelWrapper<P, E>
 where
+    P: Deref<Target = dyn BaseChatModel<Error = E> + Send + Sync> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + Into<Error> + 'static,
 {
     async fn chat(
@@ -289,18 +382,16 @@ where
         &self,
         tools: Vec<ToolDefinition>,
     ) -> Option<Box<dyn BaseChatModel<Error = Error> + Send + Sync>> {
-        // The inner model already has tools bound; calling bind_tools again
-        // may or may not work depending on the provider. We delegate.
         self.inner.bind_tools(tools).map(
             |boxed| -> Box<dyn BaseChatModel<Error = Error> + Send + Sync> {
-                Box::new(BoxedModelWrapper { inner: boxed })
+                Box::new(BoxedModelWrapper::new(boxed))
             },
         )
     }
 }
 
 // ---------------------------------------------------------------------------
-// Convenience function
+// Convenience constructors
 // ---------------------------------------------------------------------------
 
 /// Wrap any `BaseChatModel` into a trait object with `Error = crate::error::Error`.
@@ -322,128 +413,6 @@ where
     Arc::new(ChatModelWrapper::new(llm))
 }
 
-// ---------------------------------------------------------------------------
-// ArcModelWrapper — wraps Arc<dyn BaseChatModel<Error = E>>
-// ---------------------------------------------------------------------------
-
-/// Wraps an `Arc<dyn BaseChatModel<Error = E>>` and converts errors to `crate::error::Error`.
-///
-/// This is used to bridge provider trait objects (which use `ProviderError`)
-/// into the main crate's `Error`-based trait objects.
-struct ArcModelWrapper<E: std::error::Error + Send + Sync + Into<Error> + 'static> {
-    inner: Arc<dyn BaseChatModel<Error = E> + Send + Sync>,
-}
-
-impl<E> BaseLanguageModel<Vec<Message>, LLMResult> for ArcModelWrapper<E>
-where
-    E: std::error::Error + Send + Sync + Into<Error> + 'static,
-{
-    fn model_name(&self) -> &str {
-        self.inner.model_name()
-    }
-
-    fn get_num_tokens(&self, text: &str) -> usize {
-        self.inner.get_num_tokens(text)
-    }
-
-    fn temperature(&self) -> Option<f32> {
-        self.inner.temperature()
-    }
-
-    fn max_tokens(&self) -> Option<usize> {
-        self.inner.max_tokens()
-    }
-
-    fn with_temperature(self, _temp: f32) -> Self
-    where
-        Self: Sized,
-    {
-        self
-    }
-
-    fn with_max_tokens(self, _max: usize) -> Self
-    where
-        Self: Sized,
-    {
-        self
-    }
-}
-
-#[async_trait]
-impl<E> Runnable<Vec<Message>, LLMResult> for ArcModelWrapper<E>
-where
-    E: std::error::Error + Send + Sync + Into<Error> + 'static,
-{
-    type Error = Error;
-
-    async fn invoke(
-        &self,
-        input: Vec<Message>,
-        config: Option<RunnableConfig>,
-    ) -> Result<LLMResult, Error> {
-        self.inner.invoke(input, config).await.map_err(Into::into)
-    }
-
-    async fn batch(
-        &self,
-        inputs: Vec<Vec<Message>>,
-        config: Option<RunnableConfig>,
-    ) -> Result<Vec<LLMResult>, Error> {
-        self.inner.batch(inputs, config).await.map_err(Into::into)
-    }
-
-    async fn stream(
-        &self,
-        input: Vec<Message>,
-        config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<LLMResult, Error>> + Send>>, Error> {
-        let inner_stream = self.inner.stream(input, config).await.map_err(Into::into)?;
-        let mapped: Pin<Box<dyn Stream<Item = Result<LLMResult, Error>> + Send>> =
-            Box::pin(inner_stream.map(|item| item.map_err(Into::into)));
-        Ok(mapped)
-    }
-}
-
-#[async_trait]
-impl<E> BaseChatModel for ArcModelWrapper<E>
-where
-    E: std::error::Error + Send + Sync + Into<Error> + 'static,
-{
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        config: Option<RunnableConfig>,
-    ) -> Result<LLMResult, Error> {
-        self.inner.chat(messages, config).await.map_err(Into::into)
-    }
-
-    async fn stream_chat(
-        &self,
-        messages: Vec<Message>,
-        config: Option<RunnableConfig>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>>, Error> {
-        let inner_stream = self
-            .inner
-            .stream_chat(messages, config)
-            .await
-            .map_err(Into::into)?;
-        let mapped: Pin<Box<dyn Stream<Item = Result<StreamChunk, Error>> + Send>> =
-            Box::pin(inner_stream.map(|item| item.map_err(Into::into)));
-        Ok(mapped)
-    }
-
-    fn bind_tools(
-        &self,
-        tools: Vec<ToolDefinition>,
-    ) -> Option<Box<dyn BaseChatModel<Error = Error> + Send + Sync>> {
-        self.inner.bind_tools(tools).map(
-            |boxed| -> Box<dyn BaseChatModel<Error = Error> + Send + Sync> {
-                Box::new(BoxedModelWrapper { inner: boxed })
-            },
-        )
-    }
-}
-
 /// Wrap a provider's `Arc<dyn BaseChatModel<Error = ProviderError>>` into
 /// an `Arc<dyn BaseChatModel<Error = Error>>`.
 ///
@@ -452,5 +421,5 @@ where
 pub fn wrap_provider_model(
     llm: Arc<dyn BaseChatModel<Error = lc_providers::ProviderError> + Send + Sync>,
 ) -> Arc<dyn BaseChatModel<Error = Error> + Send + Sync> {
-    Arc::new(ArcModelWrapper { inner: llm })
+    Arc::new(ArcModelWrapper::new(llm))
 }

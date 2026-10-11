@@ -34,8 +34,15 @@ Answer: <your answer>";
 
 /// MapRerankDocumentsChain
 ///
-/// First calls LLM independently for each document to generate an answer and score,
-/// then ranks by relevance score and returns the highest-scoring answer.
+/// First calls LLM independently for each document to generate an answer and
+/// score, then ranks by relevance score and returns the top-`k` scored answers.
+///
+/// # Stream / invoke consistency (L58)
+/// Both paths select through the same scoring step (`rank_output`) and honor
+/// `top_k`, so a streamed pipeline and a non-streamed one produce the *same*
+/// ranked answer set. They differ only in envelope: `invoke` returns a JSON
+/// array of `{"score", "answer"}` under the output key, while `stream` carries
+/// text only and joins the top-`k` answers. This is the documented contract.
 pub struct MapRerankDocumentsChain {
     llm: BoxedChatModel,
     map_prompt_template: String,

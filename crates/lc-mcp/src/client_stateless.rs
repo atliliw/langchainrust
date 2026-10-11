@@ -15,9 +15,11 @@ use tokio::sync::Mutex;
 
 use crate::auth::AuthScheme;
 use crate::gateway::MethodRateLimiter;
-use crate::protocol::{InputRequired, MCPError, MCPRequest, MrtrAnswer, MrtrQuestion, RequestMeta};
+use crate::protocol::{
+    InputRequired, MCPError, MCPRequest, MrtrAnswer, MrtrQuestion, MrtrRoundTrip, RequestMeta,
+};
 use crate::transport::stateless::{default_meta, StatelessTransport};
-use crate::types::{MCPToolDefinition, MCPToolResult};
+use crate::types::{ListToolsParams, ListToolsResult, MCPToolDefinition, MCPToolResult};
 
 /// MRTR configuration.
 #[derive(Debug, Clone)]
@@ -107,6 +109,13 @@ impl Clone for StatelessMcpClient {
 impl crate::tool_client::McpToolClient for StatelessMcpClient {
     async fn list_tools(&self) -> Result<Vec<MCPToolDefinition>, MCPError> {
         StatelessMcpClient::list_tools(self).await
+    }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        StatelessMcpClient::list_tools_page(self, cursor).await
     }
 
     async fn call_tool(&self, name: &str, arguments: Value) -> Result<MCPToolResult, MCPError> {
@@ -211,14 +220,31 @@ impl StatelessMcpClient {
         self.check_rate_limit(method).await?;
         let mut meta = self.meta.clone();
         let mut params = params;
+        // The MRTR state machine tracks the phase of this exchange (Pending →
+        // AwaitingInput → Pending → … → Resolved) and rejects illegal hops, while
+        // `round_trips` is a pure budget counter that caps the loop. This is the
+        // same split mainstream frameworks use (LangGraph recursion_limit /
+        // LangChain max_iterations): the state machine decides *what state is
+        // legal*, the counter bounds *how many rounds are allowed*, and two
+        // independent MRTR exchanges never bleed into each other.
+        let mut rt = MrtrRoundTrip::new();
         let mut round_trips = 0usize;
         loop {
             let req = MCPRequest::new_stateless(self.next_id(), method, params.clone(), meta);
             let resp = self.transport.post_jsonrpc(&req).await?;
             let result = resp.into_result()?;
 
+            // To resend an answer we must be AwaitingInput; if `required_input`
+            // rejects the hop the exchange is somehow out of phase (already
+            // resolved, or a race) — fail rather than strand it.
             match InputRequired::from_result(&result) {
                 Some(ir) if round_trips < self.mrtr.max_round_trips => {
+                    if !rt.required_input(ir.request_state.clone()) {
+                        return Err(MCPError::new(
+                            -32003,
+                            format!("MRTR state machine refused input_required for {method}"),
+                        ));
+                    }
                     round_trips += 1;
                     let provider = self.answers.as_ref().ok_or_else(|| {
                         MCPError::new(
@@ -231,10 +257,17 @@ impl StatelessMcpClient {
                         .await
                         .map_err(|e| MCPError::new(-32003, format!("MRTR collect failed: {e}")))?;
                     // Resend the ORIGINAL method/params with the continuation
-                    // token attached; answers travel as a side channel.
+                    // token attached; answers travel as a side channel. The state
+                    // machine moves AwaitingInput → Pending for the resend.
                     let mut resent_params = params.clone().unwrap_or_else(|| json!({}));
                     resent_params["mrtr_answers"] =
                         serde_json::to_value(&answers).unwrap_or_else(|_| json!([]));
+                    if !rt.resend() {
+                        return Err(MCPError::new(
+                            -32003,
+                            format!("MRTR state machine refused resend for {method}"),
+                        ));
+                    }
                     meta = self.meta.clone().with_request_state(ir.request_state);
                     params = Some(resent_params);
                     continue;
@@ -248,7 +281,12 @@ impl StatelessMcpClient {
                         ),
                     ));
                 }
-                None => return Ok(result),
+                None => {
+                    // A final response (success or terminal error) resolves the
+                    // exchange; a second MRTR exchange starts a fresh machine.
+                    let _ = rt.resolve();
+                    return Ok(result);
+                }
             }
         }
     }
@@ -267,6 +305,24 @@ impl StatelessMcpClient {
         let tools: Vec<MCPToolDefinition> = serde_json::from_value(tools_value.clone())
             .map_err(|e| MCPError::new(-1, format!("failed to parse tool list: {e}")))?;
         Ok(tools)
+    }
+
+    /// `tools/list` with cursor pagination (#79).
+    ///
+    /// Sends the opaque `cursor` param and returns the full envelope including
+    /// `nextCursor`, so a caller can page through a large tool set. `None` is
+    /// the first page.
+    pub async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, MCPError> {
+        let params = ListToolsParams { cursor };
+        let params = serde_json::to_value(&params).map_err(|e| {
+            MCPError::new(-1, format!("failed to encode tools/list params: {e}"))
+        })?;
+        let result = self.send("tools/list", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|e| MCPError::new(-1, format!("failed to parse tool list: {e}")))
     }
 
     /// `tools/call` (MRTR-aware; emits a `tools/call {name}` OTel client span

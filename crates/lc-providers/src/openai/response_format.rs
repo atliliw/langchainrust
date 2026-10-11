@@ -53,6 +53,27 @@ impl ResponseFormat {
             },
         }
     }
+
+    /// Builds a `json_schema` response format from a provider-agnostic
+    /// [`lc_core::JsonSchemaOutput`] (raw JSON Schema passthrough).
+    ///
+    /// The OpenAI-specific strict-mode normalization (`additionalProperties:
+    /// false`, every property listed in `required`) is applied when the
+    /// constraint asks for strict mode, because OpenAI rejects a strict schema
+    /// that omits them.
+    pub fn from_output(output: lc_core::JsonSchemaOutput) -> Self {
+        let mut schema = output.schema().clone();
+        if output.is_strict() {
+            make_strict_schema(&mut schema);
+        }
+        ResponseFormat::JsonSchema {
+            json_schema: JsonSchemaSpec {
+                name: output.name().to_string(),
+                schema,
+                strict: Some(output.is_strict()),
+            },
+        }
+    }
 }
 
 /// Normalizes a JSON Schema in place for OpenAI strict mode.
@@ -223,6 +244,59 @@ mod tests {
         let mut scalar = json!("just a string");
         make_strict_schema(&mut scalar);
         assert_eq!(scalar, json!("just a string"));
+    }
+
+    /// Raw-schema passthrough: a `JsonSchemaOutput` maps onto the OpenAI
+    /// `json_schema` response format, carrying the caller's schema verbatim.
+    #[test]
+    fn test_from_output_carries_the_raw_schema() {
+        let output = lc_core::JsonSchemaOutput::new(
+            "person",
+            json!({
+                "type": "object",
+                "properties": {"name": {"type": "string"}}
+            }),
+        );
+        let value = serde_json::to_value(ResponseFormat::from_output(output)).unwrap();
+        assert_eq!(value["type"], "json_schema");
+        assert_eq!(value["json_schema"]["name"], "person");
+        assert_eq!(value["json_schema"]["strict"], true);
+        assert_eq!(
+            value["json_schema"]["schema"]["properties"]["name"]["type"],
+            "string"
+        );
+    }
+
+    /// Strict passthrough also normalizes the caller's schema for OpenAI
+    /// (`additionalProperties: false`, every property required).
+    #[test]
+    fn test_from_output_normalizes_when_strict() {
+        let output = lc_core::JsonSchemaOutput::new(
+            "person",
+            json!({
+                "type": "object",
+                "properties": {"name": {"type": "string"}}
+            }),
+        );
+        let value = serde_json::to_value(ResponseFormat::from_output(output)).unwrap();
+        let schema = &value["json_schema"]["schema"];
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(schema["required"], json!(["name"]));
+    }
+
+    /// `with_strict(false)` forwards the schema untouched and reports
+    /// `strict: false`.
+    #[test]
+    fn test_from_output_non_strict_leaves_the_schema_alone() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        });
+        let output =
+            lc_core::JsonSchemaOutput::new("person", schema.clone()).with_strict(false);
+        let value = serde_json::to_value(ResponseFormat::from_output(output)).unwrap();
+        assert_eq!(value["json_schema"]["strict"], false);
+        assert_eq!(value["json_schema"]["schema"], schema);
     }
 
     /// Idempotency: normalizing an already-strict schema changes nothing.

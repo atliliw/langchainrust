@@ -68,20 +68,22 @@ impl HTMLLoader {
         WHITESPACE_RE.replace_all(&text, " ").trim().to_string()
     }
 
-    /// Fetches HTML content from a URL, routed through the shared SSRF-hardened helper
-    async fn fetch_html(url: &str) -> Result<String, LoaderError> {
-        let (_final_url, body) = super::guarded_fetch(url, DEFAULT_HTTP_TIMEOUT).await?;
-        Ok(body)
+    /// Fetches HTML content from a URL, routed through the shared SSRF-hardened
+    /// helper. Returns `(final_url, body)` — §3.2 (LOW): the post-redirect URL is
+    /// the real source, matching `WebScraperLoader`'s `fetched_url` metadata.
+    async fn fetch_html(url: &str) -> Result<(String, String), LoaderError> {
+        super::guarded_fetch(url, DEFAULT_HTTP_TIMEOUT).await
     }
 }
 
 #[async_trait]
 impl DocumentLoader for HTMLLoader {
     async fn load(&self) -> Result<Vec<Document>, LoaderError> {
-        let html = if let Some(ref html) = self.html {
-            html.clone()
+        let (fetched_source, html) = if let Some(ref html) = self.html {
+            (None, html.clone())
         } else if let Some(ref url) = self.url {
-            Self::fetch_html(url).await?
+            let (final_url, body) = Self::fetch_html(url).await?;
+            (Some(final_url), body)
         } else {
             return Err(LoaderError::Other(
                 "HTMLLoader has neither html nor url set".to_string(),
@@ -91,8 +93,11 @@ impl DocumentLoader for HTMLLoader {
         let text = Self::extract_text(&html);
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), "html".to_string().into());
-        if let Some(ref url) = self.url {
-            metadata.insert("source".to_string(), url.clone().into());
+        // §3.2: prefer the post-redirect final URL when fetched (matches
+        // `WebScraperLoader`); fall back to the configured URL for inline HTML.
+        let source = fetched_source.or_else(|| self.url.clone());
+        if let Some(src) = source {
+            metadata.insert("source".to_string(), src.into());
         }
         Ok(vec![Document {
             content: text,

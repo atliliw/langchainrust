@@ -2,15 +2,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
 use tokio::sync::broadcast;
+use tracing::Instrument;
 
 use lc_chains::base::BaseChain;
 
 use crate::protocol::{
-    A2AMessage, A2ATaskResult, TaskFilter, TaskPushNotification, TaskStatus, WorkflowStep,
+    A2AArtifact, A2AMessage, A2ATaskResult, TaskFilter, TaskPushNotification, TaskStatus,
+    WorkflowStep,
 };
-use crate::store::TaskStore;
+use crate::store::{StoredTask, TaskStore};
 
 use super::handlers::{publish_artifact, publish_status};
 use super::message::{
@@ -66,10 +67,46 @@ pub(crate) async fn sweep_expired_tasks(store: &Arc<dyn TaskStore>, ttl: Duratio
     }
 }
 
+/// Runs a compare-and-update transition, reporting conflicts instead of
+/// silently dropping them (0.27.0 T2).
+///
+/// `stored` must already carry the intended next status (the atomic CAS swaps
+/// it as-is). Returns `true` when this writer won and the caller should publish
+/// its own transition event.
+///
+/// On `false` a concurrent writer moved the task before ours landed — most
+/// commonly a `tasks/cancel` flipping it terminal in the 0.22.0 audit window.
+/// That is no longer swallowed: a `tracing::warn` reports the lost race (the
+/// winner already broadcast its own state, so we deliberately do *not* double
+/// emit). A store `Err` is also surfaced via `tracing::error` instead of the
+/// old `.unwrap_or(false)` that collapsed both failure modes into silence.
+async fn cas_apply(store: &Arc<dyn TaskStore>, task_id: &str, stored: &StoredTask) -> bool {
+    let intended = stored.task.status;
+    match store.compare_and_update(task_id, stored.clone()).await {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(
+                task_id,
+                %intended,
+                "CAS transition lost to a concurrent writer (e.g. tasks/cancel); the winner already broadcast its own update — not re-publishing",
+            );
+            false
+        }
+        Err(e) => {
+            tracing::error!(task_id, %intended, error = %e, "store rejected CAS transition");
+            false
+        }
+    }
+}
+
 /// Execute a task in the background: `submitted -> working ->
 /// completed/failed/input-required`, guarded by the task state machine so it
 /// never clobbers a terminal status (e.g. a task cancelled while the chain
 /// was still running).
+///
+/// Instrumented with a `tracing` span so a trace can follow a single task
+/// through its transitions (0.27.0 T2: observability 埋点 / trace 贯通).
+#[tracing::instrument(skip_all, fields(task_id = %task_id))]
 pub(crate) async fn run_task(
     store: &Arc<dyn TaskStore>,
     chain: Arc<dyn BaseChain>,
@@ -85,11 +122,8 @@ pub(crate) async fn run_task(
             stored.touch();
             // 0.22.0 audit fix: compare-and-update so a terminal state written
             // concurrently (e.g. tasks/cancel) is not clobbered by this write.
-            if store
-                .compare_and_update(task_id, stored)
-                .await
-                .unwrap_or(false)
-            {
+            if cas_apply(store, task_id, &stored).await {
+                tracing::debug!("task transitioning to working");
                 publish_status(&event_bus, task_id, TaskStatus::Working, None);
             }
         }
@@ -105,6 +139,7 @@ pub(crate) async fn run_task(
         _ = cancel.notified() => {
             // Already flipped to `cancelled` by tasks/cancel's CAS before this
             // notification fired; do not transition to a live state.
+            tracing::debug!("task cancelled while chain in flight");
             return;
         }
     };
@@ -119,13 +154,12 @@ pub(crate) async fn run_task(
                     stored.touch();
                     // 0.22.0 audit fix: CAS so a concurrent cancel/complete
                     // cannot be overwritten (check-then-act race).
-                    if store
-                        .compare_and_update(task_id, stored)
-                        .await
-                        .unwrap_or(false)
-                    {
+                    if cas_apply(store, task_id, &stored).await {
+                        tracing::debug!(output_len = output.chars().count(), "task completed");
                         publish_status(&event_bus, task_id, TaskStatus::Completed, None);
-                        publish_artifact(&event_bus, task_id, A2ATaskResult::new(output));
+                        // The streamed artifact carries the output as a text
+                        // part (A2A v0.3 TaskArtifact), not a bare string.
+                        publish_artifact(&event_bus, task_id, A2AArtifact::text(task_id, output));
                     }
                 }
             }
@@ -144,11 +178,8 @@ pub(crate) async fn run_task(
                         stored.error = Some(prompt.clone());
                         stored.touch();
                         // 0.22.0 audit fix: CAS transition (see above).
-                        if store
-                            .compare_and_update(task_id, stored)
-                            .await
-                            .unwrap_or(false)
-                        {
+                        if cas_apply(store, task_id, &stored).await {
+                            tracing::debug!("task awaiting more input");
                             publish_status(
                                 &event_bus,
                                 task_id,
@@ -164,11 +195,8 @@ pub(crate) async fn run_task(
                     stored.error = Some(e.to_string());
                     stored.touch();
                     // 0.22.0 audit fix: CAS transition (see above).
-                    if store
-                        .compare_and_update(task_id, stored)
-                        .await
-                        .unwrap_or(false)
-                    {
+                    if cas_apply(store, task_id, &stored).await {
+                        tracing::error!(error = %e, "task failed");
                         publish_status(
                             &event_bus,
                             task_id,
@@ -188,6 +216,9 @@ pub(crate) async fn run_task(
 ///
 /// The handler acknowledges the `working` task immediately and spawns this; the
 /// client polls `tasks/get` for the outcome (0.20.0 S4 G2).
+///
+/// Instrumented with a `tracing` span (0.27.0 T2: observability 埋点).
+#[tracing::instrument(skip_all, fields(task_id = %task_id))]
 pub(crate) async fn run_workflow(
     store: &Arc<dyn TaskStore>,
     steps: Vec<WorkflowStep>,
@@ -195,16 +226,24 @@ pub(crate) async fn run_workflow(
     task_id: &str,
     event_bus: Option<Arc<broadcast::Sender<TaskPushNotification>>>,
 ) {
-    let mut results = serde_json::Map::new();
+    let mut results: Vec<(String, String)> = Vec::new();
     let mut failure: Option<(String, String)> = None; // (step_id, message)
     for (step, chain) in steps.iter().zip(chains.iter()) {
+        let span = tracing::debug_span!("run_workflow.step", step_id = %step.id);
         let input = build_chain_input(&step.message.content, chain.as_ref());
-        match chain.invoke(input).await {
+        match chain.invoke(input).instrument(span).await {
             Ok(result) => {
                 let output = extract_output(&result);
-                results.insert(step.id.clone(), Value::String(output));
+                tracing::debug!(step_id = %step.id, "workflow step completed");
+                // B2 (0.26.0): aggregate as an ordered `Vec<(step_id, output)>`
+                // keyed by execution index, NOT a serde_json::Map — with
+                // `preserve_order` off the map is a BTreeMap that reorders by
+                // step_id alphabetically, so `["s2","s1"]` became
+                // `"second\nfirst"`, breaking the documented execution order.
+                results.push((step.id.clone(), output));
             }
             Err(e) => {
+                tracing::warn!(step_id = %step.id, error = %e, "workflow step failed");
                 failure = Some((step.id.clone(), e.to_string()));
                 break;
             }
@@ -212,8 +251,8 @@ pub(crate) async fn run_workflow(
     }
 
     let aggregated = results
-        .values()
-        .filter_map(|v| v.as_str())
+        .iter()
+        .map(|(_, output)| output.as_str())
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -224,16 +263,21 @@ pub(crate) async fn run_workflow(
         Some((step_id, message)) => {
             if finalize.task.status.can_transition_to(&TaskStatus::Failed) {
                 finalize.task.status = TaskStatus::Failed;
+                // B2 (0.26.0): a failing workflow no longer discards the outputs
+                // of steps that already ran — routes.rs:432 documents that "the
+                // results already aggregated are still returned" on failure, but
+                // the code only ever wrote `error` and never `result`. Surface
+                // the partial aggregation (may be empty when the first step
+                // failed) so callers see what completed before the failure.
+                if !aggregated.is_empty() {
+                    finalize.result = Some(A2ATaskResult::new(aggregated.clone()));
+                }
                 finalize.error = Some(format!("step `{step_id}` failed: {message}"));
                 let error = finalize.error.clone();
                 finalize.touch();
                 // 0.22.0 audit fix: CAS so a concurrent cancel cannot be
                 // overwritten by the workflow's failure write.
-                if store
-                    .compare_and_update(task_id, finalize)
-                    .await
-                    .unwrap_or(false)
-                {
+                if cas_apply(store, task_id, &finalize).await {
                     publish_status(&event_bus, task_id, TaskStatus::Failed, error.as_deref());
                 }
             }
@@ -245,19 +289,15 @@ pub(crate) async fn run_workflow(
                 .can_transition_to(&TaskStatus::Completed)
             {
                 finalize.task.status = TaskStatus::Completed;
-                let task_result = A2ATaskResult::new(aggregated);
-                finalize.result = Some(task_result.clone());
+                let task_result = A2ATaskResult::new(aggregated.clone());
+                finalize.result = Some(task_result);
                 finalize.error = None;
                 finalize.touch();
                 // 0.22.0 audit fix: CAS so a concurrent cancel cannot be
                 // overwritten by the workflow's completion write.
-                if store
-                    .compare_and_update(task_id, finalize)
-                    .await
-                    .unwrap_or(false)
-                {
+                if cas_apply(store, task_id, &finalize).await {
                     publish_status(&event_bus, task_id, TaskStatus::Completed, None);
-                    publish_artifact(&event_bus, task_id, task_result);
+                    publish_artifact(&event_bus, task_id, A2AArtifact::text(task_id, aggregated));
                 }
             }
         }

@@ -167,6 +167,9 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             .ok_or_else(|| EmbeddingError::ApiError("No embedding data in response".to_string()))?
             .embedding
             .clone();
+        // §3.1: the returned width must equal the declared dimension, or it is
+        // rejected instead of silently propagating a wrong-width vector.
+        crate::ensure_dimension(&embedding, self.dimension)?;
         // P2-8: uniform L2 normalization, guaranteeing unit length.
         crate::l2_normalize(&mut embedding);
         Ok(embedding)
@@ -224,6 +227,11 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
                 .await
                 .map_err(|e| EmbeddingError::ParseError(e.to_string()))?;
 
+            // §3.2: this chunk must return exactly chunk.len() vectors at indices
+            // 0..chunk.len() — strictly increasing, in-range. A duplicate / out-of-order /
+            // overfull index is reportable misalignment, never a silent overwrite that
+            // happens to fill every slot.
+            let mut prev: Option<usize> = None;
             for item in embedding_response.data {
                 // P0-2/negative index: `index` is i32; an `as usize` cast would wrap a
                 // negative provider index to a huge offset. Convert with `try_from` and
@@ -234,15 +242,27 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
                         item.index
                     ))
                 })?;
-                let global_index = offset + rel;
-                if global_index >= all_results.len() {
-                    // Provider index beyond the requested range = batch misalignment; error out.
+                // §3.2: indices must be strictly increasing within the chunk — catches a
+                // duplicate (e.g. `[0,1,1]`) or out-of-order index that would otherwise
+                // overwrite a filled slot / leave one silently misaligned.
+                if let Some(prev_idx) = prev {
+                    if rel <= prev_idx {
+                        return Err(EmbeddingError::BatchMismatch {
+                            expected: chunk.len(),
+                            actual: rel + 1,
+                        });
+                    }
+                }
+                prev = Some(rel);
+                // §3.2: index beyond this chunk's range = "more than requested"; the
+                // extra entries would otherwise spill into — and mask — a filled slot.
+                if rel >= chunk.len() {
                     return Err(EmbeddingError::BatchMismatch {
-                        expected: all_results.len(),
-                        actual: global_index + 1,
+                        expected: chunk.len(),
+                        actual: rel + 1,
                     });
                 }
-                all_results[global_index] = Some(item.embedding);
+                all_results[offset + rel] = Some(item.embedding);
             }
             offset += chunk.len();
         }
@@ -252,6 +272,8 @@ impl<C: CompatConfigAccess + CompatSpec + Send + Sync> Embeddings for OpenAIComp
             .into_iter()
             .map(|opt| {
                 let mut v = opt.ok_or(EmbeddingError::EmptyVectorInBatch)?;
+                // §3.1: reject a vector whose width disagrees with the declared dimension.
+                crate::ensure_dimension(&v, self.dimension)?;
                 crate::l2_normalize(&mut v);
                 Ok(v)
             })

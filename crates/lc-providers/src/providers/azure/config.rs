@@ -5,6 +5,7 @@ use std::env;
 
 use crate::ProviderError;
 use lc_core::tools::ToolDefinition;
+use lc_core::{PromptCache, SensitiveString};
 
 /// Azure OpenAI API version.
 pub const AZURE_DEFAULT_API_VERSION: &str = "2024-02-15-preview";
@@ -17,7 +18,7 @@ pub struct AzureOpenAIConfig {
     /// Deployment name (e.g., "my-gpt4-deployment").
     pub deployment_name: String,
     /// API key for authentication.
-    pub api_key: String,
+    pub api_key: SensitiveString,
     /// API version string (default: 2024-02-15-preview).
     pub api_version: String,
     /// Model name for LLMResult metadata (optional, defaults to deployment_name).
@@ -63,7 +64,7 @@ impl AzureOpenAIConfig {
         Self {
             endpoint: endpoint.into(),
             deployment_name: deployment_name.into(),
-            api_key: api_key.into(),
+            api_key: SensitiveString::new(api_key),
             api_version: AZURE_DEFAULT_API_VERSION.to_string(),
             model: None,
             temperature: None,
@@ -105,7 +106,7 @@ impl AzureOpenAIConfig {
         Ok(Self {
             endpoint,
             deployment_name,
-            api_key,
+            api_key: SensitiveString::new(api_key),
             api_version,
             model,
             temperature: None,
@@ -149,6 +150,15 @@ impl AzureOpenAIConfig {
     /// Sets the tool choice strategy (`auto`, `required`, `none`, ...).
     pub fn with_tool_choice(mut self, choice: impl Into<String>) -> Self {
         self.tool_choice = Some(choice.into());
+        self
+    }
+
+    /// Provider-agnostic prompt-cache request.
+    ///
+    /// Azure OpenAI has no native prompt-cache knob equivalent to Anthropic's
+    /// `cache_control` breakpoints or OpenAI's `prompt_cache_key`, so this
+    /// option is silently ignored.
+    pub fn with_prompt_cache(self, _cache: PromptCache) -> Self {
         self
     }
 
