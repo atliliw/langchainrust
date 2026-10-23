@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::base::{
-    stream_chain_with_callbacks, BaseChain, ChainError, ChainResult, ChainStream, StreamToken,
+    run_chain_with_callbacks, stream_chain_with_callbacks, BaseChain, ChainError, ChainResult,
+    ChainStream, StreamToken,
 };
 use crate::BoxedChatModel;
 
@@ -217,7 +218,15 @@ impl RetrievalQA {
             ("context".to_string(), context.to_string()),
             ("question".to_string(), question.to_string()),
         ]);
-        crate::base::substitute_template(&self.prompt_template, &vars).0
+        let (prompt, missing) =
+            crate::base::substitute_template(&self.prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "RetrievalQA: prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// Simplified query interface returning the answer string.
@@ -242,14 +251,20 @@ impl RetrievalQA {
         // prompt assembly here (P1-5: previously re-implemented the whole chain
         // when `return_source_documents` was false).
         let question = question.into();
-        self.run(&question).await
+        self.run(&question, None).await
     }
 
     /// Shared execution pipeline: retrieve → assemble prompt → LLM.
     ///
     /// Used by both [`BaseChain::invoke`] and [`Self::query_with_sources`] so the
-    /// RAG path is defined exactly once.
-    async fn run(&self, question: &str) -> Result<(String, Vec<Document>), ChainError> {
+    /// RAG path is defined exactly once. `config` is threaded into the LLM call
+    /// (sampling overrides / cancellation token / callbacks); config-less
+    /// callers pass `None`.
+    async fn run(
+        &self,
+        question: &str,
+        config: Option<&RunnableConfig>,
+    ) -> Result<(String, Vec<Document>), ChainError> {
         if self.verbose {
             println!("\n=== RetrievalQA Execution ===");
             println!("Question: {}", question);
@@ -292,7 +307,7 @@ impl RetrievalQA {
         let messages = vec![Message::human(&prompt)];
         let response = self
             .llm
-            .invoke(messages, None)
+            .invoke(messages, config.cloned())
             .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {}", e)))?;
 
@@ -302,6 +317,37 @@ impl RetrievalQA {
         }
 
         Ok((response.content, documents))
+    }
+
+    /// Shared invoke body: validate → retrieve → run → assemble result.
+    ///
+    /// Used by both [`Self::invoke`] (`None` config) and
+    /// [`Self::invoke_with_config`] (the caller's config) so the RAG invoke path
+    /// is defined exactly once.
+    async fn execute(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        self.validate_inputs(&inputs)?;
+
+        let question = inputs
+            .get(&self.input_key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
+
+        let (answer, documents) = self.run(question, config).await?;
+
+        let mut result = HashMap::new();
+        result.insert(self.output_key.clone(), Value::String(answer));
+
+        if self.return_source_documents {
+            // Explicit error instead of silently inserting Value::Null (P1-2).
+            let sources = crate::base::documents_to_values(&documents)?;
+            result.insert(self.source_document_key.clone(), Value::Array(sources));
+        }
+
+        Ok(result)
     }
 }
 
@@ -320,25 +366,23 @@ impl BaseChain for RetrievalQA {
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        self.validate_inputs(&inputs)?;
+        self.execute(inputs, None).await
+    }
 
-        let question = inputs
-            .get(&self.input_key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ChainError::MissingInput(self.input_key.clone()))?;
-
-        let (answer, documents) = self.run(question).await?;
-
-        let mut result = HashMap::new();
-        result.insert(self.output_key.clone(), Value::String(answer));
-
-        if self.return_source_documents {
-            // Explicit error instead of silently inserting Value::Null (P1-2).
-            let sources = crate::base::documents_to_values(&documents)?;
-            result.insert(self.source_document_key.clone(), Value::Array(sources));
-        }
-
-        Ok(result)
+    /// M-20/H-6: invoke with the caller's `RunnableConfig`, dispatching
+    /// chain-level callbacks (like the default) AND threading `config` into the
+    /// LLM call so sampling overrides / cancellation / LLM callbacks reach the
+    /// provider (matching the other chains).
+    async fn invoke_with_config(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
+        let inner = config.clone();
+        run_chain_with_callbacks(self.name(), inputs, config, |inputs| async move {
+            self.execute(inputs, inner.as_ref()).await
+        })
+        .await
     }
 
     /// Stream execution for RetrievalQA -- token by token output.
@@ -382,6 +426,7 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::Stream;
     use lc_core::language_models::{LLMResult, StreamChunk};
+    use lc_core::runnables::CancellationToken;
     use lc_core::runnables::RunnableConfig;
     use lc_core::{BaseLanguageModel, Runnable};
     use lc_rag::retriever::RetrieverError;
@@ -473,6 +518,101 @@ mod tests {
             ];
             Ok(Box::pin(futures_util::stream::iter(tokens)))
         }
+    }
+
+    /// Mock chat model that encodes what it received through the config into its
+    /// reply, so config threading into the LLM call is observable rather than
+    /// assumed (H-6).
+    struct ConfigAwareLLM;
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for ConfigAwareLLM {
+        type Error = ProviderError;
+        async fn invoke(
+            &self,
+            _input: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            let content = if config.as_ref().is_some_and(|c| c.is_cancelled()) {
+                "config: cancelled"
+            } else if config.is_some() {
+                "config: present"
+            } else {
+                "config: none"
+            };
+            Ok(LLMResult {
+                content: content.to_string(),
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for ConfigAwareLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for ConfigAwareLLM {
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(_messages, _config).await
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+        {
+            let tokens = [Ok(StreamChunk::new("streamed token"))];
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    /// H-6: `invoke_with_config` threads the caller's `RunnableConfig` into the
+    /// LLM call. Plain `invoke` passes `None`; a cancelled token on the config
+    /// is visible to the underlying LLM call.
+    #[tokio::test]
+    async fn test_retrieval_qa_invoke_with_config_reaches_llm() {
+        let retriever: Arc<dyn RetrieverTrait> = Arc::new(MockRetriever(vec![doc("ctx")]));
+        let chain = RetrievalQA::new(ConfigAwareLLM, retriever);
+        let inputs = HashMap::from([("query".to_string(), Value::String("q".to_string()))]);
+
+        // Plain invoke: no config reaches the LLM (unchanged behavior).
+        let result = chain.invoke(inputs.clone()).await.unwrap();
+        assert_eq!(result["result"], serde_json::json!("config: none"));
+
+        // invoke_with_config with a config: it reaches the LLM call.
+        let config = RunnableConfig::new().with_temperature(0.7);
+        let result = chain
+            .invoke_with_config(inputs.clone(), Some(config))
+            .await
+            .unwrap();
+        assert_eq!(result["result"], serde_json::json!("config: present"));
+
+        // A cancellation token set on the config propagates into the LLM call.
+        let token = CancellationToken::new();
+        token.cancel();
+        let config = RunnableConfig::new().with_cancellation_token(token);
+        let result = chain.invoke_with_config(inputs, Some(config)).await.unwrap();
+        assert_eq!(result["result"], serde_json::json!("config: cancelled"));
     }
 
     fn doc(content: &str) -> Document {

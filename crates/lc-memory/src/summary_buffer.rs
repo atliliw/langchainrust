@@ -198,14 +198,19 @@ impl<M: BaseChatModel> ConversationSummaryBufferMemory<M> {
     fn retain_to_window(&mut self, kept: &[Message]) {
         self.chat_memory.clear();
         for msg in kept {
-            if matches!(msg.message_type, MessageType::Human) {
-                self.chat_memory.add_user_message(&msg.content);
-            } else if matches!(msg.message_type, MessageType::AI) {
-                if msg.tool_calls.is_none() {
-                    self.chat_memory.add_ai_message(&msg.content);
-                }
-            } else if matches!(msg.message_type, MessageType::System) {
-                self.chat_memory.add_system_message(&msg.content);
+            // H-5: preserve each surviving message's `Message::id` (persistence
+            // lineage) through the rebuild. The `add_*_message` helpers mint a
+            // fresh id-less `Message`; on the next persistent save
+            // `stamp_missing_ids` would then assign a NEW id and the
+            // optimistic-lock merge would re-append the already-persisted window —
+            // the Mongo doc regrows on EVERY summary (violating M13). Cloning the
+            // surviving message keeps its id, so the re-read snapshot dedups
+            // against the remote by identity instead of being re-appended.
+            let keep = matches!(msg.message_type, MessageType::Human)
+                || (matches!(msg.message_type, MessageType::AI) && msg.tool_calls.is_none())
+                || matches!(msg.message_type, MessageType::System);
+            if keep {
+                self.chat_memory.add_message(msg.clone());
             }
         }
     }
@@ -565,6 +570,37 @@ mod tests {
             memory.last_summary_error().is_some(),
             "the summary failure must remain observable via last_summary_error"
         );
+    }
+
+    /// H-5 regression: the summary-window rebuild must preserve each surviving
+    /// message's `Message::id` (persistence lineage / invariant M13). Dropping it
+    /// makes the next persistent save stamp a fresh id and re-append the
+    /// already-persisted window, so the Mongo document grows on EVERY summary.
+    #[test]
+    fn retain_to_window_preserves_surviving_message_ids() {
+        let llm = MockLlm::new(vec![]);
+        let mut memory: ConversationSummaryBufferMemory<MockLlm> =
+            ConversationSummaryBufferMemory::new(llm, 1000);
+
+        // A kept window of messages that already carry lineage ids (as after the
+        // first persistent save).
+        let window = vec![
+            Message::human("h1").with_id("id-1"),
+            Message::ai("a1").with_id("id-2"),
+            Message::human("h2").with_id("id-3"),
+            Message::ai("a3").with_id("id-4"),
+        ];
+
+        memory.retain_to_window(&window);
+
+        let rebuilt = memory.chat_memory().messages();
+        assert_eq!(rebuilt.len(), 4);
+        for (orig, rebuilt) in window.iter().zip(rebuilt.iter()) {
+            assert_eq!(
+                rebuilt.id, orig.id,
+                "retain_to_window must preserve Message::id (M13)"
+            );
+        }
     }
 
     #[tokio::test]

@@ -148,6 +148,56 @@ pub struct MCPServer {
 /// every tool across pages; clients that ignore `nextCursor` simply page again.
 const TOOL_PAGE_SIZE: usize = 100;
 
+/// Upper bound (bytes) on any single JSON-RPC line read from a stdio stream
+/// (stdin / child stdout). A peer sending an arbitrarily long line would
+/// otherwise grow the read buffer without limit (OOM); the read is failed
+/// cleanly once a single line exceeds this cap (see #H-5).
+pub(crate) const MAX_STDIO_LINE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Reads one newline-terminated line from `reader` into `buf`, bounded so a
+/// single frame cannot exceed `max_bytes` (memory DoS guard). The cap is
+/// enforced *while* reading, so the buffer is never allowed to grow past the
+/// limit, and any offending bytes are consumed so the stream stays aligned for
+/// the next line. Returns the number of bytes read (0 = EOF); fails with
+/// `InvalidData` when a single line exceeds `max_bytes`.
+pub(crate) async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut String,
+    max_bytes: usize,
+) -> std::io::Result<usize> {
+    buf.clear();
+    let mut total = 0usize;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(total); // EOF
+        }
+        // Consume up to and including the next newline, or the whole buffered
+        // chunk when the line is still unterminated.
+        let nl = available.iter().position(|&b| b == b'\n');
+        let consumed = match nl {
+            Some(pos) => pos + 1,
+            None => available.len(),
+        };
+        total += consumed;
+        if total > max_bytes {
+            // Drain the offending bytes to keep the stream aligned, then fail.
+            reader.consume(consumed);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("stdio line exceeds {max_bytes} bytes"),
+            ));
+        }
+        buf.push_str(&String::from_utf8_lossy(&available[..consumed]));
+        reader.consume(consumed);
+        if nl.is_some() {
+            // Consumed through the terminating newline: the line is complete
+            // (even when the newline is the chunk's very last byte).
+            return Ok(total);
+        }
+    }
+}
+
 impl MCPServer {
     /// Creates an empty server
     pub fn new() -> Self {
@@ -444,8 +494,17 @@ impl MCPServer {
                     .iter()
                     .map(|t| Self::tool_definition(t.as_ref()))
                     .collect();
-                let end = (offset + TOOL_PAGE_SIZE).min(tools.len());
-                let page: Vec<_> = tools[offset.min(tools.len())..end].to_vec();
+                // The `cursor` is client-controlled, so clamp it to the tool
+                // list *before* any arithmetic: a hostile `usize::MAX` cursor
+                // must never overflow `offset + TOOL_PAGE_SIZE` (a panic in
+                // debug, silent wrap + out-of-range slice in release) or slice
+                // `tools[start..end]` with `start > end` (see #H-4).
+                let start = offset.min(tools.len());
+                let end = start
+                    .checked_add(TOOL_PAGE_SIZE)
+                    .unwrap_or(usize::MAX)
+                    .min(tools.len());
+                let page: Vec<_> = tools[start..end].to_vec();
                 let mut result = json!({ "tools": page });
                 if end < tools.len() {
                     result["nextCursor"] = Value::String(end.to_string());
@@ -922,8 +981,7 @@ impl MCPServer {
 
         loop {
             let mut line = String::new();
-            let n = reader
-                .read_line(&mut line)
+            let n = read_bounded_line(&mut reader, &mut line, MAX_STDIO_LINE_BYTES)
                 .await
                 .map_err(|e| MCPError::new(-1, format!("failed to read stdin: {}", e)))?;
             if n == 0 {
@@ -1492,6 +1550,39 @@ mod tests {
             }
         }
         assert_eq!(collected, TOOL_PAGE_SIZE + 6);
+    }
+
+    /// #H-4: a hostile `usize::MAX` cursor must not overflow the pagination
+    /// arithmetic (a panic / DoS) and must not slice `tools[start..end]` with
+    /// `start > end`. Instead it degrades to an empty (or first) page.
+    #[tokio::test]
+    async fn test_tools_list_usize_max_cursor_no_panic() {
+        let server = server_with_echo();
+        let params = json!({ "cursor": usize::MAX.to_string() });
+        let resp = server
+            .handle_request(MCPRequest::new(1, "tools/list", Some(params)))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        let tools = result.get("tools").unwrap().as_array().unwrap();
+        // start clamps to `tools.len()`, so the page is empty and no burst.
+        assert!(tools.is_empty());
+        assert!(result.get("nextCursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_large_cursor_beyond_end_is_empty() {
+        // A cursor past the end must yield an empty page without panicking.
+        let server = server_with_echo();
+        let params = json!({ "cursor": "1000000000000" });
+        let resp = server
+            .handle_request(MCPRequest::new(1, "tools/list", Some(params)))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        let tools = result.get("tools").unwrap().as_array().unwrap();
+        assert!(tools.is_empty());
+        assert!(result.get("nextCursor").is_none());
     }
 
     #[tokio::test]

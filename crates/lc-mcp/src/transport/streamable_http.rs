@@ -40,6 +40,12 @@ use crate::sandbox::EgressPolicy;
 /// Request header the server assigns on `initialize`.
 const SESSION_HEADER: &str = "Mcp-Session-Id";
 
+/// Upper bound (bytes) on a single buffered SSE stream before a frame is
+/// forced to complete. A peer sending an arbitrarily long event / line would
+/// otherwise grow the read buffer without limit (OOM); the read fails with a
+/// protocol error once a single frame exceeds this cap (see #H-5).
+const MAX_SSE_BUFFER_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
 /// Streamable HTTP transport: stateless HTTP requests carrying one optional
 /// server-assigned session id.
 pub struct StreamableHttpTransport {
@@ -472,6 +478,17 @@ impl StreamableHttpTransport {
             let chunk =
                 chunk.map_err(|e| MCPError::new(-32000, format!("SSE stream failed: {e}")))?;
             buf.extend_from_slice(&chunk);
+            // Never let a single frame's incomplete bytes grow without bound:
+            // a peer streaming an arbitrarily long event would otherwise OOM
+            // this buffer (see #H-5).
+            if buf.len() > MAX_SSE_BUFFER_BYTES {
+                return Err(MCPError::new(
+                    -32000,
+                    format!(
+                        "SSE stream exceeded {MAX_SSE_BUFFER_BYTES} single-frame buffer limit"
+                    ),
+                ));
+            }
 
             // Parse every complete, newly arrived event block.
             while let Some((block_len, block)) = take_event_block(&buf[cursor..]) {
@@ -613,6 +630,17 @@ where
             return match Pin::new(&mut this.inner).poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
                     this.buf.extend_from_slice(bytes.as_ref());
+                    // Bound the buffer: an arbitrarily long incomplete SSE
+                    // frame must fail as a protocol error, not OOM (see #H-5).
+                    if this.buf.len() > MAX_SSE_BUFFER_BYTES {
+                        return Poll::Ready(Some(Err(MCPError::new(
+                            -32000,
+                            format!(
+                                "SSE push stream exceeded {MAX_SSE_BUFFER_BYTES} \
+                                 single-frame buffer limit"
+                            ),
+                        ))));
+                    }
                     continue; // re-check for a complete frame
                 }
                 Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(MCPError::new(

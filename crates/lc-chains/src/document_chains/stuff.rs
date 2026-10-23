@@ -191,7 +191,14 @@ impl StuffDocumentsChain {
             (self.document_variable_name.clone(), context.to_string()),
             ("input".to_string(), input.to_string()),
         ]);
-        substitute_template(&self.prompt_template, &vars).0
+        let (prompt, missing) = substitute_template(&self.prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "StuffDocumentsChain: prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// Invoke with documents and input directly.

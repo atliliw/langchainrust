@@ -448,8 +448,10 @@ fn two_tools() -> Vec<ToolDefinition> {
 
 #[tokio::test]
 async fn anthropic_cache_ttl_breakpoints_in_request() {
-    // with_prompt_cache_ttl("1h") must emit `cache_control: {"type":"ttl","ttl":"1h"}`
-    // on the system block AND the last tool definition (not tool_a).
+    // with_prompt_cache_ttl("1h") must emit
+    // `cache_control: {"type":"ephemeral","ttl":"1h"}` on the system block AND
+    // the last tool definition (not tool_a). `type` is always "ephemeral" per
+    // the Anthropic API; TTL is carried as a sibling `ttl` field.
     let body = captured_request("/v1/messages", k_hello(), |base_url| {
         Box::pin(async move {
             let model = AnthropicChat::new(
@@ -470,7 +472,7 @@ async fn anthropic_cache_ttl_breakpoints_in_request() {
 
     let system = body["system"].as_array().expect("system present");
     assert_eq!(
-        system[0]["cache_control"]["type"], "ttl",
+        system[0]["cache_control"]["type"], "ephemeral",
         "system block uses long-lived TTL marker"
     );
     assert_eq!(system[0]["cache_control"]["ttl"], "1h");
@@ -481,7 +483,7 @@ async fn anthropic_cache_ttl_breakpoints_in_request() {
         tools[0].get("cache_control").is_none(),
         "only the last tool is cached (stable prefix)"
     );
-    assert_eq!(tools[1]["cache_control"]["type"], "ttl");
+    assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
     assert_eq!(tools[1]["cache_control"]["ttl"], "1h");
 }
 

@@ -188,6 +188,23 @@ pub struct GeminiChat {
     client: reqwest::Client,
 }
 
+/// Recover the bare function name from a synthesized Gemini tool-call id.
+///
+/// `build_contents` replays assistant tool calls as `functionCall` parts, whose
+/// `name` must match a real `functionDeclarations` name. The ids we synthesize
+/// are now `call_{name}_{index}` (M5 — unique per call) or the legacy
+/// `call_{name}`; strip the prefix and any trailing `_<digits>` index to get
+/// back `{name}`. Ids that never carried the `call_` prefix are returned as-is.
+fn strip_synth_id_into_name(tool_call_id: &str) -> &str {
+    let Some(rest) = tool_call_id.strip_prefix("call_") else {
+        return tool_call_id;
+    };
+    match rest.rsplit_once('_') {
+        Some((name, idx)) if !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()) => name,
+        _ => rest,
+    }
+}
+
 impl SamplingOverride for GeminiChat {
     fn apply_sampling_overrides(&mut self, temperature: Option<f32>, max_tokens: Option<usize>) {
         if let Some(t) = temperature {
@@ -261,7 +278,12 @@ impl GeminiChat {
 
         let config = GeminiConfig {
             tools: Some(vec![tool]),
-            tool_choice: Some("auto".to_string()),
+            // M4 (0.27.x): force the tool call — "any" maps to
+            // `function_calling_config.mode = "ANY"`, which makes Gemini return
+            // a function call (here the only bound structured-output tool)
+            // instead of possibly free text that would fall back to fragile
+            // local JSON parsing.
+            tool_choice: Some("any".to_string()),
             ..self.config.clone()
         };
 
@@ -368,7 +390,10 @@ impl GeminiChat {
                     // "call", so the functionResponse.name never matched a real
                     // declaration and any multi-round tool dialog broke from the
                     // second round (0.22.0 audit H-P7).
-                    let function_name = tool_call_id.strip_prefix("call_").unwrap_or(tool_call_id);
+                    // M5 (0.27.x): recover the function name from a synthesized id.
+                    // The outgoing id is now `call_{name}_{index}` (unique per call) —
+                    // strip both prefixes that `parse_response`/the stream append.
+                    let function_name = strip_synth_id_into_name(tool_call_id);
                     contents.push(GeminiContent {
                         role: Some("function".to_string()),
                         parts: vec![GeminiPart {
@@ -527,6 +552,10 @@ impl GeminiChat {
         let mut text_parts = String::new();
         let mut thinking = String::new();
         let mut tool_calls: Vec<lc_core::tools::ToolCall> = Vec::new();
+        // M5 (0.27.x): `call_{name}` alone is not unique — a model that calls the
+        // same function twice in one response yields duplicate ids, which breaks
+        // downstream id-based correlation. Append an incrementing per-call index.
+        let mut call_index = 0usize;
 
         for part in content.parts {
             // M-9: `thought: true` parts carry chain-of-thought; surface them
@@ -541,8 +570,11 @@ impl GeminiChat {
             // H7: Parse functionCall parts into ToolCall
             if let Some(fc) = part.function_call {
                 let args_str = fc.args.unwrap_or(serde_json::json!({})).to_string();
+                // M5: unique id per call (`call_{name}_{index}`).
+                let id = format!("call_{}_{}", fc.name, call_index);
+                call_index += 1;
                 tool_calls.push(
-                    lc_core::tools::ToolCall::builder(format!("call_{}", fc.name))
+                    lc_core::tools::ToolCall::builder(id)
                         .name(fc.name)
                         .arguments(args_str)
                         .build(),
@@ -698,6 +730,9 @@ impl GeminiChat {
             // the streamed text is a truncated prefix — report it as an error
             // rather than silently returning a partial answer as complete.
             let mut saw_terminal = false;
+            // M5 (0.27.x): unique synthesized tool-call ids across the stream —
+            // `call_{name}` alone collides when the same function is called twice.
+            let mut call_index = 0usize;
             loop {
                 // 0.26.0 review 3.2: bare `bytes_stream()` has no idle guard. A
                 // peer that stops sending without closing would hang forever —
@@ -712,6 +747,14 @@ impl GeminiChat {
                     Ok(Some(cr)) => cr,
                     Ok(None) => break,
                     Err(_) => {
+                        // M2 (0.27.x): a 60s idle timeout firing AFTER a terminal
+                        // marker (usageMetadata / finishReason) is a clean end —
+                        // treat it as such instead of reporting an interruption.
+                        // Only when no terminal marker was seen is the freeze a
+                        // genuine truncation.
+                        if saw_terminal {
+                            break;
+                        }
                         let _ = tx
                             .send(Err(GeminiError::StreamInterrupted(
                                 "stream idle timeout (no data for 60s)".to_string(),
@@ -776,9 +819,13 @@ impl GeminiChat {
                                                             .args
                                                             .unwrap_or(serde_json::json!({}))
                                                             .to_string();
+                                                        // M5: unique id per call.
+                                                        let id =
+                                                            format!("call_{}_{}", fc.name, call_index);
+                                                        call_index += 1;
                                                         let call =
                                                             lc_core::tools::ToolCall::builder(
-                                                                format!("call_{}", fc.name),
+                                                                id,
                                                             )
                                                             .name(fc.name)
                                                             .arguments(args_str)

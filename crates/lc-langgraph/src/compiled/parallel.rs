@@ -422,11 +422,28 @@ impl<S: StateSchema> CompiledGraph<S> {
             merged = union_states(base, &merged, &branch.final_state)?;
         }
         for (field, reducer) in &self.field_reducers {
-            let mut acc = base.clone();
-            for branch in branches {
-                acc = reducer.reduce(&acc, &branch.final_state);
+            // H-1 (0.28 audit): fold each branch's *delta beyond `base`*, not its
+            // whole final state. Every branch starts from a clone of the fan-out
+            // `base`, so `final_state[field]` already begins with `base[field]`;
+            // folding the whole array in every round re-copied `base` `1 +
+            // branch_count` times for append-style reducers (messages/steps
+            // silently ballooned). When every branch's field array has `base` as
+            // a prefix, compute the suffix past base and concatenate
+            // `base ++ Σ deltas` (base counted exactly once); otherwise fall back
+            // to the base-seeded reducer fold for exotic / replace-style reducers.
+            match delta_union_field(base, branches, field)? {
+                Some(union) => {
+                    let out = state_with_field(base, field, union)?;
+                    merged = patch_field(&merged, &out, field)?;
+                }
+                None => {
+                    let mut acc = base.clone();
+                    for branch in branches {
+                        acc = reducer.reduce(&acc, &branch.final_state);
+                    }
+                    merged = patch_field(&merged, &acc, field)?;
+                }
             }
-            merged = patch_field(&merged, &acc, field)?;
         }
         Ok(merged)
     }
@@ -468,6 +485,62 @@ fn union_states<S: StateSchema>(base: &S, merged: &S, branch: &S) -> GraphResult
     serde_json::from_value(serde_json::Value::Object(result_map)).map_err(|e| {
         GraphError::StateError(format!(
             "Parallel branch merge failed to reassemble state: {e}"
+        ))
+    })
+}
+
+/// Extract a top-level field's JSON value, or `None` if the state has no such
+/// field (or fails to serialize).
+fn field_value<S: StateSchema>(s: &S, field: &str) -> Option<serde_json::Value> {
+    let v = s.to_json().ok()?;
+    let obj = v.as_object()?;
+    obj.get(field).cloned()
+}
+
+/// H-1 fold: given the fan-out `base` and the branch final states, produce the
+/// reducible value for one accumulating field when every branch's array has
+/// `base[field]` as a prefix (the common append-style reducer case, e.g.
+/// messages/steps). Returns `Some(base[field] ++ Σ suffixes-past-base)`, so
+/// `base` is counted exactly once across the fold; returns `None` when any
+/// branch lacks the field, its value is not an array, or `base` is not a
+/// prefix — the caller then falls back to the reducer-seeded fold.
+fn delta_union_field<S: StateSchema>(
+    base: &S,
+    branches: &[ParallelBranch<S>],
+    field: &str,
+) -> GraphResult<Option<serde_json::Value>> {
+    let Some(base_els) = field_value(base, field).and_then(|v| v.as_array().cloned()) else {
+        return Ok(None);
+    };
+    let mut union: Vec<serde_json::Value> = base_els.clone();
+    for branch in branches {
+        let Some(arr) = field_value(&branch.final_state, field)
+            .and_then(|v| v.as_array().cloned())
+        else {
+            return Ok(None);
+        };
+        if arr.len() < base_els.len() || arr[..base_els.len()] != base_els[..] {
+            return Ok(None);
+        }
+        union.extend_from_slice(&arr[base_els.len()..]);
+    }
+    Ok(Some(serde_json::Value::Array(union)))
+}
+
+/// Rebuild `base` with a single top-level field replaced by `value`, so the
+/// folded value can be handed to [`patch_field`].
+fn state_with_field<S: StateSchema>(
+    base: &S,
+    field: &str,
+    value: serde_json::Value,
+) -> GraphResult<S> {
+    let mut state_v = base.to_json()?;
+    if let Some(map) = state_v.as_object_mut() {
+        map.insert(field.to_string(), value);
+    }
+    serde_json::from_value(state_v).map_err(|e| {
+        GraphError::StateError(format!(
+            "Parallel reducer delta fold failed to reassemble state: {e}"
         ))
     })
 }

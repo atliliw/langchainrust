@@ -225,19 +225,33 @@ async fn fetch_to_data_uri(url: &str) -> Result<String, MediaError> {
             ))
         })?;
 
-    let bytes = response.bytes().await.map_err(|e| MediaError::Fetch {
-        url: url.to_string(),
-        reason: e.to_string(),
-    })?;
-    if bytes.len() > MAX_MEDIA_FETCH_BYTES {
-        return Err(MediaError::TooLarge {
-            url: url.to_string(),
-            size: bytes.len(),
-            limit: MAX_MEDIA_FETCH_BYTES,
-        });
+    // M3 (0.27.x): a body with no Content-Length is NOT buffered whole before the
+    // cap check — `response.bytes()` would pull an arbitrarily large response
+    // into memory first (OOM vector for a mocked/hostile server that streams
+    // forever without a length). Stream-read in bounded chunks and abort as soon
+    // as the cumulative size exceeds MAX_MEDIA_FETCH_BYTES.
+    let mut body = Vec::new();
+    {
+        use futures_util::StreamExt;
+        let mut body_stream = response.bytes_stream();
+        while let Some(item) = body_stream.next().await {
+            let chunk = item.map_err(|e| MediaError::Fetch {
+                url: url.to_string(),
+                reason: e.to_string(),
+            })?;
+            let cumulative = body.len().saturating_add(chunk.len());
+            if cumulative > MAX_MEDIA_FETCH_BYTES {
+                return Err(MediaError::TooLarge {
+                    url: url.to_string(),
+                    size: cumulative,
+                    limit: MAX_MEDIA_FETCH_BYTES,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
     }
 
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&body);
     Ok(format!("data:{mime};base64,{encoded}"))
 }
 

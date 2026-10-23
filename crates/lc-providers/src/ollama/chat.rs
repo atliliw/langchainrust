@@ -165,7 +165,14 @@ impl OllamaChat {
         }
 
         if let Some(tool_choice) = &self.config.tool_choice {
-            body["tool_choice"] = json!(tool_choice);
+            // M4 (0.27.x): a tool_choice that carries full JSON is a forced-tool
+            // object (the structured-output path) and must be passed through as
+            // such; the reserved literals ("auto"/"none") stay the plain string
+            // form. Matches the OpenAI builder.
+            match serde_json::from_str::<serde_json::Value>(tool_choice) {
+                Ok(json_value) if json_value.is_object() => body["tool_choice"] = json_value,
+                _ => body["tool_choice"] = json!(tool_choice),
+            }
         }
 
         body
@@ -213,7 +220,17 @@ impl OllamaChat {
 
         let config = OllamaConfig {
             tools: Some(vec![tool]),
-            tool_choice: Some("auto".to_string()),
+            // M4 (0.27.x): force the bound structured-output tool instead of
+            // "auto" — otherwise the model may return free text and the local
+            // JSON parser is a fragile fallback. Stored as the full forced-tool
+            // JSON object; the builder passes it through (see build_request_body).
+            tool_choice: Some(
+                serde_json::json!({
+                    "type": "function",
+                    "function": {"name": "structured_output"},
+                })
+                .to_string(),
+            ),
             ..self.config.clone()
         };
 
@@ -325,6 +342,10 @@ impl OllamaChat {
             // stream ended. (OpenAI/Azure/Anthropic already guard this; before
             // this fix Ollama silently returned truncated output as if complete.)
             let mut saw_terminal = false;
+            // M1 (0.27.x): whether accumulated tool calls were already flushed
+            // on a terminal usage chunk — guards the end-of-stream flush so a
+            // provider that sends usage (and thus the calls) does not double them.
+            let mut tool_calls_emitted = false;
             loop {
                 // 0.26.0 review 3.5: bare `bytes_stream()` has no idle guard. A
                 // peer that stops sending without closing would hang forever —
@@ -346,6 +367,14 @@ impl OllamaChat {
                     },
                     Ok(None) => break,
                     Err(_) => {
+                        // M2 (0.27.x): a 60s idle timeout firing AFTER a terminal
+                        // marker ([DONE] / finish_reason) was already observed is a
+                        // clean end — treat it as such instead of reporting an
+                        // interruption. Only when no terminal marker was seen is the
+                        // freeze a genuine truncation to surface as an error.
+                        if saw_terminal {
+                            break;
+                        }
                         let _ = tx
                             .send(Err(OllamaError::StreamInterrupted(
                                 "stream idle timeout (no data for 60s)".to_string(),
@@ -400,11 +429,60 @@ impl OllamaChat {
                                         return;
                                     }
                                 }
+                                // M1 (0.27.x): mirror the OpenAI/Azure streaming path
+                                // and forward reasoning/thinking deltas on their own
+                                // channel instead of dropping them (DeepSeek-R1, GLM
+                                // and other reasoning models expose CoT as
+                                // `delta.reasoning_content`).
+                                if let Some(reasoning) = choice
+                                    .delta
+                                    .reasoning_content
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    if tx
+                                        .send(Ok(StreamChunk {
+                                            text: String::new(),
+                                            thinking_content: Some(reasoning.to_string()),
+                                            token_usage: None,
+                                            tool_calls: None,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                                 // C2: fold tool-call fragments into the accumulator
                                 if let Some(deltas) = &choice.delta.tool_calls {
                                     for delta in deltas {
                                         tool_acc.push(delta);
                                     }
+                                }
+                            }
+                            // M1 (0.27.x): some OpenAI-compatible local servers
+                            // (incl. Ollama via its /v1 shim) do carry chunk-level
+                            // usage on the final chunk — forward it as a standalone
+                            // usage chunk (with any accumulated tool calls) instead
+                            // of silently dropping it (OpenAI/Azure already do this).
+                            if let Some(usage) = chunk.usage {
+                                let token_usage = TokenUsage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    total_tokens: usage.total_tokens,
+                                };
+                                let calls = tool_acc.build();
+                                if !calls.is_empty() {
+                                    tool_calls_emitted = true;
+                                }
+                                let final_chunk = StreamChunk {
+                                    thinking_content: None,
+                                    text: String::new(),
+                                    token_usage: Some(token_usage),
+                                    tool_calls: (!calls.is_empty()).then_some(calls),
+                                };
+                                if tx.send(Ok(final_chunk)).await.is_err() {
+                                    return;
                                 }
                             }
                             // Ollama 本地服务不保证回传 usage,维持 token_usage: None
@@ -435,17 +513,20 @@ impl OllamaChat {
                 return;
             }
 
-            // C2: stream exhausted — flush accumulated tool calls as a terminal chunk
-            let calls = tool_acc.build();
-            if !calls.is_empty() {
-                let _ = tx
-                    .send(Ok(StreamChunk {
-                        thinking_content: None,
-                        text: String::new(),
-                        token_usage: None,
-                        tool_calls: Some(calls),
-                    }))
-                    .await;
+            // C2: stream exhausted — flush accumulated tool calls as a terminal
+            // chunk (M1: only if a terminal usage chunk did not already emit them).
+            if !tool_calls_emitted {
+                let calls = tool_acc.build();
+                if !calls.is_empty() {
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            thinking_content: None,
+                            text: String::new(),
+                            token_usage: None,
+                            tool_calls: Some(calls),
+                        }))
+                        .await;
+                }
             }
         });
 
@@ -527,6 +608,63 @@ mod stream_truncation_tests {
             got.iter().any(|i| i.is_ok()),
             "partial tokens should have streamed before the interruption"
         );
+        server.await.unwrap();
+    }
+
+    /// M2 (0.27.x): a stream that saw a terminal marker (`finish_reason`) and
+    /// then ends — however the byte source concludes (idle timeout, clean
+    /// close, dropped connection) — is a *clean* end, NOT an interruption. This
+    /// shares the `saw_terminal` guard with the idle-timeout branch: once the
+    /// terminal marker is observed, a later silence is completion, not truncation.
+    #[tokio::test]
+    async fn terminal_marker_then_close_is_clean_not_interrupted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await; // consume the POST + body
+
+            // content delta carrying a non-null finish_reason (a terminal marker),
+            // then a clean chunked body end — no [DONE].
+            let chunk = json!({
+                "id": "1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "test",
+                "choices": [{ "index": 0, "delta": { "content": "done" }, "finish_reason": "stop" }],
+            });
+            let event = format!("data: {chunk}\r\n\r\n");
+            let body = format!("{:x}\r\n{}\r\n0\r\n\r\n", event.len(), event);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{body}"
+            );
+            socket.write_all(resp.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+
+        let chat = OllamaChat::with_config(
+            OllamaConfig::new("test").with_base_url(format!("http://{}", addr)),
+        );
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut got: Vec<Result<StreamChunk, OllamaError>> = Vec::new();
+        while let Some(item) = stream.next().await {
+            got.push(item);
+        }
+
+        assert!(
+            got.iter().all(|i| i.is_ok()),
+            "a terminal marker makes the end clean (no StreamInterrupted), got {got:?}"
+        );
+        assert_eq!(got.len(), 1, "just the content token");
+        assert_eq!(got[0].as_ref().unwrap().text, "done");
         server.await.unwrap();
     }
 }
@@ -947,5 +1085,28 @@ mod null_content_tests {
         let body = plain.build_request_body(vec![], false);
         assert_eq!(body["max_tokens"], 300);
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    /// M4 (0.27.x): structured output must FORCE the bound tool, not use "auto".
+    /// The request body carries the forced-tool object so the model cannot return
+    /// free text and fall back to fragile local JSON parsing.
+    #[test]
+    fn structured_output_forces_tool_choice() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Out {
+            answer: String,
+        }
+        let chat = OllamaChat::with_config(OllamaConfig::new("m"));
+        let method = chat.with_structured_output::<Out>();
+        let inner = OllamaChat {
+            config: method.config.clone(),
+            client: chat.client.clone(),
+        };
+        let body = inner.build_request_body(vec![], false);
+        assert_eq!(
+            body["tool_choice"],
+            serde_json::json!({"type": "function", "function": {"name": "structured_output"}}),
+        );
     }
 }

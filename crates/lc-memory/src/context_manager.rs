@@ -65,6 +65,13 @@ use lc_core::language_models::BaseChatModel;
 pub trait ReadStrategy: Send + Sync {
     /// Read the stored history as a message list.
     async fn load(&self, inputs: &HashMap<String, String>) -> Result<Vec<Message>, MemoryError>;
+
+    /// Clear the state this strategy owns. Stateless strategies are a no-op by
+    /// default; stateful ones (e.g. the buffer store) clear their buffer. Called
+    /// by [`ContextManager::clear`].
+    async fn clear(&self) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 /// Persists a completed turn into some backing store.
@@ -78,6 +85,13 @@ pub trait WriteStrategy: Send + Sync {
         inputs: &HashMap<String, String>,
         outputs: &HashMap<String, String>,
     ) -> Result<(), MemoryError>;
+
+    /// Clear the state this strategy owns. Stateless strategies are a no-op by
+    /// default; stateful ones (e.g. the buffer store) clear their buffer. Called
+    /// by [`ContextManager::clear`].
+    async fn clear(&self) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 /// Compresses an over-budget history into one that fits a budget.

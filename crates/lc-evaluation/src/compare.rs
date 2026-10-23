@@ -74,22 +74,60 @@ pub struct PairedSignificance {
     pub p_value: f64,
 }
 
+/// Lanczos approximation of `ln Γ(x)` for `x >= 1`, computed entirely in the log domain so it never
+/// over/underflows. All arguments this crate passes (`n+1`, `k+1`, `n−k+1`) satisfy `x >= 1`, and the
+/// binomial masses `P_k = C(n,k)·0.5ⁿ` are derived from it via [`ln_binomial_mass`], sidestepping the
+/// `0.5ⁿ`→`0.0` underflow that the old probability-recurrence hit at `n ≈ 1073`.
+fn log_gamma(x: f64) -> f64 {
+    debug_assert!(x >= 1.0, "Lanczos needs x >= 1, got {x}");
+    // g = 7, the standard 9-term Lanczos table.
+    const G: f64 = 7.0;
+    const COEF: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    let z = x - 1.0;
+    let mut s = COEF[0];
+    for i in 1..COEF.len() {
+        s += COEF[i] / (z + i as f64);
+    }
+    let t = z + G + 0.5;
+    // ln Γ(x) = ½·ln(2π) + (z + ½)·ln t − t + ln(s). Kept in logs so Γ itself never materializes
+    // (it would overflow for large x); `s` is positive and close to 1 here.
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (z + 0.5) * t.ln() - t + s.ln()
+}
+
+/// `ln P_k` of `C(n,k)·0.5ⁿ` — a binomial mass expressed so no intermediate value underflows.
+fn ln_binomial_mass(n: usize, k: usize) -> f64 {
+    let n = n as f64;
+    let k = k as f64;
+    log_gamma(n + 1.0) - log_gamma(k + 1.0) - log_gamma(n - k + 1.0) - n * std::f64::consts::LN_2
+}
+
 /// Two-sided exact p-value of `k` successes out of `n` fair (p = 0.5) Bernoulli trials — the sign
 /// test. Ties must already be excluded (they carry no binomial signal). `n == 0` returns `1.0` (no
-/// evidence either way). The tail is summed via the probability recurrence `P(k+1) = P(k)·(n−k)/(k+1)`
-/// so binomial coefficients never overflow `u64`; starting from `P(0) = 0.5ⁿ`, which underflows to a
-/// true zero once `n ≈ 1073`, after which the whole (astronomically small) tail reports `0.0`.
+/// evidence either way). The tail is summed as `Σ exp(ln P_i)` over `i = 0..=k`, with each mass
+/// computed in the log domain, so large balanced comparisons (where the tiny tail is *not* signal)
+/// yield `p ≈ 1.0` instead of underflowing to `0.0` like the old `0.5ⁿ` recurrence did at `n ≈ 1073`.
 fn sign_test_p(wins: usize, losses: usize) -> f64 {
     let n = wins + losses;
     if n == 0 {
         return 1.0;
     }
     let k = wins.min(losses);
-    let mut p_k = 0.5f64.powi(n as i32);
-    let mut tail = p_k;
-    for i in 0..k {
-        p_k *= (n - i) as f64 / (i + 1) as f64;
-        tail += p_k;
+    // Sum the lower tail on the log scale. Guarding each `s.ln()` term against NaN (should not
+    // happen for `i <= k <= n`) keeps the loop total deterministic; the `.min(1.0)` clamps any
+    // floating rounding that would push a genuinely balanced p just past 1.0.
+    let mut tail = 0.0f64;
+    for i in 0..=k {
+        tail += ln_binomial_mass(n, i).exp();
     }
     (2.0 * tail).min(1.0)
 }
@@ -764,5 +802,54 @@ mod tests {
         assert!(sign_test_p(5, 1) > 0.05);
         // large n, all one-sided: hugely significant, double underflow is a true 0
         assert_eq!(sign_test_p(2000, 0), 0.0);
+    }
+
+    /// H-3 regression: a balanced comparison with large n must NOT underflow to a significant 0.0.
+    /// 550/550 over 1100 pairs is pure noise under the sign-test null, so the two-sided p ≈ 1.0.
+    /// The old `0.5ⁿ` recurrence returned 0.0 here (n ≈ 1100 > ~1073), wrongly flagging it
+    /// significant. The log-domain tail sums the true binomial mass instead.
+    #[test]
+    fn sign_test_large_balanced_comparison_is_not_significant() {
+        let n = 1100usize;
+        let half = n / 2; // 550 wins / 550 losses
+
+        let p = sign_test_p(half, half);
+        assert!(p > 0.5, "balanced noise must look insignificant, got p={p}");
+        assert!(
+            (p - 1.0).abs() < 1e-9,
+            "a perfectly balanced tail clamps to 1.0, got p={p}"
+        );
+
+        // And it must round-trip through the public comparison path as not significant.
+        let base = report_with_scores(
+            "b",
+            vec![("j", 0.5, n)],
+            (0..n)
+                .map(|i| {
+                    let v = if (i < half) == (i % 2 == 0) { 1.0 } else { 0.0 };
+                    (i, vec![("j", v)])
+                })
+                .collect(),
+        );
+        let cand = report_with_scores(
+            "c",
+            vec![("j", 0.5, n)],
+            (0..n)
+                .map(|i| {
+                    let v = if (i < half) == (i % 2 == 0) { 0.0 } else { 1.0 };
+                    (i, vec![("j", v)])
+                })
+                .collect(),
+        );
+        let cmp = compare_reports(&base, &cand, 0.0);
+        let sig = &cmp.significance["j"];
+        assert_eq!(sig.n, n);
+        assert_eq!(sig.wins, half);
+        assert_eq!(sig.losses, half);
+        assert!(
+            !cmp.is_significant("j"),
+            "balanced 550/550 must not trip the significance gate (p={})",
+            sig.p_value
+        );
     }
 }

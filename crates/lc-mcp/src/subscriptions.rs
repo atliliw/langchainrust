@@ -29,6 +29,19 @@ pub const NOTIFICATIONS_RESOURCES_LIST_CHANGED: &str = "notifications/resources/
 /// `list_changed`, which is about the resource *list* itself changing.
 pub const NOTIFICATIONS_RESOURCES_UPDATED: &str = "notifications/resources/updated";
 
+/// Upper bound on the total number of `(uri, subscriber)` registrations the
+/// in-memory registry will hold across all sessions. Without a cap, a leaked or
+/// hostile set of `resources/subscribe` calls could grow this map without
+/// bound (memory DoS). When the cap is reached, new subscriptions are refused
+/// honestly with [`MCP_ERROR_RESOURCE_LIMIT`] instead of silently evicting a
+/// live subscriber's interest (see #H-6).
+pub const MAX_SUBSCRIPTIONS: usize = 1_000_000;
+
+/// JSON-RPC server error code used when the subscription registry is full
+/// ([`MAX_SUBSCRIPTIONS`] reached). Falls in the server-error reserved range
+/// (-32000..=-32099).
+pub const MCP_ERROR_RESOURCE_LIMIT: i32 = -32011;
+
 /// `resources/subscribe` / `resources/unsubscribe` request parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceSubscribeParams {
@@ -81,6 +94,17 @@ impl ResourceSubscriptions {
     /// Registers `subscriber`'s interest in `uri`. Returns `Ok(())`; fails with
     /// `invalid_params` when `uri` is empty (a subscribe must name a resource).
     pub fn subscribe(&self, uri: &str, subscriber: impl Into<String>) -> Result<(), MCPError> {
+        self.subscribe_limited(uri, subscriber, MAX_SUBSCRIPTIONS)
+    }
+
+    /// [`Self::subscribe`] with an explicit registry cap (constants and tests
+    /// inject a small limit; production uses [`MAX_SUBSCRIPTIONS`]).
+    fn subscribe_limited(
+        &self,
+        uri: &str,
+        subscriber: impl Into<String>,
+        max_subscriptions: usize,
+    ) -> Result<(), MCPError> {
         let uri = uri.trim();
         if uri.is_empty() {
             return Err(MCPError::invalid_params(
@@ -89,6 +113,25 @@ impl ResourceSubscriptions {
         }
         let subscriber = subscriber.into();
         let mut map = self.subscribers.lock().expect("subscription lock");
+        // Bounded eviction policy (#H-6): cap the total number of
+        // registrations so the registry cannot grow without bound across many
+        // sessions. A re-subscribe of an already-registered pair adds no new
+        // entry and so is always allowed at the cap.
+        if !map
+            .get(uri)
+            .is_some_and(|set| set.contains(&subscriber))
+        {
+            let in_registry: usize = map.values().map(|s| s.len()).sum();
+            if in_registry >= max_subscriptions {
+                return Err(MCPError::new(
+                    MCP_ERROR_RESOURCE_LIMIT,
+                    format!(
+                        "resources/subscribe refused: registry full \
+                         ({max_subscriptions} subscriptions)"
+                    ),
+                ));
+            }
+        }
         map.entry(uri.to_string()).or_default().insert(subscriber);
         Ok(())
     }
@@ -190,6 +233,29 @@ mod tests {
         assert!(!subs.is_subscribed("file:///a.txt", "sess-2"));
         assert!(!subs.is_subscribed("file:///b.txt", "sess-1"));
         assert!(subs.is_watched("file:///a.txt"));
+    }
+
+    #[test]
+    fn subscribe_is_bounded_no_unbounded_growth() {
+        let subs = ResourceSubscriptions::new();
+        let n = 3usize;
+        // Distinct uri per subscriber; the registry stops growing at the cap.
+        for i in 0..n {
+            subs.subscribe_limited(&format!("file:///{i}.txt"), format!("sess-{i}"), n)
+                .unwrap();
+        }
+        // The (n+1)-th distinct subscription is refused once the cap is reached.
+        let err = subs
+            .subscribe_limited("file:///overflow.txt", "sess-overflow", n)
+            .unwrap_err();
+        assert_eq!(err.code, MCP_ERROR_RESOURCE_LIMIT);
+        // Re-subscribing an existing pair at the cap adds nothing and still works.
+        subs.subscribe_limited("file:///0.txt", "sess-0", n).unwrap();
+        assert!(subs.is_subscribed("file:///0.txt", "sess-0"));
+        // Unsubscribing frees a slot so a new subscription can succeed again.
+        subs.unsubscribe("file:///0.txt", "sess-0").unwrap();
+        subs.subscribe_limited("file:///0.txt", "sess-0", n).unwrap();
+        assert!(subs.is_subscribed("file:///0.txt", "sess-0"));
     }
 
     #[test]

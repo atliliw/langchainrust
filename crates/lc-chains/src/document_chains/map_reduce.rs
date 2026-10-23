@@ -241,7 +241,14 @@ impl MapReduceDocumentsChain {
             (self.document_variable_name.clone(), context.to_string()),
             ("input".to_string(), input.to_string()),
         ]);
-        substitute_template(&self.map_prompt_template, &vars).0
+        let (prompt, missing) = substitute_template(&self.map_prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "MapReduceDocumentsChain: map prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// Build the reduce-phase prompt from the per-document summaries and input.
@@ -275,7 +282,14 @@ impl MapReduceDocumentsChain {
             ("summaries".to_string(), summaries_text),
             ("input".to_string(), input.to_string()),
         ]);
-        substitute_template(template, &vars).0
+        let (prompt, missing) = substitute_template(template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "MapReduceDocumentsChain: merge prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// The effective batch size for one hierarchical reduce round.
@@ -464,10 +478,23 @@ impl MapReduceDocumentsChain {
                 } else {
                     limit
                 };
-                futures_util::stream::iter(map_futures)
-                    .buffer_unordered(limit)
-                    .try_collect()
-                    .await
+                // M-Order: `buffer_unordered` emits in *completion* order, not
+                // input order, so with `map_concurrency < n` the map answers
+                // used to arrive scrambled, corrupting final attribution. Each
+                // future now carries its input index and the results are
+                // reassembled into document order after collection.
+                let indexed_futures: Vec<_> = map_futures
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, fut)| async move { fut.await.map(|s| (i, s)) })
+                    .collect();
+                let mut indexed: Vec<(usize, String)> =
+                    futures_util::stream::iter(indexed_futures)
+                        .buffer_unordered(limit)
+                        .try_collect()
+                        .await?;
+                indexed.sort_unstable_by_key(|&(i, _)| i);
+                Ok(indexed.into_iter().map(|(_, s)| s).collect())
             }
             None => try_join_all(map_futures).await,
         }
@@ -796,6 +823,105 @@ mod tests {
 
     fn docs(n: usize) -> Vec<Document> {
         (0..n).map(|i| Document::new(format!("doc {i}"))).collect()
+    }
+
+    /// Extract the trailing integer from a map prompt's document content
+    /// (`"doc {i}"` → `i`).
+    fn parse_doc_index(doc: &str) -> Option<usize> {
+        doc.rsplit(' ').next().and_then(|n| n.parse().ok())
+    }
+
+    /// Mock whose per-document map future completes in an order *opposite* to
+    /// the input documents (the last document resolves first), so a raw
+    /// `buffer_unordered` (completion order) would return the map answers
+    /// scrambled. The map phase must reassemble them by input index for the
+    /// final merged answer to align with the input document order (M-Order).
+    struct DelayedInverseLLM;
+
+    #[async_trait]
+    impl Runnable<Vec<Message>, LLMResult> for DelayedInverseLLM {
+        type Error = ProviderError;
+        async fn invoke(
+            &self,
+            input: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            let prompt = input.last().map(|m| m.content.clone()).unwrap_or_default();
+            let reply = hierarchy_reply(&prompt);
+            // Sleep a shorter time for higher document indices so later
+            // documents finish and are emitted first.
+            if let Some(doc) = map_prompt_document(&prompt) {
+                if let Some(idx) = parse_doc_index(doc) {
+                    let delay_ms = 3 * (3usize.saturating_sub(idx)) as u64;
+                    if delay_ms > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
+            Ok(LLMResult {
+                content: reply,
+                model: "mock".to_string(),
+                token_usage: None,
+                tool_calls: None,
+                thinking_content: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl BaseLanguageModel<Vec<Message>, LLMResult> for DelayedInverseLLM {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn get_num_tokens(&self, t: &str) -> usize {
+            t.len()
+        }
+        fn with_temperature(self, _: f32) -> Self {
+            self
+        }
+        fn with_max_tokens(self, _: usize) -> Self {
+            self
+        }
+    }
+
+    #[async_trait]
+    impl BaseChatModel for DelayedInverseLLM {
+        async fn chat(
+            &self,
+            messages: Vec<Message>,
+            config: Option<RunnableConfig>,
+        ) -> Result<LLMResult, Self::Error> {
+            self.invoke(messages, config).await
+        }
+        async fn stream_chat(
+            &self,
+            _messages: Vec<Message>,
+            _config: Option<RunnableConfig>,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
+        {
+            let tokens = [Ok(StreamChunk::new("streamed"))];
+            Ok(Box::pin(futures_util::stream::iter(tokens)))
+        }
+    }
+
+    /// M-Order: with `map_concurrency < n` the map answers are collected back
+    /// into the input document order. The mock resolves the last document
+    /// first (opposite completion order), so a scrambled merge would show up as
+    /// `C(M(doc 1)+M(doc 2)+...`; the correct output lists documents in order.
+    #[tokio::test]
+    async fn test_map_reduce_map_concurrency_preserves_document_order() {
+        let chain = MapReduceDocumentsChain::new(DelayedInverseLLM).with_map_concurrency(2);
+
+        let out = chain
+            .invoke_with_documents(docs(4), "question")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            out,
+            "C(M(doc 0)+M(doc 1)+M(doc 2)+M(doc 3))",
+            "map answers must be merged in input document order, got {out}"
+        );
     }
 
     /// P2-6: the map phase is genuinely parallel — with 6 documents the map
@@ -1176,7 +1302,9 @@ mod tests {
 
     /// Streaming path with a hierarchy: the intermediate rounds run as plain
     /// calls (6 invokes for 4 documents at batch size 2) and only the *final*
-    /// combine is streamed, so the emitted token is the fully reduced answer.
+    /// combine is streamed. The final combine's token carries the fully reduced
+    /// answer as a non-final chunk, then a trailing empty final marker
+    /// terminates the stream (the shared chain streaming contract).
     #[tokio::test]
     async fn test_map_reduce_stream_hierarchy_streams_final_combine() {
         let (llm, invokes, _) = HierarchyLLM::new();
@@ -1192,12 +1320,14 @@ mod tests {
         while let Some(item) = stream.next().await {
             tokens.push(item.unwrap());
         }
-        assert_eq!(tokens.len(), 1);
-        assert!(tokens[0].is_final);
+        assert_eq!(tokens.len(), 2, "final-combine token + trailing final marker");
+        assert!(!tokens[0].is_final);
         assert_eq!(
             tokens[0].token,
             "C(C(M(doc 0)+M(doc 1))+C(M(doc 2)+M(doc 3)))"
         );
+        assert!(tokens[1].is_final);
+        assert_eq!(tokens[1].token, "");
         assert_eq!(
             invokes.load(Ordering::SeqCst),
             6,

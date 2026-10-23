@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::base::{BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
+use super::base::{serialize_message_to_prompt, BaseChatMemory, BaseMemory, ChatMessageHistory, MemoryError};
 use lc_core::language_models::BaseChatModel;
 use lc_core::language_models::LLMResult;
 use lc_core::runnables::Runnable;
@@ -283,12 +283,13 @@ where
 
         if self.return_messages {
             let summary_msg = Message::system(&buffer);
-            let value = serde_json::to_value(&summary_msg).map_err(|e| {
-                // M14: propagate the serialization failure instead of silently
-                // shipping a `Value::Null` that would drop the summary.
-                MemoryError::Other(format!("failed to serialize summary message: {e}"))
-            })?;
-            result.insert(self.memory_key.clone(), value);
+            // MEDIUM-fix: `memory_variables_to_messages` (base.rs) only consumes
+            // `Value::Array` or `Value::String` — a bare `Value::Object` is
+            // silently dropped, so the summary history vanished for LCEL/session
+            // bridging consumers. Render the summary as a one-element message
+            // array so the summary survives the messages path.
+            let messages_value = vec![serialize_message_to_prompt(&summary_msg)?];
+            result.insert(self.memory_key.clone(), Value::Array(messages_value));
         } else {
             result.insert(self.memory_key.clone(), Value::String(buffer));
         }
@@ -372,6 +373,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base::memory_variables_to_messages;
     use crate::test_support::MockLlm;
     use lc_providers::{OpenAIChat, OpenAIConfig};
 
@@ -465,6 +467,31 @@ mod tests {
         assert!(
             json.to_string().contains("This is a summary."),
             "summary text must survive serialization, got: {json}"
+        );
+    }
+
+    /// MEDIUM-fix: with `return_messages`, the summary must survive the
+    /// `memory_variables_to_messages` bridge (LCEL / session consumers). The old
+    /// single-Object shape was silently dropped by that bridge; as a one-element
+    /// Array the summary round-trips and stays visible to consumers.
+    #[tokio::test]
+    async fn test_return_messages_summary_survives_messages_path() {
+        let llm = OpenAIChat::new(create_test_config());
+        let mut memory: ConversationSummaryMemory<OpenAIChat> =
+            ConversationSummaryMemory::new(llm).with_return_messages(true);
+        memory.buffer = "the summary of our talk so far".to_string();
+
+        let vars = memory.load_memory_variables(&HashMap::new()).await.unwrap();
+        let messages = memory_variables_to_messages(&vars);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].content.contains("the summary of our talk so far"),
+            "summary must reach the messages path, got: {:?}",
+            messages[0].content
+        );
+        assert!(
+            matches!(messages[0].message_type, lc_schema::MessageType::System),
+            "the summary should surface as a System message"
         );
     }
 

@@ -54,6 +54,10 @@ const DEFAULT_MAX_SESSIONS: usize = 100;
 pub struct RunnableWithMessageHistory<L> {
     llm: Arc<L>,
     mode: HistoryMode,
+    /// The `inputs` key carrying the user message on write-back (default `"input"`).
+    input_key: String,
+    /// The `outputs` key carrying the model answer on write-back (default `"output"`).
+    output_key: String,
 }
 
 /// Memory source: a shared single slot (SHARED) or per-session slots (SESSIONS).
@@ -84,7 +88,23 @@ impl<L> RunnableWithMessageHistory<L> {
         Self {
             llm: Arc::new(llm),
             mode: HistoryMode::Shared(Arc::new(Mutex::new(Box::new(memory)))),
+            input_key: "input".to_string(),
+            output_key: "output".to_string(),
         }
+    }
+
+    /// Sets the `inputs` key carrying the user message on write-back (default
+    /// `"input"`). Must match the memory's configured input key when custom.
+    pub fn with_input_key(mut self, key: impl Into<String>) -> Self {
+        self.input_key = key.into();
+        self
+    }
+
+    /// Sets the `outputs` key carrying the model answer on write-back (default
+    /// `"output"`). Must match the memory's configured output key when custom.
+    pub fn with_output_key(mut self, key: impl Into<String>) -> Self {
+        self.output_key = key.into();
+        self
     }
 
     /// Builds the wrapper from an LLM + a session callback (mirrors Python's
@@ -119,6 +139,8 @@ impl<L> RunnableWithMessageHistory<L> {
                 max_sessions: DEFAULT_MAX_SESSIONS,
                 default: Arc::new(Mutex::new(Box::new(ConversationBufferMemory::new()))),
             },
+            input_key: "input".to_string(),
+            output_key: "output".to_string(),
         }
     }
 
@@ -232,8 +254,11 @@ where
 
         // 4. write back to memory: on failure the model answer is not discarded (otherwise the
         //    caller retrying on Err would re-invoke the LLM); log a warn to expose the memory-layer degradation
-        let inputs = HashMap::from([("input".to_string(), input)]);
-        let outputs = HashMap::from([("output".to_string(), result.content.clone())]);
+        // MEDIUM-fix: use the configured input/output key names, not hardcoded
+        // "input"/"output". With a custom-keyed memory the old literals missed
+        // every round (save_context only logged a warn) and looked fine.
+        let inputs = HashMap::from([(self.input_key.clone(), input)]);
+        let outputs = HashMap::from([(self.output_key.clone(), result.content.clone())]);
         if let Err(e) = memory.save_context(&inputs, &outputs).await {
             log::warn!("memory save failed (model answer still returned): {e}");
         }
@@ -380,6 +405,36 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[2].len(), 5); // 2 turns * 2 messages + the current user message
         assert_eq!(calls[2][4].content, "再见");
+    }
+
+    /// MEDIUM-fix: write-back must use the configured input/output keys, not the
+    /// hardcoded "input"/"output". With custom keys the old literals missed every
+    /// round (save_context only logged a warn), so the second turn would see empty
+    /// history; the fix must actually persist the turn.
+    #[tokio::test]
+    async fn custom_keys_write_back_uses_configured_keys() {
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let llm = TestChatModel { seen: seen.clone() };
+        // Memory configured with custom keys; the wrapper is told the same keys.
+        let memory = ConversationBufferMemory::new()
+            .with_return_messages(true)
+            .with_input_key("question")
+            .with_output_key("answer");
+        let pipe = RunnableWithMessageHistory::new(llm, memory)
+            .with_input_key("question")
+            .with_output_key("answer");
+
+        pipe.invoke("自定义键第一轮".to_string(), None).await.unwrap();
+        pipe.invoke("自定义键第二轮".to_string(), None).await.unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[1].len(),
+            3,
+            "second turn must see history written with custom keys (user+ai+user), got {}",
+            calls[1].len()
+        );
     }
 
     /// Session mode: two calls with the same session_id share history.

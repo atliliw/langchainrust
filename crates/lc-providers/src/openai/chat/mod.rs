@@ -185,7 +185,14 @@ impl OpenAIChat {
         }
 
         if let Some(tool_choice) = &self.config.tool_choice {
-            body["tool_choice"] = json!(tool_choice);
+            // M4 (0.27.x): a tool_choice that carries full JSON is a forced-tool
+            // object (the structured-output path) and must be passed through as
+            // such; the reserved literals ("auto"/"none") stay the plain string
+            // form.
+            match serde_json::from_str::<serde_json::Value>(tool_choice) {
+                Ok(json_value) if json_value.is_object() => body["tool_choice"] = json_value,
+                _ => body["tool_choice"] = json!(tool_choice),
+            }
         }
 
         // 0.21.0 S3.1: engine-side structured output constraint. Providers that
@@ -248,7 +255,17 @@ impl OpenAIChat {
 
         let config = OpenAIConfig {
             tools: Some(vec![tool]),
-            tool_choice: Some("auto".to_string()),
+            // M4 (0.27.x): force the bound structured-output tool instead of
+            // "auto" — otherwise the model may return free text and the local
+            // JSON parsing fallback is fragile. Stored as the full forced-tool
+            // JSON object; the builder passes it through (see build_request_body).
+            tool_choice: Some(
+                serde_json::json!({
+                    "type": "function",
+                    "function": {"name": "structured_output"},
+                })
+                .to_string(),
+            ),
             ..self.config.clone()
         };
 

@@ -445,7 +445,16 @@ impl VectorStore for QdrantVectorStore {
             payload.insert("content", doc.content.clone());
             payload.insert("doc_id", user_id.clone()); // the user ID is stored in the payload
 
+            // H-2 (0.28 audit): never let user metadata silently overwrite the
+            // reserved `content` / `doc_id` payload keys — doing so replaced the
+            // stored text / id, so reads via `get_document` / `delete_document`
+            // by the original id stopped matching and the real content was lost.
+            // Metadata keys with these names are skipped (their payload slots are
+            // owned by the document body and identity, not free-form tags).
             for (key, value) in &doc.metadata {
+                if key == "content" || key == "doc_id" {
+                    continue;
+                }
                 payload.insert(key.clone(), value.clone());
             }
 

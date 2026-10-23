@@ -499,7 +499,13 @@ mod tests_response_format {
             "tool-based path must not set response_format"
         );
         assert_eq!(body["tools"][0]["function"]["strict"], true);
-        assert_eq!(body["tool_choice"], "auto");
+        // M4 (0.27.x): the tool-based structured-output path must FORCE the
+        // bound tool, not auto — otherwise the model can return free text and
+        // fall back to fragile local JSON parsing.
+        assert_eq!(
+            body["tool_choice"],
+            serde_json::json!({"type": "function", "function": {"name": "structured_output"}}),
+        );
     }
 
     /// 0.26.0 M6: the o-series reasoning family (o1/o3/o4/o5…, incl. previews /

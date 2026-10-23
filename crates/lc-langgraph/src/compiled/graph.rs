@@ -400,12 +400,23 @@ impl<S: StateSchema> CompiledGraph<S> {
         })
     }
 
-    /// Resolve the `(state, recursion_count)` of a checkpoint `checkpoint_id`
-    /// inside the default thread. Returns `None` when the id is unknown/pruned.
+    /// Resolve the `(state, recursion_count)` of a checkpoint `checkpoint_id`.
+    /// The checkpoint is looked up inside its own thread (resolved via
+    /// [`Checkpointer::checkpoint_lineage`]); hardcoding [`DEFAULT_THREAD`]
+    /// here (H-8, 0.28 audit) returned the wrong thread's checkpoint for
+    /// thread-bound durable backends (sqlite/postgres/redis), silently
+    /// corrupting the resume. Falls back to the default thread for records
+    /// with no lineage. Returns `None` when the id is unknown/pruned.
     async fn resolve_checkpoint_by_id(&self, checkpoint_id: &str) -> Option<(S, usize)> {
         let guard = self.checkpointer_locked().await.ok()?;
+        let thread = guard
+            .checkpoint_lineage(checkpoint_id)
+            .await
+            .ok()?
+            .map(|(thread, _)| thread)
+            .unwrap_or_else(|| crate::checkpointer::DEFAULT_THREAD.to_string());
         guard
-            .snapshots_threaded(crate::checkpointer::DEFAULT_THREAD)
+            .snapshots_threaded(&thread)
             .await
             .ok()?
             .into_iter()

@@ -48,6 +48,17 @@
 
 use std::time::Duration;
 
+/// Default total round-trip timeout for non-streaming provider requests
+/// (M6, 0.27.x).
+///
+/// The shared [`default_client`] deliberately sets only a connect timeout (a
+/// global `.timeout()` there would cut long SSE streams mid-generation), so a
+/// peer that accepts a non-streaming request but never sends a response could
+/// hang the call forever. [`send_with_retry`] applies this as the per-request
+/// total timeout on the non-streaming path — unless the caller already set their
+/// own (typically shorter) request timeout, which is preserved.
+pub(crate) const NONSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Selects which transport-level errors are retried for a (non-idempotent)
 /// request. See the module docs ("Non-idempotent request boundary (A14)") for
 /// the double-billing tradeoff.
@@ -158,7 +169,20 @@ pub(crate) async fn send_with_retry(
 ) -> Result<reqwest::Response, reqwest::Error> {
     let mut attempt = 0usize;
     loop {
-        match build_request().send().await {
+        // M6 (0.27.x): non-streaming round-trip gate. The shared client carries
+        // only a connect timeout, so without this a peer that never responds
+        // hangs the call forever. Apply the 120s default unless the caller
+        // already pinned their own (shorter) request timeout — a caller-set
+        // `.timeout()` must keep winning (tests / strict deployments rely on it).
+        let caller_timeout = build_request()
+            .build()
+            .ok()
+            .and_then(|r| r.timeout().copied());
+        let mut request = build_request();
+        if caller_timeout.is_none() {
+            request = request.timeout(NONSTREAM_REQUEST_TIMEOUT);
+        }
+        match request.send().await {
             Ok(response) => {
                 let status = response.status();
                 if attempt + 1 < retry.max_attempts && is_transient(&status) {

@@ -125,13 +125,20 @@ impl StructuredOutputChain {
     }
 
     /// 实际执行:渲染 → 调 LLM → 解析 JSON。不做回调(纯逻辑)。
-    async fn execute(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
+    ///
+    /// `config` 被透传到 LLM 调用(采样覆盖 / 取消令牌 / LLM 回调),与同族
+    /// 链一致;无配置调用方传 `None`。
+    async fn execute(
+        &self,
+        inputs: HashMap<String, Value>,
+        config: Option<&RunnableConfig>,
+    ) -> Result<ChainResult, ChainError> {
         self.validate_inputs(&inputs)?;
         let prompt = self.render_prompt(&inputs)?;
         let messages = vec![Message::human(&prompt)];
         let result = self
             .llm
-            .invoke(messages, None)
+            .invoke(messages, config.cloned())
             .await
             .map_err(|e| ChainError::ExecutionError(format!("LLM call failed: {e}")))?;
 
@@ -159,19 +166,22 @@ impl BaseChain for StructuredOutputChain {
     }
 
     async fn invoke(&self, inputs: HashMap<String, Value>) -> Result<ChainResult, ChainError> {
-        self.execute(inputs).await
+        self.execute(inputs, None).await
     }
 
-    /// 带回调执行:用 `run_chain_with_callbacks` 包链级 start/end/error 事件。
+    /// 带回调执行:用 `run_chain_with_callbacks` 包链级 start/end/error 事件,并把
+    /// `config`(采样覆盖 / 取消令牌 / LLM 回调)透传到 LLM 调用(与同族链一致)。
     async fn invoke_with_config(
         &self,
         inputs: HashMap<String, Value>,
         config: Option<RunnableConfig>,
     ) -> Result<ChainResult, ChainError> {
         let chain = self.clone();
+        let inner = config.clone();
         run_chain_with_callbacks(self.name(), inputs, config, move |inputs| {
             let chain = chain.clone();
-            async move { chain.execute(inputs).await }
+            let inner = inner.clone();
+            async move { chain.execute(inputs, inner.as_ref()).await }
         })
         .await
     }

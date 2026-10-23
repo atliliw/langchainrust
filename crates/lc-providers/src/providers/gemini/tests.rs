@@ -371,6 +371,113 @@ data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done\"}]}}],\"usageM
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].function.name, "get_weather");
         assert_eq!(tool_calls[0].function.arguments, "{\"city\":\"SF\"}");
-        assert_eq!(tool_calls[0].id, "call_get_weather");
+        // M5 (0.27.x): synthesized ids now carry a per-call index.
+        assert_eq!(tool_calls[0].id, "call_get_weather_0");
     }
+
+    /// M4 (0.27.x): structured output must force a tool call — the request's
+    /// `function_calling_config.mode` must be ANY, not AUTO, so the model cannot
+    /// return free text and fall back to fragile local JSON parsing.
+    #[test]
+    fn structured_output_forces_any() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Out {
+            answer: String,
+        }
+        let chat = GeminiChat::new(GeminiConfig::new("k"));
+        let method = chat.with_structured_output::<Out>();
+        let inner = GeminiChat {
+            config: method.config.clone(),
+            client: chat.client.clone(),
+        };
+        let req = inner.build_request(vec![]);
+        let mode = req
+            .tool_config
+            .expect("structured output sets tool_config")
+            .function_calling_config
+            .mode;
+        assert_eq!(mode, "ANY", "structured output must force the tool");
+    }
+
+    /// M5 (0.27.x): `strip_synth_id_into_name` must round-trip the unique
+    /// `call_{name}_{index}` ids (and the legacy `call_{name}` form) back to the
+    /// bare function name for multi-round replay, and leave foreign ids untouched.
+    #[test]
+    fn synthesized_tool_call_ids_round_trip_to_function_name() {
+        assert_eq!(strip_synth_id_into_name("call_get_weather_0"), "get_weather");
+        assert_eq!(strip_synth_id_into_name("call_get_weather_1"), "get_weather");
+        assert_eq!(strip_synth_id_into_name("call_get_2_0"), "get_2");
+        // legacy single-call form
+        assert_eq!(strip_synth_id_into_name("call_get_weather"), "get_weather");
+        // not synthesized by us — left untouched
+        assert_eq!(strip_synth_id_into_name("native-tool-id"), "native-tool-id");
+    }
+}
+
+/// M5 (0.27.x): a stream that calls the SAME function twice must yield distinct
+/// tool-call ids (previously both were `call_{name}`, breaking id-based
+/// correlation).
+#[tokio::test]
+async fn repeated_same_function_calls_get_unique_ids() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut header = Vec::new();
+            let mut byte = [0u8; 1];
+            while header.len() < 64 * 1024 {
+                if socket.read_exact(&mut byte).await.is_err() {
+                    return;
+                }
+                header.push(byte[0]);
+                if header.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head_lower = String::from_utf8_lossy(&header).to_lowercase();
+            let content_length: usize = head_lower
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; content_length];
+            if content_length > 0 {
+                let _ = socket.read_exact(&mut body).await;
+            }
+            use tokio::io::AsyncWriteExt;
+            let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"SF\"}}},{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"NY\"}}}]}}]}\r\n\r\n\
+data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Done\"}]}}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":3,\"totalTokenCount\":5}}\r\n\r\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}"
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    let chat =
+        GeminiChat::new(GeminiConfig::new("test-key").with_base_url(format!("http://{addr}")));
+    let mut stream = chat
+        .stream_chat_internal(vec![Message::human("weather twice")])
+        .await
+        .unwrap();
+
+    let mut ids: Vec<String> = Vec::new();
+    while let Some(item) = stream.next().await {
+        let chunk = item.expect("stream ok");
+        if let Some(calls) = chunk.tool_calls {
+            for call in calls {
+                ids.push(call.id.clone());
+            }
+        }
+    }
+
+    assert_eq!(ids.len(), 2, "two function calls streamed");
+    assert_ne!(ids[0], ids[1], "same-function calls must get distinct ids");
+    assert_eq!(ids[0], "call_get_weather_0");
+    assert_eq!(ids[1], "call_get_weather_1");
 }

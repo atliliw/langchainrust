@@ -664,6 +664,48 @@ mod tests {
         assert_eq!(back.version, 42);
     }
 
+    /// H-5 regression: after the first save persists a window, a later summary
+    /// rebuild + save must NOT re-append that same window. The summary-buffer fix
+    /// keeps each surviving message's id through the rebuild (see
+    /// `retain_to_window`), so `stamp_missing_ids` has nothing new to stamp and
+    /// the optimistic-lock merge dedups the re-read snapshot by identity. Without
+    /// the fix, the persisted window is treated as new each save and the Mongo
+    /// document grows unboundedly (M13 violation).
+    #[test]
+    fn test_persisted_window_does_not_regrow_on_repeated_save() {
+        // A window already persisted to Mongo: every message carries lineage ids.
+        let window = vec![
+            Message::human("h1").with_id("id-1"),
+            Message::ai("a1").with_id("id-2"),
+            Message::human("h2").with_id("id-3"),
+        ];
+        let remote = MemoryData::new("s".to_string()).with_messages(window.clone());
+
+        // Second (and later) saves: the local snapshot preserves the same ids
+        // (H-5 keeps them through the summary rebuild), so stamping adds nothing
+        // and the merge dedups by identity — the doc must not regrow.
+        let mut local = window.clone();
+        stamp_missing_ids(&mut local);
+        let (merged, _) = merge_memory_data(&remote, &local, "");
+        assert_eq!(
+            merged.len(),
+            window.len(),
+            "an already-persisted window must NOT be re-appended on a second save (H-5): {}",
+            merged.len()
+        );
+
+        // Repeat the save many times: history length must stay flat (the old bug
+        // regrew on every summary).
+        let mut persisted = MemoryData::new("s".to_string()).with_messages(merged);
+        for _ in 0..10 {
+            let mut local = window.clone();
+            stamp_missing_ids(&mut local);
+            let (merged, _) = merge_memory_data(&persisted, &local, "");
+            assert_eq!(merged.len(), 3, "history must stay flat across repeated saves");
+            persisted = MemoryData::new("s".to_string()).with_messages(merged);
+        }
+    }
+
     /// M13: when both sides carry stable `Message::id`s, the merge must preserve
     /// *identity*, not collapse by count. Two writers genuinely asking "hi" twice
     /// are distinct messages that each survive; the byte-identical content must

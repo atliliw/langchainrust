@@ -140,7 +140,7 @@ mod tests {
     fn expose_secret_returns_the_original() {
         let secret = SensitiveString::new("sk-live-super-secret");
         assert_eq!(secret.expose_secret(), "sk-live-super-secret");
-        assert_eq!(secret.len(), 19);
+        assert_eq!(secret.len(), 20);
         assert!(!secret.is_empty());
     }
 

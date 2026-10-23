@@ -125,7 +125,15 @@ impl RefineDocumentsChain {
             (self.document_variable_name.clone(), context.to_string()),
             ("input".to_string(), input.to_string()),
         ]);
-        crate::base::substitute_template(&self.initial_prompt_template, &vars).0
+        let (prompt, missing) =
+            crate::base::substitute_template(&self.initial_prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "RefineDocumentsChain: initial prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// Build the refine prompt from the new context, input, and existing answer.
@@ -135,7 +143,15 @@ impl RefineDocumentsChain {
             ("input".to_string(), input.to_string()),
             ("existing_answer".to_string(), existing_answer.to_string()),
         ]);
-        crate::base::substitute_template(&self.refine_prompt_template, &vars).0
+        let (prompt, missing) =
+            crate::base::substitute_template(&self.refine_prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "RefineDocumentsChain: refine prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     /// Invoke with documents and input directly (iterative refinement).

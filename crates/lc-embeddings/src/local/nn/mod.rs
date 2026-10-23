@@ -361,6 +361,18 @@ impl LocalInner {
         batch: usize,
         fed_seq_len: usize,
     ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        // Flat-tensor length guard (0.28 audit): reject an undersized output buffer
+        // up front instead of indexing past its end — a mismatched/unexpected model
+        // could otherwise panic here while the sibling paths (`mean_pool_rows_flat`,
+        // `token_rows_from_3d`) already guard their flat reads.
+        let required = shape.iter().product::<usize>();
+        if data.len() < required {
+            return Err(EmbeddingError::ParseError(format!(
+                "pool output flat tensor too short: got {} floats, need {} for shape {shape:?}",
+                data.len(),
+                required
+            )));
+        }
         match shape.len() {
             3 => {
                 let out_batch = shape[0];

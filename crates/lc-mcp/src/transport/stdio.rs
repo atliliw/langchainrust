@@ -34,6 +34,7 @@ use tokio::sync::{oneshot, Mutex};
 use crate::protocol::{
     notification_message, JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_ERROR_REQUEST_TIMEOUT,
 };
+use crate::server::{read_bounded_line, MAX_STDIO_LINE_BYTES};
 
 /// Grace period for the child to exit after its stdin gets EOF, before kill.
 const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(800);
@@ -300,8 +301,10 @@ async fn stdout_reader(inner: Arc<Inner>, stdout: ChildStdout) {
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
+        // Bounded read: a misbehaving server can never OOM this reader by
+        // emitting an arbitrarily long line — oversize frames fail cleanly and
+        // the reader keeps draining the pipe (see #H-5).
+        match read_bounded_line(&mut reader, &mut line, MAX_STDIO_LINE_BYTES).await {
             Ok(0) => break, // EOF: process exited or closed stdout
             Ok(_) => handle_line(&inner, line.trim_end()).await,
             Err(_) => break,

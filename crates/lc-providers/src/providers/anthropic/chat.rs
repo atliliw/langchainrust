@@ -105,7 +105,11 @@ impl AnthropicChat {
 
         let config = AnthropicConfig {
             tools: Some(vec![tool]),
-            tool_choice: Some("auto".to_string()),
+            // M4 (0.27.x): force the tool — `required` makes Anthropic call a
+            // tool (the only one bound is the structured-output tool), so the
+            // model cannot return free text and fall back to fragile local JSON
+            // parsing. The builder maps it to `{"type":"required"}`.
+            tool_choice: Some("required".to_string()),
             ..self.config.clone()
         };
 
@@ -721,6 +725,13 @@ impl AnthropicChat {
                     Ok(Some(cr)) => cr,
                     Ok(None) => break,
                     Err(_) => {
+                        // M2 (0.27.x): a 60s idle timeout firing AFTER the terminal
+                        // `message_stop` event is a clean end — treat it as such
+                        // instead of reporting an interruption. Only when no
+                        // message_stop was seen is the freeze a genuine truncation.
+                        if saw_message_stop {
+                            break;
+                        }
                         let _ = tx
                             .send(Err(AnthropicError::StreamInterrupted(
                                 "stream idle timeout (no data for 60s)".to_string(),
@@ -1028,6 +1039,30 @@ mod tests {
         }
         let _method: AnthropicStructuredOutputMethod<TestOutput> = chat.with_structured_output();
         // Just verify it compiles and the method is callable
+    }
+
+    /// M4 (0.27.x): structured output must FORCE the tool — `required` — not
+    /// "auto", so the model cannot return free text and fall back to fragile
+    /// local JSON parsing. The request body maps it to `{"type":"required"}`.
+    #[test]
+    fn structured_output_forces_tool_choice() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Out {
+            answer: String,
+        }
+        let chat = AnthropicChat::new(AnthropicConfig::new("k"));
+        let method = chat.with_structured_output::<Out>();
+        let inner = AnthropicChat {
+            config: method.config.clone(),
+            client: chat.client.clone(),
+        };
+        let body = inner.build_request_body(vec![], false);
+        assert_eq!(
+            body["tool_choice"],
+            json!({"type": "required"}),
+            "structured output must force the tool"
+        );
     }
 
     // --- Image handling tests ---

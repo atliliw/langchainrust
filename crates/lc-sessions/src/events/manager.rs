@@ -469,24 +469,35 @@ impl EventSessionManager {
                 .map_err(|e| SessionError::Memory(format!("failed to save memory: {e}")))?;
         }
 
-        // 3. Persist the turn now that both the LLM and memory succeeded: user
-        // message first (opens the turn), then the reply.
-        self.append(
-            session_id,
-            turn_index,
-            EventPayload::UserMessage {
-                content: user_message,
-            },
-        )
-        .await?;
-        self.append(
-            session_id,
-            turn_index,
-            EventPayload::AssistantMessage {
-                content: content.clone(),
-            },
-        )
-        .await?;
+        // 3. Persist the turn now that both the LLM and memory succeeded. The
+        // {user, assistant} pair is delivered as ONE atomic `append_batch` (a
+        // single store write): an atomic batch either lands both events or
+        // neither, so a mid-write store failure can no longer leave an orphan
+        // UserMessage with no reply. The two ids are computed up front under the
+        // session's striped lock (C7), so they are consecutive and idempotent
+        // appends still hold on crash replay.
+        let first_id = self.next_id(session_id).await?;
+        let pair = vec![
+            SessionEvent::now(
+                first_id,
+                session_id,
+                turn_index,
+                self.branch.clone(),
+                EventPayload::UserMessage {
+                    content: user_message,
+                },
+            ),
+            SessionEvent::now(
+                first_id + 1,
+                session_id,
+                turn_index,
+                self.branch.clone(),
+                EventPayload::AssistantMessage {
+                    content: content.clone(),
+                },
+            ),
+        ];
+        self.store.append_batch(&pair).await?;
 
         // 4. Auto-compaction (deterministic snapshot, no LLM), shared with the
         // idle-session `gc()` path.
@@ -618,12 +629,26 @@ impl EventSessionManager {
                 // A snapshot ahead of the log (the log was pruned or cleared
                 // after it was written) cannot be trusted as a prefix.
                 if up_to_id <= events.last().map(|e| e.id).unwrap_or(0) {
-                    let tail: Vec<SessionEvent> =
-                        events.iter().filter(|e| e.id > up_to_id).cloned().collect();
-                    if tail.is_empty() {
-                        return Ok(base);
+                    // M-s1: a compaction that ran *after* this checkpoint was
+                    // written rewrote the log — it pruned the summarized prefix
+                    // and appended a deterministic Snapshot marker the base never
+                    // folded in. The base is then no longer a prefix of the live
+                    // log: merging only the tail would resurrect turns the
+                    // compacted log already summarized, so `base ⊕ tail` would
+                    // diverge from `project(&events)`. Detect that rewrite and
+                    // degrade to a full replay (identical to what projecting the
+                    // final log yields, per the checkpoint's contract).
+                    let log_was_compacted_after_checkpoint = events.iter().any(|e| {
+                        e.id > up_to_id && matches!(e.payload, EventPayload::Snapshot { .. })
+                    });
+                    if !log_was_compacted_after_checkpoint {
+                        let tail: Vec<SessionEvent> =
+                            events.iter().filter(|e| e.id > up_to_id).cloned().collect();
+                        if tail.is_empty() {
+                            return Ok(base);
+                        }
+                        return Ok(merge_projections(base, project(&tail)?));
                     }
-                    return Ok(merge_projections(base, project(&tail)?));
                 }
             }
         }
@@ -1596,6 +1621,63 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// M-s1 regression: after a compaction rewrites the log (prunes the
+    /// summarized prefix and appends a Snapshot marker), recovery must NOT trust
+    /// the stale pre-compaction checkpoint base. The old code took the fast path
+    /// (base + tail) and resurrected turns the compacted log had already
+    /// summarized, so the recovered projection diverged from the live one. It
+    /// must detect the compaction rewrite and degrade to a full replay.
+    #[tokio::test]
+    async fn recover_session_degrades_to_full_replay_after_compaction() {
+        let dir = scratch_dir();
+        let store = Arc::new(MemoryEventStore::new());
+        let llm = MockLlm::new("回复");
+        let cp = Arc::new(FileCheckpoint::new(&dir));
+
+        // Phase 1: a manager that does not compact yet, so the durable base is a
+        // pre-compaction projection.
+        let id = {
+            let mgr = EventSessionManager::new(store.clone())
+                .with_checkpoint(cp.clone())
+                .with_auto_compaction(AutoCompaction::new(64).unwrap());
+            let id = mgr.create_session().await.unwrap();
+            for t in 0..3u32 {
+                mgr.chat(&id, &llm, format!("问题{t}")).await.unwrap();
+            }
+            assert!(mgr.save_checkpoint(&id).await.unwrap());
+            id
+        };
+        let (up_to_id, _base) = cp.latest(&id, "main").await.unwrap().unwrap();
+
+        // Phase 2: a fresh manager (a "restart") with aggressive compaction
+        // rewrites the log. The phase-1 checkpoint base is left stale — it
+        // predates the Snapshot markers appended here.
+        let mgr = EventSessionManager::new(store.clone())
+            .with_checkpoint(cp.clone())
+            .with_auto_compaction(AutoCompaction::new(2).unwrap());
+        for t in 3..=9u32 {
+            mgr.chat(&id, &llm, format!("问题{t}")).await.unwrap();
+        }
+
+        let events = store.read(&id, "main", None).await.unwrap();
+        // The precondition the fix keys off of: a compaction Snapshot landed
+        // strictly after the stale checkpoint base.
+        assert!(
+            events.iter().any(|e| {
+                e.id > up_to_id && matches!(e.payload, EventPayload::Snapshot { .. })
+            }),
+            "setup must leave a Snapshot after up_to_id={up_to_id}"
+        );
+
+        let full = project(&events).unwrap();
+        let recovered = mgr.recover_session(&id).await.unwrap();
+        assert_eq!(
+            recovered, full,
+            "recovery after a compaction rewrite must equal the full projection"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `save_checkpoint` is a no-op (not an error) when no store is attached,
     /// and errors for a session with no events once one is.
     #[tokio::test]
@@ -1672,5 +1754,138 @@ mod tests {
         assert!(fork_id > main_id);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- M-s2: atomic turn append -------------------------------------------
+
+    /// A store wrapper that counts how events are delivered — per-event `append`
+    /// vs atomic `append_batch` — so a test can prove chat() commits the
+    /// {user, assistant} turn in ONE atomic batch instead of two standalone
+    /// appends.
+    #[derive(Default)]
+    struct CountingStore {
+        inner: MemoryEventStore,
+        appends: std::sync::atomic::AtomicUsize,
+        append_batches: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EventStore for CountingStore {
+        async fn append(&self, event: &SessionEvent) -> Result<(), SessionError> {
+            self.appends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.append(event).await
+        }
+        async fn append_batch(&self, events: &[SessionEvent]) -> Result<(), SessionError> {
+            self.append_batches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.append_batch(events).await
+        }
+        async fn read(
+            &self,
+            session_id: &str,
+            branch: &str,
+            after: Option<u64>,
+        ) -> Result<Vec<SessionEvent>, SessionError> {
+            self.inner.read(session_id, branch, after).await
+        }
+        async fn read_turns_range(
+            &self,
+            session_id: &str,
+            branch: &str,
+            from_turn: u64,
+            to_turn: u64,
+        ) -> Result<Vec<SessionEvent>, SessionError> {
+            self.inner
+                .read_turns_range(session_id, branch, from_turn, to_turn)
+                .await
+        }
+        async fn fork(
+            &self,
+            session_id: &str,
+            src_branch: &str,
+            dst_branch: &str,
+            until_id: Option<u64>,
+        ) -> Result<usize, SessionError> {
+            self.inner.fork(session_id, src_branch, dst_branch, until_id).await
+        }
+        async fn latest_id(&self, session_id: &str, branch: &str) -> Result<u64, SessionError> {
+            self.inner.latest_id(session_id, branch).await
+        }
+        async fn clear_session(&self, session_id: &str) -> Result<(), SessionError> {
+            self.inner.clear_session(session_id).await
+        }
+        async fn delete_before(
+            &self,
+            session_id: &str,
+            branch: &str,
+            before_id: u64,
+        ) -> Result<(), SessionError> {
+            self.inner.delete_before(session_id, branch, before_id).await
+        }
+    }
+
+    /// M-s2 regression: chat() must persist the {user, assistant} turn as ONE
+    /// atomic `append_batch` (a single store write) — not two standalone
+    /// `append`s — so a mid-write store failure cannot orphan a UserMessage
+    /// with no reply. The pair still lands ordered and paired under one turn.
+    #[tokio::test]
+    async fn chat_appends_the_turn_as_one_atomic_batch() {
+        let store = Arc::new(CountingStore::default());
+        let mgr = EventSessionManager::new(store.clone());
+        let id = mgr.create_session().await.unwrap();
+        let llm = MockLlm::new("回复");
+
+        let appends_before = store.appends.load(std::sync::atomic::Ordering::SeqCst);
+        let batches_before = store.append_batches.load(std::sync::atomic::Ordering::SeqCst);
+
+        mgr.chat(&id, &llm, "你好".to_string()).await.unwrap();
+
+        assert_eq!(
+            store.append_batches.load(std::sync::atomic::Ordering::SeqCst) - batches_before,
+            1,
+            "a turn must land as a single atomic append_batch"
+        );
+        assert_eq!(
+            store.appends.load(std::sync::atomic::Ordering::SeqCst) - appends_before,
+            0,
+            "chat() must not fall back to two per-event append() calls"
+        );
+
+        // The pair still landed ordered and paired, sharing one turn_index with
+        // consecutive (monotonic, idempotent) ids.
+        let mut chat_events = store
+            .inner
+            .read(&id, "main", None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e.payload,
+                    EventPayload::UserMessage { .. } | EventPayload::AssistantMessage { .. }
+                )
+            });
+        let u = chat_events.next().expect("a user message was appended");
+        let a = chat_events.next().expect("an assistant message was appended");
+        assert!(
+            chat_events.next().is_none(),
+            "chat() must append exactly one {{user, assistant}} pair"
+        );
+        assert_eq!(
+            (u.turn_index, a.turn_index),
+            (0, 0),
+            "user and assistant share the same turn_index"
+        );
+        assert_eq!(a.id, u.id + 1, "ids must stay consecutive");
+        match (&u.payload, &a.payload) {
+            (
+                EventPayload::UserMessage { content },
+                EventPayload::AssistantMessage { content: reply },
+            ) => {
+                assert_eq!((content.as_str(), reply.as_str()), ("你好", "回复"));
+            }
+            other => panic!("expected in-order user then assistant, got {other:?}"),
+        }
     }
 }

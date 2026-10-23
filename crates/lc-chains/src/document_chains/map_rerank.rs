@@ -188,7 +188,15 @@ impl MapRerankDocumentsChain {
             (self.document_variable_name.clone(), context.to_string()),
             ("input".to_string(), input.to_string()),
         ]);
-        crate::base::substitute_template(&self.map_prompt_template, &vars).0
+        let (prompt, missing) =
+            crate::base::substitute_template(&self.map_prompt_template, &vars);
+        if !missing.is_empty() {
+            log::warn!(
+                "MapRerankDocumentsChain: map prompt template has unsubstituted variable(s): {}",
+                missing.join(", ")
+            );
+        }
+        prompt
     }
 
     async fn map_document(
