@@ -41,7 +41,7 @@ impl Runnable<Vec<Message>, LLMResult> for FakeModel {
                 prompt_tokens: messages.len(),
                 completion_tokens: 1,
                 total_tokens: messages.len() + 1,
-            }),
+            ..TokenUsage::default()}),
             ..Default::default()
         })
     }

@@ -644,7 +644,7 @@ impl OpenAIChat {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: message.tool_calls.clone(),
             thinking_content,
         }
@@ -798,7 +798,7 @@ impl OpenAIChat {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     total_tokens: usage.total_tokens,
-                                };
+                                ..TokenUsage::default()};
                                 // T5 (v0.23.0): surface reasoning-token spend on the
                                 // terminal usage chunk too, mirroring the non-stream path.
                                 if let Some(r) = usage.reasoning_tokens() {

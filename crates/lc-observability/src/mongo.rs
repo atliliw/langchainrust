@@ -136,7 +136,7 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 1,
             total_tokens: 2,
-        }))
+        ..TokenUsage::default()}))
         .await
         .unwrap();
     }
@@ -155,7 +155,7 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 1,
             total_tokens: 2,
-        }))
+        ..TokenUsage::default()}))
         .await
         .unwrap();
     }

@@ -275,7 +275,7 @@ impl CohereChat {
                 prompt_tokens: u.tokens.input_tokens,
                 completion_tokens: u.tokens.output_tokens,
                 total_tokens: u.tokens.input_tokens + u.tokens.output_tokens,
-            }),
+            ..TokenUsage::default()}),
             tool_calls,
             thinking_content: None,
         })
@@ -562,7 +562,7 @@ fn cohere_event_to_chunk(
                     prompt_tokens: usage.tokens.input_tokens,
                     completion_tokens: usage.tokens.output_tokens,
                     total_tokens: usage.tokens.input_tokens + usage.tokens.output_tokens,
-                });
+                ..TokenUsage::default()});
             (token_usage.is_some() || tool_calls.is_some()).then(|| StreamChunk {
                 text: String::new(),
                 thinking_content: None,

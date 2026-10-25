@@ -288,7 +288,7 @@ impl OllamaChat {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: message.tool_calls.clone(),
             thinking_content: None,
         })
@@ -470,7 +470,7 @@ impl OllamaChat {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
                                     total_tokens: usage.total_tokens,
-                                };
+                                ..TokenUsage::default()};
                                 let calls = tool_acc.build();
                                 if !calls.is_empty() {
                                     tool_calls_emitted = true;

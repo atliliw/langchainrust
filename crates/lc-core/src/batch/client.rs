@@ -544,6 +544,7 @@ impl BatchClient {
                         prompt_tokens: u.prompt_tokens,
                         completion_tokens: u.completion_tokens,
                         total_tokens: u.total_tokens,
+                        ..Default::default()
                     });
 
                     Ok(LLMResult {
@@ -652,6 +653,7 @@ impl BatchClient {
                             prompt_tokens: u.input_tokens,
                             completion_tokens: u.output_tokens,
                             total_tokens: u.input_tokens + u.output_tokens,
+                            ..Default::default()
                         });
 
                         Ok(LLMResult {

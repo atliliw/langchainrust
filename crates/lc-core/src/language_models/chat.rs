@@ -32,7 +32,14 @@ pub struct LLMResult {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Cache-backed providers (Anthropic, OpenAI) report how many input tokens were
+/// served from a prompt-cache hit ([`cache_read_tokens`](TokenUsage::cache_read_tokens))
+/// versus written into the cache ([`cache_creation_tokens`](TokenUsage::cache_creation_tokens)).
+/// Both are filled from the provider's usage block when available and stay `0`
+/// otherwise, so a caller can compute the money saved by a cache hit: the cache
+/// is billed at a fraction of the normal input rate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     /// Input token count.
     pub prompt_tokens: usize,
@@ -42,6 +49,14 @@ pub struct TokenUsage {
 
     /// Total token count.
     pub total_tokens: usize,
+
+    /// Input tokens served from a prompt-cache hit, if the provider reports it.
+    #[serde(default)]
+    pub cache_read_tokens: usize,
+
+    /// Input tokens written into the prompt cache, if the provider reports it.
+    #[serde(default)]
+    pub cache_creation_tokens: usize,
 }
 
 /// A single streaming chunk emitted by [`BaseChatModel::stream_chat`].
@@ -520,5 +535,92 @@ mod tests {
             matches!(err, PredictToolsError::Chat(ref e) if e.0 == "chat failed"),
             "expected Chat(chat failed), got {err:?}"
         );
+    }
+
+    mod token_usage_prompt_cache {
+        use super::*;
+
+        /// Default leaves both cache dimensions at `0` — a non-caching provider
+        /// produces a usage that claims no cache benefit.
+        #[test]
+        fn default_cache_tokens_are_zero() {
+            let usage = TokenUsage::default();
+            assert_eq!(usage.cache_read_tokens, 0);
+            assert_eq!(usage.cache_creation_tokens, 0);
+        }
+
+        /// Struct-update over a default keeps the default cache zeros, so the
+        /// ~35 construction sites that only fill prompt/completion/total remain
+        /// correct without restating the cache fields.
+        #[test]
+        fn struct_update_preserves_zero_cache_tokens() {
+            let usage = TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                total_tokens: 30,
+                ..TokenUsage::default()
+            };
+            assert_eq!(usage.cache_read_tokens, 0);
+            assert_eq!(usage.cache_creation_tokens, 0);
+        }
+
+        /// Older payloads / proxies that omit the cache fields still
+        /// deserialize, with both cache dimensions defaulting to `0`.
+        #[test]
+        fn legacy_json_without_cache_fields_deserializes_to_zero() {
+            #[derive(serde::Deserialize)]
+            struct Wrapper {
+                #[serde(default)]
+                user_usage: TokenUsage,
+            }
+            let w: Wrapper =
+                serde_json::from_str(r#"{"user_usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}"#)
+                    .unwrap();
+            assert_eq!(w.user_usage.cache_read_tokens, 0);
+            assert_eq!(w.user_usage.cache_creation_tokens, 0);
+        }
+
+        /// A provider-reported cache breakdown round-trips through the struct,
+        /// so callers can quantify how much input was served from a cache hit.
+        #[test]
+        fn cache_fields_deserialize_when_present() {
+            #[derive(serde::Deserialize)]
+            struct Wrapper {
+                #[serde(default)]
+                user_usage: TokenUsage,
+            }
+            let w: Wrapper = serde_json::from_str(
+                r#"{"user_usage": {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140,
+                                    "cache_read_tokens": 60, "cache_creation_tokens": 50}}"#,
+            )
+            .unwrap();
+            assert_eq!(w.user_usage.cache_read_tokens, 60);
+            assert_eq!(w.user_usage.cache_creation_tokens, 50);
+        }
+
+        /// `PartialEq` lets the observations/token-tracker compare two usages
+        /// for equality; cache dimensions participate so a caching hit isn't
+        /// conflated with a clean run.
+        #[test]
+        fn cache_tokens_participate_in_equality() {
+            let a = TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+                cache_read_tokens: 5,
+                ..TokenUsage::default()
+            };
+            let b = TokenUsage {
+                cache_creation_tokens: 7,
+                ..a.clone()
+            };
+            assert_ne!(a, b, "different cache_creation should differ");
+
+            let same = TokenUsage {
+                cache_creation_tokens: 7,
+                ..a.clone()
+            };
+            assert_eq!(b, same);
+        }
     }
 }

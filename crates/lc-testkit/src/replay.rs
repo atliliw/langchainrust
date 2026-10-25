@@ -506,7 +506,7 @@ mod tests {
                     prompt_tokens: 1,
                     completion_tokens: 2,
                     total_tokens: 3,
-                }),
+                ..TokenUsage::default()}),
                 ..Default::default()
             },
             tools: Vec::new(),

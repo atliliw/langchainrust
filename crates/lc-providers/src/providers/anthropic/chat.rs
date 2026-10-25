@@ -631,6 +631,11 @@ impl AnthropicChat {
                 prompt_tokens: u.input_tokens,
                 completion_tokens: u.output_tokens,
                 total_tokens: u.input_tokens + u.output_tokens,
+                // B1: surface the prompt-cache breakdown so callers can
+                // quantify how much input was served from a cache hit
+                // (`cache_read`) versus written into it (`cache_creation`).
+                cache_read_tokens: u.cache_read_tokens(),
+                cache_creation_tokens: u.cache_creation_tokens(),
             }),
             tool_calls: if tool_calls.is_empty() {
                 None

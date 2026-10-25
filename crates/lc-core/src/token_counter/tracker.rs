@@ -182,7 +182,7 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
                     .as_ref()
                     .map(|u| u.total_tokens)
                     .unwrap_or(prompt + completion),
-            });
+            ..TokenUsage::default()});
             if let Err(e) = sink.export(&evt).await {
                 log::warn!(target: "lc_core::token_counter", "token usage export failed: {e}");
             }
@@ -587,7 +587,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 20,
                 total_tokens: 120,
-            }),
+            ..TokenUsage::default()}),
             false,
         );
         let msgs = vec![Message::human("hi")];
@@ -609,7 +609,7 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 3,
                 total_tokens: 10,
-            }),
+            ..TokenUsage::default()}),
             false,
         );
         let model: &dyn BaseChatModel<Error = MockError> = &tracked;
@@ -644,7 +644,7 @@ mod tests {
                 prompt_tokens: 50,
                 completion_tokens: 15,
                 total_tokens: 65,
-            }),
+            ..TokenUsage::default()}),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
@@ -670,7 +670,7 @@ mod tests {
                 prompt_tokens: 5,
                 completion_tokens: 5,
                 total_tokens: 10,
-            }),
+            ..TokenUsage::default()}),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
@@ -696,7 +696,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 4,
                 total_tokens: 14,
-            }),
+            ..TokenUsage::default()}),
             true,
         );
 
@@ -736,7 +736,7 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 1,
                 total_tokens: 4,
-            }),
+            ..TokenUsage::default()}),
             false,
         );
         let tracked = tracked.with_temperature(0.5).with_max_tokens(128);
@@ -778,7 +778,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 20,
                 total_tokens: 120,
-            }),
+            ..TokenUsage::default()}),
             tool_capable,
         )
         .with_metrics_sink(Arc::new(MockSink {
@@ -821,7 +821,7 @@ mod tests {
                 prompt_tokens: 50,
                 completion_tokens: 15,
                 total_tokens: 65,
-            }),
+            ..TokenUsage::default()}),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
@@ -855,7 +855,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 4,
                 total_tokens: 14,
-            }),
+            ..TokenUsage::default()}),
             false,
         )
         .with_metrics_sink(Arc::new(MockSink {
@@ -906,7 +906,7 @@ mod tests {
                 prompt_tokens: 1000,
                 completion_tokens: 500,
                 total_tokens: 1500,
-            }),
+            ..TokenUsage::default()}),
             false,
         )
         .with_provider("mock")
@@ -938,7 +938,7 @@ mod tests {
                 prompt_tokens: 1000,
                 completion_tokens: 1000,
                 total_tokens: 2000,
-            }),
+            ..TokenUsage::default()}),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
@@ -964,7 +964,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 10,
                 total_tokens: 20,
-            }),
+            ..TokenUsage::default()}),
             true,
         )
         .with_cost_tracker(tracker.clone());

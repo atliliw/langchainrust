@@ -447,7 +447,7 @@ mod tests {
             prompt_tokens: 11,
             completion_tokens: 3,
             total_tokens: 14,
-        })
+        ..TokenUsage::default()})
     }
 
     fn attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a KeyValue> {

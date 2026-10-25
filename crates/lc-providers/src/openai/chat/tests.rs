@@ -133,7 +133,7 @@ mod tests_q3_q4 {
                 prompt_tokens: 3,
                 completion_tokens: 5,
                 total_tokens: 8,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: Some(vec![lc_core::tools::ToolCall::builder("call_1")
                 .name("get_weather")
                 .arguments(r#"{"city":"beijing"}"#)

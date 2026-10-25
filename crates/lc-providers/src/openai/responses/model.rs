@@ -332,7 +332,7 @@ impl ResponsesModel {
             prompt_tokens: u.input_tokens,
             completion_tokens: u.output_tokens,
             total_tokens: u.total_tokens,
-        });
+        ..TokenUsage::default()});
 
         Ok(LLMResult {
             content,
@@ -459,7 +459,7 @@ impl ResponsesModel {
                                         prompt_tokens: usage.input_tokens,
                                         completion_tokens: usage.output_tokens,
                                         total_tokens: usage.total_tokens,
-                                    };
+                                    ..TokenUsage::default()};
                                     if tx
                                         .send(Ok(StreamChunk {
                                             thinking_content: None,

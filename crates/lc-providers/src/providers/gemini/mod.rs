@@ -586,7 +586,7 @@ impl GeminiChat {
             prompt_tokens: u.prompt_token_count.unwrap_or(0) as usize,
             completion_tokens: u.candidates_token_count.unwrap_or(0) as usize,
             total_tokens: u.total_token_count.unwrap_or(0) as usize,
-        });
+        ..TokenUsage::default()});
 
         Ok(LLMResult {
             content: text_parts,
@@ -884,7 +884,7 @@ impl GeminiChat {
                                                 as usize,
                                             total_tokens: usage.total_token_count.unwrap_or(0)
                                                 as usize,
-                                        };
+                                        ..TokenUsage::default()};
                                         let usage_chunk = StreamChunk {
                                             thinking_content: None,
                                             text: String::new(),

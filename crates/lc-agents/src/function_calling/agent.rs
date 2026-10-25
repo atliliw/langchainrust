@@ -690,7 +690,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: Some(vec![call]),
             thinking_content: None,
         }
@@ -704,7 +704,7 @@ mod tests {
                 prompt_tokens: 8,
                 completion_tokens: 6,
                 total_tokens: 14,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: None,
             thinking_content: None,
         }
@@ -733,7 +733,7 @@ mod tests {
                         prompt_tokens: 10,
                         completion_tokens: 5,
                         total_tokens: 15,
-                    }),
+                    ..TokenUsage::default()}),
                     tool_calls: None,
                 },
             ]),
@@ -781,7 +781,7 @@ mod tests {
                     prompt_tokens: 5,
                     completion_tokens: 0,
                     total_tokens: 5,
-                }),
+                ..TokenUsage::default()}),
                 tool_calls: None,
             }]),
             calculator_call_result(),
@@ -853,7 +853,7 @@ mod tests {
                 prompt_tokens: 5,
                 completion_tokens: 0,
                 total_tokens: 5,
-            }),
+            ..TokenUsage::default()}),
             tool_calls: Some(vec![ToolCall::builder("call_1")
                 .name("calculator")
                 .arguments(r#"{"expression": "2+3"}"#)
@@ -900,7 +900,7 @@ mod tests {
                         prompt_tokens: 5,
                         completion_tokens: 0,
                         total_tokens: 5,
-                    }),
+                    ..TokenUsage::default()}),
                     tool_calls: Some(vec![ToolCall::builder("call_1")
                         .name("calculator")
                         .arguments(r#"{"expression": "2+3"}"#)

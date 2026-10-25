@@ -91,12 +91,12 @@ mod tests {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
-        });
+        ..TokenUsage::default()});
         m.add_token_usage(&TokenUsage {
             prompt_tokens: 3,
             completion_tokens: 2,
             total_tokens: 5,
-        });
+        ..TokenUsage::default()});
         assert_eq!(m.total_tokens, Some(20));
     }
 
