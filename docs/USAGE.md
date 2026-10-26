@@ -174,7 +174,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
+langchainrust = "0.28.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -3725,7 +3725,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 它是 opt-in feature（拉入 tokio-tungstenite）：
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.28.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3942,7 +3942,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.27.0", features = ["local-candle"] }
+langchainrust = { version = "0.28.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4154,7 +4154,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["chromadb"] }
+langchainrust = { version = "0.28.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4540,7 +4540,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5396,7 +5396,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5414,7 +5414,7 @@ let manager = CallbackManager::new()
 **OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["otlp"] }
+langchainrust = { version = "0.28.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5647,7 +5647,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
 ```
 
 ### 用法
@@ -5721,14 +5721,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["redis-storage"] }
+langchainrust = { version = "0.28.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5990,8 +5990,8 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
-lc-a2a = { version = "0.27.0", features = ["axum"] }
+langchainrust = "0.28.0"
+lc-a2a = { version = "0.28.0", features = ["axum"] }
 ```
 
 ```rust
@@ -6055,7 +6055,7 @@ while let Some(event) = stream.next().await {
 **WebSocket 传输（`ws` feature，0.27.0 #186）**：SSE 之外新增一条等价传输。服务端开 `ws` feature 后暴露 `GET /ws`，与 `/events` **共用同一套鉴权与逐连接过滤**——bearer 认证、B7 跨租户 `notification_visible`、`?taskId=` 限定全部一致，每条过滤后的 `TaskPushNotification` 序列化成**一个文本帧**发给该连接。客户端 `connect_ws` / `send_task_streaming_ws` 与 `connect_sse` / `send_task_streaming` 一一对应，`A2AWebSocketStream::next()` 自动回协议 ping 保活、跳过 pong/二进制帧。两条传输语义相同，按部署挑（不想被 HTTP/SSE 缓冲的场景选 WS）：
 
 ```toml
-lc-a2a = { version = "0.27.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
+lc-a2a = { version = "0.28.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
 ```
 
 ```rust
@@ -6723,7 +6723,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
 执行预算用 **wasm fuel 计量**（`timeout_ms × 1000` 条指令，至少 1000）而不是墙上时钟线程，超限**确定性**地映射成 `SandboxError::Timeout`；`Language::Wasm` 之外的语言一律 `SandboxError::UnsupportedLanguage`。
 
 ```toml
-lc-tools = { version = "0.27.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.28.0", features = ["sandbox-wasm"] }
 # 门面 langchainrust 目前未转发该 feature,所以要在 lc-tools 上开;
 # cargo 特性合并后,类型照旧从门面取:langchainrust::tools::sandbox::WasmSandbox
 ```

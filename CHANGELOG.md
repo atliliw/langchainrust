@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-10-26
+
+"三视角健康度收口" release:按**健全性 × 方便性 × 实用主义**三视角,对照源码逐条实测,把既有能力从"能跑"打磨到"好用、可靠、方便接入"。本版无新增能力大件——全部是**收口与修复**:补上门面统一错误 `LcError` 唯一漏掉的池收口、修掉 `ContextManager::clear()` 的空操作语义、给默认主路 `AgentBuilder` 内嵌 when-to-use 引导并锁定门面「3 行主路」冒烟测试。Baseline 是已发布的 v0.27.0;本版为增量修复 + 暴露面收敛,详见 `docs/internal/v0.28.0/EXECUTION_PLAN.md`。
+
+### Fixed
+
+- **`LcError` 统一错误收口补齐(`lc` facade)**:此前埋点链路(metrics / JSONLines / Mongo sink)抛的 `lc_core::ObsError` 在门面未收口,审计确认为统一错误唯一漏口;现在 `LcError` 补 `Observability(#[from] ObsError)`(MCP / Prompts / Guardrails 本就已收口),`?` 跨模块无痛,不再被迫单独 `match` 一套 `lc_core` 错误。
+- **`ContextManager::clear()` 空操作 → 真清(`lc-memory`)**:原实现是静默空操作,调用者清空后仍拿到旧历史,违反 `BaseMemory::clear` 契约;改为委托 read/write 策略真清,错误不再被吞。
+
+### Changed
+
+- **默认主路引导(`lc-agents`)**:`AgentBuilder::build()` 模块文档内嵌完整 when-to-use(默认→FunctionCallingAgent;规划→PlanExecute;多角色→Orchestrator;子任务→Handoff;反思→react/executor hooks),`max_iterations` 默认 10——80% 用户一行 `.build()` 即走通,高级入口在旁边按需取用,不再平铺十几个 agent 形态让新用户无从下手。
+- **门面「3 行主路」冒烟测试(`lc` facade)**:从门面包名 3 行构造默认 agent,锁定主路装配(LLM / system / tool / `max_iterations=10`)与缺 LLM 必须报错——给主路钉死防回归锚点。
+
 ## [0.27.0] - 2026-10-09
 
 "协议追平 + 本地执行 + 检索再进化" release:把 0.26 只打了地基、明确推给本版的**协议级大件**(MCP 新 spec 的 stateless 全轨、A2A parts/TaskStatus/push)真正做全,同时落地 computer use 本地真实执行回路,并收口 RAG 现代化剩余两块与一批 T3 缺口。Baseline 是已发布的 v0.26.0;本版为**增量修复 + 能力补齐**,详见 `docs/internal/v0.27.0/EXECUTION_PLAN.md`。

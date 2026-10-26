@@ -478,9 +478,13 @@ impl BaseMemory for ContextManager {
     }
 
     async fn clear(&mut self) -> Result<(), MemoryError> {
-        // Composable stores own their own `clear`; for buffered defaults the read/write
-        // share a store that is discarded here. `ClearError` if a strategy needs it and
-        // a future extension wants a `ClearStrategy` — kept a no-op for now.
+        // 0.28 (M-series audit): this was a silent no-op, violating `BaseMemory::clear`
+        // — a caller that wiped its context got stale history back. The composable
+        // strategies own their stores and expose `clear`; delegate to both read and
+        // write so any loaded or saved history is actually emptied. Compress/retrieve
+        // strategies are stateless/pure (no owned store), so they need no clearing.
+        self.read.clear().await?;
+        self.write.clear().await?;
         Ok(())
     }
 }

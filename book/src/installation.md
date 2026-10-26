@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
+langchainrust = "0.28.0"
 ```
 
 ## Feature Flags
@@ -13,7 +13,7 @@ LangChainRust uses feature flags to keep the default build lean:
 
 ```toml
 [dependencies.langchainrust]
-version = "0.27.0"
+version = "0.28.0"
 features = ["qdrant-integration"]  # Optional features
 ```
 

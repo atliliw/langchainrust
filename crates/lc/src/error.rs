@@ -42,6 +42,7 @@ pub use lc_chains::ChainError;
 pub use lc_core::batch::BatchError;
 pub use lc_core::json_parse::LlmJsonParseError;
 pub use lc_core::math::MathError;
+pub use lc_core::observability::ObsError;
 pub use lc_core::output_parsers::OutputParserError;
 pub use lc_core::router_llm::RouterError;
 pub use lc_core::structured_output::extract::StructuredOutputError;
@@ -86,6 +87,12 @@ pub use lc_sessions::store::SessionError;
 
 // ---- A2A Errors ----
 pub use lc_a2a::client::A2AError;
+
+// ---- MCP Errors ----
+pub use lc_mcp::MCPError;
+
+// ---- Prompt Errors ----
+pub use lc_prompts::PromptsError;
 
 /// Unified error type that aggregates all sub-module errors.
 ///
@@ -249,10 +256,26 @@ pub enum Error {
     #[error("Session error: {0}")]
     Session(#[from] SessionError),
 
+    // ---- MCP ----
+    /// MCP (Model Context Protocol) error.
+    #[error("MCP error: {0}")]
+    Mcp(#[from] MCPError),
+
     // ---- A2A ----
     /// Agent-to-Agent protocol error.
     #[error("A2A error: {0}")]
     A2A(#[from] A2AError),
+
+    // ---- Prompts ----
+    /// Prompt template processing error.
+    #[error("Prompts error: {0}")]
+    Prompts(#[from] PromptsError),
+
+    // ---- Observability ----
+    /// Observability / telemetry error (the one sub-crate error that was still
+    /// leaking `lc_core::ObsError` un-converted at the facade).
+    #[error("Observability error: {0}")]
+    Observability(#[from] ObsError),
 }
 
 /// Canonical root-level name for the unified error type.
@@ -314,5 +337,23 @@ mod tests {
         use std::error::Error as StdError;
         let err = Error::from(EmbeddingError::HttpError("invalid".to_string()));
         assert!(StdError::source(&err).is_some());
+    }
+
+    #[test]
+    fn test_from_mcp_error() {
+        let err = Error::from(MCPError::new(-32602, "bad params"));
+        assert!(matches!(err, Error::Mcp(MCPError { code: -32602, .. })));
+        assert!(err.to_string().contains("MCP error"));
+    }
+
+    #[test]
+    fn test_from_prompts_error() {
+        use lc_prompts::PromptsError;
+        let err = Error::from(PromptsError::MissingVariable("x".into()));
+        assert!(matches!(
+            err,
+            Error::Prompts(PromptsError::MissingVariable(_))
+        ));
+        assert!(err.to_string().contains("Prompts error"));
     }
 }

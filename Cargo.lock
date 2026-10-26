@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "langchainrust"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "criterion",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "lc-a2a"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3034,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "lc-agents"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "lc-callbacks"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3089,7 +3089,7 @@ dependencies = [
 
 [[package]]
 name = "lc-chains"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3110,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "lc-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "lc-embeddings"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "candle-core",
@@ -3161,7 +3161,7 @@ dependencies = [
 
 [[package]]
 name = "lc-evaluation"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3181,7 +3181,7 @@ dependencies = [
 
 [[package]]
 name = "lc-guardrails"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3203,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "lc-langgraph"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "lc-mcp"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3243,7 +3243,7 @@ dependencies = [
 
 [[package]]
 name = "lc-memory"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "lc-observability"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "lc-core",
@@ -3282,7 +3282,7 @@ dependencies = [
 
 [[package]]
 name = "lc-prompts"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "lc-core",
@@ -3294,7 +3294,7 @@ dependencies = [
 
 [[package]]
 name = "lc-providers"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3316,7 +3316,7 @@ dependencies = [
 
 [[package]]
 name = "lc-rag"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "bincode",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "lc-schema"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "base64 0.22.1",
  "lc-shared",
@@ -3356,7 +3356,7 @@ dependencies = [
 
 [[package]]
 name = "lc-sessions"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3372,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "lc-shared"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "lc-testkit"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3407,7 +3407,7 @@ dependencies = [
 
 [[package]]
 name = "lc-tools"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "lc-tools-derive"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "lc-vector-stores"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "bincode",

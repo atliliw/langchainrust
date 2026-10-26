@@ -267,36 +267,36 @@ langchainrust is a **23-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
+langchainrust = "0.28.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features — vector stores & storage
-langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
-langchainrust = { version = "0.27.0", features = ["redis-storage"] }         # Redis vector store
-langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
-langchainrust = { version = "0.27.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
+langchainrust = { version = "0.28.0", features = ["redis-storage"] }         # Redis vector store
+langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
+langchainrust = { version = "0.28.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
 
 # Durable LangGraph checkpointers (v0.22.4)
-langchainrust = { version = "0.27.0", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
-langchainrust = { version = "0.27.0", features = ["checkpoint-postgres"] }   # tokio-postgres
-langchainrust = { version = "0.27.0", features = ["checkpoint-redis"] }      # Redis with Lua CAS
+langchainrust = { version = "0.28.0", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
+langchainrust = { version = "0.28.0", features = ["checkpoint-postgres"] }   # tokio-postgres
+langchainrust = { version = "0.28.0", features = ["checkpoint-redis"] }      # Redis with Lua CAS
 
 # Local embeddings (vision/Cohere/Qwen multimodal embeddings need no feature)
-langchainrust = { version = "0.27.0", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
-langchainrust = { version = "0.27.0", features = ["fastembed"] }             # FastEmbed ONNX models
-langchainrust = { version = "0.27.0", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
+langchainrust = { version = "0.28.0", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
+langchainrust = { version = "0.28.0", features = ["fastembed"] }             # FastEmbed ONNX models
+langchainrust = { version = "0.28.0", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
 
 # Observability
-langchainrust = { version = "0.27.0", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
-langchainrust = { version = "0.27.0", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
-langchainrust = { version = "0.27.0", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
-langchainrust = { version = "0.27.0", features = ["observability-mongodb"] } # MongoDB observation sink
+langchainrust = { version = "0.28.0", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
+langchainrust = { version = "0.28.0", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
+langchainrust = { version = "0.28.0", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
+langchainrust = { version = "0.28.0", features = ["observability-mongodb"] } # MongoDB observation sink
 
 # Tools & memory
-langchainrust = { version = "0.27.0", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
-langchainrust = { version = "0.27.0", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.27.0", features = ["experimental"] }          # Experimental features
+langchainrust = { version = "0.28.0", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
+langchainrust = { version = "0.28.0", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.28.0", features = ["experimental"] }          # Experimental features
 # PineconeStore / FileVectorStore / hosted search (Tavily, Serper, Exa) require no feature flag.
 # The axum SSE agent endpoint is gated by lc-agents' own `sse-server` feature (see examples/agent_sse_server.rs).
 ```

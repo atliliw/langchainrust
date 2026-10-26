@@ -174,7 +174,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
+langchainrust = "0.28.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -3718,7 +3718,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 It is an opt-in feature (pulls in tokio-tungstenite):
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.28.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3933,7 +3933,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.27.0", features = ["local-candle"] }
+langchainrust = { version = "0.28.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4145,7 +4145,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["chromadb"] }
+langchainrust = { version = "0.28.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4534,7 +4534,7 @@ If you only need the vector leg, the free function (available since v0.23.0) `la
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5387,7 +5387,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -5405,7 +5405,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 **One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
 
 ```toml
-langchainrust = { version = "0.27.0", features = ["otlp"] }
+langchainrust = { version = "0.28.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -5639,7 +5639,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
 ```
 
 ### Usage
@@ -5713,14 +5713,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["redis-storage"] }
+langchainrust = { version = "0.28.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.27.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
 ```
 
 ### RedisDocumentStore
@@ -5981,8 +5981,8 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.27.0"
-lc-a2a = { version = "0.27.0", features = ["axum"] }
+langchainrust = "0.28.0"
+lc-a2a = { version = "0.28.0", features = ["axum"] }
 ```
 
 ```rust
@@ -6047,7 +6047,7 @@ while let Some(event) = stream.next().await {
 **WebSocket transport (`ws` feature, 0.27.0 #186)**: a second transport alongside SSE. With the `ws` feature on, the server exposes `GET /ws`, sharing the **exact same auth and per-connection filtering** as `/events` — bearer auth, the B7 cross-tenant `notification_visible` guard, and the `?taskId=` restriction all apply identically, and each filtered `TaskPushNotification` is serialized into **one text frame** for that connection. On the client, `connect_ws` / `send_task_streaming_ws` mirror `connect_sse` / `send_task_streaming`, and `A2AWebSocketStream::next()` answers protocol pings to keep an idle subscription alive while skipping pongs and binary frames. The two transports carry identical semantics; pick per deployment (WS suits a long-lived connection that does not want HTTP/SSE buffering):
 
 ```toml
-lc-a2a = { version = "0.27.0", features = ["ws"] }   # the server also needs the axum feature to serve
+lc-a2a = { version = "0.28.0", features = ["ws"] }   # the server also needs the axum feature to serve
 ```
 
 ```rust
@@ -6720,7 +6720,7 @@ Backend capability boundaries (v0.22.4):
 The execution budget is enforced with **wasm fuel** (`timeout_ms × 1000` instructions, at least 1000) instead of a racy wall-clock thread, and exhaustion maps **deterministically** to `SandboxError::Timeout`. Any language other than `Language::Wasm` yields `SandboxError::UnsupportedLanguage`.
 
 ```toml
-lc-tools = { version = "0.27.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.28.0", features = ["sandbox-wasm"] }
 # The `langchainrust` facade does not forward this feature yet, so enable it on lc-tools;
 # cargo feature unification still lets you import the type from the facade:
 # langchainrust::tools::sandbox::WasmSandbox

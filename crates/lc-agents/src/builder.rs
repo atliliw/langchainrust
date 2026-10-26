@@ -4,6 +4,20 @@
 //! Provides a fluent Builder API, modeled on rig's
 //! `client.agent(model).preamble(...).build()`.
 //!
+//! **This is the default, all-purpose agent entry point.** If you are new to
+//! the framework and are not sure which agent to use, start here: give it an
+//! LLM and a tool, and it builds a capable [`FunctionCallingAgent`] that
+//! reasons and calls tools in a loop.
+//!
+//! When to reach for more specialized agents instead:
+//! - **planning / multi-step execution** → [`crate::plan_execute::PlanExecuteAgent`] (not built here);
+//! - **supervised orchestration / role division** → [`crate::orchestrator::Orchestrator`];
+//! - **hand an explicit sub-task to a teammate** → [`crate::handoffs::HandoffManager`];
+//! - **tool-aware reflection / self-correction** → `react` / executor hooks.
+//!
+//! The 80% case is just this builder — the specialized agents exist for when a
+//! single free-form tool loop is not enough.
+//!
 //! # Example
 //!
 //! ```ignore
